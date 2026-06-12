@@ -1,0 +1,19 @@
+# Railway deploy config do serviço `livefeed` (long-running, NÃO cron).
+# O railway.toml da raiz é dos workers cron (startCommand run_worker +
+# cronSchedule); este arquivo é apontado APENAS pelo serviço livefeed via
+# "config file path" (service setting railway_config_file), sem tocar nos
+# serviços existentes.
+#
+# Env vars do serviço:
+#   TIINGO_API_KEY  (reference variable de outro serviço, ou valor próprio)
+#   PORT=8080       (target port do domínio público)
+#   SIM_MODE=1      (opcional: força o simulador)
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.workers.livefeed"
+restartPolicyType = "always"
+healthcheckPath = "/health"
+healthcheckTimeout = 120
