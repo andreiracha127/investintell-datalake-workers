@@ -305,6 +305,10 @@ def evt_tail(ret: np.ndarray) -> dict[str, float | None]:
 # ──────────────────────────────────────────────────────────────────────────────
 EQUITY_BENCHMARK_BLOCK = "na_equity_large"
 
+# Capture ratios além disso indicam denominador degenerado (benchmark ~flat
+# no subconjunto de dias) — sem significado; e a coluna é numeric(8,4).
+CAPTURE_LIMIT = 500.0
+
 BENCHMARK_BY_LABEL: dict[str, str] = {
     "Asian Equity": "dm_asia_equity",
     "Asset-Backed Securities": "fi_us_aggregate",
@@ -482,18 +486,21 @@ def regression_metrics(
     out["tracking_error_1y"] = _clip(te)
     if te >= MIN_ANNUALIZED_VOL:
         out["information_ratio_1y"] = _clip(float(np.mean(active)) * TRADING_DAYS / te)
-    # Up/down capture (geometric), vs benchmark up/down days.
+    # Up/down capture (geometric), vs benchmark up/down days. Acima de
+    # |CAPTURE_LIMIT| o denominador é degenerado (benchmark ~flat no
+    # subconjunto): estatisticamente sem significado E estoura o
+    # numeric(8,4) da coluna — vira None, nunca um número absurdo.
     up = b > 0
     down = b < 0
     if up.sum() >= 5 and (1.0 + b[up]).prod() > 0:
         fc = float(np.prod(1.0 + f[up]) ** (1.0 / up.sum()) - 1.0)
         bc = float(np.prod(1.0 + b[up]) ** (1.0 / up.sum()) - 1.0)
-        if bc != 0:
+        if bc != 0 and abs(100.0 * fc / bc) <= CAPTURE_LIMIT:
             out["upside_capture_1y"] = _clip(100.0 * fc / bc, 4)
     if down.sum() >= 5 and (1.0 + b[down]).prod() > 0:
         fc = float(np.prod(1.0 + f[down]) ** (1.0 / down.sum()) - 1.0)
         bc = float(np.prod(1.0 + b[down]) ** (1.0 / down.sum()) - 1.0)
-        if bc != 0:
+        if bc != 0 and abs(100.0 * fc / bc) <= CAPTURE_LIMIT:
             out["downside_capture_1y"] = _clip(100.0 * fc / bc, 4)
     return out
 
