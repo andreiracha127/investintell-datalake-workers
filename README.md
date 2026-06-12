@@ -51,6 +51,7 @@ Advisory lock: `src/db.py::advisory_lock(conn, lock_id)`.
 | `characteristics.py` | `company_characteristics_monthly`, `equity_characteristics_monthly` | `sec_nport_holdings`, `nav_timeseries` | `company_characteristics_compute.py`, `fund_characteristics_aggregator.py` |
 | `factor_model.py` | `factor_model_fits` | retornos (`nav_timeseries`) + características | `ipca_estimation.py` |
 | `nport_lookthrough.py` | `nport_lookthrough_exposures`, `nport_lookthrough_summary` | `sec_nport_holdings` (96M) + catálogo (`sec_cusip_ticker_map`, `sec_fund_classes`, `sec_etfs`, `instrument_identity`, `instruments_universe`) + `cagg_nport_series_profile` (coverage **copiado**, nunca recalculado) | frente C do doc de research 2026-06-11 (ADENDO §6) |
+| `credit_regime.py` | `credit_regime_daily` | Tiingo (closes ajustados HYG/IEF — série inteira por run, ajustes são retroativos) | frente B re-escopada; replica do backtest QC `856a7e9f…` (Sharpe 0,481 / DD 25,7%) — ratio HYG/IEF < p20 móvel 5y (mín. 252 obs), binário risk_on/risk_off; composite legado REFUTADO. Lock 900_205 |
 
 ### Look-through (frente C) — modelo
 
