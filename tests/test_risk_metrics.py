@@ -253,3 +253,54 @@ def test_peer_percentiles_set_based():
     finally:
         conn.rollback()
         conn.close()
+
+
+def test_benchmark_maps_reference_known_blocks():
+    """Todo bloco referenciado nos mapas existe no conjunto nomeado do
+    benchmark_ingest — um typo aqui silenciaria as métricas relativas."""
+    known = {
+        "alt_commodities", "alt_gold", "alt_real_estate", "cash",
+        "dm_asia_equity", "dm_europe_equity", "em_equity",
+        "factor_source_intl_developed", "factor_source_us_growth",
+        "fi_em_debt", "fi_ig_corporate", "fi_us_aggregate",
+        "fi_us_high_yield", "fi_us_short_term", "fi_us_tips",
+        "fi_us_treasury", "na_equity_growth", "na_equity_large",
+        "na_equity_small", "na_equity_value",
+    }
+    used = set(rm.BENCHMARK_BY_LABEL.values()) | set(
+        rm.BENCHMARK_BY_ASSET_CLASS.values()
+    ) | {rm.EQUITY_BENCHMARK_BLOCK}
+    assert used <= known, used - known
+
+
+def test_relative_metrics_synthetic_beta_two():
+    """fundo = 2× benchmark → beta 2, correlação 1, capture 200/200."""
+    rng = np.random.default_rng(42)
+    start = _dt.date(2024, 1, 1)
+    dates = [start + _dt.timedelta(days=i) for i in range(400)]
+    b_ret = rng.normal(0.0004, 0.01, 400)
+    bench_nav, fund_nav = [100.0], [100.0]
+    for r in b_ret:
+        bench_nav.append(bench_nav[-1] * (1 + r))
+        fund_nav.append(fund_nav[-1] * (1 + 2 * r))
+    bench_rows = list(zip([start - _dt.timedelta(days=1), *dates], bench_nav))
+    fund_rows = list(zip([start - _dt.timedelta(days=1), *dates], fund_nav))
+    bench_returns = {"na_equity_large": rm.dated_simple_returns(bench_rows)}
+
+    out = rm.relative_metrics_for(fund_rows, "na_equity_large", bench_returns, 0.04)
+    assert out["beta_1y"] is not None and abs(out["beta_1y"] - 2.0) < 0.01
+    assert abs(out["equity_correlation_252d"] - 1.0) < 1e-6
+    assert abs(out["upside_capture_1y"] - 200.0) < 2.0
+    assert abs(out["downside_capture_1y"] - 200.0) < 2.0
+    assert out["tracking_error_1y"] > 0
+
+
+def test_relative_metrics_without_block_only_correlation():
+    """Sem benchmark mapeado (ex. alternatives) só a eq-correlation sai."""
+    start = _dt.date(2024, 1, 1)
+    dates = [start + _dt.timedelta(days=i) for i in range(300)]
+    rows = [(d, 100.0 + i * 0.1) for i, d in enumerate(dates)]
+    bench_returns = {"na_equity_large": rm.dated_simple_returns(rows)}
+    out = rm.relative_metrics_for(rows, None, bench_returns, 0.04)
+    assert "beta_1y" not in out
+    assert "equity_correlation_252d" in out

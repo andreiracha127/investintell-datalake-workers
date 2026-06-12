@@ -61,7 +61,7 @@ _METRIC_COLUMNS = [
     "max_drawdown_1y", "max_drawdown_3y",
     "sharpe_1y", "sharpe_3y", "sortino_1y", "calmar_ratio_3y",
     "alpha_1y", "beta_1y", "tracking_error_1y", "information_ratio_1y",
-    "upside_capture_1y", "downside_capture_1y",
+    "upside_capture_1y", "downside_capture_1y", "equity_correlation_252d",
     "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
     "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
     "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
@@ -293,6 +293,161 @@ def evt_tail(ret: np.ndarray) -> dict[str, float | None]:
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Benchmark wiring (2026-06-12) — liga regression_metrics ao benchmark_nav.
+# A função existia desde o port mas nunca foi chamada: faltava o mapa
+# fundo→benchmark e o fetch das séries. Mapa em duas camadas:
+#   1. strategy label (stage) → bloco nomeado do benchmark_ingest;
+#   2. fallback instruments_universe.asset_class → bloco amplo.
+# Labels sem benchmark defensável (Balanced, Target Date, Convertibles…)
+# caem no fallback do asset_class; alternatives sem mapa ficam sem métricas
+# relativas — exceto equity_correlation_252d, sempre vs EQUITY_BENCHMARK_BLOCK.
+# ──────────────────────────────────────────────────────────────────────────────
+EQUITY_BENCHMARK_BLOCK = "na_equity_large"
+
+BENCHMARK_BY_LABEL: dict[str, str] = {
+    "Asian Equity": "dm_asia_equity",
+    "Asset-Backed Securities": "fi_us_aggregate",
+    "Cash Equivalent": "cash",
+    "Commodities": "alt_commodities",
+    "ESG/Sustainable Bond": "fi_us_aggregate",
+    "ESG/Sustainable Equity": "na_equity_large",
+    "Emerging Markets Debt": "fi_em_debt",
+    "Emerging Markets Equity": "em_equity",
+    "European Equity": "dm_europe_equity",
+    "Global Equity": "na_equity_large",
+    "Government Bond": "fi_us_treasury",
+    "High Yield Bond": "fi_us_high_yield",
+    "Inflation-Linked Bond": "fi_us_tips",
+    "Intermediate-Term Bond": "fi_us_aggregate",
+    "International Equity": "factor_source_intl_developed",
+    "Investment Grade Bond": "fi_ig_corporate",
+    "Large Blend": "na_equity_large",
+    "Large Growth": "na_equity_growth",
+    "Large Value": "na_equity_value",
+    "Long/Short Equity": "na_equity_large",
+    "Mid Blend": "na_equity_large",
+    "Mid Growth": "na_equity_growth",
+    "Mid Value": "na_equity_value",
+    "Mortgage-Backed Securities": "fi_us_aggregate",
+    "Municipal Bond": "fi_us_aggregate",
+    "Precious Metals": "alt_gold",
+    "Private Credit": "fi_us_high_yield",
+    "Real Estate": "alt_real_estate",
+    "Sector Equity": "na_equity_large",
+    "Small Blend": "na_equity_small",
+    "Small Growth": "na_equity_small",
+    "Small Value": "na_equity_small",
+    "Structured Credit": "fi_us_aggregate",
+}
+
+BENCHMARK_BY_ASSET_CLASS: dict[str, str] = {
+    "equity": "na_equity_large",
+    "fixed_income": "fi_us_aggregate",
+    "cash": "cash",
+}
+
+# Janela de busca: 252 sessões + folga p/ feriados/lacunas de NAV.
+_BENCH_LOOKBACK_DAYS = 600
+
+_FUND_BENCHMARKS_SQL = """
+WITH labels AS (
+    SELECT DISTINCT ON (source_pk)
+           source_pk::uuid AS instrument_id,
+           proposed_strategy_label AS label
+    FROM strategy_reclassification_stage
+    WHERE source_table = 'instruments_universe'
+      AND proposed_strategy_label IS NOT NULL
+    ORDER BY source_pk, classified_at DESC
+)
+SELECT iu.instrument_id, l.label, iu.asset_class
+FROM instruments_universe iu
+LEFT JOIN labels l ON l.instrument_id = iu.instrument_id
+"""
+
+
+def _fetch_fund_benchmarks(conn) -> dict[str, str]:
+    """instrument_id(str) → benchmark block_id (label map, asset-class fallback)."""
+    out: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(_FUND_BENCHMARKS_SQL)
+        for iid, label, asset_class in cur.fetchall():
+            block = BENCHMARK_BY_LABEL.get(label or "") or BENCHMARK_BY_ASSET_CLASS.get(
+                asset_class or ""
+            )
+            if block:
+                out[str(iid)] = block
+    return out
+
+
+def _fetch_benchmark_returns(
+    conn, calc_date: _dt.date
+) -> dict[str, list[tuple[_dt.date, float]]]:
+    """block_id → [(date, simple daily return)] dos NAVs do benchmark_nav.
+
+    Retornos simples recomputados do próprio NAV (não de return_1d, que é
+    log) para casar com a convenção dos retornos de fundo no worker.
+    """
+    blocks = sorted(
+        set(BENCHMARK_BY_LABEL.values())
+        | set(BENCHMARK_BY_ASSET_CLASS.values())
+        | {EQUITY_BENCHMARK_BLOCK}
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT block_id, nav_date, nav FROM benchmark_nav
+               WHERE block_id = ANY(%s) AND nav_date <= %s AND nav_date > %s
+               ORDER BY block_id, nav_date""",
+            (blocks, calc_date, calc_date - _dt.timedelta(days=_BENCH_LOOKBACK_DAYS)),
+        )
+        rows = cur.fetchall()
+    out: dict[str, list[tuple[_dt.date, float]]] = {}
+    prev_block: str | None = None
+    prev_nav: float | None = None
+    for block, d, nav in rows:
+        nav = float(nav)
+        if block != prev_block:
+            prev_block, prev_nav = block, nav
+            out.setdefault(block, [])
+            continue
+        if prev_nav and prev_nav > 0:
+            out[block].append((d, nav / prev_nav - 1.0))
+        prev_nav = nav
+    return out
+
+
+def dated_simple_returns(
+    rows: list[tuple[_dt.date, Any]],
+) -> list[tuple[_dt.date, float]]:
+    """(date, nav) rows (ascending) → [(date, simple daily return)]."""
+    out: list[tuple[_dt.date, float]] = []
+    prev: float | None = None
+    for d, nav in rows:
+        nav = float(nav)
+        if prev is not None and prev > 0:
+            out.append((d, nav / prev - 1.0))
+        prev = nav
+    return out
+
+
+def equity_correlation(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    eq_bench_dated: list[tuple[_dt.date, float]],
+    days: int = TRADING_DAYS,
+) -> float | None:
+    """corr(fundo, benchmark de equity) nas últimas ``days`` sessões em comum."""
+    bench_map = dict(eq_bench_dated)
+    pairs = [(f, bench_map[d]) for d, f in fund_ret_dated if d in bench_map]
+    if len(pairs) < days:
+        return None
+    pairs = pairs[-days:]
+    f = np.array([p[0] for p in pairs])
+    b = np.array([p[1] for p in pairs])
+    if float(np.std(f, ddof=1)) == 0 or float(np.std(b, ddof=1)) == 0:
+        return None
+    return _clip(float(np.corrcoef(f, b)[0, 1]), 4)
+
+
 def regression_metrics(
     fund_ret_dated: list[tuple[_dt.date, float]],
     bench_ret_dated: list[tuple[_dt.date, float]],
@@ -464,6 +619,27 @@ def _risk_free_rate(conn, calc_date: _dt.date) -> float:
     return RISK_FREE_FALLBACK
 
 
+def relative_metrics_for(
+    rows: list,
+    fund_block: str | None,
+    bench_returns: dict[str, list[tuple[_dt.date, float]]],
+    rf: float,
+) -> dict[str, float | None]:
+    """Métricas benchmark-relativas de um fundo a partir dos NAV rows.
+
+    ``rows`` é a saída de ``_fetch_nav`` ((date, nav) ascendente). Sem bloco
+    mapeado, só a correlação com o benchmark de equity é computada.
+    """
+    fund_ret = dated_simple_returns([(r[0], r[1]) for r in rows])
+    out: dict[str, float | None] = {}
+    if fund_block and fund_block in bench_returns:
+        out.update(regression_metrics(fund_ret, bench_returns[fund_block], rf))
+    eq = bench_returns.get(EQUITY_BENCHMARK_BLOCK)
+    if eq:
+        out["equity_correlation_252d"] = equity_correlation(fund_ret, eq)
+    return out
+
+
 def _upsert(conn, instrument_id, calc_date: _dt.date, metrics: dict[str, Any]) -> None:
     import json
 
@@ -495,15 +671,21 @@ def _resolve_max_workers() -> int:
 
 
 def _process_shard(
-    dsn: str, calc_date_iso: str, rf: float, fund_ids: list
+    dsn: str,
+    calc_date_iso: str,
+    rf: float,
+    fund_ids: list,
+    fund_benchmarks: dict[str, str],
+    bench_returns: dict[str, list[tuple[_dt.date, float]]],
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
     Opens its OWN connection (never shared across processes), computes and
     upserts its shard in its own transaction, and returns (processed, upserted).
     Does NOT take the advisory lock — the lock is held once by the main process
-    for the whole run. ``rf`` and ``calc_date`` are passed in (read once in main)
-    so children never re-fetch shared data.
+    for the whole run. ``rf``, ``calc_date``, the fund→benchmark map and the
+    benchmark return series are passed in (read once in main) so children
+    never re-fetch shared data.
     """
     cdate = _dt.date.fromisoformat(calc_date_iso)
     processed = 0
@@ -518,6 +700,11 @@ def _process_shard(
             processed += 1
             if metrics is None:
                 continue
+            metrics.update(
+                relative_metrics_for(
+                    rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                )
+            )
             _upsert(conn, iid, cdate, metrics)
             upserted += 1
         conn.commit()
@@ -648,6 +835,9 @@ def run(
             rf = _risk_free_rate(conn, cdate)
             fund_ids = _fetch_fund_ids(conn, cdate, limit)
             cdate_iso = cdate.isoformat()
+            # Benchmark wiring: lido UMA vez no main e passado aos shards.
+            bench_returns = _fetch_benchmark_returns(conn, cdate)
+            fund_benchmarks = _fetch_fund_benchmarks(conn)
 
             n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
 
@@ -663,6 +853,11 @@ def run(
                     processed += 1
                     if metrics is None:
                         continue
+                    metrics.update(
+                        relative_metrics_for(
+                            rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                        )
+                    )
                     _upsert(conn, iid, cdate, metrics)
                     upserted += 1
                 peers = _update_peer_percentiles(conn, cdate)
@@ -681,7 +876,15 @@ def run(
             processed = upserted = 0
             with ProcessPoolExecutor(max_workers=n_workers) as pool:
                 futures = [
-                    pool.submit(_process_shard, dsn, cdate_iso, rf, shard)
+                    pool.submit(
+                        _process_shard,
+                        dsn,
+                        cdate_iso,
+                        rf,
+                        shard,
+                        {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
+                        bench_returns,
+                    )
                     for shard in shards
                 ]
                 for fut in as_completed(futures):
