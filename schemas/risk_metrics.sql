@@ -128,3 +128,24 @@ BEGIN
         );
     END IF;
 END$$;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Peer/scoring layer (2026-06-12): colunas que a DB-mãe tinha e o data-lake
+-- não — consumidas pelo fund-catalog sync do Investintell Light.
+--   * peer_*  : computadas pelo pós-passo do worker (percent_rank dentro do
+--               peer_strategy_label, escala 0–100; drawdown ASC = menos
+--               negativo melhor). Labels vêm de strategy_reclassification_stage
+--               (réplica no cloud, source_table='instruments_universe').
+--   * manager_score / elite_flag / equity_correlation_252d: reservadas — o
+--     modelo de scoring do projeto allocation ainda não foi portado; ficam
+--     NULL até existir worker próprio (UI mostra "—").
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_strategy_label text;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_sharpe_pctl numeric(5,2);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_sortino_pctl numeric(5,2);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_return_pctl numeric(5,2);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_drawdown_pctl numeric(5,2);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_count integer;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS manager_score numeric(5,2);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS elite_flag boolean;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS equity_correlation_252d numeric(6,4);

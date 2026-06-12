@@ -193,3 +193,63 @@ def test_advisory_lock_is_distinct():
             assert got is True
     finally:
         conn.close()
+
+
+def test_peer_percentiles_set_based():
+    """_update_peer_percentiles: percent_rank 0-100 por label, peer_count = tamanho
+    do grupo, drawdown menos negativo = pctl maior. Roda na mãe e dá ROLLBACK."""
+    conn = _mae()
+    try:
+        cdate = _legacy_calc_date(conn)
+        updated = rm._update_peer_percentiles(conn, cdate)
+        assert updated > 1000, f"expected a broad update, got {updated}"
+
+        # Group membership per the UPDATE's own definition (stage labels join),
+        # NOT per stored peer_strategy_label — the mae keeps legacy labels on
+        # rows absent from the stage, which the update correctly leaves alone.
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH labels AS (
+                    SELECT DISTINCT ON (source_pk)
+                           source_pk::uuid AS instrument_id,
+                           proposed_strategy_label AS label
+                    FROM strategy_reclassification_stage
+                    WHERE source_table = 'instruments_universe'
+                      AND proposed_strategy_label IS NOT NULL
+                    ORDER BY source_pk, classified_at DESC
+                )
+                SELECT m.sharpe_1y, m.peer_sharpe_pctl, m.max_drawdown_1y,
+                       m.peer_drawdown_pctl, m.peer_count,
+                       count(*) OVER () AS group_size
+                FROM fund_risk_metrics m
+                JOIN labels l ON l.instrument_id = m.instrument_id
+                WHERE m.calc_date = %s AND m.organization_id IS NULL
+                  AND l.label = 'Large Blend'
+                ORDER BY m.sharpe_1y DESC NULLS LAST
+                """,
+                (cdate,),
+            )
+            rows = cur.fetchall()
+        assert len(rows) >= 10, "Large Blend peer group unexpectedly small"
+
+        group_size = rows[0][5]
+        ranked = [r for r in rows if r[0] is not None]
+        # Best sharpe in group ranks 100; pctls bounded; count = group size.
+        assert float(ranked[0][1]) == 100.0
+        for sharpe, sharpe_pctl, dd, dd_pctl, peer_count, _ in rows:
+            assert peer_count == group_size
+            if sharpe_pctl is not None:
+                assert 0 <= float(sharpe_pctl) <= 100
+            if dd_pctl is not None:
+                assert 0 <= float(dd_pctl) <= 100
+        # Monotonic: ordered by sharpe desc, pctls must be non-increasing.
+        pctls = [float(r[1]) for r in ranked]
+        assert all(a >= b for a, b in zip(pctls, pctls[1:]))
+        # Drawdown direction: the least-negative dd has the highest dd pctl.
+        dd_rows = [(float(r[2]), float(r[3])) for r in rows if r[2] is not None and r[3] is not None]
+        best_dd = max(dd_rows, key=lambda t: t[0])
+        assert best_dd[1] == max(p for _, p in dd_rows)
+    finally:
+        conn.rollback()
+        conn.close()

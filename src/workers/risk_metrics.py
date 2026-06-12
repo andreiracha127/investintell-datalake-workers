@@ -537,6 +537,84 @@ def _shard(fund_ids: list, n_shards: int) -> list[list]:
     return [s for s in shards if s]
 
 
+# Peer/scoring layer — percent_rank (0–100) dentro do peer_strategy_label.
+# Semântica verificada empiricamente contra a DB-mãe (2026-06-12): ASC para
+# sharpe/sortino/return (maior = melhor) e ASC para max_drawdown (valores
+# negativos; menos negativo = melhor → pctl maior). peer_count = tamanho do
+# grupo no calc_date. Labels: último proposed_strategy_label por instrumento
+# em strategy_reclassification_stage (réplica cloud). Fundos sem label ficam
+# com peer_* NULL. manager_score/elite_flag NÃO são computados aqui (modelo
+# de scoring do allocation ainda não portado).
+_PEER_PERCENTILES_SQL = """
+WITH labels AS (
+    SELECT DISTINCT ON (source_pk)
+           source_pk::uuid AS instrument_id,
+           proposed_strategy_label AS label
+    FROM strategy_reclassification_stage
+    WHERE source_table = 'instruments_universe'
+      AND proposed_strategy_label IS NOT NULL
+    ORDER BY source_pk, classified_at DESC
+),
+latest AS (
+    SELECT m.instrument_id, m.sharpe_1y, m.sortino_1y, m.return_1y,
+           m.max_drawdown_1y, l.label
+    FROM fund_risk_metrics m
+    JOIN labels l ON l.instrument_id = m.instrument_id
+    WHERE m.calc_date = %(calc_date)s AND m.organization_id IS NULL
+),
+counts AS (
+    SELECT label, count(*) AS peer_count FROM latest GROUP BY label
+),
+sharpe AS (
+    SELECT instrument_id, round((percent_rank() OVER (
+        PARTITION BY label ORDER BY sharpe_1y))::numeric * 100, 2) AS p
+    FROM latest WHERE sharpe_1y IS NOT NULL
+),
+sortino AS (
+    SELECT instrument_id, round((percent_rank() OVER (
+        PARTITION BY label ORDER BY sortino_1y))::numeric * 100, 2) AS p
+    FROM latest WHERE sortino_1y IS NOT NULL
+),
+ret AS (
+    SELECT instrument_id, round((percent_rank() OVER (
+        PARTITION BY label ORDER BY return_1y))::numeric * 100, 2) AS p
+    FROM latest WHERE return_1y IS NOT NULL
+),
+dd AS (
+    SELECT instrument_id, round((percent_rank() OVER (
+        PARTITION BY label ORDER BY max_drawdown_1y))::numeric * 100, 2) AS p
+    FROM latest WHERE max_drawdown_1y IS NOT NULL
+)
+UPDATE fund_risk_metrics m
+SET peer_strategy_label = lt.label,
+    peer_sharpe_pctl    = s.p,
+    peer_sortino_pctl   = so.p,
+    peer_return_pctl    = r.p,
+    peer_drawdown_pctl  = d.p,
+    peer_count          = c.peer_count
+FROM latest lt
+JOIN counts c ON c.label = lt.label
+LEFT JOIN sharpe s ON s.instrument_id = lt.instrument_id
+LEFT JOIN sortino so ON so.instrument_id = lt.instrument_id
+LEFT JOIN ret r ON r.instrument_id = lt.instrument_id
+LEFT JOIN dd d ON d.instrument_id = lt.instrument_id
+WHERE m.instrument_id = lt.instrument_id
+  AND m.calc_date = %(calc_date)s
+  AND m.organization_id IS NULL
+"""
+
+
+def _update_peer_percentiles(conn, calc_date: _dt.date) -> int:
+    """Set-based peer-percentile refresh for one calc_date; returns rows updated.
+
+    Does NOT commit — the caller owns the transaction (run() commits; tests
+    roll back).
+    """
+    with conn.cursor() as cur:
+        cur.execute(_PEER_PERCENTILES_SQL, {"calc_date": calc_date})
+        return cur.rowcount
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -587,10 +665,12 @@ def run(
                         continue
                     _upsert(conn, iid, cdate, metrics)
                     upserted += 1
+                peers = _update_peer_percentiles(conn, cdate)
                 conn.commit()
                 return {
                     "processed": processed,
                     "upserted": upserted,
+                    "peer_rows": peers,
                     "calc_date": cdate_iso,
                     "workers": 1,
                 }
@@ -609,9 +689,14 @@ def run(
                     processed += p
                     upserted += u
 
+            # Children committed their shards; rank peers over the full set.
+            peers = _update_peer_percentiles(conn, cdate)
+            conn.commit()
+
             return {
                 "processed": processed,
                 "upserted": upserted,
+                "peer_rows": peers,
                 "calc_date": cdate_iso,
                 "workers": n_workers,
             }
