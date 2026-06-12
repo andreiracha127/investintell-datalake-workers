@@ -50,6 +50,24 @@ Advisory lock: `src/db.py::advisory_lock(conn, lock_id)`.
 | `risk_metrics.py` | `fund_risk_metrics`, `sec_mmf_metrics` | `nav_timeseries`, `benchmark_nav` | `backend/app/jobs/workers/risk_calc.py` |
 | `characteristics.py` | `company_characteristics_monthly`, `equity_characteristics_monthly` | `sec_nport_holdings`, `nav_timeseries` | `company_characteristics_compute.py`, `fund_characteristics_aggregator.py` |
 | `factor_model.py` | `factor_model_fits` | retornos (`nav_timeseries`) + características | `ipca_estimation.py` |
+| `nport_lookthrough.py` | `nport_lookthrough_exposures`, `nport_lookthrough_summary` | `sec_nport_holdings` (96M) + catálogo (`sec_cusip_ticker_map`, `sec_fund_classes`, `sec_etfs`, `instrument_identity`, `instruments_universe`) + `cagg_nport_series_profile` (coverage **copiado**, nunca recalculado) | frente C do doc de research 2026-06-11 (ADENDO §6) |
+
+### Look-through (frente C) — modelo
+
+Expansão recursiva (profundidade máx. 2, guarda de ciclo por ancestrais), peso
+composto `w = (pct_parent/100) × pct_child`; dimensões **issuer (CUSIP-6)**,
+**asset_class**, **sector**, **currency**, separando exposição **direta ×
+indireta**. Σpct > 100 (derivativos/alavancagem) **nunca** é renormalizado;
+sinais (shorts) preservados. Residual explícito no summary:
+`nondecomposable_fund_pct` (fundo casado sem dados / ciclo / limite de
+profundidade), `derivatives_gross_pct`/`derivatives_net_pct` (asset_class
+N-PORT `D*` exceto `DBT`) e `unidentified_pct` (chaves sintéticas
+`LE:`/`H:`/`CIK:`). Staleness em cadeia: `oldest_report_date` = report mais
+antigo usado na expansão. Aresta FoF: CUSIP-9 → ticker
+(`sec_cusip_ticker_map`) → série (`sec_fund_classes`/`sec_etfs`), mais
+`instrument_identity` e isin (`IS:<isin>` casa via isin e via CUSIP-9 embutido
+em ISIN US; `LE:`/`H:`/`CIK:` nunca casam). Lock `900_204`. O Light consome as
+duas tabelas materializadas direto (DB-first) — nenhum cálculo em request path.
 
 ### Ingestão (Tier 1 do design — `docs/INGESTION_DESIGN.md`)
 

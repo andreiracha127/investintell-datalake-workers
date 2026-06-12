@@ -19,7 +19,8 @@ def main() -> None:
     if not worker:
         sys.exit(
             "WORKER env var not set (expected risk_metrics|characteristics|factor_model"
-            "|macro_ingestion|treasury_ingestion|benchmark_ingest|instrument_ingestion)"
+            "|nport_lookthrough|macro_ingestion|treasury_ingestion|benchmark_ingest"
+            "|instrument_ingestion)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
     stats = mod.run(resolve_dsn())

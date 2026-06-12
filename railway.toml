@@ -1,13 +1,14 @@
 # Railway deploy config — ONE SERVICE PER WORKER.
 # All services deploy this same repo. Each service sets:
-#   WORKER=risk_metrics | characteristics | factor_model
+#   WORKER=risk_metrics | characteristics | factor_model | nport_lookthrough
 #         | macro_ingestion | treasury_ingestion
 #         | benchmark_ingest | instrument_ingestion        (selects the worker)
 #   DATABASE_URL=<cloud DSN>                                (shared)
 # and its own Cron Schedule (set per-service in dashboard/CLI):
-#   risk_metrics    -> daily   (NAV is daily)
-#   characteristics -> monthly (XBRL is quarterly)
-#   factor_model    -> monthly (after characteristics)
+#   risk_metrics      -> daily   (NAV is daily)
+#   characteristics   -> monthly (XBRL is quarterly)
+#   factor_model      -> monthly (after characteristics)
+#   nport_lookthrough -> weekly  (N-PORT é mensal/trimestral; dom 04:00 UTC)
 # Ingestion (docs/INGESTION_DESIGN.md §2 — order by cron offsets):
 #   macro_ingestion      -> daily 05:00 UTC (needs FRED_API_KEY)
 #   treasury_ingestion   -> daily 05:00 UTC
