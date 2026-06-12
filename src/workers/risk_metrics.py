@@ -1,0 +1,617 @@
+"""risk_metrics worker — recompute fund risk metrics from raw NAV.
+
+Standalone reimplementation of the legacy ``risk_calc`` worker. Reads **raw
+series** (``nav_timeseries``, ``benchmark_nav``) from the data-lake and writes
+the rich ``fund_risk_metrics`` table back, plus a thin ``sec_mmf_metrics`` pass
+projected from ``sec_nport_holdings`` is intentionally out of scope here — that
+table is fed by the N-MFP ingestion worker; we only (re)create its schema and
+upsert when the source columns are present.
+
+Recipe (README §"Receita validada", proven on Lean 2026-06-11):
+
+  returns        = nav[t]/nav[t-1] - 1          (arithmetic, return-type agnostic)
+  return_Ny      = nav[-1]/nav[-window] - 1
+  volatility_1y  = std(ret, ddof=1) * sqrt(252)
+  volatility_garch = GARCH(1,1) 1-step-ahead annualised, else EWMA(0.94)
+  max_drawdown   = min(cumprod(1+ret)/cummax - 1)
+  sharpe         = (mean(excess)/std(excess,ddof=1)) * sqrt(252)
+  sortino        = mean(excess) / TDD * sqrt(252)   (TDD = sqrt(mean(min(excess,0)^2)))
+  beta/alpha/TE/IR = OLS of fund excess vs benchmark excess (date-aligned)
+  VaR/CVaR 95    = Rockafellar-Uryasev empirical estimator (return-space, negative)
+  CVaR 99/99.9   = EVT POT-GPD on the loss tail
+
+All windows are deterministic (252 trading days/year, ddof=1). ``calc_date`` is a
+parameter — no implicit ``date.today()`` in window logic.
+
+Contract:  run(dsn, *, calc_date=None, limit=None) -> {"processed", "upserted"}
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import Any
+
+import numpy as np
+
+from src.db import LOCK_RISK_METRICS, advisory_lock, connect
+
+TRADING_DAYS = 252
+
+# Internal parallelism: saturate the box's CPUs (CPU-bound GARCH/EVT per fund),
+# but cap so concurrent cloud connections (one per child, NAV read + upsert) stay
+# bounded. 24 == Railway vCPU count and a safe ceiling for the cloud pool.
+MAX_WORKERS_CAP = 24
+RISK_FREE_FALLBACK = 0.04
+MIN_ANNUALIZED_VOL = 0.01
+MAX_DAILY_RETURN_ABS = 0.5
+NUMERIC_10_6_MAX = 9999.999999
+
+# Rolling windows (trading days) for VaR/CVaR/returns.
+WINDOWS = {"1m": 21, "3m": 63, "6m": 126, "12m": 252}
+
+# ── columns we populate (must exist in schemas/risk_metrics.sql) ──────────────
+_METRIC_COLUMNS = [
+    "cvar_95_1m", "cvar_95_3m", "cvar_95_6m", "cvar_95_12m",
+    "var_95_1m", "var_95_3m", "var_95_6m", "var_95_12m",
+    "return_1m", "return_3m", "return_6m", "return_1y",
+    "return_3y_ann", "return_5y_ann", "return_10y_ann",
+    "volatility_1y", "volatility_garch", "vol_model",
+    "max_drawdown_1y", "max_drawdown_3y",
+    "sharpe_1y", "sharpe_3y", "sortino_1y", "calmar_ratio_3y",
+    "alpha_1y", "beta_1y", "tracking_error_1y", "information_ratio_1y",
+    "upside_capture_1y", "downside_capture_1y",
+    "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
+    "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
+    "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
+    "fed_funds_rate_at_calc", "data_quality_flags",
+]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Pure-math primitives
+# ──────────────────────────────────────────────────────────────────────────────
+def _clip(value: float | None, decimals: int = 6) -> float | None:
+    if value is None:
+        return None
+    v = float(value)
+    if not np.isfinite(v):
+        return None
+    v = max(-NUMERIC_10_6_MAX, min(NUMERIC_10_6_MAX, v))
+    return round(v, decimals)
+
+
+def returns_from_nav(nav: np.ndarray) -> np.ndarray:
+    """Arithmetic daily returns from a NAV price path (return-type agnostic)."""
+    nav = np.asarray(nav, dtype=float)
+    prev = nav[:-1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret = nav[1:] / prev - 1.0
+    ret = ret[np.isfinite(ret)]
+    # Reject physically-impossible single-day moves (unadjusted corp actions).
+    return ret[np.abs(ret) <= MAX_DAILY_RETURN_ABS]
+
+
+def cum_return(nav: np.ndarray, window: int) -> float | None:
+    if len(nav) <= window:
+        return None
+    base = nav[-1 - window]
+    if base == 0 or not np.isfinite(base):
+        return None
+    return float(nav[-1] / base - 1.0)
+
+
+def annualized_return(nav: np.ndarray, years: int) -> float | None:
+    window = years * TRADING_DAYS
+    if len(nav) <= window:
+        return None
+    base = nav[-1 - window]
+    if base <= 0:
+        return None
+    total = nav[-1] / base
+    if total <= 0:
+        return -1.0
+    return float(total ** (1.0 / years) - 1.0)
+
+
+def volatility(ret: np.ndarray, days: int) -> float | None:
+    if len(ret) < days:
+        return None
+    return float(np.std(ret[-days:], ddof=1) * np.sqrt(TRADING_DAYS))
+
+
+def max_drawdown(ret: np.ndarray, days: int) -> float | None:
+    if len(ret) < days:
+        return None
+    cum = np.cumprod(1.0 + ret[-days:])
+    running_max = np.maximum.accumulate(cum)
+    return float(np.min(cum / running_max - 1.0))
+
+
+def sharpe(ret: np.ndarray, days: int, rf: float) -> float | None:
+    if len(ret) < days:
+        return None
+    excess = ret[-days:] - rf / TRADING_DAYS
+    vol = float(np.std(excess, ddof=1))
+    if vol == 0 or not np.isfinite(vol):
+        return None
+    if vol * np.sqrt(TRADING_DAYS) < MIN_ANNUALIZED_VOL:
+        return None
+    return float(np.mean(excess) / vol * np.sqrt(TRADING_DAYS))
+
+
+def sortino(ret: np.ndarray, days: int, rf: float) -> float | None:
+    if len(ret) < days:
+        return None
+    excess = ret[-days:] - rf / TRADING_DAYS
+    shortfall = np.minimum(excess, 0.0)
+    tdd = float(np.sqrt(np.mean(shortfall**2)))
+    if tdd == 0 or not np.isfinite(tdd):
+        return None
+    if tdd * np.sqrt(TRADING_DAYS) < MIN_ANNUALIZED_VOL:
+        return None
+    return float(np.mean(excess) / tdd * np.sqrt(TRADING_DAYS))
+
+
+def cvar_var_95(ret: np.ndarray, confidence: float = 0.95) -> tuple[float, float]:
+    """Rockafellar-Uryasev empirical CVaR/VaR (return-space, negative losses)."""
+    if len(ret) < 5:
+        return float("nan"), float("nan")
+    losses = -ret
+    var_loss = float(np.quantile(losses, confidence, method="higher"))
+    u = np.maximum(losses - var_loss, 0.0)
+    cvar_loss = var_loss + u.sum() / ((1.0 - confidence) * losses.size)
+    return -cvar_loss, -var_loss
+
+
+def garch_or_ewma(ret: np.ndarray) -> tuple[float | None, str | None]:
+    """GARCH(1,1) zero-mean 1-step-ahead annualised vol; EWMA(0.94) fallback."""
+    arr = np.asarray(ret, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    # Guard: enough points and a NON-DEGENERATE, non-explosive return series.
+    # A near-constant series (std -> 0) makes GARCH's log-likelihood divide by
+    # zero (floods logs with benign RuntimeWarnings and yields NaN vol); those
+    # funds fall through to EWMA instead.
+    if len(arr) >= 100 and 1e-6 < float(np.std(arr)) <= 0.5:
+        try:
+            import warnings as _warnings
+
+            from arch import arch_model
+
+            # arch/numpy emit benign RuntimeWarnings while fitting hard series;
+            # the convergence_flag + finiteness checks below are the real gate.
+            with _warnings.catch_warnings(), np.errstate(all="ignore"):
+                _warnings.simplefilter("ignore")
+                model = arch_model(arr * 100.0, vol="GARCH", p=1, q=1,
+                                   mean="Zero", rescale=False)
+                res = model.fit(disp="off", show_warning=False)
+                if res.convergence_flag == 0:
+                    params = {str(k): float(v) for k, v in res.params.to_dict().items()}
+                    persistence = params["alpha[1]"] + params["beta[1]"]
+                    fc = res.forecast(horizon=1)
+                    var_1 = float(fc.variance.values[-1, 0])
+                    if np.isfinite(var_1) and var_1 >= 0 and persistence < 1.0 - 1e-6:
+                        daily = np.sqrt(var_1) / 100.0
+                        return float(daily * np.sqrt(TRADING_DAYS)), "GARCH(1,1)"
+        except Exception:
+            pass
+    # EWMA(0.94) RiskMetrics fallback.
+    if len(arr) < 20:
+        return None, None
+    variance = float(np.var(arr))
+    for r in arr:
+        variance = 0.94 * variance + 0.06 * (r * r)
+    return float(np.sqrt(variance) * np.sqrt(TRADING_DAYS)), "EWMA_0.94"
+
+
+def cornish_fisher_sharpe(ret: np.ndarray, rf: float) -> dict[str, float | None]:
+    """Cornish-Fisher skew/kurtosis-adjusted Sharpe with Opdyke 95% CI."""
+    out: dict[str, float | None] = {
+        "sharpe_cf": None, "sharpe_cf_skew": None, "sharpe_cf_kurt": None,
+        "sharpe_cf_ci_lower": None, "sharpe_cf_ci_upper": None,
+    }
+    window = ret[-(3 * TRADING_DAYS):] if len(ret) >= 3 * TRADING_DAYS else ret
+    n = len(window)
+    if n < 30:
+        return out
+    excess = window - rf / TRADING_DAYS
+    mu = float(np.mean(excess))
+    sd = float(np.std(excess, ddof=1))
+    if sd == 0 or not np.isfinite(sd):
+        return out
+    sr = mu / sd  # per-period
+    skew = float(np.mean(((excess - mu) / sd) ** 3))
+    kurt = float(np.mean(((excess - mu) / sd) ** 4) - 3.0)
+    out["sharpe_cf_skew"] = _clip(skew)
+    out["sharpe_cf_kurt"] = _clip(kurt)
+    # Cornish-Fisher expansion of the Sharpe ratio (annualised).
+    sr_cf = sr * (1.0 + (skew / 6.0) * sr - ((kurt) / 24.0) * sr * sr)
+    sr_cf_ann = sr_cf * np.sqrt(TRADING_DAYS)
+    # Monotonicity guard (legacy null-out).
+    if not np.isfinite(sr_cf_ann) or abs(sr_cf_ann) > 1e3:
+        return out
+    # Opdyke (2007) asymptotic SE of the Sharpe ratio.
+    se = np.sqrt((1.0 + 0.5 * sr * sr - skew * sr + (kurt / 4.0) * sr * sr) / n)
+    se_ann = se * np.sqrt(TRADING_DAYS)
+    out["sharpe_cf"] = _clip(sr_cf_ann)
+    out["sharpe_cf_ci_lower"] = _clip(sr_cf_ann - 1.96 * se_ann)
+    out["sharpe_cf_ci_upper"] = _clip(sr_cf_ann + 1.96 * se_ann)
+    return out
+
+
+def evt_tail(ret: np.ndarray) -> dict[str, float | None]:
+    """EVT POT-GPD on the loss tail → CVaR 99 / 99.9 and shape xi."""
+    out: dict[str, float | None] = {
+        "cvar_99_evt": None, "cvar_999_evt": None, "evt_xi_shape": None,
+    }
+    arr = np.asarray(ret, dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if len(arr) < 100:
+        return out
+    losses = -arr
+    losses = losses[losses > 0]
+    if len(losses) < 30:
+        return out
+    try:
+        from scipy.stats import genpareto
+    except Exception:
+        return out
+    # Peaks-over-threshold at the 90th percentile (drop to 85th if too few).
+    for q in (0.90, 0.85):
+        u = float(np.quantile(losses, q))
+        exceed = losses[losses > u] - u
+        if len(exceed) >= 20:
+            break
+    else:
+        return out
+    n, n_u = len(losses), len(exceed)
+    try:
+        xi, _loc, beta = genpareto.fit(exceed, floc=0.0)
+    except Exception:
+        return out
+    if beta <= 0 or not np.isfinite(xi):
+        return out
+    out["evt_xi_shape"] = _clip(float(xi))
+
+    def _var_cvar(p: float) -> tuple[float, float]:
+        # GPD tail quantile (McNeil-Frey closed form).
+        ratio = (n / n_u) * (1.0 - p)
+        var = u + (beta / xi) * (ratio ** (-xi) - 1.0) if abs(xi) > 1e-8 \
+            else u - beta * np.log(ratio)
+        if xi < 1.0:
+            cvar = var / (1.0 - xi) + (beta - xi * u) / (1.0 - xi)
+        else:
+            cvar = var  # heavy tail: ES undefined, fall back to VaR
+        return var, cvar
+
+    _, c99 = _var_cvar(0.99)
+    _, c999 = _var_cvar(0.999)
+    # Return-space (negative losses).
+    out["cvar_99_evt"] = _clip(-float(c99))
+    out["cvar_999_evt"] = _clip(-float(c999))
+    return out
+
+
+def regression_metrics(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    bench_ret_dated: list[tuple[_dt.date, float]],
+    rf: float,
+    days: int = TRADING_DAYS,
+) -> dict[str, float | None]:
+    """OLS of fund excess returns vs benchmark excess returns (date-aligned)."""
+    out: dict[str, float | None] = {
+        "beta_1y": None, "alpha_1y": None,
+        "tracking_error_1y": None, "information_ratio_1y": None,
+        "upside_capture_1y": None, "downside_capture_1y": None,
+    }
+    bench_map = dict(bench_ret_dated)
+    pairs = [(f, bench_map[d]) for d, f in fund_ret_dated if d in bench_map]
+    if len(pairs) < days:
+        return out
+    pairs = pairs[-days:]
+    f = np.array([p[0] for p in pairs])
+    b = np.array([p[1] for p in pairs])
+    rf_d = rf / TRADING_DAYS
+    # beta/alpha via OLS on raw returns; alpha annualised.
+    bvar = float(np.var(b, ddof=1))
+    if bvar == 0 or not np.isfinite(bvar):
+        return out
+    beta = float(np.cov(f, b, ddof=1)[0, 1] / bvar)
+    alpha_daily = float(np.mean(f) - rf_d) - beta * float(np.mean(b) - rf_d)
+    out["beta_1y"] = _clip(beta)
+    out["alpha_1y"] = _clip(alpha_daily * TRADING_DAYS)
+    # Tracking error & information ratio on active return.
+    active = f - b
+    te = float(np.std(active, ddof=1) * np.sqrt(TRADING_DAYS))
+    out["tracking_error_1y"] = _clip(te)
+    if te >= MIN_ANNUALIZED_VOL:
+        out["information_ratio_1y"] = _clip(float(np.mean(active)) * TRADING_DAYS / te)
+    # Up/down capture (geometric), vs benchmark up/down days.
+    up = b > 0
+    down = b < 0
+    if up.sum() >= 5 and (1.0 + b[up]).prod() > 0:
+        fc = float(np.prod(1.0 + f[up]) ** (1.0 / up.sum()) - 1.0)
+        bc = float(np.prod(1.0 + b[up]) ** (1.0 / up.sum()) - 1.0)
+        if bc != 0:
+            out["upside_capture_1y"] = _clip(100.0 * fc / bc, 4)
+    if down.sum() >= 5 and (1.0 + b[down]).prod() > 0:
+        fc = float(np.prod(1.0 + f[down]) ** (1.0 / down.sum()) - 1.0)
+        bc = float(np.prod(1.0 + b[down]) ** (1.0 / down.sum()) - 1.0)
+        if bc != 0:
+            out["downside_capture_1y"] = _clip(100.0 * fc / bc, 4)
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Per-fund metric assembly (pure — no I/O)
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_metrics(
+    nav: np.ndarray,
+    rf: float,
+    *,
+    rejected: int = 0,
+) -> dict[str, Any] | None:
+    """All risk metrics for one fund from its NAV price path. Pure computation."""
+    nav = np.asarray(nav, dtype=float)
+    nav = nav[np.isfinite(nav) & (nav > 0)]
+    ret = returns_from_nav(nav)
+    if len(ret) < 21:
+        return None
+
+    m: dict[str, Any] = {}
+
+    for label, days in WINDOWS.items():
+        if len(ret) >= days:
+            cvar, var = cvar_var_95(ret[-days:])
+            m[f"cvar_95_{label}"] = _clip(cvar)
+            m[f"var_95_{label}"] = _clip(var)
+
+    m["return_1m"] = _clip(cum_return(nav, 21))
+    m["return_3m"] = _clip(cum_return(nav, 63))
+    m["return_6m"] = _clip(cum_return(nav, 126))
+    m["return_1y"] = _clip(cum_return(nav, 252))
+    m["return_3y_ann"] = _clip(annualized_return(nav, 3))
+    m["return_5y_ann"] = _clip(annualized_return(nav, 5), 8)
+    m["return_10y_ann"] = _clip(annualized_return(nav, 10), 8)
+
+    m["volatility_1y"] = _clip(volatility(ret, 252))
+    m["max_drawdown_1y"] = _clip(max_drawdown(ret, 252))
+    m["max_drawdown_3y"] = _clip(max_drawdown(ret, 3 * 252))
+
+    m["sharpe_1y"] = _clip(sharpe(ret, 252, rf))
+    m["sharpe_3y"] = _clip(sharpe(ret, 3 * 252, rf))
+    m["sortino_1y"] = _clip(sortino(ret, 252, rf))
+
+    mdd3 = m.get("max_drawdown_3y")
+    r3 = m.get("return_3y_ann")
+    if mdd3 is not None and r3 is not None and mdd3 < 0:
+        m["calmar_ratio_3y"] = _clip(r3 / abs(mdd3), 4)
+
+    gvol, gmodel = garch_or_ewma(ret)
+    m["volatility_garch"] = _clip(gvol)
+    m["vol_model"] = gmodel
+
+    m.update(cornish_fisher_sharpe(ret, rf))
+    m.update(evt_tail(ret))
+
+    m["fed_funds_rate_at_calc"] = _clip(rf, 4)
+    m["data_quality_flags"] = (
+        {"return_rejected_count": rejected} if rejected else {}
+    )
+    return m
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# I/O helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def _resolve_calc_date(conn, calc_date: str | None) -> _dt.date:
+    if calc_date:
+        return _dt.date.fromisoformat(calc_date)
+    with conn.cursor() as cur:
+        cur.execute("SELECT max(nav_date) FROM nav_timeseries")
+        row = cur.fetchone()
+    return row[0] if row and row[0] else _dt.date.today()
+
+
+def _fetch_fund_ids(conn, calc_date: _dt.date, limit: int | None) -> list:
+    sql = """
+        SELECT instrument_id
+        FROM nav_timeseries
+        WHERE nav_date <= %s AND nav IS NOT NULL
+        GROUP BY instrument_id
+        HAVING count(*) >= 21
+        ORDER BY count(*) DESC
+    """
+    params: list[Any] = [calc_date]
+    if limit:
+        sql += " LIMIT %s"
+        params.append(limit)
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        return [r[0] for r in cur.fetchall()]
+
+
+def _fetch_nav(conn, instrument_id, calc_date: _dt.date, lookback_years: int = 11):
+    start = calc_date - _dt.timedelta(days=lookback_years * 366)
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT nav_date, nav FROM nav_timeseries
+               WHERE instrument_id = %s AND nav_date <= %s AND nav_date >= %s
+                 AND nav IS NOT NULL
+               ORDER BY nav_date""",
+            (instrument_id, calc_date, start),
+        )
+        rows = cur.fetchall()
+    return rows
+
+
+def _risk_free_rate(conn, calc_date: _dt.date) -> float:
+    """Fed Funds (DFF) as of calc_date from macro_data; fallback 4%."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT value FROM macro_data
+                   WHERE series_id = 'DFF' AND obs_date <= %s
+                   ORDER BY obs_date DESC LIMIT 1""",
+                (calc_date,),
+            )
+            row = cur.fetchone()
+        if row and row[0] is not None:
+            return float(row[0]) / 100.0
+    except Exception:
+        pass
+    return RISK_FREE_FALLBACK
+
+
+def _upsert(conn, instrument_id, calc_date: _dt.date, metrics: dict[str, Any]) -> None:
+    import json
+
+    cols = ["instrument_id", "calc_date", "organization_id"]
+    vals: list[Any] = [instrument_id, calc_date, None]
+    for c in _METRIC_COLUMNS:
+        if c not in metrics:
+            continue
+        cols.append(c)
+        v = metrics[c]
+        vals.append(json.dumps(v) if c == "data_quality_flags" else v)
+    placeholders = ", ".join(["%s"] * len(cols))
+    update_cols = [c for c in cols if c not in ("instrument_id", "calc_date", "organization_id")]
+    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    sql = (
+        f"INSERT INTO fund_risk_metrics ({', '.join(cols)}) VALUES ({placeholders}) "
+        f"ON CONFLICT (instrument_id, calc_date, organization_id) DO UPDATE SET {set_clause}"
+    )
+    with conn.cursor() as cur:
+        cur.execute(sql, vals)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sharded execution (process-level parallelism)
+# ──────────────────────────────────────────────────────────────────────────────
+def _resolve_max_workers() -> int:
+    """min(cpu_count, 24): 24 on Railway, 32→24 local; bounds the cloud pool."""
+    return min(os.cpu_count() or 4, MAX_WORKERS_CAP)
+
+
+def _process_shard(
+    dsn: str, calc_date_iso: str, rf: float, fund_ids: list
+) -> tuple[int, int]:
+    """Worker entrypoint for a child process — picklable, module-level.
+
+    Opens its OWN connection (never shared across processes), computes and
+    upserts its shard in its own transaction, and returns (processed, upserted).
+    Does NOT take the advisory lock — the lock is held once by the main process
+    for the whole run. ``rf`` and ``calc_date`` are passed in (read once in main)
+    so children never re-fetch shared data.
+    """
+    cdate = _dt.date.fromisoformat(calc_date_iso)
+    processed = 0
+    upserted = 0
+    with connect(dsn) as conn:
+        for iid in fund_ids:
+            rows = _fetch_nav(conn, iid, cdate)
+            if len(rows) < 22:
+                continue
+            nav = np.array([float(r[1]) for r in rows], dtype=float)
+            metrics = compute_metrics(nav, rf)
+            processed += 1
+            if metrics is None:
+                continue
+            _upsert(conn, iid, cdate, metrics)
+            upserted += 1
+        conn.commit()
+    return processed, upserted
+
+
+def _shard(fund_ids: list, n_shards: int) -> list[list]:
+    """Round-robin fund_ids into ``n_shards`` balanced buckets.
+
+    Round-robin (not contiguous chunks) keeps each shard's NAV-history mix
+    similar — funds are ordered by history length, so chunking would pile the
+    heavy (long-history, slow-GARCH) funds into the first shards.
+    """
+    shards: list[list] = [[] for _ in range(n_shards)]
+    for i, iid in enumerate(fund_ids):
+        shards[i % n_shards].append(iid)
+    return [s for s in shards if s]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public entrypoint
+# ──────────────────────────────────────────────────────────────────────────────
+def run(
+    dsn: str,
+    *,
+    calc_date: str | None = None,
+    limit: int | None = None,
+    serial: bool = False,
+) -> dict:
+    """Recompute fund_risk_metrics from raw NAV and upsert into the cloud.
+
+    The MAIN process takes the LOCK_RISK_METRICS advisory lock ONCE, resolves
+    ``calc_date``, reads the shared risk-free rate, and lists the target funds.
+    It then splits the funds into shards and dispatches them to a pool of worker
+    processes (``min(cpu_count, 24)``), each opening its OWN connection and
+    upserting its shard idempotently. Results are identical to the serial path —
+    same math, just distributed. Pass ``serial=True`` to force the single-process
+    path (used for benchmarking / equivalence checks).
+
+    Returns ``{"processed", "upserted", "calc_date", "workers"}``.
+    """
+    # The MAIN process holds the advisory lock for the WHOLE run (children never
+    # lock). We dispatch the pool INSIDE this context so the lock spans the run.
+    with connect(dsn) as conn:
+        with advisory_lock(conn, LOCK_RISK_METRICS) as got:
+            if not got:
+                return {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
+
+            cdate = _resolve_calc_date(conn, calc_date)
+            rf = _risk_free_rate(conn, cdate)
+            fund_ids = _fetch_fund_ids(conn, cdate, limit)
+            cdate_iso = cdate.isoformat()
+
+            n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
+
+            # Serial path (single process) — for benchmarking / equivalence.
+            if n_workers <= 1:
+                processed = upserted = 0
+                for iid in fund_ids:
+                    rows = _fetch_nav(conn, iid, cdate)
+                    if len(rows) < 22:
+                        continue
+                    nav = np.array([float(r[1]) for r in rows], dtype=float)
+                    metrics = compute_metrics(nav, rf)
+                    processed += 1
+                    if metrics is None:
+                        continue
+                    _upsert(conn, iid, cdate, metrics)
+                    upserted += 1
+                conn.commit()
+                return {
+                    "processed": processed,
+                    "upserted": upserted,
+                    "calc_date": cdate_iso,
+                    "workers": 1,
+                }
+
+            # Parallel path: shard funds, dispatch to a process pool. Each child
+            # opens its own connection and commits its own shard.
+            shards = _shard(fund_ids, n_workers)
+            processed = upserted = 0
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futures = [
+                    pool.submit(_process_shard, dsn, cdate_iso, rf, shard)
+                    for shard in shards
+                ]
+                for fut in as_completed(futures):
+                    p, u = fut.result()
+                    processed += p
+                    upserted += u
+
+            return {
+                "processed": processed,
+                "upserted": upserted,
+                "calc_date": cdate_iso,
+                "workers": n_workers,
+            }

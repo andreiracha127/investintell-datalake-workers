@@ -1,0 +1,28 @@
+# Railway deploy config — ONE SERVICE PER WORKER.
+# All services deploy this same repo. Each service sets:
+#   WORKER=risk_metrics | characteristics | factor_model
+#         | macro_ingestion | treasury_ingestion
+#         | benchmark_ingest | instrument_ingestion        (selects the worker)
+#   DATABASE_URL=<cloud DSN>                                (shared)
+# and its own Cron Schedule (set per-service in dashboard/CLI):
+#   risk_metrics    -> daily   (NAV is daily)
+#   characteristics -> monthly (XBRL is quarterly)
+#   factor_model    -> monthly (after characteristics)
+# Ingestion (docs/INGESTION_DESIGN.md §2 — order by cron offsets):
+#   macro_ingestion      -> daily 05:00 UTC (needs FRED_API_KEY)
+#   treasury_ingestion   -> daily 05:00 UTC
+#   benchmark_ingest     -> daily 05:30 UTC (needs TIINGO_API_KEY)
+#   instrument_ingestion -> daily 06:00 UTC, stale-only AUM-prioritised sweep
+#                           (needs TIINGO_API_KEY; before risk_metrics 07:00)
+#
+# nixpacks auto-detects Python via requirements.txt.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+# Per-service schedule: edit this value and `railway up --service <svc>` to apply.
+# risk-metrics: daily 07:00 UTC | characteristics & factor-model: monthly (day 2, 06:00 UTC)
+cronSchedule = "0 7 * * *"
