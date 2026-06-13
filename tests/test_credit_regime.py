@@ -136,6 +136,119 @@ def test_deterministic_full_recompute():
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Percentil generalizado (entry/exit bands)
+# ──────────────────────────────────────────────────────────────────────────────
+def test_percentile_generalizes_q_with_backtest_indexing():
+    window = [float(v) for v in range(1, 253)]  # 1..252, n=252
+    # q=0.20 → idx=int(0.20*251)=50 → sorted[50]=51 (igual a percentile_20)
+    assert cr.percentile(window, 0.20) == 51.0
+    assert cr.percentile(window, 0.20) == cr.percentile_20(window)
+    # q=0.25 → idx=int(0.25*251)=62 → sorted[62]=63 (banda de saída mais alta)
+    assert cr.percentile(window, 0.25) == 63.0
+
+
+def test_percentile_requires_min_obs_for_any_q():
+    assert cr.percentile(list(range(251)), 0.25) is None  # warmup
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Histerese assimétrica (flip-control) — decisão pura por dia
+# ──────────────────────────────────────────────────────────────────────────────
+def test_next_state_symmetric_is_memoryless():
+    """entry == exit reproduz o detector binário sem memória (risk_off ⇔ ratio < p)."""
+    assert cr.next_state("risk_on", 0.50, 0.60, 0.60) == "risk_off"
+    assert cr.next_state("risk_off", 0.50, 0.60, 0.60) == "risk_off"
+    assert cr.next_state("risk_off", 0.70, 0.60, 0.60) == "risk_on"
+    assert cr.next_state("risk_on", 0.70, 0.60, 0.60) == "risk_on"
+
+
+def test_next_state_asymmetric_holds_until_material_recovery():
+    """entry=0.60 / exit=0.70: entra abaixo da banda baixa, mas só LIMPA após
+    cruzar a banda alta — recuperação parcial (0.65) NÃO solta o sinal."""
+    # entra em stress ao romper a banda de entrada (p20)
+    assert cr.next_state("risk_on", 0.59, 0.60, 0.70) == "risk_off"
+    # recupera acima da entrada mas abaixo da saída → SEGURA risk_off (anti-whipsaw)
+    assert cr.next_state("risk_off", 0.65, 0.60, 0.70) == "risk_off"
+    # recupera acima da banda de saída (p25) → volta a risk_on
+    assert cr.next_state("risk_off", 0.71, 0.60, 0.70) == "risk_on"
+    # em risk_on, ratio na zona morta entre as bandas não dispara (exige < entrada)
+    assert cr.next_state("risk_on", 0.65, 0.60, 0.70) == "risk_on"
+
+
+def test_next_state_warmup_thresholds_none_is_risk_on():
+    assert cr.next_state("risk_on", 0.5, None, None) == "risk_on"
+    assert cr.next_state("risk_off", 0.5, None, None) == "risk_on"
+
+
+def test_hysteresis_reduces_flips_on_whipsaw():
+    """Mesmo input oscilando na folga entre as bandas: a histerese assimétrica
+    (exit > entry) corta o whipsaw vs o detector simétrico. O baseline tem
+    spread real (ciclo de 5 níveis) para que p20 < p30 — sem folga de percentil
+    a histerese não teria onde atuar. O saw oscila entre 0,69 (rompe p20≈0,70)
+    e 0,73 (cai na folga entre p20 e p30≈0,75)."""
+    base = ([0.70, 0.75, 0.80, 0.85, 0.90] * 80)[:300]
+    saw = [0.69 if i % 2 == 0 else 0.73 for i in range(40)]
+    ratios = base + saw + [0.80] * 120
+    dates = _days(len(ratios))
+    ief = [100.0] * len(ratios)
+    hyg = [r * 100 for r in ratios]
+    sym = cr.compute_regime(_series(dates, hyg), _series(dates, ief),
+                            entry_pctl=0.20, exit_pctl=0.20)
+    hys = cr.compute_regime(_series(dates, hyg), _series(dates, ief),
+                            entry_pctl=0.20, exit_pctl=0.30)
+    sym_flips = sum(r["flip"] for r in sym)
+    hys_flips = sum(r["flip"] for r in hys)
+    assert sym_flips >= 10           # o cenário de fato faz whipsaw (≈40)
+    assert hys_flips < sym_flips     # a histerese o corta (≈2)
+
+
+def test_compute_regime_default_exit_equals_entry_preserves_46flip_mechanics():
+    """Backward-compat: sem configurar exit, o estado é idêntico ao detector
+    binário validado (entra e sai uma vez no episódio de stress)."""
+    n = 400
+    dates = _days(n)
+    ief = [100.0] * n
+    hyg = [80.0] * 300 + [60.0] * 50 + [80.0] * 50
+    rows = cr.compute_regime(_series(dates, hyg), _series(dates, ief))
+    assert sum(r["flip"] for r in rows) == 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Score graduado (modo low-drawdown) — ramp 1-rank por percentil
+# ──────────────────────────────────────────────────────────────────────────────
+def test_stress_score_ramp_endpoints():
+    window = [float(v) for v in range(1, 1001)]  # 1..1000, n=1000
+    # rank >= calm (mediana) → sem stress
+    assert cr.stress_score(500.0, window, calm=0.50, panic=0.05) == pytest.approx(0.0)
+    # ratio abaixo de tudo → stress máximo (clampado em 100)
+    assert cr.stress_score(0.0, window, calm=0.50, panic=0.05) == pytest.approx(100.0)
+    # ratio no ~p20 (banda de entrada) → ramp((0.50-0.20)/0.45) ≈ 66.7
+    assert cr.stress_score(200.0, window, calm=0.50, panic=0.05) == pytest.approx(66.67, abs=0.5)
+
+
+def test_stress_score_is_monotonic_decreasing_in_ratio():
+    window = [float(v) for v in range(1, 1001)]
+    scores = [cr.stress_score(r, window) for r in (100.0, 200.0, 300.0, 450.0)]
+    assert scores == sorted(scores, reverse=True)  # ratio sobe → stress cai
+
+
+def test_stress_score_warmup_is_none():
+    assert cr.stress_score(0.5, [0.8] * 100) is None
+
+
+def test_compute_regime_rows_carry_stress_score_and_exit_band():
+    dates = _days(400)
+    ief = [100.0] * 400
+    hyg = [80.0] * 300 + [60.0] * 50 + [80.0] * 50
+    rows = cr.compute_regime(_series(dates, hyg), _series(dates, ief), exit_pctl=0.25)
+    assert rows[0]["stress_score"] is None          # warmup
+    assert "p_exit_5y" in rows[0]
+    stress = next(r for r in rows if r["regime_date"] == dates[310])
+    assert stress["stress_score"] is not None and stress["stress_score"] > 50
+    assert stress["p_exit_5y"] is not None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Integração — Tiingo real + cloud (self-skip)
 # ──────────────────────────────────────────────────────────────────────────────
 def _env() -> dict[str, str]:

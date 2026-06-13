@@ -13,11 +13,13 @@
 
 CREATE TABLE IF NOT EXISTS credit_regime_daily (
     regime_date   date           NOT NULL,
-    state         text           NOT NULL,           -- 'risk_on' | 'risk_off'
+    state         text           NOT NULL,           -- 'risk_on' | 'risk_off' (BINÁRIO, histerese)
     hyg_close     numeric(14,6),                     -- adjClose Tiingo (proveniência)
     ief_close     numeric(14,6),
     ratio         numeric(14,8)  NOT NULL,           -- hyg/ief
-    p20_5y        numeric(14,8),                     -- NULL durante warmup (<252 obs)
+    p20_5y        numeric(14,8),                     -- banda de ENTRADA (p20 default); NULL warmup
+    p_exit_5y     numeric(14,8),                     -- banda de SAÍDA (histerese); == p20_5y se exit==entry
+    stress_score  numeric(6,3),                      -- 0–100 graduado (modo low-drawdown); NULL warmup
     n_window      integer        NOT NULL,           -- obs na janela móvel (máx 1260)
     flip          boolean        NOT NULL DEFAULT false,
     computed_at   timestamptz    NOT NULL DEFAULT now(),
@@ -25,6 +27,14 @@ CREATE TABLE IF NOT EXISTS credit_regime_daily (
     CONSTRAINT credit_regime_daily_pkey PRIMARY KEY (regime_date),
     CONSTRAINT ck_credit_regime_state CHECK (state IN ('risk_on', 'risk_off'))
 );
+
+-- Migração idempotente para tabelas já materializadas (o worker grava estas
+-- colunas a cada run; o detector binário/histerese e o score graduado são
+-- aditivos — NULL durante o warmup). Veredito: histerese assimétrica é o único
+-- componente do legado com valor comprovado; stress_score alimenta o modo
+-- low-drawdown consumido pelo Light (GET /macro/regime?low_drawdown_mode=true).
+ALTER TABLE credit_regime_daily ADD COLUMN IF NOT EXISTS p_exit_5y    numeric(14,8);
+ALTER TABLE credit_regime_daily ADD COLUMN IF NOT EXISTS stress_score numeric(6,3);
 
 CREATE INDEX IF NOT EXISTS credit_regime_daily_flip_idx
     ON credit_regime_daily (regime_date DESC) WHERE flip;
