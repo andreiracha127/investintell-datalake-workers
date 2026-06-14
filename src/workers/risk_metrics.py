@@ -809,6 +809,22 @@ def _update_peer_percentiles(conn, calc_date: _dt.date) -> int:
         return cur.rowcount
 
 
+def _refresh_fund_risk_latest_mv(dsn: str) -> None:
+    """Refresh the API read-model MV (``fund_risk_latest_mv``) after a run.
+
+    The Light's FastAPI serves the fund catalogue from this MATERIALIZED VIEW
+    over ``fund_risk_metrics`` (latest calc per fund); it is stale until
+    refreshed. Per docs/INGESTION_DESIGN.md, matview refreshes run
+    ``REFRESH … CONCURRENTLY`` in a **fresh connection outside the advisory
+    lock**: CONCURRENTLY cannot run inside a transaction block (needs
+    autocommit) and requires the MV's UNIQUE index (``fund_risk_latest_mv_pk``)
+    — both hold here. Called by ``run()`` only after the lock is released.
+    """
+    with connect(dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY fund_risk_latest_mv")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
@@ -869,44 +885,57 @@ def run(
                     upserted += 1
                 peers = _update_peer_percentiles(conn, cdate)
                 conn.commit()
-                return {
+                result = {
                     "processed": processed,
                     "upserted": upserted,
                     "peer_rows": peers,
                     "calc_date": cdate_iso,
                     "workers": 1,
                 }
+            else:
+                # Parallel path: shard funds, dispatch to a process pool. Each
+                # child opens its own connection and commits its own shard.
+                shards = _shard(fund_ids, n_workers)
+                processed = upserted = 0
+                with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                    futures = [
+                        pool.submit(
+                            _process_shard,
+                            dsn,
+                            cdate_iso,
+                            rf,
+                            shard,
+                            {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
+                            bench_returns,
+                        )
+                        for shard in shards
+                    ]
+                    for fut in as_completed(futures):
+                        p, u = fut.result()
+                        processed += p
+                        upserted += u
 
-            # Parallel path: shard funds, dispatch to a process pool. Each child
-            # opens its own connection and commits its own shard.
-            shards = _shard(fund_ids, n_workers)
-            processed = upserted = 0
-            with ProcessPoolExecutor(max_workers=n_workers) as pool:
-                futures = [
-                    pool.submit(
-                        _process_shard,
-                        dsn,
-                        cdate_iso,
-                        rf,
-                        shard,
-                        {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
-                        bench_returns,
-                    )
-                    for shard in shards
-                ]
-                for fut in as_completed(futures):
-                    p, u = fut.result()
-                    processed += p
-                    upserted += u
+                # Children committed their shards; rank peers over the full set.
+                peers = _update_peer_percentiles(conn, cdate)
+                conn.commit()
 
-            # Children committed their shards; rank peers over the full set.
-            peers = _update_peer_percentiles(conn, cdate)
-            conn.commit()
+                result = {
+                    "processed": processed,
+                    "upserted": upserted,
+                    "peer_rows": peers,
+                    "calc_date": cdate_iso,
+                    "workers": n_workers,
+                }
 
-            return {
-                "processed": processed,
-                "upserted": upserted,
-                "peer_rows": peers,
-                "calc_date": cdate_iso,
-                "workers": n_workers,
-            }
+    # Lock released and the main connection is closed. Refresh the API read-model
+    # MV in a FRESH autocommit connection, OUTSIDE the advisory lock. The metrics
+    # are already committed and idempotent, so a refresh hiccup must not discard
+    # them — surface it in the stats (printed as JSON by the runner) instead of
+    # silently swallowing or failing the committed run.
+    try:
+        _refresh_fund_risk_latest_mv(dsn)
+        result["mv_refreshed"] = True
+    except Exception as exc:  # noqa: BLE001 — surface, don't discard committed work
+        result["mv_refreshed"] = False
+        result["mv_refresh_error"] = str(exc)
+    return result

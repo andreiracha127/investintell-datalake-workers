@@ -304,3 +304,118 @@ def test_relative_metrics_without_block_only_correlation():
     out = rm.relative_metrics_for(rows, None, bench_returns, 0.04)
     assert "beta_1y" not in out
     assert "equity_correlation_252d" in out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Read-model refresh (Railway/Tiger migration): after a metrics run, the API's
+# fund_risk_latest_mv MATERIALIZED VIEW is refreshed CONCURRENTLY in a FRESH
+# connection OUTSIDE the advisory lock (docs/INGESTION_DESIGN.md). These tests
+# need no DB — they monkeypatch the I/O seams.
+# ──────────────────────────────────────────────────────────────────────────────
+class _FakeCursor:
+    def __init__(self, sink: dict):
+        self._sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def execute(self, sql, *_args):
+        self._sink["sql"] = " ".join(str(sql).split())
+
+
+class _FakeConn:
+    def __init__(self, sink: dict):
+        self._sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def cursor(self):
+        return _FakeCursor(self._sink)
+
+    def commit(self):
+        self._sink.setdefault("events", []).append("commit")
+
+
+def test_refresh_fund_risk_latest_mv_concurrently_in_fresh_autocommit_conn(monkeypatch):
+    """The refresh opens a FRESH autocommit conn and runs REFRESH … CONCURRENTLY."""
+    sink: dict = {}
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        sink["dsn"] = dsn
+        sink["autocommit"] = autocommit
+        return _FakeConn(sink)
+
+    monkeypatch.setattr(rm, "connect", _fake_connect)
+    rm._refresh_fund_risk_latest_mv("postgres://x")
+
+    assert sink["autocommit"] is True  # CONCURRENTLY cannot run in a txn block
+    assert sink["dsn"] == "postgres://x"
+    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_risk_latest_mv" in sink["sql"]
+
+
+def test_run_does_not_refresh_when_lock_busy(monkeypatch):
+    """Lock busy → run() returns early and never refreshes (nothing recomputed)."""
+    import contextlib
+
+    monkeypatch.setattr(rm, "connect", lambda dsn=None, **_k: _FakeConn({}))
+
+    @contextlib.contextmanager
+    def _busy_lock(_conn, _lock_id):
+        yield False
+
+    monkeypatch.setattr(rm, "advisory_lock", _busy_lock)
+
+    refreshed = {"called": False}
+    monkeypatch.setattr(
+        rm, "_refresh_fund_risk_latest_mv",
+        lambda _dsn: refreshed.__setitem__("called", True),
+    )
+
+    stats = rm.run("postgres://x")
+    assert stats == {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
+    assert refreshed["called"] is False
+
+
+def test_run_refreshes_mv_after_lock_released(monkeypatch):
+    """Successful run: the MV refresh fires once, AFTER the advisory lock is freed."""
+    import contextlib
+
+    events: list[str] = []
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        conn = _FakeConn({"events": events})
+        return conn
+
+    monkeypatch.setattr(rm, "connect", _fake_connect)
+
+    @contextlib.contextmanager
+    def _granted_lock(_conn, _lock_id):
+        events.append("lock_acquire")
+        try:
+            yield True
+        finally:
+            events.append("lock_release")
+
+    monkeypatch.setattr(rm, "advisory_lock", _granted_lock)
+    monkeypatch.setattr(rm, "_resolve_calc_date", lambda _c, _cd: _dt.date(2026, 6, 11))
+    monkeypatch.setattr(rm, "_risk_free_rate", lambda _c, _cd: 0.04)
+    monkeypatch.setattr(rm, "_fetch_fund_ids", lambda _c, _cd, _lim: [])
+    monkeypatch.setattr(rm, "_fetch_benchmark_returns", lambda _c, _cd: {})
+    monkeypatch.setattr(rm, "_fetch_fund_benchmarks", lambda _c: {})
+    monkeypatch.setattr(rm, "_update_peer_percentiles", lambda _c, _cd: 0)
+    monkeypatch.setattr(
+        rm, "_refresh_fund_risk_latest_mv", lambda _dsn: events.append("refresh")
+    )
+
+    stats = rm.run("postgres://x")
+
+    assert stats["mv_refreshed"] is True
+    assert "refresh" in events
+    assert events.index("refresh") > events.index("lock_release")
