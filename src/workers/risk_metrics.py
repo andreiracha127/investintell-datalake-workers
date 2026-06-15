@@ -739,6 +739,49 @@ def _shard(fund_ids: list, n_shards: int) -> list[list]:
 # em strategy_reclassification_stage (réplica cloud). Fundos sem label ficam
 # com peer_* NULL. manager_score/elite_flag NÃO são computados aqui (modelo
 # de scoring do allocation ainda não portado).
+
+# Institutional peer-cohort minimum (ported from the allocation engine's
+# peer_group_service.MIN_PEER_COHORT_SIZE = 10, line 57). Cohorts below this
+# degrade to the median percentile (50) / second quartile — a fund cannot be
+# ranked credibly against fewer than 10 peers.
+MIN_PEER_COHORT_SIZE = 10
+
+
+def _peer_quartile_from_percentile(percentile: float) -> int:
+    """Map a 0-100 percentile to a quartile (1=best .. 4=worst).
+
+    Direct port of peer_group_service._quartile_from_percentile (lines 85-93).
+    """
+    if percentile >= 75:
+        return 1
+    if percentile >= 50:
+        return 2
+    if percentile >= 25:
+        return 3
+    return 4
+
+
+def _peer_midrank_percentile(
+    value: float, peers: list[float], higher_is_better: bool
+) -> float:
+    """Mid-rank percentile (0-100), Morningstar/eVestment tie convention.
+
+    Each tied value contributes 0.5 to the rank so an all-tied cohort ranks at
+    the median (50.0), not 100.0. Ported from peer_group_service._percentile_rank
+    (lines 61-82). This is the Python mirror of the SQL the post-step runs, kept
+    in lock-step so the conventions are unit-tested without a database.
+    """
+    n = len(peers)
+    if n == 0:
+        return 50.0
+    if higher_is_better:
+        below = sum(1 for p in peers if p < value)
+    else:
+        below = sum(1 for p in peers if p > value)
+    equal = sum(1 for p in peers if p == value)
+    return round((below + 0.5 * equal) / n * 100.0, 2)
+
+
 _PEER_PERCENTILES_SQL = """
 WITH labels AS (
     SELECT DISTINCT ON (source_pk)
@@ -759,40 +802,82 @@ latest AS (
 counts AS (
     SELECT label, count(*) AS peer_count FROM latest GROUP BY label
 ),
+bands AS (
+    SELECT label,
+           percentile_cont(0.25) WITHIN GROUP (ORDER BY sharpe_1y) AS band_low,
+           percentile_cont(0.50) WITHIN GROUP (ORDER BY sharpe_1y) AS band_mid,
+           percentile_cont(0.75) WITHIN GROUP (ORDER BY sharpe_1y) AS band_high
+    FROM latest WHERE sharpe_1y IS NOT NULL GROUP BY label
+),
 sharpe AS (
-    SELECT instrument_id, round((percent_rank() OVER (
-        PARTITION BY label ORDER BY sharpe_1y))::numeric * 100, 2) AS p
-    FROM latest WHERE sharpe_1y IS NOT NULL
+    SELECT a.instrument_id, round((
+        (count(*) FILTER (WHERE b.sharpe_1y < a.sharpe_1y)
+         + 0.5 * count(*) FILTER (WHERE b.sharpe_1y = a.sharpe_1y))
+        / count(*)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b ON b.label = a.label AND b.sharpe_1y IS NOT NULL
+    WHERE a.sharpe_1y IS NOT NULL
+    GROUP BY a.instrument_id, a.sharpe_1y
 ),
 sortino AS (
-    SELECT instrument_id, round((percent_rank() OVER (
-        PARTITION BY label ORDER BY sortino_1y))::numeric * 100, 2) AS p
-    FROM latest WHERE sortino_1y IS NOT NULL
+    SELECT a.instrument_id, round((
+        (count(*) FILTER (WHERE b.sortino_1y < a.sortino_1y)
+         + 0.5 * count(*) FILTER (WHERE b.sortino_1y = a.sortino_1y))
+        / count(*)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b ON b.label = a.label AND b.sortino_1y IS NOT NULL
+    WHERE a.sortino_1y IS NOT NULL
+    GROUP BY a.instrument_id, a.sortino_1y
 ),
 ret AS (
-    SELECT instrument_id, round((percent_rank() OVER (
-        PARTITION BY label ORDER BY return_1y))::numeric * 100, 2) AS p
-    FROM latest WHERE return_1y IS NOT NULL
+    SELECT a.instrument_id, round((
+        (count(*) FILTER (WHERE b.return_1y < a.return_1y)
+         + 0.5 * count(*) FILTER (WHERE b.return_1y = a.return_1y))
+        / count(*)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b ON b.label = a.label AND b.return_1y IS NOT NULL
+    WHERE a.return_1y IS NOT NULL
+    GROUP BY a.instrument_id, a.return_1y
 ),
 dd AS (
-    SELECT instrument_id, round((percent_rank() OVER (
-        PARTITION BY label ORDER BY max_drawdown_1y))::numeric * 100, 2) AS p
-    FROM latest WHERE max_drawdown_1y IS NOT NULL
+    SELECT a.instrument_id, round((
+        (count(*) FILTER (WHERE b.max_drawdown_1y < a.max_drawdown_1y)
+         + 0.5 * count(*) FILTER (WHERE b.max_drawdown_1y = a.max_drawdown_1y))
+        / count(*)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b
+      ON b.label = a.label AND b.max_drawdown_1y IS NOT NULL
+    WHERE a.max_drawdown_1y IS NOT NULL
+    GROUP BY a.instrument_id, a.max_drawdown_1y
+),
+guarded AS (
+    SELECT lt.instrument_id, lt.label, c.peer_count,
+           CASE WHEN c.peer_count < %(min_cohort)s THEN 50.0 ELSE s.p  END AS sharpe_p,
+           CASE WHEN c.peer_count < %(min_cohort)s THEN 50.0 ELSE so.p END AS sortino_p,
+           CASE WHEN c.peer_count < %(min_cohort)s THEN 50.0 ELSE r.p  END AS return_p,
+           CASE WHEN c.peer_count < %(min_cohort)s THEN 50.0 ELSE d.p  END AS dd_p,
+           bd.band_low, bd.band_mid, bd.band_high
+    FROM latest lt
+    JOIN counts c ON c.label = lt.label
+    LEFT JOIN bands bd ON bd.label = lt.label
+    LEFT JOIN sharpe s ON s.instrument_id = lt.instrument_id
+    LEFT JOIN sortino so ON so.instrument_id = lt.instrument_id
+    LEFT JOIN ret r ON r.instrument_id = lt.instrument_id
+    LEFT JOIN dd d ON d.instrument_id = lt.instrument_id
 )
 UPDATE fund_risk_metrics m
-SET peer_strategy_label = lt.label,
-    peer_sharpe_pctl    = s.p,
-    peer_sortino_pctl   = so.p,
-    peer_return_pctl    = r.p,
-    peer_drawdown_pctl  = d.p,
-    peer_count          = c.peer_count
-FROM latest lt
-JOIN counts c ON c.label = lt.label
-LEFT JOIN sharpe s ON s.instrument_id = lt.instrument_id
-LEFT JOIN sortino so ON so.instrument_id = lt.instrument_id
-LEFT JOIN ret r ON r.instrument_id = lt.instrument_id
-LEFT JOIN dd d ON d.instrument_id = lt.instrument_id
-WHERE m.instrument_id = lt.instrument_id
+SET peer_strategy_label   = g.label,
+    peer_sharpe_pctl      = g.sharpe_p,
+    peer_sortino_pctl     = g.sortino_p,
+    peer_return_pctl      = g.return_p,
+    peer_drawdown_pctl    = g.dd_p,
+    peer_count            = g.peer_count,
+    peer_overall_quartile = CASE
+        WHEN g.sharpe_p >= 75 THEN 1
+        WHEN g.sharpe_p >= 50 THEN 2
+        WHEN g.sharpe_p >= 25 THEN 3
+        ELSE 4 END,
+    peer_band_low         = g.band_low,
+    peer_band_mid         = g.band_mid,
+    peer_band_high        = g.band_high
+FROM guarded g
+WHERE m.instrument_id = g.instrument_id
   AND m.calc_date = %(calc_date)s
   AND m.organization_id IS NULL
 """
@@ -802,10 +887,15 @@ def _update_peer_percentiles(conn, calc_date: _dt.date) -> int:
     """Set-based peer-percentile refresh for one calc_date; returns rows updated.
 
     Does NOT commit — the caller owns the transaction (run() commits; tests
-    roll back).
+    roll back). Now writes quartile + p25/median/p75 band of sharpe_1y and
+    applies the MIN_PEER_COHORT_SIZE guard (percentile 50 / quartile 2 for
+    cohorts smaller than 10).
     """
     with conn.cursor() as cur:
-        cur.execute(_PEER_PERCENTILES_SQL, {"calc_date": calc_date})
+        cur.execute(
+            _PEER_PERCENTILES_SQL,
+            {"calc_date": calc_date, "min_cohort": MIN_PEER_COHORT_SIZE},
+        )
         return cur.rowcount
 
 

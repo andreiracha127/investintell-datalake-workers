@@ -419,3 +419,67 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
     assert stats["mv_refreshed"] is True
     assert "refresh" in events
     assert events.index("refresh") > events.index("lock_release")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# T3C-3: enriched peer ranking — quartile + band + cohort guard + mid-rank ties.
+# Pure-helper tests (no DB) for the ported conventions, plus an SQL-shape guard.
+# ──────────────────────────────────────────────────────────────────────────────
+def test_peer_quartile_from_percentile_boundaries():
+    assert rm._peer_quartile_from_percentile(100.0) == 1
+    assert rm._peer_quartile_from_percentile(75.0) == 1
+    assert rm._peer_quartile_from_percentile(74.99) == 2
+    assert rm._peer_quartile_from_percentile(50.0) == 2
+    assert rm._peer_quartile_from_percentile(49.99) == 3
+    assert rm._peer_quartile_from_percentile(25.0) == 3
+    assert rm._peer_quartile_from_percentile(24.99) == 4
+    assert rm._peer_quartile_from_percentile(0.0) == 4
+
+
+def test_midrank_percentile_all_tied_is_50_not_100():
+    # All-tied cohort: every member sits at the median (50.0), the institutional
+    # convention — percent_rank() would put them all at 0.
+    peers = [1.0, 1.0, 1.0, 1.0]
+    assert rm._peer_midrank_percentile(1.0, peers, higher_is_better=True) == 50.0
+
+
+def test_midrank_percentile_best_value_high():
+    peers = [0.1, 0.2, 0.3, 0.4, 0.5]
+    # value strictly above all peers -> (5 below + 0)/5 = 100.
+    assert rm._peer_midrank_percentile(0.9, peers, higher_is_better=True) == 100.0
+
+
+def test_midrank_percentile_drawdown_less_negative_ranks_higher():
+    # Drawdown uses higher_is_better=True (less-negative = larger numeric =
+    # better), matching the existing SQL (ORDER BY max_drawdown_1y ASC ->
+    # higher value = higher pctl).
+    peers = [-0.40, -0.30, -0.20, -0.10]
+    p_best = rm._peer_midrank_percentile(-0.05, peers, higher_is_better=True)
+    p_worst = rm._peer_midrank_percentile(-0.50, peers, higher_is_better=True)
+    assert p_best > p_worst
+
+
+def test_midrank_percentile_empty_cohort_returns_50():
+    assert rm._peer_midrank_percentile(1.0, [], higher_is_better=True) == 50.0
+
+
+def test_enriched_peer_sql_has_quartile_band_and_cohort_guard():
+    sql = rm._PEER_PERCENTILES_SQL.lower()
+    # New target columns are written.
+    assert "peer_overall_quartile" in sql
+    assert "peer_band_low" in sql
+    assert "peer_band_mid" in sql
+    assert "peer_band_high" in sql
+    # Cohort guard uses the institutional minimum (passed as a bind).
+    assert "min_cohort" in sql
+    # Mid-rank tie convention: count_below + 0.5 * count_equal.
+    assert "0.5" in sql
+    # Band uses percentile_cont over sharpe_1y (p25/median/p75).
+    assert "percentile_cont" in sql
+    # percent_rank() is no longer the ranking mechanism.
+    assert "percent_rank" not in sql
+
+
+def test_min_peer_cohort_size_matches_legacy():
+    # Ported from peer_group_service.MIN_PEER_COHORT_SIZE = 10.
+    assert rm.MIN_PEER_COHORT_SIZE == 10

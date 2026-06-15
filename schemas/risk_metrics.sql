@@ -149,3 +149,13 @@ ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_count integer;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS manager_score numeric(5,2);
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS elite_flag boolean;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS equity_correlation_252d numeric(6,4);
+-- Enriched peer ranking (T3C): quartile + p25/median/p75 band of sharpe_1y
+-- within the peer_strategy_label cohort. peer_overall_quartile derives from
+-- peer_sharpe_pctl (1=best..4=worst); band columns are absolute sharpe_1y
+-- quantiles for the cohort. Cohorts below 10 funds degrade to pctl 50 / Q2.
+-- NOTE: not yet surfaced to the Light app — fund_risk_latest_mv + the
+-- FundRiskLatest model need a follow-up migration to SELECT/map these.
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_overall_quartile smallint;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_band_low numeric(10,6);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_band_mid numeric(10,6);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_band_high numeric(10,6);
