@@ -460,3 +460,27 @@ def test_empirical_duration_none_below_min_r_squared():
     dy_dated = list(zip(dates, rng.normal(0, 0.0005, n).tolist(), strict=True))
     dur, r2 = rm.empirical_duration(fund_dated, dy_dated)
     assert dur is None and r2 is None
+
+
+def test_credit_beta_recovers_known_beta():
+    """Fund return = -3 * delta_spread (+ tiny noise) → credit_beta ≈ 3."""
+    rng = np.random.default_rng(13)
+    start = _dt.date(2023, 1, 2)
+    n = 400
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    ds = rng.normal(0.0, 0.0004, n)          # daily spread change, DECIMAL
+    fund_ret = -3.0 * ds + rng.normal(0.0, 1e-5, n)
+    fund_dated = list(zip(dates, fund_ret.tolist(), strict=True))
+    ds_dated = list(zip(dates, ds.tolist(), strict=True))
+
+    cb, r2 = rm.credit_beta(fund_dated, ds_dated)
+    assert cb is not None and abs(cb - 3.0) < 0.1
+    assert r2 is not None and r2 > 0.95
+
+
+def test_credit_beta_none_below_min_observations():
+    start = _dt.date(2024, 1, 1)
+    dates = [start + _dt.timedelta(days=i) for i in range(60)]  # < 120
+    fund_dated = [(d, 0.001) for d in dates]
+    ds_dated = [(d, 0.0001) for d in dates]
+    assert rm.credit_beta(fund_dated, ds_dated) == (None, None)

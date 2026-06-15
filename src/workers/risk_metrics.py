@@ -558,6 +558,28 @@ def empirical_duration(
     return _clip(-beta, 4), _clip(r2, 4)
 
 
+def credit_beta(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    baa10y_change_dated: list[tuple[_dt.date, float]],
+) -> tuple[float | None, float | None]:
+    """Credit beta = -beta of OLS(fund returns vs ΔBAA10Y in decimal).
+
+    R_fund(t) = alpha + beta * ΔSpread(t); credit_beta = -beta.
+    Same gates and windowing as empirical_duration.
+    """
+    spread = dict(baa10y_change_dated)
+    pairs = [(r, spread[d]) for d, r in fund_ret_dated if d in spread]
+    if len(pairs) < REG_MIN_OBSERVATIONS:
+        return None, None
+    pairs = pairs[-REG_WINDOW_DAYS:]
+    y = np.array([p[0] for p in pairs], dtype=float)
+    x = np.array([p[1] for p in pairs], dtype=float)
+    beta, r2 = _ols_beta_r2(y, x)
+    if r2 < REG_MIN_R_SQUARED:
+        return None, None
+    return _clip(-beta, 4), _clip(r2, 4)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-fund metric assembly (pure — no I/O)
 # ──────────────────────────────────────────────────────────────────────────────
