@@ -149,3 +149,24 @@ ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_count integer;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS manager_score numeric(5,2);
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS elite_flag boolean;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS equity_correlation_252d numeric(6,4);
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Class-specific regression metrics (Tier 1, rank 4): fixed-income empirical
+-- duration / credit beta and alternatives inflation beta / crisis alpha. Ported
+-- from the mother-DB migrations 0123 (FI) and 0125 (alternatives). Computed by
+-- the risk_metrics worker per fund using its instruments_universe.asset_class
+-- and the macro_data series DGS10 / BAA10Y / CPIAUCSL. Types match the mother DB:
+--   empirical_duration / credit_beta / inflation_beta : numeric(8,4)
+--   *_r2                                               : numeric(6,4)
+--   crisis_alpha_score                                 : numeric(10,6)
+-- scoring_model tags the pass that produced the row (fixed_income / alternatives
+-- / equity / cash), mirroring risk_calc.metrics["scoring_model"].
+-- ─────────────────────────────────────────────────────────────────────────────
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS scoring_model text;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS empirical_duration numeric(8,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS empirical_duration_r2 numeric(6,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS credit_beta numeric(8,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS credit_beta_r2 numeric(6,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS inflation_beta numeric(8,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS inflation_beta_r2 numeric(6,4);
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS crisis_alpha_score numeric(10,6);
