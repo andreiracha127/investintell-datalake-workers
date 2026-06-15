@@ -580,6 +580,47 @@ def credit_beta(
     return _clip(-beta, 4), _clip(r2, 4)
 
 
+def _daily_to_monthly_by_ym(
+    dated_returns: list[tuple[_dt.date, float]],
+) -> dict[tuple[int, int], float]:
+    """Compound daily returns into monthly returns keyed by (year, month).
+    Mirrors alternatives_analytics_service._daily_to_monthly grouping."""
+    grouped: dict[tuple[int, int], list[float]] = {}
+    for d, r in dated_returns:
+        grouped.setdefault((d.year, d.month), []).append(float(r))
+    by_month: dict[tuple[int, int], float] = {}
+    for key, daily in grouped.items():
+        compounded = 1.0
+        for r in daily:
+            compounded *= 1.0 + r
+        by_month[key] = compounded - 1.0
+    return by_month
+
+
+def inflation_beta(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    cpi_monthly_change_dated: list[tuple[_dt.date, float]],
+) -> tuple[float | None, float | None]:
+    """Inflation beta = +beta of OLS(monthly fund returns vs monthly ΔCPI).
+
+    R_fund(month) = alpha + beta * ΔCPI(month); positive beta = inflation hedge.
+    Resamples daily fund returns to monthly, inner-joins with the monthly CPI
+    change by (year, month), and returns (beta, r2) or (None, None) below
+    INFLATION_MIN_MONTHS aligned months or R² < INFLATION_MIN_R2.
+    """
+    fund_by_ym = _daily_to_monthly_by_ym(fund_ret_dated)
+    cpi_by_ym = {(d.year, d.month): float(v) for d, v in cpi_monthly_change_dated}
+    months = sorted(set(fund_by_ym) & set(cpi_by_ym))
+    if len(months) < INFLATION_MIN_MONTHS:
+        return None, None
+    y = np.array([fund_by_ym[m] for m in months], dtype=float)
+    x = np.array([cpi_by_ym[m] for m in months], dtype=float)
+    beta, r2 = _ols_beta_r2(y, x)
+    if r2 < INFLATION_MIN_R2:
+        return None, None
+    return _clip(beta, 4), _clip(r2, 4)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-fund metric assembly (pure — no I/O)
 # ──────────────────────────────────────────────────────────────────────────────

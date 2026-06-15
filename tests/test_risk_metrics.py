@@ -484,3 +484,35 @@ def test_credit_beta_none_below_min_observations():
     fund_dated = [(d, 0.001) for d in dates]
     ds_dated = [(d, 0.0001) for d in dates]
     assert rm.credit_beta(fund_dated, ds_dated) == (None, None)
+
+
+def test_inflation_beta_recovers_positive_beta():
+    """Monthly fund return = 0.5 * monthly_cpi_change (+noise) → inflation_beta ≈ 0.5.
+
+    Daily fund returns compound to a monthly return ≈ the per-month target; the
+    function resamples daily→monthly internally, so we hand it ~21 trading days
+    per month with the per-month return spread evenly.
+    """
+    rng = np.random.default_rng(21)
+    fund_dated: list = []
+    cpi_dated: list = []
+    for k in range(18):                       # 18 months ≥ INFLATION_MIN_MONTHS
+        year = 2023 + (k // 12)
+        month = (k % 12) + 1
+        cpi_chg = float(rng.normal(0.003, 0.002))      # monthly CPI MoM, decimal
+        cpi_dated.append((_dt.date(year, month, 1), cpi_chg))
+        target_month_ret = 0.5 * cpi_chg + float(rng.normal(0.0, 1e-4))
+        daily = (1.0 + target_month_ret) ** (1.0 / 21) - 1.0
+        for day in range(1, 22):
+            fund_dated.append((_dt.date(year, month, day), daily))
+
+    ib, r2 = rm.inflation_beta(fund_dated, cpi_dated)
+    assert ib is not None and abs(ib - 0.5) < 0.15
+    assert r2 is not None and r2 >= rm.INFLATION_MIN_R2
+
+
+def test_inflation_beta_none_below_min_months():
+    """Fewer than INFLATION_MIN_MONTHS aligned months → (None, None)."""
+    fund_dated = [(_dt.date(2024, m, d), 0.001) for m in range(1, 4) for d in range(1, 22)]
+    cpi_dated = [(_dt.date(2024, m, 1), 0.002) for m in range(1, 4)]  # 3 months
+    assert rm.inflation_beta(fund_dated, cpi_dated) == (None, None)
