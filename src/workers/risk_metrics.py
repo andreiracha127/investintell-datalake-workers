@@ -66,6 +66,12 @@ _METRIC_COLUMNS = [
     "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
     "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
     "fed_funds_rate_at_calc", "data_quality_flags",
+    # Class-specific regression metrics (Tier 1, rank 4).
+    "scoring_model",
+    "empirical_duration", "empirical_duration_r2",
+    "credit_beta", "credit_beta_r2",
+    "inflation_beta", "inflation_beta_r2",
+    "crisis_alpha_score",
 ]
 
 
@@ -420,6 +426,57 @@ def _fetch_benchmark_returns(
     return out
 
 
+def _fetch_macro_changes(
+    conn, calc_date: _dt.date
+) -> dict[str, list[tuple[_dt.date, float]]]:
+    """Daily ΔDGS10 / ΔBAA10Y (decimal, gap-guarded) and monthly ΔCPI from
+    macro_data. Yields are FRED percent → /100 for decimal changes; CPI is an
+    index level → MoM fractional change. Port of risk_calc._batch_fetch_macro_
+    yield_changes (gap > 7 days skipped) + _fetch_monthly_cpi_changes."""
+    start = calc_date - _dt.timedelta(days=(REG_WINDOW_DAYS + 60) * 2)
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT series_id, obs_date, value FROM macro_data
+               WHERE series_id = ANY(%s) AND obs_date <= %s AND obs_date >= %s
+                 AND value IS NOT NULL
+               ORDER BY series_id, obs_date""",
+            (["DGS10", "BAA10Y", "CPIAUCSL"], calc_date, start),
+        )
+        rows = cur.fetchall()
+    levels: dict[str, list[tuple[_dt.date, float]]] = {}
+    for sid, d, v in rows:
+        levels.setdefault(sid, []).append((d, float(v)))
+
+    out: dict[str, list[tuple[_dt.date, float]]] = {"DGS10": [], "BAA10Y": [], "CPI": []}
+    for sid in ("DGS10", "BAA10Y"):
+        obs = levels.get(sid, [])
+        for i in range(1, len(obs)):
+            pd, pv = obs[i - 1]
+            cd, cv = obs[i]
+            if (cd - pd).days > 7:          # forward-fill gap guard (legacy :484)
+                continue
+            out[sid].append((cd, (cv - pv) / 100.0))
+    cpi = levels.get("CPIAUCSL", [])
+    for i in range(1, len(cpi)):
+        pv = cpi[i - 1][1]
+        if pv > 0:
+            out["CPI"].append((cpi[i][0], (cpi[i][1] - pv) / pv))
+    return out
+
+
+def _fetch_fund_asset_classes(conn) -> dict[str, str]:
+    """instrument_id(str) → asset_class from instruments_universe."""
+    out: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT instrument_id, asset_class FROM instruments_universe "
+            "WHERE asset_class IS NOT NULL"
+        )
+        for iid, ac in cur.fetchall():
+            out[str(iid)] = ac
+    return out
+
+
 def dated_simple_returns(
     rows: list[tuple[_dt.date, Any]],
 ) -> list[tuple[_dt.date, float]]:
@@ -653,6 +710,48 @@ def crisis_alpha(
     return _clip(fund_crisis - bench_crisis, 6)
 
 
+def class_regression_metrics_for(
+    rows: list,
+    asset_class: str | None,
+    macro_changes: dict[str, list[tuple[_dt.date, float]]],
+) -> dict[str, Any]:
+    """Class-specific regression metrics from a fund's NAV rows + macro changes.
+
+    ``rows`` is _fetch_nav output ([(date, nav)] ascending). ``macro_changes``
+    carries 'DGS10' / 'BAA10Y' daily decimal changes, 'CPI' monthly decimal
+    changes, and '_equity_benchmark' daily benchmark returns (injected by the
+    caller). fixed_income → empirical_duration + credit_beta; alternatives →
+    inflation_beta + crisis_alpha_score (vs the equity benchmark). scoring_model
+    tags the pass; equity/cash get only the tag.
+    """
+    fund_ret = dated_simple_returns([(r[0], r[1]) for r in rows])
+    out: dict[str, Any] = {}
+    if asset_class == "fixed_income":
+        out["scoring_model"] = "fixed_income"
+        dur, dur_r2 = empirical_duration(fund_ret, macro_changes.get("DGS10", []))
+        if dur is not None:
+            out["empirical_duration"] = dur
+            out["empirical_duration_r2"] = dur_r2
+        cb, cb_r2 = credit_beta(fund_ret, macro_changes.get("BAA10Y", []))
+        if cb is not None:
+            out["credit_beta"] = cb
+            out["credit_beta_r2"] = cb_r2
+    elif asset_class == "alternatives":
+        out["scoring_model"] = "alternatives"
+        ib, ib_r2 = inflation_beta(fund_ret, macro_changes.get("CPI", []))
+        if ib is not None:
+            out["inflation_beta"] = ib
+            out["inflation_beta_r2"] = ib_r2
+        eq = macro_changes.get("_equity_benchmark", [])
+        if eq:
+            ca = crisis_alpha(fund_ret, eq)
+            if ca is not None:
+                out["crisis_alpha_score"] = ca
+    else:
+        out["scoring_model"] = "cash" if asset_class == "cash" else "equity"
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-fund metric assembly (pure — no I/O)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -832,6 +931,8 @@ def _process_shard(
     fund_ids: list,
     fund_benchmarks: dict[str, str],
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
+    macro_changes: dict[str, list[tuple[_dt.date, float]]],
+    fund_asset_classes: dict[str, str],
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
@@ -858,6 +959,11 @@ def _process_shard(
             metrics.update(
                 relative_metrics_for(
                     rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                )
+            )
+            metrics.update(
+                class_regression_metrics_for(
+                    rows, fund_asset_classes.get(str(iid)), macro_changes
                 )
             )
             _upsert(conn, iid, cdate, metrics)
@@ -1009,6 +1115,9 @@ def run(
             # Benchmark wiring: lido UMA vez no main e passado aos shards.
             bench_returns = _fetch_benchmark_returns(conn, cdate)
             fund_benchmarks = _fetch_fund_benchmarks(conn)
+            macro_changes = _fetch_macro_changes(conn, cdate)
+            macro_changes["_equity_benchmark"] = bench_returns.get(EQUITY_BENCHMARK_BLOCK, [])
+            fund_asset_classes = _fetch_fund_asset_classes(conn)
 
             n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
 
@@ -1027,6 +1136,11 @@ def run(
                     metrics.update(
                         relative_metrics_for(
                             rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                        )
+                    )
+                    metrics.update(
+                        class_regression_metrics_for(
+                            rows, fund_asset_classes.get(str(iid)), macro_changes
                         )
                     )
                     _upsert(conn, iid, cdate, metrics)
@@ -1055,6 +1169,9 @@ def run(
                             shard,
                             {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
                             bench_returns,
+                            macro_changes,
+                            {str(i): fund_asset_classes[str(i)]
+                             for i in shard if str(i) in fund_asset_classes},
                         )
                         for shard in shards
                     ]

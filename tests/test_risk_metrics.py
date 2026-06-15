@@ -409,6 +409,11 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
     monkeypatch.setattr(rm, "_fetch_fund_ids", lambda _c, _cd, _lim: [])
     monkeypatch.setattr(rm, "_fetch_benchmark_returns", lambda _c, _cd: {})
     monkeypatch.setattr(rm, "_fetch_fund_benchmarks", lambda _c: {})
+    monkeypatch.setattr(
+        rm, "_fetch_macro_changes",
+        lambda _c, _cd: {"DGS10": [], "BAA10Y": [], "CPI": []},
+    )
+    monkeypatch.setattr(rm, "_fetch_fund_asset_classes", lambda _c: {})
     monkeypatch.setattr(rm, "_update_peer_percentiles", lambda _c, _cd: 0)
     monkeypatch.setattr(
         rm, "_refresh_fund_risk_latest_mv", lambda _dsn: events.append("refresh")
@@ -552,3 +557,55 @@ def test_crisis_alpha_none_below_min_aligned():
     dates = [start + _dt.timedelta(days=i) for i in range(40)]
     rows = list(zip(dates, [0.0] * 40, strict=True))
     assert rm.crisis_alpha(rows, rows) is None
+
+
+def test_metric_columns_include_class_regression():
+    """The upsert column list carries the four new metrics + helpers."""
+    for col in (
+        "scoring_model", "empirical_duration", "empirical_duration_r2",
+        "credit_beta", "credit_beta_r2", "inflation_beta", "inflation_beta_r2",
+        "crisis_alpha_score",
+    ):
+        assert col in rm._METRIC_COLUMNS, col
+
+
+def _nav_rows_from_returns(start, daily_returns):
+    """[(date, nav)] from a daily-return list, NAV seeded at 100."""
+    rows = [(start - _dt.timedelta(days=1), 100.0)]
+    nav = 100.0
+    for i, r in enumerate(daily_returns):
+        nav *= (1.0 + r)
+        rows.append((start + _dt.timedelta(days=i), nav))
+    return rows
+
+
+def test_class_regression_fixed_income_populates_duration_and_credit():
+    """A fixed_income fund whose returns track ΔDGS10/ΔBAA10Y gets
+    empirical_duration, credit_beta and scoring_model='fixed_income';
+    alt-only keys absent."""
+    rng = np.random.default_rng(5)
+    start = _dt.date(2023, 1, 2)
+    n = 420
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    dy = rng.normal(0.0, 0.0005, n)
+    ds = rng.normal(0.0, 0.0004, n)
+    fund_ret = (-6.0 * dy - 3.0 * ds + rng.normal(0.0, 1e-5, n)).tolist()
+    rows = _nav_rows_from_returns(start, fund_ret)
+    macro_changes = {
+        "DGS10": list(zip(dates, dy.tolist(), strict=True)),
+        "BAA10Y": list(zip(dates, ds.tolist(), strict=True)),
+        "CPI": [],
+    }
+    out = rm.class_regression_metrics_for(rows, "fixed_income", macro_changes)
+    assert out["scoring_model"] == "fixed_income"
+    assert out["empirical_duration"] is not None
+    assert out["credit_beta"] is not None
+    assert "crisis_alpha_score" not in out
+    assert "inflation_beta" not in out
+
+
+def test_class_regression_equity_is_noop():
+    """An equity fund only gets scoring_model='equity', no regression keys."""
+    rows = [(_dt.date(2024, 1, 1) + _dt.timedelta(days=i), 100.0 + i) for i in range(30)]
+    out = rm.class_regression_metrics_for(rows, "equity", {"DGS10": [], "BAA10Y": [], "CPI": []})
+    assert out == {"scoring_model": "equity"}
