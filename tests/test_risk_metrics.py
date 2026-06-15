@@ -419,3 +419,44 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
     assert stats["mv_refreshed"] is True
     assert "refresh" in events
     assert events.index("refresh") > events.index("lock_release")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Class regression metrics (Tier 1, rank 4): empirical duration, credit beta,
+# inflation beta, crisis alpha. Pure — synthetic dated frames, no DB.
+# ──────────────────────────────────────────────────────────────────────────────
+def test_empirical_duration_recovers_known_beta():
+    """Fund return = -6 * delta_yield (+ tiny noise) → empirical_duration ≈ 6."""
+    rng = np.random.default_rng(7)
+    start = _dt.date(2023, 1, 2)
+    n = 400
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    dy = rng.normal(0.0, 0.0005, n)          # daily yield change in DECIMAL (5bp sd)
+    fund_ret = -6.0 * dy + rng.normal(0.0, 1e-5, n)
+    fund_dated = list(zip(dates, fund_ret.tolist(), strict=True))
+    dy_dated = list(zip(dates, dy.tolist(), strict=True))
+
+    dur, r2 = rm.empirical_duration(fund_dated, dy_dated)
+    assert dur is not None and abs(dur - 6.0) < 0.1
+    assert r2 is not None and r2 > 0.95
+
+
+def test_empirical_duration_none_below_min_observations():
+    """Fewer than REG_MIN_OBSERVATIONS aligned dates → (None, None)."""
+    start = _dt.date(2024, 1, 1)
+    dates = [start + _dt.timedelta(days=i) for i in range(50)]  # < 120
+    fund_dated = [(d, 0.001) for d in dates]
+    dy_dated = [(d, 0.0001) for d in dates]
+    assert rm.empirical_duration(fund_dated, dy_dated) == (None, None)
+
+
+def test_empirical_duration_none_below_min_r_squared():
+    """Pure-noise fund return uncorrelated with yield → R² below floor → None."""
+    rng = np.random.default_rng(11)
+    start = _dt.date(2023, 1, 2)
+    n = 400
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    fund_dated = list(zip(dates, rng.normal(0, 0.01, n).tolist(), strict=True))
+    dy_dated = list(zip(dates, rng.normal(0, 0.0005, n).tolist(), strict=True))
+    dur, r2 = rm.empirical_duration(fund_dated, dy_dated)
+    assert dur is None and r2 is None

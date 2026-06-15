@@ -506,6 +506,59 @@ def regression_metrics(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Class regression metrics (Tier 1, rank 4) — fixed-income empirical duration /
+# credit beta (vs macro_data ΔDGS10 / ΔBAA10Y) and alternatives inflation beta /
+# crisis alpha. Pure ports of quant_engine.fixed_income_analytics_service and
+# quant_engine.alternatives_analytics_service. Date-aligned by inner join.
+# ──────────────────────────────────────────────────────────────────────────────
+# OLS gates (verbatim from FIRegressionConfig / AltAnalyticsConfig).
+REG_MIN_OBSERVATIONS = 120          # ~6 months of daily data (FIRegressionConfig)
+REG_WINDOW_DAYS = 504               # 2 years (2 * 252) (FIRegressionConfig)
+REG_MIN_R_SQUARED = 0.05            # FI duration / credit beta floor
+INFLATION_MIN_MONTHS = 12           # inflation beta minimum aligned months
+INFLATION_MIN_R2 = 0.02             # inflation beta R² floor
+CRISIS_DRAWDOWN_THRESHOLD = -0.10   # benchmark drawdown defining "crisis"
+CRISIS_MIN_DAYS = 20                # minimum crisis days to report crisis alpha
+
+
+def _ols_beta_r2(y: np.ndarray, x: np.ndarray) -> tuple[float, float]:
+    """OLS y = alpha + beta*x → (beta, r_squared). Verbatim legacy math
+    (fixed_income_analytics_service._ols_regression)."""
+    design = np.column_stack([np.ones(len(x)), x])
+    coeffs = np.linalg.lstsq(design, y, rcond=None)[0]
+    beta = float(coeffs[1])
+    y_hat = design @ coeffs
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return beta, r2
+
+
+def empirical_duration(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    dgs10_change_dated: list[tuple[_dt.date, float]],
+) -> tuple[float | None, float | None]:
+    """Empirical duration = -beta of OLS(fund returns vs ΔDGS10 in decimal).
+
+    R_fund(t) = alpha + beta * ΔY_10Y(t); empirical_duration = -beta.
+    Inner-joins on date, takes the latest REG_WINDOW_DAYS, and returns
+    (duration, r2) or (None, None) when fewer than REG_MIN_OBSERVATIONS
+    aligned points or R² < REG_MIN_R_SQUARED.
+    """
+    yld = dict(dgs10_change_dated)
+    pairs = [(r, yld[d]) for d, r in fund_ret_dated if d in yld]
+    if len(pairs) < REG_MIN_OBSERVATIONS:
+        return None, None
+    pairs = pairs[-REG_WINDOW_DAYS:]
+    y = np.array([p[0] for p in pairs], dtype=float)
+    x = np.array([p[1] for p in pairs], dtype=float)
+    beta, r2 = _ols_beta_r2(y, x)
+    if r2 < REG_MIN_R_SQUARED:
+        return None, None
+    return _clip(-beta, 4), _clip(r2, 4)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Per-fund metric assembly (pure — no I/O)
 # ──────────────────────────────────────────────────────────────────────────────
 def compute_metrics(
