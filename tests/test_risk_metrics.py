@@ -516,3 +516,39 @@ def test_inflation_beta_none_below_min_months():
     fund_dated = [(_dt.date(2024, m, d), 0.001) for m in range(1, 4) for d in range(1, 22)]
     cpi_dated = [(_dt.date(2024, m, 1), 0.002) for m in range(1, 4)]  # 3 months
     assert rm.inflation_beta(fund_dated, cpi_dated) == (None, None)
+
+
+def test_crisis_alpha_positive_when_fund_outperforms_in_drawdown():
+    """Construct a benchmark with a deep (> -10%) drawdown stretch; the fund is
+    flat during it. Fund cum − bench cum over crisis days must be > 0."""
+    start = _dt.date(2023, 1, 2)
+    n = 120
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    bench_ret = [0.0] * n
+    # Days 30..70: benchmark falls ~1%/day → cumulative drawdown well past -10%.
+    for i in range(30, 71):
+        bench_ret[i] = -0.01
+    fund_ret = [0.0] * n                        # fund flat throughout
+    fund_dated = list(zip(dates, fund_ret, strict=True))
+    bench_dated = list(zip(dates, bench_ret, strict=True))
+
+    ca = rm.crisis_alpha(fund_dated, bench_dated)
+    assert ca is not None and ca > 0.0
+
+
+def test_crisis_alpha_none_when_too_few_crisis_days():
+    """No benchmark drawdown beyond threshold → fewer than CRISIS_MIN_DAYS
+    crisis days → None."""
+    start = _dt.date(2023, 1, 2)
+    n = 120
+    dates = [start + _dt.timedelta(days=i) for i in range(n)]
+    flat = list(zip(dates, [0.0001] * n, strict=True))   # gently rising, no DD
+    assert rm.crisis_alpha(flat, flat) is None
+
+
+def test_crisis_alpha_none_below_min_aligned():
+    """Fewer than 60 aligned days → None (matches legacy guard)."""
+    start = _dt.date(2024, 1, 1)
+    dates = [start + _dt.timedelta(days=i) for i in range(40)]
+    rows = list(zip(dates, [0.0] * 40, strict=True))
+    assert rm.crisis_alpha(rows, rows) is None

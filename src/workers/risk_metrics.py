@@ -621,6 +621,38 @@ def inflation_beta(
     return _clip(beta, 4), _clip(r2, 4)
 
 
+def crisis_alpha(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    bench_ret_dated: list[tuple[_dt.date, float]],
+) -> float | None:
+    """Crisis alpha: fund cum return − benchmark cum return on benchmark-
+    drawdown days < CRISIS_DRAWDOWN_THRESHOLD.
+
+    Inner-joins fund and benchmark daily returns by date, computes the
+    benchmark's running drawdown, and over the masked crisis days returns
+    prod(1+fund)-1 minus prod(1+bench)-1. Positive = the fund cushioned the
+    drawdown (diversification value). None below 60 aligned days or fewer than
+    CRISIS_MIN_DAYS crisis days (legacy compute_crisis_alpha guards).
+    """
+    bench_map = dict(bench_ret_dated)
+    pairs = [(f, bench_map[d]) for d, f in fund_ret_dated if d in bench_map]
+    if len(pairs) < 60:
+        return None
+    fund_d = np.array([p[0] for p in pairs], dtype=float)
+    bench_d = np.array([p[1] for p in pairs], dtype=float)
+
+    bench_cum = np.cumprod(1.0 + bench_d)
+    bench_peak = np.maximum.accumulate(bench_cum)
+    bench_dd = (bench_cum - bench_peak) / bench_peak
+    crisis_mask = bench_dd < CRISIS_DRAWDOWN_THRESHOLD
+    if int(crisis_mask.sum()) < CRISIS_MIN_DAYS:
+        return None
+
+    fund_crisis = float(np.prod(1.0 + fund_d[crisis_mask]) - 1.0)
+    bench_crisis = float(np.prod(1.0 + bench_d[crisis_mask]) - 1.0)
+    return _clip(fund_crisis - bench_crisis, 6)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Per-fund metric assembly (pure — no I/O)
 # ──────────────────────────────────────────────────────────────────────────────
