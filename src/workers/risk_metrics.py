@@ -813,8 +813,10 @@ sharpe AS (
     SELECT a.instrument_id, round((
         (count(*) FILTER (WHERE b.sharpe_1y < a.sharpe_1y)
          + 0.5 * count(*) FILTER (WHERE b.sharpe_1y = a.sharpe_1y))
-        / count(*)::numeric) * 100, 2) AS p
-    FROM latest a JOIN latest b ON b.label = a.label AND b.sharpe_1y IS NOT NULL
+        / NULLIF(count(*), 0)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b
+      ON b.label = a.label AND b.instrument_id <> a.instrument_id
+     AND b.sharpe_1y IS NOT NULL
     WHERE a.sharpe_1y IS NOT NULL
     GROUP BY a.instrument_id, a.sharpe_1y
 ),
@@ -822,8 +824,10 @@ sortino AS (
     SELECT a.instrument_id, round((
         (count(*) FILTER (WHERE b.sortino_1y < a.sortino_1y)
          + 0.5 * count(*) FILTER (WHERE b.sortino_1y = a.sortino_1y))
-        / count(*)::numeric) * 100, 2) AS p
-    FROM latest a JOIN latest b ON b.label = a.label AND b.sortino_1y IS NOT NULL
+        / NULLIF(count(*), 0)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b
+      ON b.label = a.label AND b.instrument_id <> a.instrument_id
+     AND b.sortino_1y IS NOT NULL
     WHERE a.sortino_1y IS NOT NULL
     GROUP BY a.instrument_id, a.sortino_1y
 ),
@@ -831,8 +835,10 @@ ret AS (
     SELECT a.instrument_id, round((
         (count(*) FILTER (WHERE b.return_1y < a.return_1y)
          + 0.5 * count(*) FILTER (WHERE b.return_1y = a.return_1y))
-        / count(*)::numeric) * 100, 2) AS p
-    FROM latest a JOIN latest b ON b.label = a.label AND b.return_1y IS NOT NULL
+        / NULLIF(count(*), 0)::numeric) * 100, 2) AS p
+    FROM latest a JOIN latest b
+      ON b.label = a.label AND b.instrument_id <> a.instrument_id
+     AND b.return_1y IS NOT NULL
     WHERE a.return_1y IS NOT NULL
     GROUP BY a.instrument_id, a.return_1y
 ),
@@ -840,9 +846,10 @@ dd AS (
     SELECT a.instrument_id, round((
         (count(*) FILTER (WHERE b.max_drawdown_1y < a.max_drawdown_1y)
          + 0.5 * count(*) FILTER (WHERE b.max_drawdown_1y = a.max_drawdown_1y))
-        / count(*)::numeric) * 100, 2) AS p
+        / NULLIF(count(*), 0)::numeric) * 100, 2) AS p
     FROM latest a JOIN latest b
-      ON b.label = a.label AND b.max_drawdown_1y IS NOT NULL
+      ON b.label = a.label AND b.instrument_id <> a.instrument_id
+     AND b.max_drawdown_1y IS NOT NULL
     WHERE a.max_drawdown_1y IS NOT NULL
     GROUP BY a.instrument_id, a.max_drawdown_1y
 ),
