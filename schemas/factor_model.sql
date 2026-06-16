@@ -43,3 +43,13 @@ CREATE INDEX IF NOT EXISTS ix_factor_model_fits_lookup
 -- (Não existia no legado, por isso ele acumulava duplicatas.)
 CREATE UNIQUE INDEX IF NOT EXISTS uq_factor_model_fits_natural
     ON factor_model_fits (engine, asset_class, universe_hash, fit_date);
+
+-- ---------------------------------------------------------------------------
+-- T3B-3: Gamma drift columns. Procrustes-aligned relative Frobenius drift of
+-- this fit's Gamma vs. the previous fit for the same (engine, asset_class,
+-- universe_hash). NULL until the gamma_drift monitor runs (>= 2 fits needed).
+-- Idempotent ADD COLUMN IF NOT EXISTS — safe to re-run.
+-- ---------------------------------------------------------------------------
+ALTER TABLE factor_model_fits
+    ADD COLUMN IF NOT EXISTS gamma_drift_vs_prior NUMERIC,
+    ADD COLUMN IF NOT EXISTS drift_alert          BOOLEAN;
