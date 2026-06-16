@@ -29,11 +29,18 @@ import datetime as _dt
 from typing import Any
 
 from src.db import LOCK_EOD_PRICES_WARMER, advisory_lock, connect
-from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient
+from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient, TokenBucket
 
 UPSERT_CHUNK = 500            # short transactions; well under the 65535-param ceiling (14/row)
 WATERMARK_OVERLAP_DAYS = 5    # re-fetch the last few days to absorb provider revisions
 NEW_TICKER_LOOKBACK_DAYS = 365  # rare: an index ticker not yet in eod_prices
+
+# Tiingo pacing — fast lane, matching instrument_ingestion. The account's hourly
+# budget far exceeds this, and the warming universe (~2k tickers) is small, so
+# the full sweep finishes in ~90s instead of ~15min at the 2.5 req/s default.
+FETCH_RATE_PER_S = 25.0
+FETCH_BURST = 20.0
+PROGRESS_EVERY = 500  # emit a heartbeat log every N tickers (observability)
 
 # Index ETFs the API's /stocks/overview strip warms on-demand — guarantee they
 # stay fresh even if never queried. Mirrors app ``market_overview.INDEX_TICKERS``.
@@ -138,9 +145,14 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             if limit:
                 tickers = tickers[:limit]
             watermarks = _ticker_watermarks(conn)
+            print(
+                f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}",
+                flush=True,
+            )
 
-            with TiingoClient() as tiingo:
-                for ticker in tickers:
+            bucket = TokenBucket(max_tokens=FETCH_BURST, refill_rate=FETCH_RATE_PER_S)
+            with TiingoClient(bucket=bucket) as tiingo:
+                for i, ticker in enumerate(tickers, start=1):
                     watermark = watermarks.get(ticker)
                     if watermark is not None:
                         start = watermark - _dt.timedelta(days=WATERMARK_OVERLAP_DAYS)
@@ -156,6 +168,12 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                     skipped_rows += len(bars) - len(rows)
                     if rows:
                         upserted += upsert_eod_prices(conn, rows)
+                    if i % PROGRESS_EVERY == 0:
+                        print(
+                            f"eod_prices_warmer: {i}/{len(tickers)} tickers, "
+                            f"upserted={upserted}",
+                            flush=True,
+                        )
             conn.commit()
 
     stats: dict[str, Any] = {

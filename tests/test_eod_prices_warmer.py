@@ -146,6 +146,12 @@ def test_advisory_lock_id_is_distinct():
     assert LOCK_EOD_PRICES_WARMER == 900_335
 
 
+def test_fetch_rate_is_fast_lane():
+    """Pacing matches instrument_ingestion's fast lane, not the 2.5 req/s default."""
+    assert w.FETCH_RATE_PER_S >= 25.0
+    assert w.FETCH_BURST >= 10.0
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Upsert idempotency (throwaway schema; self-skips without a local DB)
 # ──────────────────────────────────────────────────────────────────────────────
