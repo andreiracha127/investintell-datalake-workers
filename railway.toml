@@ -16,6 +16,11 @@
 #   benchmark_ingest     -> daily 05:30 UTC (needs TIINGO_API_KEY)
 #   instrument_ingestion -> daily 06:00 UTC, stale-only AUM-prioritised sweep
 #                           (needs TIINGO_API_KEY; before risk_metrics 07:00)
+#   eod_prices_warmer    -> daily 06:15 UTC, refreshes eod_prices for the stock/
+#                           ETF universe the API serves DB-first (Strategy B).
+#                           Incremental (max(date)−5d → today); needs
+#                           TIINGO_API_KEY. Keep cadence < eod_staleness_hours
+#                           (API default 24h) so /stocks/* never serves stale.
 #
 # nixpacks auto-detects Python via requirements.txt.
 

@@ -101,9 +101,13 @@ class TiingoClient:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def fetch_daily_prices(self, ticker: str, start_date: _dt.date,
-                           end_date: _dt.date | None = None) -> list[tuple[_dt.date, float | None]]:
-        """Daily price history for one ticker; [] on 404/no data."""
+    def _get_bars(self, ticker: str, start_date: _dt.date,
+                  end_date: _dt.date | None = None) -> list[dict]:
+        """Raw Tiingo daily bars for one ticker; [] on 404/no data.
+
+        Paced by the token bucket and protected by the 30×429 breaker. Shared
+        by ``fetch_daily_prices`` (NAV: date+adjClose) and ``fetch_daily_bars``
+        (full OHLCV+adj rows for eod_prices)."""
         params = {"format": "json", "resampleFreq": "daily",
                   "startDate": start_date.isoformat()}
         if end_date:
@@ -135,5 +139,18 @@ class TiingoClient:
             payload = resp.json()
             if not isinstance(payload, list):  # error body, e.g. unknown ticker
                 return []
-            return parse_price_bars(payload)
+            return payload
         return []
+
+    def fetch_daily_prices(self, ticker: str, start_date: _dt.date,
+                           end_date: _dt.date | None = None) -> list[tuple[_dt.date, float | None]]:
+        """Daily price history for one ticker; [] on 404/no data."""
+        return parse_price_bars(self._get_bars(ticker, start_date, end_date))
+
+    def fetch_daily_bars(self, ticker: str, start_date: _dt.date,
+                         end_date: _dt.date | None = None) -> list[dict]:
+        """Full raw daily bars (all OHLCV + adjusted fields) for one ticker.
+
+        Used by ``eod_prices_warmer`` to refresh the API's ``eod_prices`` table
+        (every column NOT NULL). ``[]`` on 404/no data."""
+        return self._get_bars(ticker, start_date, end_date)
