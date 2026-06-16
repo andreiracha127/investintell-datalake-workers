@@ -82,6 +82,17 @@ CHARS_COLS = [
     "profitability_gross",
 ]
 
+# PR-Q36 F04 (ported to worker, T3B-2): require >= 3 valid CV folds before a K's
+# mean OOS R^2 is treated as reliable. Mirrors
+# quant_engine.factor_model_ipca_service.MIN_FOLDS_FOR_K_SELECTION.
+MIN_FOLDS_FOR_K_SELECTION = 3
+# Parsimony tolerance for K-selection: K's whose mean OOS R^2 is within this of
+# the maximum are treated as tied, and the SMALLEST such K is chosen. Without it,
+# a raw argmax over-selects when extra IPCA factors inflate OOS R^2 by a
+# negligible amount (~1e-4), missing the true (parsimonious) factor count. This
+# is a deliberate improvement over the legacy raw-argmax selection.
+_K_PARSIMONY_TOL = 1e-3
+
 # DB-mãe legado (fallback de características enquanto o cloud não tem a tabela
 # recalculada). Read-only, apenas para o caminho de teste/validação.
 _LEGACY_DSN = (
@@ -525,3 +536,93 @@ def _upsert(conn: Any, asof: date, uhash: str, fit: dict[str, Any], oos: float |
                 "n_iter": int(fit["n_iterations"]),
             },
         )
+
+
+# --------------------------------------------------------------------------- #
+# K-selection (T3B-2): grid K, score each by walk-forward OOS R^2, apply the
+# >=3-fold reliability gate. Ports quant_engine.factor_model_ipca_service.
+# fit_universe's selection logic; reuses this module's fit_ipca / oos_r_squared.
+# --------------------------------------------------------------------------- #
+def _count_oos_folds(n_dates: int, *, min_train: int, test_window: int) -> int:
+    """Number of expanding-window folds oos_r_squared would evaluate.
+
+    Mirrors the loop in oos_r_squared: i starts at min_train and advances by
+    test_window while i + test_window <= n_dates.
+    """
+    if n_dates < min_train + test_window:
+        return 0
+    return len(range(min_train, n_dates - test_window + 1, test_window))
+
+
+def select_k(
+    chars: pd.DataFrame,
+    returns: pd.Series,
+    *,
+    max_k: int = 6,
+    min_train: int = 24,
+    test_window: int = 12,
+    max_iter: int = 100,
+) -> dict[str, Any]:
+    """Select the IPCA factor count K by walk-forward OOS R^2.
+
+    Grids K over [1, min(max_k, L)] where L = chars.shape[1], scoring each K with
+    this module's expanding-window ``oos_r_squared``. Applies a
+    >= MIN_FOLDS_FOR_K_SELECTION reliability gate:
+      - if the panel yields >= 3 folds, pick best_k = argmax mean OOS R^2;
+      - else fall back to the SMALLEST K with a (non-None) score and flag the
+        result degraded (insufficient_folds);
+      - if NO K produces a score (panel too short), raise ValueError.
+
+    Returns a dict: best_k, best_oos_r_squared, n_folds, k_scores (K -> mean OOS
+    R^2), degraded, insufficient_folds, degraded_reason.
+    """
+    L = chars.shape[1]
+    grid_top = min(max_k, L)
+    if grid_top < 1:
+        raise ValueError(f"select_k: no characteristics to fit (L={L})")
+
+    n_dates = chars.index.get_level_values("month").nunique()
+    n_folds = _count_oos_folds(n_dates, min_train=min_train, test_window=test_window)
+
+    k_scores: dict[int, float] = {}
+    for k in range(1, grid_top + 1):
+        score = oos_r_squared(
+            chars, returns, k,
+            min_train=min_train, test_window=test_window, max_iter=max_iter,
+        )
+        if score is not None:
+            k_scores[k] = float(score)
+
+    if not k_scores:
+        raise ValueError(
+            f"IPCA walk-forward CV could not validate any K in [1, {grid_top}]: "
+            "no fold produced an OOS score (panel too short or numerically unstable)"
+        )
+
+    if n_folds >= MIN_FOLDS_FOR_K_SELECTION:
+        # Parsimony tie-break: among K whose mean OOS R^2 is within
+        # _K_PARSIMONY_TOL of the maximum, choose the SMALLEST K. Recovers the
+        # true factor count when extra factors add only negligible OOS R^2.
+        best_score = max(k_scores.values())
+        best_k = min(k for k, s in k_scores.items() if s >= best_score - _K_PARSIMONY_TOL)
+        insufficient_folds = False
+        degraded_reason: str | None = None
+    else:
+        best_k = min(k_scores)  # smallest K with any valid score
+        insufficient_folds = True
+        degraded_reason = "ipca_k_selection_insufficient_folds"
+
+    best_oos = k_scores[best_k]
+    degraded = insufficient_folds or best_oos <= 0.0
+    if degraded_reason is None and best_oos <= 0.0:
+        degraded_reason = "oos_r2_negative_useless_fit"
+
+    return {
+        "best_k": int(best_k),
+        "best_oos_r_squared": float(best_oos),
+        "n_folds": int(n_folds),
+        "k_scores": k_scores,
+        "degraded": bool(degraded),
+        "insufficient_folds": bool(insufficient_folds),
+        "degraded_reason": degraded_reason,
+    }
