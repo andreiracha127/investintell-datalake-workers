@@ -136,9 +136,11 @@ END$$;
 --               peer_strategy_label, escala 0–100; drawdown ASC = menos
 --               negativo melhor). Labels vêm de strategy_reclassification_stage
 --               (réplica no cloud, source_table='instruments_universe').
---   * manager_score / elite_flag / equity_correlation_252d: reservadas — o
---     modelo de scoring do projeto allocation ainda não foi portado; ficam
---     NULL até existir worker próprio (UI mostra "—").
+--   * manager_score (numeric(5,2)): LIVE (T3C) — composite equity score written
+--     by _update_manager_scores() post-step (equity funds only); NULL for
+--     non-equity funds.
+--   * equity_correlation_252d: LIVE (computed by relative_metrics_for).
+--   * elite_flag: reservada — sem threshold definido; fica NULL.
 -- ─────────────────────────────────────────────────────────────────────────────
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_strategy_label text;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS peer_sharpe_pctl numeric(5,2);

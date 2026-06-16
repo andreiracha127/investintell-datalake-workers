@@ -415,6 +415,7 @@ def test_run_refreshes_mv_after_lock_released(monkeypatch):
     )
     monkeypatch.setattr(rm, "_fetch_fund_asset_classes", lambda _c: {})
     monkeypatch.setattr(rm, "_update_peer_percentiles", lambda _c, _cd: 0)
+    monkeypatch.setattr(rm, "_update_manager_scores", lambda _c, _cd: 0)
     monkeypatch.setattr(
         rm, "_refresh_fund_risk_latest_mv", lambda _dsn: events.append("refresh")
     )
@@ -609,3 +610,144 @@ def test_class_regression_equity_is_noop():
     rows = [(_dt.date(2024, 1, 1) + _dt.timedelta(days=i), 100.0 + i) for i in range(30)]
     out = rm.class_regression_metrics_for(rows, "equity", {"DGS10": [], "BAA10Y": [], "CPI": []})
     assert out == {"scoring_model": "equity"}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# T3C-2: manager_score post-step (equity composite). No DB — fake the cursor.
+# ──────────────────────────────────────────────────────────────────────────────
+class _ManagerScoreCursor:
+    """Fake cursor: SELECT returns canned equity rows; UPDATE batch is captured."""
+
+    def __init__(self, select_rows, sink):
+        self._select_rows = select_rows
+        self._sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def execute(self, sql, params=None):
+        self._sink["last_sql"] = " ".join(str(sql).split())
+
+    def fetchall(self):
+        return self._select_rows
+
+    def executemany(self, sql, rows):
+        self._sink["update_sql"] = " ".join(str(sql).split())
+        self._sink["update_rows"] = list(rows)
+
+
+class _ManagerScoreConn:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_update_manager_scores_writes_equity_composites():
+    """Two equity rows -> two (manager_score, instrument_id, calc_date) updates,
+    each a 0-100 composite from manager_score.compute_equity_manager_score."""
+    from src.workers import manager_score as ms
+
+    # row columns: instrument_id, return_1y, sharpe_1y, sharpe_cf,
+    #              max_drawdown_1y, information_ratio_1y
+    rows = [
+        ("11111111-1111-1111-1111-111111111111", 0.10, 1.0, 1.0, -0.25, 0.5),
+        ("22222222-2222-2222-2222-222222222222", -0.05, 0.0, None, -0.40, -0.2),
+    ]
+    sink: dict = {}
+    cur = _ManagerScoreCursor(rows, sink)
+    conn = _ManagerScoreConn(cur)
+
+    # Reproduce the post-step's peer-median baseline so expected == actual.
+    peer_medians = rm._equity_peer_medians(rows)
+    updated = rm._update_manager_scores(conn, _dt.date(2026, 6, 11))
+
+    assert updated == 2
+    by_id = {r[1]: r[0] for r in sink["update_rows"]}
+    exp0 = ms.compute_equity_manager_score(
+        {"return_1y": 0.10, "sharpe_1y": 1.0, "sharpe_cf": 1.0,
+         "max_drawdown_1y": -0.25, "information_ratio_1y": 0.5},
+        peer_medians=peer_medians,
+    ).score
+    exp1 = ms.compute_equity_manager_score(
+        {"return_1y": -0.05, "sharpe_1y": 0.0, "sharpe_cf": None,
+         "max_drawdown_1y": -0.40, "information_ratio_1y": -0.2},
+        peer_medians=peer_medians,
+    ).score
+    assert by_id["11111111-1111-1111-1111-111111111111"] == exp0
+    assert by_id["22222222-2222-2222-2222-222222222222"] == exp1
+    # Every written score is a valid 0-100 manager_score at the calc_date.
+    for score, _iid, cdate in sink["update_rows"]:
+        assert 0.0 <= score <= 100.0
+        assert cdate == _dt.date(2026, 6, 11)
+    assert "UPDATE fund_risk_metrics" in sink["update_sql"]
+    assert "manager_score" in sink["update_sql"]
+
+
+def test_update_manager_scores_empty_cohort_returns_zero():
+    sink: dict = {}
+    cur = _ManagerScoreCursor([], sink)
+    conn = _ManagerScoreConn(cur)
+    updated = rm._update_manager_scores(conn, _dt.date(2026, 6, 11))
+    assert updated == 0
+    assert "update_rows" not in sink  # nothing to write
+
+
+def test_equity_peer_medians_skips_missing_inputs():
+    """Median sub-score per component is taken over funds that HAVE the metric."""
+    rows = [
+        ("a", 0.10, 1.0, 1.0, -0.25, 0.5),
+        ("b", None, 2.0, 2.0, -0.10, None),  # missing return_1y and IR
+    ]
+    medians = rm._equity_peer_medians(rows)
+    # return_consistency only has fund 'a' -> its single sub-score is the median.
+    assert "return_consistency" in medians
+    # information_ratio only has fund 'a' -> present.
+    assert "information_ratio" in medians
+    # All medians are valid 0-100 sub-scores.
+    for v in medians.values():
+        assert 0.0 <= v <= 100.0
+
+
+def test_run_calls_manager_score_post_step(monkeypatch):
+    """Successful run() invokes _update_manager_scores once with the calc_date."""
+    import contextlib
+
+    events: list[str] = []
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        return _FakeConn({"events": events})
+
+    monkeypatch.setattr(rm, "connect", _fake_connect)
+
+    @contextlib.contextmanager
+    def _granted_lock(_conn, _lock_id):
+        yield True
+
+    monkeypatch.setattr(rm, "advisory_lock", _granted_lock)
+    monkeypatch.setattr(rm, "_resolve_calc_date", lambda _c, _cd: _dt.date(2026, 6, 11))
+    monkeypatch.setattr(rm, "_risk_free_rate", lambda _c, _cd: 0.04)
+    monkeypatch.setattr(rm, "_fetch_fund_ids", lambda _c, _cd, _lim: [])
+    monkeypatch.setattr(rm, "_fetch_benchmark_returns", lambda _c, _cd: {})
+    monkeypatch.setattr(rm, "_fetch_fund_benchmarks", lambda _c: {})
+    monkeypatch.setattr(
+        rm, "_fetch_macro_changes",
+        lambda _c, _cd: {"DGS10": [], "BAA10Y": [], "CPI": []},
+    )
+    monkeypatch.setattr(rm, "_fetch_fund_asset_classes", lambda _c: {})
+    monkeypatch.setattr(rm, "_update_peer_percentiles", lambda _c, _cd: 0)
+    monkeypatch.setattr(rm, "_refresh_fund_risk_latest_mv", lambda _dsn: None)
+
+    captured: dict = {}
+    monkeypatch.setattr(
+        rm, "_update_manager_scores",
+        lambda _c, cdate: captured.__setitem__("calc_date", cdate) or 7,
+    )
+
+    stats = rm.run("postgres://x")
+    assert captured["calc_date"] == _dt.date(2026, 6, 11)
+    assert stats["manager_score_rows"] == 7

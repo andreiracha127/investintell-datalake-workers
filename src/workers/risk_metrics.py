@@ -36,6 +36,7 @@ from typing import Any
 import numpy as np
 
 from src.db import LOCK_RISK_METRICS, advisory_lock, connect
+from src.workers import manager_score as _ms
 
 TRADING_DAYS = 252
 
@@ -1052,6 +1053,101 @@ WHERE m.instrument_id = lt.instrument_id
 """
 
 
+# Equity-only manager_score post-step (T3C). Reads the five inputs already
+# persisted in fund_risk_metrics for the calc_date, restricted to equity funds
+# (instruments_universe.asset_class = 'equity'), computes the composite via
+# src.workers.manager_score, and writes the numeric(5,2) manager_score column.
+# FI/cash/alternatives are left NULL (their scoring models are not ported).
+_MANAGER_SCORE_EQUITY_SQL = """
+SELECT m.instrument_id, m.return_1y, m.sharpe_1y, m.sharpe_cf,
+       m.max_drawdown_1y, m.information_ratio_1y
+FROM fund_risk_metrics m
+JOIN instruments_universe iu ON iu.instrument_id = m.instrument_id
+WHERE m.calc_date = %(calc_date)s
+  AND m.organization_id IS NULL
+  AND iu.asset_class = 'equity'
+"""
+
+# Sub-score component -> (metric key, lo, hi) for the peer-median baseline.
+# Mirrors the four weighted equity components in manager_score; the robust
+# Sharpe baseline reads sharpe_1y (sharpe_cf may be sparse).
+_MANAGER_SCORE_COMPONENT_INPUT = {
+    "return_consistency": ("return_1y", -0.20, 0.40),
+    "risk_adjusted_return": ("sharpe_1y", -1.0, 3.0),
+    "drawdown_control": ("max_drawdown_1y", -0.50, 0.0),
+    "information_ratio": ("information_ratio_1y", -1.0, 2.0),
+}
+
+
+def _equity_peer_medians(rows: list[tuple[Any, ...]]) -> dict[str, float]:
+    """Median sub-score per component across the equity cohort (opacity baseline).
+
+    Each present input is normalized to its 0-100 sub-score (no penalty), then
+    the per-component median is taken. Missing inputs are skipped (the median
+    is over funds that HAVE the metric), so an opaque fund is penalized against
+    the median of its transparent peers — the legacy peer_medians contract.
+
+    ``rows`` columns: (instrument_id, return_1y, sharpe_1y, sharpe_cf,
+    max_drawdown_1y, information_ratio_1y).
+    """
+    cols = {
+        "return_1y": 1, "sharpe_1y": 2, "max_drawdown_1y": 4,
+        "information_ratio_1y": 5,
+    }
+    medians: dict[str, float] = {}
+    for component, (metric, lo, hi) in _MANAGER_SCORE_COMPONENT_INPUT.items():
+        idx = cols[metric]
+        subs: list[float] = []
+        for r in rows:
+            v = r[idx]
+            if v is None:
+                continue
+            fv = float(v)
+            if not np.isfinite(fv):
+                continue
+            sub, _synth = _ms.normalize_with_provenance(fv, lo, hi)
+            subs.append(sub)
+        if subs:
+            medians[component] = float(np.median(subs))
+    return medians
+
+
+def _update_manager_scores(conn, calc_date: _dt.date) -> int:
+    """Compute & UPDATE manager_score for every equity fund at calc_date.
+
+    Does NOT commit — the caller owns the transaction (run() commits; tests
+    fake the cursor). Returns the number of rows written.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_MANAGER_SCORE_EQUITY_SQL, {"calc_date": calc_date})
+        rows = cur.fetchall()
+    if not rows:
+        return 0
+    peer_medians = _equity_peer_medians(rows)
+    updates: list[tuple[float, Any, _dt.date]] = []
+    for iid, ret_1y, sharpe_1y, sharpe_cf, mdd_1y, ir_1y in rows:
+        result = _ms.compute_equity_manager_score(
+            {
+                "return_1y": float(ret_1y) if ret_1y is not None else None,
+                "sharpe_1y": float(sharpe_1y) if sharpe_1y is not None else None,
+                "sharpe_cf": float(sharpe_cf) if sharpe_cf is not None else None,
+                "max_drawdown_1y": float(mdd_1y) if mdd_1y is not None else None,
+                "information_ratio_1y": float(ir_1y) if ir_1y is not None else None,
+            },
+            peer_medians=peer_medians,
+        )
+        updates.append((result.score, iid, calc_date))
+    with conn.cursor() as cur:
+        cur.executemany(
+            """UPDATE fund_risk_metrics
+               SET manager_score = %s
+               WHERE instrument_id = %s AND calc_date = %s
+                 AND organization_id IS NULL""",
+            updates,
+        )
+    return len(updates)
+
+
 def _update_peer_percentiles(conn, calc_date: _dt.date) -> int:
     """Set-based peer-percentile refresh for one calc_date; returns rows updated.
 
@@ -1146,11 +1242,13 @@ def run(
                     _upsert(conn, iid, cdate, metrics)
                     upserted += 1
                 peers = _update_peer_percentiles(conn, cdate)
+                mscores = _update_manager_scores(conn, cdate)
                 conn.commit()
                 result = {
                     "processed": processed,
                     "upserted": upserted,
                     "peer_rows": peers,
+                    "manager_score_rows": mscores,
                     "calc_date": cdate_iso,
                     "workers": 1,
                 }
@@ -1182,12 +1280,14 @@ def run(
 
                 # Children committed their shards; rank peers over the full set.
                 peers = _update_peer_percentiles(conn, cdate)
+                mscores = _update_manager_scores(conn, cdate)
                 conn.commit()
 
                 result = {
                     "processed": processed,
                     "upserted": upserted,
                     "peer_rows": peers,
+                    "manager_score_rows": mscores,
                     "calc_date": cdate_iso,
                     "workers": n_workers,
                 }
