@@ -644,11 +644,13 @@ _MACRO_LOOKBACK_DAYS = 1000  # > FI_REG_WINDOW sessions + holiday/gap slack
 def _fetch_macro_changes(
     conn, calc_date: _dt.date, lookback_days: int = _MACRO_LOOKBACK_DAYS
 ) -> dict[str, dict[_dt.date, float]]:
-    """{series_id: {date: daily Δ}} for the FI factor series from macro_data.
+    """{series_id: {date: daily Δ in DECIMAL}} for the FI factor series.
 
-    The FI regressions use the first difference of the level series (DGS10 yield,
-    BAA10Y spread). Read ONCE in the main process and passed to the shards (like
-    the benchmark returns), so children never re-fetch shared data.
+    First difference of the level series (DGS10 yield, BAA10Y spread). FRED quotes
+    both in PERCENT (e.g. 4.25), but fund returns are decimals, so the change is
+    scaled to fractional units (÷100) — otherwise ``duration = −β`` lands ~100×
+    too small (a 5y fund reads 0.05 instead of 5). Read ONCE in the main process
+    and passed to the shards (like the benchmark returns).
     """
     out: dict[str, dict[_dt.date, float]] = {}
     with conn.cursor() as cur:
@@ -672,7 +674,7 @@ def _fetch_macro_changes(
             out.setdefault(series, {})
             continue
         if prev_val is not None:
-            out[series][d] = val - prev_val
+            out[series][d] = (val - prev_val) / 100.0  # percent → decimal
         prev_val = val
     return out
 
