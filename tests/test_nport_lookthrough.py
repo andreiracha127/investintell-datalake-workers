@@ -105,6 +105,17 @@ def test_expand_series_sector_dual_axis():
     assert "CORP" not in sector_keys and "UST" not in sector_keys
 
 
+def test_sector_label_equity_falls_back_to_isin_when_cusip6_misses():
+    # Foreign equity: the synthetic IS:<isin> cusip never matches a CUSIP-6, but
+    # the ISIN is in the enrichment cache (merged into sector_map by ISIN key).
+    smap = {"TW0002330008": "Information Technology"}
+    h = H(cusip="IS:TW0002330008", isin="TW0002330008", asset="EC", sector="CORP")
+    assert lt.sector_label(h, smap) == "Information Technology"
+    # No ISIN entry either → honest Unclassified.
+    h2 = H(cusip="IS:JP3633400001", isin="JP3633400001", asset="EC", sector="CORP")
+    assert lt.sector_label(h2, smap) == "Unclassified"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # match_fund — a aresta FoF
 # ──────────────────────────────────────────────────────────────────────────────

@@ -164,9 +164,14 @@ def sector_label(holding: dict, sector_map: dict[str, str]) -> str:
     asset = (holding.get("asset_class") or "").strip().upper()
     issuer = (holding.get("sector") or "").strip().upper()
     if asset in _EQUITY_CATS:
-        return sector_map.get(
-            issuer_key(holding.get("cusip"), holding.get("isin"))
-        ) or "Unclassified"
+        # US/large names resolve by issuer CUSIP-6; foreign names (synthetic
+        # IS:<isin> cusip) resolve by ISIN via the enrichment cache. Both live
+        # in ``sector_map`` (6-char CUSIP-6 keys vs 12-char ISIN keys — no clash).
+        gics = sector_map.get(issuer_key(holding.get("cusip"), holding.get("isin")))
+        if not gics:
+            isin = (holding.get("isin") or "").strip().upper()
+            gics = sector_map.get(isin) if isin else None
+        return gics or "Unclassified"
     if asset in _FI_STRUCTURE_LABELS:
         return _FI_STRUCTURE_LABELS[asset]
     if asset == "DBT":
@@ -350,6 +355,16 @@ def build_sector_map(conn) -> dict[str, str]:
         for cusip, gics in cur.fetchall():
             if len(cusip) >= 6:
                 out.setdefault(cusip[:6], gics)
+        # International equities (synthetic IS:<isin> cusips) resolve by ISIN via
+        # the nport_cusip_enrichment cache. 12-char ISIN keys never clash with
+        # the 6-char CUSIP-6 keys above. Optional — skip if not yet provisioned.
+        if cur.execute("SELECT to_regclass('public.sec_isin_sector')").fetchone()[0]:
+            cur.execute(
+                "SELECT isin, gics_sector FROM sec_isin_sector "
+                "WHERE gics_sector IS NOT NULL AND isin IS NOT NULL"
+            )
+            for isin, gics in cur.fetchall():
+                out.setdefault(isin, gics)
     return out
 
 
