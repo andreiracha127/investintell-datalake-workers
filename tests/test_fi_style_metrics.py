@@ -77,6 +77,59 @@ def test_fi_style_metrics_empty_macro_is_all_none() -> None:
     assert out == {"empirical_duration": None, "credit_beta": None}
 
 
+# ── crisis_alpha ─────────────────────────────────────────────────────────────
+
+
+def _crash_then_recover(n_pre: int, crash_len: int, crash_daily: float) -> list[float]:
+    """Flat, then a sustained drawdown (>10% after ~crash_len days)."""
+    return [0.0] * n_pre + [crash_daily] * crash_len
+
+
+def test_crisis_alpha_positive_when_fund_outperforms_in_drawdown() -> None:
+    dates = _dates(200)
+    # Benchmark: flat 100d, then ~-1%/day for 60d → deep (>10%) drawdown.
+    bench_r = _crash_then_recover(100, 100, -0.012)
+    # Fund: flat in calm, only -0.2%/day during the crash → outperforms.
+    fund_r = [0.0] * 100 + [-0.002] * 100
+    bench = list(zip(dates, bench_r))
+    fund = list(zip(dates, fund_r))
+    score = rm.crisis_alpha(fund, bench)
+    assert score is not None
+    assert score > 0  # fund lost far less than equities during the crisis
+
+
+def test_crisis_alpha_negative_when_fund_underperforms() -> None:
+    dates = _dates(200)
+    bench_r = [0.0] * 100 + [-0.012] * 100
+    fund_r = [0.0] * 100 + [-0.02] * 100  # fund crashes harder than equities
+    score = rm.crisis_alpha(list(zip(dates, fund_r)), list(zip(dates, bench_r)))
+    assert score is not None
+    assert score < 0
+
+
+def test_crisis_alpha_none_without_enough_crisis_days() -> None:
+    dates = _dates(200)
+    bench_r = [0.0005] * 200  # gently rising, never in >10% drawdown
+    fund_r = [0.0003] * 200
+    assert rm.crisis_alpha(list(zip(dates, fund_r)), list(zip(dates, bench_r))) is None
+
+
+def test_crisis_alpha_none_below_min_overlap() -> None:
+    dates = _dates(40)  # < 60 common days
+    bench_r = [-0.02] * 40
+    fund_r = [-0.01] * 40
+    assert rm.crisis_alpha(list(zip(dates, fund_r)), list(zip(dates, bench_r))) is None
+
+
+def test_relative_metrics_for_adds_crisis_alpha_when_bench_given() -> None:
+    # 200 NAV rows for the fund; long equity bench with a deep drawdown.
+    dates = _dates(200)
+    nav_rows = [(dates[i], 100.0) for i in range(200)]  # flat fund (returns ~0)
+    bench = list(zip(dates, [0.0] * 100 + [-0.012] * 100))
+    out = rm.relative_metrics_for(nav_rows, None, {}, 0.04, None, bench)
+    assert "crisis_alpha_score" in out
+
+
 def test_relative_metrics_for_without_macro_omits_fi() -> None:
     # No macro_changes → FI keys absent (back-compat with existing callers).
     rows = [(_dt.date(2022, 1, 3) + _dt.timedelta(days=i), 100.0 + i) for i in range(30)]

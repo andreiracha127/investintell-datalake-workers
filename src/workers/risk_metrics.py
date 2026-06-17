@@ -65,7 +65,7 @@ _METRIC_COLUMNS = [
     "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
     "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
     "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
-    "empirical_duration", "credit_beta",
+    "empirical_duration", "credit_beta", "crisis_alpha_score",
     "fed_funds_rate_at_calc", "data_quality_flags",
 ]
 
@@ -729,18 +729,79 @@ def fi_style_metrics(
     return out
 
 
+# ── Crisis alpha (ported from the legacy alternatives analytics service) ──────
+# Fund − equity-benchmark cumulative return during equity drawdowns > 10%.
+# Positive = the fund held up (or gained) while equities crashed — diversification
+# value. Needs a LONG equity benchmark window (the 600-day benchmark fetch rarely
+# holds a ≥20-day, >10% drawdown), so na_equity_large is re-read over the fund NAV
+# span (it goes back to 1993, covering 2008/2020/2022).
+_CRISIS_BENCH_LOOKBACK_DAYS = 11 * 366
+CRISIS_DD_THRESHOLD = -0.10
+CRISIS_MIN_DAYS = 20
+
+
+def _fetch_equity_crisis_benchmark(
+    conn, calc_date: _dt.date
+) -> list[tuple[_dt.date, float]]:
+    """na_equity_large daily simple returns over the long crisis window."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT nav_date, nav FROM benchmark_nav
+               WHERE block_id = %s AND nav_date <= %s AND nav_date > %s
+               ORDER BY nav_date""",
+            (
+                EQUITY_BENCHMARK_BLOCK,
+                calc_date,
+                calc_date - _dt.timedelta(days=_CRISIS_BENCH_LOOKBACK_DAYS),
+            ),
+        )
+        rows = cur.fetchall()
+    return dated_simple_returns([(d, nav) for d, nav in rows])
+
+
+def crisis_alpha(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    eq_bench_dated: list[tuple[_dt.date, float]],
+    threshold: float = CRISIS_DD_THRESHOLD,
+    min_crisis_days: int = CRISIS_MIN_DAYS,
+) -> float | None:
+    """Fund − equity-benchmark cumulative return during equity drawdowns > threshold.
+
+    Date-aligns the two return series, marks the days the benchmark is in a
+    drawdown deeper than ``threshold``, and returns the difference of the two
+    cumulative returns over those crisis days. None if < ``min_crisis_days``.
+    """
+    bench_map = dict(eq_bench_dated)
+    pairs = [(f, bench_map[d]) for d, f in fund_ret_dated if d in bench_map]
+    if len(pairs) < 60:
+        return None
+    fund_d = np.array([p[0] for p in pairs], dtype=float)
+    bench_d = np.array([p[1] for p in pairs], dtype=float)
+    bench_cum = np.cumprod(1.0 + bench_d)
+    bench_peak = np.maximum.accumulate(bench_cum)
+    bench_dd = (bench_cum - bench_peak) / bench_peak
+    crisis = bench_dd < threshold
+    if int(crisis.sum()) < min_crisis_days:
+        return None
+    fund_crisis = float(np.prod(1.0 + fund_d[crisis]) - 1.0)
+    bench_crisis = float(np.prod(1.0 + bench_d[crisis]) - 1.0)
+    return _clip(fund_crisis - bench_crisis, 6)
+
+
 def relative_metrics_for(
     rows: list,
     fund_block: str | None,
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
     rf: float,
     macro_changes: dict[str, dict[_dt.date, float]] | None = None,
+    eq_crisis_bench: list[tuple[_dt.date, float]] | None = None,
 ) -> dict[str, float | None]:
     """Métricas benchmark-relativas de um fundo a partir dos NAV rows.
 
     ``rows`` é a saída de ``_fetch_nav`` ((date, nav) ascendente). Sem bloco
     mapeado, só a correlação com o benchmark de equity é computada. Com
-    ``macro_changes``, também computa as regressões FI (duration/credit).
+    ``macro_changes``, computa as regressões FI (duration/credit); com
+    ``eq_crisis_bench``, o crisis-alpha vs o benchmark de equity.
     """
     fund_ret = dated_simple_returns([(r[0], r[1]) for r in rows])
     out: dict[str, float | None] = {}
@@ -751,6 +812,8 @@ def relative_metrics_for(
         out["equity_correlation_252d"] = equity_correlation(fund_ret, eq)
     if macro_changes:
         out.update(fi_style_metrics(fund_ret, macro_changes))
+    if eq_crisis_bench:
+        out["crisis_alpha_score"] = crisis_alpha(fund_ret, eq_crisis_bench)
     return out
 
 
@@ -792,6 +855,7 @@ def _process_shard(
     fund_benchmarks: dict[str, str],
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
     macro_changes: dict[str, dict[_dt.date, float]] | None = None,
+    eq_crisis_bench: list[tuple[_dt.date, float]] | None = None,
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
@@ -817,7 +881,12 @@ def _process_shard(
                 continue
             metrics.update(
                 relative_metrics_for(
-                    rows, fund_benchmarks.get(str(iid)), bench_returns, rf, macro_changes
+                    rows,
+                    fund_benchmarks.get(str(iid)),
+                    bench_returns,
+                    rf,
+                    macro_changes,
+                    eq_crisis_bench,
                 )
             )
             _upsert(conn, iid, cdate, metrics)
@@ -971,6 +1040,8 @@ def run(
             fund_benchmarks = _fetch_fund_benchmarks(conn)
             # FI factor changes (Δ DGS10 / Δ BAA10Y) — read once, shared like benches.
             macro_changes = _fetch_macro_changes(conn, cdate)
+            # Long equity-benchmark window for crisis alpha (shared, read once).
+            eq_crisis_bench = _fetch_equity_crisis_benchmark(conn, cdate)
 
             n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
 
@@ -993,6 +1064,7 @@ def run(
                             bench_returns,
                             rf,
                             macro_changes,
+                            eq_crisis_bench,
                         )
                     )
                     _upsert(conn, iid, cdate, metrics)
@@ -1022,6 +1094,7 @@ def run(
                             {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
                             bench_returns,
                             macro_changes,
+                            eq_crisis_bench,
                         )
                         for shard in shards
                     ]

@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS fund_risk_metrics (
     empirical_duration               numeric(10,6),
     credit_beta                      numeric(10,6),
 
+    -- Crisis alpha: fund − equity-benchmark cum return during >10% equity drawdowns
+    crisis_alpha_score               numeric(10,6),
+
     -- Provenance / quality
     fed_funds_rate_at_calc           numeric(8,4),
     data_quality_flags               jsonb DEFAULT '{}'::jsonb,
