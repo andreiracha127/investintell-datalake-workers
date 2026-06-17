@@ -72,9 +72,10 @@ CREATE TABLE IF NOT EXISTS fund_risk_metrics (
     cvar_999_evt                     numeric(12,6),
     evt_xi_shape                     numeric(12,6),
 
-    -- Fixed-income style regressions (−beta vs Δ DGS10 / Δ BAA10Y)
+    -- Fixed-income style regressions (vs Δ DGS10 / Δ BAA10Y / Δ T10YIE breakeven)
     empirical_duration               numeric(10,6),
     credit_beta                      numeric(10,6),
+    inflation_beta                   numeric(10,6),
 
     -- Crisis alpha: fund − equity-benchmark cum return during >10% equity drawdowns
     crisis_alpha_score               numeric(10,6),

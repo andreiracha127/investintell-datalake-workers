@@ -65,7 +65,7 @@ _METRIC_COLUMNS = [
     "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
     "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
     "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
-    "empirical_duration", "credit_beta", "crisis_alpha_score",
+    "empirical_duration", "credit_beta", "inflation_beta", "crisis_alpha_score",
     "fed_funds_rate_at_calc", "data_quality_flags",
 ]
 
@@ -629,12 +629,13 @@ def _risk_free_rate(conn, calc_date: _dt.date) -> float:
 
 # ── Fixed-income style regressions (ported from the legacy quant engine) ──────
 # Empirical duration = −beta of fund daily returns on Δ DGS10 (10y Treasury
-# yield); credit beta = −beta on Δ BAA10Y (Baa−10y credit spread). OLS over the
-# date-aligned overlap, last FI_REG_WINDOW obs, kept only when the fit clears
-# FI_MIN_R2 — funds with no rate/credit sensitivity (e.g. pure equity) fail the
-# R² gate and report None.
+# yield); credit beta = −beta on Δ BAA10Y (Baa−10y credit spread); inflation beta
+# = +beta on Δ T10YIE (10y breakeven inflation). OLS over the date-aligned
+# overlap, last FI_REG_WINDOW obs, kept only when the fit clears FI_MIN_R2 — funds
+# with no sensitivity to a factor fail its R² gate and report None.
 FI_YIELD_SERIES = "DGS10"
 FI_CREDIT_SERIES = "BAA10Y"
+FI_INFLATION_SERIES = "T10YIE"
 FI_MIN_OBS = 120  # ~6 months of daily data
 FI_REG_WINDOW = 504  # 2 years (2 × 252)
 FI_MIN_R2 = 0.05
@@ -659,7 +660,7 @@ def _fetch_macro_changes(
                WHERE series_id = ANY(%s) AND obs_date <= %s AND obs_date > %s
                ORDER BY series_id, obs_date""",
             (
-                [FI_YIELD_SERIES, FI_CREDIT_SERIES],
+                [FI_YIELD_SERIES, FI_CREDIT_SERIES, FI_INFLATION_SERIES],
                 calc_date,
                 calc_date - _dt.timedelta(days=lookback_days),
             ),
@@ -715,17 +716,31 @@ def fi_style_metrics(
     fund_ret_dated: list[tuple[_dt.date, float]],
     macro_changes: dict[str, dict[_dt.date, float]],
 ) -> dict[str, float | None]:
-    """empirical_duration (vs Δ DGS10) and credit_beta (vs Δ BAA10Y)."""
-    out: dict[str, float | None] = {"empirical_duration": None, "credit_beta": None}
+    """FI style betas from the daily-change regressions.
+
+    empirical_duration = −β vs Δ DGS10; credit_beta = −β vs Δ BAA10Y;
+    inflation_beta = +β vs Δ T10YIE (breakeven) — positive = the fund rises with
+    rising inflation expectations (inflation hedge), matching the legacy sign.
+    ``_fi_factor_beta`` returns −β, so inflation flips it back to +β.
+    """
+    out: dict[str, float | None] = {
+        "empirical_duration": None,
+        "credit_beta": None,
+        "inflation_beta": None,
+    }
     if not macro_changes:
         return out
     fund_by_date = dict(fund_ret_dated)
     yld = macro_changes.get(FI_YIELD_SERIES)
     crd = macro_changes.get(FI_CREDIT_SERIES)
+    infl = macro_changes.get(FI_INFLATION_SERIES)
     if yld:
         out["empirical_duration"] = _clip(_fi_factor_beta(fund_by_date, yld), 6)
     if crd:
         out["credit_beta"] = _clip(_fi_factor_beta(fund_by_date, crd), 6)
+    if infl:
+        neg_beta = _fi_factor_beta(fund_by_date, infl)  # = −β
+        out["inflation_beta"] = _clip(-neg_beta, 6) if neg_beta is not None else None
     return out
 
 

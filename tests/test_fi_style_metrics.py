@@ -74,7 +74,24 @@ def test_fi_style_metrics_recovers_duration_and_credit() -> None:
 
 def test_fi_style_metrics_empty_macro_is_all_none() -> None:
     out = rm.fi_style_metrics([(_dt.date(2022, 1, 3), 0.01)], {})
-    assert out == {"empirical_duration": None, "credit_beta": None}
+    assert out == {
+        "empirical_duration": None,
+        "credit_beta": None,
+        "inflation_beta": None,
+    }
+
+
+def test_fi_style_metrics_inflation_beta_positive_sign() -> None:
+    # Fund that rises with breakeven changes → positive inflation_beta (hedge).
+    rng = np.random.default_rng(4)
+    dates = _dates(300)
+    infl = {d: float(rng.normal(0.0, 0.0005)) for d in dates}  # daily Δ breakeven
+    ib = 3.0
+    fund_dated = [(d, ib * infl[d] + float(rng.normal(0.0, 1e-5))) for d in dates]
+    out = rm.fi_style_metrics(fund_dated, {rm.FI_INFLATION_SERIES: infl})
+    assert out["inflation_beta"] is not None
+    assert out["inflation_beta"] > 0
+    assert abs(out["inflation_beta"] - ib) < 0.3
 
 
 # ── crisis_alpha ─────────────────────────────────────────────────────────────
