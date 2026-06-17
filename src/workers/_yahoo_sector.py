@@ -11,6 +11,8 @@ than crashing the run.
 from __future__ import annotations
 
 import re
+import threading
+import time
 from typing import Callable
 
 # Yahoo's sector vocabulary → the 11 canonical GICS sectors (verbatim from
@@ -108,11 +110,62 @@ def yahoo_symbol(ticker: str | None, exch_code: str | None) -> str | None:
     return ticker + suffix if suffix else None
 
 
+# yfinance hits Yahoo's heavily rate-limited quoteSummary endpoint; at bulk
+# scale it throttles to empty responses. Pace globally + retry, and use a
+# curl_cffi browser-impersonating session (bypasses most of the throttling).
+_YF_RETRY_SLEEPS = (2.0, 6.0)
+_YF_RATE = 2.5  # requests/second sustained, shared across worker threads
+_yf_bucket_lock = threading.Lock()
+_yf_tokens = 5.0
+_yf_last = time.monotonic()
+_yf_session_cache: object | None = None
+
+
+def _yf_acquire() -> None:
+    global _yf_tokens, _yf_last
+    while True:
+        with _yf_bucket_lock:
+            now = time.monotonic()
+            _yf_tokens = min(5.0, _yf_tokens + (now - _yf_last) * _YF_RATE)
+            _yf_last = now
+            if _yf_tokens >= 1.0:
+                _yf_tokens -= 1.0
+                return
+            wait = (1.0 - _yf_tokens) / _YF_RATE
+        time.sleep(wait)
+
+
+def _yf_session():
+    """A cached curl_cffi browser-impersonating session, or None (yf default)."""
+    global _yf_session_cache
+    if _yf_session_cache is None:
+        try:
+            from curl_cffi import requests as _cffi
+
+            _yf_session_cache = _cffi.Session(impersonate="chrome")
+        except Exception:
+            _yf_session_cache = False
+    return _yf_session_cache or None
+
+
 def _yf_info_sector(yahoo_sym: str) -> str | None:
     import yfinance as yf
 
-    info = yf.Ticker(yahoo_sym).info
-    return (info or {}).get("sector")
+    session = _yf_session()
+    for attempt in range(len(_YF_RETRY_SLEEPS) + 1):
+        _yf_acquire()
+        try:
+            ticker = (
+                yf.Ticker(yahoo_sym, session=session) if session else yf.Ticker(yahoo_sym)
+            )
+            sector = (ticker.info or {}).get("sector")
+            if sector:
+                return sector
+        except Exception:
+            pass
+        if attempt < len(_YF_RETRY_SLEEPS):
+            time.sleep(_YF_RETRY_SLEEPS[attempt])
+    return None
 
 
 def fetch_sector(

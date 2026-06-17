@@ -33,7 +33,7 @@ from src.workers._yahoo_sector import fetch_sector, yahoo_symbol
 
 DEFAULT_RUN_LIMIT = 5000          # ISINs per run — backlog drains over weeks
 DEFAULT_TTL_DAYS = 90             # re-verify a cached ISIN after this
-YF_WORKERS = 8                    # yfinance is slow; parallelize the fetch
+YF_WORKERS = 3                    # modest overlap; the global token bucket paces
 # Only recent reports define the live look-through universe — bound the scan.
 _RECENT_REPORT_DAYS = 120
 
