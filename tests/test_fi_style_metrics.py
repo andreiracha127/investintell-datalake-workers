@@ -114,6 +114,17 @@ def test_crisis_alpha_none_without_enough_crisis_days() -> None:
     assert rm.crisis_alpha(list(zip(dates, fund_r)), list(zip(dates, bench_r))) is None
 
 
+def test_crisis_alpha_clamps_blowup_outlier() -> None:
+    # A bad-NAV spike during the crisis would compound to an absurd cumulative;
+    # the result must be clamped to the sane bound, not 1e6%.
+    dates = _dates(200)
+    bench_r = [0.0] * 100 + [-0.012] * 100
+    fund_r = [0.0] * 100 + [5.0] + [-0.002] * 99  # one +500% bad-NAV day in crisis
+    score = rm.crisis_alpha(list(zip(dates, fund_r)), list(zip(dates, bench_r)))
+    assert score is not None
+    assert -10.0 <= score <= 10.0
+
+
 def test_crisis_alpha_none_below_min_overlap() -> None:
     dates = _dates(40)  # < 60 common days
     bench_r = [-0.02] * 40

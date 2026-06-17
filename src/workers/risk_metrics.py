@@ -785,7 +785,10 @@ def crisis_alpha(
         return None
     fund_crisis = float(np.prod(1.0 + fund_d[crisis]) - 1.0)
     bench_crisis = float(np.prod(1.0 + bench_d[crisis]) - 1.0)
-    return _clip(fund_crisis - bench_crisis, 6)
+    # Cumulative compounding over a long multi-crisis window can blow up on a few
+    # bad-NAV/extreme-leverage days (legacy formula had no bound). Clamp to a sane
+    # range so a garbage outlier can't dominate the Stage-1 z-scored clustering.
+    return _clip(float(np.clip(fund_crisis - bench_crisis, -10.0, 10.0)), 6)
 
 
 def relative_metrics_for(
