@@ -124,36 +124,59 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
     return "UNKNOWN"
 
 
-# N-PORT's ``sector`` field is the issuerCat code (CORP/UST/MUN/RF/...), NOT a
-# sector. Real GICS sectors come from sec_cusip_ticker_map.gics_sector keyed by
-# the issuer CUSIP-6; the issuerCat is only the fallback for issuers absent from
-# that (equity) map — most bonds, treasuries and munis. The fallback maps the
-# code to a readable bucket so the breakdown never shows raw codes.
-_ISSUER_CAT_LABELS = {
-    "CORP": "Corporate",
-    "UST": "U.S. Treasury",
-    "USGA": "U.S. Gov Agency",
-    "USGSE": "U.S. Gov-Sponsored Enterprise",
-    "MUN": "Municipal",
-    "NUSS": "Non-U.S. Sovereign",
-    "RF": "Registered Fund",
-    "OTHER": "Other",
+# The "sector" dimension is DUAL-AXIS, chosen by N-PORT assetCat — a GICS sector
+# only makes sense for equities; debt needs a fixed-income taxonomy.
+_EQUITY_CATS = frozenset({"EC", "EP"})  # common, preferred
+_DERIVATIVE_CATS = frozenset({"DE", "DFE", "DCR", "DIR", "DO"})  # eq/fx/credit/rate/other
+# Debt STRUCTURE → FI sector (independent of who issued it).
+_FI_STRUCTURE_LABELS = {
+    "ABS-MBS": "Mortgage-Backed (MBS)",
+    "ABS-O": "Asset-Backed (ABS)",
+    "ABS-CBDO": "CLO/CDO",
+    "LON": "Bank Loans",
+    "STIV": "Short-Term / Cash",
 }
+# Plain debt (DBT) split by issuer type (the N-PORT ``sector``/issuerCat code).
+_DEBT_ISSUER_LABELS = {
+    "CORP": "Corporate Debt",
+    "UST": "U.S. Treasury",
+    "USGA": "U.S. Agency",
+    "USGSE": "U.S. Agency",
+    "MUN": "Municipal",
+    "NUSS": "Sovereign (ex-US)",
+}
+# issuerCat codes that are unambiguously debt (used when assetCat is unknown).
+_DEBT_ISSUER_CODES = frozenset({"UST", "USGA", "USGSE", "MUN", "NUSS"})
 
 
 def sector_label(holding: dict, sector_map: dict[str, str]) -> str:
-    """Real GICS sector for the holding's issuer, else a readable issuerCat bucket.
+    """Dual-axis sector for one holding, chosen by N-PORT assetCat.
 
-    ``sector_map`` is issuer CUSIP-6 → GICS sector. Resolution reuses
-    ``issuer_key`` (the issuer CUSIP-6 for real CUSIPs; a synthetic key
-    otherwise, which never hits the map). The issuerCat fallback maps known
-    codes to readable labels and passes anything else through verbatim.
+    Equities (EC/EP) → the issuer's real GICS sector via ``sector_map`` (issuer
+    CUSIP-6), or ``"Unclassified"`` when absent (e.g. non-US names outside the
+    US-centric GICS map) — never an issuerCat code, which would misrepresent an
+    equity as "Corporate". Debt → a fixed-income sector by structure (MBS / ABS /
+    CLO / bank loans / short-term), with plain bonds (DBT) split by issuer type
+    (Corporate / Treasury / Agency / Municipal / Sovereign). Derivatives and repo
+    get their own buckets. N-PORT's ``sector`` field is the issuerCat code, NOT a
+    sector — it is only used to split debt, never as a sector itself.
     """
-    gics = sector_map.get(issuer_key(holding.get("cusip"), holding.get("isin")))
-    if gics:
-        return gics
-    code = (holding.get("sector") or "").strip()
-    return _ISSUER_CAT_LABELS.get(code, code or "UNKNOWN")
+    asset = (holding.get("asset_class") or "").strip().upper()
+    issuer = (holding.get("sector") or "").strip().upper()
+    if asset in _EQUITY_CATS:
+        return sector_map.get(
+            issuer_key(holding.get("cusip"), holding.get("isin"))
+        ) or "Unclassified"
+    if asset in _FI_STRUCTURE_LABELS:
+        return _FI_STRUCTURE_LABELS[asset]
+    if asset == "DBT":
+        return _DEBT_ISSUER_LABELS.get(issuer, "Debt")
+    if asset in _DERIVATIVE_CATS:
+        return "Derivatives"
+    if asset == "RA":
+        return "Repo"
+    # Unknown/missing assetCat: only unambiguously-debt issuers map; else Other.
+    return _DEBT_ISSUER_LABELS[issuer] if issuer in _DEBT_ISSUER_CODES else "Other"
 
 
 def expand_series(

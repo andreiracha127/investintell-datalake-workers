@@ -54,39 +54,54 @@ EMPTY_MAP = {"cusip": {}, "isin": {}}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# sector_label — GICS real via issuer CUSIP-6; fallback issuerCat → bucket legível
+# sector_label — dual-axis por assetCat: ações→GICS/Unclassified, dívida→setor FI
 # ──────────────────────────────────────────────────────────────────────────────
-def test_sector_label_resolves_gics_via_issuer_cusip6():
-    # A corporate *bond* inherits its issuer's equity GICS sector (CUSIP-6).
+def test_sector_label_equity_resolves_gics_else_unclassified():
     smap = {"037833": "Information Technology"}
-    assert lt.sector_label(H(cusip="037833100", sector="CORP"), smap) == "Information Technology"
+    # Equity with a mapped issuer → real GICS sector.
+    assert lt.sector_label(H(cusip="037833100", asset="EC", sector="CORP"), smap) == "Information Technology"
+    # Non-US / unmapped equity → honest "Unclassified", NOT an issuerCat code.
+    assert lt.sector_label(H(cusip="700000000", asset="EC", sector="CORP"), smap) == "Unclassified"
+    assert lt.sector_label(H(isin="JP1234567890", asset="EP", sector="CORP"), {}) == "Unclassified"
 
 
-def test_sector_label_falls_back_to_readable_issuercat_bucket():
-    # Issuers absent from the GICS map (bonds, treasuries, munis) → readable bucket.
-    assert lt.sector_label(H(cusip="912828XX1", sector="UST"), {}) == "U.S. Treasury"
-    assert lt.sector_label(H(cusip="38259P999", sector="CORP"), {}) == "Corporate"
-    assert lt.sector_label(H(cusip="64966M111", sector="MUN"), {}) == "Municipal"
-    assert lt.sector_label(H(cusip="X", sector="RF"), {}) == "Registered Fund"
+def test_sector_label_debt_splits_by_structure_then_issuer():
+    # Plain debt (DBT) split by issuer type.
+    assert lt.sector_label(H(asset="DBT", sector="CORP"), {}) == "Corporate Debt"
+    assert lt.sector_label(H(asset="DBT", sector="UST"), {}) == "U.S. Treasury"
+    assert lt.sector_label(H(asset="DBT", sector="USGSE"), {}) == "U.S. Agency"
+    assert lt.sector_label(H(asset="DBT", sector="MUN"), {}) == "Municipal"
+    assert lt.sector_label(H(asset="DBT", sector="NUSS"), {}) == "Sovereign (ex-US)"
+    # Structured debt → its own FI sector regardless of issuer.
+    assert lt.sector_label(H(asset="ABS-MBS", sector="CORP"), {}) == "Mortgage-Backed (MBS)"
+    assert lt.sector_label(H(asset="ABS-O", sector="CORP"), {}) == "Asset-Backed (ABS)"
+    assert lt.sector_label(H(asset="ABS-CBDO", sector="CORP"), {}) == "CLO/CDO"
+    assert lt.sector_label(H(asset="LON", sector="CORP"), {}) == "Bank Loans"
+    assert lt.sector_label(H(asset="STIV", sector="CORP"), {}) == "Short-Term / Cash"
 
 
-def test_sector_label_unknown_and_unmapped_code_passthrough():
-    assert lt.sector_label(H(cusip=None, sector=None), {}) == "UNKNOWN"
-    assert lt.sector_label(H(cusip="00000000Z", sector="ZZZ"), {}) == "ZZZ"
+def test_sector_label_derivatives_repo_and_ambiguous():
+    assert lt.sector_label(H(asset="DE", sector="CORP"), {}) == "Derivatives"
+    assert lt.sector_label(H(asset="DFE", sector="OTHER"), {}) == "Derivatives"
+    assert lt.sector_label(H(asset="RA", sector="CORP"), {}) == "Repo"
+    # Unknown assetCat: only unambiguously-debt issuers map; CORP/None → Other.
+    assert lt.sector_label(H(asset=None, sector="UST"), {}) == "U.S. Treasury"
+    assert lt.sector_label(H(asset="OTHER", sector="CORP"), {}) == "Other"
+    assert lt.sector_label(H(asset=None, sector=None), {}) == "Other"
 
 
-def test_expand_series_sector_dimension_prefers_gics_then_bucket():
+def test_expand_series_sector_dual_axis():
     data = {"S1": (D_ROOT, [
-        H(cusip="037833100", sector="CORP", pct=60.0),   # Apple bond → IT
-        H(cusip="912828XX1", sector="UST", pct=40.0),    # Treasury → bucket
+        H(cusip="037833100", asset="EC", sector="CORP", pct=50.0),  # equity → IT
+        H(asset="DBT", sector="UST", pct=30.0),                     # treasury debt
+        H(asset="ABS-MBS", sector="CORP", pct=20.0),                # MBS
     ])}
     smap = {"037833": "Information Technology"}
     exposures, _ = lt.expand_series(
         "S1", make_get_holdings(data), EMPTY_MAP, sector_map=smap
     )
     sector_keys = {k for (dim, k) in exposures if dim == "sector"}
-    assert "Information Technology" in sector_keys
-    assert "U.S. Treasury" in sector_keys
+    assert {"Information Technology", "U.S. Treasury", "Mortgage-Backed (MBS)"} <= sector_keys
     assert "CORP" not in sector_keys and "UST" not in sector_keys
 
 
