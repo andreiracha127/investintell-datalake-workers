@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS fund_risk_metrics (
     cvar_999_evt                     numeric(12,6),
     evt_xi_shape                     numeric(12,6),
 
+    -- Fixed-income style regressions (−beta vs Δ DGS10 / Δ BAA10Y)
+    empirical_duration               numeric(10,6),
+    credit_beta                      numeric(10,6),
+
     -- Provenance / quality
     fed_funds_rate_at_calc           numeric(8,4),
     data_quality_flags               jsonb DEFAULT '{}'::jsonb,

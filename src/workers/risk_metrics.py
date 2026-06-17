@@ -65,6 +65,7 @@ _METRIC_COLUMNS = [
     "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
     "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
     "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
+    "empirical_duration", "credit_beta",
     "fed_funds_rate_at_calc", "data_quality_flags",
 ]
 
@@ -626,16 +627,118 @@ def _risk_free_rate(conn, calc_date: _dt.date) -> float:
     return RISK_FREE_FALLBACK
 
 
+# ── Fixed-income style regressions (ported from the legacy quant engine) ──────
+# Empirical duration = −beta of fund daily returns on Δ DGS10 (10y Treasury
+# yield); credit beta = −beta on Δ BAA10Y (Baa−10y credit spread). OLS over the
+# date-aligned overlap, last FI_REG_WINDOW obs, kept only when the fit clears
+# FI_MIN_R2 — funds with no rate/credit sensitivity (e.g. pure equity) fail the
+# R² gate and report None.
+FI_YIELD_SERIES = "DGS10"
+FI_CREDIT_SERIES = "BAA10Y"
+FI_MIN_OBS = 120  # ~6 months of daily data
+FI_REG_WINDOW = 504  # 2 years (2 × 252)
+FI_MIN_R2 = 0.05
+_MACRO_LOOKBACK_DAYS = 1000  # > FI_REG_WINDOW sessions + holiday/gap slack
+
+
+def _fetch_macro_changes(
+    conn, calc_date: _dt.date, lookback_days: int = _MACRO_LOOKBACK_DAYS
+) -> dict[str, dict[_dt.date, float]]:
+    """{series_id: {date: daily Δ}} for the FI factor series from macro_data.
+
+    The FI regressions use the first difference of the level series (DGS10 yield,
+    BAA10Y spread). Read ONCE in the main process and passed to the shards (like
+    the benchmark returns), so children never re-fetch shared data.
+    """
+    out: dict[str, dict[_dt.date, float]] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT series_id, obs_date, value FROM macro_data
+               WHERE series_id = ANY(%s) AND obs_date <= %s AND obs_date > %s
+               ORDER BY series_id, obs_date""",
+            (
+                [FI_YIELD_SERIES, FI_CREDIT_SERIES],
+                calc_date,
+                calc_date - _dt.timedelta(days=lookback_days),
+            ),
+        )
+        rows = cur.fetchall()
+    prev_series: str | None = None
+    prev_val: float | None = None
+    for series, d, val in rows:
+        val = float(val)
+        if series != prev_series:
+            prev_series, prev_val = series, val
+            out.setdefault(series, {})
+            continue
+        if prev_val is not None:
+            out[series][d] = val - prev_val
+        prev_val = val
+    return out
+
+
+def _ols_beta_r2(y: np.ndarray, x: np.ndarray) -> tuple[float, float]:
+    """OLS ``y = a + b·x`` → ``(beta, r_squared)`` (legacy FI convention)."""
+    mat = np.column_stack([np.ones(len(x)), x])
+    coeffs = np.linalg.lstsq(mat, y, rcond=None)[0]
+    beta = float(coeffs[1])
+    resid = y - mat @ coeffs
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return beta, r2
+
+
+def _fi_factor_beta(
+    fund_by_date: dict[_dt.date, float], change_by_date: dict[_dt.date, float]
+) -> float | None:
+    """−beta of fund returns on a factor's daily change; None if weak/insufficient."""
+    common = sorted(fund_by_date.keys() & change_by_date.keys())
+    if len(common) < FI_MIN_OBS:
+        return None
+    common = common[-FI_REG_WINDOW:]
+    y = np.array([fund_by_date[d] for d in common], dtype=float)
+    x = np.array([change_by_date[d] for d in common], dtype=float)
+    if not np.isfinite(y).all() or not np.isfinite(x).all():
+        return None
+    if float(np.var(x)) == 0.0:
+        return None
+    beta, r2 = _ols_beta_r2(y, x)
+    if r2 < FI_MIN_R2:
+        return None
+    return -beta
+
+
+def fi_style_metrics(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    macro_changes: dict[str, dict[_dt.date, float]],
+) -> dict[str, float | None]:
+    """empirical_duration (vs Δ DGS10) and credit_beta (vs Δ BAA10Y)."""
+    out: dict[str, float | None] = {"empirical_duration": None, "credit_beta": None}
+    if not macro_changes:
+        return out
+    fund_by_date = dict(fund_ret_dated)
+    yld = macro_changes.get(FI_YIELD_SERIES)
+    crd = macro_changes.get(FI_CREDIT_SERIES)
+    if yld:
+        out["empirical_duration"] = _clip(_fi_factor_beta(fund_by_date, yld), 6)
+    if crd:
+        out["credit_beta"] = _clip(_fi_factor_beta(fund_by_date, crd), 6)
+    return out
+
+
 def relative_metrics_for(
     rows: list,
     fund_block: str | None,
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
     rf: float,
+    macro_changes: dict[str, dict[_dt.date, float]] | None = None,
 ) -> dict[str, float | None]:
     """Métricas benchmark-relativas de um fundo a partir dos NAV rows.
 
     ``rows`` é a saída de ``_fetch_nav`` ((date, nav) ascendente). Sem bloco
-    mapeado, só a correlação com o benchmark de equity é computada.
+    mapeado, só a correlação com o benchmark de equity é computada. Com
+    ``macro_changes``, também computa as regressões FI (duration/credit).
     """
     fund_ret = dated_simple_returns([(r[0], r[1]) for r in rows])
     out: dict[str, float | None] = {}
@@ -644,6 +747,8 @@ def relative_metrics_for(
     eq = bench_returns.get(EQUITY_BENCHMARK_BLOCK)
     if eq:
         out["equity_correlation_252d"] = equity_correlation(fund_ret, eq)
+    if macro_changes:
+        out.update(fi_style_metrics(fund_ret, macro_changes))
     return out
 
 
@@ -684,6 +789,7 @@ def _process_shard(
     fund_ids: list,
     fund_benchmarks: dict[str, str],
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
+    macro_changes: dict[str, dict[_dt.date, float]] | None = None,
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
@@ -709,7 +815,7 @@ def _process_shard(
                 continue
             metrics.update(
                 relative_metrics_for(
-                    rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                    rows, fund_benchmarks.get(str(iid)), bench_returns, rf, macro_changes
                 )
             )
             _upsert(conn, iid, cdate, metrics)
@@ -861,6 +967,8 @@ def run(
             # Benchmark wiring: lido UMA vez no main e passado aos shards.
             bench_returns = _fetch_benchmark_returns(conn, cdate)
             fund_benchmarks = _fetch_fund_benchmarks(conn)
+            # FI factor changes (Δ DGS10 / Δ BAA10Y) — read once, shared like benches.
+            macro_changes = _fetch_macro_changes(conn, cdate)
 
             n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
 
@@ -878,7 +986,11 @@ def run(
                         continue
                     metrics.update(
                         relative_metrics_for(
-                            rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                            rows,
+                            fund_benchmarks.get(str(iid)),
+                            bench_returns,
+                            rf,
+                            macro_changes,
                         )
                     )
                     _upsert(conn, iid, cdate, metrics)
@@ -907,6 +1019,7 @@ def run(
                             shard,
                             {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
                             bench_returns,
+                            macro_changes,
                         )
                         for shard in shards
                     ]
