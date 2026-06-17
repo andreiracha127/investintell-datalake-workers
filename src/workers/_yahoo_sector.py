@@ -118,7 +118,8 @@ _YF_RATE = 2.5  # requests/second sustained, shared across worker threads
 _yf_bucket_lock = threading.Lock()
 _yf_tokens = 5.0
 _yf_last = time.monotonic()
-_yf_session_cache: object | None = None
+# curl_cffi sessions are NOT thread-safe — one per worker thread.
+_yf_local = threading.local()
 
 
 def _yf_acquire() -> None:
@@ -136,16 +137,17 @@ def _yf_acquire() -> None:
 
 
 def _yf_session():
-    """A cached curl_cffi browser-impersonating session, or None (yf default)."""
-    global _yf_session_cache
-    if _yf_session_cache is None:
+    """A per-thread curl_cffi browser-impersonating session, or None (yf default)."""
+    session = getattr(_yf_local, "session", None)
+    if session is None:
         try:
             from curl_cffi import requests as _cffi
 
-            _yf_session_cache = _cffi.Session(impersonate="chrome")
+            session = _cffi.Session(impersonate="chrome")
         except Exception:
-            _yf_session_cache = False
-    return _yf_session_cache or None
+            session = False
+        _yf_local.session = session
+    return session or None
 
 
 def _yf_info_sector(yahoo_sym: str) -> str | None:
