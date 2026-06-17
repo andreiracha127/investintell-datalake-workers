@@ -54,6 +54,43 @@ EMPTY_MAP = {"cusip": {}, "isin": {}}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# sector_label — GICS real via issuer CUSIP-6; fallback issuerCat → bucket legível
+# ──────────────────────────────────────────────────────────────────────────────
+def test_sector_label_resolves_gics_via_issuer_cusip6():
+    # A corporate *bond* inherits its issuer's equity GICS sector (CUSIP-6).
+    smap = {"037833": "Information Technology"}
+    assert lt.sector_label(H(cusip="037833100", sector="CORP"), smap) == "Information Technology"
+
+
+def test_sector_label_falls_back_to_readable_issuercat_bucket():
+    # Issuers absent from the GICS map (bonds, treasuries, munis) → readable bucket.
+    assert lt.sector_label(H(cusip="912828XX1", sector="UST"), {}) == "U.S. Treasury"
+    assert lt.sector_label(H(cusip="38259P999", sector="CORP"), {}) == "Corporate"
+    assert lt.sector_label(H(cusip="64966M111", sector="MUN"), {}) == "Municipal"
+    assert lt.sector_label(H(cusip="X", sector="RF"), {}) == "Registered Fund"
+
+
+def test_sector_label_unknown_and_unmapped_code_passthrough():
+    assert lt.sector_label(H(cusip=None, sector=None), {}) == "UNKNOWN"
+    assert lt.sector_label(H(cusip="00000000Z", sector="ZZZ"), {}) == "ZZZ"
+
+
+def test_expand_series_sector_dimension_prefers_gics_then_bucket():
+    data = {"S1": (D_ROOT, [
+        H(cusip="037833100", sector="CORP", pct=60.0),   # Apple bond → IT
+        H(cusip="912828XX1", sector="UST", pct=40.0),    # Treasury → bucket
+    ])}
+    smap = {"037833": "Information Technology"}
+    exposures, _ = lt.expand_series(
+        "S1", make_get_holdings(data), EMPTY_MAP, sector_map=smap
+    )
+    sector_keys = {k for (dim, k) in exposures if dim == "sector"}
+    assert "Information Technology" in sector_keys
+    assert "U.S. Treasury" in sector_keys
+    assert "CORP" not in sector_keys and "UST" not in sector_keys
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # match_fund — a aresta FoF
 # ──────────────────────────────────────────────────────────────────────────────
 def test_match_fund_real_cusip():

@@ -124,11 +124,44 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
     return "UNKNOWN"
 
 
+# N-PORT's ``sector`` field is the issuerCat code (CORP/UST/MUN/RF/...), NOT a
+# sector. Real GICS sectors come from sec_cusip_ticker_map.gics_sector keyed by
+# the issuer CUSIP-6; the issuerCat is only the fallback for issuers absent from
+# that (equity) map — most bonds, treasuries and munis. The fallback maps the
+# code to a readable bucket so the breakdown never shows raw codes.
+_ISSUER_CAT_LABELS = {
+    "CORP": "Corporate",
+    "UST": "U.S. Treasury",
+    "USGA": "U.S. Gov Agency",
+    "USGSE": "U.S. Gov-Sponsored Enterprise",
+    "MUN": "Municipal",
+    "NUSS": "Non-U.S. Sovereign",
+    "RF": "Registered Fund",
+    "OTHER": "Other",
+}
+
+
+def sector_label(holding: dict, sector_map: dict[str, str]) -> str:
+    """Real GICS sector for the holding's issuer, else a readable issuerCat bucket.
+
+    ``sector_map`` is issuer CUSIP-6 → GICS sector. Resolution reuses
+    ``issuer_key`` (the issuer CUSIP-6 for real CUSIPs; a synthetic key
+    otherwise, which never hits the map). The issuerCat fallback maps known
+    codes to readable labels and passes anything else through verbatim.
+    """
+    gics = sector_map.get(issuer_key(holding.get("cusip"), holding.get("isin")))
+    if gics:
+        return gics
+    code = (holding.get("sector") or "").strip()
+    return _ISSUER_CAT_LABELS.get(code, code or "UNKNOWN")
+
+
 def expand_series(
     series_id: str,
     get_holdings: Callable[[str], tuple[_dt.date, list[dict]] | None],
     fund_map: dict,
     *,
+    sector_map: dict[str, str] | None = None,
     max_depth: int = MAX_DEPTH,
 ) -> tuple[dict, dict]:
     """Recursive look-through of one series. Pure computation over a fetcher.
@@ -140,6 +173,7 @@ def expand_series(
     Raises LookupError when the root series has no holdings — fail loud, a
     parent listed for computation must exist.
     """
+    sector_map = sector_map or {}
     root = get_holdings(series_id)
     if root is None:
         raise LookupError(f"no holdings for root series {series_id}")
@@ -167,7 +201,7 @@ def expand_series(
             ("issuer", issuer_key(holding.get("cusip"), holding.get("isin")),
              holding.get("issuer_name")),
             ("asset_class", holding.get("asset_class") or "UNKNOWN", None),
-            ("sector", holding.get("sector") or "UNKNOWN", None),
+            ("sector", sector_label(holding, sector_map), None),
             ("currency", holding.get("currency") or "UNKNOWN", None),
         )
         for dimension, key, label in keys:
@@ -273,6 +307,27 @@ def build_fund_map(conn) -> dict:
         """)
         isin_map.update(cur.fetchall())
     return {"cusip": cusip_map, "isin": isin_map}
+
+
+def build_sector_map(conn) -> dict[str, str]:
+    """Issuer CUSIP-6 → GICS sector, from ``sec_cusip_ticker_map.gics_sector``.
+
+    The map is the GICS-classified (equity) universe; bonds, treasuries and
+    munis are absent by construction and fall back to readable issuerCat buckets
+    (see ``sector_label``). CUSIP-6 (issuer grain) lets a corporate *bond*
+    inherit its issuer's equity sector. First non-null wins per issuer
+    (one issuer = one sector).
+    """
+    out: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT cusip, gics_sector FROM sec_cusip_ticker_map "
+            "WHERE gics_sector IS NOT NULL AND cusip IS NOT NULL"
+        )
+        for cusip, gics in cur.fetchall():
+            if len(cusip) >= 6:
+                out.setdefault(cusip[:6], gics)
+    return out
 
 
 def make_db_get_holdings(
@@ -424,7 +479,8 @@ def _resolve_max_workers() -> int:
 
 
 def _process_shard(
-    dsn: str, calc_date_iso: str, fund_map: dict, series_ids: list[str]
+    dsn: str, calc_date_iso: str, fund_map: dict,
+    sector_map: dict[str, str], series_ids: list[str]
 ) -> tuple[int, int, int]:
     """Child-process entrypoint: own connection, per-series commit."""
     calc_date = _dt.date.fromisoformat(calc_date_iso)
@@ -432,7 +488,9 @@ def _process_shard(
     with connect(dsn) as conn:
         get_holdings = make_db_get_holdings(conn, calc_date)
         for series_id in series_ids:
-            exposures, summary = expand_series(series_id, get_holdings, fund_map)
+            exposures, summary = expand_series(
+                series_id, get_holdings, fund_map, sector_map=sector_map
+            )
             coverage = _coverage_pct(conn, series_id, summary["report_date"])
             exposure_rows += _upsert_series(conn, series_id, exposures, summary,
                                             coverage)
@@ -485,6 +543,7 @@ def run(
                     raise RuntimeError("sec_nport_holdings is empty")
 
             fund_map = build_fund_map(conn)
+            sector_map = build_sector_map(conn)
             parents = _list_parents(conn, cdate, limit)
             cdate_iso = cdate.isoformat()
 
@@ -493,7 +552,7 @@ def run(
 
             if n_workers <= 1:
                 processed, upserted, exposure_rows = _process_shard(
-                    dsn, cdate_iso, fund_map, parents
+                    dsn, cdate_iso, fund_map, sector_map, parents
                 )
             else:
                 processed = upserted = exposure_rows = 0
@@ -501,7 +560,7 @@ def run(
                 with ProcessPoolExecutor(max_workers=n_workers) as pool:
                     futures = [
                         pool.submit(_process_shard, dsn, cdate_iso, fund_map,
-                                    shard)
+                                    sector_map, shard)
                         for shard in shards
                     ]
                     for fut in as_completed(futures):
