@@ -304,6 +304,13 @@ def build_fund_map(conn) -> dict:
                 SELECT upper(ticker), series_id
                 FROM sec_etfs
                 WHERE ticker IS NOT NULL AND series_id IS NOT NULL
+                UNION
+                -- SEC company_tickers_mf: authoritative ticker -> series_id for
+                -- registered funds/ETFs absent from the N-CEN sec_etfs slice
+                -- (e.g. WisdomTree DTD/DEM/DXJ held inside fund-of-funds).
+                SELECT upper(ticker), series_id
+                FROM sec_company_tickers_mf
+                WHERE ticker IS NOT NULL AND series_id IS NOT NULL
             )
             SELECT m.cusip, min(t.series_id)
             FROM sec_cusip_ticker_map m
