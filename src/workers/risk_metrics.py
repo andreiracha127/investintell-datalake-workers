@@ -295,66 +295,38 @@ def evt_tail(ret: np.ndarray) -> dict[str, float | None]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Benchmark wiring (2026-06-12) — liga regression_metrics ao benchmark_nav.
-# A função existia desde o port mas nunca foi chamada: faltava o mapa
-# fundo→benchmark e o fetch das séries. Mapa em duas camadas:
-#   1. strategy label (stage) → bloco nomeado do benchmark_ingest;
-#   2. fallback instruments_universe.asset_class → bloco amplo.
-# Labels sem benchmark defensável (Balanced, Target Date, Convertibles…)
-# caem no fallback do asset_class; alternatives sem mapa ficam sem métricas
-# relativas — exceto equity_correlation_252d, sempre vs EQUITY_BENCHMARK_BLOCK.
+# Benchmark wiring (2026-06-22) — liga as métricas relativas ao MESMO benchmark
+# do active share: strategy_label → proxy ETF (fund_strategy_benchmark_proxy_map),
+# com séries de retorno lidas do adj_close em eod_prices. Substitui o antigo mapa
+# strategy_label → bloco de benchmark_nav. Camadas de resolução do label:
+#   1. funds_list_mv.strategy_label (catálogo) → proxy_etf_ticker;
+#   2. strategy_reclassification_stage.proposed_strategy_label → proxy_etf_ticker;
+#   3. fallback instruments_universe.asset_class → ticker amplo.
+# Labels sem proxy mapeável ficam sem métricas relativas — exceto
+# equity_correlation_252d/crisis_alpha_score, sempre vs EQUITY_BENCHMARK_KEY.
 # ──────────────────────────────────────────────────────────────────────────────
-EQUITY_BENCHMARK_BLOCK = "na_equity_large"
+# Benchmark source = proxy ETF (active-share map), read from eod_prices.adj_close.
+# equity_correlation_252d and crisis_alpha_score are always vs this equity key.
+EQUITY_BENCHMARK_KEY = "IVV"
+
+# asset_class fallback when a fund has no label in the proxy map.
+ASSET_CLASS_FALLBACK_TICKER: dict[str, str] = {
+    "equity": "IVV",
+    "fixed_income": "BND",
+    "cash": "BIL",
+}
 
 # Capture ratios além disso indicam denominador degenerado (benchmark ~flat
 # no subconjunto de dias) — sem significado; e a coluna é numeric(8,4).
 CAPTURE_LIMIT = 500.0
 
-BENCHMARK_BY_LABEL: dict[str, str] = {
-    "Asian Equity": "dm_asia_equity",
-    "Asset-Backed Securities": "fi_us_aggregate",
-    "Cash Equivalent": "cash",
-    "Commodities": "alt_commodities",
-    "ESG/Sustainable Bond": "fi_us_aggregate",
-    "ESG/Sustainable Equity": "na_equity_large",
-    "Emerging Markets Debt": "fi_em_debt",
-    "Emerging Markets Equity": "em_equity",
-    "European Equity": "dm_europe_equity",
-    "Global Equity": "na_equity_large",
-    "Government Bond": "fi_us_treasury",
-    "High Yield Bond": "fi_us_high_yield",
-    "Inflation-Linked Bond": "fi_us_tips",
-    "Intermediate-Term Bond": "fi_us_aggregate",
-    "International Equity": "factor_source_intl_developed",
-    "Investment Grade Bond": "fi_ig_corporate",
-    "Large Blend": "na_equity_large",
-    "Large Growth": "na_equity_growth",
-    "Large Value": "na_equity_value",
-    "Long/Short Equity": "na_equity_large",
-    "Mid Blend": "na_equity_large",
-    "Mid Growth": "na_equity_growth",
-    "Mid Value": "na_equity_value",
-    "Mortgage-Backed Securities": "fi_us_aggregate",
-    "Municipal Bond": "fi_us_aggregate",
-    "Precious Metals": "alt_gold",
-    "Private Credit": "fi_us_high_yield",
-    "Real Estate": "alt_real_estate",
-    "Sector Equity": "na_equity_large",
-    "Small Blend": "na_equity_small",
-    "Small Growth": "na_equity_small",
-    "Small Value": "na_equity_small",
-    "Structured Credit": "fi_us_aggregate",
-}
-
-BENCHMARK_BY_ASSET_CLASS: dict[str, str] = {
-    "equity": "na_equity_large",
-    "fixed_income": "fi_us_aggregate",
-    "cash": "cash",
-}
-
-# Janela de busca: 252 sessões + folga p/ feriados/lacunas de NAV.
+# Janela de busca: 252 sessões + folga p/ feriados/lacunas de preço.
 _BENCH_LOOKBACK_DAYS = 600
 
+# fundo → benchmark via strategy_label → proxy ETF (mesma cadeia do active
+# share). Label preferido do catálogo (funds_list_mv); fallback p/ o stage de
+# reclassificação; fallback final por asset_class. Sem label mapeável → sem
+# benchmark (só equity_correlation/crisis_alpha vs EQUITY_BENCHMARK_KEY).
 _FUND_BENCHMARKS_SQL = """
 WITH labels AS (
     SELECT DISTINCT ON (source_pk)
@@ -363,61 +335,62 @@ WITH labels AS (
     FROM strategy_reclassification_stage
     WHERE source_table = 'instruments_universe'
       AND proposed_strategy_label IS NOT NULL
-    ORDER BY source_pk, classified_at DESC
+    ORDER BY source_pk,
+             (classification_source = 'manual_override') DESC,
+             classified_at DESC, stage_id DESC
 )
-SELECT iu.instrument_id, l.label, iu.asset_class
+SELECT iu.instrument_id, p.proxy_etf_ticker, iu.asset_class
 FROM instruments_universe iu
-LEFT JOIN labels l ON l.instrument_id = iu.instrument_id
+LEFT JOIN funds_list_mv flm ON flm.instrument_id = iu.instrument_id
+LEFT JOIN labels lb ON lb.instrument_id = iu.instrument_id
+LEFT JOIN fund_strategy_benchmark_proxy_map p
+       ON p.strategy_label = COALESCE(flm.strategy_label, lb.label)
 """
 
 
 def _fetch_fund_benchmarks(conn) -> dict[str, str]:
-    """instrument_id(str) → benchmark block_id (label map, asset-class fallback)."""
+    """instrument_id(str) → proxy ETF ticker (proxy map, asset-class fallback)."""
     out: dict[str, str] = {}
     with conn.cursor() as cur:
         cur.execute(_FUND_BENCHMARKS_SQL)
-        for iid, label, asset_class in cur.fetchall():
-            block = BENCHMARK_BY_LABEL.get(label or "") or BENCHMARK_BY_ASSET_CLASS.get(
-                asset_class or ""
-            )
-            if block:
-                out[str(iid)] = block
+        for iid, proxy, asset_class in cur.fetchall():
+            tk = proxy or ASSET_CLASS_FALLBACK_TICKER.get(asset_class or "")
+            if tk:
+                out[str(iid)] = tk.upper()
     return out
 
 
 def _fetch_benchmark_returns(
     conn, calc_date: _dt.date
 ) -> dict[str, list[tuple[_dt.date, float]]]:
-    """block_id → [(date, simple daily return)] dos NAVs do benchmark_nav.
+    """ticker → [(date, simple daily return)] do adj_close em eod_prices.
 
-    Retornos simples recomputados do próprio NAV (não de return_1d, que é
-    log) para casar com a convenção dos retornos de fundo no worker.
+    Retornos simples do preço ajustado, casando com a convenção dos retornos
+    de fundo no worker (dated_simple_returns sobre o NAV).
     """
-    blocks = sorted(
-        set(BENCHMARK_BY_LABEL.values())
-        | set(BENCHMARK_BY_ASSET_CLASS.values())
-        | {EQUITY_BENCHMARK_BLOCK}
-    )
+    fund_bm = _fetch_fund_benchmarks(conn)
+    tickers = sorted(set(fund_bm.values()) | {EQUITY_BENCHMARK_KEY})
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT block_id, nav_date, nav FROM benchmark_nav
-               WHERE block_id = ANY(%s) AND nav_date <= %s AND nav_date > %s
-               ORDER BY block_id, nav_date""",
-            (blocks, calc_date, calc_date - _dt.timedelta(days=_BENCH_LOOKBACK_DAYS)),
+            """SELECT upper(ticker), date, adj_close FROM eod_prices
+               WHERE upper(ticker) = ANY(%s) AND date <= %s AND date > %s
+                 AND adj_close IS NOT NULL
+               ORDER BY upper(ticker), date""",
+            (tickers, calc_date, calc_date - _dt.timedelta(days=_BENCH_LOOKBACK_DAYS)),
         )
         rows = cur.fetchall()
     out: dict[str, list[tuple[_dt.date, float]]] = {}
-    prev_block: str | None = None
-    prev_nav: float | None = None
-    for block, d, nav in rows:
-        nav = float(nav)
-        if block != prev_block:
-            prev_block, prev_nav = block, nav
-            out.setdefault(block, [])
+    prev_tk: str | None = None
+    prev_px: float | None = None
+    for tk, d, px in rows:
+        px = float(px)
+        if tk != prev_tk:
+            prev_tk, prev_px = tk, px
+            out.setdefault(tk, [])
             continue
-        if prev_nav and prev_nav > 0:
-            out[block].append((d, nav / prev_nav - 1.0))
-        prev_nav = nav
+        if prev_px and prev_px > 0:
+            out[tk].append((d, px / prev_px - 1.0))
+        prev_px = px
     return out
 
 
@@ -758,20 +731,25 @@ CRISIS_MIN_DAYS = 20
 def _fetch_equity_crisis_benchmark(
     conn, calc_date: _dt.date
 ) -> list[tuple[_dt.date, float]]:
-    """na_equity_large daily simple returns over the long crisis window."""
+    """IVV daily simple returns over the long crisis window (from eod_prices).
+
+    IVV history reaches 2000, covering 2008/2020/2022 drawdowns (fund_risk_metrics
+    starts 2006); pre-2000 crises are out of range and yield no crisis days.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT nav_date, nav FROM benchmark_nav
-               WHERE block_id = %s AND nav_date <= %s AND nav_date > %s
-               ORDER BY nav_date""",
+            """SELECT date, adj_close FROM eod_prices
+               WHERE upper(ticker) = %s AND date <= %s AND date > %s
+                 AND adj_close IS NOT NULL
+               ORDER BY date""",
             (
-                EQUITY_BENCHMARK_BLOCK,
+                EQUITY_BENCHMARK_KEY,
                 calc_date,
                 calc_date - _dt.timedelta(days=_CRISIS_BENCH_LOOKBACK_DAYS),
             ),
         )
         rows = cur.fetchall()
-    return dated_simple_returns([(d, nav) for d, nav in rows])
+    return dated_simple_returns([(d, px) for d, px in rows])
 
 
 def crisis_alpha(
@@ -825,7 +803,7 @@ def relative_metrics_for(
     out: dict[str, float | None] = {}
     if fund_block and fund_block in bench_returns:
         out.update(regression_metrics(fund_ret, bench_returns[fund_block], rf))
-    eq = bench_returns.get(EQUITY_BENCHMARK_BLOCK)
+    eq = bench_returns.get(EQUITY_BENCHMARK_KEY)
     if eq:
         out["equity_correlation_252d"] = equity_correlation(fund_ret, eq)
     if macro_changes:
@@ -930,9 +908,10 @@ def _shard(fund_ids: list, n_shards: int) -> list[list]:
 # Semântica verificada empiricamente contra a DB-mãe (2026-06-12): ASC para
 # sharpe/sortino/return (maior = melhor) e ASC para max_drawdown (valores
 # negativos; menos negativo = melhor → pctl maior). peer_count = tamanho do
-# grupo no calc_date. Labels: último proposed_strategy_label por instrumento
-# em strategy_reclassification_stage (réplica cloud). Fundos sem label ficam
-# com peer_* NULL. manager_score/elite_flag NÃO são computados aqui (modelo
+# grupo no calc_date. Labels: manual_override primeiro, senão último
+# proposed_strategy_label por instrumento em strategy_reclassification_stage
+# (réplica cloud). Fundos sem label ficam com peer_* NULL.
+# manager_score/elite_flag NÃO são computados aqui (modelo
 # de scoring do allocation ainda não portado).
 _PEER_PERCENTILES_SQL = """
 WITH labels AS (
@@ -942,7 +921,10 @@ WITH labels AS (
     FROM strategy_reclassification_stage
     WHERE source_table = 'instruments_universe'
       AND proposed_strategy_label IS NOT NULL
-    ORDER BY source_pk, classified_at DESC
+    ORDER BY source_pk,
+             (classification_source = 'manual_override') DESC,
+             classified_at DESC,
+             stage_id DESC
 ),
 latest AS (
     SELECT m.instrument_id, m.sharpe_1y, m.sortino_1y, m.return_1y,

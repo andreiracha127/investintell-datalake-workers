@@ -217,7 +217,10 @@ def test_peer_percentiles_set_based():
                     FROM strategy_reclassification_stage
                     WHERE source_table = 'instruments_universe'
                       AND proposed_strategy_label IS NOT NULL
-                    ORDER BY source_pk, classified_at DESC
+                    ORDER BY source_pk,
+                             (classification_source = 'manual_override') DESC,
+                             classified_at DESC,
+                             stage_id DESC
                 )
                 SELECT m.sharpe_1y, m.peer_sharpe_pctl, m.max_drawdown_1y,
                        m.peer_drawdown_pctl, m.peer_count,
@@ -255,22 +258,12 @@ def test_peer_percentiles_set_based():
         conn.close()
 
 
-def test_benchmark_maps_reference_known_blocks():
-    """Todo bloco referenciado nos mapas existe no conjunto nomeado do
-    benchmark_ingest — um typo aqui silenciaria as métricas relativas."""
-    known = {
-        "alt_commodities", "alt_gold", "alt_real_estate", "cash",
-        "dm_asia_equity", "dm_europe_equity", "em_equity",
-        "factor_source_intl_developed", "factor_source_us_growth",
-        "fi_em_debt", "fi_ig_corporate", "fi_us_aggregate",
-        "fi_us_high_yield", "fi_us_short_term", "fi_us_tips",
-        "fi_us_treasury", "na_equity_growth", "na_equity_large",
-        "na_equity_small", "na_equity_value",
-    }
-    used = set(rm.BENCHMARK_BY_LABEL.values()) | set(
-        rm.BENCHMARK_BY_ASSET_CLASS.values()
-    ) | {rm.EQUITY_BENCHMARK_BLOCK}
-    assert used <= known, used - known
+def test_equity_key_and_fallback_are_tickers():
+    """Benchmark source is now proxy-ETF tickers from eod_prices; the equity key
+    and the asset-class fallback must be plain upper-case tickers."""
+    assert rm.EQUITY_BENCHMARK_KEY == "IVV"
+    assert set(rm.ASSET_CLASS_FALLBACK_TICKER) == {"equity", "fixed_income", "cash"}
+    assert all(t.isupper() and "_" not in t for t in rm.ASSET_CLASS_FALLBACK_TICKER.values())
 
 
 def test_relative_metrics_synthetic_beta_two():
@@ -285,9 +278,9 @@ def test_relative_metrics_synthetic_beta_two():
         fund_nav.append(fund_nav[-1] * (1 + 2 * r))
     bench_rows = list(zip([start - _dt.timedelta(days=1), *dates], bench_nav))
     fund_rows = list(zip([start - _dt.timedelta(days=1), *dates], fund_nav))
-    bench_returns = {"na_equity_large": rm.dated_simple_returns(bench_rows)}
+    bench_returns = {"IVV": rm.dated_simple_returns(bench_rows)}
 
-    out = rm.relative_metrics_for(fund_rows, "na_equity_large", bench_returns, 0.04)
+    out = rm.relative_metrics_for(fund_rows, "IVV", bench_returns, 0.04)
     assert out["beta_1y"] is not None and abs(out["beta_1y"] - 2.0) < 0.01
     assert abs(out["equity_correlation_252d"] - 1.0) < 1e-6
     assert abs(out["upside_capture_1y"] - 200.0) < 2.0
@@ -300,7 +293,7 @@ def test_relative_metrics_without_block_only_correlation():
     start = _dt.date(2024, 1, 1)
     dates = [start + _dt.timedelta(days=i) for i in range(300)]
     rows = [(d, 100.0 + i * 0.1) for i, d in enumerate(dates)]
-    bench_returns = {"na_equity_large": rm.dated_simple_returns(rows)}
+    bench_returns = {"IVV": rm.dated_simple_returns(rows)}
     out = rm.relative_metrics_for(rows, None, bench_returns, 0.04)
     assert "beta_1y" not in out
     assert "equity_correlation_252d" in out
