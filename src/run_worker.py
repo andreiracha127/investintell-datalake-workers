@@ -22,7 +22,7 @@ def main() -> None:
             "|nport_lookthrough|credit_regime|regime_composite|macro_ingestion"
             "|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
-            "|fund_factors|fund_institutional_reveal|matview_refresh)"
+            "|fund_factors|fund_institutional_reveal|matview_refresh|stock_daily_returns)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
     stats = mod.run(resolve_dsn())
