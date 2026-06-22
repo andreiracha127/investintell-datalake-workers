@@ -17,12 +17,13 @@ from src.db import LOCK_MATVIEW_REFRESH, advisory_lock, connect
 _APP_MVS = [
     "price_latest_mv",
     "nav_latest_mv",
-    # Grupo A: read-models de fund analytics agregados (style-drift/top-holdings/
-    # active-share). As *_latest_mv de fatores/reveal são refrescadas pelos seus
+    # Grupo A: read-models de fund analytics agregados (style-drift/top-holdings).
+    # Active-share deixou de ser MV standalone — vive em colunas de
+    # fund_risk_metrics, projetadas em fund_risk_latest_mv (refrescada pelo worker
+    # risk_metrics). As *_latest_mv de fatores/reveal são refrescadas pelos seus
     # próprios workers (fund_factors / fund_institutional_reveal), não aqui.
     "fund_style_drift_mv",
     "fund_top_holdings_mv",
-    "fund_active_share_mv",
 ]
 _DATALAKE_MVS = [
     "stock_institutional_holders_mv",
