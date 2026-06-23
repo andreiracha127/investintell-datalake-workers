@@ -42,6 +42,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.db import LOCK_INSTRUMENT_INGESTION, advisory_lock, connect
+from src.workers._nav_sanitize import sanitize_nav_series
 from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient
 
 UPSERT_CHUNK = 500
@@ -108,10 +109,18 @@ def select_stale_tickers(universe: list[dict[str, Any]],
 def build_rows(series: list[tuple[_dt.date, float | None]],
                instruments: list[tuple[Any, str]] | tuple[tuple[Any, str], ...],
                source: str = "tiingo") -> list[dict[str, Any]]:
-    """One ticker series → rows for every instrument sharing it (log returns)."""
+    """One ticker series → rows for every instrument sharing it (log returns).
+
+    Runs ``sanitize_nav_series`` over the price series BEFORE computing
+    ``return_1d`` so a transient near-zero glitch (Bug 2) never reaches
+    nav_timeseries as an impossible log return. Dead / scale-step series are not
+    repaired (the eligibility flag handles them); their values pass through.
+    """
+    ordered = sorted((d, p) for d, p in series if p is not None and p > 0)
+    clean = sanitize_nav_series(ordered)
     rows: list[dict[str, Any]] = []
     prev: float | None = None
-    for d, price in sorted(series):
+    for (d, _orig), price in zip(ordered, clean.nav):
         if price is None or price <= 0:
             continue
         ret = round(math.log(price / prev), 8) if prev else None

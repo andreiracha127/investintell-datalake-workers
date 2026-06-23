@@ -37,6 +37,7 @@ import numpy as np
 
 from src.db import LOCK_RISK_METRICS, advisory_lock, connect
 from src.workers import manager_score as _ms
+from src.workers._nav_sanitize import GLITCH_LOG, sanitize_nav_series
 
 TRADING_DAYS = 252
 
@@ -73,6 +74,8 @@ _METRIC_COLUMNS = [
     "credit_beta", "credit_beta_r2",
     "inflation_beta", "inflation_beta_r2",
     "crisis_alpha_score",
+    # NAV data-quality eligibility (Bug 2).
+    "nav_quality_ok", "nav_glitch_count",
 ]
 
 
@@ -895,6 +898,35 @@ def relative_metrics_for(
     return out
 
 
+def _residual_impossible_count(navs: list[float | None]) -> int:
+    """Count |log return| > GLITCH_LOG in a (possibly repaired) NAV series."""
+    import math
+
+    count = 0
+    prev: float | None = None
+    for v in navs:
+        if v is not None and v > 0:
+            if prev is not None and abs(math.log(v / prev)) > GLITCH_LOG:
+                count += 1
+            prev = v
+    return count
+
+
+def nav_quality(nav_rows: list[tuple]) -> tuple[bool, int]:
+    """(nav_quality_ok, nav_glitch_count) from raw (date, nav) rows.
+
+    Mirrors the ingestion sanitizer so the flag tracks exactly what the source
+    cleanup can and cannot fix: a series is OK when it is not dead, not a scale
+    step, and has NO residual impossible print AFTER the round-trip repair (a
+    fully repaired glitch leaves zero residual). ``nav_glitch_count`` is that
+    post-repair residual.
+    """
+    res = sanitize_nav_series([(d, float(n)) for d, n in nav_rows])
+    residual = _residual_impossible_count(res.nav)
+    ok = (not res.dead) and (not res.scale_step) and (residual == 0)
+    return ok, residual
+
+
 def _upsert(conn, instrument_id, calc_date: _dt.date, metrics: dict[str, Any]) -> None:
     import json
 
@@ -957,6 +989,9 @@ def _process_shard(
             processed += 1
             if metrics is None:
                 continue
+            ok, gcount = nav_quality([(r[0], r[1]) for r in rows])
+            metrics["nav_quality_ok"] = ok
+            metrics["nav_glitch_count"] = gcount
             metrics.update(
                 relative_metrics_for(
                     rows, fund_benchmarks.get(str(iid)), bench_returns, rf
@@ -1326,6 +1361,9 @@ def run(
                     processed += 1
                     if metrics is None:
                         continue
+                    ok, gcount = nav_quality([(r[0], r[1]) for r in rows])
+                    metrics["nav_quality_ok"] = ok
+                    metrics["nav_glitch_count"] = gcount
                     metrics.update(
                         relative_metrics_for(
                             rows, fund_benchmarks.get(str(iid)), bench_returns, rf
