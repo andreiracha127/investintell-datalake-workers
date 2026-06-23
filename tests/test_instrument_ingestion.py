@@ -86,6 +86,20 @@ def test_build_rows_one_per_instrument_with_currency_and_log_returns():
     assert all(r["return_type"] == "log" and r["source"] == "tiingo" for r in rows)
 
 
+def test_build_rows_repairs_glitch_before_return():
+    series = [
+        (_dt.date(2020, 1, 1), 19.66),
+        (_dt.date(2020, 1, 2), 0.02),    # glitch
+        (_dt.date(2020, 1, 3), 19.68),
+    ]
+    rows = ii.build_rows(series, [("iid-1", "USD")])
+    nav_by_date = {r["nav_date"]: r["nav"] for r in rows}
+    assert 15.0 < nav_by_date[_dt.date(2020, 1, 2)] < 25.0   # repaired, not 0.02
+    # no impossible log return remains
+    rets = [r["return_1d"] for r in rows if r["return_1d"] is not None]
+    assert all(abs(x) < 1.0 for x in rets)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Upsert / idempotency (throwaway schema in the DB-mãe)
 # ──────────────────────────────────────────────────────────────────────────────
