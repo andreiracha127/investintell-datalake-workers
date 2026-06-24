@@ -131,8 +131,9 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 return {"days": 0, "upserted": 0, "skipped": "lock_busy"}
             ensure_schema(conn)
 
-            # owner decision C — resume the latched chain from the last snapshot.
-            prev = qa.load_previous_snapshot(conn, MODEL_VERSION)
+            # owner decision C — resume the latched chain from the last snapshot
+            # STRICTLY BEFORE today's as_of (idempotent rerun + no backfill look-ahead).
+            prev = qa.load_previous_snapshot(conn, MODEL_VERSION, as_of)
             prev_id = prev["previous_snapshot_id"] if prev else None
             g_prev_sign = prev["growth_internal_sign"] if prev else None
             i_prev_sign = prev["inflation_internal_sign"] if prev else None

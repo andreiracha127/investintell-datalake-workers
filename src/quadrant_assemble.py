@@ -26,20 +26,26 @@ from src.quadrant_staleness import available_at_snapshot, compute_stale_after
 
 _SCHEMA = "schemas/regime_quadrant_snapshot.sql"
 
-# Latched-chain read (owner decision C): the newest row per model_version supplies
-# the predecessor id + the per-axis latched sign the hysteresis resumes from.
+# Latched-chain read (owner decision C): the newest row per model_version that
+# precedes the target as_of supplies the predecessor id + the per-axis latched sign
+# the hysteresis resumes from. The ``as_of < %s`` filter is load-bearing: it makes a
+# same-day rerun load YESTERDAY'S snapshot as its predecessor (so previous_snapshot_id
+# — and therefore the deterministic uuid5 — is stable => idempotent), and it forbids
+# an out-of-order backfill from chaining off a FUTURE snapshot (point-in-time, §8:
+# never use information not available at decision_time).
 _PREV_SQL = (
     "SELECT snapshot_id, growth_internal_sign, inflation_internal_sign "
-    "FROM regime_quadrant_snapshot WHERE model_version = %s "
+    "FROM regime_quadrant_snapshot WHERE model_version = %s AND as_of < %s "
     "ORDER BY as_of DESC, available_at DESC LIMIT 1"
 )
 
 
-def load_previous_snapshot(conn, model_version: str) -> dict | None:
+def load_previous_snapshot(conn, model_version: str, as_of: _dt.date) -> dict | None:
     """Return {previous_snapshot_id, growth_internal_sign, inflation_internal_sign}
-    for the latest snapshot of ``model_version``, or None at genesis."""
+    for the newest snapshot of ``model_version`` STRICTLY BEFORE ``as_of`` (the target
+    decision date), or None at genesis (nothing precedes it)."""
     with conn.cursor() as cur:
-        cur.execute(_PREV_SQL, (model_version,))
+        cur.execute(_PREV_SQL, (model_version, as_of))
         row = cur.fetchone()
     if row is None:
         return None

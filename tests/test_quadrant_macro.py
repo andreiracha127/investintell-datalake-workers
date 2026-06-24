@@ -120,24 +120,55 @@ def test_macro_run_returns_lock_busy_sentinel(monkeypatch) -> None:
     assert out["skipped"] == "lock_busy"
 
 
+class _CaptureCur:
+    """Fake cursor that records the executed SQL + params and returns a row."""
+
+    def __init__(self, row): self._row = row
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, sql, params): self.sql, self.params = sql, params
+    def fetchone(self): return self._row
+
+
+class _CaptureConn:
+    def __init__(self, row):
+        self._row = row
+        self.last_cur = None
+
+    def cursor(self):
+        self.last_cur = _CaptureCur(self._row)
+        return self.last_cur
+
+
 def test_load_previous_snapshot_reads_latest_row() -> None:
-    class _Cur:
-        def __init__(self, row): self._row = row
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def execute(self, sql, params): self.sql, self.params = sql, params
-        def fetchone(self): return self._row
-
-    class _Conn:
-        def __init__(self, row): self._row = row
-        def cursor(self): return _Cur(self._row)
-
     # latest row -> {previous_snapshot_id, growth_internal_sign, inflation_internal_sign}
-    out = qa.load_previous_snapshot(_Conn(("uuid-abc", 1, -1)), "macro_quadrant_us_v1")
+    as_of = dt.date(2024, 3, 1)
+    out = qa.load_previous_snapshot(
+        _CaptureConn(("uuid-abc", 1, -1)), "macro_quadrant_us_v1", as_of)
     assert out == {"previous_snapshot_id": "uuid-abc",
                    "growth_internal_sign": 1, "inflation_internal_sign": -1}
     # genesis (no prior row) -> None
-    assert qa.load_previous_snapshot(_Conn(None), "macro_quadrant_us_v1") is None
+    assert qa.load_previous_snapshot(
+        _CaptureConn(None), "macro_quadrant_us_v1", as_of) is None
+
+
+def test_load_previous_snapshot_filters_strictly_before_target_as_of() -> None:
+    """Regression guard (non-env-gated): the predecessor query MUST constrain
+    ``as_of < target`` and BIND the target as_of, so a same-day rerun reproduces
+    the same predecessor (idempotent uuid5) and an out-of-order backfill never
+    chains from a FUTURE snapshot (point-in-time, freeze §8)."""
+    conn = _CaptureConn(("uuid-prev", 1, 1))
+    target = dt.date(2024, 3, 1)
+    qa.load_previous_snapshot(conn, "macro_quadrant_us_v1", target)
+
+    sql = conn.last_cur.sql
+    # the filter clause must be present (not just `WHERE model_version = %s`).
+    assert "as_of < %s" in sql, f"predecessor query lacks target filter: {sql!r}"
+    # the target as_of must actually be a bound parameter (not a tautology fake).
+    assert target in conn.last_cur.params
+    # model_version is still bound and ordering remains newest-first.
+    assert "macro_quadrant_us_v1" in conn.last_cur.params
+    assert "ORDER BY as_of DESC" in sql
 
 
 def test_score_axis_applies_direction_minus_one_before_aggregation(monkeypatch) -> None:
@@ -227,3 +258,87 @@ def test_smoke_macro_run_emits_a_snapshot() -> None:
     assert out["status"] in {"valid", "low_confidence", "unavailable", "invalid"}
     if out["status"] == "valid":
         assert out["quadrant"] in {"recovery", "expansion", "slowdown", "contraction"}
+
+
+def _env() -> dict[str, str]:
+    """Read DATABASE_URL from the repo .env (or environment), mirroring the other
+    env-gated smokes. Returns {} when nothing is configured (-> integration skip)."""
+    import pathlib
+
+    env_file = pathlib.Path(__file__).resolve().parents[1] / ".env"
+    out: dict[str, str] = {}
+    if env_file.exists():
+        for line in env_file.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+    out.update({k: v for k, v in _os.environ.items() if k == "DATABASE_URL"})
+    return out
+
+
+def _insert_snapshot_row(cur, *, snapshot_id, model_version, as_of, vintage_hash):
+    """Minimal valid snapshot row honoring every NOT NULL / CHECK constraint
+    (ck_rqs_asof_le_available, ck_rqs_computed_ge_available, stale_after ordering).
+    status='unavailable' so quadrant/confidence are NULL (coherence-safe)."""
+    available_at = dt.datetime.combine(as_of, dt.time(0, 0), tzinfo=dt.timezone.utc)
+    far = dt.datetime(2999, 1, 1, tzinfo=dt.timezone.utc)
+    cur.execute(
+        "INSERT INTO regime_quadrant_snapshot ("
+        " snapshot_id, previous_snapshot_id, status_at_compute,"
+        " coverage_quality, freshness_quality, source_health_quality,"
+        " transition_pending, as_of, available_at, computed_at,"
+        " data_stale_after, pipeline_stale_after, stale_after,"
+        " model_version, confidence_model_version, confidence_method,"
+        " source_vintage_hash, growth_internal_sign, inflation_internal_sign"
+        ") VALUES (%s, NULL, 'unavailable', 0.0, 0.0, 0.0, false,"
+        " %s, %s, %s, %s, %s, %s, %s, 'confidence_v1.0', 'm', %s, 1, 1)",
+        (snapshot_id, as_of, available_at, available_at, far, far, far,
+         model_version, vintage_hash),
+    )
+
+
+@pytest.mark.skipif(not _env().get("DATABASE_URL"),
+                    reason="needs DATABASE_URL (Tiger) for the schema integration test")
+def test_load_previous_snapshot_is_target_aware_against_real_schema() -> None:
+    """Integration (BEGIN/ROLLBACK, nothing persists): insert D1<D2<D3 for the same
+    model_version, then prove load_previous_snapshot(conn, mv, D2) returns the D1
+    row — NOT D3 (no look-ahead) and NOT D2 (strict <) — and that querying at D1
+    returns None (genesis, nothing precedes it)."""
+    import uuid as _uuid
+
+    import psycopg
+
+    dsn = _env()["DATABASE_URL"]
+    mv = f"itest_predecessor_{_uuid.uuid4().hex[:8]}"
+    d1, d2, d3 = dt.date(2024, 1, 2), dt.date(2024, 2, 1), dt.date(2024, 3, 1)
+    id1, id2, id3 = str(_uuid.uuid4()), str(_uuid.uuid4()), str(_uuid.uuid4())
+
+    import pathlib
+
+    schema_sql = (pathlib.Path(__file__).resolve().parents[1]
+                  / "schemas" / "regime_quadrant_snapshot.sql").read_text(encoding="utf-8")
+
+    conn = psycopg.connect(dsn, connect_timeout=15)
+    try:
+        with conn.cursor() as cur:
+            # apply the Task 1 schema inside this transaction (idempotent CREATE ...
+            # IF NOT EXISTS); the final ROLLBACK discards the table too if it was new,
+            # so this test NEVER persists anything to prod.
+            cur.execute(schema_sql)
+            _insert_snapshot_row(cur, snapshot_id=id1, model_version=mv,
+                                 as_of=d1, vintage_hash="h1")
+            _insert_snapshot_row(cur, snapshot_id=id2, model_version=mv,
+                                 as_of=d2, vintage_hash="h2")
+            _insert_snapshot_row(cur, snapshot_id=id3, model_version=mv,
+                                 as_of=d3, vintage_hash="h3")
+
+        # target D2: newest snapshot STRICTLY BEFORE it is D1 (not D3=future, not D2=self).
+        prev = qa.load_previous_snapshot(conn, mv, d2)
+        assert prev is not None
+        assert prev["previous_snapshot_id"] == id1
+
+        # target D1: nothing precedes it -> genesis (None).
+        assert qa.load_previous_snapshot(conn, mv, d1) is None
+    finally:
+        conn.rollback()  # discard the test rows — nothing persists
+        conn.close()
