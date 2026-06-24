@@ -53,9 +53,10 @@ LOCK_NPORT_LOOKTHROUGH = 900_204
 LOCK_CREDIT_REGIME = 900_205
 LOCK_REGIME_COMPOSITE = 900_206
 LOCK_REGIME_GATE = 900_207
+LOCK_REGIME_QUADRANT = 900_208
 # TECH DEBT: main also introduced screener_metrics with 900_207. Keep the
-# combo-regime-gate lock ownership here; reassign screener_metrics before both
-# services are allowed to run concurrently.
+# combo-regime-gate lock ownership here; reassign main-added metrics locks
+# before these services are allowed to run concurrently.
 LOCK_SCREENER_METRICS = 900_207
 LOCK_FUND_FACTORS = 900_208
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
