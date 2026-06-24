@@ -2,8 +2,9 @@
 """MacroReleaseAxisModel — the OFFICIAL strategic quadrant (freeze v1 §A, scope §1).
 
 Consumes the point-in-time vintage store (A1 latest_vintage_as_of) for the seed
-basket (A1 SEED_SOURCES), applies the per-series transform (seed: yoy), aggregates
-by axis_weights, and emits the SAME QuadrantSnapshot the market worker emits via
+basket (A1 SEED_SOURCES), applies the two-stage transform (economic_transform_id per
+family → robust_z via standardized_latest), aggregates by axis_weights, and emits
+the SAME QuadrantSnapshot the market worker emits via
 the shared assembler. NEVER reads the latest-revision macro_data (look-ahead).
 Market-implied is a separate worker and NEVER a fallback here: a bad macro snapshot
 is persisted as non-valid and the backend turns that into QUADRANT_UNAVAILABLE.
