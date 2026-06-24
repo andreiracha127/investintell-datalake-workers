@@ -99,6 +99,20 @@ def _score_history(conn, axis: str, decision_time: _dt.datetime) -> list[float]:
     return history
 
 
+def _require_critical_expiries(critical_expiries: list[_dt.datetime]) -> None:
+    """Fail loud if the registry yields no critical source expiry.
+
+    The macro quadrant's staleness (compute_stale_after) requires >=1 critical
+    source expiry. All SEED_SOURCES are critical today, but a future registry edit
+    that drops every critical flag would otherwise surface as a deep
+    compute_stale_after ValueError; convert it to a clear worker-level message.
+    """
+    if not critical_expiries:
+        raise ValueError(
+            "macro quadrant requires >=1 critical source expiry; "
+            "none found in registry")
+
+
 def ensure_schema(conn) -> None:
     qa.ensure_schema(conn)
 
@@ -135,6 +149,12 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             g_health = 1.0 if g_score is not None else 0.0
             i_health = 1.0 if i_score is not None else 0.0
 
+            # fail loud if a future registry edit drops every critical flag, so the
+            # staleness guarantee (>=1 critical expiry) is a clear worker error, not a
+            # deep compute_stale_after ValueError inside build_snapshot.
+            critical_expiries = [*g_exp, *i_exp]
+            _require_critical_expiries(critical_expiries)
+
             source_vintage_hash = _vintage_hash(g_z, i_z, as_of)
             snap = qa.build_snapshot(
                 as_of=as_of, computed_at=decision_time, previous_snapshot_id=prev_id,
@@ -146,7 +166,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 inflation_coverage=i_cov, inflation_freshness=i_fresh, inflation_health=i_health,
                 inflation_contributions=i_contrib, inflation_u_floor=U_FLOOR_SEED["inflation"],
                 input_available_ats=[*g_av, *i_av],
-                critical_expiries=[*g_exp, *i_exp],
+                critical_expiries=critical_expiries,
                 model_version=MODEL_VERSION, confidence_method=CONFIDENCE_METHOD,
                 source_vintage_hash=source_vintage_hash,
             )
