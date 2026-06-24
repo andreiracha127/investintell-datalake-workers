@@ -33,6 +33,31 @@ def test_compute_nav_momentum_requires_minimum_history():
     assert all(value is None for value in out.values())
 
 
+def test_compute_nav_momentum_uses_talib_backend_when_available(monkeypatch):
+    calls: list[str] = []
+
+    class FakeTalib:
+        @staticmethod
+        def RSI(close, timeperiod):
+            calls.append(f"RSI:{timeperiod}")
+            return np.array([np.nan] * (len(close) - 1) + [40.0])
+
+        @staticmethod
+        def BBANDS(close, timeperiod, nbdevup, nbdevdn):
+            calls.append(f"BBANDS:{timeperiod}:{nbdevup}:{nbdevdn}")
+            upper = np.array([np.nan] * (len(close) - 1) + [120.0])
+            middle = np.array([np.nan] * len(close))
+            lower = np.array([np.nan] * (len(close) - 1) + [80.0])
+            return upper, middle, lower
+
+    monkeypatch.setattr(mm, "_TALIB", FakeTalib)
+    out = mm.compute_nav_momentum([100.0] * 30)
+    assert calls == ["RSI:14", "BBANDS:20:2:2"]
+    assert out["rsi_14"] == pytest.approx(40.0)
+    assert out["bb_position"] == pytest.approx(50.0)
+    assert out["nav_momentum_score"] == pytest.approx(45.0)
+
+
 def test_compute_nport_flow_momentum_scores_reported_inflows_above_neutral():
     score = mm.compute_nport_flow_momentum([0.01, 0.015, 0.02, 0.025, 0.03])
     assert score is not None

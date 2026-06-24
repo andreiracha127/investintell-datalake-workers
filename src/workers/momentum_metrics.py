@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as _dt
 from dataclasses import dataclass
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -24,6 +25,15 @@ MOMENTUM_COLUMNS = (
     "nport_flow_staleness_days",
     "nport_flow_observation_count",
 )
+
+MIN_NAV_OBSERVATIONS = 30
+
+try:
+    import talib as _talib_mod
+
+    _TALIB: ModuleType | None = _talib_mod
+except ImportError:
+    _TALIB = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +91,54 @@ def bollinger_position(nav: np.ndarray, window: int = 20) -> float | None:
     return round((float(nav[-1]) - lower) / (upper - lower), 6)
 
 
+def _assemble_nav_signal(
+    rsi_norm: float | None,
+    bb_pos: float | None,
+) -> tuple[float | None, float | None, float | None]:
+    rsi_val = round(rsi_norm * 100.0, 6) if rsi_norm is not None else None
+    bb_val = round(bb_pos * 100.0, 6) if bb_pos is not None else None
+    if rsi_norm is not None and bb_pos is not None:
+        score = round((0.5 * rsi_norm + 0.5 * bb_pos) * 100.0, 6)
+    elif rsi_norm is not None:
+        score = round(rsi_norm * 100.0, 6)
+    elif bb_pos is not None:
+        score = round(bb_pos * 100.0, 6)
+    else:
+        score = None
+    return rsi_val, bb_val, score
+
+
+def _talib_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, float | None] | None:
+    """TA-Lib RSI/Bollinger signal used by the mother DB momentum service."""
+
+    if _TALIB is None:
+        return None
+    close = nav.astype(float)
+    rsi = _TALIB.RSI(close, timeperiod=14)
+    last_rsi = next((v for v in reversed(rsi) if not np.isnan(v)), None)
+    rsi_norm = float(last_rsi) / 100.0 if last_rsi is not None else None
+
+    upper, _, lower = _TALIB.BBANDS(close, timeperiod=20, nbdevup=2, nbdevdn=2)
+    last_upper = next((v for v in reversed(upper) if not np.isnan(v)), None)
+    last_lower = next((v for v in reversed(lower) if not np.isnan(v)), None)
+    bb_pos = None
+    if last_upper is not None and last_lower is not None:
+        bb_range = float(last_upper) - float(last_lower)
+        if bb_range > 0:
+            bb_pos = max(0.0, min(1.0, (float(close[-1]) - float(last_lower)) / (bb_range + 1e-8)))
+    return _assemble_nav_signal(rsi_norm, bb_pos)
+
+
+def _numpy_nav_signal(nav: np.ndarray) -> tuple[float | None, float | None, float | None]:
+    """Deterministic fallback for local/test envs without TA-Lib installed."""
+
+    rsi = rsi_14(nav)
+    bb = bollinger_position(nav)
+    rsi_norm = rsi / 100.0 if rsi is not None else None
+    bb_pos = _clip(bb, 0.0, 1.0)
+    return _assemble_nav_signal(rsi_norm, bb_pos)
+
+
 def dtw_drift_score(nav: np.ndarray, window: int = 63) -> float | None:
     """Trend-path stability score, 0..100.
 
@@ -105,26 +163,12 @@ def dtw_drift_score(nav: np.ndarray, window: int = 63) -> float | None:
 def compute_nav_momentum(nav_values: list[float]) -> dict[str, Any]:
     nav = np.asarray(nav_values, dtype=float)
     nav = nav[np.isfinite(nav)]
-    if len(nav) < 20:
+    if len(nav) < MIN_NAV_OBSERVATIONS:
         return {c: None for c in MOMENTUM_COLUMNS}
 
-    rsi = rsi_14(nav)
-    bb = bollinger_position(nav)
     drift = dtw_drift_score(nav)
-    lookback = min(63, len(nav) - 1)
-    ret = float(nav[-1] / nav[-1 - lookback] - 1.0) if nav[-1 - lookback] else None
-    ret_score = _score_between(ret, -0.20, 0.20)
-    bb_score = _score_between(bb, 0.0, 1.0)
-
-    weighted = [
-        (ret_score, 0.35),
-        (rsi, 0.25),
-        (bb_score, 0.20),
-        (drift, 0.20),
-    ]
-    num = sum(score * weight for score, weight in weighted if score is not None)
-    den = sum(weight for score, weight in weighted if score is not None)
-    nav_score = round(num / den, 6) if den else None
+    signal = _talib_nav_signal(nav) or _numpy_nav_signal(nav)
+    rsi, bb, nav_score = signal
     return {
         "dtw_drift_score": drift,
         "rsi_14": rsi,
