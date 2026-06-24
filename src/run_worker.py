@@ -20,7 +20,7 @@ def main() -> None:
         sys.exit(
             "WORKER env var not set (expected risk_metrics|characteristics|factor_model"
             "|nport_lookthrough|credit_regime|regime_composite|macro_ingestion"
-            "|treasury_ingestion|benchmark_ingest|instrument_ingestion"
+            "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|sec_company_tickers_mf|nport_cusip_enrichment"
             "|screener_metrics|fund_factors|fund_institutional_reveal"

@@ -23,6 +23,10 @@ import datetime as _dt
 
 from src.workers import macro_vintage as mv
 
+
+def store_last_sql(store: dict) -> str:
+    return store.get("last_sql", "")
+
 # Real ALFRED output_type=2 for PAYEMS 2010-03 (trimmed to the transitions):
 # 129750 (1st print 2010-04-02) -> 129871 -> 129849 (held) -> 129438 (benchmark 2011-02).
 _ALFRED_PAYEMS = {
@@ -65,3 +69,73 @@ def test_parse_alfred_ignores_non_vintage_columns() -> None:
     payload = {"observations": [{"date": "2020-01-01", "realtime_start": "2020-01-01", "X_20200115": "3.0"}]}
     rows = mv.parse_alfred_vintages("X", payload)
     assert len(rows) == 1 and rows[0]["value"] == 3.0
+
+
+class _FakeCur:
+    def __init__(self, store): self.store = store
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, sql, params=None):
+        self._last = (sql, params)
+        if params is not None and "pg_try_advisory_lock" in sql:
+            self.store["lock"] = True
+    def executemany(self, sql, seq):
+        self.store["last_sql"] = sql
+        self.store.setdefault("rows", []).extend(seq)
+    def fetchone(self): return (True,)
+
+
+class _FakeConn:
+    def __init__(self, store): self.store = store
+    def cursor(self): return _FakeCur(self.store)
+    def commit(self): self.store["committed"] = True
+    def close(self): pass
+
+
+def test_rows_to_records_sets_available_at_and_version() -> None:
+    rows = mv.parse_alfred_vintages("PAYEMS", _ALFRED_PAYEMS)
+    recs = mv.rows_to_records(rows, "macro_quadrant_us_v1.0")
+    # record tuple: (series_id, observation_period, vintage_date, value, available_at, revision_number, source, source_spec_version)
+    first = recs[0]
+    assert first[0] == "PAYEMS"
+    assert first[2] == _dt.date(2010, 4, 2)           # vintage_date
+    assert first[4] == _dt.datetime(2010, 4, 2, tzinfo=_dt.timezone.utc)  # available_at = vintage 00:00 UTC
+    assert first[5] == 0                               # revision_number
+    assert first[6] == "alfred" and first[7] == "macro_quadrant_us_v1.0"
+
+
+def test_upsert_vintages_sends_all_records() -> None:
+    store: dict = {}
+    recs = mv.rows_to_records(mv.parse_alfred_vintages("PAYEMS", _ALFRED_PAYEMS), "v")
+    n = mv.upsert_vintages(_FakeConn(store), recs)
+    assert n == len(recs) == 4
+    assert "ON CONFLICT" in store_last_sql(store)
+
+
+def test_run_returns_lock_busy_sentinel(monkeypatch) -> None:
+    import contextlib
+
+    @contextlib.contextmanager
+    def _busy(conn, lock_id):
+        yield False
+    monkeypatch.setenv("FRED_API_KEY", "test-key")  # run() reads the key before the lock check
+    monkeypatch.setattr(mv, "connect", lambda dsn, **k: _FakeConn({}))
+    monkeypatch.setattr(mv, "advisory_lock", _busy)
+    monkeypatch.setattr(mv, "ensure_schema", lambda conn: None)
+    out = mv.run("postg://x")
+    assert out["status"] == "lock_busy"
+
+
+import os as _os
+
+import pytest
+
+
+@pytest.mark.skipif(not _os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY")
+def test_smoke_fetch_real_payems_has_vintages() -> None:
+    import httpx
+    with httpx.Client(timeout=30.0) as client:
+        payload = mv.fetch_vintages(client, _os.environ["FRED_API_KEY"], "PAYEMS", mv.TokenBucket())
+    rows = mv.parse_alfred_vintages("PAYEMS", payload)
+    assert len(rows) > 50  # decades of monthly revisions
+    assert all(r["revision_number"] >= 0 for r in rows)
