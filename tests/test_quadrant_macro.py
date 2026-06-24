@@ -140,6 +140,80 @@ def test_load_previous_snapshot_reads_latest_row() -> None:
     assert qa.load_previous_snapshot(_Conn(None), "macro_quadrant_us_v1") is None
 
 
+def test_score_axis_applies_direction_minus_one_before_aggregation(monkeypatch) -> None:
+    """Obligation 1: a direction=-1 series flips the sign of its z BEFORE axis_score.
+
+    Exercise the real ``_score_axis`` seam with a synthetic direction=-1 spec whose
+    standardized z is POSITIVE; the per-series contribution and the axis score must
+    both come out NEGATIVE (direction was applied per-series before aggregation).
+    """
+    from src.macro_sources import _macro
+
+    spec = _macro("FAKEDIR", "growth", "synthetic", 0.25, "log_3m3m_ann_v1",
+                  direction=-1)
+    assert spec.direction == -1
+
+    # one-spec registry + matching weights; stub the PIT read and the standardizer
+    # so the only thing under test is the (z * spec.direction) sign-flow.
+    monkeypatch.setattr(qm, "SEED_SOURCES", (spec,))
+    monkeypatch.setattr(qm, "axis_weights", lambda axis: {"FAKEDIR": 1.0})
+    monkeypatch.setattr(qm, "latest_vintage_as_of",
+                        lambda conn, series_ids, t: {"FAKEDIR": {}})
+    # positive raw z; direction=-1 must invert it before it reaches axis_score.
+    monkeypatch.setattr(qm, "standardized_latest",
+                        lambda spec, series, as_of: 2.0)
+
+    t = dt.datetime(2024, 3, 5, tzinfo=dt.timezone.utc)
+    score, contributions, z_by_series, _av, _exp = qm._score_axis(None, "growth", t)
+
+    # raw z was +2.0; the stored per-series z is direction-flipped to -2.0.
+    assert z_by_series["FAKEDIR"] == -2.0
+    # contribution and axis score therefore carry the NEGATIVE sign.
+    assert contributions["FAKEDIR"] < 0.0
+    assert score is not None and score < 0.0
+    assert score == -2.0  # w=1.0 over the single available series
+
+
+def test_score_axis_raises_clear_error_when_no_critical_specs(monkeypatch) -> None:
+    """Obligation 3 (worker-level): a registry with no critical specs fails loud.
+
+    With every spec critical=False the axis yields an EMPTY critical_expiries; the
+    worker's guard raises a clear ValueError rather than letting compute_stale_after
+    fail deep inside build_snapshot.
+    """
+    from src.macro_sources import _macro
+
+    spec = _macro("NONCRIT", "growth", "synthetic", 0.25, "log_3m3m_ann_v1",
+                  critical=False)
+    assert spec.critical is False
+
+    monkeypatch.setattr(qm, "SEED_SOURCES", (spec,))
+    monkeypatch.setattr(qm, "axis_weights", lambda axis: {"NONCRIT": 1.0})
+    monkeypatch.setattr(qm, "latest_vintage_as_of",
+                        lambda conn, series_ids, t: {"NONCRIT": {}})
+    monkeypatch.setattr(qm, "standardized_latest",
+                        lambda spec, series, as_of: 1.0)
+
+    t = dt.datetime(2024, 3, 5, tzinfo=dt.timezone.utc)
+    _score, _contrib, _z, _av, critical_expiries = qm._score_axis(None, "growth", t)
+    assert critical_expiries == []  # no critical specs -> no expiries
+
+    import pytest as _pytest
+    with _pytest.raises(ValueError, match="critical source expiry"):
+        qm._require_critical_expiries(critical_expiries)
+
+
+def test_build_snapshot_stale_degrades_to_low_confidence() -> None:
+    """Obligation 2: a compute-time 'stale' (critical source expired) is degraded to
+    low_confidence with quadrant=NULL before INSERT, so the raw 'stale' literal never
+    reaches the schema's ck_rqs_status_domain CHECK."""
+    # freshness=0.0 drives critical_source_expired -> resolve_status returns 'stale';
+    # coverage stays full (>= 0.80) so 'unavailable' does NOT pre-empt the stale branch.
+    snap = qa.build_snapshot(**_kw(growth_freshness=0.0, inflation_freshness=0.0))
+    assert snap.status_at_compute == "low_confidence"
+    assert snap.quadrant is None
+
+
 import os as _os
 
 import pytest
