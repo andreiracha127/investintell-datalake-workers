@@ -62,6 +62,15 @@ def test_deadband_keeps_internal_publishes_no_quadrant() -> None:
     assert internal == 1 and effective is None and pending is True and reason == "deadband"
 
 
+def test_hold_low_confidence_withholds_consumable_sign() -> None:
+    # prior +1, signed_margin = +1 * 0.15 = 0.15 >= EXIT -> stability branch,
+    # but confidence < min -> internal sign preserved, effective withheld.
+    internal, effective, pending, reason = axis_hysteresis(
+        1, 0.15, 0.55, min_confidence=MINC)
+    assert internal == 1 and effective is None and pending is True
+    assert reason == "hold_low_confidence"
+
+
 def test_deadband_opposite_small_keeps_old_internal() -> None:
     # prior +1, score -0.05 -> signed_margin -0.05, |.|<ENTER and < EXIT: deadband,
     # memory of +1 preserved (so tomorrow distinguishes 'was up' from 'never set').
