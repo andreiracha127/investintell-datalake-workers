@@ -30,3 +30,24 @@ def test_compute_nav_momentum_requires_minimum_history():
     out = mm.compute_nav_momentum([100.0] * 10)
     assert all(value is None for value in out.values())
 
+
+def test_compute_flow_momentum_scores_reported_inflows_above_neutral():
+    score = mm.compute_flow_momentum([0.01, 0.015, 0.02, 0.025, 0.03])
+    assert score is not None
+    assert score > 50.0
+
+
+def test_compute_flow_momentum_scores_reported_redemptions_below_neutral():
+    score = mm.compute_flow_momentum([-0.01, -0.015, -0.02, -0.025, -0.03])
+    assert score is not None
+    assert score < 50.0
+
+
+def test_compute_momentum_blends_nav_and_nport_flow_scores():
+    nav = [100.0 + i * 0.2 for i in range(90)]
+    out = mm.compute_momentum(nav, [-0.03, -0.025, -0.02, -0.015, -0.01])
+    assert out["nav_momentum_score"] is not None
+    assert out["flow_momentum_score"] is not None
+    assert out["blended_momentum_score"] == pytest.approx(
+        0.5 * out["nav_momentum_score"] + 0.5 * out["flow_momentum_score"]
+    )

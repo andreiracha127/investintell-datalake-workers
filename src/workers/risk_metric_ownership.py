@@ -278,6 +278,12 @@ FUND_RISK_LATEST_MV_COLUMNS = (
     "active_share_benchmark_series_id",
     "active_share_fund_report_date",
     "active_share_benchmark_report_date",
+    "dtw_drift_score",
+    "rsi_14",
+    "bb_position",
+    "nav_momentum_score",
+    "flow_momentum_score",
+    "blended_momentum_score",
     "nav_quality_ok",
     "nav_glitch_count",
 )

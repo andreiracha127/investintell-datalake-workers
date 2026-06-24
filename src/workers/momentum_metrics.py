@@ -1,4 +1,4 @@
-"""Recurring NAV momentum owner for ``fund_risk_metrics``."""
+"""Recurring NAV and N-PORT flow momentum owner for ``fund_risk_metrics``."""
 
 from __future__ import annotations
 
@@ -121,6 +121,53 @@ def compute_nav_momentum(nav_values: list[float]) -> dict[str, float | None]:
     }
 
 
+def compute_flow_momentum(flow_pct_assets: list[float]) -> float | None:
+    """Score N-PORT net flows, normalized by assets, on a 0..100 scale.
+
+    The input is monthly ``net_flow / net_assets`` from reported N-PORT sales,
+    reinvestments, and redemptions. The score is based on the trend slope of
+    cumulative normalized flows, so sustained inflows score above 50 and
+    sustained redemptions score below 50.
+    """
+
+    flows = np.asarray(flow_pct_assets, dtype=float)
+    flows = flows[np.isfinite(flows)]
+    if len(flows) < 3:
+        return None
+    tail = flows[-min(12, len(flows)):]
+    cumulative = np.cumsum(tail)
+    if len(cumulative) < 3:
+        return None
+    slope = float(np.polyfit(np.arange(len(cumulative)), cumulative, 1)[0])
+    score = 50.0 + 50.0 * float(np.tanh(slope / 0.02))
+    return round(max(0.0, min(100.0, score)), 6)
+
+
+def blend_momentum_scores(
+    nav_score: float | None,
+    flow_score: float | None,
+) -> float | None:
+    if nav_score is not None and flow_score is not None:
+        return round(0.5 * nav_score + 0.5 * flow_score, 6)
+    if flow_score is not None:
+        return flow_score
+    return nav_score
+
+
+def compute_momentum(
+    nav_values: list[float],
+    flow_pct_assets: list[float],
+) -> dict[str, float | None]:
+    metrics = compute_nav_momentum(nav_values)
+    flow_score = compute_flow_momentum(flow_pct_assets)
+    metrics["flow_momentum_score"] = flow_score
+    metrics["blended_momentum_score"] = blend_momentum_scores(
+        metrics["nav_momentum_score"],
+        flow_score,
+    )
+    return metrics
+
+
 def _resolve_calc_date(conn, calc_date: str | None) -> _dt.date:
     if calc_date:
         return _dt.date.fromisoformat(calc_date)
@@ -135,12 +182,13 @@ def _resolve_calc_date(conn, calc_date: str | None) -> _dt.date:
     return cdate
 
 
-def _target_instruments(conn, calc_date: _dt.date, limit: int | None) -> list[Any]:
+def _target_instruments(conn, calc_date: _dt.date, limit: int | None) -> list[tuple[Any, str | None]]:
     sql = """
-        SELECT instrument_id
-        FROM fund_risk_metrics
-        WHERE calc_date = %s AND organization_id IS NULL
-        ORDER BY instrument_id
+        SELECT frm.instrument_id, f.series_id
+        FROM fund_risk_metrics frm
+        LEFT JOIN funds_v f ON f.instrument_id = frm.instrument_id
+        WHERE frm.calc_date = %s AND frm.organization_id IS NULL
+        ORDER BY frm.instrument_id
     """
     params: list[Any] = [calc_date]
     if limit:
@@ -148,7 +196,7 @@ def _target_instruments(conn, calc_date: _dt.date, limit: int | None) -> list[An
         params.append(limit)
     with conn.cursor() as cur:
         cur.execute(sql, params)
-        return [r[0] for r in cur.fetchall()]
+        return [(r[0], r[1]) for r in cur.fetchall()]
 
 
 def _fetch_nav(conn, instrument_id: Any, calc_date: _dt.date) -> list[float]:
@@ -171,6 +219,33 @@ def _fetch_nav(conn, instrument_id: Any, calc_date: _dt.date) -> list[float]:
         return [float(r[0]) for r in cur.fetchall()]
 
 
+def _fetch_flow_pct_assets(conn, series_id: str | None, calc_date: _dt.date) -> list[float]:
+    if not series_id:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT net_flow_pct_assets
+            FROM (
+                SELECT DISTINCT ON (flow_month_end)
+                    flow_month_end,
+                    net_flow_pct_assets
+                FROM sec_nport_fund_monthly_flows
+                WHERE series_id = %s
+                  AND flow_month_end <= %s
+                  AND net_flow_pct_assets IS NOT NULL
+                ORDER BY flow_month_end, filing_date DESC NULLS LAST, accession_number DESC
+            ) deduped
+            ORDER BY flow_month_end DESC
+            LIMIT 24
+            """,
+            (series_id, calc_date),
+        )
+        values = [float(r[0]) for r in cur.fetchall()]
+    values.reverse()
+    return values
+
+
 def _upsert(conn, calc_date: _dt.date, rows: list[tuple]) -> int:
     if not rows:
         return 0
@@ -191,6 +266,13 @@ def _upsert(conn, calc_date: _dt.date, rows: list[tuple]) -> int:
     return len(rows)
 
 
+def _refresh_read_models(dsn: str) -> None:
+    with connect(dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY fund_risk_latest_mv")
+            cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY funds_list_mv")
+
+
 def run(
     dsn: str,
     *,
@@ -206,9 +288,12 @@ def run(
             cdate = _resolve_calc_date(conn, calc_date)
             targets = _target_instruments(conn, cdate, limit)
             rows = []
-            for instrument_id in targets:
-                metrics = compute_nav_momentum(_fetch_nav(conn, instrument_id, cdate))
-                if metrics["nav_momentum_score"] is None:
+            for instrument_id, series_id in targets:
+                metrics = compute_momentum(
+                    _fetch_nav(conn, instrument_id, cdate),
+                    _fetch_flow_pct_assets(conn, series_id, cdate),
+                )
+                if metrics["blended_momentum_score"] is None:
                     continue
                 rows.append(
                     (
@@ -220,5 +305,5 @@ def run(
                 )
             upserted = _upsert(conn, cdate, rows)
             conn.commit()
+    _refresh_read_models(dsn)
     return {"processed": len(targets), "upserted": upserted, "calc_date": cdate}
-

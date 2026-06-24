@@ -79,6 +79,11 @@ duas tabelas materializadas direto (DB-first) — nenhum cálculo em request pat
 | `benchmark_ingest.py` | `benchmark_nav` | Tiingo (ETFs benchmark por bloco; NaN ≤5%) | 900_332 | `TIINGO_API_KEY` |
 | `instrument_ingestion.py` | `nav_timeseries` | Tiingo (sweep stale-only priorizado por AUM; universo completo/run) + fallback UCITS EODHD→Yahoo (`_fallback_nav.py`) | 900_331 | `TIINGO_API_KEY`, `EODHD_API_KEY` (opcional) |
 
+Loader local complementar: `scripts/load_nport_fund_flows.py` lê os dumps DERA
+`E:\Edgard\*_nport` (`FUND_REPORTED_INFO.tsv` + `SUBMISSION.tsv`) e popula
+`sec_nport_fund_reported_info` / `sec_nport_fund_monthly_flows`. Esses fluxos
+mensais reportados são a fonte primária de `flow_momentum_score`.
+
 ## Receita validada — risk metrics (prova Lean, 2026-06-11)
 
 Recalcular de `nav_timeseries.nav` (retornos aritméticos, `return_type='arithmetic'`):

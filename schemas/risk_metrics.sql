@@ -300,6 +300,12 @@ SELECT DISTINCT ON (instrument_id)
     active_share_benchmark_series_id,
     active_share_fund_report_date,
     active_share_benchmark_report_date,
+    dtw_drift_score,
+    rsi_14,
+    bb_position,
+    nav_momentum_score,
+    flow_momentum_score,
+    blended_momentum_score,
     nav_quality_ok,
     nav_glitch_count
 FROM fund_risk_metrics
@@ -359,6 +365,7 @@ SELECT
     r.peer_drawdown_pctl,
     r.peer_count,
     r.manager_score,
+    r.blended_momentum_score,
     NULL::boolean AS elite_flag,
     r.downside_capture_1y,
     r.upside_capture_1y,
