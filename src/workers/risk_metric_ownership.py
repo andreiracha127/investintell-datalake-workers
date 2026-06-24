@@ -84,6 +84,12 @@ MOMENTUM_COLUMNS = (
     "nav_momentum_score",
     "flow_momentum_score",
     "blended_momentum_score",
+    "flow_momentum_as_of",
+    "flow_momentum_observation_count",
+    "nport_flow_momentum_score",
+    "nport_flow_as_of",
+    "nport_flow_staleness_days",
+    "nport_flow_observation_count",
 )
 
 LATENT_MMF_COLUMNS = (
@@ -185,6 +191,12 @@ FUND_RISK_METRICS_COLUMNS = (
     "nav_momentum_score",
     "flow_momentum_score",
     "blended_momentum_score",
+    "flow_momentum_as_of",
+    "flow_momentum_observation_count",
+    "nport_flow_momentum_score",
+    "nport_flow_as_of",
+    "nport_flow_staleness_days",
+    "nport_flow_observation_count",
     "cvar_95_conditional",
     "elite_rank_within_strategy",
     "elite_target_count_per_strategy",
@@ -284,6 +296,12 @@ FUND_RISK_LATEST_MV_COLUMNS = (
     "nav_momentum_score",
     "flow_momentum_score",
     "blended_momentum_score",
+    "flow_momentum_as_of",
+    "flow_momentum_observation_count",
+    "nport_flow_momentum_score",
+    "nport_flow_as_of",
+    "nport_flow_staleness_days",
+    "nport_flow_observation_count",
     "nav_quality_ok",
     "nav_glitch_count",
 )
@@ -292,5 +310,10 @@ FUND_RISK_LATEST_MV_STALE_POLICIES = {
     OWNER_ACTIVE_SHARE: (
         "Snapshot from the latest available N-PORT reports at or before "
         "calc_date; active_share_*_report_date and *_age_days are exposed."
+    ),
+    OWNER_MOMENTUM: (
+        "flow_momentum_score is a daily NAV/AUM proxy as of "
+        "flow_momentum_as_of; nport_flow_* is a slower reported-flow "
+        "confirmation with explicit as_of and staleness fields."
     ),
 }

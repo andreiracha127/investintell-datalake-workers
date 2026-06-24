@@ -64,7 +64,7 @@ def _mv_select_columns(sql: str) -> set[str]:
 def test_schema_declares_every_managed_fund_risk_column():
     declared = _declared_fund_risk_columns(_schema_sql())
     assert set(FUND_RISK_METRICS_COLUMNS) <= declared
-    assert len(FUND_RISK_METRICS_COLUMNS) == 96
+    assert len(FUND_RISK_METRICS_COLUMNS) == 102
 
 
 def test_mmf_columns_are_latent_not_schema_managed_or_owned():

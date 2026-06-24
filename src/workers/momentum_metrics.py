@@ -1,8 +1,9 @@
-"""Recurring NAV and N-PORT flow momentum owner for ``fund_risk_metrics``."""
+"""Recurring NAV, daily-flow proxy, and N-PORT flow confirmation momentum."""
 
 from __future__ import annotations
 
 import datetime as _dt
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -16,7 +17,20 @@ MOMENTUM_COLUMNS = (
     "nav_momentum_score",
     "flow_momentum_score",
     "blended_momentum_score",
+    "flow_momentum_as_of",
+    "flow_momentum_observation_count",
+    "nport_flow_momentum_score",
+    "nport_flow_as_of",
+    "nport_flow_staleness_days",
+    "nport_flow_observation_count",
 )
+
+
+@dataclass(frozen=True)
+class NavAumPoint:
+    nav_date: _dt.date
+    nav: float
+    aum_usd: float | None
 
 
 def _clip(value: float | None, lo: float, hi: float) -> float | None:
@@ -88,7 +102,7 @@ def dtw_drift_score(nav: np.ndarray, window: int = 63) -> float | None:
     return round(score, 6)
 
 
-def compute_nav_momentum(nav_values: list[float]) -> dict[str, float | None]:
+def compute_nav_momentum(nav_values: list[float]) -> dict[str, Any]:
     nav = np.asarray(nav_values, dtype=float)
     nav = nav[np.isfinite(nav)]
     if len(nav) < 20:
@@ -118,29 +132,82 @@ def compute_nav_momentum(nav_values: list[float]) -> dict[str, float | None]:
         "nav_momentum_score": nav_score,
         "flow_momentum_score": None,
         "blended_momentum_score": nav_score,
+        "flow_momentum_as_of": None,
+        "flow_momentum_observation_count": None,
+        "nport_flow_momentum_score": None,
+        "nport_flow_as_of": None,
+        "nport_flow_staleness_days": None,
+        "nport_flow_observation_count": None,
     }
 
 
-def compute_flow_momentum(flow_pct_assets: list[float]) -> float | None:
-    """Score N-PORT net flows, normalized by assets, on a 0..100 scale.
-
-    The input is monthly ``net_flow / net_assets`` from reported N-PORT sales,
-    reinvestments, and redemptions. The score is based on the trend slope of
-    cumulative normalized flows, so sustained inflows score above 50 and
-    sustained redemptions score below 50.
-    """
-
+def _score_flow_pct_slope(
+    flow_pct_assets: list[float],
+    *,
+    max_points: int,
+    min_points: int,
+    slope_scale: float,
+) -> float | None:
     flows = np.asarray(flow_pct_assets, dtype=float)
     flows = flows[np.isfinite(flows)]
-    if len(flows) < 3:
+    if len(flows) < min_points:
         return None
-    tail = flows[-min(12, len(flows)):]
+    tail = flows[-min(max_points, len(flows)):]
     cumulative = np.cumsum(tail)
-    if len(cumulative) < 3:
+    if len(cumulative) < min_points:
         return None
     slope = float(np.polyfit(np.arange(len(cumulative)), cumulative, 1)[0])
-    score = 50.0 + 50.0 * float(np.tanh(slope / 0.02))
+    score = 50.0 + 50.0 * float(np.tanh(slope / slope_scale))
     return round(max(0.0, min(100.0, score)), 6)
+
+
+def compute_daily_flow_pct(nav_aum_points: list[NavAumPoint]) -> list[float]:
+    """Estimate daily external flows from AUM changes net of NAV return.
+
+    ``external_flow_t = AUM_t - AUM_{t-1} * NAV_t / NAV_{t-1}``
+
+    This keeps the optimizer on a fresh daily signal while separating market/NAV
+    performance from subscriptions and redemptions as far as the NAV+AUM series
+    allows. Extreme one-day values are clipped to damp splits, mergers, and
+    stale AUM jumps.
+    """
+
+    flows: list[float] = []
+    points = [p for p in nav_aum_points if p.aum_usd is not None and p.nav > 0 and p.aum_usd > 0]
+    for prev, cur in zip(points, points[1:]):
+        if prev.nav <= 0 or prev.aum_usd is None or cur.aum_usd is None or prev.aum_usd <= 0:
+            continue
+        expected_aum = prev.aum_usd * (cur.nav / prev.nav)
+        external_flow = cur.aum_usd - expected_aum
+        flows.append(float(max(-0.25, min(0.25, external_flow / prev.aum_usd))))
+    return flows
+
+
+def compute_daily_flow_momentum(flow_pct_assets: list[float]) -> float | None:
+    """Score fresh daily flow proxy, normalized by prior-day assets."""
+
+    return _score_flow_pct_slope(
+        flow_pct_assets,
+        max_points=63,
+        min_points=10,
+        slope_scale=0.0025,
+    )
+
+
+def compute_nport_flow_momentum(flow_pct_assets: list[float]) -> float | None:
+    """Score reported N-PORT net flows, normalized by assets, on 0..100.
+
+    The input is monthly ``net_flow / net_assets`` from reported N-PORT sales,
+    reinvestments, and redemptions. It is a slower confirmation/reviewer signal,
+    not the optimizer's fresh flow input.
+    """
+
+    return _score_flow_pct_slope(
+        flow_pct_assets,
+        max_points=12,
+        min_points=3,
+        slope_scale=0.02,
+    )
 
 
 def blend_momentum_scores(
@@ -155,16 +222,34 @@ def blend_momentum_scores(
 
 
 def compute_momentum(
-    nav_values: list[float],
-    flow_pct_assets: list[float],
-) -> dict[str, float | None]:
+    nav_aum_points: list[NavAumPoint],
+    nport_flow_pct_assets: list[float],
+    *,
+    nport_as_of: _dt.date | None = None,
+    calc_date: _dt.date | None = None,
+) -> dict[str, Any]:
+    nav_values = [p.nav for p in nav_aum_points]
     metrics = compute_nav_momentum(nav_values)
-    flow_score = compute_flow_momentum(flow_pct_assets)
+    daily_flow_pct = compute_daily_flow_pct(nav_aum_points)
+    flow_score = compute_daily_flow_momentum(daily_flow_pct)
+    nport_score = compute_nport_flow_momentum(nport_flow_pct_assets)
+
     metrics["flow_momentum_score"] = flow_score
     metrics["blended_momentum_score"] = blend_momentum_scores(
         metrics["nav_momentum_score"],
         flow_score,
     )
+    flow_as_of = next((p.nav_date for p in reversed(nav_aum_points) if p.aum_usd is not None), None)
+    metrics["flow_momentum_as_of"] = flow_as_of
+    metrics["flow_momentum_observation_count"] = len(daily_flow_pct)
+    metrics["nport_flow_momentum_score"] = nport_score
+    metrics["nport_flow_as_of"] = nport_as_of
+    metrics["nport_flow_staleness_days"] = (
+        (calc_date - nport_as_of).days
+        if calc_date is not None and nport_as_of is not None
+        else None
+    )
+    metrics["nport_flow_observation_count"] = len(nport_flow_pct_assets)
     return metrics
 
 
@@ -199,12 +284,12 @@ def _target_instruments(conn, calc_date: _dt.date, limit: int | None) -> list[tu
         return [(r[0], r[1]) for r in cur.fetchall()]
 
 
-def _fetch_nav(conn, instrument_id: Any, calc_date: _dt.date) -> list[float]:
+def _fetch_nav_aum(conn, instrument_id: Any, calc_date: _dt.date) -> list[NavAumPoint]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT nav FROM (
-                SELECT nav_date, nav
+            SELECT nav_date, nav, aum_usd FROM (
+                SELECT nav_date, nav, aum_usd
                 FROM nav_timeseries
                 WHERE instrument_id = %s
                   AND nav_date <= %s
@@ -216,16 +301,23 @@ def _fetch_nav(conn, instrument_id: Any, calc_date: _dt.date) -> list[float]:
             """,
             (instrument_id, calc_date),
         )
-        return [float(r[0]) for r in cur.fetchall()]
+        return [
+            NavAumPoint(r[0], float(r[1]), float(r[2]) if r[2] is not None else None)
+            for r in cur.fetchall()
+        ]
 
 
-def _fetch_flow_pct_assets(conn, series_id: str | None, calc_date: _dt.date) -> list[float]:
+def _fetch_nport_flow_pct_assets(
+    conn,
+    series_id: str | None,
+    calc_date: _dt.date,
+) -> tuple[list[float], _dt.date | None]:
     if not series_id:
-        return []
+        return [], None
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT net_flow_pct_assets
+            SELECT flow_month_end, net_flow_pct_assets
             FROM (
                 SELECT DISTINCT ON (flow_month_end)
                     flow_month_end,
@@ -241,9 +333,11 @@ def _fetch_flow_pct_assets(conn, series_id: str | None, calc_date: _dt.date) -> 
             """,
             (series_id, calc_date),
         )
-        values = [float(r[0]) for r in cur.fetchall()]
+        rows = cur.fetchall()
+    values = [float(r[1]) for r in rows]
+    as_of = rows[0][0] if rows else None
     values.reverse()
-    return values
+    return values, as_of
 
 
 def _upsert(conn, calc_date: _dt.date, rows: list[tuple]) -> int:
@@ -289,9 +383,12 @@ def run(
             targets = _target_instruments(conn, cdate, limit)
             rows = []
             for instrument_id, series_id in targets:
+                nport_flows, nport_as_of = _fetch_nport_flow_pct_assets(conn, series_id, cdate)
                 metrics = compute_momentum(
-                    _fetch_nav(conn, instrument_id, cdate),
-                    _fetch_flow_pct_assets(conn, series_id, cdate),
+                    _fetch_nav_aum(conn, instrument_id, cdate),
+                    nport_flows,
+                    nport_as_of=nport_as_of,
+                    calc_date=cdate,
                 )
                 if metrics["blended_momentum_score"] is None:
                     continue

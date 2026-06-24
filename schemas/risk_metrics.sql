@@ -120,6 +120,12 @@ CREATE TABLE IF NOT EXISTS fund_risk_metrics (
     nav_momentum_score numeric,
     flow_momentum_score numeric,
     blended_momentum_score numeric,
+    flow_momentum_as_of date,
+    flow_momentum_observation_count integer,
+    nport_flow_momentum_score numeric,
+    nport_flow_as_of date,
+    nport_flow_staleness_days integer,
+    nport_flow_observation_count integer,
 
     -- owner: reserved
     cvar_95_conditional numeric,
@@ -190,6 +196,12 @@ ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS bb_position numeric;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS nav_momentum_score numeric;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS flow_momentum_score numeric;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS blended_momentum_score numeric;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS flow_momentum_as_of date;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS flow_momentum_observation_count integer;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS nport_flow_momentum_score numeric;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS nport_flow_as_of date;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS nport_flow_staleness_days integer;
+ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS nport_flow_observation_count integer;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS cvar_95_conditional numeric;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS elite_rank_within_strategy smallint;
 ALTER TABLE fund_risk_metrics ADD COLUMN IF NOT EXISTS elite_target_count_per_strategy smallint;
@@ -306,6 +318,12 @@ SELECT DISTINCT ON (instrument_id)
     nav_momentum_score,
     flow_momentum_score,
     blended_momentum_score,
+    flow_momentum_as_of,
+    flow_momentum_observation_count,
+    nport_flow_momentum_score,
+    nport_flow_as_of,
+    nport_flow_staleness_days,
+    nport_flow_observation_count,
     nav_quality_ok,
     nav_glitch_count
 FROM fund_risk_metrics
