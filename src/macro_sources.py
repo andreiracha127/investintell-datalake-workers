@@ -22,8 +22,10 @@ class MacroSourceSpec:
     series_id: str
     axis: Literal["growth", "inflation"]
     family: str
-    transform_id: str
+    economic_transform_id: str
+    standardizer_id: str
     direction: Literal[-1, 1]
+    neutral_level: float | None
     weight: float
     cadence: Literal["daily", "weekly", "monthly", "quarterly"]
     release_calendar_id: str | None
@@ -31,32 +33,38 @@ class MacroSourceSpec:
     grace_period: timedelta
     hard_max_age: timedelta
     critical: bool
-    minimum_history: int
+    minimum_valid_observations: int
     source_spec_version: str = SOURCE_SPEC_VERSION
 
 
-def _macro(series_id, axis, family, weight, *, direction=1, transform="yoy",
-           cadence="monthly", critical=True):
+_STD = "robust_z_10y_distinct_vintages_v1"
+
+
+def _macro(series_id, axis, family, weight, econ_transform, *, direction=1,
+           neutral_level=None, cadence="monthly", critical=True,
+           min_valid_obs=24):
     return MacroSourceSpec(
         source_id=f"alfred:{series_id}", series_id=series_id, axis=axis, family=family,
-        transform_id=transform, direction=direction, weight=weight, cadence=cadence,
-        release_calendar_id=None, revision_policy="vintage",
+        economic_transform_id=econ_transform, standardizer_id=_STD,
+        direction=direction, neutral_level=neutral_level, weight=weight,
+        cadence=cadence, release_calendar_id=None, revision_policy="vintage",
         grace_period=timedelta(days=7), hard_max_age=timedelta(days=45),
-        critical=critical, minimum_history=24,
+        critical=critical, minimum_valid_observations=min_valid_obs,
     )
 
 
 SEED_SOURCES: tuple[MacroSourceSpec, ...] = (
-    # growth axis (4 families)
-    _macro("INDPRO", "growth", "activity_production", 0.25),
-    _macro("PCEC96", "growth", "real_consumption", 0.25),
-    _macro("PAYEMS", "growth", "labor", 0.25),
-    _macro("ACOGNO", "growth", "new_orders_leading", 0.25),
-    # inflation axis (4 families)
-    _macro("CPILFESL", "inflation", "core_inflation", 0.30),
-    _macro("PPIFIS", "inflation", "upstream_prices", 0.25),
-    _macro("AHETPI", "inflation", "wages", 0.25),
-    _macro("MICH", "inflation", "inflation_expectations", 0.20),
+    # growth axis — monthly seasonally-adjusted activity -> log_3m3m_ann_v1.
+    _macro("INDPRO", "growth", "activity_production", 0.25, "log_3m3m_ann_v1"),
+    _macro("PCEC96", "growth", "real_consumption", 0.25, "log_3m3m_ann_v1"),
+    _macro("PAYEMS", "growth", "labor", 0.25, "log_3m3m_ann_v1"),
+    _macro("ACOGNO", "growth", "new_orders_leading", 0.25, "log_3m3m_ann_v1"),
+    # inflation axis — SA price/wage indices -> ann3m_minus_yoy_v1 (InflationImpulse);
+    # expectations are a level survey -> delta_3m_level_v1.
+    _macro("CPILFESL", "inflation", "core_inflation", 0.30, "ann3m_minus_yoy_v1"),
+    _macro("PPIFIS", "inflation", "upstream_prices", 0.25, "ann3m_minus_yoy_v1"),
+    _macro("AHETPI", "inflation", "wages", 0.25, "ann3m_minus_yoy_v1"),
+    _macro("MICH", "inflation", "inflation_expectations", 0.20, "delta_3m_level_v1"),
 )
 
 
