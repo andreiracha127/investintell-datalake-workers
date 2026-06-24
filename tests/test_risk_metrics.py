@@ -57,6 +57,27 @@ def _legacy_calc_date(conn) -> _dt.date:
         return cur.fetchone()[0]
 
 
+def _skip_if_metric_schema_lagging(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'fund_risk_metrics'
+              AND column_name = ANY(%s)
+            """,
+            (rm._METRIC_COLUMNS,),
+        )
+        present = {r[0] for r in cur.fetchall()}
+    missing = sorted(set(rm._METRIC_COLUMNS) - present)
+    if missing:
+        pytest.skip(
+            "DB-mãe fund_risk_metrics schema lags worker columns: "
+            + ", ".join(missing[:8])
+        )
+
+
 def _legacy_metrics(conn, instrument_id, calc_date):
     with conn.cursor() as cur:
         cur.execute(
@@ -107,6 +128,7 @@ def test_run_end_to_end_and_idempotent():
     """run(limit=...) executes against the mother DB and is idempotent."""
     conn = _mae()
     try:
+        _skip_if_metric_schema_lagging(conn)
         cdate = _legacy_calc_date(conn)
     finally:
         conn.close()
@@ -751,6 +773,83 @@ def test_run_calls_manager_score_post_step(monkeypatch):
     stats = rm.run("postgres://x")
     assert captured["calc_date"] == _dt.date(2026, 6, 11)
     assert stats["manager_score_rows"] == 7
+
+
+def test_parallel_run_updates_peers_and_manager_after_shards(monkeypatch):
+    """Parallel run: shard commits finish before peer and manager post-steps."""
+    import contextlib
+
+    events: list[str] = []
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        return _FakeConn({"events": events})
+
+    @contextlib.contextmanager
+    def _granted_lock(_conn, _lock_id):
+        yield True
+
+    class _Future:
+        def __init__(self, value):
+            self._value = value
+
+        def result(self):
+            return self._value
+
+    class _Pool:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def submit(self, fn, *args):
+            return _Future(fn(*args))
+
+    def _fake_process_shard(*_args):
+        events.append("shard_commit")
+        return 1, 1
+
+    monkeypatch.setattr(rm, "connect", _fake_connect)
+    monkeypatch.setattr(rm, "advisory_lock", _granted_lock)
+    monkeypatch.setattr(rm, "_resolve_calc_date", lambda _c, _cd: _dt.date(2026, 6, 11))
+    monkeypatch.setattr(rm, "_risk_free_rate", lambda _c, _cd: 0.04)
+    monkeypatch.setattr(rm, "_fetch_fund_ids", lambda _c, _cd, _lim: ["a", "b"])
+    monkeypatch.setattr(rm, "_fetch_benchmark_returns", lambda _c, _cd: {})
+    monkeypatch.setattr(rm, "_fetch_fund_benchmarks", lambda _c: {})
+    monkeypatch.setattr(
+        rm,
+        "_fetch_macro_changes",
+        lambda _c, _cd: {"DGS10": [], "BAA10Y": [], "CPI": []},
+    )
+    monkeypatch.setattr(rm, "_fetch_fund_asset_classes", lambda _c: {})
+    monkeypatch.setattr(rm, "_resolve_max_workers", lambda: 2)
+    monkeypatch.setattr(rm, "_process_shard", _fake_process_shard)
+    monkeypatch.setattr(rm, "ProcessPoolExecutor", _Pool)
+    monkeypatch.setattr(rm, "as_completed", lambda futures: futures)
+    monkeypatch.setattr(
+        rm,
+        "_update_peer_percentiles",
+        lambda _c, _cd: events.append("peer") or 11,
+    )
+    monkeypatch.setattr(
+        rm,
+        "_update_manager_scores",
+        lambda _c, _cd: events.append("manager") or 7,
+    )
+    monkeypatch.setattr(rm, "_refresh_fund_risk_latest_mv", lambda _dsn: events.append("refresh"))
+
+    stats = rm.run("postgres://x")
+
+    assert stats["peer_rows"] == 11
+    assert stats["manager_score_rows"] == 7
+    assert events.count("shard_commit") == 2
+    assert max(i for i, e in enumerate(events) if e == "shard_commit") < events.index("peer")
+    assert events.index("peer") < events.index("manager")
+    assert events.index("manager") < events.index("commit")
+    assert events.index("commit") < events.index("refresh")
 
 
 # ──────────────────────────────────────────────────────────────────────────────

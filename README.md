@@ -47,7 +47,7 @@ Advisory lock: `src/db.py::advisory_lock(conn, lock_id)`.
 
 | Worker (`src/workers/`) | Tabela(s) destino | Fonte bruta | Referência (monólito, só leitura) |
 |---|---|---|---|
-| `risk_metrics.py` | `fund_risk_metrics`, `sec_mmf_metrics` | `nav_timeseries`, `benchmark_nav` | `backend/app/jobs/workers/risk_calc.py` |
+| `risk_metrics.py` | `fund_risk_metrics` | `nav_timeseries`, `benchmark_nav` | `backend/app/jobs/workers/risk_calc.py` |
 | `characteristics.py` | `company_characteristics_monthly`, `equity_characteristics_monthly` | `sec_nport_holdings`, `nav_timeseries` | `company_characteristics_compute.py`, `fund_characteristics_aggregator.py` |
 | `factor_model.py` | `factor_model_fits` | retornos (`nav_timeseries`) + características | `ipca_estimation.py` |
 | `nport_lookthrough.py` | `nport_lookthrough_exposures`, `nport_lookthrough_summary` | `sec_nport_holdings` (96M) + catálogo (`sec_cusip_ticker_map`, `sec_fund_classes`, `sec_etfs`, `instrument_identity`, `instruments_universe`) + `cagg_nport_series_profile` (coverage **copiado**, nunca recalculado) | frente C do doc de research 2026-06-11 (ADENDO §6) |
