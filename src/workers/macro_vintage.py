@@ -60,3 +60,92 @@ def parse_alfred_vintages(series_id: str, payload: dict[str, Any]) -> list[dict[
                 last_val = v
                 rev += 1
     return rows
+
+
+import os
+
+from src.db import LOCK_MACRO_VINTAGE, advisory_lock, connect
+from src.macro_sources import SEED_SOURCES, SOURCE_SPEC_VERSION
+from src.workers.macro_ingestion import FRED_BASE_URL, TokenBucket
+
+_REALTIME_ALL = {"realtime_start": "1776-07-04", "realtime_end": "9999-12-31"}
+_SCHEMA = "schemas/macro_observation_vintage.sql"
+
+
+def ensure_schema(conn) -> None:
+    import pathlib
+    sql = pathlib.Path(_SCHEMA).read_text(encoding="utf-8")
+    with conn.cursor() as cur:
+        cur.execute(sql)
+    conn.commit()
+
+
+def fetch_vintages(client, api_key: str, series_id: str, bucket: TokenBucket) -> dict:
+    """ALFRED all-vintages fetch (output_type=2) for one series. Retries on 5xx/429;
+    a 400 (discontinued/no-vintage series) returns an empty payload, never fails."""
+    import time
+    params = {"series_id": series_id, "api_key": api_key, "file_type": "json",
+              "output_type": 2, **_REALTIME_ALL}
+    for attempt in range(3):
+        bucket.acquire()
+        resp = client.get(f"{FRED_BASE_URL}/series/observations", params=params)
+        if resp.status_code in (429, 503) or resp.status_code >= 500:
+            time.sleep(min(30.0, 2.0 * (2 ** attempt)))
+            continue
+        if resp.status_code == 400:
+            return {"observations": []}
+        resp.raise_for_status()
+        return resp.json()
+    return {"observations": []}
+
+
+def rows_to_records(rows: list[dict], source_spec_version: str) -> list[tuple]:
+    """Parsed rows -> DB tuples; available_at = vintage_date at 00:00 UTC."""
+    out = []
+    for r in rows:
+        vd = r["vintage_date"]
+        available_at = _dt.datetime(vd.year, vd.month, vd.day, tzinfo=_dt.timezone.utc)
+        out.append((r["series_id"], r["observation_period"], vd, r["value"],
+                    available_at, r["revision_number"], "alfred", source_spec_version))
+    return out
+
+
+def upsert_vintages(conn, records: list[tuple]) -> int:
+    """Idempotent insert — vintages are immutable, so ON CONFLICT DO NOTHING."""
+    if not records:
+        return 0
+    sql = (
+        "INSERT INTO macro_observation_vintage "
+        "(series_id, observation_period, vintage_date, value, available_at, "
+        " revision_number, source, source_spec_version) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (series_id, observation_period, vintage_date) DO NOTHING"
+    )
+    with conn.cursor() as cur:
+        cur.executemany(sql, records)
+    conn.commit()
+    return len(records)
+
+
+def run(dsn: str, *, limit: int | None = None) -> dict:
+    """Backfill + refresh all basket vintages. Idempotent (DO NOTHING). Re-runs
+    only add newly-published vintages. ``limit`` caps series count (smoke runs)."""
+    api_key = os.environ["FRED_API_KEY"]
+    specs = list(SEED_SOURCES)[: limit or len(SEED_SOURCES)]
+    conn = connect(dsn)
+    try:
+        ensure_schema(conn)
+        with advisory_lock(conn, LOCK_MACRO_VINTAGE) as got:
+            if not got:
+                return {"status": "lock_busy"}
+            import httpx
+            bucket = TokenBucket()
+            upserted = 0
+            with httpx.Client(timeout=30.0) as client:
+                for spec in specs:
+                    payload = fetch_vintages(client, api_key, spec.series_id, bucket)
+                    rows = parse_alfred_vintages(spec.series_id, payload)
+                    upserted += upsert_vintages(conn, rows_to_records(rows, SOURCE_SPEC_VERSION))
+            return {"status": "ok", "series": len(specs), "upserted": upserted}
+    finally:
+        conn.close()
