@@ -109,3 +109,21 @@ def test_latest_mv_active_share_has_explicit_stale_policy():
 def test_schema_mv_matches_registry_contract():
     mv_cols = _mv_select_columns(_schema_sql())
     assert mv_cols == set(FUND_RISK_LATEST_MV_COLUMNS)
+
+
+def test_schema_rebuilds_dependent_funds_list_without_reserved_risk_source():
+    sql = _schema_sql()
+    assert (
+        sql.index("DROP MATERIALIZED VIEW IF EXISTS funds_list_mv")
+        < sql.index("DROP MATERIALIZED VIEW IF EXISTS fund_risk_latest_mv")
+    )
+
+    match = re.search(
+        r"CREATE MATERIALIZED VIEW funds_list_mv AS(.*?);",
+        sql,
+        flags=re.S,
+    )
+    assert match, "funds_list_mv CREATE MATERIALIZED VIEW block not found"
+    funds_list_select = match.group(1)
+    assert "r.elite_flag" not in funds_list_select
+    assert "NULL::boolean AS elite_flag" in funds_list_select

@@ -14,8 +14,10 @@
 --                            exist in Tiger as latent dump artifacts but are
 --                            intentionally not managed by this schema.
 
--- The live MV depends on base-table column types. Drop/recreate it around this
--- parity DDL so type corrections do not hit SQLSTATE 0A000.
+-- The live MV depends on base-table column types, and funds_list_mv depends on
+-- the live MV. Drop/recreate both around this parity DDL so type corrections do
+-- not hit SQLSTATE 0A000.
+DROP MATERIALIZED VIEW IF EXISTS funds_list_mv;
 DROP MATERIALIZED VIEW IF EXISTS fund_risk_latest_mv;
 
 CREATE TABLE IF NOT EXISTS fund_risk_metrics (
@@ -306,3 +308,77 @@ ORDER BY instrument_id, calc_date DESC;
 
 CREATE UNIQUE INDEX IF NOT EXISTS fund_risk_latest_mv_pk
     ON fund_risk_latest_mv (instrument_id);
+
+-- Funds list read model depends on fund_risk_latest_mv in Tiger. Keep the
+-- existing list contract view-aware, but do not re-source reserved risk fields
+-- from fund_risk_latest_mv. elite_flag is retained as an explicit null
+-- compatibility column until a scoring owner/product contract exists.
+CREATE MATERIALIZED VIEW funds_list_mv AS
+WITH nav_staleness AS (
+    SELECT max(nav_timeseries.nav_date) AS source_nav_max_date
+    FROM nav_timeseries
+)
+SELECT
+    f.instrument_id,
+    f.series_id,
+    f.ticker,
+    f.name,
+    f.fund_type,
+    f.strategy_label,
+    f.asset_class,
+    f.is_index,
+    f.expense_ratio,
+    f.aum_usd,
+    f.inception_date,
+    r.calc_date,
+    ns.source_nav_max_date,
+    r.return_1m,
+    r.return_3m,
+    r.return_1y,
+    r.return_3y_ann,
+    r.return_5y_ann,
+    r.volatility_1y,
+    r.max_drawdown_1y,
+    r.max_drawdown_3y,
+    r.sharpe_1y,
+    r.sharpe_3y,
+    r.sortino_1y,
+    r.calmar_ratio_3y,
+    r.alpha_1y,
+    r.beta_1y,
+    r.information_ratio_1y,
+    r.tracking_error_1y,
+    r.var_95_1m,
+    r.cvar_95_1m,
+    r.cvar_95_12m,
+    r.cvar_99_evt,
+    r.peer_strategy_label,
+    r.peer_sharpe_pctl,
+    r.peer_sortino_pctl,
+    r.peer_return_pctl,
+    r.peer_drawdown_pctl,
+    r.peer_count,
+    r.manager_score,
+    NULL::boolean AS elite_flag,
+    r.downside_capture_1y,
+    r.upside_capture_1y,
+    r.equity_correlation_252d
+FROM funds_v f
+LEFT JOIN fund_risk_latest_mv r ON r.instrument_id = f.instrument_id
+CROSS JOIN nav_staleness ns
+WHERE f.strategy_label IS DISTINCT FROM 'Unclassified'::text;
+
+CREATE UNIQUE INDEX IF NOT EXISTS funds_list_mv_pk
+    ON funds_list_mv (instrument_id);
+CREATE INDEX IF NOT EXISTS funds_list_mv_filters_idx
+    ON funds_list_mv (fund_type, asset_class, strategy_label);
+CREATE INDEX IF NOT EXISTS funds_list_mv_risk_filters_idx
+    ON funds_list_mv (return_1y, volatility_1y, max_drawdown_1y);
+CREATE INDEX IF NOT EXISTS funds_list_mv_ticker_sort_idx
+    ON funds_list_mv (ticker, instrument_id);
+CREATE INDEX IF NOT EXISTS funds_list_mv_name_sort_idx
+    ON funds_list_mv (name, instrument_id);
+CREATE INDEX IF NOT EXISTS funds_list_mv_aum_sort_idx
+    ON funds_list_mv (aum_usd DESC NULLS LAST, ticker, instrument_id);
+CREATE INDEX IF NOT EXISTS funds_list_mv_sharpe_sort_idx
+    ON funds_list_mv (sharpe_1y DESC NULLS LAST, ticker, instrument_id);
