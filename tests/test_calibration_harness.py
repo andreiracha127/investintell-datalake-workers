@@ -160,6 +160,19 @@ def test_compare_macro_market_conditions_on_both_valid_dates() -> None:
     assert metrics["macro_valid_market_abstain_rate"] == 0.5
 
 
+def test_transition_lags_are_monotonic_one_to_one_with_window() -> None:
+    lags = ch.monotonic_transition_lags(
+        ["2024-01-02", "2024-01-04", "2024-12-31"],
+        ["2024-01-03", "2024-01-05"],
+        max_business_day_window=126,
+    )
+
+    assert lags["matching_method"] == "monotonic_one_to_one"
+    assert lags["lags_days"] == [1, 1]
+    assert lags["unmatched_macro_transition_dates"] == ["2024-12-31"]
+    assert lags["unmatched_market_transition_dates"] == []
+
+
 def test_parse_args_defaults_market_source_to_db_cagg(tmp_path) -> None:
     cfg = ch.parse_args([
         "--start-date",
@@ -1382,3 +1395,137 @@ def test_a31_transformation_weights_use_l2_component_z() -> None:
 
     assert ch.series_score_from_l2_row(row, ref) == 0.10
     assert ch.series_score_from_l2_row(row, cfg) == pytest.approx(0.0)
+
+
+def test_weighted_median_axis_aggregation_uses_family_weights() -> None:
+    ref = ch.reference_a31_config()
+    cfg = ch.A31Config(
+        **{
+            **ch.asdict(ref),
+            "name": "A31-WEIGHTED-MEDIAN",
+            "axis_aggregation_method": "weighted_median",
+            "family_weights": {
+                **ref.family_weights,
+                "growth": {"stable_family": 0.60, "volatile_family": 0.40},
+            },
+            "series_weights": {"STABLE": 1.0, "VOL": 1.0},
+        }
+    )
+    rows = {
+        "STABLE": {
+            "series_id": "STABLE",
+            "axis_id": "growth",
+            "family_id": "stable_family",
+            "reference_series_score": -1.0,
+            "freshness": 1.0,
+            "vintage_quality": 1.0,
+        },
+        "VOL": {
+            "series_id": "VOL",
+            "axis_id": "growth",
+            "family_id": "volatile_family",
+            "reference_series_score": 2.0,
+            "freshness": 1.0,
+            "vintage_quality": 1.0,
+        },
+    }
+
+    result = ch.aggregate_l3_axis(rows, "growth", cfg)
+
+    assert result["score"] == pytest.approx(-1.0)
+    assert result["family_consensus_ok"] is True
+
+
+def test_revision_soft_threshold_uses_only_sufficient_history() -> None:
+    ref = ch.reference_a31_config()
+    cfg = ch.A31Config(
+        **{
+            **ch.asdict(ref),
+            "name": "A31-REVSOFT",
+            "revision_soft_threshold_quantile": "p75",
+        }
+    )
+    row = {"business_date": "2024-01-05", "selection_mode": "latest", "series_id": "PAYEMS"}
+    key = ("2024-01-05", "latest", "series", "PAYEMS")
+
+    assert ch.apply_revision_soft_threshold(
+        0.80,
+        row,
+        cfg,
+        revision_uncertainty_by_key={key: {"sufficient_history": False}},
+        business_date=None,
+        selection_mode=None,
+    ) == pytest.approx(0.80)
+    assert ch.apply_revision_soft_threshold(
+        0.80,
+        row,
+        cfg,
+        revision_uncertainty_by_key={
+            key: {"sufficient_history": True, "p75_absolute_revision": 0.30}
+        },
+        business_date=None,
+        selection_mode=None,
+    ) == pytest.approx(0.50)
+
+
+def test_revision_uncertainty_primitives_are_expanding_and_frequency_aware() -> None:
+    records: list[dict[str, object]] = []
+    start = dt.date(2020, 1, 1)
+    for idx in range(37):
+        day = (start + dt.timedelta(days=idx)).isoformat()
+        period = (start + dt.timedelta(days=idx * 31)).isoformat()
+        base = {
+            "business_date": day,
+            "series_id": "PAYEMS",
+            "family_id": "labor",
+            "axis_id": "growth",
+            "transform_class": "quantity_index",
+            "observation_period": period,
+            "vintage_date": day,
+        }
+        records.append({
+            **base,
+            "selection_mode": "latest",
+            "reference_series_score": 1.0,
+        })
+        records.append({
+            **base,
+            "selection_mode": "first_release",
+            "reference_series_score": 0.0,
+        })
+
+    rows = ch.build_revision_uncertainty_primitives(records)
+    keyed = ch.revision_uncertainty_keyed(rows)
+    first_sufficient = keyed[("2020-02-06", "latest", "series", "PAYEMS")]
+    previous = keyed[("2020-02-05", "latest", "series", "PAYEMS")]
+
+    assert previous["frequency"] == "monthly"
+    assert previous["mature_minimum"] == 36
+    assert previous["mature_observation_count"] == 35
+    assert previous["sufficient_history"] is False
+    assert first_sufficient["mature_observation_count"] == 36
+    assert first_sufficient["sufficient_history"] is True
+    assert first_sufficient["median_absolute_revision"] == pytest.approx(1.0)
+
+
+def test_v03_stop_decision_uses_full_history_for_new_family_rule() -> None:
+    rows = [
+        {
+            "a31_config_name": "CONTROL",
+            "v03_gate_status": "v03_screened_out",
+            "full_candidate_revision_change_rate": 0.19621235641105247,
+            "post_initialization_candidate_revision_change_rate": 0.208,
+        },
+        {
+            "a31_config_name": "REVSOFT-P50",
+            "v03_gate_status": "v03_screened_out",
+            "full_candidate_revision_change_rate": 0.194,
+            "post_initialization_candidate_revision_change_rate": 0.206,
+        },
+    ]
+
+    decision = ch.v03_stop_decision(rows)
+
+    assert decision["decision"] == "open_new_family_qualification"
+    assert decision["best_config"] == "REVSOFT-P50"
+    assert decision["best_full_revision_rate"] == pytest.approx(0.194)
