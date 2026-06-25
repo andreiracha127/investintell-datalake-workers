@@ -70,6 +70,7 @@ V02_QUALIFICATION_SCHEMA_VERSION = 1
 V02_ALFRED_FETCH_SCHEMA_VERSION = 1
 V02_ALFRED_SOURCE_SPEC_VERSION = "macro_family_map_v02_candidate_data_qualification_v1"
 PARENT_V01_L2_HASH = "4419f8c041397e16914d1b0a6dcb8244a5144bd98a54a75e67a6832f9d468c85"
+MIN_QUARTERLY_SURVEY_OBS = 12
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
 Status = Literal["valid", "abstain", "unavailable", "invalid"]
@@ -89,6 +90,7 @@ class SeriesConfig:
         "claims_log4w_delta13",
         "diffusion_zero_centered",
         "sentiment_level_delta",
+        "quarterly_survey_level_v1",
     ]
     direction: Literal[-1, 1] = 1
     weight_in_family: float = 1.0
@@ -301,7 +303,13 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "credit_survey",
         "quarterly",
         120,
-        SeriesConfig("DRTSCILM", "growth", "credit_survey", "rate_level", direction=-1),
+        SeriesConfig(
+            "DRTSCILM",
+            "growth",
+            "credit_survey",
+            "quarterly_survey_level_v1",
+            direction=-1,
+        ),
         notes="SLOOS tighter commercial and industrial loan standards",
     ),
     V02SeriesSpec(
@@ -309,7 +317,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "credit_survey",
         "quarterly",
         120,
-        SeriesConfig("DRSDCILM", "growth", "credit_survey", "rate_level"),
+        SeriesConfig("DRSDCILM", "growth", "credit_survey", "quarterly_survey_level_v1"),
         notes="SLOOS commercial and industrial loan demand",
     ),
     V02SeriesSpec(
@@ -328,6 +336,7 @@ V02_UNION_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
 V02_UNION_SERIES: tuple[SeriesConfig, ...] = tuple(
     spec.config for spec in V02_UNION_SERIES_SPECS
 )
+V02_SPEC_BY_SERIES_ID = {spec.series_id: spec for spec in V02_UNION_SERIES_SPECS}
 V02_EXCLUDED_MARKET_DERIVED_SERIES = ("NFCI", "STLFSI", "STLFSI4")
 V02A_GROWTH_SCREEN_SERIES = (
     "ICSA",
@@ -337,7 +346,13 @@ V02A_GROWTH_SCREEN_SERIES = (
     "NOCDISA066MSFRBNY",
     "UMCSENT",
 )
-V02B_DEFERRED_SERIES = ("BUSAPPWNSAUS", "DRTSCILM", "DRSDCILM")
+V02B_SLOOS_SCREEN_SERIES = ("DRTSCILM", "DRSDCILM")
+V02B_DEFERRED_SERIES = ("BUSAPPWNSAUS",)
+V02A_DIAGNOSTIC_RESULTS = (
+    "V02-G1-SURVEY-REGION-COMPOSITE-15",
+    "V02-G1-SURVEY-REGION-COMPOSITE-10",
+    "V02-G1-ICSA-LOG4W-10",
+)
 
 FAMILY_WEIGHTS: dict[str, dict[str, float]] = {
     "growth": {"real_activity": 0.75, "labor": 0.25},
@@ -961,12 +976,16 @@ def macro_primitive_row(
         "axis_id": cfg.axis,
         "family_id": cfg.family,
         "transform_class": cfg.transform_class,
+        "direction": cfg.direction,
         "observation_period": date_or_none(latest_period),
         "vintage_date": date_or_none(latest_row.vintage_date if latest_row else None),
         "available_at": datetime_or_none(latest_row.available_at if latest_row else None),
         "raw_value": latest_row.value if latest_row else None,
         "revision_number": latest_row.revision_number if latest_row else None,
-        "freshness": series_freshness(cut, latest_row.available_at) if latest_row else 0.0,
+        "freshness": (
+            series_freshness(cut, latest_row.available_at, series_id=cfg.series_id)
+            if latest_row else 0.0
+        ),
         "vintage_quality": (
             vintage_quality(latest_row.revision_number) if latest_row else 0.0
         ),
@@ -1036,6 +1055,8 @@ def custom_macro_primitives(
         "z_diffusion_zero_centered": None,
         "sentiment_level_z": None,
         "sentiment_delta_3m_z": None,
+        "quarterly_level_z": None,
+        "quarterly_delta_1q_z": None,
     }
     if cfg.transform_class in {"claims_log4w", "claims_log4w_delta13"}:
         log_ma4 = log_moving_average_history(series, periods, window=4)
@@ -1067,6 +1088,14 @@ def custom_macro_primitives(
             out.update({
                 "sentiment_level_z": latest_component_z(series),
                 "sentiment_delta_3m_z": latest_component_z(delta3),
+            })
+    if cfg.transform_class == "quarterly_survey_level_v1":
+        latest = periods[-1] if periods else None
+        if latest is not None:
+            delta1q = ordered_delta_by_lag(series, lag=1)
+            out.update({
+                "quarterly_level_z": latest_quarterly_component_z(series),
+                "quarterly_delta_1q_z": latest_quarterly_component_z(delta1q),
             })
     return out
 
@@ -1104,6 +1133,20 @@ def zero_centered_robust_z(series: dict[dt.date, float], current: float) -> floa
     if scale <= 0:
         return None
     return clip(current / scale, SERIES_Z_CLIP)
+
+
+def latest_quarterly_component_z(values_by_period: dict[dt.date, float]) -> float | None:
+    if not values_by_period:
+        return None
+    latest = max(values_by_period)
+    history = [
+        float(value)
+        for period, value in values_by_period.items()
+        if period <= latest and math.isfinite(value)
+    ]
+    if len(history) < MIN_QUARTERLY_SURVEY_OBS:
+        return None
+    return robust_z(history, values_by_period[latest], clip=SERIES_Z_CLIP)
 
 
 def series_component_z_values(transform_class: str, series: dict[dt.date, float]) -> dict[str, float | None]:
@@ -1201,6 +1244,8 @@ def _reference_series_score_cached(
         value = diffusion_zero_centered_score(series)
     elif transform_class == "sentiment_level_delta":
         value = sentiment_level_delta_score(series)
+    elif transform_class == "quarterly_survey_level_v1":
+        value = latest_quarterly_component_z(series)
     else:
         value = rate_level_score(series)
     return value * direction if value is not None else None
@@ -1880,7 +1925,22 @@ def shift_months_with_set(
     return candidate if candidate in period_set else None
 
 
-def series_freshness(cut: dt.datetime, available_at: dt.datetime) -> float:
+def series_freshness(
+    cut: dt.datetime,
+    available_at: dt.datetime,
+    *,
+    series_id: str | None = None,
+) -> float:
+    spec = V02_SPEC_BY_SERIES_ID.get(series_id or "")
+    if spec and spec.frequency == "quarterly":
+        soft, hard = source_deadlines(
+            available_at,
+            available_at + dt.timedelta(days=90),
+            dt.timedelta(days=15),
+            dt.timedelta(days=spec.freshness_limit_days),
+            dt.timedelta(days=30),
+        )
+        return freshness_value(cut, soft, hard)
     # Baseline approximation until release calendars are wired: monthly source,
     # next expected release around +30d, 7d grace, hard max age 45d.
     soft, hard = source_deadlines(
@@ -2306,10 +2366,18 @@ def a31_config_hash(config: A31Config, l2_macro_logical_hash: str) -> str:
     })[:24]
 
 
-def a32_config_hash(config: A32Config, l3_config_hash: str) -> str:
+def a32_config_hash(config: A32Config) -> str:
     return stable_hash({
-        "l3_config_hash": l3_config_hash,
         "canonical_A32Config": asdict(config),
+        "state_schema_version": L4_STATE_SCHEMA_VERSION,
+        "state_code_version": L4_STATE_CODE_VERSION,
+    })[:24]
+
+
+def evaluation_hash(a31_config_hash_: str, a32_config_hash_: str) -> str:
+    return stable_hash({
+        "a31_config_hash": a31_config_hash_,
+        "a32_config_hash": a32_config_hash_,
         "state_schema_version": L4_STATE_SCHEMA_VERSION,
         "state_code_version": L4_STATE_CODE_VERSION,
     })[:24]
@@ -2528,6 +2596,23 @@ def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | 
             (0.70, finite_or_none(row.get("sentiment_level_z"))),
             (0.30, finite_or_none(row.get("sentiment_delta_3m_z"))),
         ])
+    if transform_class == "quarterly_survey_level_v1":
+        weights = config.transformation_weights.get(
+            transform_class, {"level": 1.0, "delta_1q": 0.0}
+        )
+        components = [
+            (
+                float(weights.get("level", 1.0)),
+                finite_or_none(row.get("quarterly_level_z")),
+            ),
+            (
+                float(weights.get("delta_1q", 0.0)),
+                finite_or_none(row.get("quarterly_delta_1q_z")),
+            ),
+        ]
+        value = weighted_components([(w, z) for w, z in components if w > 0.0])
+        direction = int(row.get("direction") or series_direction(str(row.get("series_id") or "")))
+        return value * direction if value is not None else None
     ref = reference_a31_config()
     weights = config.transformation_weights.get(transform_class)
     if not weights:
@@ -2546,6 +2631,13 @@ def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | 
             (float(weights.get("delta_3m", 0.0)), finite_or_none(row.get("z_delta_3m"))),
         ])
     return finite_or_none(row.get("reference_series_score"))
+
+
+def series_direction(series_id: str) -> int:
+    spec = V02_SPEC_BY_SERIES_ID.get(series_id)
+    if spec is None:
+        return 1
+    return int(spec.config.direction)
 
 
 def enrich_l2_component_z(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2759,7 +2851,8 @@ def run_l4_state_machine(
     if not rows:
         return [], {}
     l3_hash = rows[0]["a31_config_hash"]
-    a32_hash = a32_config_hash(a32_config, l3_hash)
+    a32_hash = a32_config_hash(a32_config)
+    eval_hash = evaluation_hash(l3_hash, a32_hash)
     prev_info_hash: str | None = None
     prev_record: dict[str, Any] | None = None
     growth_internal: int | None = None
@@ -2821,6 +2914,7 @@ def run_l4_state_machine(
             "date": day,
             "a31_config_hash": l3_hash,
             "a32_config_hash": a32_hash,
+            "evaluation_hash": eval_hash,
             "a31_config_name": row["a31_config_name"],
             "a32_config_name": a32_config.name,
             "selection_mode": selection_mode,
@@ -2896,6 +2990,7 @@ def run_l4_state_machine(
         "code_version": L4_STATE_CODE_VERSION,
         "a31_config_hash": l3_hash,
         "a32_config_hash": a32_hash,
+        "evaluation_hash": eval_hash,
         "a32_config": asdict(a32_config),
         "selection_mode": selection_mode,
         "selection_role": selection_role_for_mode(selection_mode),
@@ -3099,10 +3194,20 @@ def build_smoke_grid_results(
             runtime, _ = run_l4_state_machine(l3_rows, a32, selection_mode="latest")
             counterfactual, _ = run_l4_state_machine(l3_rows, a32, selection_mode="first_release")
             a31_hash = l3_manifest["a31_config_hash"]
-            a32_hash = a32_config_hash(a32, a31_hash)
+            a32_hash = a32_config_hash(a32)
+            eval_hash = evaluation_hash(a31_hash, a32_hash)
             classification = classify_smoke_result(runtime, counterfactual)
             all_metric_rows.extend(
-                evaluation_metric_rows(runtime, counterfactual, a31, a32, a31_hash, a32_hash, classification)
+                evaluation_metric_rows(
+                    runtime,
+                    counterfactual,
+                    a31,
+                    a32,
+                    a31_hash,
+                    a32_hash,
+                    eval_hash,
+                    classification,
+                )
             )
             full_metrics = build_macro_metrics(runtime, first_release_replay=counterfactual)
             all_summary_rows.append({
@@ -3110,6 +3215,7 @@ def build_smoke_grid_results(
                 "a31_config_name": a31.name,
                 "a32_config_hash": a32_hash,
                 "a32_config_name": a32.name,
+                "evaluation_hash": eval_hash,
                 "result_classification": classification,
                 "valid_rate": full_metrics["valid_rate"],
                 "abstain_rate": full_metrics["abstain_rate"],
@@ -3225,6 +3331,7 @@ def evaluation_metric_rows(
     a32: A32Config,
     a31_hash: str,
     a32_hash: str,
+    eval_hash: str,
     classification: str,
 ) -> list[dict[str, Any]]:
     folds = [
@@ -3239,12 +3346,14 @@ def evaluation_metric_rows(
         cf = filter_replay_window(counterfactual, start, end)
         metrics = build_macro_metrics(rt, first_release_replay=cf)
         transition_deltas = build_transition_revision_deltas(rt, cf)
+        revision_diagnostics = replay_revision_diagnostics(rt, cf)
         rows.append({
             "fold": fold_name,
             "a31_config_hash": a31_hash,
             "a31_config_name": a31.name,
             "a32_config_hash": a32_hash,
             "a32_config_name": a32.name,
+            "evaluation_hash": eval_hash,
             "result_classification": classification,
             "candidate_revision_change_rate": metrics["vintage_stability"].get(
                 "candidate_quadrant_changed_by_revision_rate"
@@ -3293,11 +3402,66 @@ def evaluation_metric_rows(
             "inflation_dispersion_distribution": json.dumps(
                 distribution([row["inflation_dispersion"] for row in rt]), sort_keys=True
             ),
+            **revision_diagnostics,
             "frozen": False,
             "production_candidate": False,
             "activation_ready": False,
         })
     return rows
+
+
+def replay_revision_diagnostics(
+    runtime: list[dict[str, Any]],
+    counterfactual: list[dict[str, Any]],
+) -> dict[str, Any]:
+    cf_by_date = {str(row["date"]): row for row in counterfactual}
+    growth_score_diffs: list[float] = []
+    growth_raw_sign_change_dates: list[dt.date] = []
+    growth_axis_state_change_dates: list[dt.date] = []
+    candidate_change_dates: list[dt.date] = []
+    deadband_absorbed_dates: list[dt.date] = []
+    common_dates: list[dt.date] = []
+    for latest in runtime:
+        date_text = str(latest["date"])
+        revised = cf_by_date.get(date_text)
+        if revised is None:
+            continue
+        day = dt.date.fromisoformat(date_text)
+        common_dates.append(day)
+        latest_growth = finite_or_none(latest.get("growth_score"))
+        revised_growth = finite_or_none(revised.get("growth_score"))
+        latest_growth_sign = sign_of(latest_growth)
+        revised_growth_sign = sign_of(revised_growth)
+        growth_raw_changed = (
+            latest_growth_sign is not None
+            and revised_growth_sign is not None
+            and latest_growth_sign != revised_growth_sign
+        )
+        if latest_growth is not None and revised_growth is not None:
+            growth_score_diffs.append(abs(latest_growth - revised_growth))
+        if growth_raw_changed:
+            growth_raw_sign_change_dates.append(day)
+        if latest.get("growth_axis_state") != revised.get("growth_axis_state"):
+            growth_axis_state_change_dates.append(day)
+        elif growth_raw_changed:
+            deadband_absorbed_dates.append(day)
+        if latest.get("candidate_quadrant") != revised.get("candidate_quadrant"):
+            candidate_change_dates.append(day)
+
+    durations = contiguous_date_durations(candidate_change_dates, sorted(common_dates))
+    duration_dist = duration_summary(durations)
+    score_dist = distribution(growth_score_diffs)
+    return {
+        "growth_score_revision_abs_median": score_dist["median"],
+        "growth_score_revision_abs_p90": score_dist["p90"],
+        "growth_raw_sign_change_days": len(growth_raw_sign_change_dates),
+        "growth_axis_state_change_days": len(growth_axis_state_change_dates),
+        "candidate_quadrant_change_days": len(candidate_change_dates),
+        "deadband_absorbed_revision_days": len(deadband_absorbed_dates),
+        "revision_episode_count": len(durations),
+        "revision_episode_duration_p50": duration_dist["median"],
+        "revision_episode_duration_p90": duration_dist["p90"],
+    }
 
 
 def filter_replay_window(
@@ -4723,6 +4887,7 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         "qualification_status": qualification_status,
         "candidate_sets": candidate_sets,
         "v02_g0_control_ready": True,
+        "v02b_sloos_g0_control_ready": True,
         "blocked_reasons": blocked_reasons,
         "worker_commit": worker_commit,
         "git_dirty": git_dirty,
@@ -4757,11 +4922,17 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         "qualification_status": qualification_status,
         "candidate_sets": candidate_sets,
         "v02_g0_control_ready": True,
+        "v02b_sloos_g0_control_ready": True,
         "blocked_reasons": blocked_reasons,
         "v02_g0_control_status": (
             "ready_not_run"
             if candidate_sets["v02a_growth_screen"]["ready_for_grid"]
             else "blocked_until_v02a_qualifies"
+        ),
+        "v02b_sloos_g0_control_status": (
+            "ready_not_run"
+            if candidate_sets["v02b_sloos_screen"]["ready_for_grid"]
+            else "blocked_until_sloos_quarterly_qualifies"
         ),
         "a4_status": "candidate_seed_only",
         "a5_status": "blocked",
@@ -4993,6 +5164,10 @@ def build_v02_candidate_sets(series_audit: list[dict[str, Any]]) -> dict[str, An
         by_series.get(series_id, {}).get("eligibility_status") == "eligible_for_v02_screen"
         for series_id in V02A_GROWTH_SCREEN_SERIES
     )
+    v02b_sloos_ready = all(
+        by_series.get(series_id, {}).get("eligibility_status") == "eligible_for_v02_screen"
+        for series_id in V02B_SLOOS_SCREEN_SERIES
+    )
     deferred = {
         series_id: v02_deferred_reason(series_id, by_series.get(series_id, {}))
         for series_id in V02B_DEFERRED_SERIES
@@ -5002,6 +5177,13 @@ def build_v02_candidate_sets(series_audit: list[dict[str, Any]]) -> dict[str, An
             "ready_for_grid": v02a_ready,
             "eligible_series": list(V02A_GROWTH_SCREEN_SERIES),
             "series_set_hash": stable_hash(list(V02A_GROWTH_SCREEN_SERIES)),
+        },
+        "v02b_sloos_screen": {
+            "ready_for_grid": v02b_sloos_ready,
+            "eligible_series": list(V02B_SLOOS_SCREEN_SERIES),
+            "series_set_hash": stable_hash(list(V02B_SLOOS_SCREEN_SERIES)),
+            "transform_class": "quarterly_survey_level_v1",
+            "min_history": f"{MIN_QUARTERLY_SURVEY_OBS} quarters",
         },
         "v02b_deferred": {
             "ready_for_grid": False,
@@ -5171,7 +5353,11 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
                 result_dir,
                 expected_l2_hash=l2_hash,
                 expected_a31_hash=a31_hash,
-                expected_a32_hash=a32_config_hash(a32_ref, a31_hash),
+                expected_a32_hash=a32_config_hash(a32_ref),
+                expected_evaluation_hash=evaluation_hash(
+                    a31_hash,
+                    a32_config_hash(a32_ref),
+                ),
             )
             if loaded is not None:
                 existing_summary.append(loaded["summary"])
@@ -5219,8 +5405,22 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
     write_json(output_dir / "failures.json", {"failures": failures})
 
     finished = dt.datetime.now(UTC)
+    a32_ref_hashes = sorted({row["a32_config_hash"] for row in summary_rows})
+    if len(a32_ref_hashes) != 1:
+        raise ValueError(f"A32-REF must be canonical and unique; got {a32_ref_hashes}")
+    v02a_statuses = sorted({
+        str(item["metadata"].get("v02a_status"))
+        for item in normalized_catalog["configs"]
+        if item["metadata"].get("v02a_status")
+    })
+    v02a_diagnostic_references = sorted({
+        str(ref)
+        for item in normalized_catalog["configs"]
+        for ref in item["metadata"].get("v02a_diagnostic_references", [])
+    })
     grid_manifest = {
         "schema_version": A31_GRID_SCHEMA_VERSION,
+        "status": "ok" if not failures else "partial_with_failures",
         "run_fingerprint": run_fingerprint,
         "execution_id": execution_id,
         "started_at": started.isoformat(),
@@ -5245,7 +5445,10 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
             "series_family_mapping_hash": feature_manifest.get("series_family_mapping_hash"),
         },
         "config_catalog_hash": catalog_hash,
-        "a32_ref_hashes": sorted({row["a32_config_hash"] for row in summary_rows}),
+        "a32_ref_hashes": a32_ref_hashes,
+        "evaluation_hashes": sorted({row["evaluation_hash"] for row in summary_rows}),
+        "v02a_status": v02a_statuses[0] if len(v02a_statuses) == 1 else None,
+        "v02a_diagnostic_references": v02a_diagnostic_references,
         "config_count": len(normalized_catalog["configs"]),
         "completed_count": len(summary_rows),
         "failure_count": len(failures),
@@ -5643,7 +5846,8 @@ def a31_grid_worker(task: dict[str, Any]) -> dict[str, Any]:
     a31 = A31Config(**item["config"])
     a31_hash = str(item["a31_config_hash"])
     a32 = reference_a32_config()
-    a32_hash = a32_config_hash(a32, a31_hash)
+    a32_hash = a32_config_hash(a32)
+    eval_hash = evaluation_hash(a31_hash, a32_hash)
     result_dir = Path(task["result_dir"])
     temp_dir = result_dir.with_name(f"{result_dir.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     if temp_dir.exists():
@@ -5685,11 +5889,13 @@ def a31_grid_worker(task: dict[str, Any]) -> dict[str, Any]:
             a32,
             a31_hash,
             a32_hash,
+            eval_hash,
             classification,
         )
         summary = a31_grid_summary_row(
             item,
             a32_hash,
+            eval_hash,
             metrics_full,
             metric_rows,
             timings,
@@ -5724,6 +5930,7 @@ def a31_grid_worker(task: dict[str, Any]) -> dict[str, Any]:
             "a31_config": asdict(a31),
             "a32_ref_hash": a32_hash,
             "a32_ref_config": asdict(a32),
+            "evaluation_hash": eval_hash,
             **persisted_hashes,
             "metrics_logical_hash": logical_payload_hash(metrics_full),
             "metrics_by_fold_logical_hash": logical_records_hash(metric_rows),
@@ -5801,6 +6008,7 @@ def classify_a31_grid_result(metrics: dict[str, Any]) -> str:
 def a31_grid_summary_row(
     item: dict[str, Any],
     a32_hash: str,
+    eval_hash: str,
     metrics: dict[str, Any],
     metric_rows: list[dict[str, Any]],
     timings: dict[str, float],
@@ -5814,6 +6022,7 @@ def a31_grid_summary_row(
         "a31_config_name": item["config"]["name"],
         "a32_config_hash": a32_hash,
         "a32_config_name": "A32-REF",
+        "evaluation_hash": eval_hash,
         "catalog_index": item["catalog_index"],
         "round": item["metadata"].get("round"),
         "description": item["metadata"].get("description"),
@@ -5829,6 +6038,15 @@ def a31_grid_summary_row(
         "transition_timing_displacement_median": transition_displacement_median(
             full["transition_timing_displacement"]
         ),
+        "growth_score_revision_abs_median": full["growth_score_revision_abs_median"],
+        "growth_score_revision_abs_p90": full["growth_score_revision_abs_p90"],
+        "growth_raw_sign_change_days": full["growth_raw_sign_change_days"],
+        "growth_axis_state_change_days": full["growth_axis_state_change_days"],
+        "candidate_quadrant_change_days": full["candidate_quadrant_change_days"],
+        "deadband_absorbed_revision_days": full["deadband_absorbed_revision_days"],
+        "revision_episode_count": full["revision_episode_count"],
+        "revision_episode_duration_p50": full["revision_episode_duration_p50"],
+        "revision_episode_duration_p90": full["revision_episode_duration_p90"],
         "candidate_flips_per_year": full["candidate_flips_per_year"],
         "published_flips_per_year": full["published_flips_per_year"],
         "valid_rate": full["valid_rate"],
@@ -5864,6 +6082,7 @@ def load_existing_a31_result(
     expected_l2_hash: str,
     expected_a31_hash: str,
     expected_a32_hash: str,
+    expected_evaluation_hash: str,
 ) -> dict[str, Any] | None:
     required = [
         "l3_score_panel.parquet",
@@ -5884,6 +6103,8 @@ def load_existing_a31_result(
     if manifest.get("a31_config_hash") != expected_a31_hash:
         return None
     if manifest.get("a32_ref_hash") != expected_a32_hash:
+        return None
+    if manifest.get("evaluation_hash") != expected_evaluation_hash:
         return None
     l3_rows = read_parquet_records(result_dir / "l3_score_panel.parquet")
     runtime = read_parquet_records(result_dir / "l4_replay_a32_ref.parquet")
