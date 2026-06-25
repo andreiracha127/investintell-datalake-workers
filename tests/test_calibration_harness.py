@@ -1007,6 +1007,80 @@ def test_a31_grid_parallel_matches_serial_metrics(tmp_path, monkeypatch) -> None
         assert serial_row["result_classification"] == parallel_row["result_classification"]
 
 
+def test_a31_progression_payload_allows_conditional_pass() -> None:
+    payload = ch.a31_progression_payload({
+        "candidate_revision_change_rate": 0.2220,
+        "growth_sign_revision_change_days": 1028,
+        "valid_rate": ch.A31_V01_VALID_RATE + 0.001,
+    })
+
+    assert payload["decision_policy_version"] == ch.A31_PROGRESSION_POLICY_VERSION
+    assert payload["progression_level"] == "conditional_pass"
+    assert payload["a31_provisional_status"] == "a31_provisional_candidate"
+    assert payload["risk_flag"] == "elevated_vintage_instability"
+    assert payload["absolute_target_20pct_met"] is False
+
+
+def test_a31_progression_decision_uses_g2_control_for_fold_deltas() -> None:
+    control = {
+        "a31_config_hash": "control",
+        "a31_config_name": "G2-CREDIT6040-15",
+        "progression_level": "conditional_pass",
+        "candidate_revision_change_rate": 0.2220,
+        "growth_sign_revision_change_days": 1028,
+        "a31_provisional_status": "a31_provisional_candidate",
+        "risk_flag": "elevated_vintage_instability",
+        "relative_revision_improvement_vs_v01": 0.119,
+        "valid_rate": 0.22,
+        "absolute_target_20pct_met": False,
+    }
+    challenger = {
+        **control,
+        "a31_config_hash": "challenger",
+        "a31_config_name": "G2-CREDIT6040-10-SURVEY05",
+        "candidate_revision_change_rate": 0.2210,
+    }
+    metrics = [
+        {
+            "a31_config_hash": "control",
+            "fold": "2014_2017",
+            "candidate_revision_change_rate": 0.25,
+        },
+        {
+            "a31_config_hash": "challenger",
+            "fold": "2014_2017",
+            "candidate_revision_change_rate": 0.24,
+        },
+    ]
+
+    decision = ch.build_a31_progression_decision_manifest(
+        [control, challenger],
+        metrics,
+        config_catalog_path=Path("catalog.yaml"),
+    )
+
+    assert decision["new_decision"] == "advance_to_g2_limited"
+    assert decision["reason"]["fold_revision_deltas_vs_control"]["2014_2017"] == pytest.approx(-0.01)
+    assert decision["a4_status"] == "calibration_in_progress_with_provisional_A3"
+
+
+def test_a32_grid_configs_match_limited_surface() -> None:
+    configs = ch.a32_grid_configs()
+
+    assert len(configs) == 24
+    assert {cfg.min_confidence for cfg in configs} == {0.60, 0.65, 0.70}
+    assert {cfg.growth_enter for cfg in configs} == {0.30, 0.35}
+    assert {cfg.inflation_enter for cfg in configs} == {0.35, 0.40}
+    assert {cfg.growth_exit for cfg in configs} == {0.10, 0.15}
+    assert {cfg.inflation_exit for cfg in configs} == {0.10, 0.15}
+    assert {cfg.u_floor for cfg in configs} == {0.65}
+    assert {cfg.growth_score_scale for cfg in configs} == {1.0}
+    assert {cfg.inflation_score_scale for cfg in configs} == {1.0}
+    assert {cfg.dispersion_limit for cfg in configs} == {1.25}
+    assert all(cfg.growth_exit < cfg.growth_enter for cfg in configs)
+    assert all(cfg.inflation_exit < cfg.inflation_enter for cfg in configs)
+
+
 def test_a31_catalog_compiles_multiple_family_shifts_from_immutable_base() -> None:
     cfg, metadata = ch.a31_config_from_catalog_entry({
         "name": "A31-MULTI-SHIFT",
