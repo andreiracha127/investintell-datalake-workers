@@ -25,6 +25,10 @@ OBJECT_STORE_BASE_PREFIX = "investintell/a3/qc-a3-parity"
 OBJECT_STORE_PREFIX = OBJECT_STORE_BASE_PREFIX
 QC_A3_BRIDGE_SCHEMA_VERSION = 1
 FLOAT_TOLERANCE = 1e-12
+FLOAT_REL_TOLERANCE = 1e-12
+METRIC_HASH_FLOAT_DECIMALS = 12
+METRICS_HASH_POLICY_VERSION = "qc_a3_metrics_float_canonical_v1"
+BUNDLE_EVALUATION_HASH_POLICY_VERSION = "qc_a3_parity_bundle_v1"
 OBJECT_STORE_UPLOAD_FILE_KEYS = {
     "feature_manifest": "manifests/feature_manifest.json",
     "revision_uncertainty_manifest": "manifests/revision_uncertainty_manifest.json",
@@ -273,7 +277,7 @@ def compare_expected_metrics(
             "status": "skipped",
             "reason": f"no supported metrics parquet found in {config.expected_v03_grid_dir}",
         }
-    expected_rows = harness.read_parquet_records(expected_path)
+    expected_rows = read_expected_metric_rows(expected_path, harness)
     expected = [
         row for row in expected_rows
         if row.get("a31_config_name") == config.a31_name
@@ -294,6 +298,7 @@ def compare_expected_metrics(
             mismatches.append({"fold": fold, "field": "<row>", "issue": "missing_actual"})
             continue
         mismatches.extend(compare_rows(fold, actual_row, expected_row))
+    float_diffs = float_diff_summary(actual_metric_rows, expected)
     return {
         "enabled": True,
         "status": "passed" if not mismatches else "failed",
@@ -302,6 +307,7 @@ def compare_expected_metrics(
         "expected_rows": len(expected),
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:50],
+        **float_diffs,
     }
 
 
@@ -314,7 +320,24 @@ def first_existing_metrics_path(base_dir: Path) -> Path | None:
         path = base_dir / name
         if path.exists():
             return path
+    for name in (
+        "expected/macro_metric_rows.json",
+        "macro_metric_rows.json",
+    ):
+        path = base_dir / name
+        if path.exists():
+            return path
     return None
+
+
+def read_expected_metric_rows(path: Path, harness: Any) -> list[dict[str, Any]]:
+    if path.suffix.lower() == ".json":
+        payload = read_json(path)
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError(f"Expected metric rows JSON at {path} must contain a rows array")
+        return rows
+    return harness.read_parquet_records(path)
 
 
 def compare_rows(
@@ -331,16 +354,17 @@ def compare_rows(
         rhs = expected[key]
         if lhs is None and rhs is None:
             continue
+        if values_equivalent(lhs, rhs):
+            continue
         if is_number(lhs) and is_number(rhs):
-            if abs(float(lhs) - float(rhs)) > FLOAT_TOLERANCE:
-                mismatches.append({
-                    "fold": fold,
-                    "field": key,
-                    "actual": lhs,
-                    "expected": rhs,
-                    "abs_diff": abs(float(lhs) - float(rhs)),
-                })
-        elif normalize_scalar(lhs) != normalize_scalar(rhs):
+            mismatches.append({
+                "fold": fold,
+                "field": key,
+                "actual": lhs,
+                "expected": rhs,
+                "abs_diff": abs(float(lhs) - float(rhs)),
+            })
+        else:
             mismatches.append({
                 "fold": fold,
                 "field": key,
@@ -350,8 +374,164 @@ def compare_rows(
     return mismatches
 
 
+def float_diff_summary(
+    actual_rows: list[dict[str, Any]],
+    expected_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    actual_by_fold = {str(row.get("fold")): row for row in actual_rows}
+    diffs: list[dict[str, Any]] = []
+    for expected in expected_rows:
+        fold = str(expected.get("fold"))
+        actual = actual_by_fold.get(fold)
+        if actual is None:
+            continue
+        for key in sorted(set(actual) & set(expected)):
+            collect_float_diffs(
+                diffs,
+                fold=fold,
+                field=key,
+                actual=actual[key],
+                expected=expected[key],
+            )
+    max_abs_diff = max((item["abs_diff"] for item in diffs), default=0.0)
+    max_rel_diff = max((item["rel_diff"] for item in diffs), default=0.0)
+    differing_fields = sorted({item["field"] for item in diffs})
+    return {
+        "float_abs_tolerance": FLOAT_TOLERANCE,
+        "float_rel_tolerance": FLOAT_REL_TOLERANCE,
+        "max_abs_diff": max_abs_diff,
+        "max_rel_diff": max_rel_diff,
+        "differing_float_fields": differing_fields,
+    }
+
+
+def collect_float_diffs(
+    diffs: list[dict[str, Any]],
+    *,
+    fold: str,
+    field: str,
+    actual: Any,
+    expected: Any,
+) -> None:
+    actual_json = parse_json_scalar(actual)
+    expected_json = parse_json_scalar(expected)
+    if actual_json is not None and expected_json is not None:
+        collect_json_float_diffs(
+            diffs,
+            fold=fold,
+            field=field,
+            actual=actual_json,
+            expected=expected_json,
+        )
+        return
+    if is_number(actual) and is_number(expected):
+        append_float_diff(diffs, fold=fold, field=field, actual=float(actual), expected=float(expected))
+
+
+def collect_json_float_diffs(
+    diffs: list[dict[str, Any]],
+    *,
+    fold: str,
+    field: str,
+    actual: Any,
+    expected: Any,
+) -> None:
+    if is_number(actual) and is_number(expected):
+        append_float_diff(diffs, fold=fold, field=field, actual=float(actual), expected=float(expected))
+        return
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        for key in sorted(set(actual) & set(expected)):
+            collect_json_float_diffs(
+                diffs,
+                fold=fold,
+                field=f"{field}.{key}",
+                actual=actual[key],
+                expected=expected[key],
+            )
+        return
+    if isinstance(actual, list) and isinstance(expected, list):
+        for index, (left, right) in enumerate(zip(actual, expected)):
+            collect_json_float_diffs(
+                diffs,
+                fold=fold,
+                field=f"{field}[{index}]",
+                actual=left,
+                expected=right,
+            )
+
+
+def append_float_diff(
+    diffs: list[dict[str, Any]],
+    *,
+    fold: str,
+    field: str,
+    actual: float,
+    expected: float,
+) -> None:
+    abs_diff = abs(actual - expected)
+    if abs_diff == 0:
+        return
+    denominator = max(abs(expected), FLOAT_TOLERANCE)
+    diffs.append({
+        "fold": fold,
+        "field": field,
+        "actual": actual,
+        "expected": expected,
+        "abs_diff": abs_diff,
+        "rel_diff": abs_diff / denominator,
+    })
+
+
 def is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def values_equivalent(lhs: Any, rhs: Any) -> bool:
+    if lhs is None and rhs is None:
+        return True
+    if is_number(lhs) and is_number(rhs):
+        return math.isclose(
+            float(lhs),
+            float(rhs),
+            rel_tol=FLOAT_REL_TOLERANCE,
+            abs_tol=FLOAT_TOLERANCE,
+        )
+    lhs_json = parse_json_scalar(lhs)
+    rhs_json = parse_json_scalar(rhs)
+    if lhs_json is not None and rhs_json is not None:
+        return json_values_equivalent(lhs_json, rhs_json)
+    return normalize_scalar(lhs) == normalize_scalar(rhs)
+
+
+def parse_json_scalar(value: Any) -> Any | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
+def json_values_equivalent(lhs: Any, rhs: Any) -> bool:
+    if is_number(lhs) and is_number(rhs):
+        return math.isclose(
+            float(lhs),
+            float(rhs),
+            rel_tol=FLOAT_REL_TOLERANCE,
+            abs_tol=FLOAT_TOLERANCE,
+        )
+    if isinstance(lhs, dict) and isinstance(rhs, dict):
+        if set(lhs) != set(rhs):
+            return False
+        return all(json_values_equivalent(lhs[key], rhs[key]) for key in lhs)
+    if isinstance(lhs, list) and isinstance(rhs, list):
+        if len(lhs) != len(rhs):
+            return False
+        return all(json_values_equivalent(left, right) for left, right in zip(lhs, rhs))
+    return normalize_scalar(lhs) == normalize_scalar(rhs)
 
 
 def normalize_scalar(value: Any) -> Any:
@@ -361,6 +541,86 @@ def normalize_scalar(value: Any) -> Any:
         except (AttributeError, TypeError, ValueError):
             return value
     return value
+
+
+def metric_rows_logical_hash(rows: list[dict[str, Any]]) -> str:
+    harness = require_harness()
+    return harness.logical_records_hash(canonical_metric_rows(rows))
+
+
+def metric_rows_raw_sha256(rows: list[dict[str, Any]]) -> str:
+    payload = json.dumps(
+        rows,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def metrics_hash_policy_payload(
+    rows: list[dict[str, Any]],
+    comparison: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "metrics_hash_policy_version": METRICS_HASH_POLICY_VERSION,
+        "metrics_raw_sha256": metric_rows_raw_sha256(rows),
+        "metrics_canonical_logical_hash": metric_rows_logical_hash(rows),
+        "float_abs_tolerance": FLOAT_TOLERANCE,
+        "float_rel_tolerance": FLOAT_REL_TOLERANCE,
+        "max_abs_diff": comparison.get("max_abs_diff"),
+        "max_rel_diff": comparison.get("max_rel_diff"),
+        "differing_float_fields": comparison.get("differing_float_fields", []),
+    }
+
+
+def bundle_evaluation_hash(
+    *,
+    worker_commit: str | None,
+    result: dict[str, Any],
+    metrics_policy: dict[str, Any],
+) -> str:
+    harness = require_harness()
+    return harness.logical_payload_hash({
+        "policy_version": BUNDLE_EVALUATION_HASH_POLICY_VERSION,
+        "schema_version": QC_A3_BRIDGE_SCHEMA_VERSION,
+        "worker_commit": worker_commit,
+        "model_evaluation_hash": result["evaluation_hash"],
+        "a31_config_hash": result["a31_hash"],
+        "a32_config_hash": result["a32_hash"],
+        "parent_l2_macro_logical_hash": result["l2_hash"],
+        "revision_uncertainty_logical_hash": result["uncertainty_hash"],
+        "metrics_hash_policy_version": metrics_policy["metrics_hash_policy_version"],
+        "metrics_canonical_logical_hash": metrics_policy["metrics_canonical_logical_hash"],
+    })[:24]
+
+
+def canonical_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: canonical_metric_value(value) for key, value in row.items()}
+        for row in rows
+    ]
+
+
+def canonical_metric_value(value: Any) -> Any:
+    if is_number(value):
+        rounded = round(float(value), METRIC_HASH_FLOAT_DECIMALS)
+        return 0.0 if rounded == 0 else rounded
+    parsed = parse_json_scalar(value)
+    if parsed is not None:
+        return json.dumps(
+            canonical_metric_value(parsed),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    if isinstance(value, dict):
+        return {
+            str(key): canonical_metric_value(item)
+            for key, item in sorted(value.items())
+        }
+    if isinstance(value, list):
+        return [canonical_metric_value(item) for item in value]
+    return normalize_scalar(value)
 
 
 def read_npz_records(path: Path) -> list[dict[str, Any]]:
@@ -638,9 +898,15 @@ def object_store_manifest_payload(
     harness = require_harness()
     runtime_hash = harness.logical_records_hash(result["runtime_rows"])
     counterfactual_hash = harness.logical_records_hash(result["counterfactual_rows"])
-    metric_hash = harness.logical_records_hash(result["metric_rows"])
+    metrics_policy = metrics_hash_policy_payload(result["metric_rows"], result["comparison"])
+    metric_hash = metrics_policy["metrics_canonical_logical_hash"]
     worker_commit = config.worker_commit or current_git_commit()
-    immutable_prefix = immutable_object_store_prefix(worker_commit, result["evaluation_hash"])
+    evaluation_hash = bundle_evaluation_hash(
+        worker_commit=worker_commit,
+        result=result,
+        metrics_policy=metrics_policy,
+    )
+    immutable_prefix = immutable_object_store_prefix(worker_commit, evaluation_hash)
     bundle_dir = l2_panel_path.parents[1]
     object_files = object_file_metadata(
         bundle_dir,
@@ -691,12 +957,16 @@ def object_store_manifest_payload(
             "runtime publication or activation",
             "A4 parameter selection before A3 scope decision",
         ],
+        "evaluation_hash_policy_version": BUNDLE_EVALUATION_HASH_POLICY_VERSION,
+        "evaluation_hash": evaluation_hash,
+        "model_evaluation_hash": result["evaluation_hash"],
         "selected": {
             "a31_config_name": config.a31_name,
             "a31_config_hash": result["a31_hash"],
             "a32_config_name": config.a32_name,
             "a32_config_hash": result["a32_hash"],
-            "evaluation_hash": result["evaluation_hash"],
+            "model_evaluation_hash": result["evaluation_hash"],
+            "bundle_evaluation_hash": evaluation_hash,
         },
         "parent_hashes": {
             "l2_macro_logical_hash": result["l2_hash"],
@@ -760,10 +1030,14 @@ def object_store_manifest_payload(
             "macro_runtime_replay_logical_hash": runtime_hash,
             "macro_counterfactual_replay_logical_hash": counterfactual_hash,
             "macro_metric_rows_logical_hash": metric_hash,
+            "macro_metric_rows_raw_sha256": metrics_policy["metrics_raw_sha256"],
+            "macro_metric_rows_canonical_logical_hash": metric_hash,
+            "metrics_hash_policy_version": metrics_policy["metrics_hash_policy_version"],
             "metric_row_count": len(result["metric_rows"]),
             "runtime_row_count": len(result["runtime_rows"]),
             "counterfactual_row_count": len(result["counterfactual_rows"]),
         },
+        **metrics_policy,
         "comparison": result["comparison"],
         "qc_notes": {
             "research_node": "R8-16 CPU recommended for larger grids",
@@ -780,19 +1054,28 @@ def parity_report(
     finished: dt.datetime,
 ) -> dict[str, Any]:
     harness = require_harness()
+    metrics_policy = metrics_hash_policy_payload(result["metric_rows"], result["comparison"])
+    worker_commit = config.worker_commit or current_git_commit()
+    evaluation_hash = bundle_evaluation_hash(
+        worker_commit=worker_commit,
+        result=result,
+        metrics_policy=metrics_policy,
+    )
     return {
         "schema_version": QC_A3_BRIDGE_SCHEMA_VERSION,
         "artifact_type": "qc_a3_parity_report",
         "execution_id": str(uuid.uuid4()),
         "started_at": started.isoformat(),
         "finished_at": finished.isoformat(),
-        "worker_commit": config.worker_commit or current_git_commit(),
+        "worker_commit": worker_commit,
         "git_dirty": bool(current_git_dirty()),
         "a31_config_name": config.a31_name,
         "a31_config_hash": result["a31_hash"],
         "a32_config_name": config.a32_name,
         "a32_config_hash": result["a32_hash"],
-        "evaluation_hash": result["evaluation_hash"],
+        "evaluation_hash_policy_version": BUNDLE_EVALUATION_HASH_POLICY_VERSION,
+        "evaluation_hash": evaluation_hash,
+        "model_evaluation_hash": result["evaluation_hash"],
         "parent_hashes": {
             "l2_macro_logical_hash": result["l2_hash"],
             "revision_uncertainty_logical_hash": result["uncertainty_hash"],
@@ -802,7 +1085,15 @@ def parity_report(
         "counterfactual_replay_logical_hash": harness.logical_records_hash(
             result["counterfactual_rows"]
         ),
-        "metric_rows_logical_hash": harness.logical_records_hash(result["metric_rows"]),
+        "metric_rows_logical_hash": metrics_policy["metrics_canonical_logical_hash"],
+        "metrics_raw_sha256": metrics_policy["metrics_raw_sha256"],
+        "metrics_canonical_logical_hash": metrics_policy["metrics_canonical_logical_hash"],
+        "metrics_hash_policy_version": metrics_policy["metrics_hash_policy_version"],
+        "float_abs_tolerance": metrics_policy["float_abs_tolerance"],
+        "float_rel_tolerance": metrics_policy["float_rel_tolerance"],
+        "max_abs_diff": metrics_policy["max_abs_diff"],
+        "max_rel_diff": metrics_policy["max_rel_diff"],
+        "differing_float_fields": metrics_policy["differing_float_fields"],
         "metric_row_count": len(result["metric_rows"]),
         "runtime_row_count": len(result["runtime_rows"]),
         "counterfactual_row_count": len(result["counterfactual_rows"]),

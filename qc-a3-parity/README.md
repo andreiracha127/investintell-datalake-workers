@@ -11,13 +11,17 @@ This project is diagnostic-only:
 - `A4=harness_ready_provisional_A3`;
 - `A5=blocked`.
 
-Object Store manifest:
+Object Store manifest key is read from `object_store_manifest_key.txt` or the
+`QC_A3_OBJECT_STORE_MANIFEST_KEY` environment variable. The key must point to an
+immutable Object Store prefix generated after the bridge code is committed.
 
 ```text
-investintell/a3/qc-a3-parity/25375bb/10198d7603036c3327ac9e67/object_store_manifest.json
+investintell/a3/qc-a3-parity/<commit>/<bundle_evaluation_hash>/object_store_manifest.json
 ```
 
-Run `qc_a3_parity.ipynb` twice after a kernel restart. It writes:
+`qc_a3_parity.ipynb` requires QuantConnect cloud by default. In that mode it
+fails loudly if it uses the local bundle fallback, runs on WSL2, or cannot read a
+Research node identifier. Run it twice after a kernel restart. It writes:
 
 ```text
 results/qc_cloud_parity_report.json
