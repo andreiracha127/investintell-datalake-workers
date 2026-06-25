@@ -8,11 +8,14 @@ the benchmark ETFs needed by the screener metrics worker.
 
 Universe = active ``universe_constituents`` ∪ ``SELECT DISTINCT ticker FROM
 eod_prices`` ∪ ``INDEX_TICKERS``. This keeps the public stock screener covered
-instead of relying on a ticker to be queried once before it becomes warm.
+instead of relying on a ticker to be queried once before it becomes warm. The
+worker also seeds ``instruments`` for active screener tickers before touching
+``eod_prices`` because the Timescale table has a ticker FK to ``instruments``.
 
-Incremental only: every warmed ticker already has history, so we fetch from
-``max(date) − overlap`` (revisions) through today. ``eod_prices`` upserts land on
-recent uncompressed chunks — the same path the API's on-demand ingest uses.
+Incremental for existing tickers, two-year cold start for newly covered screener
+tickers: existing tickers fetch from ``max(date) − overlap`` (revisions), while
+new tickers fetch enough history for screener beta_2y. ``eod_prices`` upserts
+land on recent uncompressed chunks once the initial cold load is done.
 
 NOTE vs ``instrument_ingestion`` (which refreshes ``nav_timeseries`` for the fund
 catalog): this worker targets ``eod_prices`` (stock/ETF OHLCV the /stocks/* API
@@ -73,6 +76,20 @@ EOD_UPSERT_SQL = """
         split_factor = EXCLUDED.split_factor
 """
 
+SEED_ACTIVE_INSTRUMENTS_SQL = """
+    INSERT INTO instruments (ticker, name, asset_type)
+    SELECT ticker, name, 'stock'
+    FROM universe_constituents
+    WHERE status = 'active'
+    ON CONFLICT (ticker) DO NOTHING
+"""
+
+SEED_EXTRA_INSTRUMENT_SQL = """
+    INSERT INTO instruments (ticker, name, asset_type)
+    VALUES (%s, %s, 'etf')
+    ON CONFLICT (ticker) DO NOTHING
+"""
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Pure helpers
@@ -113,6 +130,21 @@ def warming_universe(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> list[st
     return sorted(tickers)
 
 
+def ensure_instruments(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> int:
+    """Seed FK parent rows for active screener and benchmark tickers."""
+    inserted = 0
+    with conn.cursor() as cur:
+        cur.execute(SEED_ACTIVE_INSTRUMENTS_SQL)
+        inserted += max(cur.rowcount, 0)
+        cur.executemany(
+            SEED_EXTRA_INSTRUMENT_SQL,
+            [(ticker, ticker) for ticker in extra],
+        )
+        inserted += max(cur.rowcount, 0)
+    conn.commit()
+    return inserted
+
+
 def _ticker_watermarks(conn) -> dict[str, _dt.date]:
     with conn.cursor() as cur:
         cur.execute("SELECT ticker, max(date) FROM eod_prices GROUP BY ticker")
@@ -125,8 +157,12 @@ def upsert_eod_prices(conn, rows: list[tuple[Any, ...]]) -> int:
     with conn.cursor() as cur:
         for i in range(0, len(rows), UPSERT_CHUNK):
             chunk = rows[i:i + UPSERT_CHUNK]
-            cur.executemany(EOD_UPSERT_SQL, chunk)
-            conn.commit()
+            try:
+                cur.executemany(EOD_UPSERT_SQL, chunk)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             upserted += len(chunk)
     return upserted
 
@@ -145,6 +181,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             if not got:
                 return {"fetched": 0, "upserted": 0, "skipped": "lock_busy"}
 
+            instruments_seeded = ensure_instruments(conn)
             tickers = warming_universe(conn)
             if limit:
                 tickers = tickers[:limit]
@@ -182,7 +219,8 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
 
     stats: dict[str, Any] = {
         "fetched": fetched, "upserted": upserted,
-        "tickers": len(tickers), "as_of": as_of.isoformat(),
+        "tickers": len(tickers), "instruments_seeded": instruments_seeded,
+        "as_of": as_of.isoformat(),
     }
     if skipped_rows:
         stats["skipped_rows"] = skipped_rows

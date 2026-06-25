@@ -80,6 +80,19 @@ def test_eod_upsert_sql_targets_ticker_date_and_updates_price_columns():
     assert "date = EXCLUDED" not in sql
 
 
+def test_instrument_seed_sqls_preserve_eod_prices_fk_parent():
+    active_sql = w.SEED_ACTIVE_INSTRUMENTS_SQL
+    extra_sql = w.SEED_EXTRA_INSTRUMENT_SQL
+
+    assert "INSERT INTO instruments" in active_sql
+    assert "FROM universe_constituents" in active_sql
+    assert "WHERE status = 'active'" in active_sql
+    assert "ON CONFLICT (ticker) DO NOTHING" in active_sql
+    assert "INSERT INTO instruments" in extra_sql
+    assert "VALUES (%s, %s, 'etf')" in extra_sql
+    assert "ON CONFLICT (ticker) DO NOTHING" in extra_sql
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Universe + watermarks (fake cursor — no DB)
 # ──────────────────────────────────────────────────────────────────────────────
