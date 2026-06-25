@@ -23,7 +23,8 @@ def main() -> None:
             "|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
-            "|matview_refresh|stock_daily_returns)"
+            "|matview_refresh|stock_daily_returns"
+            "|active_share_metrics|momentum_metrics)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
     stats = mod.run(resolve_dsn())

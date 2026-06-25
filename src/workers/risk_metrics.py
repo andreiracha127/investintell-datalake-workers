@@ -2,10 +2,9 @@
 
 Standalone reimplementation of the legacy ``risk_calc`` worker. Reads **raw
 series** (``nav_timeseries``, ``benchmark_nav``) from the data-lake and writes
-the rich ``fund_risk_metrics`` table back, plus a thin ``sec_mmf_metrics`` pass
-projected from ``sec_nport_holdings`` is intentionally out of scope here — that
-table is fed by the N-MFP ingestion worker; we only (re)create its schema and
-upsert when the source columns are present.
+the rich ``fund_risk_metrics`` table back. MMF/N-MFP dump artifacts are
+intentionally out of the product risk contract until the catalog includes that
+fund class and a recurring owner is planned.
 
 Recipe (README §"Receita validada", proven on Lean 2026-06-11):
 
@@ -38,6 +37,7 @@ import numpy as np
 from src.db import LOCK_RISK_METRICS, advisory_lock, connect
 from src.workers import manager_score as _ms
 from src.workers._nav_sanitize import GLITCH_LOG, sanitize_nav_series
+from src.workers.risk_metric_ownership import RISK_METRICS_UPSERT_COLUMNS
 
 TRADING_DAYS = 252
 
@@ -54,29 +54,7 @@ NUMERIC_10_6_MAX = 9999.999999
 WINDOWS = {"1m": 21, "3m": 63, "6m": 126, "12m": 252}
 
 # ── columns we populate (must exist in schemas/risk_metrics.sql) ──────────────
-_METRIC_COLUMNS = [
-    "cvar_95_1m", "cvar_95_3m", "cvar_95_6m", "cvar_95_12m",
-    "var_95_1m", "var_95_3m", "var_95_6m", "var_95_12m",
-    "return_1m", "return_3m", "return_6m", "return_1y",
-    "return_3y_ann", "return_5y_ann", "return_10y_ann",
-    "volatility_1y", "volatility_garch", "vol_model",
-    "max_drawdown_1y", "max_drawdown_3y",
-    "sharpe_1y", "sharpe_3y", "sortino_1y", "calmar_ratio_3y",
-    "alpha_1y", "beta_1y", "tracking_error_1y", "information_ratio_1y",
-    "upside_capture_1y", "downside_capture_1y", "equity_correlation_252d",
-    "sharpe_cf", "sharpe_cf_skew", "sharpe_cf_kurt",
-    "sharpe_cf_ci_lower", "sharpe_cf_ci_upper",
-    "cvar_99_evt", "cvar_999_evt", "evt_xi_shape",
-    "fed_funds_rate_at_calc", "data_quality_flags",
-    # Class-specific regression metrics (Tier 1, rank 4).
-    "scoring_model",
-    "empirical_duration", "empirical_duration_r2",
-    "credit_beta", "credit_beta_r2",
-    "inflation_beta", "inflation_beta_r2",
-    "crisis_alpha_score",
-    # NAV data-quality eligibility (Bug 2).
-    "nav_quality_ok", "nav_glitch_count",
-]
+_METRIC_COLUMNS = list(RISK_METRICS_UPSERT_COLUMNS)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

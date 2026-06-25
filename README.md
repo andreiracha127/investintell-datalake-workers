@@ -47,7 +47,7 @@ Advisory lock: `src/db.py::advisory_lock(conn, lock_id)`.
 
 | Worker (`src/workers/`) | Tabela(s) destino | Fonte bruta | Referência (monólito, só leitura) |
 |---|---|---|---|
-| `risk_metrics.py` | `fund_risk_metrics`, `sec_mmf_metrics` | `nav_timeseries`, `benchmark_nav` | `backend/app/jobs/workers/risk_calc.py` |
+| `risk_metrics.py` | `fund_risk_metrics` | `nav_timeseries`, `benchmark_nav` | `backend/app/jobs/workers/risk_calc.py` |
 | `characteristics.py` | `company_characteristics_monthly`, `equity_characteristics_monthly` | `sec_nport_holdings`, `nav_timeseries` | `company_characteristics_compute.py`, `fund_characteristics_aggregator.py` |
 | `factor_model.py` | `factor_model_fits` | retornos (`nav_timeseries`) + características | `ipca_estimation.py` |
 | `nport_lookthrough.py` | `nport_lookthrough_exposures`, `nport_lookthrough_summary` | `sec_nport_holdings` (96M) + catálogo (`sec_cusip_ticker_map`, `sec_fund_classes`, `sec_etfs`, `instrument_identity`, `instruments_universe`) + `cagg_nport_series_profile` (coverage **copiado**, nunca recalculado) | frente C do doc de research 2026-06-11 (ADENDO §6) |
@@ -78,6 +78,11 @@ duas tabelas materializadas direto (DB-first) — nenhum cálculo em request pat
 | `treasury_ingestion.py` | `treasury_data` | US Treasury Fiscal Data (5 endpoints, `RATE_/DEBT_/AUCTION_/FX_/INTEREST_`) | 900_324 | — |
 | `benchmark_ingest.py` | `benchmark_nav` | Tiingo (ETFs benchmark por bloco; NaN ≤5%) | 900_332 | `TIINGO_API_KEY` |
 | `instrument_ingestion.py` | `nav_timeseries` | Tiingo (sweep stale-only priorizado por AUM; universo completo/run) + fallback UCITS EODHD→Yahoo (`_fallback_nav.py`) | 900_331 | `TIINGO_API_KEY`, `EODHD_API_KEY` (opcional) |
+
+Loader local complementar: `scripts/load_nport_fund_flows.py` lê os dumps DERA
+`E:\Edgard\*_nport` (`FUND_REPORTED_INFO.tsv` + `SUBMISSION.tsv`) e popula
+`sec_nport_fund_reported_info` / `sec_nport_fund_monthly_flows`. Esses fluxos
+mensais reportados são a fonte primária de `flow_momentum_score`.
 
 ## Receita validada — risk metrics (prova Lean, 2026-06-11)
 
