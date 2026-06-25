@@ -557,7 +557,7 @@ def test_l3_l4_reference_parity_matches_replay(monkeypatch) -> None:
 
     monkeypatch.setattr(ch, "score_all_series", fake_score_all_series)
     monkeypatch.setattr(ch, "reference_series_score", lambda cfg, series: 1.0)
-    monkeypatch.setattr(ch, "series_freshness", lambda cut, available_at: 1.0)
+    monkeypatch.setattr(ch, "series_freshness", lambda cut, available_at, **kwargs: 1.0)
     monkeypatch.setattr(ch, "vintage_quality", lambda revision_number: 1.0)
     rows = [
         _row(cfg.series_id, dt.date(2024, 1, 1), dt.date(2024, 2, 1), 100.0)
@@ -667,6 +667,57 @@ def test_series_transform_overrides_apply_v02a_sign_conventions() -> None:
 
     assert ch.series_score_from_l2_row(claims_row, cfg) == pytest.approx(-1.7)
     assert ch.series_score_from_l2_row(diffusion_row, cfg) == pytest.approx(0.75)
+
+
+def test_a32_hash_is_canonical_and_evaluation_hash_is_contextual() -> None:
+    a32 = ch.reference_a32_config()
+    canonical = ch.a32_config_hash(a32)
+
+    assert ch.a32_config_hash(a32) == canonical
+    assert ch.evaluation_hash("a31-left", canonical) != ch.evaluation_hash(
+        "a31-right",
+        canonical,
+    )
+
+
+def test_quarterly_survey_level_v1_applies_sloos_direction_and_acceleration() -> None:
+    standards_row = {
+        "series_id": "DRTSCILM",
+        "transform_class": "quarterly_survey_level_v1",
+        "quarterly_level_z": 2.0,
+        "quarterly_delta_1q_z": 1.0,
+        "direction": -1,
+    }
+    demand_row = {
+        "series_id": "DRSDCILM",
+        "transform_class": "quarterly_survey_level_v1",
+        "quarterly_level_z": 2.0,
+        "quarterly_delta_1q_z": 1.0,
+        "direction": 1,
+    }
+    ref = ch.reference_a31_config()
+    level_only = ch.A31Config(
+        **{
+            **ch.asdict(ref),
+            "series_transform_overrides": {
+                "DRTSCILM": "quarterly_survey_level_v1",
+                "DRSDCILM": "quarterly_survey_level_v1",
+            },
+        }
+    )
+    accel = ch.A31Config(
+        **{
+            **ch.asdict(level_only),
+            "transformation_weights": {
+                **level_only.transformation_weights,
+                "quarterly_survey_level_v1": {"level": 0.80, "delta_1q": 0.20},
+            },
+        }
+    )
+
+    assert ch.series_score_from_l2_row(standards_row, level_only) == pytest.approx(-2.0)
+    assert ch.series_score_from_l2_row(demand_row, level_only) == pytest.approx(2.0)
+    assert ch.series_score_from_l2_row(standards_row, accel) == pytest.approx(-1.8)
 
 
 def test_l3_rejects_parent_hash_mismatch() -> None:
@@ -839,7 +890,7 @@ def test_harness_primary_artifacts_are_deterministic(tmp_path, monkeypatch) -> N
 
 def _write_grid_feature_inputs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     monkeypatch.setattr(ch, "reference_series_score", lambda cfg, series: 1.0)
-    monkeypatch.setattr(ch, "series_freshness", lambda cut, available_at: 1.0)
+    monkeypatch.setattr(ch, "series_freshness", lambda cut, available_at, **kwargs: 1.0)
     monkeypatch.setattr(ch, "vintage_quality", lambda revision_number: 1.0)
     calendar = [dt.date(2024, 2, 2), dt.date(2024, 2, 5)]
     rows = [
