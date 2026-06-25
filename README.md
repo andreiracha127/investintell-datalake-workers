@@ -26,6 +26,53 @@ Deploy-alvo: **Railway** (um serviço por worker, cron-scheduled).
    cálculo (`calc_date`) é parâmetro; janelas são determinísticas (252d, `ddof=1`,
    retornos aritméticos).
 
+## QC A3 parity pilot
+
+O piloto `qc-a3-parity` usa QuantConnect Research apenas como infraestrutura
+secundária de pesquisa. O core A3 continua consumindo painéis PIT imutáveis do
+Investintell; o notebook não usa QC FRED, não usa retornos como objetivo de A3 e
+mantém `runtime_activation=false`, `A4=harness_ready_provisional_A3` e
+`A5=blocked`.
+
+Bundle local aprovado para o primeiro teste cloud:
+
+```powershell
+python qc_a3_core.py export-bundle `
+  --feature-manifest _tmp_qc_a3_parity_25375bb_20260625\manifests\feature_manifest.json `
+  --revision-uncertainty-manifest _tmp_qc_a3_parity_25375bb_20260625\manifests\revision_uncertainty_manifest.json `
+  --config-catalog _tmp_qc_a3_parity_25375bb_20260625\manifests\config_catalog.normalized.json `
+  --a32-grid-dir _tmp_qc_a3_parity_25375bb_20260625\manifests `
+  --output-dir _tmp_qc_a3_parity_25375bb_10198d_cloud_20260625 `
+  --expected-v03-grid-dir _tmp_a31_v03_revision_robust_g1_e6a72c3_20260625 `
+  --a31-name V03-G0-CONTROL `
+  --a32-name A32-G0.35-I0.35-X0.10-C0.60-D1.25 `
+  --worker-commit 25375bbd23d7eb99210914ad6702bf2d080a27ce
+```
+
+O manifest publica somente JSON, NPZ e CSV gzip no prefixo imutável:
+
+```text
+investintell/a3/qc-a3-parity/25375bb/10198d7603036c3327ac9e67/
+```
+
+O projeto cloud materializa `src/calibration_harness.py` a partir de
+`code/calibration_harness.py.gz` no mesmo prefixo, com SHA-256 verificado, porque
+o QC Cloud limita o tamanho de arquivos fonte individuais.
+
+Upload via Lean CLI:
+
+```powershell
+lean login
+lean whoami
+python qc_a3_core.py upload-object-store `
+  --bundle-dir _tmp_qc_a3_parity_25375bb_10198d_cloud_20260625
+lean cloud object-store list investintell/a3/qc-a3-parity/25375bb
+```
+
+O notebook cloud deve gravar `results/qc_cloud_parity_report.json` e
+`results/qc_cloud_environment.json`, com hashes lógicos iguais aos do bundle e
+`mismatch_count=0`.
+
 ## Contrato de um worker
 
 Cada worker é um módulo em `src/workers/<nome>.py` expondo:
