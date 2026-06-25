@@ -67,6 +67,8 @@ L4_STATE_CODE_VERSION = "a3_l4_state_machine_v0"
 SMOKE_GRID_SCHEMA_VERSION = 1
 A31_GRID_SCHEMA_VERSION = 1
 V02_QUALIFICATION_SCHEMA_VERSION = 1
+V02_ALFRED_FETCH_SCHEMA_VERSION = 1
+V02_ALFRED_SOURCE_SPEC_VERSION = "macro_family_map_v02_candidate_data_qualification_v1"
 PARENT_V01_L2_HASH = "4419f8c041397e16914d1b0a6dcb8244a5144bd98a54a75e67a6832f9d468c85"
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
@@ -191,6 +193,14 @@ class V02QualificationConfig:
     v01_screen_dir: Path | None = None
     v01_local_dir: Path | None = None
     offline: bool = False
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class V02FetchAlfredConfig:
+    base_vintage_cache: Path
+    output_dir: Path
+    fred_env_file: Path | None = None
     worker_commit: str | None = None
 
 
@@ -951,9 +961,10 @@ def macro_primitive_row(
 
     idx = periods.index(latest_period)
     current = series[latest_period]
-    p3 = shift_months(periods, idx, 3)
-    p6 = shift_months(periods, idx, 6)
-    p12 = shift_months(periods, idx, 12)
+    period_set = set(periods)
+    p3 = shift_months_with_set(periods, period_set, idx, 3)
+    p6 = shift_months_with_set(periods, period_set, idx, 6)
+    p12 = shift_months_with_set(periods, period_set, idx, 12)
     primitives.update({
         "change_3m_annualized": log_change(series, latest_period, p3, annualizer=4.0),
         "change_6m_annualized": log_change(series, latest_period, p6, annualizer=2.0),
@@ -1012,14 +1023,15 @@ def series_component_z_values_uncached(
     transform_class: str, series: dict[dt.date, float]
 ) -> dict[str, float | None]:
     periods = sorted(series)
+    period_set = set(periods)
     if transform_class in {"quantity_index", "price_index"}:
         c3: dict[dt.date, float] = {}
         c6: dict[dt.date, float] = {}
         c12: dict[dt.date, float] = {}
         for i, period in enumerate(periods):
-            p3 = shift_months(periods, i, 3)
-            p6 = shift_months(periods, i, 6)
-            p12 = shift_months(periods, i, 12)
+            p3 = shift_months_with_set(periods, period_set, i, 3)
+            p6 = shift_months_with_set(periods, period_set, i, 6)
+            p12 = shift_months_with_set(periods, period_set, i, 12)
             current = series[period]
             if current <= 0:
                 continue
@@ -1040,7 +1052,7 @@ def series_component_z_values_uncached(
         }
     delta3: dict[dt.date, float] = {}
     for i, period in enumerate(periods):
-        p3 = shift_months(periods, i, 3)
+        p3 = shift_months_with_set(periods, period_set, i, 3)
         if p3 is not None:
             delta3[period] = series[period] - series[p3]
     return {
@@ -1374,13 +1386,14 @@ def score_all_series(
 
 def quantity_index_score(series: dict[dt.date, float]) -> float | None:
     periods = sorted(series)
+    period_set = set(periods)
     g3: dict[dt.date, float] = {}
     g6: dict[dt.date, float] = {}
     g12: dict[dt.date, float] = {}
     for i, period in enumerate(periods):
-        p3 = shift_months(periods, i, 3)
-        p6 = shift_months(periods, i, 6)
-        p12 = shift_months(periods, i, 12)
+        p3 = shift_months_with_set(periods, period_set, i, 3)
+        p6 = shift_months_with_set(periods, period_set, i, 6)
+        p12 = shift_months_with_set(periods, period_set, i, 12)
         current = series[period]
         if current <= 0:
             continue
@@ -1400,13 +1413,14 @@ def quantity_index_score(series: dict[dt.date, float]) -> float | None:
 
 def price_index_score(series: dict[dt.date, float]) -> float | None:
     periods = sorted(series)
+    period_set = set(periods)
     pi3: dict[dt.date, float] = {}
     pi6: dict[dt.date, float] = {}
     pi12: dict[dt.date, float] = {}
     for i, period in enumerate(periods):
-        p3 = shift_months(periods, i, 3)
-        p6 = shift_months(periods, i, 6)
-        p12 = shift_months(periods, i, 12)
+        p3 = shift_months_with_set(periods, period_set, i, 3)
+        p6 = shift_months_with_set(periods, period_set, i, 6)
+        p12 = shift_months_with_set(periods, period_set, i, 12)
         current = series[period]
         if current <= 0:
             continue
@@ -1426,9 +1440,10 @@ def price_index_score(series: dict[dt.date, float]) -> float | None:
 
 def rate_level_score(series: dict[dt.date, float]) -> float | None:
     periods = sorted(series)
+    period_set = set(periods)
     delta3: dict[dt.date, float] = {}
     for i, period in enumerate(periods):
-        p3 = shift_months(periods, i, 3)
+        p3 = shift_months_with_set(periods, period_set, i, 3)
         if p3 is not None:
             delta3[period] = series[period] - series[p3]
     z_level = latest_component_z(series)
@@ -1696,13 +1711,22 @@ def quadrant_from_scores(growth: float | None, inflation: float | None) -> Quadr
 
 
 def shift_months(periods: list[dt.date], idx: int, back: int) -> dt.date | None:
+    return shift_months_with_set(periods, set(periods), idx, back)
+
+
+def shift_months_with_set(
+    periods: list[dt.date],
+    period_set: set[dt.date],
+    idx: int,
+    back: int,
+) -> dt.date | None:
     target = periods[idx]
     y, m = target.year, target.month - back
     while m <= 0:
         m += 12
         y -= 1
     candidate = dt.date(y, m, 1)
-    return candidate if candidate in set(periods) else None
+    return candidate if candidate in period_set else None
 
 
 def series_freshness(cut: dt.datetime, available_at: dt.datetime) -> float:
@@ -4143,6 +4167,181 @@ def _float_or_none(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def parse_v02_fetch_alfred_args(argv: list[str]) -> V02FetchAlfredConfig:
+    ap = argparse.ArgumentParser(description="Fetch ALFRED vintages for v02 candidate series")
+    ap.add_argument("command", choices=["v02-fetch-alfred"])
+    ap.add_argument("--base-vintage-cache", required=True)
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--fred-env-file")
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return V02FetchAlfredConfig(
+        base_vintage_cache=Path(args.base_vintage_cache),
+        output_dir=Path(args.output_dir),
+        fred_env_file=Path(args.fred_env_file) if args.fred_env_file else None,
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_v02_fetch_alfred(config: V02FetchAlfredConfig) -> dict[str, Any]:
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    api_key = load_fred_api_key(config.fred_env_file)
+    base_rows = read_vintage_cache(config.base_vintage_cache)
+    fetched_rows, series_stats = fetch_v02_candidate_vintages(api_key)
+    union_rows = merge_vintage_rows(base_rows + fetched_rows)
+    out_path = config.output_dir / "macro_vintages_v02_union.parquet"
+    write_vintage_cache(out_path, union_rows)
+
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+    fetched_series = sorted({row.series_id for row in fetched_rows})
+    missing_series = sorted(
+        spec.series_id
+        for spec in V02_CHALLENGER_SERIES_SPECS
+        if spec.series_id not in fetched_series
+    )
+    manifest = {
+        "schema_version": V02_ALFRED_FETCH_SCHEMA_VERSION,
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": dt.datetime.now(UTC).isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "network_access": "fred_series_observations_output_type_2",
+        "secret_sources": {
+            "fred_api_key": "env_or_env_file_present",
+            "fred_env_file": str(config.fred_env_file) if config.fred_env_file else None,
+        },
+        "base_vintage_cache": str(config.base_vintage_cache),
+        "base_row_count": len(base_rows),
+        "fetched_candidate_row_count": len(fetched_rows),
+        "union_row_count": len(union_rows),
+        "source_spec_version": V02_ALFRED_SOURCE_SPEC_VERSION,
+        "candidate_series": [spec.series_id for spec in V02_CHALLENGER_SERIES_SPECS],
+        "fetched_series": fetched_series,
+        "missing_series": missing_series,
+        "series_stats": series_stats,
+        "market_derived_series_excluded": list(V02_EXCLUDED_MARKET_DERIVED_SERIES),
+        "vintage_data_hash": rows_hash(union_rows),
+        "artifact_hashes": {
+            "macro_vintages_v02_union.parquet": hash_file(out_path),
+        },
+    }
+    write_json(config.output_dir / "v02_alfred_fetch_manifest.json", manifest)
+    return {
+        "status": "ok" if not missing_series else "partial",
+        "output_dir": str(config.output_dir),
+        "execution_id": execution_id,
+        "fetched_candidate_row_count": len(fetched_rows),
+        "union_row_count": len(union_rows),
+        "missing_series": missing_series,
+        "vintage_data_hash": manifest["vintage_data_hash"],
+    }
+
+
+def load_fred_api_key(env_file: Path | None) -> str:
+    value = os.environ.get("FRED_API_KEY")
+    if value:
+        return value.strip().strip('"').strip("'")
+    if env_file is not None:
+        parsed = read_env_file_value(env_file, "FRED_API_KEY")
+        if parsed:
+            return parsed
+    raise SystemExit("FRED_API_KEY not found in environment or --fred-env-file")
+
+
+def read_env_file_value(path: Path, key: str) -> str | None:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    prefix = f"{key}="
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if not line.startswith(prefix):
+            continue
+        value = line[len(prefix):].strip()
+        if "#" in value and not value.startswith(('"', "'")):
+            value = value.split("#", 1)[0].strip()
+        return value.strip().strip('"').strip("'")
+    return None
+
+
+def fetch_v02_candidate_vintages(api_key: str) -> tuple[list[VintageRow], list[dict[str, Any]]]:
+    import httpx
+
+    from src.workers.macro_ingestion import TokenBucket
+    from src.workers.macro_vintage import fetch_vintages, parse_alfred_vintages
+
+    rows: list[VintageRow] = []
+    stats: list[dict[str, Any]] = []
+    bucket = TokenBucket()
+    with httpx.Client(timeout=60.0) as client:
+        for spec in V02_CHALLENGER_SERIES_SPECS:
+            payload = fetch_vintages(client, api_key, spec.series_id, bucket)
+            parsed = parse_alfred_vintages(spec.series_id, payload)
+            series_rows = [
+                VintageRow(
+                    series_id=str(item["series_id"]),
+                    observation_period=item["observation_period"],
+                    vintage_date=item["vintage_date"],
+                    value=float(item["value"]),
+                    available_at=dt.datetime.combine(
+                        item["vintage_date"], dt.time(0, 0), tzinfo=UTC
+                    ),
+                    revision_number=int(item["revision_number"]),
+                    source_spec_version=V02_ALFRED_SOURCE_SPEC_VERSION,
+                )
+                for item in parsed
+            ]
+            rows.extend(series_rows)
+            stats.append({
+                "series_id": spec.series_id,
+                "candidate_family": spec.candidate_family,
+                "frequency": spec.frequency,
+                "observation_count": len({
+                    row.observation_period for row in series_rows
+                }),
+                "vintage_row_count": len(series_rows),
+                "observation_min": date_or_none(
+                    min((row.observation_period for row in series_rows), default=None)
+                ),
+                "observation_max": date_or_none(
+                    max((row.observation_period for row in series_rows), default=None)
+                ),
+                "vintage_min": date_or_none(
+                    min((row.vintage_date for row in series_rows), default=None)
+                ),
+                "vintage_max": date_or_none(
+                    max((row.vintage_date for row in series_rows), default=None)
+                ),
+            })
+    return merge_vintage_rows(rows), stats
+
+
+def merge_vintage_rows(rows: list[VintageRow]) -> list[VintageRow]:
+    merged: dict[tuple[str, dt.date, dt.date], VintageRow] = {}
+    for row in rows:
+        merged[(row.series_id, row.observation_period, row.vintage_date)] = row
+    return sorted(
+        merged.values(),
+        key=lambda row: (
+            row.series_id,
+            row.observation_period,
+            row.available_at,
+            row.vintage_date,
+        ),
+    )
+
+
 def parse_v02_qualification_args(argv: list[str]) -> V02QualificationConfig:
     ap = argparse.ArgumentParser(description="Qualify macro_family_map_v02 candidate data")
     ap.add_argument("command", choices=["v02-qualify"])
@@ -5588,6 +5787,10 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
     if argv and argv[0] == "a31-grid":
         result = run_a31_grid(parse_a31_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "v02-fetch-alfred":
+        result = run_v02_fetch_alfred(parse_v02_fetch_alfred_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     if argv and argv[0] == "v02-qualify":

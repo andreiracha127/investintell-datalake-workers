@@ -352,6 +352,31 @@ def test_v02_candidate_universe_excludes_market_derived_series() -> None:
     assert ids.isdisjoint(ch.V02_EXCLUDED_MARKET_DERIVED_SERIES)
 
 
+def test_read_env_file_value_parses_quoted_fred_api_key(tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join([
+            "# local secrets",
+            "DATABASE_URL=postgres://example",
+            'FRED_API_KEY="abc123"',
+        ]),
+        encoding="utf-8",
+    )
+
+    assert ch.read_env_file_value(env_file, "FRED_API_KEY") == "abc123"
+
+
+def test_merge_vintage_rows_deduplicates_and_sorts() -> None:
+    older = _row("B", dt.date(2024, 1, 1), dt.date(2024, 2, 1), 2.0)
+    first = _row("A", dt.date(2024, 1, 1), dt.date(2024, 2, 1), 1.0)
+    replacement = _row("A", dt.date(2024, 1, 1), dt.date(2024, 2, 1), 1.5)
+
+    rows = ch.merge_vintage_rows([older, first, replacement])
+
+    assert [row.series_id for row in rows] == ["A", "B"]
+    assert rows[0].value == 1.5
+
+
 def test_v02_qualification_marks_missing_candidate_vintages(tmp_path) -> None:
     manifest_path = tmp_path / "feature_manifest.json"
     ch.write_json(
