@@ -279,6 +279,7 @@ class A31V03GridConfig:
     config_catalog: Path
     a32_grid_dir: Path
     output_dir: Path | None = None
+    jobs: int = 1
     offline: bool = False
     worker_commit: str | None = None
     a32_name: str = "A32-G0.35-I0.35-X0.10-C0.60-D1.25"
@@ -5984,20 +5985,128 @@ def parse_a31_v03_grid_args(argv: list[str]) -> A31V03GridConfig:
     ap.add_argument("--config-catalog", required=True)
     ap.add_argument("--a32-grid-dir", required=True)
     ap.add_argument("--output-dir")
+    ap.add_argument("--jobs", type=int, default=1)
     ap.add_argument("--offline", action="store_true")
     ap.add_argument("--worker-commit")
     ap.add_argument("--a32-name", default="A32-G0.35-I0.35-X0.10-C0.60-D1.25")
     args = ap.parse_args(argv)
+    if args.jobs < 1:
+        raise SystemExit("--jobs must be >= 1")
     return A31V03GridConfig(
         feature_manifest=Path(args.feature_manifest),
         revision_uncertainty_manifest=Path(args.revision_uncertainty_manifest),
         config_catalog=Path(args.config_catalog),
         a32_grid_dir=Path(args.a32_grid_dir),
         output_dir=Path(args.output_dir) if args.output_dir else None,
+        jobs=args.jobs,
         offline=args.offline,
         worker_commit=args.worker_commit,
         a32_name=args.a32_name,
     )
+
+
+def evaluate_a31_v03_item(
+    *,
+    item: dict[str, Any],
+    l2_records: list[dict[str, Any]],
+    l2_hash: str,
+    uncertainty_by_key: dict[tuple[str, str, str, str], dict[str, Any]],
+    uncertainty_hash: str,
+    a32: A32Config,
+    a32_hash: str,
+) -> dict[str, Any]:
+    timings: dict[str, float] = {}
+    a31 = A31Config(**item["config"])
+    t0 = time.perf_counter()
+    l3_rows, _, l3_manifest = build_l3_score_panel(
+        l2_records,
+        a31,
+        l2_macro_logical_hash=l2_hash,
+        expected_l2_macro_logical_hash=l2_hash,
+        revision_uncertainty_by_key=uncertainty_by_key,
+        revision_uncertainty_logical_hash=uncertainty_hash,
+    )
+    timings["compute_l3"] = time.perf_counter() - t0
+
+    a31_hash = str(l3_manifest["a31_config_hash"])
+    eval_hash = evaluation_hash(a31_hash, a32_hash)
+
+    t0 = time.perf_counter()
+    runtime, _ = run_l4_state_machine(l3_rows, a32, selection_mode="latest")
+    counterfactual, _ = run_l4_state_machine(
+        l3_rows, a32, selection_mode="first_release"
+    )
+    timings["run_l4"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    metrics_full = build_macro_metrics(
+        runtime,
+        first_release_replay=counterfactual,
+    )
+    classification = classify_a32_grid_result(metrics_full)
+    rows = evaluation_metric_rows(
+        runtime,
+        counterfactual,
+        a31,
+        a32,
+        a31_hash,
+        a32_hash,
+        eval_hash,
+        classification,
+    )
+    summary = a31_v03_summary_row(item, a32, a32_hash, eval_hash, rows)
+    summary.update({
+        "classification": classification,
+        "runtime_replay_logical_hash": logical_records_hash(runtime),
+        "counterfactual_replay_logical_hash": logical_records_hash(counterfactual),
+    })
+    timings["compute_metrics"] = time.perf_counter() - t0
+    return {"summary": summary, "metrics_rows": rows, "timings_seconds": timings}
+
+
+def a31_v03_grid_worker(task: dict[str, Any]) -> dict[str, Any]:
+    timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+    feature_manifest, _, l2_hash, l2_records = load_l2_macro_from_feature_manifest(
+        Path(task["feature_manifest"])
+    )
+    validate_parent_hash(
+        "a31-v03 worker L2 macro_feature_primitives",
+        str(task["l2_macro_logical_hash"]),
+        l2_hash,
+    )
+    uncertainty_manifest, uncertainty_hash, uncertainty_rows = (
+        load_revision_uncertainty_from_manifest(Path(task["revision_uncertainty_manifest"]))
+    )
+    validate_parent_hash(
+        "a31-v03 worker revision uncertainty",
+        str(task["revision_uncertainty_logical_hash"]),
+        uncertainty_hash,
+    )
+    parent_uncertainty_l2 = (
+        uncertainty_manifest.get("parent_hashes") or {}
+    ).get("l2_macro_logical_hash")
+    validate_parent_hash("a31-v03 worker uncertainty parent L2", str(parent_uncertainty_l2), l2_hash)
+    if feature_manifest.get("schema_version") is None:
+        raise ValueError("feature manifest missing schema_version")
+    uncertainty_by_key = revision_uncertainty_keyed(uncertainty_rows)
+    a32 = load_a32_config_from_grid(Path(task["a32_grid_dir"]), str(task["a32_name"]))
+    a32_hash = a32_config_hash(a32)
+    validate_parent_hash("a31-v03 worker A32 hash", str(task["a32_hash"]), a32_hash)
+    timings["load_inputs"] = time.perf_counter() - t0
+
+    result = evaluate_a31_v03_item(
+        item=task["a31_item"],
+        l2_records=l2_records,
+        l2_hash=l2_hash,
+        uncertainty_by_key=uncertainty_by_key,
+        uncertainty_hash=uncertainty_hash,
+        a32=a32,
+        a32_hash=a32_hash,
+    )
+    timings.update(result["timings_seconds"])
+    result["timings_seconds"] = timings
+    return result
 
 
 def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
@@ -6037,42 +6146,53 @@ def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
     summary_rows: list[dict[str, Any]] = []
     metric_rows: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for item in normalized_catalog["configs"]:
-        a31 = A31Config(**item["config"])
-        try:
-            l3_rows, _, l3_manifest = build_l3_score_panel(
-                l2_records,
-                a31,
-                l2_macro_logical_hash=l2_hash,
-                expected_l2_macro_logical_hash=l2_hash,
-                revision_uncertainty_by_key=uncertainty_by_key,
-                revision_uncertainty_logical_hash=uncertainty_hash,
-            )
-            a31_hash = str(l3_manifest["a31_config_hash"])
-            eval_hash = evaluation_hash(a31_hash, a32_hash)
-            runtime, _ = run_l4_state_machine(l3_rows, a32, selection_mode="latest")
-            counterfactual, _ = run_l4_state_machine(
-                l3_rows, a32, selection_mode="first_release"
-            )
-            metrics_full = build_macro_metrics(
-                runtime,
-                first_release_replay=counterfactual,
-            )
-            classification = classify_a32_grid_result(metrics_full)
-            rows = evaluation_metric_rows(
-                runtime,
-                counterfactual,
-                a31,
-                a32,
-                a31_hash,
-                a32_hash,
-                eval_hash,
-                classification,
-            )
-            metric_rows.extend(rows)
-            summary_rows.append(a31_v03_summary_row(item, a32, a32_hash, eval_hash, rows))
-        except Exception as exc:  # pragma: no cover - per-config isolation
-            failures.append(a31_failure_record({"a31_item": item}, exc))
+    computed: list[dict[str, Any]] = []
+    if config.jobs == 1:
+        for item in normalized_catalog["configs"]:
+            try:
+                computed.append(
+                    evaluate_a31_v03_item(
+                        item=item,
+                        l2_records=l2_records,
+                        l2_hash=l2_hash,
+                        uncertainty_by_key=uncertainty_by_key,
+                        uncertainty_hash=uncertainty_hash,
+                        a32=a32,
+                        a32_hash=a32_hash,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - per-config isolation
+                failures.append(a31_failure_record({"a31_item": item}, exc))
+    else:
+        tasks = [
+            {
+                "feature_manifest": str(config.feature_manifest.resolve()),
+                "revision_uncertainty_manifest": str(
+                    config.revision_uncertainty_manifest.resolve()
+                ),
+                "a32_grid_dir": str(config.a32_grid_dir.resolve()),
+                "a32_name": config.a32_name,
+                "a32_hash": a32_hash,
+                "l2_macro_logical_hash": l2_hash,
+                "revision_uncertainty_logical_hash": uncertainty_hash,
+                "a31_item": item,
+            }
+            for item in normalized_catalog["configs"]
+        ]
+        with concurrent.futures.ProcessPoolExecutor(max_workers=config.jobs) as pool:
+            futures = {pool.submit(a31_v03_grid_worker, task): task for task in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    computed.append(future.result())
+                except Exception as exc:  # pragma: no cover - defensive per-config isolation
+                    failures.append(a31_failure_record(task, exc))
+
+    summary_rows = [row["summary"] for row in computed]
+    metric_rows = [metric for row in computed for metric in row["metrics_rows"]]
+    stage_timings = aggregate_timing_records(
+        [row.get("timings_seconds", {}) for row in computed]
+    )
 
     apply_v03_gate_status(summary_rows, metric_rows)
     summary_rows.sort(key=v03_summary_sort_key)
@@ -6095,6 +6215,7 @@ def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
         "finished_at": finished.isoformat(),
         "host": socket.gethostname(),
         "pid": os.getpid(),
+        "jobs": config.jobs,
         "offline": True,
         "external_access": "disabled_by_a31_v03_grid_path",
         "worker_commit": worker_commit,
@@ -6125,6 +6246,7 @@ def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
         "a3_status": "open_macro_v03",
         "a4_status": A4_PROVISIONAL_STATUS,
         "a5_status": "blocked",
+        "stage_timings_seconds": stage_timings,
         "artifact_hashes": hash_artifacts(
             output_dir,
             [
@@ -6145,6 +6267,7 @@ def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
         "output_dir": str(output_dir),
         "evaluation_count": len(summary_rows),
         "failure_count": len(failures),
+        "jobs": config.jobs,
         "stop_decision": stop_decision["decision"],
         "summary_logical_hash": manifest["summary_logical_hash"],
         "metrics_logical_hash": manifest["metrics_logical_hash"],
@@ -9102,6 +9225,22 @@ def fold_revision_deltas(
 def timing_summary_fields(timings: dict[str, float]) -> dict[str, float]:
     keys = ["load_l2", "compute_l3", "write_l3", "run_l4", "compute_metrics", "write_artifacts"]
     return {f"timing_{key}_seconds": round(float(timings.get(key, 0.0)), 6) for key in keys}
+
+
+def aggregate_timing_records(
+    timing_records: list[dict[str, float]],
+) -> dict[str, dict[str, float | int | None]]:
+    keys = sorted({key for row in timing_records for key in row})
+    out: dict[str, dict[str, float | int | None]] = {}
+    for key in keys:
+        values = [float(row[key]) for row in timing_records if key in row]
+        out[key] = {
+            "count": len(values),
+            "total": round(sum(values), 6) if values else None,
+            "mean": round(sum(values) / len(values), 6) if values else None,
+            "max": round(max(values), 6) if values else None,
+        }
+    return out
 
 
 def load_existing_a31_result(
