@@ -837,6 +837,10 @@ def macro_primitive_row(
     primitives["acceleration_6m_vs_12m"] = numeric_delta(
         primitives.get("change_6m_annualized"), primitives.get("change_12m")
     )
+    primitives.update({
+        f"z_{name}": value
+        for name, value in series_component_z_values(cfg.transform_class, series).items()
+    })
     observed_values = [series[p] for p in periods]
     median = statistics.median(observed_values)
     mad = statistics.median([abs(value - median) for value in observed_values])
@@ -855,6 +859,48 @@ def macro_primitive_row(
         ),
     })
     return primitives
+
+
+def series_component_z_values(transform_class: str, series: dict[dt.date, float]) -> dict[str, float | None]:
+    periods = sorted(series)
+    if transform_class in {"quantity_index", "price_index"}:
+        c3: dict[dt.date, float] = {}
+        c6: dict[dt.date, float] = {}
+        c12: dict[dt.date, float] = {}
+        for i, period in enumerate(periods):
+            p3 = shift_months(periods, i, 3)
+            p6 = shift_months(periods, i, 6)
+            p12 = shift_months(periods, i, 12)
+            current = series[period]
+            if current <= 0:
+                continue
+            if p3 is not None and series[p3] > 0:
+                c3[period] = 4.0 * (math.log(current) - math.log(series[p3]))
+            if p6 is not None and series[p6] > 0:
+                c6[period] = 2.0 * (math.log(current) - math.log(series[p6]))
+            if p12 is not None and series[p12] > 0:
+                c12[period] = math.log(current) - math.log(series[p12])
+        a3 = {p: c3[p] - c12[p] for p in c3.keys() & c12.keys()}
+        a6 = {p: c6[p] - c12[p] for p in c6.keys() & c12.keys()}
+        return {
+            "acceleration_3m": latest_component_z(a3),
+            "acceleration_6m": latest_component_z(a6),
+            "change_12m": latest_component_z(c12),
+            "level": None,
+            "delta_3m": None,
+        }
+    delta3: dict[dt.date, float] = {}
+    for i, period in enumerate(periods):
+        p3 = shift_months(periods, i, 3)
+        if p3 is not None:
+            delta3[period] = series[period] - series[p3]
+    return {
+        "acceleration_3m": None,
+        "acceleration_6m": None,
+        "change_12m": None,
+        "level": latest_component_z(series),
+        "delta_3m": latest_component_z(delta3),
+    }
 
 
 def selection_role_for_mode(selection_mode: str) -> str:
@@ -2122,6 +2168,8 @@ def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | 
 
 def enrich_l2_component_z(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     enriched = [dict(row) for row in rows]
+    if enriched and "z_change_12m" in enriched[0]:
+        return enriched
     indexes_by_series: dict[tuple[str, str], list[int]] = {}
     for idx, row in enumerate(enriched):
         indexes_by_series.setdefault(
