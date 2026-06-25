@@ -1,5 +1,5 @@
 schema_version: 1
-status: calibration_in_progress_with_provisional_A3
+status: harness_ready_provisional_A3
 activation_ready: false
 parameter_freeze: false
 a5_status: blocked
@@ -28,6 +28,20 @@ a32_grid_source:
 
 a4_1_identity_gate:
   gate: identity
+  allowed_scope:
+    - replay_smoke
+    - book_compilation
+    - feasibility_tests
+    - metrics_generation
+    - identity_gate_validation
+    - lineage_tests
+  forbidden_scope:
+    - center_selection
+    - maxdd_cvar_policy_comparison
+    - half_width_calibration
+    - gamma_selection
+    - beta_cap_calibration
+    - gate_calibration
   frozen_parameters:
     recovery: true
     expansion: true
@@ -35,7 +49,7 @@ a4_1_identity_gate:
     gamma: true
     cvar_limits: true
     beta_caps: true
-  calibrate_only:
+  future_calibration_scope_after_A3_freeze:
     - slowdown_centers
     - contraction_centers
     - risk_assets_cap
