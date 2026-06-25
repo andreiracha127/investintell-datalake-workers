@@ -7831,6 +7831,11 @@ def run_a3_scope_decision(config: A3ScopeDecisionConfig) -> dict[str, Any]:
         row for row in pareto
         if row.get("pareto_role") == "current_stability_preserving"
     )
+    current_full_fold = next(
+        row for row in pareto_by_fold
+        if row.get("pareto_role") == "current_stability_preserving"
+        and row.get("fold") == "full"
+    )
     outcome = a3_scope_outcome(current, freeze_manifest, market_manifest, market_comparison)
     decision = {
         "schema_version": A3_SCOPE_DECISION_SCHEMA_VERSION,
@@ -7854,9 +7859,10 @@ def run_a3_scope_decision(config: A3ScopeDecisionConfig) -> dict[str, Any]:
             ),
             "consumable_state_coverage": current.get("consumable_state_coverage"),
             "transition_displacement_p90": current.get("transition_displacement_p90"),
-            "revision_episode_duration_p90": current.get(
+            "revision_episode_duration_p90": current_full_fold.get(
                 "revision_episode_duration_p90"
             ),
+            "revision_episode_count": current_full_fold.get("revision_episode_count"),
             "first_operational_date": current.get("first_operational_date"),
         },
         "market_current": {
