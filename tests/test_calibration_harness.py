@@ -1061,7 +1061,7 @@ def test_a31_progression_decision_uses_g2_control_for_fold_deltas() -> None:
 
     assert decision["new_decision"] == "advance_to_g2_limited"
     assert decision["reason"]["fold_revision_deltas_vs_control"]["2014_2017"] == pytest.approx(-0.01)
-    assert decision["a4_status"] == "calibration_in_progress_with_provisional_A3"
+    assert decision["a4_status"] == ch.A4_PROVISIONAL_STATUS
 
 
 def test_a32_grid_configs_match_limited_surface() -> None:
@@ -1079,6 +1079,118 @@ def test_a32_grid_configs_match_limited_surface() -> None:
     assert {cfg.dispersion_limit for cfg in configs} == {1.25}
     assert all(cfg.growth_exit < cfg.growth_enter for cfg in configs)
     assert all(cfg.inflation_exit < cfg.inflation_enter for cfg in configs)
+
+
+def _a32_summary_row(
+    role_suffix: str,
+    growth_enter: float,
+    inflation_enter: float,
+    axis_exit: float,
+    min_confidence: float,
+) -> dict[str, object]:
+    return {
+        "a31_config_name": "G2-CREDIT6040-15-SURVEY05",
+        "a31_config_hash": "a31",
+        "a32_config_name": f"A32-{role_suffix}",
+        "a32_config_hash": role_suffix,
+        "evaluation_hash": f"eval-{role_suffix}",
+        "growth_enter": growth_enter,
+        "inflation_enter": inflation_enter,
+        "axis_exit": axis_exit,
+        "min_confidence": min_confidence,
+        "u_floor": 0.65,
+        "growth_score_scale": 1.0,
+        "inflation_score_scale": 1.0,
+        "dispersion_limit": 1.25,
+    }
+
+
+def _a32_metric_row(a32_hash: str) -> dict[str, object]:
+    return {
+        "fold": "full",
+        "a31_config_hash": "a31",
+        "a32_config_hash": a32_hash,
+        "candidate_revision_change_rate": 0.1962,
+        "growth_raw_sign_change_days": 940,
+        "growth_sign_revision_change_days": 978,
+        "growth_axis_state_change_days": 978,
+        "inflation_sign_revision_change_days": 410,
+        "candidate_quadrant_change_days": 632,
+        "status_revision_change_days": 42,
+        "latched_revision_change_days": 17,
+        "transition_timing_displacement": json.dumps({
+            "p10": 1,
+            "median": 3,
+            "p90": 8,
+        }),
+        "candidate_flips_per_year": 8.7,
+        "published_flips_per_year": 1.0,
+        "candidate_duration_distribution": json.dumps({
+            "p10": 4,
+            "median": 22,
+            "p90": 80,
+        }),
+        "published_duration_distribution": json.dumps({
+            "p10": 12,
+            "median": 75,
+            "p90": 210,
+        }),
+        "valid_rate": 0.3247,
+        "abstain_rate": 0.6753,
+        "consumable_state_coverage": 0.3809,
+        "stale_days_over_5bd": 1482,
+        "longest_stale_run": 356,
+        "days_since_last_valid_distribution": json.dumps({
+            "min": 0,
+            "p10": 0,
+            "median": 2,
+            "p90": 18,
+            "max": 356,
+        }),
+        "quadrant_occupancy": json.dumps({"expansion": 10}),
+        "reason_counts": json.dumps({"confidence_below_threshold": 5}),
+    }
+
+
+def test_a32_freeze_readiness_pareto_separates_metric_taxonomy() -> None:
+    specs = [
+        ("cur", 0.35, 0.35, 0.10, 0.60),
+        ("conf", 0.35, 0.35, 0.10, 0.65),
+        ("infl", 0.35, 0.40, 0.10, 0.60),
+        ("exit", 0.35, 0.35, 0.15, 0.60),
+        ("growth", 0.30, 0.35, 0.10, 0.60),
+    ]
+    summary = [_a32_summary_row(*spec) for spec in specs]
+    metrics = [_a32_metric_row(str(row["a32_config_hash"])) for row in summary]
+
+    pareto = ch.a32_freeze_readiness_pareto(summary, metrics)
+
+    assert [row["pareto_role"] for row in pareto] == [
+        "current_stability_preserving",
+        "neighbor_confidence_0_65",
+        "neighbor_inflation_enter_0_40",
+        "neighbor_exit_0_15",
+        "neighbor_growth_enter_0_30_high_coverage",
+    ]
+    assert pareto[0]["raw_growth_sign_revision_changes"] == 940
+    assert pareto[0]["axis_effective_sign_revision_changes_growth"] == 978
+    assert pareto[0]["axis_state_label_revision_changes_growth"] == 978
+    assert pareto[0]["raw_inflation_sign_revision_changes"] is None
+    assert pareto[0]["state_age_since_last_valid_p50"] == 2
+    assert pareto[0]["consumed_state_age_p50"] is None
+    assert pareto[0]["consumed_state_age_p95"] is None
+
+
+def test_freeze_blockers_keep_progression_separate_from_freeze() -> None:
+    blockers = ch.freeze_blockers({
+        "candidate_revision_change_rate": 0.1962,
+        "valid_rate": 0.3247,
+        "consumable_state_coverage": 0.3809,
+    })
+
+    assert "candidate_revision_change_rate_above_10pct_freeze_gate" in blockers
+    assert "valid_rate_below_original_freeze_band" in blockers
+    assert "market_implied_valid_vs_valid_comparison_not_operational" in blockers
 
 
 def test_a31_catalog_compiles_multiple_family_shifts_from_immutable_base() -> None:

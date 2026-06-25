@@ -78,6 +78,8 @@ A31_RELATIVE_IMPROVEMENT_CONDITIONAL = 0.08
 A31_V01_BENCHMARK_REVISION_RATE = 0.25209562247749145
 A31_V01_GROWTH_SIGN_BENCHMARK = 1111
 A31_V01_VALID_RATE = 0.21204594846321018
+GATE_MAX_LAG_BUSINESS_DAYS = 5
+A4_PROVISIONAL_STATUS = "harness_ready_provisional_A3"
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
 Status = Literal["valid", "abstain", "unavailable", "invalid"]
@@ -207,6 +209,15 @@ class A32GridConfig:
     a31_catalog: Path
     output_dir: Path | None = None
     offline: bool = False
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class A3FreezeReadinessConfig:
+    v02b_grid_dir: Path
+    g2_grid_dir: Path
+    a32_grid_dir: Path
+    output_dir: Path
     worker_commit: str | None = None
 
 
@@ -5748,7 +5759,7 @@ def run_a32_grid(config: A32GridConfig) -> dict[str, Any]:
             ],
         ),
         "selection_policy": "A3.2 limited grid over selected provisional A31 panels",
-        "a4_status": "calibration_in_progress_with_provisional_A3",
+        "a4_status": A4_PROVISIONAL_STATUS,
         "a5_status": "blocked",
     }
     write_json(output_dir / "a32_grid_manifest.json", manifest)
@@ -5761,6 +5772,482 @@ def run_a32_grid(config: A32GridConfig) -> dict[str, Any]:
         "summary_logical_hash": manifest["summary_logical_hash"],
         "metrics_logical_hash": manifest["metrics_logical_hash"],
     }
+
+
+def parse_a3_freeze_readiness_args(argv: list[str]) -> A3FreezeReadinessConfig:
+    ap = argparse.ArgumentParser(description="Package A3 freeze-readiness evidence")
+    ap.add_argument("command", choices=["a3-freeze-readiness"])
+    ap.add_argument("--v02b-grid-dir", required=True)
+    ap.add_argument("--g2-grid-dir", required=True)
+    ap.add_argument("--a32-grid-dir", required=True)
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return A3FreezeReadinessConfig(
+        v02b_grid_dir=Path(args.v02b_grid_dir),
+        g2_grid_dir=Path(args.g2_grid_dir),
+        a32_grid_dir=Path(args.a32_grid_dir),
+        output_dir=Path(args.output_dir),
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_a3_freeze_readiness_package(
+    config: A3FreezeReadinessConfig,
+) -> dict[str, Any]:
+    output_dir = config.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    short_commit = worker_commit[:7]
+
+    v02b_manifest = read_json_dict(config.v02b_grid_dir / "grid_manifest.json")
+    g2_manifest = read_json_dict(config.g2_grid_dir / "grid_manifest.json")
+    a32_manifest = read_json_dict(config.a32_grid_dir / "a32_grid_manifest.json")
+    for label, manifest in {
+        "v02b": v02b_manifest,
+        "g2": g2_manifest,
+        "a32": a32_manifest,
+    }.items():
+        validate_packaged_manifest(label, manifest, worker_commit)
+
+    v02b_summary = read_parquet_records(config.v02b_grid_dir / "a31_grid_summary.parquet")
+    v02b_metrics = read_parquet_records(config.v02b_grid_dir / "a31_grid_metrics.parquet")
+    g2_summary = read_parquet_records(config.g2_grid_dir / "a31_grid_summary.parquet")
+    g2_metrics = read_parquet_records(config.g2_grid_dir / "a31_grid_metrics.parquet")
+    a32_summary = read_parquet_records(config.a32_grid_dir / "a32_grid_summary.parquet")
+    a32_metrics = read_parquet_records(config.a32_grid_dir / "a32_grid_metrics.parquet")
+
+    v02b_decision = read_json_dict(config.v02b_grid_dir / "a31_progression_decision.json")
+    g2_decision = read_json_dict(config.g2_grid_dir / "a31_progression_decision.json")
+    v02b_result = a31_result_payload(
+        "V02B-G1-CREDIT-6040-15",
+        v02b_summary,
+        v02b_metrics,
+        v02b_manifest,
+        v02b_decision,
+    )
+    g2_result = a31_result_payload(
+        "G2-CREDIT6040-15-SURVEY05",
+        g2_summary,
+        g2_metrics,
+        g2_manifest,
+        g2_decision,
+    )
+    a32_pareto = a32_freeze_readiness_pareto(a32_summary, a32_metrics)
+    current_a32 = next(
+        row for row in a32_pareto
+        if row["pareto_role"] == "current_stability_preserving"
+    )
+
+    basis = {
+        "worker_commit": worker_commit,
+        "parent_l2_logical_hash": a32_manifest["parent_hashes"]["l2_macro_logical_hash"],
+        "v02b_result_hash": logical_payload_hash(v02b_result),
+        "g2_result_hash": logical_payload_hash(g2_result),
+        "a32_pareto_hash": logical_records_hash(a32_pareto),
+        "v02b_metrics_logical_hash": v02b_manifest.get("metrics_logical_hash"),
+        "g2_metrics_logical_hash": g2_manifest.get("metrics_logical_hash"),
+        "a32_metrics_logical_hash": a32_manifest.get("metrics_logical_hash"),
+    }
+    decision_basis_hash = logical_payload_hash(basis)
+
+    v02b_result_path = output_dir / f"v02b_credit6040_15_result_{short_commit}.json"
+    g2_result_path = output_dir / f"g2_credit6040_15_survey05_result_{short_commit}.json"
+    a32_pareto_path = output_dir / f"a32_selected_pareto_{short_commit}.parquet"
+    report_path = output_dir / f"a3_freeze_readiness_{short_commit}.md"
+    write_json(v02b_result_path, v02b_result)
+    write_json(g2_result_path, g2_result)
+    write_parquet(a32_pareto_path, a32_pareto)
+    report_text = build_a3_freeze_readiness_report(
+        worker_commit=worker_commit,
+        v02b_result=v02b_result,
+        g2_result=g2_result,
+        current_a32=current_a32,
+        a32_pareto=a32_pareto,
+        decision_basis_hash=decision_basis_hash,
+    )
+    report_path.write_text(report_text, encoding="utf-8")
+
+    progression_manifest = {
+        "schema_version": 1,
+        "artifact_type": "a3_freeze_readiness_progression_manifest",
+        "worker_commit": worker_commit,
+        "git_dirty": False,
+        "parent_l2_logical_hash": a32_manifest["parent_hashes"]["l2_macro_logical_hash"],
+        "a31_config_name": current_a32["a31_config_name"],
+        "a31_config_hash": current_a32["a31_config_hash"],
+        "a32_config_name": current_a32["a32_config_name"],
+        "a32_config_hash": current_a32["a32_config_hash"],
+        "progression_policy_version": A31_PROGRESSION_POLICY_VERSION,
+        "previous_decision": v02b_decision.get("previous_decision"),
+        "new_decision": v02b_decision.get("new_decision"),
+        "supersession_reason": [
+            "a3_progression_v2 allows G1 -> G2 limited without changing final freeze gates",
+            "G2 limited evidence is packaged separately from older e9318e artifacts",
+            "A3.2 limited grid is diagnostic and does not imply parameter freeze",
+        ],
+        "progression_gate_interpretation": {
+            "g1_to_g2_limited": "permitted_by_a3_progression_v2",
+            "g2_to_a3_2_limited": "permitted",
+            "a3_parameter_freeze": "blocked_original_freeze_gates_still_apply",
+            "retroactive_reclassification": False,
+            "effective_scope": "v02b_and_later",
+        },
+        "decision_basis_hash": decision_basis_hash,
+        "freeze_ready": False,
+        "freeze_blockers": freeze_blockers(current_a32),
+        "a4_status": A4_PROVISIONAL_STATUS,
+        "a4_allowed_scope": [
+            "replay_smoke",
+            "book_compilation",
+            "feasibility_tests",
+            "metrics_generation",
+            "identity_gate_validation",
+            "lineage_tests",
+        ],
+        "a4_forbidden_scope": [
+            "center_selection",
+            "policy_selection_by_maxdd_cvar",
+            "half_width_calibration",
+            "gamma_or_beta_cap_calibration",
+            "gate_calibration",
+        ],
+        "a5_status": "blocked",
+        "market_implied_status": "not_operational_in_5ba5217_package",
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            [
+                v02b_result_path.name,
+                g2_result_path.name,
+                a32_pareto_path.name,
+                report_path.name,
+            ],
+        ),
+    }
+    manifest_path = output_dir / f"a3_progression_v2_manifest_{short_commit}.json"
+    write_json(manifest_path, progression_manifest)
+    return {
+        "status": "ok",
+        "output_dir": str(output_dir),
+        "manifest": str(manifest_path),
+        "decision_basis_hash": decision_basis_hash,
+        "freeze_ready": False,
+        "a32_pareto_count": len(a32_pareto),
+    }
+
+
+def validate_packaged_manifest(
+    label: str, manifest: dict[str, Any], worker_commit: str
+) -> None:
+    if manifest.get("worker_commit") != worker_commit:
+        raise ValueError(
+            f"{label} worker_commit mismatch: {manifest.get('worker_commit')} != {worker_commit}"
+        )
+    if manifest.get("git_dirty"):
+        raise ValueError(f"{label} manifest is dirty and cannot be freeze-readiness evidence")
+    if manifest.get("failure_count") not in {0, None}:
+        raise ValueError(f"{label} manifest has grid failures: {manifest.get('failure_count')}")
+    if manifest.get("status") != "ok":
+        raise ValueError(f"{label} manifest status is not ok: {manifest.get('status')}")
+
+
+def a31_result_payload(
+    config_name: str,
+    summary_rows: list[dict[str, Any]],
+    metric_rows: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    decision: dict[str, Any],
+) -> dict[str, Any]:
+    row = row_by_name(summary_rows, config_name)
+    folds = [
+        row for row in metric_rows
+        if row.get("a31_config_hash") == row_by_name(summary_rows, config_name)["a31_config_hash"]
+    ]
+    folds.sort(key=lambda item: str(item.get("fold")))
+    return {
+        "config_name": config_name,
+        "summary": normalize_logical_value(row),
+        "fold_metrics": normalize_logical_value(folds),
+        "grid_manifest": {
+            "worker_commit": manifest.get("worker_commit"),
+            "git_dirty": manifest.get("git_dirty"),
+            "parent_l2_logical_hash": (manifest.get("parent_hashes") or {}).get(
+                "l2_macro_logical_hash"
+            ),
+            "summary_logical_hash": manifest.get("summary_logical_hash"),
+            "metrics_logical_hash": manifest.get("metrics_logical_hash"),
+            "a32_ref_hashes": manifest.get("a32_ref_hashes"),
+        },
+        "progression_decision": normalize_logical_value(decision),
+    }
+
+
+def row_by_name(rows: list[dict[str, Any]], config_name: str) -> dict[str, Any]:
+    matches = [row for row in rows if row.get("a31_config_name") == config_name]
+    if not matches:
+        raise ValueError(f"missing result row for {config_name}")
+    if len(matches) > 1:
+        raise ValueError(f"multiple result rows for {config_name}")
+    return dict(matches[0])
+
+
+def a32_freeze_readiness_pareto(
+    summary_rows: list[dict[str, Any]],
+    metric_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    specs = [
+        ("current_stability_preserving", 0.35, 0.35, 0.10, 0.60),
+        ("neighbor_confidence_0_65", 0.35, 0.35, 0.10, 0.65),
+        ("neighbor_inflation_enter_0_40", 0.35, 0.40, 0.10, 0.60),
+        ("neighbor_exit_0_15", 0.35, 0.35, 0.15, 0.60),
+        ("neighbor_growth_enter_0_30_high_coverage", 0.30, 0.35, 0.10, 0.60),
+    ]
+    out: list[dict[str, Any]] = []
+    for rank, (role, growth_enter, inflation_enter, axis_exit, confidence) in enumerate(
+        specs,
+        start=1,
+    ):
+        summary = find_a32_summary_row(
+            summary_rows,
+            a31_config_name="G2-CREDIT6040-15-SURVEY05",
+            growth_enter=growth_enter,
+            inflation_enter=inflation_enter,
+            axis_exit=axis_exit,
+            min_confidence=confidence,
+        )
+        full = find_a32_metric_row(
+            metric_rows,
+            str(summary["a31_config_hash"]),
+            str(summary["a32_config_hash"]),
+            "full",
+        )
+        transition_dist = parse_json_metric(full.get("transition_timing_displacement"))
+        candidate_duration = parse_json_metric(full.get("candidate_duration_distribution"))
+        published_duration = parse_json_metric(full.get("published_duration_distribution"))
+        consumed_age = parse_json_metric(full.get("days_since_last_valid_distribution"))
+        enriched = {
+            "pareto_rank": rank,
+            "pareto_role": role,
+            "a31_config_name": summary["a31_config_name"],
+            "a31_config_hash": summary["a31_config_hash"],
+            "a32_config_name": summary["a32_config_name"],
+            "a32_config_hash": summary["a32_config_hash"],
+            "evaluation_hash": summary["evaluation_hash"],
+            "growth_enter": summary["growth_enter"],
+            "inflation_enter": summary["inflation_enter"],
+            "axis_exit": summary["axis_exit"],
+            "min_confidence": summary["min_confidence"],
+            "u_floor": summary["u_floor"],
+            "score_scale": summary["growth_score_scale"],
+            "dispersion_limit": summary["dispersion_limit"],
+            "candidate_revision_change_rate": full["candidate_revision_change_rate"],
+            "raw_growth_sign_revision_changes": full.get("growth_raw_sign_change_days"),
+            "raw_inflation_sign_revision_changes": None,
+            "axis_effective_sign_revision_changes_growth": full.get(
+                "growth_sign_revision_change_days"
+            ),
+            "axis_effective_sign_revision_changes_inflation": full.get(
+                "inflation_sign_revision_change_days"
+            ),
+            "axis_state_label_revision_changes_growth": full.get(
+                "growth_axis_state_change_days"
+            ),
+            "axis_state_label_revision_changes_inflation": None,
+            "candidate_quadrant_revision_changes": full.get(
+                "candidate_quadrant_change_days"
+            ),
+            "status_revision_changes": full.get("status_revision_change_days"),
+            "published_quadrant_revision_changes": full.get(
+                "latched_revision_change_days"
+            ),
+            "latched_quadrant_revision_changes": full.get("latched_revision_change_days"),
+            "transition_displacement_median": transition_dist.get("median"),
+            "transition_displacement_p90": transition_dist.get("p90"),
+            "candidate_flips_per_year": full["candidate_flips_per_year"],
+            "published_flips_per_year": full["published_flips_per_year"],
+            "candidate_duration_median": candidate_duration.get("median"),
+            "candidate_duration_p10": candidate_duration.get("p10"),
+            "published_duration_median": published_duration.get("median"),
+            "published_duration_p10": published_duration.get("p10"),
+            "valid_rate": full["valid_rate"],
+            "abstain_rate": full["abstain_rate"],
+            "consumable_state_coverage": full["consumable_state_coverage"],
+            "stale_days_over_5bd": full["stale_days_over_5bd"],
+            "longest_stale_run": full["longest_stale_run"],
+            "state_age_since_last_valid_p50": consumed_age.get("median"),
+            "state_age_since_last_valid_p90": consumed_age.get("p90"),
+            "state_age_since_last_valid_max": consumed_age.get("max"),
+            "consumed_state_age_p50": None,
+            "consumed_state_age_p95": None,
+            "consumed_state_age_max": None,
+            "quadrant_occupancy": full["quadrant_occupancy"],
+            "abstention_reasons": full["reason_counts"],
+            "freeze_ready": False,
+            "production_candidate": False,
+            "activation_ready": False,
+        }
+        out.append(enriched)
+    return out
+
+
+def find_a32_summary_row(
+    rows: list[dict[str, Any]],
+    *,
+    a31_config_name: str,
+    growth_enter: float,
+    inflation_enter: float,
+    axis_exit: float,
+    min_confidence: float,
+) -> dict[str, Any]:
+    matches = [
+        row for row in rows
+        if row.get("a31_config_name") == a31_config_name
+        and float_close(row.get("growth_enter"), growth_enter)
+        and float_close(row.get("inflation_enter"), inflation_enter)
+        and float_close(row.get("axis_exit"), axis_exit)
+        and float_close(row.get("min_confidence"), min_confidence)
+    ]
+    if not matches:
+        raise ValueError(f"missing A3.2 row for {a31_config_name} {growth_enter}/{inflation_enter}/{axis_exit}/{min_confidence}")
+    if len(matches) > 1:
+        raise ValueError("A3.2 summary row is not unique")
+    return dict(matches[0])
+
+
+def find_a32_metric_row(
+    rows: list[dict[str, Any]],
+    a31_hash: str,
+    a32_hash: str,
+    fold: str,
+) -> dict[str, Any]:
+    matches = [
+        row for row in rows
+        if str(row.get("a31_config_hash")) == a31_hash
+        and str(row.get("a32_config_hash")) == a32_hash
+        and row.get("fold") == fold
+    ]
+    if not matches:
+        raise ValueError(f"missing A3.2 metric row for {a31_hash}/{a32_hash}/{fold}")
+    if len(matches) > 1:
+        raise ValueError("A3.2 metric row is not unique")
+    return dict(matches[0])
+
+
+def float_close(value: Any, expected: float) -> bool:
+    return value is not None and abs(float(value) - expected) < 1e-12
+
+
+def parse_json_metric(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if value in {None, ""}:
+        return {}
+    payload = json.loads(str(value))
+    return payload if isinstance(payload, dict) else {}
+
+
+def freeze_blockers(current_a32: dict[str, Any]) -> list[str]:
+    blockers = []
+    if float(current_a32["candidate_revision_change_rate"]) > MAX_REVISION_CHANGE_RATE_FREEZE:
+        blockers.append("candidate_revision_change_rate_above_10pct_freeze_gate")
+    if float(current_a32["valid_rate"]) < MIN_VALID_RATE_FREEZE:
+        blockers.append("valid_rate_below_original_freeze_band")
+    if float(current_a32["consumable_state_coverage"]) < MIN_VALID_RATE_FREEZE:
+        blockers.append("consumable_state_coverage_below_operational_target")
+    blockers.append("market_implied_valid_vs_valid_comparison_not_operational")
+    blockers.append("raw_inflation_revision_metric_not_available_in_5ba5217_artifacts")
+    blockers.append("consumed_state_age_distribution_not_available_in_5ba5217_artifacts")
+    return blockers
+
+
+def build_a3_freeze_readiness_report(
+    *,
+    worker_commit: str,
+    v02b_result: dict[str, Any],
+    g2_result: dict[str, Any],
+    current_a32: dict[str, Any],
+    a32_pareto: list[dict[str, Any]],
+    decision_basis_hash: str,
+) -> str:
+    v02b = v02b_result["summary"]
+    g2 = g2_result["summary"]
+    blockers = freeze_blockers(current_a32)
+    rows = [
+        "# A3 Freeze Readiness",
+        "",
+        f"- worker_commit: `{worker_commit}`",
+        "- git_dirty: `false`",
+        f"- decision_basis_hash: `{decision_basis_hash}`",
+        "- freeze_ready: `false`",
+        f"- A4 status: `{A4_PROVISIONAL_STATUS}`",
+        "- A5 status: `blocked`",
+        "",
+        "## Progression vs Freeze",
+        "",
+        "- G1 -> G2 limited: permitted by `a3_progression_v2`.",
+        "- G2 -> A3.2 limited: permitted for diagnostic threshold calibration.",
+        "- A3 parameter freeze: blocked; the original freeze gates still apply.",
+        "- retroactive_reclassification: `false`.",
+        "- effective_scope: `v02b_and_later`.",
+        "",
+        "## Headline Results",
+        "",
+        f"- SLOOS 60/40 15pct revision rate: `{v02b['candidate_revision_change_rate']}`; growth axis effective-sign changes: `{v02b['growth_sign_revision_change_days']}`; valid rate: `{v02b['valid_rate']}`.",
+        f"- G2 SLOOS+survey revision rate: `{g2['candidate_revision_change_rate']}`; growth axis effective-sign changes: `{g2['growth_sign_revision_change_days']}`; valid rate: `{g2['valid_rate']}`.",
+        f"- Current A3.2 candidate: `{current_a32['a32_config_name']}`.",
+        f"- Current A3.2 revision rate: `{current_a32['candidate_revision_change_rate']}`; raw growth score-sign changes: `{current_a32['raw_growth_sign_revision_changes']}`; axis effective-sign growth changes: `{current_a32['axis_effective_sign_revision_changes_growth']}`; axis state-label growth changes: `{current_a32['axis_state_label_revision_changes_growth']}`; valid rate: `{current_a32['valid_rate']}`; consumable coverage: `{current_a32['consumable_state_coverage']}`.",
+        "",
+        "## Consumable Coverage Contract",
+        "",
+        f"- `GATE_MAX_LAG_BUSINESS_DAYS={GATE_MAX_LAG_BUSINESS_DAYS}`.",
+        "- A day is consumable when a latched/published quadrant exists and the last `valid` publication is no more than 5 business-day rows old.",
+        "- The metric includes latched state carried during abstention only inside that lag window.",
+        "- It does not require the current row itself to be `valid`.",
+        "- Current artifacts expose P50/P90/max for `days_since_last_valid_distribution`; consumed-state age distribution requires a future artifact schema.",
+        "",
+        "## Metric Taxonomy",
+        "",
+        "- `raw_growth_sign_revision_changes`: raw score sign disagreement from revision diagnostics.",
+        "- `raw_inflation_sign_revision_changes`: not present in 5ba5217 artifacts.",
+        "- `axis_effective_sign_revision_changes_*`: threshold/hysteresis-dependent effective axis-sign disagreement.",
+        "- `axis_state_label_revision_changes_*`: more granular axis label disagreement, including neutral-state reason changes when available.",
+        "- `candidate_quadrant_revision_changes`: candidate quadrant disagreement.",
+        "- `status_revision_changes`: valid/abstain status disagreement.",
+        "- `published_quadrant_revision_changes`: 5ba5217 uses the latched `published_quadrant` field.",
+        "- `latched_quadrant_revision_changes`: latched published-state disagreement including abstain carry.",
+        "",
+        "## A3.2 Pareto Shortlist",
+        "",
+        "| rank | role | A32 | revision | raw growth | axis effective growth | valid | consumable | stale >5bd |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in a32_pareto:
+        rows.append(
+            f"| {row['pareto_rank']} | {row['pareto_role']} | `{row['a32_config_name']}` | "
+            f"{row['candidate_revision_change_rate']:.6f} | {row['raw_growth_sign_revision_changes']} | "
+            f"{row['axis_effective_sign_revision_changes_growth']} | {row['valid_rate']:.6f} | "
+            f"{row['consumable_state_coverage']:.6f} | {row['stale_days_over_5bd']} |"
+        )
+    rows.extend([
+        "",
+        "## Freeze Blockers",
+        "",
+    ])
+    rows.extend(f"- {blocker}" for blocker in blockers)
+    rows.extend([
+        "",
+        "## Market-Implied",
+        "",
+        "The 5ba5217 package does not contain an operational valid-vs-valid market-implied comparison. This remains a freeze blocker and must be calibrated separately.",
+        "",
+        "## A4 Guard",
+        "",
+        "A4 is limited to smoke, book compilation, feasibility, identity-gate validation, metrics generation, and lineage checks. It must not select centers, half-widths, gamma, beta caps, policy winners, or gate parameters before A3 freeze.",
+        "",
+    ])
+    return "\n".join(rows)
 
 
 def load_l2_macro_from_feature_manifest(
@@ -6543,7 +7030,7 @@ def build_a31_progression_decision_manifest(
         if new_decision in {"advance_to_g2", "advance_to_g2_limited"}
         else "blocked",
         "a4_status": (
-            "calibration_in_progress_with_provisional_A3"
+            A4_PROVISIONAL_STATUS
             if new_decision in {"advance_to_g2", "advance_to_g2_limited"}
             else "candidate_seed_only"
         ),
@@ -6791,6 +7278,10 @@ def main(argv: list[str] | None = None) -> None:
         return
     if argv and argv[0] == "a32-grid":
         result = run_a32_grid(parse_a32_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "a3-freeze-readiness":
+        result = run_a3_freeze_readiness_package(parse_a3_freeze_readiness_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     if argv and argv[0] == "v02-fetch-alfred":
