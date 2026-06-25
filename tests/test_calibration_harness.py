@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 from pathlib import Path
 
@@ -640,3 +641,122 @@ def test_harness_primary_artifacts_are_deterministic(tmp_path, monkeypatch) -> N
         )
 
     assert hashes[0] == hashes[1]
+
+
+def _write_grid_feature_inputs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    monkeypatch.setattr(ch, "reference_series_score", lambda cfg, series: 1.0)
+    monkeypatch.setattr(ch, "series_freshness", lambda cut, available_at: 1.0)
+    monkeypatch.setattr(ch, "vintage_quality", lambda revision_number: 1.0)
+    calendar = [dt.date(2024, 2, 2), dt.date(2024, 2, 5)]
+    rows = [
+        _row(cfg.series_id, dt.date(2024, 1, 1), dt.date(2024, 2, 1), 100.0)
+        for cfg in ch.BASELINE_SERIES
+    ]
+    primitives = ch.build_macro_feature_primitives(ch.group_rows(rows), calendar)
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    ch.write_parquet(feature_dir / "macro_feature_primitives.parquet", primitives)
+    l2_hash = ch.logical_records_hash(primitives)
+    ch.write_json(
+        feature_dir / "feature_manifest.json",
+        {
+            "schema_version": ch.L2_SCHEMA_VERSION,
+            "parameter_independent": True,
+            "counterfactual_runtime_allowed": False,
+            "business_date_calendar_hash": ch.business_calendar_hash(calendar),
+            "series_family_mapping_hash": ch.series_family_mapping_hash(),
+            "selection_roles": {
+                "latest": "pit_runtime_candidate",
+                "first_release": "revised_vintage_counterfactual",
+            },
+            "macro_feature_primitives": {
+                "row_count": len(primitives),
+                "logical_hash": l2_hash,
+                "grain": "business_date x selection_mode x series_id",
+            },
+        },
+    )
+    catalog = tmp_path / "catalog.yaml"
+    catalog.write_text(
+        "\n".join([
+            "configs:",
+            "  - name: A31-REF",
+            "  - name: A31-ROBUST-MEDIAN",
+            "    aggregation_method: median",
+        ]),
+        encoding="utf-8",
+    )
+    return feature_dir / "feature_manifest.json", catalog
+
+
+def test_a31_grid_only_writes_artifacts_and_resumes(tmp_path, monkeypatch) -> None:
+    manifest, catalog = _write_grid_feature_inputs(tmp_path, monkeypatch)
+    out = tmp_path / "grid"
+
+    first = ch.run_a31_grid(ch.A31GridConfig(
+        feature_manifest=manifest,
+        config_catalog=catalog,
+        output_dir=out,
+        jobs=1,
+        resume=False,
+        offline=True,
+        worker_commit="worker",
+    ))
+    second = ch.run_a31_grid(ch.A31GridConfig(
+        feature_manifest=manifest,
+        config_catalog=catalog,
+        output_dir=out,
+        jobs=1,
+        resume=True,
+        offline=True,
+        worker_commit="worker",
+    ))
+
+    assert first["completed_count"] == 2
+    assert second["resume_skipped_configs"] == 2
+    grid_manifest = json.loads((out / "grid_manifest.json").read_text(encoding="utf-8"))
+    assert grid_manifest["grid_only"] is True
+    assert grid_manifest["skipped_stages"] == ["DB", "Tiingo", "L0", "L1", "L2"]
+    assert (out / "results").exists()
+    assert ch.read_parquet_records(out / "a31_pareto.parquet")
+    for result_dir in (out / "results").iterdir():
+        assert (result_dir / "l3_score_panel.parquet").exists()
+        assert (result_dir / "l4_replay_a32_ref.parquet").exists()
+        result_manifest = json.loads(
+            (result_dir / "result_manifest.json").read_text(encoding="utf-8")
+        )
+        assert result_manifest["counterfactual_only_flags"]["counterfactual_runtime_allowed"] is False
+
+
+def test_a31_grid_parallel_matches_serial_metrics(tmp_path, monkeypatch) -> None:
+    manifest, catalog = _write_grid_feature_inputs(tmp_path, monkeypatch)
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+
+    ch.run_a31_grid(ch.A31GridConfig(
+        feature_manifest=manifest,
+        config_catalog=catalog,
+        output_dir=serial,
+        jobs=1,
+        offline=True,
+        worker_commit="worker",
+    ))
+    ch.run_a31_grid(ch.A31GridConfig(
+        feature_manifest=manifest,
+        config_catalog=catalog,
+        output_dir=parallel,
+        jobs=2,
+        offline=True,
+        worker_commit="worker",
+    ))
+
+    serial_metrics = ch.read_parquet_records(serial / "a31_grid_metrics.parquet")
+    parallel_metrics = ch.read_parquet_records(parallel / "a31_grid_metrics.parquet")
+    assert ch.logical_records_hash(serial_metrics) == ch.logical_records_hash(parallel_metrics)
+    serial_summary = ch.read_parquet_records(serial / "a31_grid_summary.parquet")
+    parallel_summary = ch.read_parquet_records(parallel / "a31_grid_summary.parquet")
+    assert [row["a31_config_hash"] for row in serial_summary] == [
+        row["a31_config_hash"] for row in parallel_summary
+    ]
+    for serial_row, parallel_row in zip(serial_summary, parallel_summary):
+        assert serial_row["result_classification"] == parallel_row["result_classification"]
