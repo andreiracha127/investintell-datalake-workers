@@ -540,6 +540,88 @@ def test_market_confidence_scale_strong_and_neutral_cases() -> None:
     assert flat_rows[-1]["status"] == "abstain"
 
 
+def test_market_grid_uses_primitives_and_carries_market_closed_days(tmp_path) -> None:
+    rows = [
+        {
+            "business_date": "2024-01-02",
+            "price_source": "test",
+            "lookback_days": 126,
+            "trading_session_indicator": True,
+            "spy_available": True,
+            "tip_available": True,
+            "ief_available": True,
+            "breakeven_available": True,
+            "growth_126d_return": 0.10,
+            "inflation_126d_return": 0.10,
+        },
+        {
+            "business_date": "2024-01-03",
+            "price_source": "test",
+            "lookback_days": 126,
+            "trading_session_indicator": False,
+            "spy_available": False,
+            "tip_available": False,
+            "ief_available": False,
+            "breakeven_available": False,
+            "growth_126d_return": None,
+            "inflation_126d_return": None,
+        },
+    ]
+    feature_dir = tmp_path / "features"
+    feature_dir.mkdir()
+    ch.write_parquet(feature_dir / "market_feature_primitives.parquet", rows)
+    ch.write_json(
+        feature_dir / "feature_manifest.json",
+        {
+            "schema_version": ch.L2_SCHEMA_VERSION,
+            "parameter_independent": True,
+            "business_date_calendar_hash": "cal",
+            "market_feature_primitives": {
+                "row_count": len(rows),
+                "logical_hash": ch.logical_records_hash(rows),
+                "grain": "business_date",
+            },
+        },
+    )
+
+    result = ch.run_market_grid(ch.MarketGridConfig(
+        feature_manifest=feature_dir / "feature_manifest.json",
+        macro_feature_manifest=None,
+        a31_catalog=None,
+        a32_grid_dir=None,
+        output_dir=tmp_path / "market_grid",
+        offline=True,
+        worker_commit="worker",
+    ))
+    replay = ch.read_parquet_records(
+        tmp_path / "market_grid" / "market_replay_selected.parquet"
+    )
+    summary = ch.read_parquet_records(
+        tmp_path / "market_grid" / "market_grid_summary.parquet"
+    )
+
+    assert result["selected_has_valid_all_years"] is True
+    assert replay[0]["status"] == "valid"
+    assert replay[1]["status"] == "valid"
+    assert replay[1]["carried_on_market_closed_day"] is True
+    assert summary[0]["market_closed_days"] == 1
+    assert summary[0]["spy_missing_data_days"] == 0
+
+
+def test_a3_scope_outcome_prefers_macro_v03_when_freeze_gates_fail() -> None:
+    outcome = ch.a3_scope_outcome(
+        {
+            "candidate_revision_change_rate": 0.1962,
+            "consumable_state_coverage": 0.3809,
+        },
+        {"freeze_blockers": ["candidate_revision_change_rate_above_10pct_freeze_gate"]},
+        {"selected_has_valid_all_years": True},
+        {"both_valid_dates": 100},
+    )
+
+    assert outcome == "open_macro_v03"
+
+
 def test_l3_l4_reference_parity_matches_replay(monkeypatch) -> None:
     def fake_score_all_series(selected, cut):
         return {
@@ -922,15 +1004,12 @@ def _write_grid_feature_inputs(tmp_path: Path, monkeypatch) -> tuple[Path, Path]
         },
     )
     catalog = tmp_path / "catalog.yaml"
-    catalog.write_text(
-        "\n".join([
-            "configs:",
-            "  - name: A31-REF",
-            "  - name: A31-ROBUST-MEDIAN",
-            "    aggregation_method: median",
-        ]),
-        encoding="utf-8",
-    )
+    catalog.write_text(json.dumps({
+        "configs": [
+            {"name": "A31-REF"},
+            {"name": "A31-ROBUST-MEDIAN", "aggregation_method": "median"},
+        ],
+    }), encoding="utf-8")
     return feature_dir / "feature_manifest.json", catalog
 
 
@@ -1112,12 +1191,18 @@ def _a32_metric_row(a32_hash: str) -> dict[str, object]:
         "a32_config_hash": a32_hash,
         "candidate_revision_change_rate": 0.1962,
         "growth_raw_sign_change_days": 940,
+        "inflation_raw_sign_change_days": 320,
         "growth_sign_revision_change_days": 978,
         "growth_axis_state_change_days": 978,
         "inflation_sign_revision_change_days": 410,
+        "inflation_axis_state_change_days": 415,
         "candidate_quadrant_change_days": 632,
         "status_revision_change_days": 42,
+        "status_revision_change_rate": 0.013,
+        "published_revision_change_days": 17,
+        "published_revision_change_rate": 0.005,
         "latched_revision_change_days": 17,
+        "latched_revision_change_rate": 0.005,
         "transition_timing_displacement": json.dumps({
             "p10": 1,
             "median": 3,
@@ -1147,6 +1232,17 @@ def _a32_metric_row(a32_hash: str) -> dict[str, object]:
             "p90": 18,
             "max": 356,
         }),
+        "consumed_state_age_distribution": json.dumps({
+            "min": 0,
+            "p10": 0,
+            "median": 1,
+            "p90": 4,
+            "max": 5,
+        }),
+        "first_input_ready_date": "2014-02-19",
+        "first_latched_date": "2016-02-08",
+        "first_operational_date": "2016-02-08",
+        "post_initialization_start_date": "2016-02-08",
         "quadrant_occupancy": json.dumps({"expansion": 10}),
         "reason_counts": json.dumps({"confidence_below_threshold": 5}),
     }
@@ -1175,10 +1271,11 @@ def test_a32_freeze_readiness_pareto_separates_metric_taxonomy() -> None:
     assert pareto[0]["raw_growth_sign_revision_changes"] == 940
     assert pareto[0]["axis_effective_sign_revision_changes_growth"] == 978
     assert pareto[0]["axis_state_label_revision_changes_growth"] == 978
-    assert pareto[0]["raw_inflation_sign_revision_changes"] is None
+    assert pareto[0]["raw_inflation_sign_revision_changes"] == 320
     assert pareto[0]["state_age_since_last_valid_p50"] == 2
-    assert pareto[0]["consumed_state_age_p50"] is None
-    assert pareto[0]["consumed_state_age_p95"] is None
+    assert pareto[0]["consumed_state_age_p50"] == 1
+    assert pareto[0]["consumed_state_age_p90"] == 4
+    assert pareto[0]["first_operational_date"] == "2016-02-08"
 
 
 def test_freeze_blockers_keep_progression_separate_from_freeze() -> None:
@@ -1186,11 +1283,41 @@ def test_freeze_blockers_keep_progression_separate_from_freeze() -> None:
         "candidate_revision_change_rate": 0.1962,
         "valid_rate": 0.3247,
         "consumable_state_coverage": 0.3809,
+        "raw_inflation_sign_revision_changes": 320,
+        "consumed_state_age_p50": 1,
     })
 
     assert "candidate_revision_change_rate_above_10pct_freeze_gate" in blockers
     assert "valid_rate_below_original_freeze_band" in blockers
     assert "market_implied_valid_vs_valid_comparison_not_operational" in blockers
+    assert "raw_inflation_revision_metric_not_available" not in blockers
+
+
+def test_a32_freeze_readiness_pareto_by_fold_materializes_fold_rows() -> None:
+    summary = [_a32_summary_row("cur", 0.35, 0.35, 0.10, 0.60)]
+    full = _a32_metric_row("cur")
+    post = {**full, "fold": "post_initialization", "valid_rate": 0.55}
+    folds = [full, post]
+
+    pareto = ch.a32_freeze_readiness_pareto(
+        summary + [
+            _a32_summary_row("conf", 0.35, 0.35, 0.10, 0.65),
+            _a32_summary_row("infl", 0.35, 0.40, 0.10, 0.60),
+            _a32_summary_row("exit", 0.35, 0.35, 0.15, 0.60),
+            _a32_summary_row("growth", 0.30, 0.35, 0.10, 0.60),
+        ],
+        folds + [
+            _a32_metric_row("conf"),
+            _a32_metric_row("infl"),
+            _a32_metric_row("exit"),
+            _a32_metric_row("growth"),
+        ],
+    )
+    by_fold = ch.a32_freeze_readiness_pareto_by_fold(pareto[:1], folds)
+
+    assert [row["fold"] for row in by_fold] == ["full", "post_initialization"]
+    assert by_fold[1]["valid_rate"] == 0.55
+    assert by_fold[1]["consumed_state_age_p90"] == 4
 
 
 def test_a31_catalog_compiles_multiple_family_shifts_from_immutable_base() -> None:
