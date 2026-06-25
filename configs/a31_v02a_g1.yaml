@@ -1,0 +1,226 @@
+schema_version: 1
+description: v02a growth one-factor screen. Inflation map and A32 remain frozen; no parameter freeze.
+
+base_series_weights: &base_series_weights
+  ACOGNO: 1.0
+  INDPRO: 1.0
+  PCEC96: 1.0
+  PAYEMS: 1.0
+  CPILFESL: 1.0
+  PPIFIS: 1.0
+  AHETPI: 1.0
+  MICH: 1.0
+
+inflation_weights: &inflation_weights
+  consumer_prices: 0.4117647059
+  producer_prices: 0.2352941176
+  wages: 0.2352941176
+  expectations: 0.1176470588
+
+growth_base_05: &growth_base_05
+  real_activity: 0.7125
+  labor: 0.2375
+
+growth_base_10: &growth_base_10
+  real_activity: 0.675
+  labor: 0.225
+
+growth_base_15: &growth_base_15
+  real_activity: 0.6375
+  labor: 0.2125
+
+temporal_stable_transforms: &temporal_stable_transforms
+  quantity_index:
+    acceleration_3m: 0.30
+    acceleration_6m: 0.40
+    change_12m: 0.30
+  price_index:
+    acceleration_3m: 0.35
+    acceleration_6m: 0.40
+    change_12m: 0.25
+
+configs:
+  - name: V02-G0-CONTROL
+    round: V02-G0
+    description: Control using v02 union L2 but selecting only A31-C-TEMPORAL-STABLE v01 series.
+    transformation_weights: *temporal_stable_transforms
+
+  - name: V02-G1-ICSA-LOG4W-05
+    round: V02-G1
+    description: Add-only 5pct claims_labor family using -z(log 4-week MA of ICSA).
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        claims_labor: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      ICSA: 1.0
+    series_transform_overrides:
+      ICSA: claims_log4w
+
+  - name: V02-G1-ICSA-LOG4W-10
+    round: V02-G1
+    description: Add-only 10pct claims_labor family using -z(log 4-week MA of ICSA).
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_10
+        claims_labor: 0.10
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      ICSA: 1.0
+    series_transform_overrides:
+      ICSA: claims_log4w
+
+  - name: V02-G1-ICSA-LOG4W-DELTA13-10
+    round: V02-G1
+    description: Add-only 10pct claims_labor with 70pct level and 30pct 13-week change penalty.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_10
+        claims_labor: 0.10
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      ICSA: 1.0
+    series_transform_overrides:
+      ICSA: claims_log4w_delta13
+
+  - name: V02-G1-PHI-GENERAL-05
+    round: V02-G1
+    description: Add-only 5pct Philadelphia Fed general activity diffusion index.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        survey_diffusion: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      GACDFSA066MSFRBPHI: 1.0
+    series_transform_overrides:
+      GACDFSA066MSFRBPHI: diffusion_zero_centered
+
+  - name: V02-G1-PHI-ORDERS-05
+    round: V02-G1
+    description: Add-only 5pct Philadelphia Fed new orders diffusion index.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        survey_diffusion: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      NOCDFSA066MSFRBPHI: 1.0
+    series_transform_overrides:
+      NOCDFSA066MSFRBPHI: diffusion_zero_centered
+
+  - name: V02-G1-NY-GENERAL-05
+    round: V02-G1
+    description: Add-only 5pct Empire State general conditions diffusion index.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        survey_diffusion: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      GACDISA066MSFRBNY: 1.0
+    series_transform_overrides:
+      GACDISA066MSFRBNY: diffusion_zero_centered
+
+  - name: V02-G1-NY-ORDERS-05
+    round: V02-G1
+    description: Add-only 5pct Empire State new orders diffusion index.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        survey_diffusion: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      NOCDISA066MSFRBNY: 1.0
+    series_transform_overrides:
+      NOCDISA066MSFRBNY: diffusion_zero_centered
+
+  - name: V02-G1-SURVEY-GENERAL-CROSSREGION-10
+    round: V02-G1
+    description: Add-only 10pct cross-region general activity composite, equal PHI and NY weights.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_10
+        survey_diffusion: 0.10
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      GACDFSA066MSFRBPHI: 0.5
+      GACDISA066MSFRBNY: 0.5
+    series_transform_overrides:
+      GACDFSA066MSFRBPHI: diffusion_zero_centered
+      GACDISA066MSFRBNY: diffusion_zero_centered
+
+  - name: V02-G1-SURVEY-REGION-COMPOSITE-10
+    round: V02-G1
+    description: Add-only 10pct survey composite, equal region and within-region general/orders weights.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_10
+        survey_diffusion: 0.10
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      GACDFSA066MSFRBPHI: 0.25
+      NOCDFSA066MSFRBPHI: 0.25
+      GACDISA066MSFRBNY: 0.25
+      NOCDISA066MSFRBNY: 0.25
+    series_transform_overrides:
+      GACDFSA066MSFRBPHI: diffusion_zero_centered
+      NOCDFSA066MSFRBPHI: diffusion_zero_centered
+      GACDISA066MSFRBNY: diffusion_zero_centered
+      NOCDISA066MSFRBNY: diffusion_zero_centered
+
+  - name: V02-G1-SURVEY-REGION-COMPOSITE-15
+    round: V02-G1
+    description: Add-only 15pct survey composite, equal region and within-region general/orders weights.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_15
+        survey_diffusion: 0.15
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      GACDFSA066MSFRBPHI: 0.25
+      NOCDFSA066MSFRBPHI: 0.25
+      GACDISA066MSFRBNY: 0.25
+      NOCDISA066MSFRBNY: 0.25
+    series_transform_overrides:
+      GACDFSA066MSFRBPHI: diffusion_zero_centered
+      NOCDFSA066MSFRBPHI: diffusion_zero_centered
+      GACDISA066MSFRBNY: diffusion_zero_centered
+      NOCDISA066MSFRBNY: diffusion_zero_centered
+
+  - name: V02-G1-UMCSENT-05
+    round: V02-G1
+    description: Add-only 5pct consumer_survey family; capped due UMCSENT/MICH provider overlap.
+    cross_axis_provider_overlap: UMCSENT shares Survey of Consumers provider family with MICH.
+    transformation_weights: *temporal_stable_transforms
+    family_weights:
+      growth:
+        <<: *growth_base_05
+        consumer_survey: 0.05
+      inflation: *inflation_weights
+    series_weights:
+      <<: *base_series_weights
+      UMCSENT: 1.0
+    series_transform_overrides:
+      UMCSENT: sentiment_level_delta

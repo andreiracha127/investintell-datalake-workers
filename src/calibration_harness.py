@@ -23,7 +23,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -81,7 +81,15 @@ class SeriesConfig:
     series_id: str
     axis: Literal["growth", "inflation"]
     family: str
-    transform_class: Literal["quantity_index", "price_index", "rate_level"]
+    transform_class: Literal[
+        "quantity_index",
+        "price_index",
+        "rate_level",
+        "claims_log4w",
+        "claims_log4w_delta13",
+        "diffusion_zero_centered",
+        "sentiment_level_delta",
+    ]
     direction: Literal[-1, 1] = 1
     weight_in_family: float = 1.0
 
@@ -155,6 +163,7 @@ class A31Config:
     reliability_weighting: str
     score_clip: dict[str, float]
     release_smoothing: str = "none"
+    series_transform_overrides: dict[str, str] = dataclass_field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -244,7 +253,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "claims_labor",
         "weekly",
         21,
-        SeriesConfig("ICSA", "growth", "claims_labor", "quantity_index", direction=-1),
+        SeriesConfig("ICSA", "growth", "claims_labor", "claims_log4w"),
         notes="initial claims; intended v02 transform is inverted and smoothed by release",
     ),
     V02SeriesSpec(
@@ -252,7 +261,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "survey_diffusion",
         "monthly",
         45,
-        SeriesConfig("GACDFSA066MSFRBPHI", "growth", "survey_diffusion", "rate_level"),
+        SeriesConfig("GACDFSA066MSFRBPHI", "growth", "survey_diffusion", "diffusion_zero_centered"),
         notes="Philadelphia Fed current general activity diffusion index",
     ),
     V02SeriesSpec(
@@ -260,7 +269,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "survey_diffusion",
         "monthly",
         45,
-        SeriesConfig("NOCDFSA066MSFRBPHI", "growth", "survey_diffusion", "rate_level"),
+        SeriesConfig("NOCDFSA066MSFRBPHI", "growth", "survey_diffusion", "diffusion_zero_centered"),
         notes="Philadelphia Fed current new orders diffusion index",
     ),
     V02SeriesSpec(
@@ -268,7 +277,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "survey_diffusion",
         "monthly",
         45,
-        SeriesConfig("GACDISA066MSFRBNY", "growth", "survey_diffusion", "rate_level"),
+        SeriesConfig("GACDISA066MSFRBNY", "growth", "survey_diffusion", "diffusion_zero_centered"),
         notes="Empire State current general business conditions diffusion index",
     ),
     V02SeriesSpec(
@@ -276,7 +285,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "survey_diffusion",
         "monthly",
         45,
-        SeriesConfig("NOCDISA066MSFRBNY", "growth", "survey_diffusion", "rate_level"),
+        SeriesConfig("NOCDISA066MSFRBNY", "growth", "survey_diffusion", "diffusion_zero_centered"),
         notes="Empire State current new orders diffusion index",
     ),
     V02SeriesSpec(
@@ -308,7 +317,7 @@ V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
         "consumer_survey",
         "monthly",
         60,
-        SeriesConfig("UMCSENT", "growth", "consumer_survey", "rate_level"),
+        SeriesConfig("UMCSENT", "growth", "consumer_survey", "sentiment_level_delta"),
         notes="consumer sentiment challenger with its own freshness treatment",
     ),
 )
@@ -320,6 +329,15 @@ V02_UNION_SERIES: tuple[SeriesConfig, ...] = tuple(
     spec.config for spec in V02_UNION_SERIES_SPECS
 )
 V02_EXCLUDED_MARKET_DERIVED_SERIES = ("NFCI", "STLFSI", "STLFSI4")
+V02A_GROWTH_SCREEN_SERIES = (
+    "ICSA",
+    "GACDFSA066MSFRBPHI",
+    "NOCDFSA066MSFRBPHI",
+    "GACDISA066MSFRBNY",
+    "NOCDISA066MSFRBNY",
+    "UMCSENT",
+)
+V02B_DEFERRED_SERIES = ("BUSAPPWNSAUS", "DRTSCILM", "DRSDCILM")
 
 FAMILY_WEIGHTS: dict[str, dict[str, float]] = {
     "growth": {"real_activity": 0.75, "labor": 0.25},
@@ -993,6 +1011,7 @@ def macro_primitive_row(
         "level_robust_z": ((current - median) / (1.4826 * mad)) if mad > 0 else None,
         "diffusion_offset": sign_of(current - median),
     })
+    primitives.update(custom_macro_primitives(cfg, series, periods))
     reference_score = reference_series_score(cfg, series)
     primitives.update({
         "reference_series_score": reference_score,
@@ -1001,6 +1020,90 @@ def macro_primitive_row(
         ),
     })
     return primitives
+
+
+def custom_macro_primitives(
+    cfg: SeriesConfig,
+    series: dict[dt.date, float],
+    periods: list[dt.date],
+) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "claims_log_ma4": None,
+        "z_claims_log_ma4": None,
+        "claims_delta_13w_log_ma4": None,
+        "z_claims_delta_13w_log_ma4": None,
+        "diffusion_zero_centered": None,
+        "z_diffusion_zero_centered": None,
+        "sentiment_level_z": None,
+        "sentiment_delta_3m_z": None,
+    }
+    if cfg.transform_class in {"claims_log4w", "claims_log4w_delta13"}:
+        log_ma4 = log_moving_average_history(series, periods, window=4)
+        latest = max(log_ma4, default=None)
+        if latest is not None:
+            delta13 = ordered_delta_by_lag(log_ma4, lag=13)
+            out.update({
+                "claims_log_ma4": log_ma4.get(latest),
+                "z_claims_log_ma4": latest_component_z(log_ma4),
+                "claims_delta_13w_log_ma4": delta13.get(latest),
+                "z_claims_delta_13w_log_ma4": latest_component_z(delta13),
+            })
+    if cfg.transform_class == "diffusion_zero_centered":
+        latest = periods[-1] if periods else None
+        if latest is not None:
+            out.update({
+                "diffusion_zero_centered": series[latest],
+                "z_diffusion_zero_centered": zero_centered_robust_z(series, series[latest]),
+            })
+    if cfg.transform_class == "sentiment_level_delta":
+        latest = periods[-1] if periods else None
+        if latest is not None:
+            delta3: dict[dt.date, float] = {}
+            period_set = set(periods)
+            for idx, period in enumerate(periods):
+                p3 = shift_months_with_set(periods, period_set, idx, 3)
+                if p3 is not None:
+                    delta3[period] = series[period] - series[p3]
+            out.update({
+                "sentiment_level_z": latest_component_z(series),
+                "sentiment_delta_3m_z": latest_component_z(delta3),
+            })
+    return out
+
+
+def log_moving_average_history(
+    series: dict[dt.date, float],
+    periods: list[dt.date],
+    *,
+    window: int,
+) -> dict[dt.date, float]:
+    out: dict[dt.date, float] = {}
+    for idx, period in enumerate(periods):
+        if idx + 1 < window:
+            continue
+        values = [series[p] for p in periods[idx - window + 1: idx + 1]]
+        if all(value > 0 for value in values):
+            out[period] = math.log(sum(values) / window)
+    return out
+
+
+def ordered_delta_by_lag(values_by_period: dict[dt.date, float], *, lag: int) -> dict[dt.date, float]:
+    periods = sorted(values_by_period)
+    out: dict[dt.date, float] = {}
+    for idx, period in enumerate(periods):
+        if idx >= lag:
+            out[period] = values_by_period[period] - values_by_period[periods[idx - lag]]
+    return out
+
+
+def zero_centered_robust_z(series: dict[dt.date, float], current: float) -> float | None:
+    values = [float(value) for value in series.values() if math.isfinite(value)]
+    if len(values) < MIN_MONTHLY_OBS:
+        return None
+    scale = 1.4826 * statistics.median(abs(value) for value in values)
+    if scale <= 0:
+        return None
+    return clip(current / scale, SERIES_Z_CLIP)
 
 
 def series_component_z_values(transform_class: str, series: dict[dt.date, float]) -> dict[str, float | None]:
@@ -1090,6 +1193,14 @@ def _reference_series_score_cached(
         value = quantity_index_score(series)
     elif transform_class == "price_index":
         value = price_index_score(series)
+    elif transform_class == "claims_log4w":
+        value = claims_log4w_score(series)
+    elif transform_class == "claims_log4w_delta13":
+        value = claims_log4w_delta13_score(series)
+    elif transform_class == "diffusion_zero_centered":
+        value = diffusion_zero_centered_score(series)
+    elif transform_class == "sentiment_level_delta":
+        value = sentiment_level_delta_score(series)
     else:
         value = rate_level_score(series)
     return value * direction if value is not None else None
@@ -1449,6 +1560,46 @@ def rate_level_score(series: dict[dt.date, float]) -> float | None:
     z_level = latest_component_z(series)
     z_delta = latest_component_z(delta3)
     return weighted_components([(0.70, z_level), (0.30, z_delta)])
+
+
+def claims_log4w_score(series: dict[dt.date, float]) -> float | None:
+    periods = sorted(series)
+    log_ma4 = log_moving_average_history(series, periods, window=4)
+    z_level = latest_component_z(log_ma4)
+    return -z_level if z_level is not None else None
+
+
+def claims_log4w_delta13_score(series: dict[dt.date, float]) -> float | None:
+    periods = sorted(series)
+    log_ma4 = log_moving_average_history(series, periods, window=4)
+    delta13 = ordered_delta_by_lag(log_ma4, lag=13)
+    z_level = latest_component_z(log_ma4)
+    z_delta = latest_component_z(delta13)
+    return weighted_components([
+        (0.70, -z_level if z_level is not None else None),
+        (0.30, -z_delta if z_delta is not None else None),
+    ])
+
+
+def diffusion_zero_centered_score(series: dict[dt.date, float]) -> float | None:
+    periods = sorted(series)
+    if not periods:
+        return None
+    return zero_centered_robust_z(series, series[periods[-1]])
+
+
+def sentiment_level_delta_score(series: dict[dt.date, float]) -> float | None:
+    periods = sorted(series)
+    period_set = set(periods)
+    delta3: dict[dt.date, float] = {}
+    for idx, period in enumerate(periods):
+        p3 = shift_months_with_set(periods, period_set, idx, 3)
+        if p3 is not None:
+            delta3[period] = series[period] - series[p3]
+    return weighted_components([
+        (0.70, latest_component_z(series)),
+        (0.30, latest_component_z(delta3)),
+    ])
 
 
 def weighted_components(items: list[tuple[float, float | None]]) -> float | None:
@@ -2192,6 +2343,9 @@ def build_l3_score_panel(
     for (business_date, selection_mode), primitive_rows in sorted(grouped.items()):
         role = selection_role_for_mode(selection_mode)
         by_series = {str(row["series_id"]): row for row in primitive_rows}
+        selected_primitive_rows = [
+            row for row in primitive_rows if l3_row_selected(row, a31_config)
+        ]
         axis_payload = {
             "growth": aggregate_l3_axis(by_series, "growth", a31_config),
             "inflation": aggregate_l3_axis(by_series, "inflation", a31_config),
@@ -2204,7 +2358,7 @@ def build_l3_score_panel(
             axis_payload["inflation"]["vintage_quality"],
         )
         u_value = 0.35 * c_quality + 0.20 * f_quality + 0.25 * a_quality + 0.20 * v_quality
-        information_hash = l2_information_set_hash(primitive_rows)
+        information_hash = l2_information_set_hash(selected_primitive_rows)
         critical_flags = {
             "growth": bool(axis_payload["growth"]["has_anchor"]),
             "inflation": bool(axis_payload["inflation"]["has_anchor"]),
@@ -2273,12 +2427,15 @@ def build_l3_score_panel(
 def aggregate_l3_axis(
     by_series: dict[str, dict[str, Any]], axis: str, config: A31Config
 ) -> dict[str, Any]:
-    configs = [cfg for cfg in BASELINE_SERIES if cfg.axis == axis]
     by_family: dict[str, list[tuple[float, dict[str, Any]]]] = {}
-    for cfg in configs:
-        row = by_series.get(cfg.series_id, {})
-        weight = config.series_weights.get(cfg.series_id, cfg.weight_in_family)
-        by_family.setdefault(cfg.family, []).append((weight, row))
+    for series_id, row in sorted(by_series.items()):
+        if not l3_row_selected(row, config):
+            continue
+        if str(row.get("axis_id")) != axis:
+            continue
+        family = str(row.get("family_id"))
+        weight = config.series_weights.get(series_id, 1.0)
+        by_family.setdefault(family, []).append((weight, row))
 
     family_scores: dict[str, float] = {}
     family_freshness: dict[str, float] = {}
@@ -2338,8 +2495,39 @@ def aggregate_l3_axis(
     }
 
 
+def l3_row_selected(row: dict[str, Any], config: A31Config) -> bool:
+    series_id = str(row.get("series_id") or "")
+    axis = str(row.get("axis_id") or "")
+    family = str(row.get("family_id") or "")
+    if series_id not in config.series_weights:
+        return False
+    return family in config.family_weights.get(axis, {})
+
+
 def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | None:
-    transform_class = str(row.get("transform_class") or "")
+    series_id = str(row.get("series_id") or "")
+    transform_class = str(
+        config.series_transform_overrides.get(series_id)
+        or row.get("transform_class")
+        or ""
+    )
+    if transform_class == "claims_log4w":
+        z_level = finite_or_none(row.get("z_claims_log_ma4"))
+        return -z_level if z_level is not None else None
+    if transform_class == "claims_log4w_delta13":
+        z_level = finite_or_none(row.get("z_claims_log_ma4"))
+        z_delta = finite_or_none(row.get("z_claims_delta_13w_log_ma4"))
+        return weighted_components([
+            (0.70, -z_level if z_level is not None else None),
+            (0.30, -z_delta if z_delta is not None else None),
+        ])
+    if transform_class == "diffusion_zero_centered":
+        return finite_or_none(row.get("z_diffusion_zero_centered"))
+    if transform_class == "sentiment_level_delta":
+        return weighted_components([
+            (0.70, finite_or_none(row.get("sentiment_level_z"))),
+            (0.30, finite_or_none(row.get("sentiment_delta_3m_z"))),
+        ])
     ref = reference_a31_config()
     weights = config.transformation_weights.get(transform_class)
     if not weights:
@@ -2523,19 +2711,22 @@ def l3_contribution_rows(
     config: A31Config,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for cfg in BASELINE_SERIES:
-        source = by_series.get(cfg.series_id, {})
+    for series_id, source in sorted(by_series.items()):
+        if not l3_row_selected(source, config):
+            continue
+        axis = str(source.get("axis_id"))
+        family = str(source.get("family_id"))
         rows.append({
             "business_date": business_date,
             "selection_mode": selection_mode,
             "selection_role": selection_role,
             "a31_config_hash": a31_hash,
             "contribution_level": "series",
-            "axis": cfg.axis,
-            "family": cfg.family,
-            "series_id": cfg.series_id,
+            "axis": axis,
+            "family": family,
+            "series_id": series_id,
             "score": series_score_from_l2_row(source, config),
-            "weight": 1.0,
+            "weight": config.series_weights.get(series_id),
         })
     for axis_name, payload in axis_payload.items():
         for family, score in payload["family_scores"].items():
@@ -2549,7 +2740,7 @@ def l3_contribution_rows(
                 "family": family,
                 "series_id": None,
                 "score": score,
-                "weight": FAMILY_WEIGHTS[axis_name].get(family),
+                "weight": config.family_weights.get(axis_name, {}).get(family),
             })
     return rows
 
@@ -4421,9 +4612,6 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
     series_audit = build_v02_series_audit(vintages, macro_feature_primitives, calendar)
 
     l0_hash = rows_hash(vintages)
-    l1_hash = logical_records_hash(pit_selection_panel)
-    l2_hash = logical_records_hash(macro_feature_primitives)
-    audit_hash = logical_records_hash(series_audit)
     calendar_hash = business_calendar_hash(calendar)
     mapping_hash = series_family_mapping_hash(V02_UNION_SERIES)
     worker_commit = config.worker_commit or run_text(
@@ -4437,6 +4625,14 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         for row in series_audit
         if row["series_id"] not in {cfg.series_id for cfg in BASELINE_SERIES}
     )
+    candidate_sets = build_v02_candidate_sets(series_audit)
+    qualification_status = (
+        "qualified"
+        if ready_for_all_v02(series_audit)
+        else "qualified_with_exclusions"
+        if candidate_sets["v02a_growth_screen"]["ready_for_grid"]
+        else "blocked_data_qualification"
+    )
     ready_for_grid = bool(series_audit) and all(
         row["eligibility_status"] in {"baseline_v01_preserved", "eligible_for_v02_screen"}
         for row in series_audit
@@ -4445,7 +4641,11 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         status for status in candidate_status_counts if status != "eligible_for_v02_screen"
     )
 
-    write_parquet(config.output_dir / "macro_vintages_v02_union.parquet", [
+    vintage_path = config.output_dir / "macro_vintages_v02_union.parquet"
+    pit_path = config.output_dir / "pit_selection_panel_v02_union.parquet"
+    l2_path = config.output_dir / "macro_feature_primitives_v02_union.parquet"
+    audit_path = config.output_dir / "v02_series_audit.parquet"
+    write_parquet(vintage_path, [
         {
             "series_id": row.series_id,
             "observation_period": row.observation_period.isoformat(),
@@ -4457,12 +4657,13 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         }
         for row in vintages
     ])
-    write_parquet(config.output_dir / "pit_selection_panel_v02_union.parquet", pit_selection_panel)
-    write_parquet(
-        config.output_dir / "macro_feature_primitives_v02_union.parquet",
-        macro_feature_primitives,
-    )
-    write_parquet(config.output_dir / "v02_series_audit.parquet", series_audit)
+    write_parquet(pit_path, pit_selection_panel)
+    write_parquet(l2_path, macro_feature_primitives)
+    write_parquet(audit_path, series_audit)
+    l0_hash = rows_hash(read_vintage_cache(vintage_path))
+    l1_hash = logical_records_hash(read_parquet_records(pit_path))
+    l2_hash = logical_records_hash(read_parquet_records(l2_path))
+    audit_hash = logical_records_hash(read_parquet_records(audit_path))
 
     v01_exhaustion = build_v01_exhaustion_manifest(config, v01_l2_hash)
     write_json(config.output_dir / "v01_exhaustion_manifest.json", v01_exhaustion)
@@ -4519,6 +4720,9 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         "inflation_map_status": "unchanged_from_A31-C-TEMPORAL-STABLE",
         "a32_status": "A32-REF_frozen_not_run",
         "ready_for_grid": ready_for_grid,
+        "qualification_status": qualification_status,
+        "candidate_sets": candidate_sets,
+        "v02_g0_control_ready": True,
         "blocked_reasons": blocked_reasons,
         "worker_commit": worker_commit,
         "git_dirty": git_dirty,
@@ -4550,10 +4754,14 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         "v02_series_audit_logical_hash": audit_hash,
         "candidate_eligibility_status_counts": candidate_status_counts,
         "ready_for_grid": ready_for_grid,
+        "qualification_status": qualification_status,
+        "candidate_sets": candidate_sets,
+        "v02_g0_control_ready": True,
         "blocked_reasons": blocked_reasons,
         "v02_g0_control_status": (
-            "not_run_data_qualification_only"
-            if ready_for_grid else "blocked_until_candidate_vintages_qualify"
+            "ready_not_run"
+            if candidate_sets["v02a_growth_screen"]["ready_for_grid"]
+            else "blocked_until_v02a_qualifies"
         ),
         "a4_status": "candidate_seed_only",
         "a5_status": "blocked",
@@ -4582,6 +4790,7 @@ def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
         "output_dir": str(config.output_dir),
         "execution_id": execution_id,
         "ready_for_grid": ready_for_grid,
+        "qualification_status": qualification_status,
         "parent_v01_l2_hash": v01_l2_hash,
         "l2_macro_logical_hash": l2_hash,
         "v02_series_audit_logical_hash": audit_hash,
@@ -4769,6 +4978,43 @@ def count_values(values: Any) -> dict[str, int]:
         key = str(value)
         counts[key] = counts.get(key, 0) + 1
     return dict(sorted(counts.items()))
+
+
+def ready_for_all_v02(series_audit: list[dict[str, Any]]) -> bool:
+    return all(
+        row["eligibility_status"] in {"baseline_v01_preserved", "eligible_for_v02_screen"}
+        for row in series_audit
+    )
+
+
+def build_v02_candidate_sets(series_audit: list[dict[str, Any]]) -> dict[str, Any]:
+    by_series = {str(row["series_id"]): row for row in series_audit}
+    v02a_ready = all(
+        by_series.get(series_id, {}).get("eligibility_status") == "eligible_for_v02_screen"
+        for series_id in V02A_GROWTH_SCREEN_SERIES
+    )
+    deferred = {
+        series_id: v02_deferred_reason(series_id, by_series.get(series_id, {}))
+        for series_id in V02B_DEFERRED_SERIES
+    }
+    return {
+        "v02a_growth_screen": {
+            "ready_for_grid": v02a_ready,
+            "eligible_series": list(V02A_GROWTH_SCREEN_SERIES),
+            "series_set_hash": stable_hash(list(V02A_GROWTH_SCREEN_SERIES)),
+        },
+        "v02b_deferred": {
+            "ready_for_grid": False,
+            "deferred_series": deferred,
+            "series_set_hash": stable_hash(list(V02B_DEFERRED_SERIES)),
+        },
+    }
+
+
+def v02_deferred_reason(series_id: str, row: dict[str, Any]) -> str:
+    if series_id in {"DRTSCILM", "DRSDCILM"}:
+        return "quarterly_transform_required"
+    return str(row.get("eligibility_status") or "not_audited")
 
 
 def build_v01_exhaustion_manifest(
@@ -5076,12 +5322,12 @@ def read_parquet_records(path: Path) -> list[dict[str, Any]]:
         raise RuntimeError("pandas is required to read calibration parquet artifacts") from exc
     frame = pd.read_parquet(path)
     return [
-        {str(key): parquet_cell(value) for key, value in record.items()}
+        {str(key): parquet_cell(value, key=str(key)) for key, value in record.items()}
         for record in frame.to_dict("records")
     ]
 
 
-def parquet_cell(value: Any) -> Any:
+def parquet_cell(value: Any, *, key: str | None = None) -> Any:
     if hasattr(value, "item") and not isinstance(value, (str, bytes, bytearray)):
         try:
             value = value.item()
@@ -5090,7 +5336,7 @@ def parquet_cell(value: Any) -> Any:
     if hasattr(value, "to_pydatetime"):
         value = value.to_pydatetime()
     if isinstance(value, dt.datetime):
-        if value.time() == dt.time(0, 0):
+        if value.time() == dt.time(0, 0) and not (key and "available_at" in key):
             return value.date().isoformat()
         return value.isoformat()
     if isinstance(value, dt.date):
@@ -5179,6 +5425,7 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         "release_smoothing",
         "family_weights",
         "series_weights",
+        "series_transform_overrides",
     }
     for field in simple_fields:
         if field in entry:
@@ -5222,6 +5469,10 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         reliability_weighting=str(data["reliability_weighting"]),
         score_clip={str(k): float(v) for k, v in dict(data["score_clip"]).items()},
         release_smoothing=str(data["release_smoothing"]),
+        series_transform_overrides={
+            str(k): str(v)
+            for k, v in dict(data.get("series_transform_overrides", {})).items()
+        },
     )
     metadata = {
         key: normalize_logical_value(value)
@@ -5236,6 +5487,7 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
             "transformation_weights",
             "family_weights",
             "series_weights",
+            "series_transform_overrides",
             "score_clip",
             "family_weight_shift",
             "family_weight_shifts",
@@ -5249,6 +5501,9 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         metadata["series_weight_shifts"] = normalize_logical_value(series_shifts)
     metadata["resolved_family_weights"] = normalize_logical_value(cfg.family_weights)
     metadata["resolved_series_weights"] = normalize_logical_value(cfg.series_weights)
+    metadata["resolved_series_transform_overrides"] = normalize_logical_value(
+        cfg.series_transform_overrides
+    )
     return cfg, metadata
 
 
@@ -5348,6 +5603,7 @@ def a31_distance_from_ref(config: A31Config) -> float:
     distance += abs(config.robust_clip - ref.robust_clip) / 10.0
     distance += 0.01 if config.reliability_weighting != ref.reliability_weighting else 0.0
     distance += 0.01 if config.release_smoothing != ref.release_smoothing else 0.0
+    distance += 0.01 * len(config.series_transform_overrides)
     return round(distance, 12)
 
 

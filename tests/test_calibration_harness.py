@@ -582,6 +582,93 @@ def test_l3_l4_reference_parity_matches_replay(monkeypatch) -> None:
     assert parity["passed"] is True
 
 
+def _l2_row(
+    business_date: str,
+    series_id: str,
+    axis: str,
+    family: str,
+    score: float,
+    *,
+    transform_class: str = "rate_level",
+    raw_value: float = 100.0,
+    revision: int = 0,
+) -> dict[str, object]:
+    return {
+        "business_date": business_date,
+        "selection_mode": "latest",
+        "selection_role": "pit_runtime_candidate",
+        "counterfactual_only": False,
+        "series_id": series_id,
+        "axis_id": axis,
+        "family_id": family,
+        "transform_class": transform_class,
+        "observation_period": "2024-01-01",
+        "vintage_date": "2024-02-01",
+        "available_at": "2024-02-01T00:00:00+00:00",
+        "raw_value": raw_value,
+        "revision_number": revision,
+        "freshness": 1.0,
+        "vintage_quality": 1.0,
+        "coverage": 1.0,
+        "reference_series_score": score,
+        "reference_transform_reason": None,
+    }
+
+
+def test_l3_information_hash_ignores_unselected_union_series() -> None:
+    rows = []
+    for day, icsa_value in [("2024-02-02", 200.0), ("2024-02-05", 250.0)]:
+        for cfg in ch.BASELINE_SERIES:
+            rows.append(_l2_row(day, cfg.series_id, cfg.axis, cfg.family, 1.0))
+        rows.append(
+            _l2_row(
+                day,
+                "ICSA",
+                "growth",
+                "claims_labor",
+                1.0,
+                transform_class="claims_log4w",
+                raw_value=icsa_value,
+                revision=1,
+            )
+        )
+    l2_hash = ch.logical_records_hash(rows)
+    l3_rows, _, _ = ch.build_l3_score_panel(
+        rows,
+        ch.reference_a31_config(),
+        l2_macro_logical_hash=l2_hash,
+        expected_l2_macro_logical_hash=l2_hash,
+    )
+
+    assert l3_rows[0]["information_set_hash"] == l3_rows[1]["information_set_hash"]
+
+
+def test_series_transform_overrides_apply_v02a_sign_conventions() -> None:
+    claims_row = {
+        "series_id": "ICSA",
+        "transform_class": "claims_log4w",
+        "z_claims_log_ma4": 2.0,
+        "z_claims_delta_13w_log_ma4": 1.0,
+    }
+    diffusion_row = {
+        "series_id": "GACDFSA066MSFRBPHI",
+        "transform_class": "diffusion_zero_centered",
+        "z_diffusion_zero_centered": 0.75,
+    }
+    cfg = ch.A31Config(
+        **{
+            **ch.asdict(ch.reference_a31_config()),
+            "series_transform_overrides": {
+                "ICSA": "claims_log4w_delta13",
+                "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+            },
+        }
+    )
+
+    assert ch.series_score_from_l2_row(claims_row, cfg) == pytest.approx(-1.7)
+    assert ch.series_score_from_l2_row(diffusion_row, cfg) == pytest.approx(0.75)
+
+
 def test_l3_rejects_parent_hash_mismatch() -> None:
     with pytest.raises(ValueError, match="parent hash mismatch"):
         ch.build_l3_score_panel(
