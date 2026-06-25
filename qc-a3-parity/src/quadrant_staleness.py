@@ -17,8 +17,6 @@ Business days = Mon-Fri count, NO holiday calendar in v1 (a documented A3
 calibration point — exchange holidays would tighten the market model's 3-bd
 hard_max_age; for the macro monthly basket the 45-calendar-day hard_max dominates).
 """
-from __future__ import annotations
-
 import datetime as _dt
 
 

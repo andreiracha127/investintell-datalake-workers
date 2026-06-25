@@ -42,8 +42,6 @@ confidence_model_version, never recomputed with future data. Calibrate the
 thresholds/floors (A3) ONLY against abstention/flips/vintage-stability, NEVER
 against CAGR/Sharpe.
 """
-from __future__ import annotations
-
 from typing import Literal
 
 import statistics

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import csv
 import datetime as dt
@@ -690,7 +688,6 @@ def materialize_harness_source_from_manifest(
     if not db_stub.exists():
         db_stub.write_text(
             '"""Offline DB stub for QC A3 parity."""\n'
-            "from __future__ import annotations\n\n"
             "def resolve_dsn(dsn=None):\n"
             "    raise RuntimeError('QC A3 parity is offline-only; database access is forbidden')\n\n"
             "def connect(dsn=None, *, autocommit=False):\n"
