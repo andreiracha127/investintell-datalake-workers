@@ -1,0 +1,176 @@
+schema_version: 1
+description: A3.1 Round C targeted transformations and series reweights. A32 remains A32-REF for all entries.
+configs:
+  - name: A31-C-HUBER100-WAGES025
+    round: C1
+    description: Local sensitivity around best local result; Huber 1.00, wages shift 2.5pp.
+    robust_clip: 1.00
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.025
+
+  - name: A31-C-HUBER100-WAGES050
+    round: C1
+    description: Local sensitivity around best local result; Huber 1.00, wages shift 5pp.
+    robust_clip: 1.00
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.05
+
+  - name: A31-C-HUBER125-WAGES025
+    round: C1
+    description: Local sensitivity around best local result; Huber 1.25, wages shift 2.5pp.
+    robust_clip: 1.25
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.025
+
+  - name: A31-C-HUBER125-WAGES050
+    round: C1
+    description: Best local structure from Round B.
+    robust_clip: 1.25
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.05
+
+  - name: A31-C-HUBER150-WAGES025
+    round: C1
+    description: Local sensitivity around best local result; Huber 1.50, wages shift 2.5pp.
+    robust_clip: 1.50
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.025
+
+  - name: A31-C-HUBER150-WAGES050
+    round: C1
+    description: Local sensitivity around best local result; Huber 1.50, wages shift 5pp.
+    robust_clip: 1.50
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.05
+
+  - name: A31-C-QTY-BALANCED
+    round: C2
+    description: Quantity/index temporal mix 40pct 3m, 35pct 6m, 25pct 12m.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.40
+        acceleration_6m: 0.35
+        change_12m: 0.25
+
+  - name: A31-C-QTY-STABLE
+    round: C2
+    description: Quantity/index temporal mix 30pct 3m, 40pct 6m, 30pct 12m.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+
+  - name: A31-C-PRICE-BALANCED
+    round: C2
+    description: Price temporal mix 45pct 3m, 35pct 6m, 20pct 12m.
+    transformation_weights:
+      price_index:
+        acceleration_3m: 0.45
+        acceleration_6m: 0.35
+        change_12m: 0.20
+
+  - name: A31-C-PRICE-STABLE
+    round: C2
+    description: Price temporal mix 35pct 3m, 40pct 6m, 25pct 12m.
+    transformation_weights:
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+
+  - name: A31-C-TEMPORAL-BALANCED
+    round: C2
+    description: Balanced temporal mixes for quantity/index and price transforms.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.40
+        acceleration_6m: 0.35
+        change_12m: 0.25
+      price_index:
+        acceleration_3m: 0.45
+        acceleration_6m: 0.35
+        change_12m: 0.20
+
+  - name: A31-C-TEMPORAL-STABLE
+    round: C2
+    description: Stable temporal mixes for quantity/index and price transforms.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+
+  - name: A31-C-PCEC96-025-SAME-FAMILY
+    round: C3
+    description: Series reweight from PCEC96, top growth sign-change contributor, 2.5pp to ACOGNO/INDPRO.
+    attribution_source: revision_attribution_by_series.score_sign_changed
+    series_weight_shift:
+      source: PCEC96
+      recipients: [ACOGNO, INDPRO]
+      delta: 0.025
+
+  - name: A31-C-PCEC96-050-SAME-FAMILY
+    round: C3
+    description: Series reweight from PCEC96, top growth sign-change contributor, 5pp to ACOGNO/INDPRO.
+    attribution_source: revision_attribution_by_series.score_sign_changed
+    series_weight_shift:
+      source: PCEC96
+      recipients: [ACOGNO, INDPRO]
+      delta: 0.05
+
+  - name: A31-C-INDPRO-025-SAME-FAMILY
+    round: C3
+    description: Series reweight from INDPRO, next real-activity contributor, 2.5pp to ACOGNO/PCEC96.
+    attribution_source: revision_attribution_by_series.score_sign_changed
+    series_weight_shift:
+      source: INDPRO
+      recipients: [ACOGNO, PCEC96]
+      delta: 0.025
+
+  - name: A31-C-INDPRO-050-SAME-FAMILY
+    round: C3
+    description: Series reweight from INDPRO, next real-activity contributor, 5pp to ACOGNO/PCEC96.
+    attribution_source: revision_attribution_by_series.score_sign_changed
+    series_weight_shift:
+      source: INDPRO
+      recipients: [ACOGNO, PCEC96]
+      delta: 0.05
+
+  - name: A31-C-REF-EMA-HL2
+    round: C4
+    description: Reference score panel with EMA by release, half-life 2 releases.
+    release_smoothing: ema_half_life_2
+
+  - name: A31-C-HUBER125-WAGES050-EMA-HL2
+    round: C4
+    description: Best local structure with EMA by release, half-life 2 releases.
+    robust_clip: 1.25
+    release_smoothing: ema_half_life_2
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.05
