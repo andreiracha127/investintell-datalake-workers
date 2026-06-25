@@ -21,6 +21,10 @@
 #                           Incremental (max(date)−5d → today); needs
 #                           TIINGO_API_KEY. Keep cadence < eod_staleness_hours
 #                           (API default 24h) so /stocks/* never serves stale.
+#   screener_metrics     -> daily after eod_prices_warmer; computes price-derived
+#                           fields from eod_prices and fundamentals directly from
+#                           company_characteristics_monthly, then refreshes
+#                           screener_equity_snapshot_mv for the Light API.
 #
 # nixpacks auto-detects Python via requirements.txt.
 

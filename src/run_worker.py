@@ -21,7 +21,7 @@ def main() -> None:
             "WORKER env var not set (expected risk_metrics|characteristics|factor_model"
             "|nport_lookthrough|credit_regime|regime_composite|macro_ingestion"
             "|treasury_ingestion|benchmark_ingest|instrument_ingestion"
-            "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion)"
+            "|eod_prices_warmer|screener_metrics|sec_13f_ingestion|form345_ingestion)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
     stats = mod.run(resolve_dsn())

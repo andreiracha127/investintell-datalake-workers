@@ -111,7 +111,7 @@ class _FakeConn:
 def test_warming_universe_unions_index_tickers_dedups_and_sorts():
     conn = _FakeConn([("MSFT",), ("AAPL",), ("SPY",)])
     universe = w.warming_universe(conn)
-    # SPY (an index ticker) already present is not duplicated; QQQ/DIA/IWM added.
+    # SPY already present is not duplicated; remaining index/benchmark ETFs added.
     assert universe == sorted(set(["MSFT", "AAPL", "SPY", *w.INDEX_TICKERS]))
     assert universe == sorted(universe)
     assert len(universe) == len(set(universe))
@@ -150,6 +150,12 @@ def test_fetch_rate_is_fast_lane():
     """Pacing matches instrument_ingestion's fast lane, not the 2.5 req/s default."""
     assert w.FETCH_RATE_PER_S >= 25.0
     assert w.FETCH_BURST >= 10.0
+
+
+def test_warmer_cold_lookback_covers_screener_two_year_beta():
+    assert w.NEW_TICKER_LOOKBACK_DAYS >= 745
+    for ticker in ("SPY", "GLD", "AGG", "TLT", "USO"):
+        assert ticker in w.INDEX_TICKERS
 
 
 # ──────────────────────────────────────────────────────────────────────────────

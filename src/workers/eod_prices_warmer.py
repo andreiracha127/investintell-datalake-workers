@@ -2,14 +2,13 @@
 
 Strategy B (Investintell-Light API latency-tail fix): the API serves /stocks/*
 DB-first from ``eod_prices`` and never fetches a *stale* ticker synchronously on
-the request path. This worker is what keeps that universe fresh out-of-band: for
-every ticker already present in ``eod_prices`` (plus a small set of index ETFs)
-it fetches the recent daily bars from Tiingo and upserts the full OHLCV row.
+the request path. This worker keeps that table fresh out-of-band for every
+active screener constituent, every ticker already present in ``eod_prices``, and
+the benchmark ETFs needed by the screener metrics worker.
 
-Universe = ``SELECT DISTINCT ticker FROM eod_prices`` ∪ ``INDEX_TICKERS`` — self-
-maintaining: any ticker a user has ever queried (so it has rows) stays warm; a
-brand-new ticker is fetched cold-with-deadline by the API on first request and
-joins the universe thereafter.
+Universe = active ``universe_constituents`` ∪ ``SELECT DISTINCT ticker FROM
+eod_prices`` ∪ ``INDEX_TICKERS``. This keeps the public stock screener covered
+instead of relying on a ticker to be queried once before it becomes warm.
 
 Incremental only: every warmed ticker already has history, so we fetch from
 ``max(date) − overlap`` (revisions) through today. ``eod_prices`` upserts land on
@@ -33,7 +32,7 @@ from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient, TokenBucket
 
 UPSERT_CHUNK = 500            # short transactions; well under the 65535-param ceiling (14/row)
 WATERMARK_OVERLAP_DAYS = 5    # re-fetch the last few days to absorb provider revisions
-NEW_TICKER_LOOKBACK_DAYS = 365  # rare: an index ticker not yet in eod_prices
+NEW_TICKER_LOOKBACK_DAYS = 745  # covers screener beta_2y lookback on cold tickers
 
 # Tiingo pacing — fast lane, matching instrument_ingestion. The account's hourly
 # budget far exceeds this, and the warming universe (~2k tickers) is small, so
@@ -42,9 +41,8 @@ FETCH_RATE_PER_S = 25.0
 FETCH_BURST = 20.0
 PROGRESS_EVERY = 500  # emit a heartbeat log every N tickers (observability)
 
-# Index ETFs the API's /stocks/overview strip warms on-demand — guarantee they
-# stay fresh even if never queried. Mirrors app ``market_overview.INDEX_TICKERS``.
-INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "DIA", "IWM")
+# Index / benchmark ETFs the API and screener need even if never queried.
+INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "DIA", "IWM", "GLD", "AGG", "TLT", "USO")
 
 # eod_prices price columns (all NOT NULL) → Tiingo daily-bar JSON key.
 _BAR_KEYS: dict[str, str] = {
@@ -101,9 +99,15 @@ def build_eod_rows(ticker: str, bars: list[dict[str, Any]]) -> list[tuple[Any, .
 # DB I/O
 # ──────────────────────────────────────────────────────────────────────────────
 def warming_universe(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> list[str]:
-    """All tickers already in eod_prices, unioned with the index ETFs, sorted."""
+    """Active screener tickers + already-known EOD tickers + benchmark ETFs."""
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT ticker FROM eod_prices")
+        cur.execute(
+            """
+            SELECT ticker FROM universe_constituents WHERE status = 'active'
+            UNION
+            SELECT DISTINCT ticker FROM eod_prices
+            """
+        )
         tickers = {r[0] for r in cur.fetchall()}
     tickers.update(extra)
     return sorted(tickers)
