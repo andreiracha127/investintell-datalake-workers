@@ -66,6 +66,8 @@ L4_STATE_SCHEMA_VERSION = 1
 L4_STATE_CODE_VERSION = "a3_l4_state_machine_v0"
 SMOKE_GRID_SCHEMA_VERSION = 1
 A31_GRID_SCHEMA_VERSION = 1
+V02_QUALIFICATION_SCHEMA_VERSION = 1
+PARENT_V01_L2_HASH = "4419f8c041397e16914d1b0a6dcb8244a5144bd98a54a75e67a6832f9d468c85"
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
 Status = Literal["valid", "abstain", "unavailable", "invalid"]
@@ -179,6 +181,30 @@ class A31GridConfig:
     worker_commit: str | None = None
 
 
+@dataclass(frozen=True)
+class V02QualificationConfig:
+    v01_feature_manifest: Path
+    vintage_cache: Path
+    output_dir: Path
+    start_date: dt.date
+    end_date: dt.date
+    v01_screen_dir: Path | None = None
+    v01_local_dir: Path | None = None
+    offline: bool = False
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class V02SeriesSpec:
+    series_id: str
+    candidate_family: str
+    frequency: str
+    freshness_limit_days: int
+    config: SeriesConfig
+    license_status: str = "fred_alfred_public_citation_required"
+    notes: str = ""
+
+
 BASELINE_SERIES: tuple[SeriesConfig, ...] = (
     SeriesConfig("ACOGNO", "growth", "real_activity", "quantity_index"),
     SeriesConfig("INDPRO", "growth", "real_activity", "quantity_index"),
@@ -189,6 +215,101 @@ BASELINE_SERIES: tuple[SeriesConfig, ...] = (
     SeriesConfig("AHETPI", "inflation", "wages", "price_index"),
     SeriesConfig("MICH", "inflation", "expectations", "rate_level"),
 )
+
+BASELINE_SERIES_SPECS: tuple[V02SeriesSpec, ...] = tuple(
+    V02SeriesSpec(
+        series_id=cfg.series_id,
+        candidate_family=cfg.family,
+        frequency="monthly",
+        freshness_limit_days=45,
+        config=cfg,
+        notes="v01 baseline series preserved for control parity",
+    )
+    for cfg in BASELINE_SERIES
+)
+
+V02_CHALLENGER_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
+    V02SeriesSpec(
+        "ICSA",
+        "claims_labor",
+        "weekly",
+        21,
+        SeriesConfig("ICSA", "growth", "claims_labor", "quantity_index", direction=-1),
+        notes="initial claims; intended v02 transform is inverted and smoothed by release",
+    ),
+    V02SeriesSpec(
+        "GACDFSA066MSFRBPHI",
+        "survey_diffusion",
+        "monthly",
+        45,
+        SeriesConfig("GACDFSA066MSFRBPHI", "growth", "survey_diffusion", "rate_level"),
+        notes="Philadelphia Fed current general activity diffusion index",
+    ),
+    V02SeriesSpec(
+        "NOCDFSA066MSFRBPHI",
+        "survey_diffusion",
+        "monthly",
+        45,
+        SeriesConfig("NOCDFSA066MSFRBPHI", "growth", "survey_diffusion", "rate_level"),
+        notes="Philadelphia Fed current new orders diffusion index",
+    ),
+    V02SeriesSpec(
+        "GACDISA066MSFRBNY",
+        "survey_diffusion",
+        "monthly",
+        45,
+        SeriesConfig("GACDISA066MSFRBNY", "growth", "survey_diffusion", "rate_level"),
+        notes="Empire State current general business conditions diffusion index",
+    ),
+    V02SeriesSpec(
+        "NOCDISA066MSFRBNY",
+        "survey_diffusion",
+        "monthly",
+        45,
+        SeriesConfig("NOCDISA066MSFRBNY", "growth", "survey_diffusion", "rate_level"),
+        notes="Empire State current new orders diffusion index",
+    ),
+    V02SeriesSpec(
+        "BUSAPPWNSAUS",
+        "business_formation",
+        "weekly",
+        21,
+        SeriesConfig("BUSAPPWNSAUS", "growth", "business_formation", "quantity_index"),
+        notes="business applications impulse candidate",
+    ),
+    V02SeriesSpec(
+        "DRTSCILM",
+        "credit_survey",
+        "quarterly",
+        120,
+        SeriesConfig("DRTSCILM", "growth", "credit_survey", "rate_level", direction=-1),
+        notes="SLOOS tighter commercial and industrial loan standards",
+    ),
+    V02SeriesSpec(
+        "DRSDCILM",
+        "credit_survey",
+        "quarterly",
+        120,
+        SeriesConfig("DRSDCILM", "growth", "credit_survey", "rate_level"),
+        notes="SLOOS commercial and industrial loan demand",
+    ),
+    V02SeriesSpec(
+        "UMCSENT",
+        "consumer_survey",
+        "monthly",
+        60,
+        SeriesConfig("UMCSENT", "growth", "consumer_survey", "rate_level"),
+        notes="consumer sentiment challenger with its own freshness treatment",
+    ),
+)
+
+V02_UNION_SERIES_SPECS: tuple[V02SeriesSpec, ...] = (
+    BASELINE_SERIES_SPECS + V02_CHALLENGER_SERIES_SPECS
+)
+V02_UNION_SERIES: tuple[SeriesConfig, ...] = tuple(
+    spec.config for spec in V02_UNION_SERIES_SPECS
+)
+V02_EXCLUDED_MARKET_DERIVED_SERIES = ("NFCI", "STLFSI", "STLFSI4")
 
 FAMILY_WEIGHTS: dict[str, dict[str, float]] = {
     "growth": {"real_activity": 0.75, "labor": 0.25},
@@ -231,8 +352,13 @@ def decision_time(day: dt.date) -> dt.datetime:
     return dt.datetime.combine(day, dt.time(23, 59, 59), tzinfo=UTC)
 
 
-def read_vintage_rows(conn, *, max_available_at: dt.datetime) -> list[VintageRow]:
-    series_ids = [s.series_id for s in BASELINE_SERIES]
+def read_vintage_rows(
+    conn,
+    *,
+    max_available_at: dt.datetime,
+    series_configs: tuple[SeriesConfig, ...] = BASELINE_SERIES,
+) -> list[VintageRow]:
+    series_ids = [s.series_id for s in series_configs]
     sql = (
         "SELECT series_id, observation_period, vintage_date, value, available_at, "
         "       revision_number, source_spec_version "
@@ -714,9 +840,11 @@ def compute_pit_qa(
 def build_pit_selection_panel(
     grouped: dict[str, list[VintageRow]],
     calendar: list[dt.date],
+    *,
+    series_configs: tuple[SeriesConfig, ...] = BASELINE_SERIES,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    configs = {cfg.series_id: cfg for cfg in BASELINE_SERIES}
+    configs = {cfg.series_id: cfg for cfg in series_configs}
     for day in calendar:
         cut = decision_time(day)
         latest = select_rows_as_of(grouped, cut, mode="latest")
@@ -767,9 +895,11 @@ def build_pit_selection_panel(
 def build_macro_feature_primitives(
     grouped: dict[str, list[VintageRow]],
     calendar: list[dt.date],
+    *,
+    series_configs: tuple[SeriesConfig, ...] = BASELINE_SERIES,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    configs = {cfg.series_id: cfg for cfg in BASELINE_SERIES}
+    configs = {cfg.series_id: cfg for cfg in series_configs}
     for day in calendar:
         cut = decision_time(day)
         selections = {
@@ -1978,8 +2108,14 @@ def business_calendar_hash(calendar: list[dt.date]) -> str:
     return stable_hash([day.isoformat() for day in calendar])
 
 
-def series_family_mapping_hash() -> str:
-    return stable_hash([asdict(cfg) for cfg in BASELINE_SERIES])
+def series_family_mapping_hash(
+    series_configs: tuple[SeriesConfig, ...] = BASELINE_SERIES,
+) -> str:
+    return stable_hash([asdict(cfg) for cfg in series_configs])
+
+
+def v02_series_universe_hash() -> str:
+    return stable_hash([asdict(spec) for spec in V02_UNION_SERIES_SPECS])
 
 
 def canonical_config_hash(config: A31Config | A32Config) -> str:
@@ -4007,6 +4143,503 @@ def _float_or_none(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def parse_v02_qualification_args(argv: list[str]) -> V02QualificationConfig:
+    ap = argparse.ArgumentParser(description="Qualify macro_family_map_v02 candidate data")
+    ap.add_argument("command", choices=["v02-qualify"])
+    ap.add_argument("--v01-feature-manifest", required=True)
+    ap.add_argument("--vintage-cache", required=True)
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--start-date", default="2014-02-19")
+    ap.add_argument("--end-date", default="2026-06-24")
+    ap.add_argument("--v01-screen-dir")
+    ap.add_argument("--v01-local-dir")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return V02QualificationConfig(
+        v01_feature_manifest=Path(args.v01_feature_manifest),
+        vintage_cache=Path(args.vintage_cache),
+        output_dir=Path(args.output_dir),
+        start_date=dt.date.fromisoformat(args.start_date),
+        end_date=dt.date.fromisoformat(args.end_date),
+        v01_screen_dir=Path(args.v01_screen_dir) if args.v01_screen_dir else None,
+        v01_local_dir=Path(args.v01_local_dir) if args.v01_local_dir else None,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_v02_qualification(config: V02QualificationConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("v02-qualify requires --offline to forbid DB/Tiingo access")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+
+    v01_manifest = read_json_dict(config.v01_feature_manifest)
+    v01_l2_hash = str(
+        (v01_manifest.get("macro_feature_primitives") or {}).get("logical_hash") or ""
+    )
+    validate_parent_hash("v01 L2 macro_feature_primitives", v01_l2_hash, PARENT_V01_L2_HASH)
+    all_vintages = read_vintage_cache(config.vintage_cache)
+    union_ids = {cfg.series_id for cfg in V02_UNION_SERIES}
+    vintages = [row for row in all_vintages if row.series_id in union_ids]
+    calendar = business_days(config.start_date, config.end_date)
+    grouped = group_rows(vintages)
+    baseline_pit = load_optional_v01_panel(
+        config.v01_feature_manifest.parent / "pit_selection_panel.parquet",
+        calendar,
+    )
+    baseline_l2 = load_optional_v01_panel(
+        config.v01_feature_manifest.parent / "macro_feature_primitives.parquet",
+        calendar,
+    )
+    challenger_ids = {spec.series_id for spec in V02_CHALLENGER_SERIES_SPECS}
+    challenger_rows = [row for row in vintages if row.series_id in challenger_ids]
+    challenger_grouped = group_rows(challenger_rows)
+    if baseline_pit is None or baseline_l2 is None:
+        pit_selection_panel = build_pit_selection_panel(
+            grouped,
+            calendar,
+            series_configs=V02_UNION_SERIES,
+        )
+        macro_feature_primitives = build_macro_feature_primitives(
+            grouped,
+            calendar,
+            series_configs=V02_UNION_SERIES,
+        )
+    else:
+        pit_selection_panel = baseline_pit + build_pit_selection_panel(
+            challenger_grouped,
+            calendar,
+            series_configs=tuple(spec.config for spec in V02_CHALLENGER_SERIES_SPECS),
+        )
+        macro_feature_primitives = baseline_l2 + build_macro_feature_primitives(
+            challenger_grouped,
+            calendar,
+            series_configs=tuple(spec.config for spec in V02_CHALLENGER_SERIES_SPECS),
+        )
+    series_audit = build_v02_series_audit(vintages, macro_feature_primitives, calendar)
+
+    l0_hash = rows_hash(vintages)
+    l1_hash = logical_records_hash(pit_selection_panel)
+    l2_hash = logical_records_hash(macro_feature_primitives)
+    audit_hash = logical_records_hash(series_audit)
+    calendar_hash = business_calendar_hash(calendar)
+    mapping_hash = series_family_mapping_hash(V02_UNION_SERIES)
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+    candidate_status_counts = count_values(
+        row["eligibility_status"]
+        for row in series_audit
+        if row["series_id"] not in {cfg.series_id for cfg in BASELINE_SERIES}
+    )
+    ready_for_grid = bool(series_audit) and all(
+        row["eligibility_status"] in {"baseline_v01_preserved", "eligible_for_v02_screen"}
+        for row in series_audit
+    )
+    blocked_reasons = sorted(
+        status for status in candidate_status_counts if status != "eligible_for_v02_screen"
+    )
+
+    write_parquet(config.output_dir / "macro_vintages_v02_union.parquet", [
+        {
+            "series_id": row.series_id,
+            "observation_period": row.observation_period.isoformat(),
+            "vintage_date": row.vintage_date.isoformat(),
+            "value": row.value,
+            "available_at": row.available_at.isoformat(),
+            "revision_number": row.revision_number,
+            "source_spec_version": row.source_spec_version,
+        }
+        for row in vintages
+    ])
+    write_parquet(config.output_dir / "pit_selection_panel_v02_union.parquet", pit_selection_panel)
+    write_parquet(
+        config.output_dir / "macro_feature_primitives_v02_union.parquet",
+        macro_feature_primitives,
+    )
+    write_parquet(config.output_dir / "v02_series_audit.parquet", series_audit)
+
+    v01_exhaustion = build_v01_exhaustion_manifest(config, v01_l2_hash)
+    write_json(config.output_dir / "v01_exhaustion_manifest.json", v01_exhaustion)
+
+    pit_selection_manifest = {
+        "panel": "pit_selection_panel_v02_union",
+        "schema_version": L1_SCHEMA_VERSION,
+        "row_count": len(pit_selection_panel),
+        "logical_hash": l1_hash,
+        "business_date_calendar_hash": calendar_hash,
+        "series_family_mapping_hash": mapping_hash,
+        "series_universe_hash": v02_series_universe_hash(),
+        "vintage_data_hash": l0_hash,
+        "selection_modes": ["latest", "first_release"],
+        "selection_roles": {
+            "latest": "pit_runtime_candidate",
+            "first_release": "revised_vintage_counterfactual",
+        },
+        "counterfactual_runtime_allowed": False,
+        "grain": "business_date x series_id",
+    }
+    write_json(config.output_dir / "pit_selection_manifest_v02_union.json", pit_selection_manifest)
+
+    feature_manifest = {
+        "schema_version": L2_SCHEMA_VERSION,
+        "panel": "macro_feature_primitives_v02_union",
+        "file_name": "macro_feature_primitives_v02_union.parquet",
+        "parameter_independent": True,
+        "counterfactual_runtime_allowed": False,
+        "business_date_calendar_hash": calendar_hash,
+        "series_family_mapping_hash": mapping_hash,
+        "family_map_candidate_set": "macro_family_map_v02_candidate_growth_qualification",
+        "series_universe_hash": v02_series_universe_hash(),
+        "vintage_data_hash": l0_hash,
+        "release_calendar_hash": calendar_hash,
+        "parent_v01_l2_hash": v01_l2_hash,
+        "parent_hashes": {
+            "parent_v01_l2_hash": v01_l2_hash,
+            "l1_logical_hash": l1_hash,
+            "vintage_data_hash": l0_hash,
+            "v02_series_audit_logical_hash": audit_hash,
+        },
+        "selection_roles": {
+            "latest": "pit_runtime_candidate",
+            "first_release": "revised_vintage_counterfactual",
+        },
+        "macro_feature_primitives": {
+            "row_count": len(macro_feature_primitives),
+            "logical_hash": l2_hash,
+            "grain": "business_date x selection_mode x series_id",
+            "file_name": "macro_feature_primitives_v02_union.parquet",
+        },
+        "market_derived_series_excluded": list(V02_EXCLUDED_MARKET_DERIVED_SERIES),
+        "inflation_map_status": "unchanged_from_A31-C-TEMPORAL-STABLE",
+        "a32_status": "A32-REF_frozen_not_run",
+        "ready_for_grid": ready_for_grid,
+        "blocked_reasons": blocked_reasons,
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+    }
+    write_json(config.output_dir / "feature_manifest_v02_union.json", feature_manifest)
+
+    finished = dt.datetime.now(UTC)
+    qualification_manifest = {
+        "schema_version": V02_QUALIFICATION_SCHEMA_VERSION,
+        "status": "ready_for_v02_grid" if ready_for_grid else "blocked_data_qualification",
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "offline": True,
+        "external_access": "disabled_by_v02_qualification_path",
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "parent_v01_l2_hash": v01_l2_hash,
+        "family_map_candidate_set": feature_manifest["family_map_candidate_set"],
+        "series_universe_hash": feature_manifest["series_universe_hash"],
+        "vintage_data_hash": l0_hash,
+        "release_calendar_hash": calendar_hash,
+        "l1_schema_version": L1_SCHEMA_VERSION,
+        "l2_schema_version": L2_SCHEMA_VERSION,
+        "l1_logical_hash": l1_hash,
+        "l2_macro_logical_hash": l2_hash,
+        "v02_series_audit_logical_hash": audit_hash,
+        "candidate_eligibility_status_counts": candidate_status_counts,
+        "ready_for_grid": ready_for_grid,
+        "blocked_reasons": blocked_reasons,
+        "v02_g0_control_status": (
+            "not_run_data_qualification_only"
+            if ready_for_grid else "blocked_until_candidate_vintages_qualify"
+        ),
+        "a4_status": "candidate_seed_only",
+        "a5_status": "blocked",
+        "artifact_hashes": hash_artifacts(config.output_dir, [
+            "macro_vintages_v02_union.parquet",
+            "pit_selection_panel_v02_union.parquet",
+            "pit_selection_manifest_v02_union.json",
+            "macro_feature_primitives_v02_union.parquet",
+            "feature_manifest_v02_union.json",
+            "v02_series_audit.parquet",
+            "v01_exhaustion_manifest.json",
+        ]),
+        "logical_artifacts": {
+            "macro_vintages_v02_union.parquet": l0_hash,
+            "pit_selection_panel_v02_union.parquet": l1_hash,
+            "pit_selection_manifest_v02_union.json": logical_payload_hash(pit_selection_manifest),
+            "macro_feature_primitives_v02_union.parquet": l2_hash,
+            "feature_manifest_v02_union.json": logical_payload_hash(feature_manifest),
+            "v02_series_audit.parquet": audit_hash,
+            "v01_exhaustion_manifest.json": logical_payload_hash(v01_exhaustion),
+        },
+    }
+    write_json(config.output_dir / "v02_qualification_manifest.json", qualification_manifest)
+    return {
+        "status": qualification_manifest["status"],
+        "output_dir": str(config.output_dir),
+        "execution_id": execution_id,
+        "ready_for_grid": ready_for_grid,
+        "parent_v01_l2_hash": v01_l2_hash,
+        "l2_macro_logical_hash": l2_hash,
+        "v02_series_audit_logical_hash": audit_hash,
+        "candidate_eligibility_status_counts": candidate_status_counts,
+    }
+
+
+def build_v02_series_audit(
+    vintage_rows: list[VintageRow],
+    macro_feature_primitives: list[dict[str, Any]],
+    calendar: list[dt.date],
+) -> list[dict[str, Any]]:
+    rows_by_series: dict[str, list[VintageRow]] = {}
+    for row in vintage_rows:
+        rows_by_series.setdefault(row.series_id, []).append(row)
+    primitives_by_series: dict[str, list[dict[str, Any]]] = {}
+    for row in macro_feature_primitives:
+        primitives_by_series.setdefault(str(row["series_id"]), []).append(row)
+
+    audit_rows: list[dict[str, Any]] = []
+    baseline_ids = {cfg.series_id for cfg in BASELINE_SERIES}
+    for spec in V02_UNION_SERIES_SPECS:
+        sid = spec.series_id
+        series_rows = sorted(
+            rows_by_series.get(sid, []),
+            key=lambda r: (r.observation_period, r.available_at, r.vintage_date),
+        )
+        primitive_rows = primitives_by_series.get(sid, [])
+        latest_rows = [
+            row for row in primitive_rows if row.get("selection_mode") == "latest"
+        ]
+        coverage_rate = (
+            sum(1 for row in latest_rows if row.get("coverage")) / len(calendar)
+            if calendar else 0.0
+        )
+        first_eligible = next(
+            (
+                str(row["business_date"])
+                for row in latest_rows
+                if row.get("coverage") and row.get("reference_series_score") is not None
+            ),
+            None,
+        )
+        release_lag_dist = distribution([
+            float((row.available_at.date() - row.observation_period).days)
+            for row in series_rows
+        ])
+        by_observation: dict[dt.date, list[VintageRow]] = {}
+        for row in series_rows:
+            by_observation.setdefault(row.observation_period, []).append(row)
+        revised_observations = [
+            period
+            for period, rows in by_observation.items()
+            if len(rows) > 1 or max(row.revision_number for row in rows) > 0
+        ]
+        revision_deltas: list[float] = []
+        for rows in by_observation.values():
+            ordered = sorted(rows, key=lambda r: (r.available_at, r.vintage_date))
+            for prev, current in zip(ordered, ordered[1:]):
+                revision_deltas.append(abs(current.value - prev.value))
+        revision_dist = distribution(revision_deltas)
+        sign_stats = v02_sign_revision_stats(primitive_rows, calendar)
+        eligibility = v02_eligibility_status(
+            spec,
+            series_rows,
+            coverage_rate,
+            first_eligible,
+            baseline_ids,
+        )
+        audit_rows.append({
+            "series_id": sid,
+            "candidate_family": spec.candidate_family,
+            "frequency": spec.frequency,
+            "first_eligible_date": first_eligible,
+            "coverage_rate": coverage_rate,
+            "median_release_lag": release_lag_dist["median"],
+            "p90_release_lag": release_lag_dist["p90"],
+            "freshness_limit": spec.freshness_limit_days,
+            "observations_ever_revised_rate": (
+                len(revised_observations) / len(by_observation)
+                if by_observation else None
+            ),
+            "median_abs_revision": revision_dist["median"],
+            "p90_abs_revision": revision_dist["p90"],
+            "transformed_sign_change_rate": sign_stats["transformed_sign_change_rate"],
+            "days_affected_by_revision": sign_stats["days_affected_by_revision"],
+            "revision_episode_count": sign_stats["revision_episode_count"],
+            "revision_episode_median_duration": sign_stats[
+                "revision_episode_median_duration"
+            ],
+            "alfred_lineage_complete": bool(series_rows) and all(
+                bool(row.source_spec_version) for row in series_rows
+            ),
+            "license_status": spec.license_status,
+            "eligibility_status": eligibility,
+        })
+    audit_rows.sort(key=lambda row: row["series_id"])
+    return audit_rows
+
+
+def load_optional_v01_panel(path: Path, calendar: list[dt.date]) -> list[dict[str, Any]] | None:
+    if not path.exists():
+        return None
+    allowed_dates = {day.isoformat() for day in calendar}
+    rows = read_parquet_records(path)
+    return [
+        row for row in rows
+        if str(row.get("business_date") or row.get("date")) in allowed_dates
+    ]
+
+
+def v02_sign_revision_stats(
+    primitive_rows: list[dict[str, Any]],
+    calendar: list[dt.date],
+) -> dict[str, Any]:
+    by_date_mode: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in primitive_rows:
+        by_date_mode[(str(row["business_date"]), str(row["selection_mode"]))] = row
+    affected_dates: list[dt.date] = []
+    comparable = 0
+    for day in calendar:
+        key = day.isoformat()
+        latest = by_date_mode.get((key, "latest"))
+        first = by_date_mode.get((key, "first_release"))
+        latest_sign = sign_of(latest.get("reference_series_score")) if latest else None
+        first_sign = sign_of(first.get("reference_series_score")) if first else None
+        if latest_sign is None or first_sign is None:
+            continue
+        comparable += 1
+        if latest_sign != first_sign:
+            affected_dates.append(day)
+    durations = contiguous_date_durations(affected_dates, calendar)
+    return {
+        "transformed_sign_change_rate": (
+            len(affected_dates) / comparable if comparable else None
+        ),
+        "days_affected_by_revision": len(affected_dates),
+        "revision_episode_count": len(durations),
+        "revision_episode_median_duration": (
+            statistics.median(durations) if durations else None
+        ),
+    }
+
+
+def contiguous_date_durations(dates: list[dt.date], calendar: list[dt.date]) -> list[int]:
+    if not dates:
+        return []
+    affected = set(dates)
+    durations: list[int] = []
+    current = 0
+    for day in calendar:
+        if day in affected:
+            current += 1
+        elif current:
+            durations.append(current)
+            current = 0
+    if current:
+        durations.append(current)
+    return durations
+
+
+def v02_eligibility_status(
+    spec: V02SeriesSpec,
+    rows: list[VintageRow],
+    coverage_rate: float,
+    first_eligible_date: str | None,
+    baseline_ids: set[str],
+) -> str:
+    if spec.series_id in V02_EXCLUDED_MARKET_DERIVED_SERIES:
+        return "market_derived_excluded"
+    if spec.series_id in baseline_ids:
+        return "baseline_v01_preserved"
+    if not rows:
+        return "missing_vintages"
+    if first_eligible_date is None:
+        return "insufficient_transform_history"
+    if coverage_rate < 0.80:
+        return "fold_coverage_failed"
+    return "eligible_for_v02_screen"
+
+
+def count_values(values: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        key = str(value)
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def build_v01_exhaustion_manifest(
+    config: V02QualificationConfig,
+    v01_l2_hash: str,
+) -> dict[str, Any]:
+    return {
+        "status": "exhausted_vintage_instability",
+        "decision": "A3.1 v01 baseline exhausted; do not advance to A3.2",
+        "parent_v01_l2_hash": v01_l2_hash,
+        "global_benchmark": load_a31_result_by_name(
+            config.v01_screen_dir,
+            "A31-C-TEMPORAL-STABLE",
+        ),
+        "growth_benchmark": load_a31_result_by_name(
+            config.v01_local_dir,
+            "A31-CLOCAL-TEMPORAL-STABLE-PCEC025",
+        ),
+        "a32_status": "A32-REF_frozen_not_optimized",
+        "a4_status": "candidate_seed_only",
+        "a5_status": "blocked",
+    }
+
+
+def load_a31_result_by_name(grid_dir: Path | None, name: str) -> dict[str, Any]:
+    if grid_dir is None:
+        return {"name": name, "status": "not_provided"}
+    results_dir = grid_dir / "results"
+    if not results_dir.exists():
+        return {"name": name, "status": "missing_results_dir", "grid_dir": str(grid_dir)}
+    for summary_path in sorted(results_dir.glob("*/result_summary.json")):
+        summary = read_json_dict(summary_path)
+        if summary.get("a31_config_name") != name:
+            continue
+        result_dir = summary_path.parent
+        manifest_path = result_dir / "result_manifest.json"
+        metrics_by_fold_path = result_dir / "metrics_by_fold.json"
+        manifest = read_json_dict(manifest_path) if manifest_path.exists() else {}
+        metrics_payload = (
+            read_json_dict(metrics_by_fold_path) if metrics_by_fold_path.exists() else {}
+        )
+        return {
+            "name": name,
+            "status": "found",
+            "result_dir": str(result_dir),
+            "a31_config_hash": summary.get("a31_config_hash"),
+            "candidate_revision_change_rate": summary.get(
+                "candidate_revision_change_rate"
+            ),
+            "growth_sign_revision_change_days": summary.get(
+                "growth_sign_revision_change_days"
+            ),
+            "inflation_sign_revision_change_days": summary.get(
+                "inflation_sign_revision_change_days"
+            ),
+            "candidate_flips_per_year": summary.get("candidate_flips_per_year"),
+            "valid_rate": summary.get("valid_rate"),
+            "abstain_rate": summary.get("abstain_rate"),
+            "metrics_logical_hash": summary.get("metrics_logical_hash"),
+            "metrics_by_fold_logical_hash": summary.get(
+                "metrics_by_fold_logical_hash"
+            ),
+            "result_manifest_metrics_logical_hash": manifest.get(
+                "metrics_logical_hash"
+            ),
+            "fold_rows": metrics_payload.get("rows", []),
+        }
+    return {"name": name, "status": "not_found", "grid_dir": str(grid_dir)}
+
+
 def parse_a31_grid_args(argv: list[str]) -> A31GridConfig:
     ap = argparse.ArgumentParser(description="Run offline A3.1 grid over materialized L2")
     ap.add_argument("command", choices=["a31-grid"])
@@ -4225,7 +4858,8 @@ def load_l2_macro_from_feature_manifest(
     expected_hash = str(macro_meta.get("logical_hash") or "")
     if not expected_hash:
         raise ValueError("feature_manifest is missing macro_feature_primitives.logical_hash")
-    l2_path = feature_manifest_path.parent / "macro_feature_primitives.parquet"
+    l2_file_name = str(macro_meta.get("file_name") or "macro_feature_primitives.parquet")
+    l2_path = feature_manifest_path.parent / l2_file_name
     rows = read_parquet_records(l2_path)
     actual_hash = logical_records_hash(rows)
     validate_parent_hash("a31-grid L2 macro_feature_primitives", actual_hash, expected_hash)
@@ -4954,6 +5588,10 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
     if argv and argv[0] == "a31-grid":
         result = run_a31_grid(parse_a31_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "v02-qualify":
+        result = run_v02_qualification(parse_v02_qualification_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     config = parse_args(argv)

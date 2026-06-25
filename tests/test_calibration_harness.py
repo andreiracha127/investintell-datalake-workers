@@ -341,6 +341,88 @@ def test_pit_selection_and_feature_panels_have_expected_grain() -> None:
     assert all(row["coverage_flag"] for row in pit)
 
 
+def test_v02_candidate_universe_excludes_market_derived_series() -> None:
+    ids = {spec.series_id for spec in ch.V02_CHALLENGER_SERIES_SPECS}
+
+    assert {"ICSA", "BUSAPPWNSAUS", "DRTSCILM", "DRSDCILM", "UMCSENT"} <= ids
+    assert "GACDFSA066MSFRBPHI" in ids
+    assert "NOCDFSA066MSFRBPHI" in ids
+    assert "GACDISA066MSFRBNY" in ids
+    assert "NOCDISA066MSFRBNY" in ids
+    assert ids.isdisjoint(ch.V02_EXCLUDED_MARKET_DERIVED_SERIES)
+
+
+def test_v02_qualification_marks_missing_candidate_vintages(tmp_path) -> None:
+    manifest_path = tmp_path / "feature_manifest.json"
+    ch.write_json(
+        manifest_path,
+        {"macro_feature_primitives": {"logical_hash": ch.PARENT_V01_L2_HASH}},
+    )
+    vintage_cache = tmp_path / "macro_vintages.parquet"
+    ch.write_vintage_cache(
+        vintage_cache,
+        [
+            _row("ACOGNO", dt.date(2024, 1, 1), dt.date(2024, 2, 1), 100.0),
+            _row("ACOGNO", dt.date(2024, 1, 1), dt.date(2024, 3, 1), 101.0, revision=1),
+        ],
+    )
+
+    result = ch.run_v02_qualification(ch.V02QualificationConfig(
+        v01_feature_manifest=manifest_path,
+        vintage_cache=vintage_cache,
+        output_dir=tmp_path / "out",
+        start_date=dt.date(2024, 2, 15),
+        end_date=dt.date(2024, 2, 15),
+        offline=True,
+        worker_commit="test",
+    ))
+
+    assert result["status"] == "blocked_data_qualification"
+    audit = ch.read_parquet_records(tmp_path / "out" / "v02_series_audit.parquet")
+    by_id = {row["series_id"]: row for row in audit}
+    assert by_id["ACOGNO"]["eligibility_status"] == "baseline_v01_preserved"
+    assert by_id["ICSA"]["eligibility_status"] == "missing_vintages"
+    assert result["candidate_eligibility_status_counts"] == {"missing_vintages": 9}
+
+    feature_manifest = ch.read_json_dict(
+        tmp_path / "out" / "feature_manifest_v02_union.json"
+    )
+    assert feature_manifest["parent_v01_l2_hash"] == ch.PARENT_V01_L2_HASH
+    assert feature_manifest["ready_for_grid"] is False
+    assert "NFCI" in feature_manifest["market_derived_series_excluded"]
+
+
+def test_load_l2_macro_from_feature_manifest_honors_file_name(tmp_path) -> None:
+    rows = [{"business_date": "2024-01-02", "selection_mode": "latest", "series_id": "X"}]
+    ch.write_parquet(tmp_path / "macro_feature_primitives_v02_union.parquet", rows)
+    l2_hash = ch.logical_records_hash(rows)
+    ch.write_json(
+        tmp_path / "feature_manifest_v02_union.json",
+        {
+            "schema_version": ch.L2_SCHEMA_VERSION,
+            "parameter_independent": True,
+            "counterfactual_runtime_allowed": False,
+            "selection_roles": {
+                "latest": "pit_runtime_candidate",
+                "first_release": "revised_vintage_counterfactual",
+            },
+            "macro_feature_primitives": {
+                "logical_hash": l2_hash,
+                "row_count": 1,
+                "file_name": "macro_feature_primitives_v02_union.parquet",
+            },
+        },
+    )
+
+    _, l2_path, actual_hash, records = ch.load_l2_macro_from_feature_manifest(
+        tmp_path / "feature_manifest_v02_union.json"
+    )
+
+    assert l2_path.name == "macro_feature_primitives_v02_union.parquet"
+    assert actual_hash == l2_hash
+    assert records == rows
+
+
 def test_publication_status_rejects_low_axis_coverage_even_with_confidence() -> None:
     axis = {
         "growth": {
