@@ -124,11 +124,72 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
     return "UNKNOWN"
 
 
+# The "sector" dimension is DUAL-AXIS, chosen by N-PORT assetCat — a GICS sector
+# only makes sense for equities; debt needs a fixed-income taxonomy.
+_EQUITY_CATS = frozenset({"EC", "EP"})  # common, preferred
+_DERIVATIVE_CATS = frozenset({"DE", "DFE", "DCR", "DIR", "DO"})  # eq/fx/credit/rate/other
+# Debt STRUCTURE → FI sector (independent of who issued it).
+_FI_STRUCTURE_LABELS = {
+    "ABS-MBS": "Mortgage-Backed (MBS)",
+    "ABS-O": "Asset-Backed (ABS)",
+    "ABS-CBDO": "CLO/CDO",
+    "LON": "Bank Loans",
+    "STIV": "Short-Term / Cash",
+}
+# Plain debt (DBT) split by issuer type (the N-PORT ``sector``/issuerCat code).
+_DEBT_ISSUER_LABELS = {
+    "CORP": "Corporate Debt",
+    "UST": "U.S. Treasury",
+    "USGA": "U.S. Agency",
+    "USGSE": "U.S. Agency",
+    "MUN": "Municipal",
+    "NUSS": "Sovereign (ex-US)",
+}
+# issuerCat codes that are unambiguously debt (used when assetCat is unknown).
+_DEBT_ISSUER_CODES = frozenset({"UST", "USGA", "USGSE", "MUN", "NUSS"})
+
+
+def sector_label(holding: dict, sector_map: dict[str, str]) -> str:
+    """Dual-axis sector for one holding, chosen by N-PORT assetCat.
+
+    Equities (EC/EP) → the issuer's real GICS sector via ``sector_map`` (issuer
+    CUSIP-6), or ``"Unclassified"`` when absent (e.g. non-US names outside the
+    US-centric GICS map) — never an issuerCat code, which would misrepresent an
+    equity as "Corporate". Debt → a fixed-income sector by structure (MBS / ABS /
+    CLO / bank loans / short-term), with plain bonds (DBT) split by issuer type
+    (Corporate / Treasury / Agency / Municipal / Sovereign). Derivatives and repo
+    get their own buckets. N-PORT's ``sector`` field is the issuerCat code, NOT a
+    sector — it is only used to split debt, never as a sector itself.
+    """
+    asset = (holding.get("asset_class") or "").strip().upper()
+    issuer = (holding.get("sector") or "").strip().upper()
+    if asset in _EQUITY_CATS:
+        # US/large names resolve by issuer CUSIP-6; foreign names (synthetic
+        # IS:<isin> cusip) resolve by ISIN via the enrichment cache. Both live
+        # in ``sector_map`` (6-char CUSIP-6 keys vs 12-char ISIN keys — no clash).
+        gics = sector_map.get(issuer_key(holding.get("cusip"), holding.get("isin")))
+        if not gics:
+            isin = (holding.get("isin") or "").strip().upper()
+            gics = sector_map.get(isin) if isin else None
+        return gics or "Unclassified"
+    if asset in _FI_STRUCTURE_LABELS:
+        return _FI_STRUCTURE_LABELS[asset]
+    if asset == "DBT":
+        return _DEBT_ISSUER_LABELS.get(issuer, "Debt")
+    if asset in _DERIVATIVE_CATS:
+        return "Derivatives"
+    if asset == "RA":
+        return "Repo"
+    # Unknown/missing assetCat: only unambiguously-debt issuers map; else Other.
+    return _DEBT_ISSUER_LABELS[issuer] if issuer in _DEBT_ISSUER_CODES else "Other"
+
+
 def expand_series(
     series_id: str,
     get_holdings: Callable[[str], tuple[_dt.date, list[dict]] | None],
     fund_map: dict,
     *,
+    sector_map: dict[str, str] | None = None,
     max_depth: int = MAX_DEPTH,
 ) -> tuple[dict, dict]:
     """Recursive look-through of one series. Pure computation over a fetcher.
@@ -140,6 +201,7 @@ def expand_series(
     Raises LookupError when the root series has no holdings — fail loud, a
     parent listed for computation must exist.
     """
+    sector_map = sector_map or {}
     root = get_holdings(series_id)
     if root is None:
         raise LookupError(f"no holdings for root series {series_id}")
@@ -167,7 +229,7 @@ def expand_series(
             ("issuer", issuer_key(holding.get("cusip"), holding.get("isin")),
              holding.get("issuer_name")),
             ("asset_class", holding.get("asset_class") or "UNKNOWN", None),
-            ("sector", holding.get("sector") or "UNKNOWN", None),
+            ("sector", sector_label(holding, sector_map), None),
             ("currency", holding.get("currency") or "UNKNOWN", None),
         )
         for dimension, key, label in keys:
@@ -242,6 +304,13 @@ def build_fund_map(conn) -> dict:
                 SELECT upper(ticker), series_id
                 FROM sec_etfs
                 WHERE ticker IS NOT NULL AND series_id IS NOT NULL
+                UNION
+                -- SEC company_tickers_mf: authoritative ticker -> series_id for
+                -- registered funds/ETFs absent from the N-CEN sec_etfs slice
+                -- (e.g. WisdomTree DTD/DEM/DXJ held inside fund-of-funds).
+                SELECT upper(ticker), series_id
+                FROM sec_company_tickers_mf
+                WHERE ticker IS NOT NULL AND series_id IS NOT NULL
             )
             SELECT m.cusip, min(t.series_id)
             FROM sec_cusip_ticker_map m
@@ -273,6 +342,37 @@ def build_fund_map(conn) -> dict:
         """)
         isin_map.update(cur.fetchall())
     return {"cusip": cusip_map, "isin": isin_map}
+
+
+def build_sector_map(conn) -> dict[str, str]:
+    """Issuer CUSIP-6 → GICS sector, from ``sec_cusip_ticker_map.gics_sector``.
+
+    The map is the GICS-classified (equity) universe; bonds, treasuries and
+    munis are absent by construction and fall back to readable issuerCat buckets
+    (see ``sector_label``). CUSIP-6 (issuer grain) lets a corporate *bond*
+    inherit its issuer's equity sector. First non-null wins per issuer
+    (one issuer = one sector).
+    """
+    out: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT cusip, gics_sector FROM sec_cusip_ticker_map "
+            "WHERE gics_sector IS NOT NULL AND cusip IS NOT NULL"
+        )
+        for cusip, gics in cur.fetchall():
+            if len(cusip) >= 6:
+                out.setdefault(cusip[:6], gics)
+        # International equities (synthetic IS:<isin> cusips) resolve by ISIN via
+        # the nport_cusip_enrichment cache. 12-char ISIN keys never clash with
+        # the 6-char CUSIP-6 keys above. Optional — skip if not yet provisioned.
+        if cur.execute("SELECT to_regclass('public.sec_isin_sector')").fetchone()[0]:
+            cur.execute(
+                "SELECT isin, gics_sector FROM sec_isin_sector "
+                "WHERE gics_sector IS NOT NULL AND isin IS NOT NULL"
+            )
+            for isin, gics in cur.fetchall():
+                out.setdefault(isin, gics)
+    return out
 
 
 def make_db_get_holdings(
@@ -424,7 +524,8 @@ def _resolve_max_workers() -> int:
 
 
 def _process_shard(
-    dsn: str, calc_date_iso: str, fund_map: dict, series_ids: list[str]
+    dsn: str, calc_date_iso: str, fund_map: dict,
+    sector_map: dict[str, str], series_ids: list[str]
 ) -> tuple[int, int, int]:
     """Child-process entrypoint: own connection, per-series commit."""
     calc_date = _dt.date.fromisoformat(calc_date_iso)
@@ -432,7 +533,9 @@ def _process_shard(
     with connect(dsn) as conn:
         get_holdings = make_db_get_holdings(conn, calc_date)
         for series_id in series_ids:
-            exposures, summary = expand_series(series_id, get_holdings, fund_map)
+            exposures, summary = expand_series(
+                series_id, get_holdings, fund_map, sector_map=sector_map
+            )
             coverage = _coverage_pct(conn, series_id, summary["report_date"])
             exposure_rows += _upsert_series(conn, series_id, exposures, summary,
                                             coverage)
@@ -485,6 +588,7 @@ def run(
                     raise RuntimeError("sec_nport_holdings is empty")
 
             fund_map = build_fund_map(conn)
+            sector_map = build_sector_map(conn)
             parents = _list_parents(conn, cdate, limit)
             cdate_iso = cdate.isoformat()
 
@@ -493,7 +597,7 @@ def run(
 
             if n_workers <= 1:
                 processed, upserted, exposure_rows = _process_shard(
-                    dsn, cdate_iso, fund_map, parents
+                    dsn, cdate_iso, fund_map, sector_map, parents
                 )
             else:
                 processed = upserted = exposure_rows = 0
@@ -501,7 +605,7 @@ def run(
                 with ProcessPoolExecutor(max_workers=n_workers) as pool:
                     futures = [
                         pool.submit(_process_shard, dsn, cdate_iso, fund_map,
-                                    shard)
+                                    sector_map, shard)
                         for shard in shards
                     ]
                     for fut in as_completed(futures):

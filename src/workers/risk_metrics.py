@@ -282,16 +282,26 @@ def evt_tail(ret: np.ndarray) -> dict[str, float | None]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Benchmark wiring (2026-06-12) — liga regression_metrics ao benchmark_nav.
-# A função existia desde o port mas nunca foi chamada: faltava o mapa
-# fundo→benchmark e o fetch das séries. Mapa em duas camadas:
-#   1. strategy label (stage) → bloco nomeado do benchmark_ingest;
-#   2. fallback instruments_universe.asset_class → bloco amplo.
-# Labels sem benchmark defensável (Balanced, Target Date, Convertibles…)
-# caem no fallback do asset_class; alternatives sem mapa ficam sem métricas
-# relativas — exceto equity_correlation_252d, sempre vs EQUITY_BENCHMARK_BLOCK.
+# Benchmark wiring (2026-06-22) — liga as métricas relativas ao MESMO benchmark
+# do active share: strategy_label → proxy ETF (fund_strategy_benchmark_proxy_map),
+# com séries de retorno lidas do adj_close em eod_prices. Substitui o antigo mapa
+# strategy_label → bloco de benchmark_nav. Camadas de resolução do label:
+#   1. funds_list_mv.strategy_label (catálogo) → proxy_etf_ticker;
+#   2. strategy_reclassification_stage.proposed_strategy_label → proxy_etf_ticker;
+#   3. fallback instruments_universe.asset_class → ticker amplo.
+# Labels sem proxy mapeável ficam sem métricas relativas — exceto
+# equity_correlation_252d/crisis_alpha_score, sempre vs EQUITY_BENCHMARK_KEY.
 # ──────────────────────────────────────────────────────────────────────────────
-EQUITY_BENCHMARK_BLOCK = "na_equity_large"
+# Benchmark source = proxy ETF (active-share map), read from eod_prices.adj_close.
+# equity_correlation_252d and crisis_alpha_score are always vs this equity key.
+EQUITY_BENCHMARK_KEY = "IVV"
+
+# asset_class fallback when a fund has no label in the proxy map.
+ASSET_CLASS_FALLBACK_TICKER: dict[str, str] = {
+    "equity": "IVV",
+    "fixed_income": "BND",
+    "cash": "BIL",
+}
 
 # Capture ratios além disso indicam denominador degenerado (benchmark ~flat
 # no subconjunto de dias) — sem significado; e a coluna é numeric(8,4).
@@ -343,9 +353,13 @@ BENCHMARK_BY_ASSET_CLASS: dict[str, str] = {
     "cash": "cash",
 }
 
-# Janela de busca: 252 sessões + folga p/ feriados/lacunas de NAV.
+# Janela de busca: 252 sessões + folga p/ feriados/lacunas de preço.
 _BENCH_LOOKBACK_DAYS = 600
 
+# fundo → benchmark via strategy_label → proxy ETF (mesma cadeia do active
+# share). Label preferido do catálogo (funds_list_mv); fallback p/ o stage de
+# reclassificação; fallback final por asset_class. Sem label mapeável → sem
+# benchmark (só equity_correlation/crisis_alpha vs EQUITY_BENCHMARK_KEY).
 _FUND_BENCHMARKS_SQL = """
 WITH labels AS (
     SELECT DISTINCT ON (source_pk)
@@ -354,71 +368,75 @@ WITH labels AS (
     FROM strategy_reclassification_stage
     WHERE source_table = 'instruments_universe'
       AND proposed_strategy_label IS NOT NULL
-    ORDER BY source_pk, classified_at DESC
+    ORDER BY source_pk,
+             (classification_source = 'manual_override') DESC,
+             classified_at DESC, stage_id DESC
 )
-SELECT iu.instrument_id, l.label, iu.asset_class
+SELECT iu.instrument_id, p.proxy_etf_ticker, iu.asset_class
 FROM instruments_universe iu
-LEFT JOIN labels l ON l.instrument_id = iu.instrument_id
+LEFT JOIN funds_list_mv flm ON flm.instrument_id = iu.instrument_id
+LEFT JOIN labels lb ON lb.instrument_id = iu.instrument_id
+LEFT JOIN fund_strategy_benchmark_proxy_map p
+       ON p.strategy_label = COALESCE(flm.strategy_label, lb.label)
 """
 
 
 def _fetch_fund_benchmarks(conn) -> dict[str, str]:
-    """instrument_id(str) → benchmark block_id (label map, asset-class fallback)."""
+    """instrument_id(str) → proxy ETF ticker (proxy map, asset-class fallback)."""
     out: dict[str, str] = {}
     with conn.cursor() as cur:
         cur.execute(_FUND_BENCHMARKS_SQL)
-        for iid, label, asset_class in cur.fetchall():
-            block = BENCHMARK_BY_LABEL.get(label or "") or BENCHMARK_BY_ASSET_CLASS.get(
-                asset_class or ""
-            )
-            if block:
-                out[str(iid)] = block
+        for iid, proxy, asset_class in cur.fetchall():
+            tk = proxy or ASSET_CLASS_FALLBACK_TICKER.get(asset_class or "")
+            if tk:
+                out[str(iid)] = tk.upper()
     return out
 
 
 def _fetch_benchmark_returns(
     conn, calc_date: _dt.date
 ) -> dict[str, list[tuple[_dt.date, float]]]:
-    """block_id → [(date, simple daily return)] dos NAVs do benchmark_nav.
+    """ticker → [(date, simple daily return)] do adj_close em eod_prices.
 
-    Retornos simples recomputados do próprio NAV (não de return_1d, que é
-    log) para casar com a convenção dos retornos de fundo no worker.
+    Retornos simples do preço ajustado, casando com a convenção dos retornos
+    de fundo no worker (dated_simple_returns sobre o NAV).
     """
-    blocks = sorted(
-        set(BENCHMARK_BY_LABEL.values())
-        | set(BENCHMARK_BY_ASSET_CLASS.values())
-        | {EQUITY_BENCHMARK_BLOCK}
-    )
+    fund_bm = _fetch_fund_benchmarks(conn)
+    tickers = sorted(set(fund_bm.values()) | {EQUITY_BENCHMARK_KEY})
     with conn.cursor() as cur:
         cur.execute(
-            """SELECT block_id, nav_date, nav FROM benchmark_nav
-               WHERE block_id = ANY(%s) AND nav_date <= %s AND nav_date > %s
-               ORDER BY block_id, nav_date""",
-            (blocks, calc_date, calc_date - _dt.timedelta(days=_BENCH_LOOKBACK_DAYS)),
+            """SELECT upper(ticker), date, adj_close FROM eod_prices
+               WHERE upper(ticker) = ANY(%s) AND date <= %s AND date > %s
+                 AND adj_close IS NOT NULL
+               ORDER BY upper(ticker), date""",
+            (tickers, calc_date, calc_date - _dt.timedelta(days=_BENCH_LOOKBACK_DAYS)),
         )
         rows = cur.fetchall()
     out: dict[str, list[tuple[_dt.date, float]]] = {}
-    prev_block: str | None = None
-    prev_nav: float | None = None
-    for block, d, nav in rows:
-        nav = float(nav)
-        if block != prev_block:
-            prev_block, prev_nav = block, nav
-            out.setdefault(block, [])
+    prev_tk: str | None = None
+    prev_px: float | None = None
+    for tk, d, px in rows:
+        px = float(px)
+        if tk != prev_tk:
+            prev_tk, prev_px = tk, px
+            out.setdefault(tk, [])
             continue
-        if prev_nav and prev_nav > 0:
-            out[block].append((d, nav / prev_nav - 1.0))
-        prev_nav = nav
+        if prev_px and prev_px > 0:
+            out[tk].append((d, px / prev_px - 1.0))
+        prev_px = px
     return out
 
 
 def _fetch_macro_changes(
     conn, calc_date: _dt.date
 ) -> dict[str, list[tuple[_dt.date, float]]]:
-    """Daily ΔDGS10 / ΔBAA10Y (decimal, gap-guarded) and monthly ΔCPI from
-    macro_data. Yields are FRED percent → /100 for decimal changes; CPI is an
-    index level → MoM fractional change. Port of risk_calc._batch_fetch_macro_
-    yield_changes (gap > 7 days skipped) + _fetch_monthly_cpi_changes."""
+    """Daily factor changes plus monthly CPI from macro_data.
+
+    DGS10/BAA10Y/T10YIE are FRED percent levels, so differences are scaled to
+    decimal units. CPIAUCSL is an index level and is converted to MoM fractional
+    change. The dated-list shape is the long-standing class-regression contract;
+    ``fi_style_metrics`` accepts it directly and converts to date maps locally.
+    """
     start = calc_date - _dt.timedelta(days=(REG_WINDOW_DAYS + 60) * 2)
     with conn.cursor() as cur:
         cur.execute(
@@ -426,15 +444,20 @@ def _fetch_macro_changes(
                WHERE series_id = ANY(%s) AND obs_date <= %s AND obs_date >= %s
                  AND value IS NOT NULL
                ORDER BY series_id, obs_date""",
-            (["DGS10", "BAA10Y", "CPIAUCSL"], calc_date, start),
+            (["DGS10", "BAA10Y", "T10YIE", "CPIAUCSL"], calc_date, start),
         )
         rows = cur.fetchall()
     levels: dict[str, list[tuple[_dt.date, float]]] = {}
     for sid, d, v in rows:
         levels.setdefault(sid, []).append((d, float(v)))
 
-    out: dict[str, list[tuple[_dt.date, float]]] = {"DGS10": [], "BAA10Y": [], "CPI": []}
-    for sid in ("DGS10", "BAA10Y"):
+    out: dict[str, list[tuple[_dt.date, float]]] = {
+        "DGS10": [],
+        "BAA10Y": [],
+        "T10YIE": [],
+        "CPI": [],
+    }
+    for sid in ("DGS10", "BAA10Y", "T10YIE"):
         obs = levels.get(sid, [])
         for i in range(1, len(obs)):
             pd, pv = obs[i - 1]
@@ -860,24 +883,189 @@ def _risk_free_rate(conn, calc_date: _dt.date) -> float:
     return RISK_FREE_FALLBACK
 
 
+# ── Fixed-income style regressions (ported from the legacy quant engine) ──────
+# Empirical duration = −beta of fund daily returns on Δ DGS10 (10y Treasury
+# yield); credit beta = −beta on Δ BAA10Y (Baa−10y credit spread); inflation beta
+# = +beta on Δ T10YIE (10y breakeven inflation). OLS over the date-aligned
+# overlap, last FI_REG_WINDOW obs, kept only when the fit clears FI_MIN_R2 — funds
+# with no sensitivity to a factor fail its R² gate and report None.
+FI_YIELD_SERIES = "DGS10"
+FI_CREDIT_SERIES = "BAA10Y"
+FI_INFLATION_SERIES = "T10YIE"
+FI_MIN_OBS = 120  # ~6 months of daily data
+FI_REG_WINDOW = 504  # 2 years (2 × 252)
+FI_MIN_R2 = 0.05
+_MACRO_LOOKBACK_DAYS = 1000  # > FI_REG_WINDOW sessions + holiday/gap slack
+
+
+def _ols_beta_r2(y: np.ndarray, x: np.ndarray) -> tuple[float, float]:
+    """OLS ``y = a + b·x`` → ``(beta, r_squared)`` (legacy FI convention)."""
+    mat = np.column_stack([np.ones(len(x)), x])
+    coeffs = np.linalg.lstsq(mat, y, rcond=None)[0]
+    beta = float(coeffs[1])
+    resid = y - mat @ coeffs
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - np.mean(y)) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    return beta, r2
+
+
+def _fi_factor_beta(
+    fund_by_date: dict[_dt.date, float], change_by_date: dict[_dt.date, float]
+) -> float | None:
+    """−beta of fund returns on a factor's daily change; None if weak/insufficient."""
+    common = sorted(fund_by_date.keys() & change_by_date.keys())
+    if len(common) < FI_MIN_OBS:
+        return None
+    common = common[-FI_REG_WINDOW:]
+    y = np.array([fund_by_date[d] for d in common], dtype=float)
+    x = np.array([change_by_date[d] for d in common], dtype=float)
+    if not np.isfinite(y).all() or not np.isfinite(x).all():
+        return None
+    if float(np.var(x)) == 0.0:
+        return None
+    beta, r2 = _ols_beta_r2(y, x)
+    if r2 < FI_MIN_R2:
+        return None
+    return -beta
+
+
+MacroChangeSeries = dict[_dt.date, float] | list[tuple[_dt.date, float]]
+
+
+def _factor_change_map(series: MacroChangeSeries | None) -> dict[_dt.date, float]:
+    if not series:
+        return {}
+    if isinstance(series, dict):
+        return series
+    return {d: float(v) for d, v in series}
+
+
+def fi_style_metrics(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    macro_changes: dict[str, MacroChangeSeries],
+) -> dict[str, float | None]:
+    """FI style betas from the daily-change regressions.
+
+    empirical_duration = −β vs Δ DGS10; credit_beta = −β vs Δ BAA10Y;
+    inflation_beta = +β vs Δ T10YIE (breakeven) — positive = the fund rises with
+    rising inflation expectations (inflation hedge), matching the legacy sign.
+    ``_fi_factor_beta`` returns −β, so inflation flips it back to +β.
+    """
+    out: dict[str, float | None] = {
+        "empirical_duration": None,
+        "credit_beta": None,
+        "inflation_beta": None,
+    }
+    if not macro_changes:
+        return out
+    fund_by_date = dict(fund_ret_dated)
+    yld = _factor_change_map(macro_changes.get(FI_YIELD_SERIES))
+    crd = _factor_change_map(macro_changes.get(FI_CREDIT_SERIES))
+    infl = _factor_change_map(macro_changes.get(FI_INFLATION_SERIES))
+    if yld:
+        out["empirical_duration"] = _clip(_fi_factor_beta(fund_by_date, yld), 6)
+    if crd:
+        out["credit_beta"] = _clip(_fi_factor_beta(fund_by_date, crd), 6)
+    if infl:
+        neg_beta = _fi_factor_beta(fund_by_date, infl)  # = −β
+        out["inflation_beta"] = _clip(-neg_beta, 6) if neg_beta is not None else None
+    return out
+
+
+# ── Crisis alpha (ported from the legacy alternatives analytics service) ──────
+# Fund − equity-benchmark cumulative return during equity drawdowns > 10%.
+# Positive = the fund held up (or gained) while equities crashed — diversification
+# value. Needs a LONG equity benchmark window (the 600-day benchmark fetch rarely
+# holds a ≥20-day, >10% drawdown), so na_equity_large is re-read over the fund NAV
+# span (it goes back to 1993, covering 2008/2020/2022).
+_CRISIS_BENCH_LOOKBACK_DAYS = 11 * 366
+CRISIS_DD_THRESHOLD = -0.10
+CRISIS_MIN_DAYS = 20
+
+
+def _fetch_equity_crisis_benchmark(
+    conn, calc_date: _dt.date
+) -> list[tuple[_dt.date, float]]:
+    """IVV daily simple returns over the long crisis window (from eod_prices).
+
+    IVV history reaches 2000, covering 2008/2020/2022 drawdowns (fund_risk_metrics
+    starts 2006); pre-2000 crises are out of range and yield no crisis days.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """SELECT date, adj_close FROM eod_prices
+               WHERE upper(ticker) = %s AND date <= %s AND date > %s
+                 AND adj_close IS NOT NULL
+               ORDER BY date""",
+            (
+                EQUITY_BENCHMARK_KEY,
+                calc_date,
+                calc_date - _dt.timedelta(days=_CRISIS_BENCH_LOOKBACK_DAYS),
+            ),
+        )
+        rows = cur.fetchall()
+    return dated_simple_returns([(d, px) for d, px in rows])
+
+
+def crisis_alpha(
+    fund_ret_dated: list[tuple[_dt.date, float]],
+    eq_bench_dated: list[tuple[_dt.date, float]],
+    threshold: float = CRISIS_DD_THRESHOLD,
+    min_crisis_days: int = CRISIS_MIN_DAYS,
+) -> float | None:
+    """Fund − equity-benchmark cumulative return during equity drawdowns > threshold.
+
+    Date-aligns the two return series, marks the days the benchmark is in a
+    drawdown deeper than ``threshold``, and returns the difference of the two
+    cumulative returns over those crisis days. None if < ``min_crisis_days``.
+    """
+    bench_map = dict(eq_bench_dated)
+    pairs = [(f, bench_map[d]) for d, f in fund_ret_dated if d in bench_map]
+    if len(pairs) < 60:
+        return None
+    fund_d = np.array([p[0] for p in pairs], dtype=float)
+    bench_d = np.array([p[1] for p in pairs], dtype=float)
+    bench_cum = np.cumprod(1.0 + bench_d)
+    bench_peak = np.maximum.accumulate(bench_cum)
+    bench_dd = (bench_cum - bench_peak) / bench_peak
+    crisis = bench_dd < threshold
+    if int(crisis.sum()) < min_crisis_days:
+        return None
+    fund_crisis = float(np.prod(1.0 + fund_d[crisis]) - 1.0)
+    bench_crisis = float(np.prod(1.0 + bench_d[crisis]) - 1.0)
+    # Cumulative compounding over a long multi-crisis window can blow up on a few
+    # bad-NAV/extreme-leverage days (legacy formula had no bound). Clamp to a sane
+    # range so a garbage outlier can't dominate the Stage-1 z-scored clustering.
+    return _clip(float(np.clip(fund_crisis - bench_crisis, -10.0, 10.0)), 6)
+
+
 def relative_metrics_for(
     rows: list,
     fund_block: str | None,
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
     rf: float,
+    macro_changes: dict[str, MacroChangeSeries] | None = None,
+    eq_crisis_bench: list[tuple[_dt.date, float]] | None = None,
 ) -> dict[str, float | None]:
     """Métricas benchmark-relativas de um fundo a partir dos NAV rows.
 
     ``rows`` é a saída de ``_fetch_nav`` ((date, nav) ascendente). Sem bloco
-    mapeado, só a correlação com o benchmark de equity é computada.
+    mapeado, só a correlação com o benchmark de equity é computada. Com
+    ``macro_changes``, computa as regressões FI (duration/credit); com
+    ``eq_crisis_bench``, o crisis-alpha vs o benchmark de equity.
     """
     fund_ret = dated_simple_returns([(r[0], r[1]) for r in rows])
     out: dict[str, float | None] = {}
     if fund_block and fund_block in bench_returns:
         out.update(regression_metrics(fund_ret, bench_returns[fund_block], rf))
-    eq = bench_returns.get(EQUITY_BENCHMARK_BLOCK)
+    eq = bench_returns.get(EQUITY_BENCHMARK_KEY)
     if eq:
         out["equity_correlation_252d"] = equity_correlation(fund_ret, eq)
+    if macro_changes:
+        out.update(fi_style_metrics(fund_ret, macro_changes))
+    if eq_crisis_bench:
+        out["crisis_alpha_score"] = crisis_alpha(fund_ret, eq_crisis_bench)
     return out
 
 
@@ -947,8 +1135,9 @@ def _process_shard(
     fund_ids: list,
     fund_benchmarks: dict[str, str],
     bench_returns: dict[str, list[tuple[_dt.date, float]]],
-    macro_changes: dict[str, list[tuple[_dt.date, float]]],
-    fund_asset_classes: dict[str, str],
+    macro_changes: dict[str, MacroChangeSeries] | None = None,
+    eq_crisis_bench: list[tuple[_dt.date, float]] | None = None,
+    fund_asset_classes: dict[str, str] | None = None,
 ) -> tuple[int, int]:
     """Worker entrypoint for a child process — picklable, module-level.
 
@@ -962,6 +1151,8 @@ def _process_shard(
     cdate = _dt.date.fromisoformat(calc_date_iso)
     processed = 0
     upserted = 0
+    macro_payload = macro_changes or {}
+    asset_classes = fund_asset_classes or {}
     with connect(dsn) as conn:
         for iid in fund_ids:
             rows = _fetch_nav(conn, iid, cdate)
@@ -977,12 +1168,17 @@ def _process_shard(
             metrics["nav_glitch_count"] = gcount
             metrics.update(
                 relative_metrics_for(
-                    rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                    rows,
+                    fund_benchmarks.get(str(iid)),
+                    bench_returns,
+                    rf,
+                    macro_payload,
+                    eq_crisis_bench,
                 )
             )
             metrics.update(
                 class_regression_metrics_for(
-                    rows, fund_asset_classes.get(str(iid)), macro_changes
+                    rows, asset_classes.get(str(iid)), macro_payload
                 )
             )
             _upsert(conn, iid, cdate, metrics)
@@ -1008,9 +1204,10 @@ def _shard(fund_ids: list, n_shards: int) -> list[list]:
 # Semântica verificada empiricamente contra a DB-mãe (2026-06-12): ASC para
 # sharpe/sortino/return (maior = melhor) e ASC para max_drawdown (valores
 # negativos; menos negativo = melhor → pctl maior). peer_count = tamanho do
-# grupo no calc_date. Labels: último proposed_strategy_label por instrumento
-# em strategy_reclassification_stage (réplica cloud). Fundos sem label ficam
-# com peer_* NULL. manager_score/elite_flag NÃO são computados aqui (modelo
+# grupo no calc_date. Labels: manual_override primeiro, senão último
+# proposed_strategy_label por instrumento em strategy_reclassification_stage
+# (réplica cloud). Fundos sem label ficam com peer_* NULL.
+# manager_score/elite_flag NÃO são computados aqui (modelo
 # de scoring do allocation ainda não portado).
 #
 # Institutional peer-cohort minimum (ported from the allocation engine's
@@ -1063,7 +1260,10 @@ WITH labels AS (
     FROM strategy_reclassification_stage
     WHERE source_table = 'instruments_universe'
       AND proposed_strategy_label IS NOT NULL
-    ORDER BY source_pk, classified_at DESC
+    ORDER BY source_pk,
+             (classification_source = 'manual_override') DESC,
+             classified_at DESC,
+             stage_id DESC
 ),
 latest AS (
     SELECT m.instrument_id, m.sharpe_1y, m.sortino_1y, m.return_1y,
@@ -1327,7 +1527,14 @@ def run(
             bench_returns = _fetch_benchmark_returns(conn, cdate)
             fund_benchmarks = _fetch_fund_benchmarks(conn)
             macro_changes = _fetch_macro_changes(conn, cdate)
-            macro_changes["_equity_benchmark"] = bench_returns.get(EQUITY_BENCHMARK_BLOCK, [])
+            eq_crisis_bench = (
+                _fetch_equity_crisis_benchmark(conn, cdate)
+                if bench_returns.get(EQUITY_BENCHMARK_KEY)
+                else []
+            )
+            macro_changes["_equity_benchmark"] = (
+                eq_crisis_bench or bench_returns.get(EQUITY_BENCHMARK_KEY, [])
+            )
             fund_asset_classes = _fetch_fund_asset_classes(conn)
 
             n_workers = 1 if serial else min(_resolve_max_workers(), len(fund_ids) or 1)
@@ -1349,7 +1556,12 @@ def run(
                     metrics["nav_glitch_count"] = gcount
                     metrics.update(
                         relative_metrics_for(
-                            rows, fund_benchmarks.get(str(iid)), bench_returns, rf
+                            rows,
+                            fund_benchmarks.get(str(iid)),
+                            bench_returns,
+                            rf,
+                            macro_changes,
+                            eq_crisis_bench,
                         )
                     )
                     metrics.update(
@@ -1386,6 +1598,7 @@ def run(
                             {str(i): b for i in shard if (b := fund_benchmarks.get(str(i)))},
                             bench_returns,
                             macro_changes,
+                            eq_crisis_bench,
                             {str(i): fund_asset_classes[str(i)]
                              for i in shard if str(i) in fund_asset_classes},
                         )

@@ -54,6 +54,69 @@ EMPTY_MAP = {"cusip": {}, "isin": {}}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# sector_label — dual-axis por assetCat: ações→GICS/Unclassified, dívida→setor FI
+# ──────────────────────────────────────────────────────────────────────────────
+def test_sector_label_equity_resolves_gics_else_unclassified():
+    smap = {"037833": "Information Technology"}
+    # Equity with a mapped issuer → real GICS sector.
+    assert lt.sector_label(H(cusip="037833100", asset="EC", sector="CORP"), smap) == "Information Technology"
+    # Non-US / unmapped equity → honest "Unclassified", NOT an issuerCat code.
+    assert lt.sector_label(H(cusip="700000000", asset="EC", sector="CORP"), smap) == "Unclassified"
+    assert lt.sector_label(H(isin="JP1234567890", asset="EP", sector="CORP"), {}) == "Unclassified"
+
+
+def test_sector_label_debt_splits_by_structure_then_issuer():
+    # Plain debt (DBT) split by issuer type.
+    assert lt.sector_label(H(asset="DBT", sector="CORP"), {}) == "Corporate Debt"
+    assert lt.sector_label(H(asset="DBT", sector="UST"), {}) == "U.S. Treasury"
+    assert lt.sector_label(H(asset="DBT", sector="USGSE"), {}) == "U.S. Agency"
+    assert lt.sector_label(H(asset="DBT", sector="MUN"), {}) == "Municipal"
+    assert lt.sector_label(H(asset="DBT", sector="NUSS"), {}) == "Sovereign (ex-US)"
+    # Structured debt → its own FI sector regardless of issuer.
+    assert lt.sector_label(H(asset="ABS-MBS", sector="CORP"), {}) == "Mortgage-Backed (MBS)"
+    assert lt.sector_label(H(asset="ABS-O", sector="CORP"), {}) == "Asset-Backed (ABS)"
+    assert lt.sector_label(H(asset="ABS-CBDO", sector="CORP"), {}) == "CLO/CDO"
+    assert lt.sector_label(H(asset="LON", sector="CORP"), {}) == "Bank Loans"
+    assert lt.sector_label(H(asset="STIV", sector="CORP"), {}) == "Short-Term / Cash"
+
+
+def test_sector_label_derivatives_repo_and_ambiguous():
+    assert lt.sector_label(H(asset="DE", sector="CORP"), {}) == "Derivatives"
+    assert lt.sector_label(H(asset="DFE", sector="OTHER"), {}) == "Derivatives"
+    assert lt.sector_label(H(asset="RA", sector="CORP"), {}) == "Repo"
+    # Unknown assetCat: only unambiguously-debt issuers map; CORP/None → Other.
+    assert lt.sector_label(H(asset=None, sector="UST"), {}) == "U.S. Treasury"
+    assert lt.sector_label(H(asset="OTHER", sector="CORP"), {}) == "Other"
+    assert lt.sector_label(H(asset=None, sector=None), {}) == "Other"
+
+
+def test_expand_series_sector_dual_axis():
+    data = {"S1": (D_ROOT, [
+        H(cusip="037833100", asset="EC", sector="CORP", pct=50.0),  # equity → IT
+        H(asset="DBT", sector="UST", pct=30.0),                     # treasury debt
+        H(asset="ABS-MBS", sector="CORP", pct=20.0),                # MBS
+    ])}
+    smap = {"037833": "Information Technology"}
+    exposures, _ = lt.expand_series(
+        "S1", make_get_holdings(data), EMPTY_MAP, sector_map=smap
+    )
+    sector_keys = {k for (dim, k) in exposures if dim == "sector"}
+    assert {"Information Technology", "U.S. Treasury", "Mortgage-Backed (MBS)"} <= sector_keys
+    assert "CORP" not in sector_keys and "UST" not in sector_keys
+
+
+def test_sector_label_equity_falls_back_to_isin_when_cusip6_misses():
+    # Foreign equity: the synthetic IS:<isin> cusip never matches a CUSIP-6, but
+    # the ISIN is in the enrichment cache (merged into sector_map by ISIN key).
+    smap = {"TW0002330008": "Information Technology"}
+    h = H(cusip="IS:TW0002330008", isin="TW0002330008", asset="EC", sector="CORP")
+    assert lt.sector_label(h, smap) == "Information Technology"
+    # No ISIN entry either → honest Unclassified.
+    h2 = H(cusip="IS:JP3633400001", isin="JP3633400001", asset="EC", sector="CORP")
+    assert lt.sector_label(h2, smap) == "Unclassified"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # match_fund — a aresta FoF
 # ──────────────────────────────────────────────────────────────────────────────
 def test_match_fund_real_cusip():

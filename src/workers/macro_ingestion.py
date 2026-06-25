@@ -204,6 +204,15 @@ CREDIT_SERIES: list[SeriesSpec] = [
 ]
 
 
+# Raw-only ingest: fetched and upserted into macro_data for downstream consumers
+# (the risk_metrics FI inflation-beta regression reads Δ T10YIE) but deliberately
+# NOT part of any scored dimension list, so the regional regime snapshot is
+# unchanged by their presence.
+RAW_INGEST_SERIES: list[SeriesSpec] = [
+    SeriesSpec("T10YIE", "inflation_expectations", "10Y Breakeven Inflation", "daily"),
+]
+
+
 def _all_specs() -> list[SeriesSpec]:
     specs: list[SeriesSpec] = []
     for region_specs in REGION_SERIES.values():
@@ -211,6 +220,8 @@ def _all_specs() -> list[SeriesSpec]:
     specs.extend(GLOBAL_SERIES)
     existing = {s.series_id for s in specs}
     specs.extend(s for s in CREDIT_SERIES if s.series_id not in existing)
+    existing |= {s.series_id for s in CREDIT_SERIES}
+    specs.extend(s for s in RAW_INGEST_SERIES if s.series_id not in existing)
     return specs
 
 

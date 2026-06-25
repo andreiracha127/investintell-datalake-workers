@@ -22,6 +22,7 @@ def main() -> None:
             "|nport_lookthrough|credit_regime|regime_composite|macro_ingestion"
             "|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
+            "|sec_company_tickers_mf|nport_cusip_enrichment"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics)"
