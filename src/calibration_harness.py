@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import datetime as dt
+import functools
 import hashlib
 import importlib.metadata
 import json
@@ -862,6 +863,21 @@ def macro_primitive_row(
 
 
 def series_component_z_values(transform_class: str, series: dict[dt.date, float]) -> dict[str, float | None]:
+    key = tuple((period.isoformat(), round(float(value), 10)) for period, value in sorted(series.items()))
+    return dict(_series_component_z_values_cached(transform_class, key))
+
+
+@functools.lru_cache(maxsize=20000)
+def _series_component_z_values_cached(
+    transform_class: str, series_items: tuple[tuple[str, float], ...]
+) -> tuple[tuple[str, float | None], ...]:
+    series = {dt.date.fromisoformat(period): value for period, value in series_items}
+    return tuple(series_component_z_values_uncached(transform_class, series).items())
+
+
+def series_component_z_values_uncached(
+    transform_class: str, series: dict[dt.date, float]
+) -> dict[str, float | None]:
     periods = sorted(series)
     if transform_class in {"quantity_index", "price_index"}:
         c3: dict[dt.date, float] = {}
