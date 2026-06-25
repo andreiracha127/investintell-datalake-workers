@@ -17,7 +17,6 @@ data/
 qc-a3-parity/results/
 qc-a3-parity/src/calibration_harness.py
 qc-a3-parity/src/db.py
-qc-a3-parity/object_store_manifest_key.txt
 
 # scratch / one-off validation scripts
 _tmp_*
