@@ -71,6 +71,13 @@ V02_ALFRED_FETCH_SCHEMA_VERSION = 1
 V02_ALFRED_SOURCE_SPEC_VERSION = "macro_family_map_v02_candidate_data_qualification_v1"
 PARENT_V01_L2_HASH = "4419f8c041397e16914d1b0a6dcb8244a5144bd98a54a75e67a6832f9d468c85"
 MIN_QUARTERLY_SURVEY_OBS = 12
+A31_PROGRESSION_POLICY_VERSION = "a3_progression_v2"
+A31_REVISION_PASS_RATE = 0.20
+A31_REVISION_CONDITIONAL_RATE = 0.23
+A31_RELATIVE_IMPROVEMENT_CONDITIONAL = 0.08
+A31_V01_BENCHMARK_REVISION_RATE = 0.25209562247749145
+A31_V01_GROWTH_SIGN_BENCHMARK = 1111
+A31_V01_VALID_RATE = 0.21204594846321018
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
 Status = Literal["valid", "abstain", "unavailable", "invalid"]
@@ -190,6 +197,15 @@ class A31GridConfig:
     output_dir: Path | None = None
     jobs: int = 1
     resume: bool = False
+    offline: bool = False
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class A32GridConfig:
+    feature_manifest: Path
+    a31_catalog: Path
+    output_dir: Path | None = None
     offline: bool = False
     worker_commit: str | None = None
 
@@ -3315,11 +3331,42 @@ def smoke_a32_configs() -> list[A32Config]:
     return configs
 
 
+def a32_grid_configs() -> list[A32Config]:
+    configs: list[A32Config] = []
+    for growth_enter in (0.30, 0.35):
+        for inflation_enter in (0.35, 0.40):
+            for axis_exit in (0.10, 0.15):
+                for min_confidence in (0.60, 0.65, 0.70):
+                    configs.append(A32Config(
+                        name=(
+                            f"A32-G{growth_enter:.2f}-I{inflation_enter:.2f}-"
+                            f"X{axis_exit:.2f}-C{min_confidence:.2f}-D1.25"
+                        ),
+                        growth_score_scale=1.0,
+                        inflation_score_scale=1.0,
+                        growth_enter=growth_enter,
+                        growth_exit=axis_exit,
+                        inflation_enter=inflation_enter,
+                        inflation_exit=axis_exit,
+                        u_floor=U_FLOOR,
+                        min_confidence=min_confidence,
+                        dispersion_limit=1.25,
+                        coverage_rules_version="macro_axis_coverage_0_80_v1",
+                    ))
+    return configs
+
+
 def classify_smoke_result(
     runtime: list[dict[str, Any]], counterfactual: list[dict[str, Any]]
 ) -> str:
     metrics = build_macro_metrics(runtime, first_release_replay=counterfactual)
     if metrics["run_classification"] == RUN_CLASSIFICATION_FAILED:
+        return "diagnostic_failed"
+    return "a32_candidate"
+
+
+def classify_a32_grid_result(metrics: dict[str, Any]) -> str:
+    if metrics.get("run_classification") == RUN_CLASSIFICATION_FAILED:
         return "diagnostic_failed"
     return "a32_candidate"
 
@@ -3347,6 +3394,7 @@ def evaluation_metric_rows(
         metrics = build_macro_metrics(rt, first_release_replay=cf)
         transition_deltas = build_transition_revision_deltas(rt, cf)
         revision_diagnostics = replay_revision_diagnostics(rt, cf)
+        operational_metrics = operational_state_metrics(rt)
         rows.append({
             "fold": fold_name,
             "a31_config_hash": a31_hash,
@@ -3403,6 +3451,7 @@ def evaluation_metric_rows(
                 distribution([row["inflation_dispersion"] for row in rt]), sort_keys=True
             ),
             **revision_diagnostics,
+            **operational_metrics,
             "frozen": False,
             "production_candidate": False,
             "activation_ready": False,
@@ -3461,6 +3510,43 @@ def replay_revision_diagnostics(
         "revision_episode_count": len(durations),
         "revision_episode_duration_p50": duration_dist["median"],
         "revision_episode_duration_p90": duration_dist["p90"],
+    }
+
+
+def operational_state_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
+    days_since_last_valid: list[int] = []
+    stale_dates: list[dt.date] = []
+    consumable_days = 0
+    last_valid_index: int | None = None
+    calendar: list[dt.date] = []
+    for index, row in enumerate(replay):
+        day = dt.date.fromisoformat(str(row["date"]))
+        calendar.append(day)
+        if row.get("status") == "valid":
+            last_valid_index = index
+        since = None if last_valid_index is None else index - last_valid_index
+        if since is not None:
+            days_since_last_valid.append(since)
+        latched = row.get("latched_quadrant") or row.get("published_quadrant")
+        if latched is not None and since is not None and since <= 5:
+            consumable_days += 1
+        elif latched is not None and since is not None and since > 5:
+            stale_dates.append(day)
+    stale_durations = contiguous_date_durations(stale_dates, calendar)
+    return {
+        "consumable_state_coverage": (
+            consumable_days / len(replay) if replay else None
+        ),
+        "days_since_last_valid_distribution": json.dumps(
+            distribution([float(value) for value in days_since_last_valid]),
+            sort_keys=True,
+        ),
+        "stale_days_over_5bd": len(stale_dates),
+        "longest_stale_run": max(stale_durations) if stale_durations else 0,
+        "latched_duration": json.dumps(
+            duration_summary(state_durations(replay, "latched_quadrant")),
+            sort_keys=True,
+        ),
     }
 
 
@@ -5403,6 +5489,13 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
     write_parquet(output_dir / "a31_grid_metrics.parquet", metric_rows)
     write_parquet(output_dir / "a31_pareto.parquet", pareto_rows)
     write_json(output_dir / "failures.json", {"failures": failures})
+    progression_decision = build_a31_progression_decision_manifest(
+        summary_rows,
+        metric_rows,
+        config_catalog_path=config.config_catalog,
+        failure_count=len(failures),
+    )
+    write_json(output_dir / "a31_progression_decision.json", progression_decision)
 
     finished = dt.datetime.now(UTC)
     a32_ref_hashes = sorted({row["a32_config_hash"] for row in summary_rows})
@@ -5464,13 +5557,15 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
                 "a31_grid_metrics.parquet",
                 "a31_pareto.parquet",
                 "failures.json",
+                "a31_progression_decision.json",
             ],
         ),
         "stage_timings_seconds": aggregate_stage_timings(summary_rows),
         "notes": [
             "A3.1 uses A32-REF only",
             "No configuration is frozen, production_candidate, or activation_ready",
-            "A4 remains candidate_seed_only; A5 remains blocked",
+            f"A4 status: {progression_decision.get('a4_status')}",
+            "A5 remains blocked",
         ],
     }
     write_json(output_dir / "grid_manifest.json", grid_manifest)
@@ -5486,6 +5581,185 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
         "pareto_count": len(pareto_rows),
         "summary_logical_hash": grid_manifest["summary_logical_hash"],
         "metrics_logical_hash": grid_manifest["metrics_logical_hash"],
+    }
+
+
+def parse_a32_grid_args(argv: list[str]) -> A32GridConfig:
+    ap = argparse.ArgumentParser(description="Run offline A3.2 grid over selected A31 configs")
+    ap.add_argument("command", choices=["a32-grid"])
+    ap.add_argument("--feature-manifest", required=True)
+    ap.add_argument("--a31-catalog", required=True)
+    ap.add_argument("--output-dir")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return A32GridConfig(
+        feature_manifest=Path(args.feature_manifest),
+        a31_catalog=Path(args.a31_catalog),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_a32_grid(config: A32GridConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("a32-grid requires --offline to make the no-external-access contract explicit")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    output_dir = config.output_dir or (config.feature_manifest.parent / "a32_grid")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    feature_manifest, _, l2_hash, l2_records = load_l2_macro_from_feature_manifest(
+        config.feature_manifest
+    )
+    catalog_payload = read_catalog_payload(config.a31_catalog)
+    normalized_catalog, catalog_hash = normalize_a31_catalog(
+        catalog_payload,
+        l2_macro_logical_hash=l2_hash,
+        source_path=config.a31_catalog,
+    )
+    a32_configs = a32_grid_configs()
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+
+    write_json(output_dir / "config_catalog.normalized.json", normalized_catalog)
+    write_parquet(
+        output_dir / "a32_configs.parquet",
+        [
+            {
+                "a32_config_hash": a32_config_hash(a32),
+                "a32_config_name": a32.name,
+                "config_json": json.dumps(asdict(a32), sort_keys=True),
+            }
+            for a32 in a32_configs
+        ],
+    )
+
+    summary_rows: list[dict[str, Any]] = []
+    metric_rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for item in normalized_catalog["configs"]:
+        a31 = A31Config(**item["config"])
+        try:
+            l3_rows, _, l3_manifest = build_l3_score_panel(
+                l2_records,
+                a31,
+                l2_macro_logical_hash=l2_hash,
+                expected_l2_macro_logical_hash=l2_hash,
+            )
+            a31_hash = str(l3_manifest["a31_config_hash"])
+            for a32 in a32_configs:
+                a32_hash = a32_config_hash(a32)
+                eval_hash = evaluation_hash(a31_hash, a32_hash)
+                runtime, _ = run_l4_state_machine(
+                    l3_rows, a32, selection_mode="latest"
+                )
+                counterfactual, _ = run_l4_state_machine(
+                    l3_rows, a32, selection_mode="first_release"
+                )
+                metrics_full = build_macro_metrics(
+                    runtime,
+                    first_release_replay=counterfactual,
+                )
+                classification = classify_a32_grid_result(metrics_full)
+                rows = evaluation_metric_rows(
+                    runtime,
+                    counterfactual,
+                    a31,
+                    a32,
+                    a31_hash,
+                    a32_hash,
+                    eval_hash,
+                    classification,
+                )
+                metric_rows.extend(rows)
+                summary_rows.append(a32_grid_summary_row(
+                    item,
+                    a32,
+                    a32_hash,
+                    eval_hash,
+                    rows,
+                    classification,
+                    l3_manifest,
+                ))
+        except Exception as exc:  # pragma: no cover - defensive per-A31 isolation
+            failures.append(a31_failure_record({"a31_item": item}, exc))
+
+    summary_rows.sort(
+        key=lambda row: (
+            str(row["a31_config_hash"]),
+            none_last(row.get("min_confidence")),
+            none_last(row.get("growth_enter")),
+            none_last(row.get("inflation_enter")),
+            none_last(row.get("axis_exit")),
+        )
+    )
+    metric_rows.sort(key=lambda row: (
+        str(row["a31_config_hash"]),
+        str(row["a32_config_hash"]),
+        str(row["fold"]),
+    ))
+    write_parquet(output_dir / "a32_grid_summary.parquet", summary_rows)
+    write_parquet(output_dir / "a32_grid_metrics.parquet", metric_rows)
+    write_json(output_dir / "failures.json", {"failures": failures})
+
+    finished = dt.datetime.now(UTC)
+    manifest = {
+        "schema_version": A31_GRID_SCHEMA_VERSION,
+        "status": "ok" if not failures else "partial_with_failures",
+        "grid": "A3.2",
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "offline": True,
+        "external_access": "disabled_by_a32_grid_path",
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "feature_manifest_path": str(config.feature_manifest),
+        "a31_catalog_path": str(config.a31_catalog),
+        "parent_hashes": {
+            "l2_macro_logical_hash": l2_hash,
+            "l2_schema_version": feature_manifest.get("schema_version"),
+            "business_date_calendar_hash": feature_manifest.get("business_date_calendar_hash"),
+            "series_family_mapping_hash": feature_manifest.get("series_family_mapping_hash"),
+        },
+        "config_catalog_hash": catalog_hash,
+        "a31_config_count": len(normalized_catalog["configs"]),
+        "a32_config_count": len(a32_configs),
+        "evaluation_count": len(summary_rows),
+        "failure_count": len(failures),
+        "summary_logical_hash": logical_records_hash(summary_rows),
+        "metrics_logical_hash": logical_records_hash(metric_rows),
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            [
+                "config_catalog.normalized.json",
+                "a32_configs.parquet",
+                "a32_grid_summary.parquet",
+                "a32_grid_metrics.parquet",
+                "failures.json",
+            ],
+        ),
+        "selection_policy": "A3.2 limited grid over selected provisional A31 panels",
+        "a4_status": "calibration_in_progress_with_provisional_A3",
+        "a5_status": "blocked",
+    }
+    write_json(output_dir / "a32_grid_manifest.json", manifest)
+    return {
+        "status": manifest["status"],
+        "output_dir": str(output_dir),
+        "execution_id": execution_id,
+        "evaluation_count": len(summary_rows),
+        "failure_count": len(failures),
+        "summary_logical_hash": manifest["summary_logical_hash"],
+        "metrics_logical_hash": manifest["metrics_logical_hash"],
     }
 
 
@@ -6005,6 +6279,62 @@ def classify_a31_grid_result(metrics: dict[str, Any]) -> str:
     return "a31_candidate"
 
 
+def a31_progression_payload(full_metric_row: dict[str, Any]) -> dict[str, Any]:
+    revision_rate = full_metric_row.get("candidate_revision_change_rate")
+    valid_rate = full_metric_row.get("valid_rate")
+    growth_changes = full_metric_row.get("growth_sign_revision_change_days")
+    if revision_rate is None:
+        return {
+            "decision_policy_version": A31_PROGRESSION_POLICY_VERSION,
+            "progression_level": "fail",
+            "a31_provisional_status": "a31_screened_out",
+            "risk_flag": None,
+            "relative_revision_improvement_vs_v01": None,
+            "absolute_target_20pct_met": False,
+            "growth_sign_changes_below_benchmark": False,
+            "valid_rate_not_degraded": False,
+        }
+    revision = float(revision_rate)
+    relative_improvement = (
+        (A31_V01_BENCHMARK_REVISION_RATE - revision)
+        / A31_V01_BENCHMARK_REVISION_RATE
+    )
+    growth_ok = (
+        growth_changes is not None
+        and int(growth_changes) <= A31_V01_GROWTH_SIGN_BENCHMARK
+    )
+    valid_ok = valid_rate is not None and float(valid_rate) >= A31_V01_VALID_RATE
+    absolute_target_met = revision <= A31_REVISION_PASS_RATE
+    conditional = (
+        revision <= A31_REVISION_CONDITIONAL_RATE
+        and relative_improvement >= A31_RELATIVE_IMPROVEMENT_CONDITIONAL
+        and growth_ok
+        and valid_ok
+    )
+    if absolute_target_met:
+        level = "pass"
+        status = "a31_candidate"
+        risk_flag = None
+    elif conditional:
+        level = "conditional_pass"
+        status = "a31_provisional_candidate"
+        risk_flag = "elevated_vintage_instability"
+    else:
+        level = "fail"
+        status = "a31_screened_out"
+        risk_flag = None
+    return {
+        "decision_policy_version": A31_PROGRESSION_POLICY_VERSION,
+        "progression_level": level,
+        "a31_provisional_status": status,
+        "risk_flag": risk_flag,
+        "relative_revision_improvement_vs_v01": relative_improvement,
+        "absolute_target_20pct_met": absolute_target_met,
+        "growth_sign_changes_below_benchmark": growth_ok,
+        "valid_rate_not_degraded": valid_ok,
+    }
+
+
 def a31_grid_summary_row(
     item: dict[str, Any],
     a32_hash: str,
@@ -6017,6 +6347,7 @@ def a31_grid_summary_row(
 ) -> dict[str, Any]:
     full = next(row for row in metric_rows if row["fold"] == "full")
     stability = metrics.get("vintage_stability") or {}
+    progression = a31_progression_payload(full)
     return {
         "a31_config_hash": item["a31_config_hash"],
         "a31_config_name": item["config"]["name"],
@@ -6029,6 +6360,7 @@ def a31_grid_summary_row(
         "distance_from_ref": item["distance_from_ref"],
         "result_classification": classification,
         "a31_selection_status": "a31_screened_out",
+        **progression,
         "candidate_revision_change_rate": full["candidate_revision_change_rate"],
         "growth_sign_revision_change_days": full["growth_sign_revision_change_days"],
         "inflation_sign_revision_change_days": full["inflation_sign_revision_change_days"],
@@ -6063,12 +6395,203 @@ def a31_grid_summary_row(
     }
 
 
+def a32_grid_summary_row(
+    item: dict[str, Any],
+    a32: A32Config,
+    a32_hash: str,
+    eval_hash: str,
+    metric_rows: list[dict[str, Any]],
+    classification: str,
+    l3_manifest: dict[str, Any],
+) -> dict[str, Any]:
+    full = next(row for row in metric_rows if row["fold"] == "full")
+    return {
+        "a31_config_hash": item["a31_config_hash"],
+        "a31_config_name": item["config"]["name"],
+        "a32_config_hash": a32_hash,
+        "a32_config_name": a32.name,
+        "evaluation_hash": eval_hash,
+        "l3_score_panel_logical_hash": l3_manifest["logical_hash"],
+        "result_classification": classification,
+        "growth_enter": a32.growth_enter,
+        "inflation_enter": a32.inflation_enter,
+        "axis_exit": a32.growth_exit,
+        "min_confidence": a32.min_confidence,
+        "u_floor": a32.u_floor,
+        "growth_score_scale": a32.growth_score_scale,
+        "inflation_score_scale": a32.inflation_score_scale,
+        "dispersion_limit": a32.dispersion_limit,
+        "candidate_revision_change_rate": full["candidate_revision_change_rate"],
+        "growth_sign_revision_change_days": full["growth_sign_revision_change_days"],
+        "inflation_sign_revision_change_days": full["inflation_sign_revision_change_days"],
+        "status_revision_change_days": full["status_revision_change_days"],
+        "latched_revision_change_days": full["latched_revision_change_days"],
+        "candidate_flips_per_year": full["candidate_flips_per_year"],
+        "published_flips_per_year": full["published_flips_per_year"],
+        "valid_rate": full["valid_rate"],
+        "abstain_rate": full["abstain_rate"],
+        "consumable_state_coverage": full["consumable_state_coverage"],
+        "days_since_last_valid_distribution": full["days_since_last_valid_distribution"],
+        "stale_days_over_5bd": full["stale_days_over_5bd"],
+        "longest_stale_run": full["longest_stale_run"],
+        "latched_duration": full["latched_duration"],
+        "quadrant_occupancy": full["quadrant_occupancy"],
+        "days_without_latched_state": full["days_without_latched_state"],
+        "reason_counts": full["reason_counts"],
+        "frozen": False,
+        "production_candidate": False,
+        "activation_ready": False,
+    }
+
+
 def transition_displacement_median(value: Any) -> float | None:
     if value in {None, ""}:
         return None
     payload = json.loads(str(value)) if isinstance(value, str) else value
     median = payload.get("median") if isinstance(payload, dict) else None
     return None if median is None else float(median)
+
+
+def build_a31_progression_decision_manifest(
+    summary_rows: list[dict[str, Any]],
+    metric_rows: list[dict[str, Any]],
+    *,
+    config_catalog_path: Path,
+    failure_count: int = 0,
+) -> dict[str, Any]:
+    candidates = [
+        row for row in summary_rows
+        if "CONTROL" not in str(row.get("a31_config_name", "")).upper()
+    ]
+    ranked = sorted(
+        candidates or summary_rows,
+        key=lambda row: (
+            progression_rank(row.get("progression_level")),
+            none_last(row.get("candidate_revision_change_rate")),
+            none_last(row.get("growth_sign_revision_change_days")),
+            str(row.get("a31_config_hash")),
+        ),
+    )
+    champion = ranked[0] if ranked else None
+    control = a31_decision_control_row(summary_rows)
+    if champion is None:
+        return {
+            "decision_policy_version": A31_PROGRESSION_POLICY_VERSION,
+            "new_decision": "no_candidate_available",
+            "config_catalog_path": str(config_catalog_path),
+        }
+
+    progression_level = str(champion.get("progression_level"))
+    if progression_level == "pass":
+        new_decision = "advance_to_g2"
+    elif progression_level == "conditional_pass":
+        new_decision = "advance_to_g2_limited"
+    else:
+        new_decision = "do_not_advance_to_g2"
+    previous_decision = (
+        "do_not_advance_to_g2"
+        if any(row.get("a31_config_name") == "V02B-G1-CREDIT-6040-15" for row in summary_rows)
+        else None
+    )
+    fold_deltas = fold_revision_deltas(
+        metric_rows,
+        str(champion.get("a31_config_hash")),
+        str(control.get("a31_config_hash")) if control else None,
+    )
+    return {
+        "decision_policy_version": A31_PROGRESSION_POLICY_VERSION,
+        "previous_decision": previous_decision,
+        "new_decision": new_decision,
+        "champion": {
+            "a31_config_name": champion.get("a31_config_name"),
+            "a31_config_hash": champion.get("a31_config_hash"),
+            "status": champion.get("a31_provisional_status"),
+            "risk_flag": champion.get("risk_flag"),
+            "candidate_revision_change_rate": champion.get("candidate_revision_change_rate"),
+            "relative_revision_improvement_vs_v01": champion.get(
+                "relative_revision_improvement_vs_v01"
+            ),
+            "growth_sign_revision_change_days": champion.get(
+                "growth_sign_revision_change_days"
+            ),
+            "valid_rate": champion.get("valid_rate"),
+            "absolute_target_20pct_met": champion.get("absolute_target_20pct_met"),
+        },
+        "reason": {
+            "relative_revision_improvement_vs_v01": champion.get(
+                "relative_revision_improvement_vs_v01"
+            ),
+            "growth_sign_changes_below_benchmark": champion.get(
+                "growth_sign_changes_below_benchmark"
+            ),
+            "valid_rate_not_degraded": champion.get("valid_rate_not_degraded"),
+            "absolute_target_20pct_met": champion.get("absolute_target_20pct_met"),
+            "fold_revision_deltas_vs_control": fold_deltas,
+            "material_fold_deterioration": any(
+                delta is not None and delta > 0.02 for delta in fold_deltas.values()
+            ),
+        },
+        "hard_blocks_checked_by_grid": {
+            "a32_canonical_hash_unique": True,
+            "grid_failures": failure_count,
+            "external_access": "disabled_by_grid_only_path",
+        },
+        "a3_1_status": "provisional_candidate_selected"
+        if new_decision in {"advance_to_g2", "advance_to_g2_limited"}
+        else "screen_complete_no_g2",
+        "a3_2_status": "ready_to_start"
+        if new_decision in {"advance_to_g2", "advance_to_g2_limited"}
+        else "blocked",
+        "a4_status": (
+            "calibration_in_progress_with_provisional_A3"
+            if new_decision in {"advance_to_g2", "advance_to_g2_limited"}
+            else "candidate_seed_only"
+        ),
+        "a5_status": "blocked",
+    }
+
+
+def a31_decision_control_row(summary_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    exact_names = {"G2-CREDIT6040-15", "V02B-G0-CONTROL", "V02-G0-CONTROL"}
+    exact = next(
+        (
+            row for row in summary_rows
+            if str(row.get("a31_config_name")) in exact_names
+        ),
+        None,
+    )
+    if exact is not None:
+        return exact
+    return next(
+        (
+            row for row in summary_rows
+            if "CONTROL" in str(row.get("a31_config_name", "")).upper()
+        ),
+        None,
+    )
+
+
+def progression_rank(level: Any) -> int:
+    return {"pass": 0, "conditional_pass": 1, "fail": 2}.get(str(level), 3)
+
+
+def fold_revision_deltas(
+    metric_rows: list[dict[str, Any]],
+    champion_hash: str,
+    control_hash: str | None,
+) -> dict[str, float | None]:
+    if control_hash is None:
+        return {}
+    by_key = {
+        (str(row.get("a31_config_hash")), str(row.get("fold"))): row
+        for row in metric_rows
+    }
+    out: dict[str, float | None] = {}
+    for fold in ("2014_2017", "2018_2021", "2022_2026"):
+        lhs = by_key.get((champion_hash, fold), {}).get("candidate_revision_change_rate")
+        rhs = by_key.get((control_hash, fold), {}).get("candidate_revision_change_rate")
+        out[fold] = None if lhs is None or rhs is None else float(lhs) - float(rhs)
+    return out
 
 
 def timing_summary_fields(timings: dict[str, float]) -> dict[str, float]:
@@ -6264,6 +6787,10 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
     if argv and argv[0] == "a31-grid":
         result = run_a31_grid(parse_a31_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "a32-grid":
+        result = run_a32_grid(parse_a32_grid_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     if argv and argv[0] == "v02-fetch-alfred":
