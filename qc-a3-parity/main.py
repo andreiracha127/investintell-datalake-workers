@@ -13,6 +13,8 @@ class QCA3ParityPlaceholder(QCAlgorithm):
         self.set_start_date(2026, 6, 24)
         self.set_end_date(2026, 6, 25)
         self.set_cash(100000)
-        self.debug(
-            "qc-a3-parity is diagnostic-only; run qc_a3_parity.ipynb in Research."
+        raise RuntimeError(
+            "qc-a3-parity is diagnostic-only. Do not run this project as a "
+            "backtest; open and run qc_a3_parity.ipynb in the QuantConnect "
+            "Research environment."
         )
