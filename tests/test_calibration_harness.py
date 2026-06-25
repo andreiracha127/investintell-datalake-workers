@@ -760,3 +760,67 @@ def test_a31_grid_parallel_matches_serial_metrics(tmp_path, monkeypatch) -> None
     ]
     for serial_row, parallel_row in zip(serial_summary, parallel_summary):
         assert serial_row["result_classification"] == parallel_row["result_classification"]
+
+
+def test_a31_catalog_compiles_multiple_family_shifts_from_immutable_base() -> None:
+    cfg, metadata = ch.a31_config_from_catalog_entry({
+        "name": "A31-MULTI-SHIFT",
+        "family_weight_shifts": [
+            {
+                "axis": "inflation",
+                "source": "consumer_prices",
+                "recipients": ["producer_prices", "wages", "expectations"],
+                "delta": 0.05,
+            },
+            {
+                "axis": "inflation",
+                "source": "wages",
+                "recipients": ["consumer_prices", "producer_prices", "expectations"],
+                "delta": 0.05,
+            },
+        ],
+    })
+    ref = ch.reference_a31_config()
+    weights = cfg.family_weights["inflation"]
+
+    assert abs(sum(weights.values()) - 1.0) < 1e-12
+    assert weights["consumer_prices"] == pytest.approx(
+        ref.family_weights["inflation"]["consumer_prices"] - 0.05 + (0.05 / 3.0)
+    )
+    assert weights["wages"] == pytest.approx(
+        ref.family_weights["inflation"]["wages"] - 0.05 + (0.05 / 3.0)
+    )
+    assert metadata["family_weight_shifts"][0]["recipients"] == [
+        "expectations",
+        "producer_prices",
+        "wages",
+    ]
+    assert metadata["resolved_family_weights"] == ch.normalize_logical_value(cfg.family_weights)
+
+
+def test_a31_transformation_weights_use_l2_component_z() -> None:
+    ref = ch.reference_a31_config()
+    cfg = ch.A31Config(
+        **{
+            **ch.asdict(ref),
+            "name": "A31-STABLE",
+            "transformation_weights": {
+                **ref.transformation_weights,
+                "quantity_index": {
+                    "acceleration_3m": 0.30,
+                    "acceleration_6m": 0.40,
+                    "change_12m": 0.30,
+                },
+            },
+        }
+    )
+    row = {
+        "transform_class": "quantity_index",
+        "reference_series_score": 0.10,
+        "z_acceleration_3m": 1.0,
+        "z_acceleration_6m": 0.0,
+        "z_change_12m": -1.0,
+    }
+
+    assert ch.series_score_from_l2_row(row, ref) == 0.10
+    assert ch.series_score_from_l2_row(row, cfg) == pytest.approx(0.0)

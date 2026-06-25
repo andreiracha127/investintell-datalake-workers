@@ -60,7 +60,7 @@ DEFAULT_INPUT_CACHE_DIR = "_tmp_calibration_input_cache"
 L1_SCHEMA_VERSION = 1
 L2_SCHEMA_VERSION = 1
 L3_SCORER_SCHEMA_VERSION = 1
-L3_SCORER_CODE_VERSION = "a3_l3_score_panel_v0"
+L3_SCORER_CODE_VERSION = "a3_l3_score_panel_v1"
 L4_STATE_SCHEMA_VERSION = 1
 L4_STATE_CODE_VERSION = "a3_l4_state_machine_v0"
 SMOKE_GRID_SCHEMA_VERSION = 1
@@ -149,6 +149,7 @@ class A31Config:
     robust_clip: float
     reliability_weighting: str
     score_clip: dict[str, float]
+    release_smoothing: str = "none"
 
 
 @dataclass(frozen=True)
@@ -1873,6 +1874,7 @@ def reference_a31_config(name: str = "A31-REF") -> A31Config:
             "family": FAMILY_SCORE_CLIP,
             "axis": AXIS_SCORE_CLIP,
         },
+        release_smoothing="none",
     )
 
 
@@ -1939,6 +1941,7 @@ def build_l3_score_panel(
         l2_macro_logical_hash,
         expected_l2_macro_logical_hash,
     )
+    macro_feature_primitives = enrich_l2_component_z(macro_feature_primitives)
     config_hash = a31_config_hash(a31_config, l2_macro_logical_hash)
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in macro_feature_primitives:
@@ -2005,8 +2008,11 @@ def build_l3_score_panel(
             "information_set_hash": information_hash,
         })
         contribution_rows.extend(
-            l3_contribution_rows(business_date, selection_mode, role, config_hash, by_series, axis_payload)
+            l3_contribution_rows(
+                business_date, selection_mode, role, config_hash, by_series, axis_payload, a31_config
+            )
         )
+    apply_release_smoothing(score_rows, a31_config.release_smoothing)
     manifest = {
         "schema_version": L3_SCORER_SCHEMA_VERSION,
         "code_version": L3_SCORER_CODE_VERSION,
@@ -2040,7 +2046,7 @@ def aggregate_l3_axis(
     for family, items in by_family.items():
         values = []
         for weight, row in items:
-            score = finite_or_none(row.get("reference_series_score"))
+            score = series_score_from_l2_row(row, config)
             if score is not None:
                 score = clip(score, config.score_clip.get("series", SERIES_Z_CLIP))
                 adjusted_weight = weight * reliability_weight_factor(
@@ -2090,6 +2096,109 @@ def aggregate_l3_axis(
         "family_count": len(available),
         "has_anchor": bool(ANCHOR_FAMILIES[axis] & set(available)),
     }
+
+
+def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | None:
+    transform_class = str(row.get("transform_class") or "")
+    ref = reference_a31_config()
+    weights = config.transformation_weights.get(transform_class)
+    if not weights:
+        return finite_or_none(row.get("reference_series_score"))
+    if weights == ref.transformation_weights.get(transform_class):
+        return finite_or_none(row.get("reference_series_score"))
+    if transform_class in {"quantity_index", "price_index"}:
+        return weighted_components([
+            (float(weights.get("acceleration_3m", 0.0)), finite_or_none(row.get("z_acceleration_3m"))),
+            (float(weights.get("acceleration_6m", 0.0)), finite_or_none(row.get("z_acceleration_6m"))),
+            (float(weights.get("change_12m", 0.0)), finite_or_none(row.get("z_change_12m"))),
+        ])
+    if transform_class == "rate_level":
+        return weighted_components([
+            (float(weights.get("level", 0.0)), finite_or_none(row.get("z_level"))),
+            (float(weights.get("delta_3m", 0.0)), finite_or_none(row.get("z_delta_3m"))),
+        ])
+    return finite_or_none(row.get("reference_series_score"))
+
+
+def enrich_l2_component_z(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched = [dict(row) for row in rows]
+    indexes_by_series: dict[tuple[str, str], list[int]] = {}
+    for idx, row in enumerate(enriched):
+        indexes_by_series.setdefault(
+            (str(row.get("selection_mode")), str(row.get("series_id"))), []
+        ).append(idx)
+    component_sources = {
+        "acceleration_3m": "acceleration_3m_vs_12m",
+        "acceleration_6m": "acceleration_6m_vs_12m",
+        "change_12m": "change_12m",
+        "level": "raw_value",
+        "delta_3m": "delta_3m",
+    }
+    for indexes in indexes_by_series.values():
+        histories: dict[str, dict[dt.date, float]] = {
+            component: {} for component in component_sources
+        }
+        for idx in sorted(indexes, key=lambda i: str(enriched[i].get("business_date"))):
+            row = enriched[idx]
+            period_value = row.get("observation_period")
+            period = cache_date(period_value) if period_value not in {None, ""} else None
+            for component, source_key in component_sources.items():
+                value = finite_or_none(row.get(source_key))
+                if period is not None and value is not None:
+                    histories[component][period] = value
+                row[f"z_{component}"] = component_z_as_of(histories[component], period)
+    return enriched
+
+
+def component_z_as_of(history: dict[dt.date, float], current_period: dt.date | None) -> float | None:
+    if current_period is None:
+        return None
+    cutoff = safe_year_delta(current_period, -10)
+    values = {
+        period: value
+        for period, value in history.items()
+        if cutoff <= period <= current_period and math.isfinite(value)
+    }
+    return latest_component_z(values)
+
+
+def safe_year_delta(value: dt.date, years: int) -> dt.date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(year=value.year + years, day=28)
+
+
+def apply_release_smoothing(rows: list[dict[str, Any]], mode: str) -> None:
+    if mode in {"none", "off", "disabled"}:
+        return
+    if mode not in {"ema_half_life_2", "ema_hl2"}:
+        raise ValueError(f"unsupported release_smoothing: {mode}")
+    alpha = 1.0 - math.exp(math.log(0.5) / 2.0)
+    by_mode: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_mode.setdefault(str(row["selection_mode"]), []).append(row)
+    for selection_rows in by_mode.values():
+        prev_info_hash: str | None = None
+        prev_growth: float | None = None
+        prev_inflation: float | None = None
+        for row in sorted(selection_rows, key=lambda item: str(item["business_date"])):
+            current_info_hash = str(row["information_set_hash"])
+            growth = finite_or_none(row.get("growth_score_unscaled"))
+            inflation = finite_or_none(row.get("inflation_score_unscaled"))
+            if current_info_hash == prev_info_hash:
+                row["growth_score_unscaled"] = prev_growth
+                row["inflation_score_unscaled"] = prev_inflation
+                continue
+            if prev_growth is not None and growth is not None:
+                growth = alpha * growth + (1.0 - alpha) * prev_growth
+            if prev_inflation is not None and inflation is not None:
+                inflation = alpha * inflation + (1.0 - alpha) * prev_inflation
+            row["growth_score_unscaled"] = growth
+            row["inflation_score_unscaled"] = inflation
+            prev_info_hash = current_info_hash
+            prev_growth = growth
+            prev_inflation = inflation
 
 
 def reliability_weight_factor(value: Any, mode: str) -> float:
@@ -2169,6 +2278,7 @@ def l3_contribution_rows(
     a31_hash: str,
     by_series: dict[str, dict[str, Any]],
     axis_payload: dict[str, dict[str, Any]],
+    config: A31Config,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for cfg in BASELINE_SERIES:
@@ -2182,7 +2292,7 @@ def l3_contribution_rows(
             "axis": cfg.axis,
             "family": cfg.family,
             "series_id": cfg.series_id,
-            "score": finite_or_none(source.get("reference_series_score")),
+            "score": series_score_from_l2_row(source, config),
             "weight": 1.0,
         })
     for axis_name, payload in axis_payload.items():
@@ -4151,13 +4261,20 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         "aggregation_method",
         "robust_clip",
         "reliability_weighting",
-        "transformation_weights",
+        "release_smoothing",
         "family_weights",
         "series_weights",
     }
     for field in simple_fields:
         if field in entry:
             data[field] = json.loads(json.dumps(entry[field]))
+    if "transformation_weights" in entry:
+        merged_transforms = json.loads(json.dumps(data["transformation_weights"]))
+        for transform, weights in dict(entry["transformation_weights"]).items():
+            merged = dict(merged_transforms.get(transform, {}))
+            merged.update(weights)
+            merged_transforms[transform] = merged
+        data["transformation_weights"] = merged_transforms
     if "score_clip" in entry:
         merged = dict(data["score_clip"])
         merged.update(entry["score_clip"])
@@ -4166,8 +4283,14 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
     if shifts:
         if isinstance(shifts, dict):
             shifts = [shifts]
-        for shift in shifts:
-            apply_family_weight_shift_to_data(data, shift)
+        shifts = canonicalize_shifts(shifts)
+        apply_family_weight_shifts_to_data(data, shifts)
+    series_shifts = entry.get("series_weight_shifts") or entry.get("series_weight_shift")
+    if series_shifts:
+        if isinstance(series_shifts, dict):
+            series_shifts = [series_shifts]
+        series_shifts = canonicalize_shifts(series_shifts)
+        apply_series_weight_shifts_to_data(data, series_shifts)
     cfg = A31Config(
         name=str(data["name"]),
         transformation_weights={
@@ -4183,6 +4306,7 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         robust_clip=float(data["robust_clip"]),
         reliability_weighting=str(data["reliability_weighting"]),
         score_clip={str(k): float(v) for k, v in dict(data["score_clip"]).items()},
+        release_smoothing=str(data["release_smoothing"]),
     )
     metadata = {
         key: normalize_logical_value(value)
@@ -4193,43 +4317,101 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
             "aggregation_method",
             "robust_clip",
             "reliability_weighting",
+            "release_smoothing",
             "transformation_weights",
             "family_weights",
             "series_weights",
             "score_clip",
             "family_weight_shift",
             "family_weight_shifts",
+            "series_weight_shift",
+            "series_weight_shifts",
         }
     }
     if shifts:
         metadata["family_weight_shifts"] = normalize_logical_value(shifts)
+    if series_shifts:
+        metadata["series_weight_shifts"] = normalize_logical_value(series_shifts)
+    metadata["resolved_family_weights"] = normalize_logical_value(cfg.family_weights)
+    metadata["resolved_series_weights"] = normalize_logical_value(cfg.series_weights)
     return cfg, metadata
 
 
-def apply_family_weight_shift_to_data(data: dict[str, Any], shift: dict[str, Any]) -> None:
-    axis = str(shift["axis"])
-    source = str(shift["source"])
-    delta = min(0.05, abs(float(shift.get("delta", 0.05))))
-    axis_weights = data["family_weights"][axis]
-    if source not in axis_weights:
-        raise ValueError(f"unknown source family for shift: {axis}.{source}")
-    delta = min(delta, float(axis_weights[source]))
-    recipients = [str(item) for item in shift.get("recipients", [])]
-    if not recipients:
-        recipients = [family for family in axis_weights if family != source]
-    if not recipients:
-        return
-    for family in recipients:
-        if family not in axis_weights:
-            raise ValueError(f"unknown recipient family for shift: {axis}.{family}")
-    axis_weights[source] = float(axis_weights[source]) - delta
-    add = delta / len(recipients)
-    for family in recipients:
-        axis_weights[family] = float(axis_weights[family]) + add
-    total = sum(float(value) for value in axis_weights.values())
-    if total > 0:
-        for family in list(axis_weights):
-            axis_weights[family] = float(axis_weights[family]) / total
+def canonicalize_shifts(shifts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for shift in shifts:
+        current = dict(shift)
+        if "recipients" in current:
+            current["recipients"] = sorted(str(item) for item in current["recipients"])
+        out.append(current)
+    return out
+
+
+def apply_family_weight_shifts_to_data(data: dict[str, Any], shifts: list[dict[str, Any]]) -> None:
+    by_axis: dict[str, list[dict[str, Any]]] = {}
+    for shift in shifts:
+        by_axis.setdefault(str(shift["axis"]), []).append(shift)
+    for axis, axis_shifts in by_axis.items():
+        base_weights = {family: float(weight) for family, weight in data["family_weights"][axis].items()}
+        deltas = {family: 0.0 for family in base_weights}
+        for shift in axis_shifts:
+            source = str(shift["source"])
+            if source not in base_weights:
+                raise ValueError(f"unknown source family for shift: {axis}.{source}")
+            delta = min(0.05, abs(float(shift.get("delta", 0.05))))
+            delta = min(delta, base_weights[source] + deltas[source])
+            recipients = [str(item) for item in shift.get("recipients", [])]
+            if not recipients:
+                recipients = sorted(family for family in base_weights if family != source)
+            if not recipients:
+                continue
+            for family in recipients:
+                if family not in base_weights:
+                    raise ValueError(f"unknown recipient family for shift: {axis}.{family}")
+            deltas[source] -= delta
+            add = delta / len(recipients)
+            for family in recipients:
+                deltas[family] += add
+        resolved = {family: base_weights[family] + deltas[family] for family in base_weights}
+        if any(value <= 0.0 for value in resolved.values()):
+            raise ValueError(f"family weight shift produced non-positive weight for axis {axis}")
+        total = sum(resolved.values())
+        data["family_weights"][axis] = {
+            family: resolved[family] / total for family in sorted(resolved)
+        }
+
+
+def apply_series_weight_shifts_to_data(data: dict[str, Any], shifts: list[dict[str, Any]]) -> None:
+    by_group: dict[tuple[str, ...], list[dict[str, Any]]] = {}
+    for shift in shifts:
+        group = tuple(sorted({str(shift["source"]), *(str(item) for item in shift.get("recipients", []))}))
+        by_group.setdefault(group, []).append(shift)
+    for group, group_shifts in by_group.items():
+        base = {series_id: float(data["series_weights"][series_id]) for series_id in group}
+        total_base = sum(base.values())
+        shares = {series_id: weight / total_base for series_id, weight in base.items()}
+        deltas = {series_id: 0.0 for series_id in shares}
+        for shift in group_shifts:
+            source = str(shift["source"])
+            if source not in shares:
+                raise ValueError(f"unknown source series for shift: {source}")
+            delta = min(0.05, abs(float(shift.get("delta", 0.05))))
+            delta = min(delta, shares[source] + deltas[source] - 0.01)
+            recipients = [str(item) for item in shift.get("recipients", []) if str(item) != source]
+            if not recipients:
+                raise ValueError(f"series shift for {source} requires recipients")
+            for series_id in recipients:
+                if series_id not in shares:
+                    raise ValueError(f"unknown recipient series for shift: {series_id}")
+            deltas[source] -= delta
+            add = delta / len(recipients)
+            for series_id in recipients:
+                deltas[series_id] += add
+        resolved = {series_id: shares[series_id] + deltas[series_id] for series_id in shares}
+        if any(value <= 0.0 for value in resolved.values()):
+            raise ValueError(f"series weight shift produced non-positive weight in group {group}")
+        for series_id, share in resolved.items():
+            data["series_weights"][series_id] = share * total_base
 
 
 def a31_distance_from_ref(config: A31Config) -> float:
@@ -4242,9 +4424,15 @@ def a31_distance_from_ref(config: A31Config) -> float:
         distance += abs(config.series_weights.get(series_id, 0.0) - weight)
     for key, value in ref.score_clip.items():
         distance += abs(config.score_clip.get(key, 0.0) - value) / 10.0
+    for transform, weights in ref.transformation_weights.items():
+        for component, weight in weights.items():
+            distance += abs(
+                config.transformation_weights.get(transform, {}).get(component, 0.0) - weight
+            )
     distance += 0.01 if config.aggregation_method != ref.aggregation_method else 0.0
     distance += abs(config.robust_clip - ref.robust_clip) / 10.0
     distance += 0.01 if config.reliability_weighting != ref.reliability_weighting else 0.0
+    distance += 0.01 if config.release_smoothing != ref.release_smoothing else 0.0
     return round(distance, 12)
 
 
