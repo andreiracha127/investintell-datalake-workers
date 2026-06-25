@@ -934,6 +934,7 @@ SELECT
 FROM hold h
 LEFT JOIN LATERAL (
   SELECT CASE WHEN w.n >= 12 AND sv.nav IS NOT NULL AND sv.nav > 0
+               AND abs(ev.nav / sv.nav - 1.0) <= 10.0
               THEN round((ev.nav / sv.nav - 1.0)::numeric, 4) END AS mom_12_1
   FROM (SELECT count(*) AS n FROM tmp_l2_navpts p
          WHERE p.instrument_id = h.instrument_id AND p.m_end <= h.as_of) w
@@ -1042,6 +1043,9 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
 
     conn = connect(dsn)
     try:
+        with conn.cursor() as cur:
+            cur.execute("SET temp_buffers = '512MB'")
+            cur.execute("SET work_mem = '256MB'")
         with advisory_lock(conn, LOCK_CHARACTERISTICS) as got:
             if not got:
                 return {"status": "skipped", "reason": "lock_held",
@@ -1050,13 +1054,15 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             # ---- Layer 1: company characteristics (set-based) --------------
             # One pass over the whole us-gaap fact table instead of 2 queries
             # per CIK x ~14.5k CIKs. See _run_layer1_setbased for the SQL.
+            company_error = None
             try:
                 company_processed, company_upserted = _run_layer1_setbased(
                     conn, today, limit
                 )
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 company_processed = company_upserted = 0
+                company_error = f"{type(exc).__name__}: {exc}"
 
             # ---- Layer 2: fund/equity characteristics (set-based) ----------
             # One server-side pass over every (instrument_id, report_date)
@@ -1064,22 +1070,33 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             # See _run_layer2_setbased for the SQL. The per-fund helpers
             # (compute_fund_rows / _aggregate_one_date / _replace_fund_rows)
             # are retained as the audited test oracle.
+            equity_error = None
             try:
                 equity_processed, equity_upserted = _run_layer2_setbased(
                     conn, limit
                 )
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
                 equity_processed = equity_upserted = 0
+                equity_error = f"{type(exc).__name__}: {exc}"
 
+            errors = {
+                k: v
+                for k, v in (
+                    ("company_error", company_error),
+                    ("equity_error", equity_error),
+                )
+                if v
+            }
             return {
-                "status": "succeeded",
+                "status": "succeeded" if not errors else "partial",
                 "processed": company_processed + equity_processed,
                 "upserted": company_upserted + equity_upserted,
                 "company_processed": company_processed,
                 "company_upserted": company_upserted,
                 "equity_processed": equity_processed,
                 "equity_upserted": equity_upserted,
+                **errors,
             }
     finally:
         conn.close()

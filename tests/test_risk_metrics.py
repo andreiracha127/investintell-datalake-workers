@@ -295,6 +295,22 @@ def test_relative_metrics_synthetic_beta_two():
     assert out["tracking_error_1y"] > 0
 
 
+def test_regression_nulls_degenerate_beta():
+    """Beta non-economico deve ficar nulo sem bloquear TE/IR."""
+    start = _dt.date(2024, 1, 1)
+    rng = np.random.default_rng(7)
+    dates = [start + _dt.timedelta(days=i) for i in range(300)]
+    b_ret = rng.normal(0.0, 0.001, 300)
+    fund = list(zip(dates, 50.0 * b_ret))
+    bench = list(zip(dates, b_ret))
+
+    out = rm.regression_metrics(fund, bench, 0.04)
+
+    assert out["beta_1y"] is None
+    assert out["alpha_1y"] is None
+    assert out["tracking_error_1y"] is not None
+
+
 def test_relative_metrics_without_block_only_correlation():
     """Sem benchmark mapeado (ex. alternatives) só a eq-correlation sai."""
     start = _dt.date(2024, 1, 1)

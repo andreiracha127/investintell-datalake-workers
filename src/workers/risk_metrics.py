@@ -319,6 +319,10 @@ EQUITY_BENCHMARK_BLOCK = "na_equity_large"
 # no subconjunto de dias) — sem significado; e a coluna é numeric(8,4).
 CAPTURE_LIMIT = 500.0
 
+# |beta| acima disso indica janela degenerada (benchmark quase flat no overlap
+# ou salto de NAV); mesmo fundos alavancados reais ficam bem abaixo desse teto.
+BETA_ABS_LIMIT = 10.0
+
 BENCHMARK_BY_LABEL: dict[str, str] = {
     "Asian Equity": "dm_asia_equity",
     "Asset-Backed Securities": "fi_us_aggregate",
@@ -538,9 +542,10 @@ def regression_metrics(
     if bvar == 0 or not np.isfinite(bvar):
         return out
     beta = float(np.cov(f, b, ddof=1)[0, 1] / bvar)
-    alpha_daily = float(np.mean(f) - rf_d) - beta * float(np.mean(b) - rf_d)
-    out["beta_1y"] = _clip(beta)
-    out["alpha_1y"] = _clip(alpha_daily * TRADING_DAYS)
+    if abs(beta) <= BETA_ABS_LIMIT:
+        alpha_daily = float(np.mean(f) - rf_d) - beta * float(np.mean(b) - rf_d)
+        out["beta_1y"] = _clip(beta)
+        out["alpha_1y"] = _clip(alpha_daily * TRADING_DAYS)
     # Tracking error & information ratio on active return.
     active = f - b
     te = float(np.std(active, ddof=1) * np.sqrt(TRADING_DAYS))
