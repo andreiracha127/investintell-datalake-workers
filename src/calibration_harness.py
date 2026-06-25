@@ -863,8 +863,11 @@ def macro_primitive_row(
 
 
 def series_component_z_values(transform_class: str, series: dict[dt.date, float]) -> dict[str, float | None]:
-    key = tuple((period.isoformat(), round(float(value), 10)) for period, value in sorted(series.items()))
-    return dict(_series_component_z_values_cached(transform_class, key))
+    return dict(_series_component_z_values_cached(transform_class, series_cache_key(series)))
+
+
+def series_cache_key(series: dict[dt.date, float]) -> tuple[tuple[str, float], ...]:
+    return tuple((period.isoformat(), round(float(value), 10)) for period, value in sorted(series.items()))
 
 
 @functools.lru_cache(maxsize=20000)
@@ -926,13 +929,28 @@ def selection_role_for_mode(selection_mode: str) -> str:
 
 
 def reference_series_score(cfg: SeriesConfig, series: dict[dt.date, float]) -> float | None:
-    if cfg.transform_class == "quantity_index":
+    value = _reference_series_score_cached(
+        cfg.transform_class,
+        cfg.direction,
+        series_cache_key(series),
+    )
+    return value
+
+
+@functools.lru_cache(maxsize=20000)
+def _reference_series_score_cached(
+    transform_class: str,
+    direction: int,
+    series_items: tuple[tuple[str, float], ...],
+) -> float | None:
+    series = {dt.date.fromisoformat(period): value for period, value in series_items}
+    if transform_class == "quantity_index":
         value = quantity_index_score(series)
-    elif cfg.transform_class == "price_index":
+    elif transform_class == "price_index":
         value = price_index_score(series)
     else:
         value = rate_level_score(series)
-    return value * cfg.direction if value is not None else None
+    return value * direction if value is not None else None
 
 
 def build_market_feature_primitives(
