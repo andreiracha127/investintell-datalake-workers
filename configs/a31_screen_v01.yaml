@@ -1,0 +1,103 @@
+schema_version: 1
+description: A3.1 one-factor screening catalog. A32 remains A32-REF for all entries.
+configs:
+  - name: A31-REF
+    round: A
+    description: Reference A3.1 score panel.
+
+  - name: A31-ROBUST-MEDIAN
+    round: A
+    description: One-factor change from huberized weighted mean to median aggregation.
+    aggregation_method: median
+
+  - name: A31-HUBER-1P25
+    round: A
+    description: One-factor tighter Huber clipping.
+    robust_clip: 1.25
+
+  - name: A31-HUBER-1P75
+    round: A
+    description: One-factor looser Huber clipping.
+    robust_clip: 1.75
+
+  - name: A31-CLIP-SERIES-2P5
+    round: A
+    description: One-factor series score clip 2.5 versus 3.0.
+    score_clip:
+      series: 2.5
+
+  - name: A31-CLIP-FAMILY-2P0
+    round: A
+    description: One-factor family score clip 2.0 versus 2.5.
+    score_clip:
+      family: 2.0
+
+  - name: A31-CLIP-AXIS-1P75
+    round: A
+    description: One-factor axis score clip 1.75 versus 2.0.
+    score_clip:
+      axis: 1.75
+
+  - name: A31-RELIABILITY-BASE
+    round: A
+    description: One-factor PIT vintage reliability weighting.
+    reliability_weighting: base
+
+  - name: A31-RELIABILITY-REINFORCED
+    round: A
+    description: One-factor stronger PIT vintage reliability weighting.
+    reliability_weighting: reinforced
+
+  - name: A31-GROWTH-REAL-TO-LABOR
+    round: A
+    description: Shift 5pp from growth real_activity to labor.
+    family_weight_shift:
+      axis: growth
+      source: real_activity
+      recipients: [labor]
+      delta: 0.05
+
+  - name: A31-GROWTH-LABOR-TO-REAL
+    round: A
+    description: Shift 5pp from growth labor to real_activity.
+    family_weight_shift:
+      axis: growth
+      source: labor
+      recipients: [real_activity]
+      delta: 0.05
+
+  - name: A31-INFL-CONSUMER-TO-OTHERS
+    round: A
+    description: Shift 5pp from consumer prices to the other inflation families.
+    family_weight_shift:
+      axis: inflation
+      source: consumer_prices
+      recipients: [producer_prices, wages, expectations]
+      delta: 0.05
+
+  - name: A31-INFL-PRODUCER-TO-OTHERS
+    round: A
+    description: Shift 5pp from producer prices to the other inflation families.
+    family_weight_shift:
+      axis: inflation
+      source: producer_prices
+      recipients: [consumer_prices, wages, expectations]
+      delta: 0.05
+
+  - name: A31-INFL-WAGES-TO-OTHERS
+    round: A
+    description: Shift 5pp from wages to the other inflation families.
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, producer_prices, expectations]
+      delta: 0.05
+
+  - name: A31-INFL-EXPECT-TO-OTHERS
+    round: A
+    description: Shift 5pp from inflation expectations to the other inflation families.
+    family_weight_shift:
+      axis: inflation
+      source: expectations
+      recipients: [consumer_prices, producer_prices, wages]
+      delta: 0.05

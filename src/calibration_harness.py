@@ -8,15 +8,19 @@ artifact files only.  It never inserts into ``regime_quadrant_snapshot``.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import hashlib
 import importlib.metadata
 import json
 import math
 import os
+import shutil
+import socket
 import statistics
 import subprocess
 import sys
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -60,6 +64,7 @@ L3_SCORER_CODE_VERSION = "a3_l3_score_panel_v0"
 L4_STATE_SCHEMA_VERSION = 1
 L4_STATE_CODE_VERSION = "a3_l4_state_machine_v0"
 SMOKE_GRID_SCHEMA_VERSION = 1
+A31_GRID_SCHEMA_VERSION = 1
 
 Quadrant = Literal["recovery", "expansion", "slowdown", "contraction"]
 Status = Literal["valid", "abstain", "unavailable", "invalid"]
@@ -159,6 +164,17 @@ class A32Config:
     min_confidence: float
     dispersion_limit: float
     coverage_rules_version: str
+
+
+@dataclass(frozen=True)
+class A31GridConfig:
+    feature_manifest: Path
+    config_catalog: Path
+    output_dir: Path | None = None
+    jobs: int = 1
+    resume: bool = False
+    offline: bool = False
+    worker_commit: str | None = None
 
 
 BASELINE_SERIES: tuple[SeriesConfig, ...] = (
@@ -2027,8 +2043,11 @@ def aggregate_l3_axis(
             score = finite_or_none(row.get("reference_series_score"))
             if score is not None:
                 score = clip(score, config.score_clip.get("series", SERIES_Z_CLIP))
-                values.append((weight, score))
-        score = aggregate_values(values, config.aggregation_method)
+                adjusted_weight = weight * reliability_weight_factor(
+                    row.get("vintage_quality"), config.reliability_weighting
+                )
+                values.append((adjusted_weight, score))
+        score = aggregate_values(values, config.aggregation_method, config.robust_clip)
         if score is not None:
             family_scores[family] = clip(score, config.score_clip.get("family", FAMILY_SCORE_CLIP))
         family_freshness[family] = weighted_quality([
@@ -2039,18 +2058,27 @@ def aggregate_l3_axis(
         ])
 
     weights = config.family_weights[axis]
+    score_weights = {
+        family: weight * reliability_weight_factor(
+            family_vintage.get(family), config.reliability_weighting
+        )
+        for family, weight in weights.items()
+    }
     available = {family: score for family, score in family_scores.items() if family in weights}
-    active_weight = sum(weights[family] for family in available)
+    active_weight = sum(score_weights[family] for family in available)
     total_weight = sum(weights.values())
     coverage = active_weight / total_weight if total_weight > 0 else 0.0
     if active_weight > 0:
-        score = sum((weights[family] / active_weight) * value for family, value in available.items())
+        score = sum(
+            (score_weights[family] / active_weight) * value
+            for family, value in available.items()
+        )
         score = clip(score, config.score_clip.get("axis", AXIS_SCORE_CLIP))
     else:
         score = None
     freshness = weighted_quality([(weights[family], family_freshness.get(family, 0.0)) for family in weights])
     vintage = weighted_quality([(weights[family], family_vintage.get(family, 0.0)) for family in weights])
-    concordance, dispersion = concordance_quality(available, weights, score)
+    concordance, dispersion = concordance_quality(available, score_weights, score)
     return {
         "score": score,
         "family_scores": family_scores,
@@ -2064,9 +2092,27 @@ def aggregate_l3_axis(
     }
 
 
-def aggregate_values(items: list[tuple[float, float]], method: str) -> float | None:
+def reliability_weight_factor(value: Any, mode: str) -> float:
+    if mode in {"none", "off", "disabled"}:
+        return 1.0
+    quality = finite_or_none(value)
+    if quality is None:
+        return 1.0
+    quality = max(0.0, min(1.0, quality))
+    if mode in {"base", "pit_expanding"}:
+        return max(0.25, quality)
+    if mode in {"reinforced", "strong"}:
+        return max(0.10, quality * quality)
+    raise ValueError(f"unsupported reliability_weighting: {mode}")
+
+
+def aggregate_values(
+    items: list[tuple[float, float]], method: str, robust_clip: float = 1.5
+) -> float | None:
     if method == "huberized_weighted_mean":
-        return huberized_weighted_mean([(weight, value) for weight, value in items])
+        return huberized_weighted_mean_with_limit(
+            [(weight, value) for weight, value in items], robust_clip
+        )
     values = [value for _, value in items if math.isfinite(value)]
     if not values:
         return None
@@ -2074,6 +2120,25 @@ def aggregate_values(items: list[tuple[float, float]], method: str) -> float | N
         return statistics.median(values)
     total = sum(abs(weight) for weight, _ in items)
     return sum(abs(weight) * value for weight, value in items) / total if total > 0 else None
+
+
+def huberized_weighted_mean_with_limit(
+    items: list[tuple[float, float | None]], limit_multiplier: float
+) -> float | None:
+    values = [(w, float(v)) for w, v in items if v is not None and math.isfinite(v)]
+    if not values:
+        return None
+    raw = [v for _, v in values]
+    if len(raw) == 1:
+        return raw[0]
+    median = statistics.median(raw)
+    mad = statistics.median(abs(v - median) for v in raw)
+    scale = 1.4826 * mad
+    multiplier = limit_multiplier if limit_multiplier > 0 else 1.5
+    limit = multiplier * scale if scale > 0 else multiplier
+    clipped = [(w, max(median - limit, min(median + limit, v))) for w, v in values]
+    total = sum(abs(w) for w, _ in clipped)
+    return sum(abs(w) * v for w, v in clipped) / total if total > 0 else None
 
 
 def l2_information_set_hash(rows: list[dict[str, Any]]) -> str:
@@ -3485,6 +3550,15 @@ def logical_payload_hash(payload: Any) -> str:
 
 
 def normalize_logical_value(value: Any) -> Any:
+    if hasattr(value, "item") and not isinstance(value, (str, bytes, bytearray)):
+        try:
+            value = value.item()
+        except (AttributeError, ValueError, TypeError):
+            pass
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    elif hasattr(value, "to_pydatetime64"):
+        value = str(value)
     if isinstance(value, dict):
         return {str(k): normalize_logical_value(v) for k, v in sorted(value.items())}
     if isinstance(value, list):
@@ -3741,6 +3815,826 @@ def _float_or_none(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
+def parse_a31_grid_args(argv: list[str]) -> A31GridConfig:
+    ap = argparse.ArgumentParser(description="Run offline A3.1 grid over materialized L2")
+    ap.add_argument("command", choices=["a31-grid"])
+    ap.add_argument("--feature-manifest", required=True)
+    ap.add_argument("--config-catalog", required=True)
+    ap.add_argument("--output-dir")
+    ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    if args.jobs < 1:
+        raise SystemExit("--jobs must be >= 1")
+    return A31GridConfig(
+        feature_manifest=Path(args.feature_manifest),
+        config_catalog=Path(args.config_catalog),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        jobs=args.jobs,
+        resume=args.resume,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("a31-grid requires --offline to make the no-external-access contract explicit")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    output_dir = config.output_dir or (config.feature_manifest.parent / "a31_grid")
+    results_dir = output_dir / "results"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    feature_manifest, l2_path, l2_hash, l2_records = load_l2_macro_from_feature_manifest(
+        config.feature_manifest
+    )
+    catalog_payload = read_catalog_payload(config.config_catalog)
+    normalized_catalog, catalog_hash = normalize_a31_catalog(
+        catalog_payload,
+        l2_macro_logical_hash=l2_hash,
+        source_path=config.config_catalog,
+    )
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+    run_fingerprint = a31_grid_run_fingerprint(
+        l2_macro_logical_hash=l2_hash,
+        config_catalog_hash=catalog_hash,
+        worker_commit=worker_commit,
+    )
+    write_json(output_dir / "config_catalog.normalized.json", normalized_catalog)
+    write_parquet(
+        output_dir / "configs.parquet",
+        [
+            {
+                "a31_config_hash": item["a31_config_hash"],
+                "a31_config_name": item["config"]["name"],
+                "distance_from_ref": item["distance_from_ref"],
+                "catalog_index": item["catalog_index"],
+                "round": item["metadata"].get("round"),
+                "description": item["metadata"].get("description"),
+                "config_json": json.dumps(item["config"], sort_keys=True),
+                "metadata_json": json.dumps(item["metadata"], sort_keys=True),
+            }
+            for item in normalized_catalog["configs"]
+        ],
+    )
+
+    a32_ref = reference_a32_config()
+    existing_summary: list[dict[str, Any]] = []
+    existing_metrics: list[dict[str, Any]] = []
+    tasks: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    skipped = 0
+    for item in normalized_catalog["configs"]:
+        a31_hash = str(item["a31_config_hash"])
+        result_dir = results_dir / a31_hash
+        if config.resume:
+            loaded = load_existing_a31_result(
+                result_dir,
+                expected_l2_hash=l2_hash,
+                expected_a31_hash=a31_hash,
+                expected_a32_hash=a32_config_hash(a32_ref, a31_hash),
+            )
+            if loaded is not None:
+                existing_summary.append(loaded["summary"])
+                existing_metrics.extend(loaded["metrics_rows"])
+                skipped += 1
+                continue
+        tasks.append({
+            "feature_manifest_path": str(config.feature_manifest),
+            "l2_path": str(l2_path),
+            "l2_macro_logical_hash": l2_hash,
+            "result_dir": str(result_dir),
+            "execution_id": execution_id,
+            "worker_commit": worker_commit,
+            "a31_item": item,
+        })
+
+    computed: list[dict[str, Any]] = []
+    if config.jobs == 1:
+        for task in tasks:
+            try:
+                computed.append(a31_grid_worker(task))
+            except Exception as exc:  # pragma: no cover - exercised by CLI failures
+                failures.append(a31_failure_record(task, exc))
+    else:
+        with concurrent.futures.ProcessPoolExecutor(max_workers=config.jobs) as pool:
+            futures = {pool.submit(a31_grid_worker, task): task for task in tasks}
+            for future in concurrent.futures.as_completed(futures):
+                task = futures[future]
+                try:
+                    computed.append(future.result())
+                except Exception as exc:  # pragma: no cover - defensive per-config isolation
+                    failures.append(a31_failure_record(task, exc))
+
+    summary_rows = existing_summary + [row["summary"] for row in computed]
+    metric_rows = existing_metrics + [
+        metric for row in computed for metric in row["metrics_rows"]
+    ]
+    summary_rows.sort(key=lambda row: str(row["a31_config_hash"]))
+    metric_rows.sort(key=lambda row: (str(row["a31_config_hash"]), str(row["fold"])))
+    summary_rows, pareto_rows = mark_a31_pareto(summary_rows)
+
+    write_parquet(output_dir / "a31_grid_summary.parquet", summary_rows)
+    write_parquet(output_dir / "a31_grid_metrics.parquet", metric_rows)
+    write_parquet(output_dir / "a31_pareto.parquet", pareto_rows)
+    write_json(output_dir / "failures.json", {"failures": failures})
+
+    finished = dt.datetime.now(UTC)
+    grid_manifest = {
+        "schema_version": A31_GRID_SCHEMA_VERSION,
+        "run_fingerprint": run_fingerprint,
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "jobs": config.jobs,
+        "resume": config.resume,
+        "resume_skipped_configs": skipped,
+        "offline": True,
+        "external_access": "disabled_by_grid_only_path",
+        "grid_only": True,
+        "skipped_stages": ["DB", "Tiingo", "L0", "L1", "L2"],
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "feature_manifest_path": str(config.feature_manifest),
+        "config_catalog_path": str(config.config_catalog),
+        "parent_hashes": {
+            "l2_macro_logical_hash": l2_hash,
+            "l2_schema_version": feature_manifest.get("schema_version"),
+            "business_date_calendar_hash": feature_manifest.get("business_date_calendar_hash"),
+            "series_family_mapping_hash": feature_manifest.get("series_family_mapping_hash"),
+        },
+        "config_catalog_hash": catalog_hash,
+        "a32_ref_hashes": sorted({row["a32_config_hash"] for row in summary_rows}),
+        "config_count": len(normalized_catalog["configs"]),
+        "completed_count": len(summary_rows),
+        "failure_count": len(failures),
+        "summary_logical_hash": logical_records_hash(summary_rows),
+        "metrics_logical_hash": logical_records_hash(metric_rows),
+        "pareto_logical_hash": logical_records_hash(pareto_rows),
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            [
+                "config_catalog.normalized.json",
+                "configs.parquet",
+                "a31_grid_summary.parquet",
+                "a31_grid_metrics.parquet",
+                "a31_pareto.parquet",
+                "failures.json",
+            ],
+        ),
+        "stage_timings_seconds": aggregate_stage_timings(summary_rows),
+        "notes": [
+            "A3.1 uses A32-REF only",
+            "No configuration is frozen, production_candidate, or activation_ready",
+            "A4 remains candidate_seed_only; A5 remains blocked",
+        ],
+    }
+    write_json(output_dir / "grid_manifest.json", grid_manifest)
+    return {
+        "status": "ok" if not failures else "partial",
+        "output_dir": str(output_dir),
+        "run_fingerprint": run_fingerprint,
+        "execution_id": execution_id,
+        "config_count": len(normalized_catalog["configs"]),
+        "completed_count": len(summary_rows),
+        "failure_count": len(failures),
+        "resume_skipped_configs": skipped,
+        "pareto_count": len(pareto_rows),
+        "summary_logical_hash": grid_manifest["summary_logical_hash"],
+        "metrics_logical_hash": grid_manifest["metrics_logical_hash"],
+    }
+
+
+def load_l2_macro_from_feature_manifest(
+    feature_manifest_path: Path,
+) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]]]:
+    manifest = read_json_dict(feature_manifest_path)
+    if not manifest.get("parameter_independent"):
+        raise ValueError("feature_manifest must be parameter_independent=true for a31-grid")
+    if manifest.get("counterfactual_runtime_allowed"):
+        raise ValueError("feature_manifest must forbid counterfactual runtime use")
+    roles = manifest.get("selection_roles") or {}
+    if roles.get("latest") != "pit_runtime_candidate":
+        raise ValueError("feature_manifest.latest must be pit_runtime_candidate")
+    if roles.get("first_release") != "revised_vintage_counterfactual":
+        raise ValueError("feature_manifest.first_release must be revised_vintage_counterfactual")
+    macro_meta = manifest.get("macro_feature_primitives") or {}
+    expected_hash = str(macro_meta.get("logical_hash") or "")
+    if not expected_hash:
+        raise ValueError("feature_manifest is missing macro_feature_primitives.logical_hash")
+    l2_path = feature_manifest_path.parent / "macro_feature_primitives.parquet"
+    rows = read_parquet_records(l2_path)
+    actual_hash = logical_records_hash(rows)
+    validate_parent_hash("a31-grid L2 macro_feature_primitives", actual_hash, expected_hash)
+    if macro_meta.get("row_count") is not None and int(macro_meta["row_count"]) != len(rows):
+        raise ValueError("macro_feature_primitives row_count mismatch")
+    return manifest, l2_path, actual_hash, rows
+
+
+def read_parquet_records(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    try:
+        import pandas as pd
+    except ImportError as exc:  # pragma: no cover - pandas is a project dependency
+        raise RuntimeError("pandas is required to read calibration parquet artifacts") from exc
+    frame = pd.read_parquet(path)
+    return [
+        {str(key): parquet_cell(value) for key, value in record.items()}
+        for record in frame.to_dict("records")
+    ]
+
+
+def parquet_cell(value: Any) -> Any:
+    if hasattr(value, "item") and not isinstance(value, (str, bytes, bytearray)):
+        try:
+            value = value.item()
+        except (AttributeError, ValueError, TypeError):
+            pass
+    if hasattr(value, "to_pydatetime"):
+        value = value.to_pydatetime()
+    if isinstance(value, dt.datetime):
+        if value.time() == dt.time(0, 0):
+            return value.date().isoformat()
+        return value.isoformat()
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
+
+
+def read_json_dict(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return payload
+
+
+def read_catalog_payload(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(path)
+    text = path.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML is required for YAML A31 config catalogs") from exc
+        payload = yaml.safe_load(text)
+    if isinstance(payload, list):
+        payload = {"configs": payload}
+    if not isinstance(payload, dict):
+        raise ValueError("A31 config catalog must be a mapping or list")
+    if "configs" not in payload:
+        raise ValueError("A31 config catalog must contain configs")
+    return payload
+
+
+def normalize_a31_catalog(
+    payload: dict[str, Any], *, l2_macro_logical_hash: str, source_path: Path
+) -> tuple[dict[str, Any], str]:
+    configs_payload = payload.get("configs")
+    if not isinstance(configs_payload, list) or not configs_payload:
+        raise ValueError("A31 config catalog configs must be a non-empty list")
+    normalized_configs: list[dict[str, Any]] = []
+    seen_hashes: set[str] = set()
+    for idx, raw in enumerate(configs_payload):
+        if not isinstance(raw, dict):
+            raise ValueError("each A31 config catalog entry must be a mapping")
+        cfg, metadata = a31_config_from_catalog_entry(raw)
+        config_hash = a31_config_hash(cfg, l2_macro_logical_hash)
+        if config_hash in seen_hashes:
+            raise ValueError(f"duplicate A31 config hash in catalog: {config_hash}")
+        seen_hashes.add(config_hash)
+        normalized_configs.append({
+            "catalog_index": idx,
+            "a31_config_hash": config_hash,
+            "config": asdict(cfg),
+            "metadata": metadata,
+            "distance_from_ref": a31_distance_from_ref(cfg),
+        })
+    normalized = {
+        "schema_version": A31_GRID_SCHEMA_VERSION,
+        "source_path": str(source_path),
+        "selection_policy": "A3.1 screening only; A32-REF fixed; no freeze",
+        "config_count": len(normalized_configs),
+        "configs": normalized_configs,
+    }
+    return normalized, logical_payload_hash(normalized)
+
+
+def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dict[str, Any]]:
+    ref = reference_a31_config()
+    data = json.loads(json.dumps(asdict(ref)))
+    name = str(entry.get("name") or "").strip()
+    if not name:
+        raise ValueError("A31 catalog entry missing name")
+    if entry.get("extends") not in {None, "A31-REF", "ref", "reference"}:
+        raise ValueError(f"unsupported A31 extends: {entry.get('extends')}")
+    data["name"] = name
+    simple_fields = {
+        "aggregation_method",
+        "robust_clip",
+        "reliability_weighting",
+        "transformation_weights",
+        "family_weights",
+        "series_weights",
+    }
+    for field in simple_fields:
+        if field in entry:
+            data[field] = json.loads(json.dumps(entry[field]))
+    if "score_clip" in entry:
+        merged = dict(data["score_clip"])
+        merged.update(entry["score_clip"])
+        data["score_clip"] = merged
+    shifts = entry.get("family_weight_shifts") or entry.get("family_weight_shift")
+    if shifts:
+        if isinstance(shifts, dict):
+            shifts = [shifts]
+        for shift in shifts:
+            apply_family_weight_shift_to_data(data, shift)
+    cfg = A31Config(
+        name=str(data["name"]),
+        transformation_weights={
+            str(k): {str(kk): float(vv) for kk, vv in dict(v).items()}
+            for k, v in dict(data["transformation_weights"]).items()
+        },
+        family_weights={
+            str(k): {str(kk): float(vv) for kk, vv in dict(v).items()}
+            for k, v in dict(data["family_weights"]).items()
+        },
+        series_weights={str(k): float(v) for k, v in dict(data["series_weights"]).items()},
+        aggregation_method=str(data["aggregation_method"]),
+        robust_clip=float(data["robust_clip"]),
+        reliability_weighting=str(data["reliability_weighting"]),
+        score_clip={str(k): float(v) for k, v in dict(data["score_clip"]).items()},
+    )
+    metadata = {
+        key: normalize_logical_value(value)
+        for key, value in entry.items()
+        if key not in {
+            "name",
+            "extends",
+            "aggregation_method",
+            "robust_clip",
+            "reliability_weighting",
+            "transformation_weights",
+            "family_weights",
+            "series_weights",
+            "score_clip",
+            "family_weight_shift",
+            "family_weight_shifts",
+        }
+    }
+    if shifts:
+        metadata["family_weight_shifts"] = normalize_logical_value(shifts)
+    return cfg, metadata
+
+
+def apply_family_weight_shift_to_data(data: dict[str, Any], shift: dict[str, Any]) -> None:
+    axis = str(shift["axis"])
+    source = str(shift["source"])
+    delta = min(0.05, abs(float(shift.get("delta", 0.05))))
+    axis_weights = data["family_weights"][axis]
+    if source not in axis_weights:
+        raise ValueError(f"unknown source family for shift: {axis}.{source}")
+    delta = min(delta, float(axis_weights[source]))
+    recipients = [str(item) for item in shift.get("recipients", [])]
+    if not recipients:
+        recipients = [family for family in axis_weights if family != source]
+    if not recipients:
+        return
+    for family in recipients:
+        if family not in axis_weights:
+            raise ValueError(f"unknown recipient family for shift: {axis}.{family}")
+    axis_weights[source] = float(axis_weights[source]) - delta
+    add = delta / len(recipients)
+    for family in recipients:
+        axis_weights[family] = float(axis_weights[family]) + add
+    total = sum(float(value) for value in axis_weights.values())
+    if total > 0:
+        for family in list(axis_weights):
+            axis_weights[family] = float(axis_weights[family]) / total
+
+
+def a31_distance_from_ref(config: A31Config) -> float:
+    ref = reference_a31_config()
+    distance = 0.0
+    for axis, weights in ref.family_weights.items():
+        for family, weight in weights.items():
+            distance += abs(config.family_weights.get(axis, {}).get(family, 0.0) - weight)
+    for series_id, weight in ref.series_weights.items():
+        distance += abs(config.series_weights.get(series_id, 0.0) - weight)
+    for key, value in ref.score_clip.items():
+        distance += abs(config.score_clip.get(key, 0.0) - value) / 10.0
+    distance += 0.01 if config.aggregation_method != ref.aggregation_method else 0.0
+    distance += abs(config.robust_clip - ref.robust_clip) / 10.0
+    distance += 0.01 if config.reliability_weighting != ref.reliability_weighting else 0.0
+    return round(distance, 12)
+
+
+def a31_grid_run_fingerprint(
+    *, l2_macro_logical_hash: str, config_catalog_hash: str, worker_commit: str
+) -> str:
+    return stable_hash({
+        "parent_l2_hash": l2_macro_logical_hash,
+        "config_catalog_hash": config_catalog_hash,
+        "worker_commit": worker_commit,
+        "schema_versions": {
+            "l2": L2_SCHEMA_VERSION,
+            "l3": L3_SCORER_SCHEMA_VERSION,
+            "l4": L4_STATE_SCHEMA_VERSION,
+            "a31_grid": A31_GRID_SCHEMA_VERSION,
+        },
+        "code_versions": {
+            "l3": L3_SCORER_CODE_VERSION,
+            "l4": L4_STATE_CODE_VERSION,
+        },
+    })
+
+
+def a31_grid_worker(task: dict[str, Any]) -> dict[str, Any]:
+    timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+    l2_records = read_parquet_records(Path(task["l2_path"]))
+    l2_hash = logical_records_hash(l2_records)
+    validate_parent_hash(
+        "a31-grid worker L2 macro_feature_primitives",
+        l2_hash,
+        str(task["l2_macro_logical_hash"]),
+    )
+    timings["load_l2"] = time.perf_counter() - t0
+
+    item = task["a31_item"]
+    a31 = A31Config(**item["config"])
+    a31_hash = str(item["a31_config_hash"])
+    a32 = reference_a32_config()
+    a32_hash = a32_config_hash(a32, a31_hash)
+    result_dir = Path(task["result_dir"])
+    temp_dir = result_dir.with_name(f"{result_dir.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir)
+    temp_dir.mkdir(parents=True, exist_ok=False)
+
+    try:
+        t0 = time.perf_counter()
+        l3_rows, contribution_rows, l3_manifest = build_l3_score_panel(
+            l2_records,
+            a31,
+            l2_macro_logical_hash=l2_hash,
+            expected_l2_macro_logical_hash=str(task["l2_macro_logical_hash"]),
+        )
+        timings["compute_l3"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        write_parquet(temp_dir / "l3_score_panel.parquet", l3_rows)
+        write_parquet(temp_dir / "l3_contributions.parquet", contribution_rows)
+        write_json(temp_dir / "l3_manifest.json", l3_manifest)
+        timings["write_l3"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        runtime, l4_runtime_manifest = run_l4_state_machine(
+            l3_rows, a32, selection_mode="latest"
+        )
+        counterfactual, l4_counterfactual_manifest = run_l4_state_machine(
+            l3_rows, a32, selection_mode="first_release"
+        )
+        timings["run_l4"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        metrics_full = build_macro_metrics(runtime, first_release_replay=counterfactual)
+        classification = classify_a31_grid_result(metrics_full)
+        metric_rows = evaluation_metric_rows(
+            runtime,
+            counterfactual,
+            a31,
+            a32,
+            a31_hash,
+            a32_hash,
+            classification,
+        )
+        summary = a31_grid_summary_row(
+            item,
+            a32_hash,
+            metrics_full,
+            metric_rows,
+            timings,
+            classification,
+            result_dir,
+        )
+        timings["compute_metrics"] = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        write_parquet(temp_dir / "l4_replay_a32_ref.parquet", runtime)
+        write_parquet(temp_dir / "l4_counterfactual_a32_ref.parquet", counterfactual)
+        write_json(temp_dir / "metrics_full.json", metrics_full)
+        write_json(temp_dir / "metrics_by_fold.json", {"rows": metric_rows})
+        persisted_hashes = {
+            "score_panel_logical_hash": logical_records_hash(
+                read_parquet_records(temp_dir / "l3_score_panel.parquet")
+            ),
+            "contribution_logical_hash": logical_records_hash(
+                read_parquet_records(temp_dir / "l3_contributions.parquet")
+            ),
+            "replay_logical_hash": logical_records_hash(
+                read_parquet_records(temp_dir / "l4_replay_a32_ref.parquet")
+            ),
+            "counterfactual_replay_logical_hash": logical_records_hash(
+                read_parquet_records(temp_dir / "l4_counterfactual_a32_ref.parquet")
+            ),
+        }
+        result_manifest = {
+            "schema_version": A31_GRID_SCHEMA_VERSION,
+            "parent_l2_logical_hash": l2_hash,
+            "a31_config_hash": a31_hash,
+            "a31_config": asdict(a31),
+            "a32_ref_hash": a32_hash,
+            "a32_ref_config": asdict(a32),
+            **persisted_hashes,
+            "metrics_logical_hash": logical_payload_hash(metrics_full),
+            "metrics_by_fold_logical_hash": logical_records_hash(metric_rows),
+            "worker_commit": task["worker_commit"],
+            "execution_id": task["execution_id"],
+            "counterfactual_only_flags": {
+                "runtime_counterfactual_only_values": sorted({
+                    str(row.get("counterfactual_only")) for row in runtime
+                }),
+                "counterfactual_counterfactual_only_values": sorted({
+                    str(row.get("counterfactual_only")) for row in counterfactual
+                }),
+                "counterfactual_runtime_allowed": False,
+            },
+            "selection_roles": {
+                "latest": "pit_runtime_candidate",
+                "first_release": "revised_vintage_counterfactual",
+            },
+            "l4_runtime_manifest": l4_runtime_manifest,
+            "l4_counterfactual_manifest": l4_counterfactual_manifest,
+            "timings_seconds": timings,
+            "artifacts": {
+                "l3_score_panel.parquet": hash_file(temp_dir / "l3_score_panel.parquet"),
+                "l3_contributions.parquet": hash_file(temp_dir / "l3_contributions.parquet"),
+                "l4_replay_a32_ref.parquet": hash_file(temp_dir / "l4_replay_a32_ref.parquet"),
+                "l4_counterfactual_a32_ref.parquet": hash_file(
+                    temp_dir / "l4_counterfactual_a32_ref.parquet"
+                ),
+                "metrics_full.json": hash_file(temp_dir / "metrics_full.json"),
+                "metrics_by_fold.json": hash_file(temp_dir / "metrics_by_fold.json"),
+            },
+        }
+        summary.update({
+            "score_panel_logical_hash": result_manifest["score_panel_logical_hash"],
+            "replay_logical_hash": result_manifest["replay_logical_hash"],
+            "counterfactual_replay_logical_hash": result_manifest[
+                "counterfactual_replay_logical_hash"
+            ],
+            "metrics_logical_hash": result_manifest["metrics_logical_hash"],
+            "metrics_by_fold_logical_hash": result_manifest["metrics_by_fold_logical_hash"],
+        })
+        write_json(temp_dir / "result_manifest.json", result_manifest)
+        timings["write_artifacts"] = time.perf_counter() - t0
+        result_manifest["timings_seconds"] = timings
+        write_json(temp_dir / "result_manifest.json", result_manifest)
+        summary.update(timing_summary_fields(timings))
+        write_json(temp_dir / "result_summary.json", summary)
+
+        if result_dir.exists():
+            shutil.rmtree(result_dir)
+        temp_dir.rename(result_dir)
+        return {
+            "summary": summary,
+            "metrics_rows": metric_rows,
+        }
+    except Exception:
+        if temp_dir.exists():
+            shutil.rmtree(temp_dir)
+        raise
+
+
+def classify_a31_grid_result(metrics: dict[str, Any]) -> str:
+    if metrics.get("run_classification") == RUN_CLASSIFICATION_FAILED:
+        return "diagnostic_failed"
+    stability = metrics.get("vintage_stability") or {}
+    if (
+        stability.get("candidate_quadrant_changed_by_revision_rate") is not None
+        and stability["candidate_quadrant_changed_by_revision_rate"]
+        > MAX_REVISION_CHANGE_RATE_FREEZE
+    ):
+        return "diagnostic_failed"
+    return "a31_candidate"
+
+
+def a31_grid_summary_row(
+    item: dict[str, Any],
+    a32_hash: str,
+    metrics: dict[str, Any],
+    metric_rows: list[dict[str, Any]],
+    timings: dict[str, float],
+    classification: str,
+    result_dir: Path,
+) -> dict[str, Any]:
+    full = next(row for row in metric_rows if row["fold"] == "full")
+    stability = metrics.get("vintage_stability") or {}
+    return {
+        "a31_config_hash": item["a31_config_hash"],
+        "a31_config_name": item["config"]["name"],
+        "a32_config_hash": a32_hash,
+        "a32_config_name": "A32-REF",
+        "catalog_index": item["catalog_index"],
+        "round": item["metadata"].get("round"),
+        "description": item["metadata"].get("description"),
+        "distance_from_ref": item["distance_from_ref"],
+        "result_classification": classification,
+        "a31_selection_status": "a31_screened_out",
+        "candidate_revision_change_rate": full["candidate_revision_change_rate"],
+        "growth_sign_revision_change_days": full["growth_sign_revision_change_days"],
+        "inflation_sign_revision_change_days": full["inflation_sign_revision_change_days"],
+        "status_revision_change_days": full["status_revision_change_days"],
+        "latched_revision_change_days": full["latched_revision_change_days"],
+        "transition_timing_displacement": full["transition_timing_displacement"],
+        "transition_timing_displacement_median": transition_displacement_median(
+            full["transition_timing_displacement"]
+        ),
+        "candidate_flips_per_year": full["candidate_flips_per_year"],
+        "published_flips_per_year": full["published_flips_per_year"],
+        "valid_rate": full["valid_rate"],
+        "abstain_rate": full["abstain_rate"],
+        "days_without_latched_state": full["days_without_latched_state"],
+        "candidate_quadrant_changed_by_revision_days": stability.get(
+            "candidate_quadrant_changed_by_revision_days"
+        ),
+        "frozen": False,
+        "production_candidate": False,
+        "activation_ready": False,
+        "result_dir": str(result_dir),
+        **timing_summary_fields(timings),
+    }
+
+
+def transition_displacement_median(value: Any) -> float | None:
+    if value in {None, ""}:
+        return None
+    payload = json.loads(str(value)) if isinstance(value, str) else value
+    median = payload.get("median") if isinstance(payload, dict) else None
+    return None if median is None else float(median)
+
+
+def timing_summary_fields(timings: dict[str, float]) -> dict[str, float]:
+    keys = ["load_l2", "compute_l3", "write_l3", "run_l4", "compute_metrics", "write_artifacts"]
+    return {f"timing_{key}_seconds": round(float(timings.get(key, 0.0)), 6) for key in keys}
+
+
+def load_existing_a31_result(
+    result_dir: Path,
+    *,
+    expected_l2_hash: str,
+    expected_a31_hash: str,
+    expected_a32_hash: str,
+) -> dict[str, Any] | None:
+    required = [
+        "l3_score_panel.parquet",
+        "l3_contributions.parquet",
+        "l3_manifest.json",
+        "l4_replay_a32_ref.parquet",
+        "l4_counterfactual_a32_ref.parquet",
+        "metrics_full.json",
+        "metrics_by_fold.json",
+        "result_manifest.json",
+        "result_summary.json",
+    ]
+    if not result_dir.exists() or not all((result_dir / name).exists() for name in required):
+        return None
+    manifest = read_json_dict(result_dir / "result_manifest.json")
+    if manifest.get("parent_l2_logical_hash") != expected_l2_hash:
+        return None
+    if manifest.get("a31_config_hash") != expected_a31_hash:
+        return None
+    if manifest.get("a32_ref_hash") != expected_a32_hash:
+        return None
+    l3_rows = read_parquet_records(result_dir / "l3_score_panel.parquet")
+    runtime = read_parquet_records(result_dir / "l4_replay_a32_ref.parquet")
+    counterfactual = read_parquet_records(result_dir / "l4_counterfactual_a32_ref.parquet")
+    metrics_payload = read_json_dict(result_dir / "metrics_full.json")
+    metrics_rows_payload = read_json_dict(result_dir / "metrics_by_fold.json")
+    metrics_rows = list(metrics_rows_payload.get("rows") or [])
+    if logical_records_hash(l3_rows) != manifest.get("score_panel_logical_hash"):
+        return None
+    if logical_records_hash(runtime) != manifest.get("replay_logical_hash"):
+        return None
+    if (
+        logical_records_hash(counterfactual)
+        != manifest.get("counterfactual_replay_logical_hash")
+    ):
+        return None
+    if logical_payload_hash(metrics_payload) != manifest.get("metrics_logical_hash"):
+        return None
+    if logical_records_hash(metrics_rows) != manifest.get("metrics_by_fold_logical_hash"):
+        return None
+    summary = read_json_dict(result_dir / "result_summary.json")
+    return {"summary": summary, "metrics_rows": metrics_rows}
+
+
+def a31_failure_record(task: dict[str, Any], exc: Exception) -> dict[str, Any]:
+    item = task.get("a31_item") or {}
+    return {
+        "a31_config_hash": item.get("a31_config_hash"),
+        "a31_config_name": (item.get("config") or {}).get("name"),
+        "error_type": type(exc).__name__,
+        "error": str(exc),
+        "result_classification": "smoke_execution_failed",
+    }
+
+
+def mark_a31_pareto(
+    summary_rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    eligible = [
+        row for row in summary_rows
+        if row.get("result_classification") not in {"smoke_execution_failed", "reference_parity_failed"}
+    ]
+    ranked = sorted(eligible, key=a31_pareto_sort_key)
+    pareto_rows: list[dict[str, Any]] = []
+    pareto_hashes = {row["a31_config_hash"] for row in ranked[:5]}
+    for rank, row in enumerate(ranked[:5], start=1):
+        selected = pareto_projection(row)
+        selected["pareto_rank"] = rank
+        selected["a31_selection_status"] = "a31_pareto_candidate"
+        selected["frozen"] = False
+        selected["production_candidate"] = False
+        selected["activation_ready"] = False
+        pareto_rows.append(selected)
+    updated = []
+    for row in summary_rows:
+        current = dict(row)
+        if current["a31_config_hash"] in pareto_hashes:
+            current["a31_selection_status"] = "a31_pareto_candidate"
+            current["pareto_rank"] = next(
+                item["pareto_rank"] for item in pareto_rows
+                if item["a31_config_hash"] == current["a31_config_hash"]
+            )
+        else:
+            current["a31_selection_status"] = "a31_screened_out"
+            current["pareto_rank"] = None
+        updated.append(current)
+    updated.sort(key=lambda row: str(row["a31_config_hash"]))
+    return updated, pareto_rows
+
+
+def pareto_projection(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value for key, value in row.items()
+        if key != "result_dir" and not key.startswith("timing_")
+    }
+
+
+def a31_pareto_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        none_last(row.get("candidate_revision_change_rate")),
+        none_last(row.get("growth_sign_revision_change_days")),
+        none_last(row.get("inflation_sign_revision_change_days")),
+        none_last(row.get("transition_timing_displacement_median")),
+        none_last(row.get("candidate_flips_per_year")),
+        none_last(row.get("distance_from_ref")),
+        str(row.get("a31_config_hash")),
+    )
+
+
+def none_last(value: Any) -> float:
+    if value is None:
+        return float("inf")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("inf")
+
+
+def aggregate_stage_timings(summary_rows: list[dict[str, Any]]) -> dict[str, dict[str, float | None]]:
+    out: dict[str, dict[str, float | None]] = {}
+    for key in ["load_l2", "compute_l3", "write_l3", "run_l4", "compute_metrics", "write_artifacts"]:
+        values = [
+            float(row[f"timing_{key}_seconds"])
+            for row in summary_rows
+            if row.get(f"timing_{key}_seconds") is not None
+        ]
+        out[key] = distribution(values)
+    return out
+
+
 def parse_args(argv: list[str] | None = None) -> HarnessConfig:
     ap = argparse.ArgumentParser(description="Run read-only A3 calibration replay")
     ap.add_argument("--start-date", required=True)
@@ -3786,6 +4680,12 @@ def parse_args(argv: list[str] | None = None) -> HarnessConfig:
 
 
 def main(argv: list[str] | None = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "a31-grid":
+        result = run_a31_grid(parse_a31_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
     config = parse_args(argv)
     if config.macro_config != MACRO_CONFIG_ID:
         raise SystemExit(f"unsupported macro_config: {config.macro_config}")
