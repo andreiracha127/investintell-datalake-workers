@@ -66,6 +66,9 @@ L4_STATE_SCHEMA_VERSION = 1
 L4_STATE_CODE_VERSION = "a3_l4_state_machine_v0"
 SMOKE_GRID_SCHEMA_VERSION = 1
 A31_GRID_SCHEMA_VERSION = 1
+MARKET_GRID_SCHEMA_VERSION = 1
+MARKET_GRID_CODE_VERSION = "market_implied_grid_v1"
+A3_SCOPE_DECISION_SCHEMA_VERSION = 1
 V02_QUALIFICATION_SCHEMA_VERSION = 1
 V02_ALFRED_FETCH_SCHEMA_VERSION = 1
 V02_ALFRED_SOURCE_SPEC_VERSION = "macro_family_map_v02_candidate_data_qualification_v1"
@@ -217,6 +220,39 @@ class A3FreezeReadinessConfig:
     v02b_grid_dir: Path
     g2_grid_dir: Path
     a32_grid_dir: Path
+    output_dir: Path
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class MarketGridConfig:
+    feature_manifest: Path
+    a31_catalog: Path | None
+    a32_grid_dir: Path | None
+    macro_feature_manifest: Path | None = None
+    output_dir: Path | None = None
+    offline: bool = False
+    worker_commit: str | None = None
+    macro_a31_name: str = "G2-CREDIT6040-15-SURVEY05"
+    macro_a32_name: str = "A32-G0.35-I0.35-X0.10-C0.60-D1.25"
+
+
+@dataclass(frozen=True)
+class MarketCalibrationConfig:
+    name: str
+    growth_score_scale: float
+    inflation_score_scale: float
+    growth_enter: float
+    growth_exit: float
+    inflation_enter: float
+    inflation_exit: float
+    min_confidence: float
+
+
+@dataclass(frozen=True)
+class A3ScopeDecisionConfig:
+    freeze_readiness_dir: Path
+    market_grid_dir: Path
     output_dir: Path
     worker_commit: str | None = None
 
@@ -2007,12 +2043,15 @@ def build_macro_metrics(
     reason_any_counts = count_reason_groups(replay)
     stability: dict[str, Any] = {}
     if first_release_replay:
+        common = 0
         comparable = 0
         changed = 0
         sign_changed = {"growth": 0, "inflation": 0}
         status_changed = 0
+        published_changed = 0
         latched_changed = 0
         for latest, first in zip(replay, first_release_replay):
+            common += 1
             lq = latest.get("candidate_quadrant")
             fq = first.get("candidate_quadrant")
             if lq and fq:
@@ -2022,11 +2061,16 @@ def build_macro_metrics(
                 sign_changed["inflation"] += int(
                     latest.get("inflation_sign") != first.get("inflation_sign")
                 )
-                status_changed += int(latest.get("status") != first.get("status"))
-                latched_changed += int(
-                    latest.get("published_quadrant") != first.get("published_quadrant")
-                )
+            status_changed += int(latest.get("status") != first.get("status"))
+            published_changed += int(
+                latest.get("published_quadrant") != first.get("published_quadrant")
+            )
+            latched_changed += int(
+                (latest.get("latched_quadrant") or latest.get("published_quadrant"))
+                != (first.get("latched_quadrant") or first.get("published_quadrant"))
+            )
         stability = {
+            "revision_common_days": common,
             "candidate_comparable_days": comparable,
             "candidate_quadrant_changed_by_revision_days": changed,
             "candidate_quadrant_changed_by_revision_rate": (
@@ -2035,7 +2079,15 @@ def build_macro_metrics(
             "growth_axis_sign_changed_by_revision_days": sign_changed["growth"],
             "inflation_axis_sign_changed_by_revision_days": sign_changed["inflation"],
             "status_changed_by_revision_days": status_changed,
+            "status_changed_by_revision_rate": status_changed / common if common else None,
+            "published_quadrant_changed_by_revision_days": published_changed,
+            "published_quadrant_changed_by_revision_rate": (
+                published_changed / common if common else None
+            ),
             "latched_quadrant_changed_by_revision_days": latched_changed,
+            "latched_quadrant_changed_by_revision_rate": (
+                latched_changed / common if common else None
+            ),
         }
     classification = classify_baseline_run(
         valid_rate=statuses.get("valid", 0) / total if total else 0.0,
@@ -3392,8 +3444,14 @@ def evaluation_metric_rows(
     eval_hash: str,
     classification: str,
 ) -> list[dict[str, Any]]:
+    readiness = operational_readiness_dates(runtime)
+    post_start = (
+        dt.date.fromisoformat(readiness["post_initialization_start_date"])
+        if readiness.get("post_initialization_start_date") else None
+    )
     folds = [
         ("full", None, None),
+        ("post_initialization", post_start, None),
         ("2014_2017", dt.date(2014, 2, 19), dt.date(2017, 12, 31)),
         ("2018_2021", dt.date(2018, 1, 1), dt.date(2021, 12, 31)),
         ("2022_2026", dt.date(2022, 1, 1), dt.date(2026, 6, 24)),
@@ -3402,12 +3460,16 @@ def evaluation_metric_rows(
     for fold_name, start, end in folds:
         rt = filter_replay_window(runtime, start, end)
         cf = filter_replay_window(counterfactual, start, end)
+        if fold_name == "post_initialization" and not rt:
+            continue
         metrics = build_macro_metrics(rt, first_release_replay=cf)
         transition_deltas = build_transition_revision_deltas(rt, cf)
         revision_diagnostics = replay_revision_diagnostics(rt, cf)
         operational_metrics = operational_state_metrics(rt)
+        full_operational_metrics = operational_state_metrics(runtime)
         rows.append({
             "fold": fold_name,
+            "history_scope": "full_history" if fold_name == "full" else fold_name,
             "a31_config_hash": a31_hash,
             "a31_config_name": a31.name,
             "a32_config_hash": a32_hash,
@@ -3426,8 +3488,20 @@ def evaluation_metric_rows(
             "status_revision_change_days": metrics["vintage_stability"].get(
                 "status_changed_by_revision_days"
             ),
+            "status_revision_change_rate": metrics["vintage_stability"].get(
+                "status_changed_by_revision_rate"
+            ),
+            "published_revision_change_days": metrics["vintage_stability"].get(
+                "published_quadrant_changed_by_revision_days"
+            ),
+            "published_revision_change_rate": metrics["vintage_stability"].get(
+                "published_quadrant_changed_by_revision_rate"
+            ),
             "latched_revision_change_days": metrics["vintage_stability"].get(
                 "latched_quadrant_changed_by_revision_days"
+            ),
+            "latched_revision_change_rate": metrics["vintage_stability"].get(
+                "latched_quadrant_changed_by_revision_rate"
             ),
             "transition_timing_displacement": json.dumps(
                 duration_summary([
@@ -3455,6 +3529,12 @@ def evaluation_metric_rows(
             "coverage_distribution": json.dumps(
                 metrics["coverage_distribution"], sort_keys=True
             ),
+            "first_input_ready_date": full_operational_metrics["first_input_ready_date"],
+            "first_latched_date": full_operational_metrics["first_latched_date"],
+            "first_operational_date": full_operational_metrics["first_operational_date"],
+            "post_initialization_start_date": full_operational_metrics[
+                "post_initialization_start_date"
+            ],
             "growth_dispersion_distribution": json.dumps(
                 distribution([row["growth_dispersion"] for row in rt]), sort_keys=True
             ),
@@ -3475,9 +3555,9 @@ def replay_revision_diagnostics(
     counterfactual: list[dict[str, Any]],
 ) -> dict[str, Any]:
     cf_by_date = {str(row["date"]): row for row in counterfactual}
-    growth_score_diffs: list[float] = []
-    growth_raw_sign_change_dates: list[dt.date] = []
-    growth_axis_state_change_dates: list[dt.date] = []
+    score_diffs: dict[str, list[float]] = {"growth": [], "inflation": []}
+    raw_sign_change_dates: dict[str, list[dt.date]] = {"growth": [], "inflation": []}
+    axis_state_change_dates: dict[str, list[dt.date]] = {"growth": [], "inflation": []}
     candidate_change_dates: list[dt.date] = []
     deadband_absorbed_dates: list[dt.date] = []
     common_dates: list[dt.date] = []
@@ -3488,34 +3568,44 @@ def replay_revision_diagnostics(
             continue
         day = dt.date.fromisoformat(date_text)
         common_dates.append(day)
-        latest_growth = finite_or_none(latest.get("growth_score"))
-        revised_growth = finite_or_none(revised.get("growth_score"))
-        latest_growth_sign = sign_of(latest_growth)
-        revised_growth_sign = sign_of(revised_growth)
-        growth_raw_changed = (
-            latest_growth_sign is not None
-            and revised_growth_sign is not None
-            and latest_growth_sign != revised_growth_sign
-        )
-        if latest_growth is not None and revised_growth is not None:
-            growth_score_diffs.append(abs(latest_growth - revised_growth))
-        if growth_raw_changed:
-            growth_raw_sign_change_dates.append(day)
-        if latest.get("growth_axis_state") != revised.get("growth_axis_state"):
-            growth_axis_state_change_dates.append(day)
-        elif growth_raw_changed:
+        raw_changed_any_axis = False
+        axis_state_changed_any_axis = False
+        for axis in ("growth", "inflation"):
+            latest_score = finite_or_none(latest.get(f"{axis}_score"))
+            revised_score = finite_or_none(revised.get(f"{axis}_score"))
+            latest_sign = sign_of(latest_score)
+            revised_sign = sign_of(revised_score)
+            raw_changed = (
+                latest_sign is not None
+                and revised_sign is not None
+                and latest_sign != revised_sign
+            )
+            if latest_score is not None and revised_score is not None:
+                score_diffs[axis].append(abs(latest_score - revised_score))
+            if raw_changed:
+                raw_sign_change_dates[axis].append(day)
+                raw_changed_any_axis = True
+            if latest.get(f"{axis}_axis_state") != revised.get(f"{axis}_axis_state"):
+                axis_state_change_dates[axis].append(day)
+                axis_state_changed_any_axis = True
+        if raw_changed_any_axis and not axis_state_changed_any_axis:
             deadband_absorbed_dates.append(day)
         if latest.get("candidate_quadrant") != revised.get("candidate_quadrant"):
             candidate_change_dates.append(day)
 
     durations = contiguous_date_durations(candidate_change_dates, sorted(common_dates))
     duration_dist = duration_summary(durations)
-    score_dist = distribution(growth_score_diffs)
+    growth_score_dist = distribution(score_diffs["growth"])
+    inflation_score_dist = distribution(score_diffs["inflation"])
     return {
-        "growth_score_revision_abs_median": score_dist["median"],
-        "growth_score_revision_abs_p90": score_dist["p90"],
-        "growth_raw_sign_change_days": len(growth_raw_sign_change_dates),
-        "growth_axis_state_change_days": len(growth_axis_state_change_dates),
+        "growth_score_revision_abs_median": growth_score_dist["median"],
+        "growth_score_revision_abs_p90": growth_score_dist["p90"],
+        "inflation_score_revision_abs_median": inflation_score_dist["median"],
+        "inflation_score_revision_abs_p90": inflation_score_dist["p90"],
+        "growth_raw_sign_change_days": len(raw_sign_change_dates["growth"]),
+        "inflation_raw_sign_change_days": len(raw_sign_change_dates["inflation"]),
+        "growth_axis_state_change_days": len(axis_state_change_dates["growth"]),
+        "inflation_axis_state_change_days": len(axis_state_change_dates["inflation"]),
         "candidate_quadrant_change_days": len(candidate_change_dates),
         "deadband_absorbed_revision_days": len(deadband_absorbed_dates),
         "revision_episode_count": len(durations),
@@ -3526,6 +3616,7 @@ def replay_revision_diagnostics(
 
 def operational_state_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
     days_since_last_valid: list[int] = []
+    consumed_state_age: list[int] = []
     stale_dates: list[dt.date] = []
     consumable_days = 0
     last_valid_index: int | None = None
@@ -3539,11 +3630,13 @@ def operational_state_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
         if since is not None:
             days_since_last_valid.append(since)
         latched = row.get("latched_quadrant") or row.get("published_quadrant")
-        if latched is not None and since is not None and since <= 5:
+        if latched is not None and since is not None and since <= GATE_MAX_LAG_BUSINESS_DAYS:
             consumable_days += 1
+            consumed_state_age.append(since)
         elif latched is not None and since is not None and since > 5:
             stale_dates.append(day)
     stale_durations = contiguous_date_durations(stale_dates, calendar)
+    readiness = operational_readiness_dates(replay)
     return {
         "consumable_state_coverage": (
             consumable_days / len(replay) if replay else None
@@ -3552,12 +3645,47 @@ def operational_state_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
             distribution([float(value) for value in days_since_last_valid]),
             sort_keys=True,
         ),
+        "consumed_state_age_distribution": json.dumps(
+            distribution([float(value) for value in consumed_state_age]),
+            sort_keys=True,
+        ),
         "stale_days_over_5bd": len(stale_dates),
         "longest_stale_run": max(stale_durations) if stale_durations else 0,
         "latched_duration": json.dumps(
             duration_summary(state_durations(replay, "latched_quadrant")),
             sort_keys=True,
         ),
+        **readiness,
+    }
+
+
+def operational_readiness_dates(replay: list[dict[str, Any]]) -> dict[str, str | None]:
+    first_input_ready: str | None = None
+    first_latched: str | None = None
+    first_operational: str | None = None
+    for row in replay:
+        day = str(row["date"])
+        reasons = reason_groups(row.get("status_reasons_all") or row.get("all_reasons"))
+        no_input_blocker = any(
+            reason.endswith("_no_score")
+            or reason.endswith("_missing_anchor_family")
+            or reason.endswith("_insufficient_families")
+            or reason.endswith("_coverage_insufficient")
+            or reason.endswith("_freshness_failed")
+            for reason in reasons
+        )
+        if first_input_ready is None and not no_input_blocker:
+            first_input_ready = day
+        latched = row.get("latched_quadrant") or row.get("published_quadrant")
+        if first_latched is None and latched is not None:
+            first_latched = day
+        if first_operational is None and first_input_ready is not None and latched is not None:
+            first_operational = day
+    return {
+        "first_input_ready_date": first_input_ready,
+        "first_latched_date": first_latched,
+        "first_operational_date": first_operational,
+        "post_initialization_start_date": first_operational,
     }
 
 
@@ -3566,11 +3694,12 @@ def filter_replay_window(
     start: dt.date | None,
     end: dt.date | None,
 ) -> list[dict[str, Any]]:
-    if start is None or end is None:
+    if start is None and end is None:
         return rows
     return [
         row for row in rows
-        if start <= dt.date.fromisoformat(str(row["date"])) <= end
+        if (start is None or dt.date.fromisoformat(str(row["date"])) >= start)
+        and (end is None or dt.date.fromisoformat(str(row["date"])) <= end)
     ]
 
 
@@ -5836,6 +5965,7 @@ def run_a3_freeze_readiness_package(
         g2_decision,
     )
     a32_pareto = a32_freeze_readiness_pareto(a32_summary, a32_metrics)
+    a32_pareto_by_fold = a32_freeze_readiness_pareto_by_fold(a32_pareto, a32_metrics)
     current_a32 = next(
         row for row in a32_pareto
         if row["pareto_role"] == "current_stability_preserving"
@@ -5847,6 +5977,7 @@ def run_a3_freeze_readiness_package(
         "v02b_result_hash": logical_payload_hash(v02b_result),
         "g2_result_hash": logical_payload_hash(g2_result),
         "a32_pareto_hash": logical_records_hash(a32_pareto),
+        "a32_pareto_by_fold_hash": logical_records_hash(a32_pareto_by_fold),
         "v02b_metrics_logical_hash": v02b_manifest.get("metrics_logical_hash"),
         "g2_metrics_logical_hash": g2_manifest.get("metrics_logical_hash"),
         "a32_metrics_logical_hash": a32_manifest.get("metrics_logical_hash"),
@@ -5856,16 +5987,21 @@ def run_a3_freeze_readiness_package(
     v02b_result_path = output_dir / f"v02b_credit6040_15_result_{short_commit}.json"
     g2_result_path = output_dir / f"g2_credit6040_15_survey05_result_{short_commit}.json"
     a32_pareto_path = output_dir / f"a32_selected_pareto_{short_commit}.parquet"
+    a32_pareto_by_fold_path = (
+        output_dir / f"a32_selected_pareto_by_fold_{short_commit}.parquet"
+    )
     report_path = output_dir / f"a3_freeze_readiness_{short_commit}.md"
     write_json(v02b_result_path, v02b_result)
     write_json(g2_result_path, g2_result)
     write_parquet(a32_pareto_path, a32_pareto)
+    write_parquet(a32_pareto_by_fold_path, a32_pareto_by_fold)
     report_text = build_a3_freeze_readiness_report(
         worker_commit=worker_commit,
         v02b_result=v02b_result,
         g2_result=g2_result,
         current_a32=current_a32,
         a32_pareto=a32_pareto,
+        a32_pareto_by_fold=a32_pareto_by_fold,
         decision_basis_hash=decision_basis_hash,
     )
     report_path.write_text(report_text, encoding="utf-8")
@@ -5922,6 +6058,7 @@ def run_a3_freeze_readiness_package(
                 v02b_result_path.name,
                 g2_result_path.name,
                 a32_pareto_path.name,
+                a32_pareto_by_fold_path.name,
                 report_path.name,
             ],
         ),
@@ -6026,7 +6163,8 @@ def a32_freeze_readiness_pareto(
         transition_dist = parse_json_metric(full.get("transition_timing_displacement"))
         candidate_duration = parse_json_metric(full.get("candidate_duration_distribution"))
         published_duration = parse_json_metric(full.get("published_duration_distribution"))
-        consumed_age = parse_json_metric(full.get("days_since_last_valid_distribution"))
+        state_age = parse_json_metric(full.get("days_since_last_valid_distribution"))
+        consumed_age = parse_json_metric(full.get("consumed_state_age_distribution"))
         enriched = {
             "pareto_rank": rank,
             "pareto_role": role,
@@ -6044,7 +6182,9 @@ def a32_freeze_readiness_pareto(
             "dispersion_limit": summary["dispersion_limit"],
             "candidate_revision_change_rate": full["candidate_revision_change_rate"],
             "raw_growth_sign_revision_changes": full.get("growth_raw_sign_change_days"),
-            "raw_inflation_sign_revision_changes": None,
+            "raw_inflation_sign_revision_changes": full.get(
+                "inflation_raw_sign_change_days"
+            ),
             "axis_effective_sign_revision_changes_growth": full.get(
                 "growth_sign_revision_change_days"
             ),
@@ -6054,15 +6194,24 @@ def a32_freeze_readiness_pareto(
             "axis_state_label_revision_changes_growth": full.get(
                 "growth_axis_state_change_days"
             ),
-            "axis_state_label_revision_changes_inflation": None,
+            "axis_state_label_revision_changes_inflation": full.get(
+                "inflation_axis_state_change_days"
+            ),
             "candidate_quadrant_revision_changes": full.get(
                 "candidate_quadrant_change_days"
             ),
             "status_revision_changes": full.get("status_revision_change_days"),
+            "status_revision_change_rate": full.get("status_revision_change_rate"),
             "published_quadrant_revision_changes": full.get(
-                "latched_revision_change_days"
+                "published_revision_change_days"
+            ),
+            "published_quadrant_revision_change_rate": full.get(
+                "published_revision_change_rate"
             ),
             "latched_quadrant_revision_changes": full.get("latched_revision_change_days"),
+            "latched_quadrant_revision_change_rate": full.get(
+                "latched_revision_change_rate"
+            ),
             "transition_displacement_median": transition_dist.get("median"),
             "transition_displacement_p90": transition_dist.get("p90"),
             "candidate_flips_per_year": full["candidate_flips_per_year"],
@@ -6076,12 +6225,16 @@ def a32_freeze_readiness_pareto(
             "consumable_state_coverage": full["consumable_state_coverage"],
             "stale_days_over_5bd": full["stale_days_over_5bd"],
             "longest_stale_run": full["longest_stale_run"],
-            "state_age_since_last_valid_p50": consumed_age.get("median"),
-            "state_age_since_last_valid_p90": consumed_age.get("p90"),
-            "state_age_since_last_valid_max": consumed_age.get("max"),
-            "consumed_state_age_p50": None,
-            "consumed_state_age_p95": None,
-            "consumed_state_age_max": None,
+            "state_age_since_last_valid_p50": state_age.get("median"),
+            "state_age_since_last_valid_p90": state_age.get("p90"),
+            "state_age_since_last_valid_max": state_age.get("max"),
+            "consumed_state_age_p50": consumed_age.get("median"),
+            "consumed_state_age_p90": consumed_age.get("p90"),
+            "consumed_state_age_max": consumed_age.get("max"),
+            "first_input_ready_date": full.get("first_input_ready_date"),
+            "first_latched_date": full.get("first_latched_date"),
+            "first_operational_date": full.get("first_operational_date"),
+            "post_initialization_start_date": full.get("post_initialization_start_date"),
             "quadrant_occupancy": full["quadrant_occupancy"],
             "abstention_reasons": full["reason_counts"],
             "freeze_ready": False,
@@ -6089,6 +6242,89 @@ def a32_freeze_readiness_pareto(
             "activation_ready": False,
         }
         out.append(enriched)
+    return out
+
+
+def a32_freeze_readiness_pareto_by_fold(
+    a32_pareto: list[dict[str, Any]],
+    metric_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in a32_pareto:
+        rows = [
+            row for row in metric_rows
+            if str(row.get("a31_config_hash")) == str(item["a31_config_hash"])
+            and str(row.get("a32_config_hash")) == str(item["a32_config_hash"])
+        ]
+        rows.sort(key=lambda row: str(row.get("fold")))
+        for row in rows:
+            transition_dist = parse_json_metric(row.get("transition_timing_displacement"))
+            consumed_age = parse_json_metric(row.get("consumed_state_age_distribution"))
+            out.append({
+                "pareto_rank": item["pareto_rank"],
+                "pareto_role": item["pareto_role"],
+                "fold": row.get("fold"),
+                "history_scope": row.get("history_scope"),
+                "a31_config_name": row.get("a31_config_name"),
+                "a31_config_hash": row.get("a31_config_hash"),
+                "a32_config_name": row.get("a32_config_name"),
+                "a32_config_hash": row.get("a32_config_hash"),
+                "candidate_revision_change_rate": row.get(
+                    "candidate_revision_change_rate"
+                ),
+                "raw_growth_sign_revision_changes": row.get(
+                    "growth_raw_sign_change_days"
+                ),
+                "raw_inflation_sign_revision_changes": row.get(
+                    "inflation_raw_sign_change_days"
+                ),
+                "axis_effective_sign_revision_changes_growth": row.get(
+                    "growth_sign_revision_change_days"
+                ),
+                "axis_effective_sign_revision_changes_inflation": row.get(
+                    "inflation_sign_revision_change_days"
+                ),
+                "axis_state_label_revision_changes_growth": row.get(
+                    "growth_axis_state_change_days"
+                ),
+                "axis_state_label_revision_changes_inflation": row.get(
+                    "inflation_axis_state_change_days"
+                ),
+                "candidate_quadrant_revision_changes": row.get(
+                    "candidate_quadrant_change_days"
+                ),
+                "status_revision_change_days": row.get("status_revision_change_days"),
+                "status_revision_change_rate": row.get("status_revision_change_rate"),
+                "published_revision_change_days": row.get(
+                    "published_revision_change_days"
+                ),
+                "published_revision_change_rate": row.get(
+                    "published_revision_change_rate"
+                ),
+                "latched_revision_change_days": row.get("latched_revision_change_days"),
+                "latched_revision_change_rate": row.get(
+                    "latched_revision_change_rate"
+                ),
+                "transition_displacement_median": transition_dist.get("median"),
+                "transition_displacement_p90": transition_dist.get("p90"),
+                "revision_episode_count": row.get("revision_episode_count"),
+                "revision_episode_duration_p50": row.get(
+                    "revision_episode_duration_p50"
+                ),
+                "revision_episode_duration_p90": row.get(
+                    "revision_episode_duration_p90"
+                ),
+                "valid_rate": row.get("valid_rate"),
+                "abstain_rate": row.get("abstain_rate"),
+                "consumable_state_coverage": row.get("consumable_state_coverage"),
+                "consumed_state_age_p50": consumed_age.get("median"),
+                "consumed_state_age_p90": consumed_age.get("p90"),
+                "consumed_state_age_max": consumed_age.get("max"),
+                "stale_days_over_5bd": row.get("stale_days_over_5bd"),
+                "longest_stale_run": row.get("longest_stale_run"),
+                "days_without_latched_state": row.get("days_without_latched_state"),
+                "first_operational_date": row.get("first_operational_date"),
+            })
     return out
 
 
@@ -6157,8 +6393,10 @@ def freeze_blockers(current_a32: dict[str, Any]) -> list[str]:
     if float(current_a32["consumable_state_coverage"]) < MIN_VALID_RATE_FREEZE:
         blockers.append("consumable_state_coverage_below_operational_target")
     blockers.append("market_implied_valid_vs_valid_comparison_not_operational")
-    blockers.append("raw_inflation_revision_metric_not_available_in_5ba5217_artifacts")
-    blockers.append("consumed_state_age_distribution_not_available_in_5ba5217_artifacts")
+    if current_a32.get("raw_inflation_sign_revision_changes") is None:
+        blockers.append("raw_inflation_revision_metric_not_available")
+    if current_a32.get("consumed_state_age_p50") is None:
+        blockers.append("consumed_state_age_distribution_not_available")
     return blockers
 
 
@@ -6169,6 +6407,7 @@ def build_a3_freeze_readiness_report(
     g2_result: dict[str, Any],
     current_a32: dict[str, Any],
     a32_pareto: list[dict[str, Any]],
+    a32_pareto_by_fold: list[dict[str, Any]],
     decision_basis_hash: str,
 ) -> str:
     v02b = v02b_result["summary"]
@@ -6197,7 +6436,8 @@ def build_a3_freeze_readiness_report(
         f"- SLOOS 60/40 15pct revision rate: `{v02b['candidate_revision_change_rate']}`; growth axis effective-sign changes: `{v02b['growth_sign_revision_change_days']}`; valid rate: `{v02b['valid_rate']}`.",
         f"- G2 SLOOS+survey revision rate: `{g2['candidate_revision_change_rate']}`; growth axis effective-sign changes: `{g2['growth_sign_revision_change_days']}`; valid rate: `{g2['valid_rate']}`.",
         f"- Current A3.2 candidate: `{current_a32['a32_config_name']}`.",
-        f"- Current A3.2 revision rate: `{current_a32['candidate_revision_change_rate']}`; raw growth score-sign changes: `{current_a32['raw_growth_sign_revision_changes']}`; axis effective-sign growth changes: `{current_a32['axis_effective_sign_revision_changes_growth']}`; axis state-label growth changes: `{current_a32['axis_state_label_revision_changes_growth']}`; valid rate: `{current_a32['valid_rate']}`; consumable coverage: `{current_a32['consumable_state_coverage']}`.",
+        f"- Current A3.2 revision rate: `{current_a32['candidate_revision_change_rate']}`; raw growth score-sign changes: `{current_a32['raw_growth_sign_revision_changes']}`; raw inflation score-sign changes: `{current_a32['raw_inflation_sign_revision_changes']}`; axis effective-sign growth changes: `{current_a32['axis_effective_sign_revision_changes_growth']}`; axis state-label growth changes: `{current_a32['axis_state_label_revision_changes_growth']}`; valid rate: `{current_a32['valid_rate']}`; consumable coverage: `{current_a32['consumable_state_coverage']}`.",
+        f"- First operational date: `{current_a32['first_operational_date']}`.",
         "",
         "## Consumable Coverage Contract",
         "",
@@ -6205,30 +6445,49 @@ def build_a3_freeze_readiness_report(
         "- A day is consumable when a latched/published quadrant exists and the last `valid` publication is no more than 5 business-day rows old.",
         "- The metric includes latched state carried during abstention only inside that lag window.",
         "- It does not require the current row itself to be `valid`.",
-        "- Current artifacts expose P50/P90/max for `days_since_last_valid_distribution`; consumed-state age distribution requires a future artifact schema.",
+        "- `consumed_state_age_*` is computed only on consumable days; `state_age_since_last_valid_*` is computed on all days after the first valid publication.",
         "",
         "## Metric Taxonomy",
         "",
         "- `raw_growth_sign_revision_changes`: raw score sign disagreement from revision diagnostics.",
-        "- `raw_inflation_sign_revision_changes`: not present in 5ba5217 artifacts.",
+        "- `raw_inflation_sign_revision_changes`: raw inflation score sign disagreement from revision diagnostics.",
         "- `axis_effective_sign_revision_changes_*`: threshold/hysteresis-dependent effective axis-sign disagreement.",
         "- `axis_state_label_revision_changes_*`: more granular axis label disagreement, including neutral-state reason changes when available.",
         "- `candidate_quadrant_revision_changes`: candidate quadrant disagreement.",
         "- `status_revision_changes`: valid/abstain status disagreement.",
-        "- `published_quadrant_revision_changes`: 5ba5217 uses the latched `published_quadrant` field.",
+        "- `published_quadrant_revision_changes`: published quadrant disagreement.",
         "- `latched_quadrant_revision_changes`: latched published-state disagreement including abstain carry.",
         "",
         "## A3.2 Pareto Shortlist",
         "",
-        "| rank | role | A32 | revision | raw growth | axis effective growth | valid | consumable | stale >5bd |",
-        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| rank | role | A32 | revision | raw growth | raw inflation | axis growth | valid | consumable | consumed age P90 | stale >5bd |",
+        "| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in a32_pareto:
         rows.append(
             f"| {row['pareto_rank']} | {row['pareto_role']} | `{row['a32_config_name']}` | "
             f"{row['candidate_revision_change_rate']:.6f} | {row['raw_growth_sign_revision_changes']} | "
+            f"{row['raw_inflation_sign_revision_changes']} | "
             f"{row['axis_effective_sign_revision_changes_growth']} | {row['valid_rate']:.6f} | "
-            f"{row['consumable_state_coverage']:.6f} | {row['stale_days_over_5bd']} |"
+            f"{row['consumable_state_coverage']:.6f} | {row['consumed_state_age_p90']} | "
+            f"{row['stale_days_over_5bd']} |"
+        )
+    rows.extend([
+        "",
+        "## A3.2 Folds",
+        "",
+        "| rank | fold | revision | status rev rate | latched rev rate | valid | consumable | transition P90 | episode P90 |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ])
+    for row in a32_pareto_by_fold:
+        rows.append(
+            f"| {row['pareto_rank']} | {row['fold']} | "
+            f"{row['candidate_revision_change_rate']} | "
+            f"{row['status_revision_change_rate']} | "
+            f"{row['latched_revision_change_rate']} | "
+            f"{row['valid_rate']} | {row['consumable_state_coverage']} | "
+            f"{row['transition_displacement_p90']} | "
+            f"{row['revision_episode_duration_p90']} |"
         )
     rows.extend([
         "",
@@ -6274,6 +6533,26 @@ def load_l2_macro_from_feature_manifest(
     validate_parent_hash("a31-grid L2 macro_feature_primitives", actual_hash, expected_hash)
     if macro_meta.get("row_count") is not None and int(macro_meta["row_count"]) != len(rows):
         raise ValueError("macro_feature_primitives row_count mismatch")
+    return manifest, l2_path, actual_hash, rows
+
+
+def load_l2_market_from_feature_manifest(
+    feature_manifest_path: Path,
+) -> tuple[dict[str, Any], Path, str, list[dict[str, Any]]]:
+    manifest = read_json_dict(feature_manifest_path)
+    if not manifest.get("parameter_independent"):
+        raise ValueError("feature_manifest must be parameter_independent=true for market-grid")
+    market_meta = manifest.get("market_feature_primitives") or {}
+    expected_hash = str(market_meta.get("logical_hash") or "")
+    if not expected_hash:
+        raise ValueError("feature_manifest is missing market_feature_primitives.logical_hash")
+    l2_file_name = str(market_meta.get("file_name") or "market_feature_primitives.parquet")
+    l2_path = feature_manifest_path.parent / l2_file_name
+    rows = read_parquet_records(l2_path)
+    actual_hash = logical_records_hash(rows)
+    validate_parent_hash("market-grid L2 market_feature_primitives", actual_hash, expected_hash)
+    if market_meta.get("row_count") is not None and int(market_meta["row_count"]) != len(rows):
+        raise ValueError("market_feature_primitives row_count mismatch")
     return manifest, l2_path, actual_hash, rows
 
 
@@ -6351,7 +6630,11 @@ def normalize_a31_catalog(
     for idx, raw in enumerate(configs_payload):
         if not isinstance(raw, dict):
             raise ValueError("each A31 config catalog entry must be a mapping")
-        cfg, metadata = a31_config_from_catalog_entry(raw)
+        if isinstance(raw.get("config"), dict):
+            cfg = A31Config(**raw["config"])
+            metadata = dict(raw.get("metadata") or {})
+        else:
+            cfg, metadata = a31_config_from_catalog_entry(raw)
         config_hash = a31_config_hash(cfg, l2_macro_logical_hash)
         if config_hash in seen_hashes:
             raise ValueError(f"duplicate A31 config hash in catalog: {config_hash}")
@@ -6852,15 +7135,29 @@ def a31_grid_summary_row(
         "growth_sign_revision_change_days": full["growth_sign_revision_change_days"],
         "inflation_sign_revision_change_days": full["inflation_sign_revision_change_days"],
         "status_revision_change_days": full["status_revision_change_days"],
+        "status_revision_change_rate": full.get("status_revision_change_rate"),
+        "published_revision_change_days": full.get("published_revision_change_days"),
+        "published_revision_change_rate": full.get("published_revision_change_rate"),
         "latched_revision_change_days": full["latched_revision_change_days"],
+        "latched_revision_change_rate": full.get("latched_revision_change_rate"),
         "transition_timing_displacement": full["transition_timing_displacement"],
         "transition_timing_displacement_median": transition_displacement_median(
             full["transition_timing_displacement"]
         ),
         "growth_score_revision_abs_median": full["growth_score_revision_abs_median"],
         "growth_score_revision_abs_p90": full["growth_score_revision_abs_p90"],
+        "inflation_score_revision_abs_median": full.get(
+            "inflation_score_revision_abs_median"
+        ),
+        "inflation_score_revision_abs_p90": full.get(
+            "inflation_score_revision_abs_p90"
+        ),
         "growth_raw_sign_change_days": full["growth_raw_sign_change_days"],
+        "inflation_raw_sign_change_days": full.get("inflation_raw_sign_change_days"),
         "growth_axis_state_change_days": full["growth_axis_state_change_days"],
+        "inflation_axis_state_change_days": full.get(
+            "inflation_axis_state_change_days"
+        ),
         "candidate_quadrant_change_days": full["candidate_quadrant_change_days"],
         "deadband_absorbed_revision_days": full["deadband_absorbed_revision_days"],
         "revision_episode_count": full["revision_episode_count"],
@@ -6912,23 +7209,756 @@ def a32_grid_summary_row(
         "growth_sign_revision_change_days": full["growth_sign_revision_change_days"],
         "inflation_sign_revision_change_days": full["inflation_sign_revision_change_days"],
         "status_revision_change_days": full["status_revision_change_days"],
+        "status_revision_change_rate": full.get("status_revision_change_rate"),
+        "published_revision_change_days": full.get("published_revision_change_days"),
+        "published_revision_change_rate": full.get("published_revision_change_rate"),
         "latched_revision_change_days": full["latched_revision_change_days"],
+        "latched_revision_change_rate": full.get("latched_revision_change_rate"),
         "candidate_flips_per_year": full["candidate_flips_per_year"],
         "published_flips_per_year": full["published_flips_per_year"],
         "valid_rate": full["valid_rate"],
         "abstain_rate": full["abstain_rate"],
         "consumable_state_coverage": full["consumable_state_coverage"],
         "days_since_last_valid_distribution": full["days_since_last_valid_distribution"],
+        "consumed_state_age_distribution": full.get("consumed_state_age_distribution"),
         "stale_days_over_5bd": full["stale_days_over_5bd"],
         "longest_stale_run": full["longest_stale_run"],
         "latched_duration": full["latched_duration"],
         "quadrant_occupancy": full["quadrant_occupancy"],
         "days_without_latched_state": full["days_without_latched_state"],
+        "first_input_ready_date": full.get("first_input_ready_date"),
+        "first_latched_date": full.get("first_latched_date"),
+        "first_operational_date": full.get("first_operational_date"),
+        "post_initialization_start_date": full.get("post_initialization_start_date"),
         "reason_counts": full["reason_counts"],
         "frozen": False,
         "production_candidate": False,
         "activation_ready": False,
     }
+
+
+def parse_market_grid_args(argv: list[str]) -> MarketGridConfig:
+    ap = argparse.ArgumentParser(description="Run offline market-implied calibration grid")
+    ap.add_argument("command", choices=["market-grid"])
+    ap.add_argument("--feature-manifest", required=True)
+    ap.add_argument("--macro-feature-manifest")
+    ap.add_argument("--a31-catalog")
+    ap.add_argument("--a32-grid-dir")
+    ap.add_argument("--output-dir")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    ap.add_argument("--macro-a31-name", default="G2-CREDIT6040-15-SURVEY05")
+    ap.add_argument("--macro-a32-name", default="A32-G0.35-I0.35-X0.10-C0.60-D1.25")
+    args = ap.parse_args(argv)
+    return MarketGridConfig(
+        feature_manifest=Path(args.feature_manifest),
+        macro_feature_manifest=Path(args.macro_feature_manifest)
+        if args.macro_feature_manifest else None,
+        a31_catalog=Path(args.a31_catalog) if args.a31_catalog else None,
+        a32_grid_dir=Path(args.a32_grid_dir) if args.a32_grid_dir else None,
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+        macro_a31_name=args.macro_a31_name,
+        macro_a32_name=args.macro_a32_name,
+    )
+
+
+def run_market_grid(config: MarketGridConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("market-grid requires --offline to make the no-external-access contract explicit")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    output_dir = config.output_dir or (config.feature_manifest.parent / "market_grid")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    market_manifest, _, market_l2_hash, market_primitives = load_l2_market_from_feature_manifest(
+        config.feature_manifest
+    )
+    market_configs = market_grid_configs_from_primitives(market_primitives)
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+
+    summary_rows: list[dict[str, Any]] = []
+    metrics_rows: list[dict[str, Any]] = []
+    replay_by_hash: dict[str, list[dict[str, Any]]] = {}
+    for item in market_configs:
+        cfg = item["config"]
+        cfg_hash = market_config_hash(cfg, market_l2_hash)
+        replay = run_market_state_machine_from_primitives(
+            market_primitives,
+            cfg,
+            config_hash=cfg_hash,
+        )
+        replay_by_hash[cfg_hash] = replay
+        metric = market_grid_metric_row(replay, cfg, cfg_hash)
+        metrics_rows.append(metric)
+        summary_rows.append({
+            **metric,
+            "quantile_basis": item["quantile_basis"],
+            "growth_scale_denominator": item["growth_scale_denominator"],
+            "inflation_scale_denominator": item["inflation_scale_denominator"],
+            "frozen": False,
+            "production_candidate": False,
+            "activation_ready": False,
+        })
+    summary_rows.sort(key=market_grid_sort_key)
+    metrics_rows.sort(key=lambda row: str(row["market_config_hash"]))
+    selected = summary_rows[0] if summary_rows else None
+    selected_replay = replay_by_hash[str(selected["market_config_hash"])] if selected else []
+
+    macro_replay: list[dict[str, Any]] = []
+    comparison_rows: list[dict[str, Any]] = []
+    comparison_metrics: dict[str, Any] = {
+        "status": "not_run",
+        "reason": "macro replay inputs not provided",
+    }
+    if (
+        config.macro_feature_manifest is not None
+        and config.a31_catalog is not None
+        and config.a32_grid_dir is not None
+    ):
+        macro_replay = build_selected_macro_replay_for_market_comparison(
+            macro_feature_manifest=config.macro_feature_manifest,
+            a31_catalog=config.a31_catalog,
+            a32_grid_dir=config.a32_grid_dir,
+            a31_name=config.macro_a31_name,
+            a32_name=config.macro_a32_name,
+        )
+        comparison_rows, comparison_metrics = compare_macro_market(
+            macro_replay,
+            selected_replay,
+            source="market_grid",
+        )
+
+    write_parquet(output_dir / "market_configs.parquet", [
+        {
+            "market_config_hash": market_config_hash(item["config"], market_l2_hash),
+            "market_config_name": item["config"].name,
+            "config_json": json.dumps(asdict(item["config"]), sort_keys=True),
+            "quantile_basis": item["quantile_basis"],
+            "growth_scale_denominator": item["growth_scale_denominator"],
+            "inflation_scale_denominator": item["inflation_scale_denominator"],
+        }
+        for item in market_configs
+    ])
+    write_parquet(output_dir / "market_grid_summary.parquet", summary_rows)
+    write_parquet(output_dir / "market_grid_metrics.parquet", metrics_rows)
+    write_parquet(output_dir / "market_replay_selected.parquet", selected_replay)
+    write_parquet(output_dir / "macro_replay_for_market_comparison.parquet", macro_replay)
+    write_parquet(output_dir / "macro_market_comparison_selected.parquet", comparison_rows)
+    write_json(output_dir / "market_comparison_metrics.json", comparison_metrics)
+
+    finished = dt.datetime.now(UTC)
+    manifest = {
+        "schema_version": MARKET_GRID_SCHEMA_VERSION,
+        "code_version": MARKET_GRID_CODE_VERSION,
+        "status": "ok",
+        "grid": "market_implied",
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "offline": True,
+        "external_access": "disabled_by_market_grid_path",
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "feature_manifest_path": str(config.feature_manifest),
+        "macro_feature_manifest_path": (
+            str(config.macro_feature_manifest) if config.macro_feature_manifest else None
+        ),
+        "parent_hashes": {
+            "l2_market_logical_hash": market_l2_hash,
+            "l2_market_schema_version": market_manifest.get("schema_version"),
+            "business_date_calendar_hash": market_manifest.get(
+                "business_date_calendar_hash"
+            ),
+        },
+        "config_count": len(market_configs),
+        "selected_market_config_hash": selected.get("market_config_hash") if selected else None,
+        "selected_market_config_name": selected.get("market_config_name") if selected else None,
+        "selected_valid_years": selected.get("valid_years") if selected else [],
+        "selected_has_valid_all_years": selected.get("has_valid_all_years") if selected else False,
+        "summary_logical_hash": logical_records_hash(summary_rows),
+        "metrics_logical_hash": logical_records_hash(metrics_rows),
+        "selected_replay_logical_hash": logical_records_hash(selected_replay),
+        "comparison_logical_hash": logical_records_hash(comparison_rows),
+        "comparison_metrics_logical_hash": logical_payload_hash(comparison_metrics),
+        "selection_policy": (
+            "empirical-quantile market calibration; no return target and no "
+            "macro-agreement optimization"
+        ),
+        "market_calendar_policy": (
+            "business-day output with carry-forward on inferred market-closed days; "
+            "SPY-only gaps are classified as data_missing"
+        ),
+        "a4_status": A4_PROVISIONAL_STATUS,
+        "a5_status": "blocked",
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            [
+                "market_configs.parquet",
+                "market_grid_summary.parquet",
+                "market_grid_metrics.parquet",
+                "market_replay_selected.parquet",
+                "macro_replay_for_market_comparison.parquet",
+                "macro_market_comparison_selected.parquet",
+                "market_comparison_metrics.json",
+            ],
+        ),
+    }
+    write_json(output_dir / "market_grid_manifest.json", manifest)
+    write_text(
+        output_dir / "market_operational_report.md",
+        render_market_operational_report(manifest, selected or {}, comparison_metrics),
+    )
+    return {
+        "status": "ok",
+        "output_dir": str(output_dir),
+        "execution_id": execution_id,
+        "selected_market_config_hash": manifest["selected_market_config_hash"],
+        "selected_has_valid_all_years": manifest["selected_has_valid_all_years"],
+        "comparison_both_valid_dates": comparison_metrics.get("both_valid_dates"),
+    }
+
+
+def market_grid_configs_from_primitives(
+    rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    growth_abs = [
+        abs(float(row["growth_126d_return"]))
+        for row in rows
+        if finite_or_none(row.get("growth_126d_return")) is not None
+    ]
+    inflation_abs = [
+        abs(float(row["inflation_126d_return"]))
+        for row in rows
+        if finite_or_none(row.get("inflation_126d_return")) is not None
+    ]
+    if not growth_abs or not inflation_abs:
+        raise ValueError("market_feature_primitives do not contain usable score history")
+    configs: list[dict[str, Any]] = []
+    for quantile in (0.60, 0.75):
+        g_denom = max(percentile(sorted(growth_abs), quantile), 1e-9)
+        i_denom = max(percentile(sorted(inflation_abs), quantile), 1e-9)
+        for enter in (0.75, 1.00):
+            for exit_ in (0.35, 0.50):
+                for confidence in (0.15, 0.25, 0.35):
+                    if exit_ >= enter:
+                        continue
+                    name = (
+                        f"MKT-Q{int(quantile * 100)}-E{int(enter * 100):03d}"
+                        f"-X{int(exit_ * 100):03d}-C{int(confidence * 100):03d}"
+                    )
+                    configs.append({
+                        "quantile_basis": quantile,
+                        "growth_scale_denominator": g_denom,
+                        "inflation_scale_denominator": i_denom,
+                        "config": MarketCalibrationConfig(
+                            name=name,
+                            growth_score_scale=1.0 / g_denom,
+                            inflation_score_scale=1.0 / i_denom,
+                            growth_enter=enter,
+                            growth_exit=exit_,
+                            inflation_enter=enter,
+                            inflation_exit=exit_,
+                            min_confidence=confidence,
+                        ),
+                    })
+    return configs
+
+
+def market_config_hash(config: MarketCalibrationConfig, l2_market_hash: str) -> str:
+    return stable_hash({
+        "l2_market_logical_hash": l2_market_hash,
+        "canonical_MarketCalibrationConfig": asdict(config),
+        "market_grid_code_version": MARKET_GRID_CODE_VERSION,
+    })[:24]
+
+
+def run_market_state_machine_from_primitives(
+    primitives: list[dict[str, Any]],
+    config: MarketCalibrationConfig,
+    *,
+    config_hash: str,
+) -> list[dict[str, Any]]:
+    rows = sorted(primitives, key=lambda row: str(row["business_date"]))
+    prev_g = prev_i = None
+    published: str | None = None
+    prev_record: dict[str, Any] | None = None
+    out: list[dict[str, Any]] = []
+    for primitive in rows:
+        day = str(primitive["business_date"])
+        session = bool(primitive.get("trading_session_indicator"))
+        if not session:
+            calendar_reason = market_calendar_reason(primitive)
+            if calendar_reason == "market_closed_no_session" and prev_record is not None:
+                carried = dict(prev_record)
+                carried["business_date"] = day
+                carried["date"] = day
+                carried["input_changed"] = False
+                carried["inputs_changed"] = False
+                carried["reevaluated"] = False
+                carried["transition_occurred"] = False
+                carried["market_session"] = False
+                carried["market_calendar_reason"] = calendar_reason
+                carried["carried_on_market_closed_day"] = True
+                out.append(carried)
+                prev_record = carried
+                continue
+        reasons: list[str] = []
+        if not session:
+            reasons.append(market_calendar_reason(primitive))
+        g_raw = finite_or_none(primitive.get("growth_126d_return"))
+        i_raw = finite_or_none(primitive.get("inflation_126d_return"))
+        if g_raw is None:
+            reasons.append("market_growth_warmup_or_missing")
+        if i_raw is None:
+            reasons.append("market_inflation_warmup_or_missing")
+        if session and not primitive.get("spy_available"):
+            reasons.append("market_spy_data_missing")
+        if session and (not primitive.get("tip_available") or not primitive.get("ief_available")):
+            reasons.append("market_tip_ief_data_missing")
+        g_score = g_raw * config.growth_score_scale if g_raw is not None else None
+        i_score = i_raw * config.inflation_score_scale if i_raw is not None else None
+        prev_published = published
+        g_state = transition_axis(
+            prev_g,
+            g_score,
+            enter=config.growth_enter,
+            exit_=config.growth_exit,
+        )
+        i_state = transition_axis(
+            prev_i,
+            i_score,
+            enter=config.inflation_enter,
+            exit_=config.inflation_exit,
+        )
+        prev_g, prev_i = g_state.internal_sign, i_state.internal_sign
+        g_margin = axis_margin(g_score, config.growth_enter, config.growth_exit)
+        i_margin = axis_margin(i_score, config.inflation_enter, config.inflation_exit)
+        confidence = math.sqrt(g_margin * i_margin)
+        quadrant = quadrant_from_signs(g_state.effective_sign, i_state.effective_sign)
+        if g_state.effective_sign is None:
+            reasons.append(f"market_growth_{g_state.reason}")
+        if i_state.effective_sign is None:
+            reasons.append(f"market_inflation_{i_state.reason}")
+        if confidence < config.min_confidence:
+            reasons.append("market_confidence_below_min")
+        reasons = sorted(set(reasons))
+        status: Status = "valid" if quadrant and not reasons else "abstain"
+        if status == "valid":
+            published = quadrant
+        record = {
+            "business_date": day,
+            "date": day,
+            "market_config_hash": config_hash,
+            "market_config_name": config.name,
+            "model_version": "market_implied_quadrant_v0_calibrated_candidate",
+            "status": status,
+            "status_reason_primary": primary_reason(reasons),
+            "status_reasons_all": ",".join(reasons),
+            "quadrant": quadrant if status == "valid" else None,
+            "published_quadrant": published,
+            "latched_quadrant": published,
+            "candidate_quadrant": quadrant_from_scores(g_score, i_score),
+            "candidate_confidence": confidence,
+            "confidence": confidence,
+            "growth_sign": g_state.effective_sign,
+            "inflation_sign": i_state.effective_sign,
+            "growth_axis_state": axis_state_label(g_state),
+            "inflation_axis_state": axis_state_label(i_state),
+            "growth_raw_score": g_raw,
+            "inflation_raw_score": i_raw,
+            "growth_score": g_score,
+            "inflation_score": i_score,
+            "growth_margin": g_margin,
+            "inflation_margin": i_margin,
+            "confidence_growth_margin_component": g_margin,
+            "confidence_inflation_margin_component": i_margin,
+            "confidence_formula": "sqrt(growth_margin * inflation_margin)",
+            "confidence_ok": confidence >= config.min_confidence,
+            "market_session": session,
+            "market_calendar_reason": market_calendar_reason(primitive) if not session else None,
+            "carried_on_market_closed_day": False,
+            "input_changed": True,
+            "inputs_changed": True,
+            "reevaluated": True,
+            "transition_occurred": (
+                published is not None and published != prev_published
+            ),
+            "lookback_days": primitive.get("lookback_days"),
+            "price_source": primitive.get("price_source"),
+            "price_convention": "market_feature_primitives 126-day returns; market-closed days carry forward prior state",
+        }
+        out.append(record)
+        prev_record = record
+    return out
+
+
+def market_calendar_reason(row: dict[str, Any]) -> str:
+    spy = bool(row.get("spy_available"))
+    tip = bool(row.get("tip_available"))
+    ief = bool(row.get("ief_available"))
+    if not spy and not tip and not ief:
+        return "market_closed_no_session"
+    if not spy:
+        return "market_spy_data_missing"
+    return "market_partial_data_missing"
+
+
+def market_grid_metric_row(
+    replay: list[dict[str, Any]],
+    config: MarketCalibrationConfig,
+    config_hash: str,
+) -> dict[str, Any]:
+    metrics = build_market_metrics(replay)
+    years = sorted({int(str(row["date"])[:4]) for row in replay})
+    valid_years = sorted({
+        int(str(row["date"])[:4])
+        for row in replay
+        if row.get("status") == "valid"
+    })
+    total = len(replay)
+    market_closed_days = sum(
+        1 for row in replay
+        if row.get("market_calendar_reason") == "market_closed_no_session"
+    )
+    spy_missing_data_days = sum(
+        1 for row in replay
+        if row.get("market_calendar_reason") == "market_spy_data_missing"
+    )
+    fixed_income_missing_days = sum(
+        1 for row in replay
+        if "market_tip_ief_data_missing" in str(row.get("status_reasons_all"))
+    )
+    years_denominator = max(1.0, total / 252.0)
+    valid_rows = [row for row in replay if row.get("status") == "valid"]
+    return {
+        "market_config_hash": config_hash,
+        "market_config_name": config.name,
+        "config_json": json.dumps(asdict(config), sort_keys=True),
+        "growth_enter": config.growth_enter,
+        "growth_exit": config.growth_exit,
+        "inflation_enter": config.inflation_enter,
+        "inflation_exit": config.inflation_exit,
+        "growth_score_scale": config.growth_score_scale,
+        "inflation_score_scale": config.inflation_score_scale,
+        "min_confidence": config.min_confidence,
+        "eligible_days": total,
+        "market_valid_rate": metrics["market_valid_rate"],
+        "valid_days": count_by(replay, "status").get("valid", 0),
+        "abstain_days": count_by(replay, "status").get("abstain", 0),
+        "status_counts": json.dumps(metrics["market_status_counts"], sort_keys=True),
+        "reason_counts": json.dumps(
+            metrics["market_status_reason_any_counts"], sort_keys=True
+        ),
+        "candidate_quadrant_counts": json.dumps(
+            metrics["market_candidate_quadrant_counts"], sort_keys=True
+        ),
+        "published_quadrant_counts": json.dumps(
+            count_by(valid_rows, "published_quadrant"), sort_keys=True
+        ),
+        "candidate_flips_per_year": (
+            flips_for_key(replay, "candidate_quadrant") / years_denominator
+        ),
+        "published_flips_per_year": (
+            flips_for_key(valid_rows, "published_quadrant") / years_denominator
+        ),
+        "candidate_duration_distribution": json.dumps(
+            duration_summary(state_durations(replay, "candidate_quadrant")),
+            sort_keys=True,
+        ),
+        "published_duration_distribution": json.dumps(
+            duration_summary(state_durations(valid_rows, "published_quadrant")),
+            sort_keys=True,
+        ),
+        "confidence_distribution": json.dumps(
+            metrics["market_confidence_distribution"], sort_keys=True
+        ),
+        "growth_score_distribution": json.dumps(
+            metrics["market_growth_score_distribution"], sort_keys=True
+        ),
+        "inflation_score_distribution": json.dumps(
+            metrics["market_inflation_score_distribution"], sort_keys=True
+        ),
+        "market_closed_days": market_closed_days,
+        "spy_missing_data_days": spy_missing_data_days,
+        "fixed_income_missing_days": fixed_income_missing_days,
+        "valid_years": json.dumps(valid_years),
+        "all_years": json.dumps(years),
+        "has_valid_all_years": valid_years == years,
+        "frozen": False,
+        "production_candidate": False,
+        "activation_ready": False,
+    }
+
+
+def market_grid_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    duration = parse_json_metric(row.get("published_duration_distribution"))
+    median_duration = duration.get("median")
+    flip_penalty = abs(float(row.get("published_flips_per_year") or 0.0) - 4.0)
+    return (
+        0 if row.get("has_valid_all_years") else 1,
+        -float(row.get("market_valid_rate") or 0.0),
+        flip_penalty,
+        none_last(median_duration),
+        none_last(row.get("min_confidence")),
+        str(row.get("market_config_hash")),
+    )
+
+
+def build_selected_macro_replay_for_market_comparison(
+    *,
+    macro_feature_manifest: Path,
+    a31_catalog: Path,
+    a32_grid_dir: Path,
+    a31_name: str,
+    a32_name: str,
+) -> list[dict[str, Any]]:
+    _, _, l2_hash, l2_records = load_l2_macro_from_feature_manifest(macro_feature_manifest)
+    catalog_payload = read_catalog_payload(a31_catalog)
+    normalized_catalog, _ = normalize_a31_catalog(
+        catalog_payload,
+        l2_macro_logical_hash=l2_hash,
+        source_path=a31_catalog,
+    )
+    matches = [
+        item for item in normalized_catalog["configs"]
+        if item["config"]["name"] == a31_name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"macro A31 config is not unique: {a31_name}")
+    a31 = A31Config(**matches[0]["config"])
+    l3_rows, _, _ = build_l3_score_panel(
+        l2_records,
+        a31,
+        l2_macro_logical_hash=l2_hash,
+        expected_l2_macro_logical_hash=l2_hash,
+    )
+    a32 = load_a32_config_from_grid(a32_grid_dir, a32_name)
+    macro_replay, _ = run_l4_state_machine(l3_rows, a32, selection_mode="latest")
+    return macro_replay
+
+
+def load_a32_config_from_grid(a32_grid_dir: Path, a32_name: str) -> A32Config:
+    rows = read_parquet_records(a32_grid_dir / "a32_configs.parquet")
+    matches = [row for row in rows if row.get("a32_config_name") == a32_name]
+    if len(matches) != 1:
+        raise ValueError(f"A32 config is not unique in grid dir: {a32_name}")
+    payload = json.loads(str(matches[0]["config_json"]))
+    return A32Config(**payload)
+
+
+def render_market_operational_report(
+    manifest: dict[str, Any],
+    selected: dict[str, Any],
+    comparison_metrics: dict[str, Any],
+) -> str:
+    return "\n".join([
+        "# Market-Implied Calibration Grid",
+        "",
+        f"- worker_commit: `{manifest['worker_commit']}`",
+        f"- git_dirty: `{manifest['git_dirty']}`",
+        f"- selected_config: `{manifest['selected_market_config_name']}`",
+        f"- selected_has_valid_all_years: `{manifest['selected_has_valid_all_years']}`",
+        f"- selected_valid_years: `{manifest['selected_valid_years']}`",
+        f"- market_valid_rate: `{selected.get('market_valid_rate')}`",
+        f"- valid_days: `{selected.get('valid_days')}`",
+        f"- published_flips_per_year: `{selected.get('published_flips_per_year')}`",
+        f"- market_closed_days: `{selected.get('market_closed_days')}`",
+        f"- spy_missing_data_days: `{selected.get('spy_missing_data_days')}`",
+        f"- fixed_income_missing_days: `{selected.get('fixed_income_missing_days')}`",
+        "",
+        "## Comparison",
+        "",
+        f"- common_dates: `{comparison_metrics.get('common_dates')}`",
+        f"- both_valid_dates: `{comparison_metrics.get('both_valid_dates')}`",
+        f"- exact_quadrant_agreement_rate: `{comparison_metrics.get('exact_quadrant_agreement_rate')}`",
+        f"- macro_valid_market_abstain_rate: `{comparison_metrics.get('macro_valid_market_abstain_rate')}`",
+        f"- market_valid_macro_abstain_rate: `{comparison_metrics.get('market_valid_macro_abstain_rate')}`",
+        "",
+        "No return series is used as an optimization target, and macro agreement is diagnostic only.",
+        "",
+    ])
+
+
+def parse_a3_scope_decision_args(argv: list[str]) -> A3ScopeDecisionConfig:
+    ap = argparse.ArgumentParser(description="Write formal A3 scope decision")
+    ap.add_argument("command", choices=["a3-scope-decision"])
+    ap.add_argument("--freeze-readiness-dir", required=True)
+    ap.add_argument("--market-grid-dir", required=True)
+    ap.add_argument("--output-dir", required=True)
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return A3ScopeDecisionConfig(
+        freeze_readiness_dir=Path(args.freeze_readiness_dir),
+        market_grid_dir=Path(args.market_grid_dir),
+        output_dir=Path(args.output_dir),
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_a3_scope_decision(config: A3ScopeDecisionConfig) -> dict[str, Any]:
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    freeze_manifest_path = single_matching_path(
+        config.freeze_readiness_dir,
+        "a3_progression_v2_manifest_*.json",
+    )
+    pareto_path = single_matching_path(
+        config.freeze_readiness_dir,
+        "a32_selected_pareto_???????.parquet",
+    )
+    pareto_by_fold_path = single_matching_path(
+        config.freeze_readiness_dir,
+        "a32_selected_pareto_by_fold_*.parquet",
+    )
+    freeze_manifest = read_json_dict(freeze_manifest_path)
+    pareto = read_parquet_records(pareto_path)
+    pareto_by_fold = read_parquet_records(pareto_by_fold_path)
+    market_manifest = read_json_dict(config.market_grid_dir / "market_grid_manifest.json")
+    market_comparison = read_json_dict(
+        config.market_grid_dir / "market_comparison_metrics.json"
+    )
+    current = next(
+        row for row in pareto
+        if row.get("pareto_role") == "current_stability_preserving"
+    )
+    outcome = a3_scope_outcome(current, freeze_manifest, market_manifest, market_comparison)
+    decision = {
+        "schema_version": A3_SCOPE_DECISION_SCHEMA_VERSION,
+        "artifact_type": "a3_scope_decision_v1",
+        "worker_commit": worker_commit,
+        "git_dirty": bool(run_text(
+            ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+        )),
+        "result": outcome,
+        "allowed_results": [
+            "freeze_ready",
+            "open_macro_v03",
+            "request_freeze_gate_revision",
+        ],
+        "freeze_ready": outcome == "freeze_ready",
+        "macro_current": {
+            "a31_config_name": current.get("a31_config_name"),
+            "a32_config_name": current.get("a32_config_name"),
+            "candidate_revision_change_rate": current.get(
+                "candidate_revision_change_rate"
+            ),
+            "consumable_state_coverage": current.get("consumable_state_coverage"),
+            "transition_displacement_p90": current.get("transition_displacement_p90"),
+            "revision_episode_duration_p90": current.get(
+                "revision_episode_duration_p90"
+            ),
+            "first_operational_date": current.get("first_operational_date"),
+        },
+        "market_current": {
+            "selected_market_config_name": market_manifest.get(
+                "selected_market_config_name"
+            ),
+            "selected_has_valid_all_years": market_manifest.get(
+                "selected_has_valid_all_years"
+            ),
+            "both_valid_dates": market_comparison.get("both_valid_dates"),
+            "exact_quadrant_agreement_rate": market_comparison.get(
+                "exact_quadrant_agreement_rate"
+            ),
+        },
+        "decision_basis": {
+            "freeze_manifest": freeze_manifest_path.name,
+            "pareto_logical_hash": logical_records_hash(pareto),
+            "pareto_by_fold_logical_hash": logical_records_hash(pareto_by_fold),
+            "market_grid_manifest": "market_grid_manifest.json",
+            "market_grid_summary_hash": market_manifest.get("summary_logical_hash"),
+            "market_comparison_hash": market_manifest.get("comparison_logical_hash"),
+        },
+        "reason": a3_scope_reasons(current, market_manifest, market_comparison),
+        "a4_status": A4_PROVISIONAL_STATUS,
+        "a4_allowed_scope": [
+            "replay_smoke",
+            "book_compilation",
+            "feasibility_tests",
+            "metrics_generation",
+            "identity_gate_validation",
+            "lineage_tests",
+        ],
+        "a4_forbidden_scope": [
+            "center_selection",
+            "policy_selection_by_maxdd_cvar",
+            "half_width_calibration",
+            "gamma_or_beta_cap_calibration",
+            "gate_calibration",
+        ],
+        "a5_status": "blocked",
+    }
+    decision["decision_basis_hash"] = logical_payload_hash(decision["decision_basis"])
+    decision_path = config.output_dir / "a3_scope_decision_v1.json"
+    write_json(decision_path, decision)
+    return {
+        "status": "ok",
+        "output_dir": str(config.output_dir),
+        "decision": outcome,
+        "freeze_ready": decision["freeze_ready"],
+        "decision_basis_hash": decision["decision_basis_hash"],
+    }
+
+
+def single_matching_path(base: Path, pattern: str) -> Path:
+    matches = sorted(base.glob(pattern))
+    if len(matches) != 1:
+        raise ValueError(f"expected one {pattern} in {base}, found {len(matches)}")
+    return matches[0]
+
+
+def a3_scope_outcome(
+    current: dict[str, Any],
+    freeze_manifest: dict[str, Any],
+    market_manifest: dict[str, Any],
+    market_comparison: dict[str, Any],
+) -> str:
+    revision = float(current.get("candidate_revision_change_rate") or 1.0)
+    consumable = float(current.get("consumable_state_coverage") or 0.0)
+    market_operational = bool(market_manifest.get("selected_has_valid_all_years")) and (
+        int(market_comparison.get("both_valid_dates") or 0) > 0
+    )
+    if (
+        not freeze_manifest.get("freeze_blockers")
+        and revision <= MAX_REVISION_CHANGE_RATE_FREEZE
+        and consumable >= MIN_VALID_RATE_FREEZE
+        and market_operational
+    ):
+        return "freeze_ready"
+    if revision > MAX_REVISION_CHANGE_RATE_FREEZE or consumable < MIN_VALID_RATE_FREEZE:
+        return "open_macro_v03"
+    return "request_freeze_gate_revision"
+
+
+def a3_scope_reasons(
+    current: dict[str, Any],
+    market_manifest: dict[str, Any],
+    market_comparison: dict[str, Any],
+) -> list[str]:
+    reasons: list[str] = []
+    revision = float(current.get("candidate_revision_change_rate") or 1.0)
+    consumable = float(current.get("consumable_state_coverage") or 0.0)
+    if revision > MAX_REVISION_CHANGE_RATE_FREEZE:
+        reasons.append("candidate_revision_rate_above_10pct_freeze_gate")
+    if consumable < MIN_VALID_RATE_FREEZE:
+        reasons.append("consumable_coverage_below_operational_freeze_band")
+    if not market_manifest.get("selected_has_valid_all_years"):
+        reasons.append("market_implied_lacks_valid_observations_in_all_years")
+    if int(market_comparison.get("both_valid_dates") or 0) <= 0:
+        reasons.append("macro_market_valid_vs_valid_comparison_not_operational")
+    reasons.append("A4_limited_to_smoke_and_viability")
+    reasons.append("A5_blocked")
+    return reasons
 
 
 def transition_displacement_median(value: Any) -> float | None:
@@ -7282,6 +8312,14 @@ def main(argv: list[str] | None = None) -> None:
         return
     if argv and argv[0] == "a3-freeze-readiness":
         result = run_a3_freeze_readiness_package(parse_a3_freeze_readiness_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "market-grid":
+        result = run_market_grid(parse_market_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "a3-scope-decision":
+        result = run_a3_scope_decision(parse_a3_scope_decision_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     if argv and argv[0] == "v02-fetch-alfred":
