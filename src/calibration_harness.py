@@ -69,18 +69,22 @@ A31_GRID_SCHEMA_VERSION = 1
 MARKET_GRID_SCHEMA_VERSION = 1
 MARKET_GRID_CODE_VERSION = "market_implied_grid_v1"
 A3_SCOPE_DECISION_SCHEMA_VERSION = 1
+REVISION_UNCERTAINTY_SCHEMA_VERSION = 1
+A31_V03_GRID_SCHEMA_VERSION = 1
 V02_QUALIFICATION_SCHEMA_VERSION = 1
 V02_ALFRED_FETCH_SCHEMA_VERSION = 1
 V02_ALFRED_SOURCE_SPEC_VERSION = "macro_family_map_v02_candidate_data_qualification_v1"
 PARENT_V01_L2_HASH = "4419f8c041397e16914d1b0a6dcb8244a5144bd98a54a75e67a6832f9d468c85"
 MIN_QUARTERLY_SURVEY_OBS = 12
 A31_PROGRESSION_POLICY_VERSION = "a3_progression_v2"
+MARKET_DIAGNOSTIC_MODEL_VERSION = "market_implied_v1_diagnostic_frozen"
 A31_REVISION_PASS_RATE = 0.20
 A31_REVISION_CONDITIONAL_RATE = 0.23
 A31_RELATIVE_IMPROVEMENT_CONDITIONAL = 0.08
 A31_V01_BENCHMARK_REVISION_RATE = 0.25209562247749145
 A31_V01_GROWTH_SIGN_BENCHMARK = 1111
 A31_V01_VALID_RATE = 0.21204594846321018
+A31_V03_CONTROL_REVISION_RATE = 0.19621235641105247
 GATE_MAX_LAG_BUSINESS_DAYS = 5
 A4_PROVISIONAL_STATUS = "harness_ready_provisional_A3"
 
@@ -176,8 +180,11 @@ class A31Config:
     robust_clip: float
     reliability_weighting: str
     score_clip: dict[str, float]
+    axis_aggregation_method: str = "weighted_mean"
     release_smoothing: str = "none"
     series_transform_overrides: dict[str, str] = dataclass_field(default_factory=dict)
+    revision_soft_threshold_quantile: str | None = None
+    family_consensus_min: float | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +262,26 @@ class A3ScopeDecisionConfig:
     market_grid_dir: Path
     output_dir: Path
     worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class RevisionUncertaintyConfig:
+    feature_manifest: Path
+    output_dir: Path | None = None
+    offline: bool = False
+    worker_commit: str | None = None
+
+
+@dataclass(frozen=True)
+class A31V03GridConfig:
+    feature_manifest: Path
+    revision_uncertainty_manifest: Path
+    config_catalog: Path
+    a32_grid_dir: Path
+    output_dir: Path | None = None
+    offline: bool = False
+    worker_commit: str | None = None
+    a32_name: str = "A32-G0.35-I0.35-X0.10-C0.60-D1.25"
 
 
 @dataclass(frozen=True)
@@ -2233,8 +2260,11 @@ def compare_macro_market(
         "macro_transition_dates": transition_dates(macro_replay, "published_quadrant"),
         "market_transition_dates": transition_dates(market_rows, "quadrant"),
     }
-    metrics["transition_lead_lag_days"] = nearest_transition_lags(
-        metrics["macro_transition_dates"], metrics["market_transition_dates"])
+    metrics["transition_lead_lag_days"] = monotonic_transition_lags(
+        metrics["macro_transition_dates"],
+        metrics["market_transition_dates"],
+        max_business_day_window=126,
+    )
     return rows, metrics
 
 
@@ -2391,6 +2421,7 @@ def reference_a31_config(name: str = "A31-REF") -> A31Config:
         family_weights=json.loads(json.dumps(FAMILY_WEIGHTS)),
         series_weights={cfg.series_id: cfg.weight_in_family for cfg in BASELINE_SERIES},
         aggregation_method="huberized_weighted_mean",
+        axis_aggregation_method="weighted_mean",
         robust_clip=1.5,
         reliability_weighting="none",
         score_clip={
@@ -2473,6 +2504,8 @@ def build_l3_score_panel(
     *,
     l2_macro_logical_hash: str,
     expected_l2_macro_logical_hash: str,
+    revision_uncertainty_by_key: dict[tuple[str, str, str, str], dict[str, Any]] | None = None,
+    revision_uncertainty_logical_hash: str | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     validate_parent_hash(
         "L3 macro_feature_primitives",
@@ -2494,8 +2527,22 @@ def build_l3_score_panel(
             row for row in primitive_rows if l3_row_selected(row, a31_config)
         ]
         axis_payload = {
-            "growth": aggregate_l3_axis(by_series, "growth", a31_config),
-            "inflation": aggregate_l3_axis(by_series, "inflation", a31_config),
+            "growth": aggregate_l3_axis(
+                by_series,
+                "growth",
+                a31_config,
+                revision_uncertainty_by_key=revision_uncertainty_by_key,
+                business_date=business_date,
+                selection_mode=selection_mode,
+            ),
+            "inflation": aggregate_l3_axis(
+                by_series,
+                "inflation",
+                a31_config,
+                revision_uncertainty_by_key=revision_uncertainty_by_key,
+                business_date=business_date,
+                selection_mode=selection_mode,
+            ),
         }
         c_quality = min(axis_payload["growth"]["coverage"], axis_payload["inflation"]["coverage"])
         f_quality = min(axis_payload["growth"]["freshness"], axis_payload["inflation"]["freshness"])
@@ -2541,6 +2588,18 @@ def build_l3_score_panel(
             "inflation_vintage_quality": axis_payload["inflation"]["vintage_quality"],
             "growth_concordance": axis_payload["growth"]["concordance"],
             "inflation_concordance": axis_payload["inflation"]["concordance"],
+            "growth_family_consensus_ratio": axis_payload["growth"][
+                "family_consensus_ratio"
+            ],
+            "inflation_family_consensus_ratio": axis_payload["inflation"][
+                "family_consensus_ratio"
+            ],
+            "growth_family_consensus_ok": axis_payload["growth"][
+                "family_consensus_ok"
+            ],
+            "inflation_family_consensus_ok": axis_payload["inflation"][
+                "family_consensus_ok"
+            ],
             "growth_family_count": axis_payload["growth"]["family_count"],
             "inflation_family_count": axis_payload["inflation"]["family_count"],
             "critical_family_flags": json.dumps(critical_flags, sort_keys=True),
@@ -2561,6 +2620,7 @@ def build_l3_score_panel(
         "a31_config": asdict(a31_config),
         "parent_hashes": {
             "l2_macro_logical_hash": l2_macro_logical_hash,
+            "revision_uncertainty_logical_hash": revision_uncertainty_logical_hash,
         },
         "row_count": len(score_rows),
         "contribution_row_count": len(contribution_rows),
@@ -2572,7 +2632,13 @@ def build_l3_score_panel(
 
 
 def aggregate_l3_axis(
-    by_series: dict[str, dict[str, Any]], axis: str, config: A31Config
+    by_series: dict[str, dict[str, Any]],
+    axis: str,
+    config: A31Config,
+    *,
+    revision_uncertainty_by_key: dict[tuple[str, str, str, str], dict[str, Any]] | None = None,
+    business_date: str | None = None,
+    selection_mode: str | None = None,
 ) -> dict[str, Any]:
     by_family: dict[str, list[tuple[float, dict[str, Any]]]] = {}
     for series_id, row in sorted(by_series.items()):
@@ -2592,6 +2658,14 @@ def aggregate_l3_axis(
         for weight, row in items:
             score = series_score_from_l2_row(row, config)
             if score is not None:
+                score = apply_revision_soft_threshold(
+                    score,
+                    row,
+                    config,
+                    revision_uncertainty_by_key=revision_uncertainty_by_key,
+                    business_date=business_date,
+                    selection_mode=selection_mode,
+                )
                 score = clip(score, config.score_clip.get("series", SERIES_Z_CLIP))
                 adjusted_weight = weight * reliability_weight_factor(
                     row.get("vintage_quality"), config.reliability_weighting
@@ -2619,13 +2693,31 @@ def aggregate_l3_axis(
     total_weight = sum(weights.values())
     coverage = active_weight / total_weight if total_weight > 0 else 0.0
     if active_weight > 0:
-        score = sum(
-            (score_weights[family] / active_weight) * value
-            for family, value in available.items()
-        )
+        if config.axis_aggregation_method == "weighted_median":
+            score = weighted_median([
+                (score_weights[family], value)
+                for family, value in available.items()
+            ])
+        else:
+            if config.axis_aggregation_method != "weighted_mean":
+                raise ValueError(
+                    f"unsupported axis_aggregation_method: {config.axis_aggregation_method}"
+                )
+            score = sum(
+                (score_weights[family] / active_weight) * value
+                for family, value in available.items()
+            )
         score = clip(score, config.score_clip.get("axis", AXIS_SCORE_CLIP))
     else:
         score = None
+    consensus_ratio, consensus_ok = family_consensus_status(
+        available,
+        score_weights,
+        config.family_consensus_min,
+        score,
+    )
+    if score is not None and not consensus_ok:
+        score = 0.0
     freshness = weighted_quality([(weights[family], family_freshness.get(family, 0.0)) for family in weights])
     vintage = weighted_quality([(weights[family], family_vintage.get(family, 0.0)) for family in weights])
     concordance, dispersion = concordance_quality(available, score_weights, score)
@@ -2637,6 +2729,8 @@ def aggregate_l3_axis(
         "vintage_quality": vintage,
         "concordance": concordance,
         "dispersion": dispersion,
+        "family_consensus_ratio": consensus_ratio,
+        "family_consensus_ok": consensus_ok,
         "family_count": len(available),
         "has_anchor": bool(ANCHOR_FAMILIES[axis] & set(available)),
     }
@@ -2649,6 +2743,63 @@ def l3_row_selected(row: dict[str, Any], config: A31Config) -> bool:
     if series_id not in config.series_weights:
         return False
     return family in config.family_weights.get(axis, {})
+
+
+def apply_revision_soft_threshold(
+    score: float,
+    row: dict[str, Any],
+    config: A31Config,
+    *,
+    revision_uncertainty_by_key: dict[tuple[str, str, str, str], dict[str, Any]] | None,
+    business_date: str | None,
+    selection_mode: str | None,
+) -> float:
+    quantile = config.revision_soft_threshold_quantile
+    if not quantile or revision_uncertainty_by_key is None:
+        return score
+    key = (
+        str(business_date or row.get("business_date")),
+        str(selection_mode or row.get("selection_mode")),
+        "series",
+        str(row.get("series_id")),
+    )
+    uncertainty = revision_uncertainty_by_key.get(key)
+    if not uncertainty or not uncertainty.get("sufficient_history"):
+        return score
+    q_field = {
+        "p50": "median_absolute_revision",
+        "p75": "p75_absolute_revision",
+        "p90": "p90_absolute_revision",
+    }.get(str(quantile).lower())
+    if q_field is None:
+        raise ValueError(f"unsupported revision soft-threshold quantile: {quantile}")
+    q_value = finite_or_none(uncertainty.get(q_field))
+    if q_value is None:
+        return score
+    return math.copysign(max(abs(score) - q_value, 0.0), score)
+
+
+def family_consensus_status(
+    family_scores: dict[str, float],
+    score_weights: dict[str, float],
+    threshold: float | None,
+    axis_score_value: float | None,
+) -> tuple[float | None, bool]:
+    if threshold is None:
+        return None, True
+    if not family_scores or axis_score_value is None or axis_score_value == 0:
+        return 0.0, False
+    sign = 1 if axis_score_value > 0 else -1
+    active_weight = sum(abs(score_weights.get(family, 0.0)) for family in family_scores)
+    if active_weight <= 0:
+        return 0.0, False
+    same = sum(
+        abs(score_weights.get(family, 0.0))
+        for family, value in family_scores.items()
+        if (value > 0 and sign > 0) or (value < 0 and sign < 0)
+    )
+    ratio = same / active_weight
+    return ratio, ratio >= threshold
 
 
 def series_score_from_l2_row(row: dict[str, Any], config: A31Config) -> float | None:
@@ -2830,6 +2981,24 @@ def aggregate_values(
         return statistics.median(values)
     total = sum(abs(weight) for weight, _ in items)
     return sum(abs(weight) * value for weight, value in items) / total if total > 0 else None
+
+
+def weighted_median(items: list[tuple[float, float | None]]) -> float | None:
+    values = sorted(
+        (float(value), abs(float(weight)))
+        for weight, value in items
+        if value is not None and math.isfinite(value) and math.isfinite(float(weight))
+    )
+    total = sum(weight for _, weight in values)
+    if total <= 0:
+        return None
+    midpoint = total / 2.0
+    running = 0.0
+    for value, weight in values:
+        running += weight
+        if running >= midpoint:
+            return value
+    return values[-1][0]
 
 
 def huberized_weighted_mean_with_limit(
@@ -3466,6 +3635,7 @@ def evaluation_metric_rows(
         transition_deltas = build_transition_revision_deltas(rt, cf)
         revision_diagnostics = replay_revision_diagnostics(rt, cf)
         operational_metrics = operational_state_metrics(rt)
+        candidate_metrics = candidate_definition_metrics(rt)
         full_operational_metrics = operational_state_metrics(runtime)
         rows.append({
             "fold": fold_name,
@@ -3525,6 +3695,7 @@ def evaluation_metric_rows(
             "quadrant_occupancy": json.dumps(
                 metrics["candidate_quadrant_counts_all_days"], sort_keys=True
             ),
+            **candidate_metrics,
             "days_without_latched_state": metrics["days_without_latched_state"],
             "coverage_distribution": json.dumps(
                 metrics["coverage_distribution"], sort_keys=True
@@ -3607,6 +3778,9 @@ def replay_revision_diagnostics(
         "growth_axis_state_change_days": len(axis_state_change_dates["growth"]),
         "inflation_axis_state_change_days": len(axis_state_change_dates["inflation"]),
         "candidate_quadrant_change_days": len(candidate_change_dates),
+        "candidate_quadrant_change_rate_calendar": (
+            len(candidate_change_dates) / len(common_dates) if common_dates else None
+        ),
         "deadband_absorbed_revision_days": len(deadband_absorbed_dates),
         "revision_episode_count": len(durations),
         "revision_episode_duration_p50": duration_dist["median"],
@@ -3656,6 +3830,18 @@ def operational_state_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
             sort_keys=True,
         ),
         **readiness,
+    }
+
+
+def candidate_definition_metrics(replay: list[dict[str, Any]]) -> dict[str, Any]:
+    total = len(replay)
+    candidate_defined = sum(1 for row in replay if row.get("candidate_quadrant"))
+    neutral = total - candidate_defined
+    return {
+        "candidate_defined_rate": candidate_defined / total if total else None,
+        "neutral_rate": neutral / total if total else None,
+        "candidate_defined_days": candidate_defined,
+        "neutral_days": neutral,
     }
 
 
@@ -4701,6 +4887,72 @@ def nearest_transition_lags(macro_dates: list[str], market_dates: list[str]) -> 
     }
 
 
+def monotonic_transition_lags(
+    macro_dates: list[str],
+    market_dates: list[str],
+    *,
+    max_business_day_window: int,
+) -> dict[str, Any]:
+    macro = [dt.date.fromisoformat(day) for day in macro_dates]
+    market = [dt.date.fromisoformat(day) for day in market_dates]
+    matched: list[dict[str, Any]] = []
+    unmatched_macro: list[str] = []
+    used_market: set[int] = set()
+    next_market_idx = 0
+    for macro_day in macro:
+        while next_market_idx < len(market):
+            lag = signed_business_day_distance(macro_day, market[next_market_idx])
+            if lag < -max_business_day_window:
+                next_market_idx += 1
+                continue
+            break
+        candidates: list[tuple[int, int, int]] = []
+        idx = next_market_idx
+        while idx < len(market):
+            lag = signed_business_day_distance(macro_day, market[idx])
+            if lag > max_business_day_window:
+                break
+            if idx not in used_market:
+                candidates.append((abs(lag), lag, idx))
+            idx += 1
+        if not candidates:
+            unmatched_macro.append(macro_day.isoformat())
+            continue
+        _, lag, chosen_idx = min(candidates)
+        used_market.add(chosen_idx)
+        next_market_idx = chosen_idx + 1
+        matched.append({
+            "macro_transition_date": macro_day.isoformat(),
+            "market_transition_date": market[chosen_idx].isoformat(),
+            "market_minus_macro_business_days": lag,
+        })
+    unmatched_market = [
+        day.isoformat() for idx, day in enumerate(market)
+        if idx not in used_market
+    ]
+    lags = [int(row["market_minus_macro_business_days"]) for row in matched]
+    return {
+        "matching_method": "monotonic_one_to_one",
+        "max_business_day_window": max_business_day_window,
+        "count": len(lags),
+        "median_days": statistics.median(lags) if lags else None,
+        "lags_days": lags,
+        "matched_transitions": matched,
+        "unmatched_macro_transition_dates": unmatched_macro,
+        "unmatched_market_transition_dates": unmatched_market,
+        "unmatched_macro_count": len(unmatched_macro),
+        "unmatched_market_count": len(unmatched_market),
+    }
+
+
+def signed_business_day_distance(start: dt.date, end: dt.date) -> int:
+    if start == end:
+        return 0
+    sign = 1 if end > start else -1
+    earlier, later = (start, end) if end > start else (end, start)
+    return sign * (len(business_days(earlier, later)) - 1)
+
+
 def sign_of(value: Any) -> int | None:
     if value is None:
         return None
@@ -5724,6 +5976,381 @@ def run_a31_grid(config: A31GridConfig) -> dict[str, Any]:
     }
 
 
+def parse_a31_v03_grid_args(argv: list[str]) -> A31V03GridConfig:
+    ap = argparse.ArgumentParser(description="Run macro_v03 revision-robust one-factor grid")
+    ap.add_argument("command", choices=["a31-v03-grid"])
+    ap.add_argument("--feature-manifest", required=True)
+    ap.add_argument("--revision-uncertainty-manifest", required=True)
+    ap.add_argument("--config-catalog", required=True)
+    ap.add_argument("--a32-grid-dir", required=True)
+    ap.add_argument("--output-dir")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    ap.add_argument("--a32-name", default="A32-G0.35-I0.35-X0.10-C0.60-D1.25")
+    args = ap.parse_args(argv)
+    return A31V03GridConfig(
+        feature_manifest=Path(args.feature_manifest),
+        revision_uncertainty_manifest=Path(args.revision_uncertainty_manifest),
+        config_catalog=Path(args.config_catalog),
+        a32_grid_dir=Path(args.a32_grid_dir),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+        a32_name=args.a32_name,
+    )
+
+
+def run_a31_v03_grid(config: A31V03GridConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("a31-v03-grid requires --offline")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    output_dir = config.output_dir or (config.feature_manifest.parent / "a31_v03_grid")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    feature_manifest, _, l2_hash, l2_records = load_l2_macro_from_feature_manifest(
+        config.feature_manifest
+    )
+    uncertainty_manifest, uncertainty_hash, uncertainty_rows = (
+        load_revision_uncertainty_from_manifest(config.revision_uncertainty_manifest)
+    )
+    parent_uncertainty_l2 = (
+        uncertainty_manifest.get("parent_hashes") or {}
+    ).get("l2_macro_logical_hash")
+    validate_parent_hash("v03 uncertainty parent L2", str(parent_uncertainty_l2), l2_hash)
+    uncertainty_by_key = revision_uncertainty_keyed(uncertainty_rows)
+    catalog_payload = read_catalog_payload(config.config_catalog)
+    normalized_catalog, catalog_hash = normalize_a31_catalog(
+        catalog_payload,
+        l2_macro_logical_hash=l2_hash,
+        source_path=config.config_catalog,
+    )
+    a32 = load_a32_config_from_grid(config.a32_grid_dir, config.a32_name)
+    a32_hash = a32_config_hash(a32)
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+
+    write_json(output_dir / "config_catalog.normalized.json", normalized_catalog)
+    summary_rows: list[dict[str, Any]] = []
+    metric_rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for item in normalized_catalog["configs"]:
+        a31 = A31Config(**item["config"])
+        try:
+            l3_rows, _, l3_manifest = build_l3_score_panel(
+                l2_records,
+                a31,
+                l2_macro_logical_hash=l2_hash,
+                expected_l2_macro_logical_hash=l2_hash,
+                revision_uncertainty_by_key=uncertainty_by_key,
+                revision_uncertainty_logical_hash=uncertainty_hash,
+            )
+            a31_hash = str(l3_manifest["a31_config_hash"])
+            eval_hash = evaluation_hash(a31_hash, a32_hash)
+            runtime, _ = run_l4_state_machine(l3_rows, a32, selection_mode="latest")
+            counterfactual, _ = run_l4_state_machine(
+                l3_rows, a32, selection_mode="first_release"
+            )
+            metrics_full = build_macro_metrics(
+                runtime,
+                first_release_replay=counterfactual,
+            )
+            classification = classify_a32_grid_result(metrics_full)
+            rows = evaluation_metric_rows(
+                runtime,
+                counterfactual,
+                a31,
+                a32,
+                a31_hash,
+                a32_hash,
+                eval_hash,
+                classification,
+            )
+            metric_rows.extend(rows)
+            summary_rows.append(a31_v03_summary_row(item, a32, a32_hash, eval_hash, rows))
+        except Exception as exc:  # pragma: no cover - per-config isolation
+            failures.append(a31_failure_record({"a31_item": item}, exc))
+
+    apply_v03_gate_status(summary_rows, metric_rows)
+    summary_rows.sort(key=v03_summary_sort_key)
+    metric_rows.sort(key=lambda row: (
+        str(row["a31_config_hash"]),
+        str(row["a32_config_hash"]),
+        str(row["fold"]),
+    ))
+    write_parquet(output_dir / "a31_v03_grid_summary.parquet", summary_rows)
+    write_parquet(output_dir / "a31_v03_grid_metrics.parquet", metric_rows)
+    write_json(output_dir / "failures.json", {"failures": failures})
+    stop_decision = v03_stop_decision(summary_rows)
+    finished = dt.datetime.now(UTC)
+    manifest = {
+        "schema_version": A31_V03_GRID_SCHEMA_VERSION,
+        "status": "ok" if not failures else "partial_with_failures",
+        "grid": "macro_v03_revision_robust",
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "offline": True,
+        "external_access": "disabled_by_a31_v03_grid_path",
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "feature_manifest_path": str(config.feature_manifest),
+        "revision_uncertainty_manifest_path": str(config.revision_uncertainty_manifest),
+        "config_catalog_path": str(config.config_catalog),
+        "a32_grid_dir": str(config.a32_grid_dir),
+        "a32_config_name": a32.name,
+        "a32_config_hash": a32_hash,
+        "parent_hashes": {
+            "l2_macro_logical_hash": l2_hash,
+            "revision_uncertainty_logical_hash": uncertainty_hash,
+            "business_date_calendar_hash": feature_manifest.get(
+                "business_date_calendar_hash"
+            ),
+            "series_family_mapping_hash": feature_manifest.get(
+                "series_family_mapping_hash"
+            ),
+        },
+        "config_catalog_hash": catalog_hash,
+        "config_count": len(normalized_catalog["configs"]),
+        "evaluation_count": len(summary_rows),
+        "failure_count": len(failures),
+        "summary_logical_hash": logical_records_hash(summary_rows),
+        "metrics_logical_hash": logical_records_hash(metric_rows),
+        "stop_decision": stop_decision,
+        "a3_status": "open_macro_v03",
+        "a4_status": A4_PROVISIONAL_STATUS,
+        "a5_status": "blocked",
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            [
+                "config_catalog.normalized.json",
+                "a31_v03_grid_summary.parquet",
+                "a31_v03_grid_metrics.parquet",
+                "failures.json",
+            ],
+        ),
+    }
+    write_json(output_dir / "a31_v03_grid_manifest.json", manifest)
+    write_text(
+        output_dir / "a31_v03_revision_robust_report.md",
+        render_a31_v03_report(manifest, summary_rows),
+    )
+    return {
+        "status": manifest["status"],
+        "output_dir": str(output_dir),
+        "evaluation_count": len(summary_rows),
+        "failure_count": len(failures),
+        "stop_decision": stop_decision["decision"],
+        "summary_logical_hash": manifest["summary_logical_hash"],
+        "metrics_logical_hash": manifest["metrics_logical_hash"],
+    }
+
+
+def a31_v03_summary_row(
+    item: dict[str, Any],
+    a32: A32Config,
+    a32_hash: str,
+    eval_hash: str,
+    metric_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    full = next(row for row in metric_rows if row["fold"] == "full")
+    post = next(
+        (row for row in metric_rows if row["fold"] == "post_initialization"),
+        full,
+    )
+    transition_dist = parse_json_metric(post.get("transition_timing_displacement"))
+    return {
+        "a31_config_hash": item["a31_config_hash"],
+        "a31_config_name": item["config"]["name"],
+        "a32_config_hash": a32_hash,
+        "a32_config_name": a32.name,
+        "evaluation_hash": eval_hash,
+        "catalog_index": item["catalog_index"],
+        "round": item["metadata"].get("round"),
+        "description": item["metadata"].get("description"),
+        "distance_from_ref": item["distance_from_ref"],
+        "revision_soft_threshold_quantile": item["config"].get(
+            "revision_soft_threshold_quantile"
+        ),
+        "family_consensus_min": item["config"].get("family_consensus_min"),
+        "aggregation_method": item["config"].get("aggregation_method"),
+        "full_candidate_revision_change_rate": full.get(
+            "candidate_quadrant_change_rate_calendar"
+        ),
+        "post_initialization_candidate_revision_change_rate": post.get(
+            "candidate_quadrant_change_rate_calendar"
+        ),
+        "full_comparable_candidate_revision_change_rate": full.get(
+            "candidate_revision_change_rate"
+        ),
+        "post_initialization_comparable_candidate_revision_change_rate": post.get(
+            "candidate_revision_change_rate"
+        ),
+        "growth_raw_sign_change_days": full.get("growth_raw_sign_change_days"),
+        "inflation_raw_sign_change_days": full.get("inflation_raw_sign_change_days"),
+        "post_initialization_consumable_coverage": post.get(
+            "consumable_state_coverage"
+        ),
+        "post_initialization_valid_rate": post.get("valid_rate"),
+        "post_initialization_neutral_rate": post.get("neutral_rate"),
+        "post_initialization_candidate_defined_rate": post.get(
+            "candidate_defined_rate"
+        ),
+        "post_initialization_transition_displacement_p90": transition_dist.get("p90"),
+        "post_initialization_episode_duration_p90": post.get(
+            "revision_episode_duration_p90"
+        ),
+        "full_neutral_rate": full.get("neutral_rate"),
+        "full_candidate_defined_rate": full.get("candidate_defined_rate"),
+        "full_valid_rate": full.get("valid_rate"),
+        "full_consumable_coverage": full.get("consumable_state_coverage"),
+        "v03_gate_status": "pending",
+        "frozen": False,
+        "production_candidate": False,
+        "activation_ready": False,
+    }
+
+
+def apply_v03_gate_status(
+    summary_rows: list[dict[str, Any]], metric_rows: list[dict[str, Any]]
+) -> None:
+    control = next(
+        (row for row in summary_rows if row["a31_config_name"] == "V03-G0-CONTROL"),
+        None,
+    )
+    control_hash = control.get("a31_config_hash") if control else None
+    for row in summary_rows:
+        fold_deltas = v03_fold_revision_deltas(
+            metric_rows,
+            str(row["a31_config_hash"]),
+            str(control_hash) if control_hash else None,
+        )
+        row["fold_revision_deltas_vs_control"] = json.dumps(fold_deltas, sort_keys=True)
+        improves = [
+            delta for delta in fold_deltas.values()
+            if delta is not None and delta < 0
+        ]
+        worsens = [
+            delta for delta in fold_deltas.values()
+            if delta is not None and delta > 0.02
+        ]
+        passes = (
+            float(row.get("full_candidate_revision_change_rate") or 1.0) < 0.15
+            and float(row.get("post_initialization_candidate_revision_change_rate") or 1.0) < 0.15
+            and len(improves) >= 2
+            and not worsens
+            and int(row.get("growth_raw_sign_change_days") or 10**9) < 400
+            and int(row.get("inflation_raw_sign_change_days") or 10**9) <= 217
+            and float(row.get("post_initialization_consumable_coverage") or 0.0) >= 0.43
+            and float(row.get("post_initialization_transition_displacement_p90") or 10**9) < 45.0
+            and float(row.get("post_initialization_episode_duration_p90") or 10**9) < 18.0
+        )
+        row["v03_improved_folds_vs_control"] = len(improves)
+        row["v03_fold_worse_over_2pp"] = bool(worsens)
+        row["v03_gate_status"] = (
+            "v03_intermediate_pass" if passes else "v03_screened_out"
+        )
+
+
+def v03_fold_revision_deltas(
+    metric_rows: list[dict[str, Any]], config_hash: str, control_hash: str | None
+) -> dict[str, float | None]:
+    if control_hash is None:
+        return {"2014_2017": None, "2018_2021": None, "2022_2026": None}
+    by_key = {
+        (str(row["a31_config_hash"]), str(row["fold"])): row
+        for row in metric_rows
+    }
+    out: dict[str, float | None] = {}
+    for fold in ("2014_2017", "2018_2021", "2022_2026"):
+        lhs = by_key.get((config_hash, fold), {}).get(
+            "candidate_quadrant_change_rate_calendar"
+        )
+        rhs = by_key.get((control_hash, fold), {}).get(
+            "candidate_quadrant_change_rate_calendar"
+        )
+        out[fold] = None if lhs is None or rhs is None else float(lhs) - float(rhs)
+    return out
+
+
+def v03_stop_decision(summary_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not summary_rows:
+        return {"decision": "v03_execution_failed", "reason": "no_results"}
+    best_post = min(
+        summary_rows,
+        key=lambda row: none_last(row.get("post_initialization_candidate_revision_change_rate")),
+    )
+    best_full = min(
+        summary_rows,
+        key=lambda row: none_last(row.get("full_candidate_revision_change_rate")),
+    )
+    best_full_rate = float(best_full.get("full_candidate_revision_change_rate") or 1.0)
+    if any(row.get("v03_gate_status") == "v03_intermediate_pass" for row in summary_rows):
+        decision = "run_local_v03_limited"
+    elif 0.15 <= best_full_rate < A31_V03_CONTROL_REVISION_RATE:
+        decision = "open_new_family_qualification"
+    else:
+        decision = "prepare_request_freeze_gate_revision"
+    return {
+        "decision": decision,
+        "best_config": best_full.get("a31_config_name"),
+        "best_full_revision_rate": best_full.get("full_candidate_revision_change_rate"),
+        "best_post_initialization_config": best_post.get("a31_config_name"),
+        "best_post_initialization_revision_rate": best_post.get(
+            "post_initialization_candidate_revision_change_rate"
+        ),
+        "a3_freeze_ready": False,
+        "a4_status": A4_PROVISIONAL_STATUS,
+        "a5_status": "blocked",
+    }
+
+
+def v03_summary_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        0 if row.get("v03_gate_status") == "v03_intermediate_pass" else 1,
+        none_last(row.get("post_initialization_candidate_revision_change_rate")),
+        none_last(row.get("growth_raw_sign_change_days")),
+        none_last(row.get("inflation_raw_sign_change_days")),
+        none_last(row.get("post_initialization_consumable_coverage")) * -1,
+        str(row.get("a31_config_hash")),
+    )
+
+
+def render_a31_v03_report(
+    manifest: dict[str, Any], summary_rows: list[dict[str, Any]]
+) -> str:
+    rows = [
+        "# A31 v03 Revision Robust Screen",
+        "",
+        f"- worker_commit: `{manifest['worker_commit']}`",
+        f"- git_dirty: `{manifest['git_dirty']}`",
+        f"- A32 fixed: `{manifest['a32_config_name']}`",
+        f"- stop_decision: `{manifest['stop_decision']['decision']}`",
+        "- A4 remains smoke/viability only; A5 remains blocked.",
+        "",
+        "| config | gate | post-init revision | growth raw | inflation raw | post-init valid | post-init consumable | neutral | candidate defined |",
+        "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
+    for row in summary_rows:
+        rows.append(
+            f"| `{row['a31_config_name']}` | {row['v03_gate_status']} | "
+            f"{row['post_initialization_candidate_revision_change_rate']} | "
+            f"{row['growth_raw_sign_change_days']} | "
+            f"{row['inflation_raw_sign_change_days']} | "
+            f"{row['post_initialization_valid_rate']} | "
+            f"{row['post_initialization_consumable_coverage']} | "
+            f"{row['post_initialization_neutral_rate']} | "
+            f"{row['post_initialization_candidate_defined_rate']} |"
+        )
+    rows.append("")
+    return "\n".join(rows)
+
+
 def parse_a32_grid_args(argv: list[str]) -> A32GridConfig:
     ap = argparse.ArgumentParser(description="Run offline A3.2 grid over selected A31 configs")
     ap.add_argument("command", choices=["a32-grid"])
@@ -6556,6 +7183,328 @@ def load_l2_market_from_feature_manifest(
     return manifest, l2_path, actual_hash, rows
 
 
+def parse_revision_uncertainty_args(argv: list[str]) -> RevisionUncertaintyConfig:
+    ap = argparse.ArgumentParser(description="Build PIT revision-uncertainty primitives")
+    ap.add_argument("command", choices=["revision-uncertainty"])
+    ap.add_argument("--feature-manifest", required=True)
+    ap.add_argument("--output-dir")
+    ap.add_argument("--offline", action="store_true")
+    ap.add_argument("--worker-commit")
+    args = ap.parse_args(argv)
+    return RevisionUncertaintyConfig(
+        feature_manifest=Path(args.feature_manifest),
+        output_dir=Path(args.output_dir) if args.output_dir else None,
+        offline=args.offline,
+        worker_commit=args.worker_commit,
+    )
+
+
+def run_revision_uncertainty(config: RevisionUncertaintyConfig) -> dict[str, Any]:
+    if not config.offline:
+        raise SystemExit("revision-uncertainty requires --offline")
+    started = dt.datetime.now(UTC)
+    execution_id = str(uuid.uuid4())
+    output_dir = config.output_dir or (config.feature_manifest.parent / "revision_uncertainty")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    feature_manifest, _, l2_hash, l2_records = load_l2_macro_from_feature_manifest(
+        config.feature_manifest
+    )
+    worker_commit = config.worker_commit or run_text(
+        ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1]
+    )
+    git_dirty = bool(run_text(
+        ["git", "status", "--porcelain"], cwd=Path(__file__).resolve().parents[1]
+    ))
+    rows = build_revision_uncertainty_primitives(l2_records)
+    write_parquet(output_dir / "revision_uncertainty_primitives.parquet", rows)
+    finished = dt.datetime.now(UTC)
+    manifest = {
+        "schema_version": REVISION_UNCERTAINTY_SCHEMA_VERSION,
+        "artifact_type": "revision_uncertainty_primitives",
+        "execution_id": execution_id,
+        "started_at": started.isoformat(),
+        "finished_at": finished.isoformat(),
+        "host": socket.gethostname(),
+        "pid": os.getpid(),
+        "offline": True,
+        "external_access": "disabled_by_revision_uncertainty_path",
+        "worker_commit": worker_commit,
+        "git_dirty": git_dirty,
+        "feature_manifest_path": str(config.feature_manifest),
+        "parent_hashes": {
+            "l2_macro_logical_hash": l2_hash,
+            "l2_schema_version": feature_manifest.get("schema_version"),
+            "business_date_calendar_hash": feature_manifest.get(
+                "business_date_calendar_hash"
+            ),
+            "series_family_mapping_hash": feature_manifest.get(
+                "series_family_mapping_hash"
+            ),
+        },
+        "grain": "business_date x selection_mode x entity_level x entity_id",
+        "strictly_pit": True,
+        "history_update_policy": "expanding history before current business_date is used for current estimates",
+        "mature_minimums": {
+            "weekly": 52,
+            "monthly": 36,
+            "quarterly": 12,
+        },
+        "fallback_policy": "insufficient history leaves q_revision null and L3 uses REF behavior",
+        "row_count": len(rows),
+        "logical_hash": logical_records_hash(rows),
+        "artifact_hashes": hash_artifacts(
+            output_dir,
+            ["revision_uncertainty_primitives.parquet"],
+        ),
+    }
+    write_json(output_dir / "revision_uncertainty_manifest.json", manifest)
+    return {
+        "status": "ok",
+        "output_dir": str(output_dir),
+        "row_count": len(rows),
+        "logical_hash": manifest["logical_hash"],
+    }
+
+
+def build_revision_uncertainty_primitives(
+    l2_records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_series_date: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+    series_meta: dict[str, dict[str, Any]] = {}
+    for row in l2_records:
+        series_id = str(row.get("series_id"))
+        business_date = str(row.get("business_date"))
+        selection_mode = str(row.get("selection_mode"))
+        by_series_date.setdefault((business_date, series_id), {})[selection_mode] = row
+        series_meta.setdefault(series_id, row)
+    history: dict[str, list[dict[str, Any]]] = {series_id: [] for series_id in series_meta}
+    seen_revision_events: dict[str, set[tuple[str, str | None, str | None]]] = {
+        series_id: set() for series_id in series_meta
+    }
+    rows: list[dict[str, Any]] = []
+    dates = sorted({date for date, _ in by_series_date})
+    for business_date in dates:
+        series_rows_for_aggregate: list[dict[str, Any]] = []
+        for series_id in sorted(series_meta):
+            modes = by_series_date.get((business_date, series_id), {})
+            latest = modes.get("latest")
+            first = modes.get("first_release")
+            if latest is None:
+                continue
+            stats = revision_uncertainty_stats(
+                history[series_id],
+                transform_frequency(str(latest.get("transform_class"))),
+            )
+            for selection_mode in ("latest", "first_release"):
+                source_row = modes.get(selection_mode)
+                if source_row is None:
+                    continue
+                out = revision_uncertainty_row(
+                    business_date,
+                    selection_mode,
+                    "series",
+                    series_id,
+                    source_row,
+                    stats,
+                )
+                rows.append(out)
+                if selection_mode == "latest":
+                    series_rows_for_aggregate.append(out)
+            if first is not None:
+                event = revision_event_from_pair(latest, first)
+                if event is not None:
+                    key = (
+                        str(latest.get("observation_period")),
+                        str(latest.get("vintage_date")),
+                        str(first.get("vintage_date")),
+                    )
+                    if key not in seen_revision_events[series_id]:
+                        history[series_id].append(event)
+                        seen_revision_events[series_id].add(key)
+        rows.extend(aggregate_revision_uncertainty_rows(business_date, series_rows_for_aggregate))
+    rows.sort(key=lambda row: (
+        str(row["business_date"]),
+        str(row["selection_mode"]),
+        str(row["entity_level"]),
+        str(row["entity_id"]),
+    ))
+    return rows
+
+
+def revision_event_from_pair(
+    latest: dict[str, Any], first: dict[str, Any]
+) -> dict[str, Any] | None:
+    latest_score = finite_or_none(latest.get("reference_series_score"))
+    first_score = finite_or_none(first.get("reference_series_score"))
+    if latest_score is None or first_score is None:
+        return None
+    revision_delta = latest_score - first_score
+    return {
+        "revision_delta": revision_delta,
+        "abs_revision_delta": abs(revision_delta),
+        "sign_flipped": (
+            sign_of(latest_score) is not None
+            and sign_of(first_score) is not None
+            and sign_of(latest_score) != sign_of(first_score)
+        ),
+    }
+
+
+def transform_frequency(transform_class: str) -> str:
+    if transform_class.startswith("claims_"):
+        return "weekly"
+    if transform_class.startswith("quarterly_"):
+        return "quarterly"
+    return "monthly"
+
+
+def mature_minimum_for_frequency(frequency: str) -> int:
+    return {"weekly": 52, "quarterly": 12}.get(frequency, 36)
+
+
+def revision_uncertainty_stats(
+    history: list[dict[str, Any]], frequency: str
+) -> dict[str, Any]:
+    mature_count = len(history)
+    minimum = mature_minimum_for_frequency(frequency)
+    if mature_count < minimum:
+        return {
+            "frequency": frequency,
+            "mature_observation_count": mature_count,
+            "mature_minimum": minimum,
+            "sufficient_history": False,
+            "median_revision_bias": None,
+            "median_absolute_revision": None,
+            "p75_absolute_revision": None,
+            "p90_absolute_revision": None,
+            "revision_sign_flip_rate": None,
+        }
+    biases = sorted(float(item["revision_delta"]) for item in history)
+    absolutes = sorted(float(item["abs_revision_delta"]) for item in history)
+    flips = [bool(item["sign_flipped"]) for item in history]
+    return {
+        "frequency": frequency,
+        "mature_observation_count": mature_count,
+        "mature_minimum": minimum,
+        "sufficient_history": True,
+        "median_revision_bias": statistics.median(biases),
+        "median_absolute_revision": percentile(absolutes, 0.50),
+        "p75_absolute_revision": percentile(absolutes, 0.75),
+        "p90_absolute_revision": percentile(absolutes, 0.90),
+        "revision_sign_flip_rate": sum(1 for value in flips if value) / len(flips),
+    }
+
+
+def revision_uncertainty_row(
+    business_date: str,
+    selection_mode: str,
+    entity_level: str,
+    entity_id: str,
+    source_row: dict[str, Any],
+    stats: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date,
+        "selection_mode": selection_mode,
+        "selection_role": selection_role_for_mode(selection_mode),
+        "counterfactual_only": selection_role_for_mode(selection_mode)
+        != "pit_runtime_candidate",
+        "entity_level": entity_level,
+        "entity_id": entity_id,
+        "series_id": source_row.get("series_id") if entity_level == "series" else None,
+        "family_id": source_row.get("family_id"),
+        "axis_id": source_row.get("axis_id"),
+        **stats,
+    }
+
+
+def aggregate_revision_uncertainty_rows(
+    business_date: str,
+    series_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for selection_mode in ("latest", "first_release"):
+        mode_rows = [
+            dict(row, selection_mode=selection_mode)
+            for row in series_rows
+        ]
+        for level, key_name in (("family", "family_id"), ("axis", "axis_id")):
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for row in mode_rows:
+                groups.setdefault(str(row.get(key_name)), []).append(row)
+            for entity_id, items in sorted(groups.items()):
+                stats = aggregate_uncertainty_stats(items)
+                out.append({
+                    "business_date": business_date,
+                    "selection_mode": selection_mode,
+                    "selection_role": selection_role_for_mode(selection_mode),
+                    "counterfactual_only": selection_role_for_mode(selection_mode)
+                    != "pit_runtime_candidate",
+                    "entity_level": level,
+                    "entity_id": entity_id,
+                    "series_id": None,
+                    "family_id": entity_id if level == "family" else None,
+                    "axis_id": entity_id if level == "axis" else items[0].get("axis_id"),
+                    **stats,
+                })
+    return out
+
+
+def aggregate_uncertainty_stats(items: list[dict[str, Any]]) -> dict[str, Any]:
+    sufficient = [row for row in items if row.get("sufficient_history")]
+    mature_count = sum(int(row.get("mature_observation_count") or 0) for row in items)
+    minimum = sum(int(row.get("mature_minimum") or 0) for row in items)
+    def metric_values(name: str) -> list[float]:
+        return [
+            float(row[name]) for row in sufficient
+            if row.get(name) is not None
+        ]
+    abs_p50 = metric_values("median_absolute_revision")
+    abs_p75 = metric_values("p75_absolute_revision")
+    abs_p90 = metric_values("p90_absolute_revision")
+    biases = metric_values("median_revision_bias")
+    flips = metric_values("revision_sign_flip_rate")
+    return {
+        "frequency": "mixed",
+        "mature_observation_count": mature_count,
+        "mature_minimum": minimum,
+        "sufficient_history": bool(sufficient),
+        "median_revision_bias": statistics.median(biases) if biases else None,
+        "median_absolute_revision": statistics.median(abs_p50) if abs_p50 else None,
+        "p75_absolute_revision": statistics.median(abs_p75) if abs_p75 else None,
+        "p90_absolute_revision": statistics.median(abs_p90) if abs_p90 else None,
+        "revision_sign_flip_rate": statistics.mean(flips) if flips else None,
+    }
+
+
+def load_revision_uncertainty_from_manifest(
+    manifest_path: Path,
+) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+    manifest = read_json_dict(manifest_path)
+    expected_hash = str(manifest.get("logical_hash") or "")
+    if not expected_hash:
+        raise ValueError("revision uncertainty manifest missing logical_hash")
+    path = manifest_path.parent / "revision_uncertainty_primitives.parquet"
+    rows = read_parquet_records(path)
+    actual_hash = logical_records_hash(rows)
+    validate_parent_hash("revision_uncertainty_primitives", actual_hash, expected_hash)
+    return manifest, actual_hash, rows
+
+
+def revision_uncertainty_keyed(
+    rows: list[dict[str, Any]],
+) -> dict[tuple[str, str, str, str], dict[str, Any]]:
+    return {
+        (
+            str(row["business_date"]),
+            str(row["selection_mode"]),
+            str(row["entity_level"]),
+            str(row["entity_id"]),
+        ): row
+        for row in rows
+    }
+
+
 def read_parquet_records(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(path)
@@ -6667,12 +7616,15 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
     data["name"] = name
     simple_fields = {
         "aggregation_method",
+        "axis_aggregation_method",
         "robust_clip",
         "reliability_weighting",
         "release_smoothing",
         "family_weights",
         "series_weights",
         "series_transform_overrides",
+        "revision_soft_threshold_quantile",
+        "family_consensus_min",
     }
     for field in simple_fields:
         if field in entry:
@@ -6712,6 +7664,7 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
         },
         series_weights={str(k): float(v) for k, v in dict(data["series_weights"]).items()},
         aggregation_method=str(data["aggregation_method"]),
+        axis_aggregation_method=str(data["axis_aggregation_method"]),
         robust_clip=float(data["robust_clip"]),
         reliability_weighting=str(data["reliability_weighting"]),
         score_clip={str(k): float(v) for k, v in dict(data["score_clip"]).items()},
@@ -6720,6 +7673,14 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
             str(k): str(v)
             for k, v in dict(data.get("series_transform_overrides", {})).items()
         },
+        revision_soft_threshold_quantile=(
+            None if data.get("revision_soft_threshold_quantile") in {None, "null", ""}
+            else str(data.get("revision_soft_threshold_quantile"))
+        ),
+        family_consensus_min=(
+            None if data.get("family_consensus_min") is None
+            else float(data.get("family_consensus_min"))
+        ),
     )
     metadata = {
         key: normalize_logical_value(value)
@@ -6728,6 +7689,7 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
             "name",
             "extends",
             "aggregation_method",
+            "axis_aggregation_method",
             "robust_clip",
             "reliability_weighting",
             "release_smoothing",
@@ -6735,6 +7697,8 @@ def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dic
             "family_weights",
             "series_weights",
             "series_transform_overrides",
+            "revision_soft_threshold_quantile",
+            "family_consensus_min",
             "score_clip",
             "family_weight_shift",
             "family_weight_shifts",
@@ -6847,6 +7811,9 @@ def a31_distance_from_ref(config: A31Config) -> float:
                 config.transformation_weights.get(transform, {}).get(component, 0.0) - weight
             )
     distance += 0.01 if config.aggregation_method != ref.aggregation_method else 0.0
+    distance += (
+        0.01 if config.axis_aggregation_method != ref.axis_aggregation_method else 0.0
+    )
     distance += abs(config.robust_clip - ref.robust_clip) / 10.0
     distance += 0.01 if config.reliability_weighting != ref.reliability_weighting else 0.0
     distance += 0.01 if config.release_smoothing != ref.release_smoothing else 0.0
@@ -7309,6 +8276,7 @@ def run_market_grid(config: MarketGridConfig) -> dict[str, Any]:
     metrics_rows.sort(key=lambda row: str(row["market_config_hash"]))
     selected = summary_rows[0] if summary_rows else None
     selected_replay = replay_by_hash[str(selected["market_config_hash"])] if selected else []
+    selected_replay = freeze_market_diagnostic_replay(selected_replay)
 
     macro_replay: list[dict[str, Any]] = []
     comparison_rows: list[dict[str, Any]] = []
@@ -7381,6 +8349,9 @@ def run_market_grid(config: MarketGridConfig) -> dict[str, Any]:
         "config_count": len(market_configs),
         "selected_market_config_hash": selected.get("market_config_hash") if selected else None,
         "selected_market_config_name": selected.get("market_config_name") if selected else None,
+        "selected_market_model_version": MARKET_DIAGNOSTIC_MODEL_VERSION,
+        "runtime_activation": False,
+        "freeze_scope": "diagnostic_comparator_only",
         "selected_valid_years": selected.get("valid_years") if selected else [],
         "selected_has_valid_all_years": selected.get("has_valid_all_years") if selected else False,
         "summary_logical_hash": logical_records_hash(summary_rows),
@@ -7710,6 +8681,17 @@ def market_grid_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
         none_last(row.get("min_confidence")),
         str(row.get("market_config_hash")),
     )
+
+
+def freeze_market_diagnostic_replay(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    frozen: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item["model_version"] = MARKET_DIAGNOSTIC_MODEL_VERSION
+        item["diagnostic_frozen"] = True
+        item["runtime_activation"] = False
+        frozen.append(item)
+    return frozen
 
 
 def build_selected_macro_replay_for_market_comparison(
@@ -8310,6 +9292,14 @@ def main(argv: list[str] | None = None) -> None:
         argv = sys.argv[1:]
     if argv and argv[0] == "a31-grid":
         result = run_a31_grid(parse_a31_grid_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "revision-uncertainty":
+        result = run_revision_uncertainty(parse_revision_uncertainty_args(argv))
+        print(json.dumps(result, sort_keys=True))
+        return
+    if argv and argv[0] == "a31-v03-grid":
+        result = run_a31_v03_grid(parse_a31_v03_grid_args(argv))
         print(json.dumps(result, sort_keys=True))
         return
     if argv and argv[0] == "a32-grid":
