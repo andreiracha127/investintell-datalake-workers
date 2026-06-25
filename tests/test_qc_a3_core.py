@@ -34,6 +34,24 @@ def test_compare_rows_allows_tiny_float_differences() -> None:
     assert mismatches == []
 
 
+def test_compare_rows_allows_tiny_json_float_differences() -> None:
+    mismatches = qc.compare_rows(
+        "full",
+        {"distribution": '{"max": 1.0000000000001, "min": 0.0}'},
+        {"distribution": '{"max": 1.0, "min": 0.0}'},
+    )
+
+    assert mismatches == []
+
+
+def test_metric_rows_logical_hash_canonicalizes_float_noise() -> None:
+    left = [{"fold": "full", "value": 0.39246263518212093}]
+    right = [{"fold": "full", "value": 0.39246263518212104}]
+
+    assert qc.metric_rows_logical_hash(left) == qc.metric_rows_logical_hash(right)
+    assert qc.metric_rows_raw_sha256(left) != qc.metric_rows_raw_sha256(right)
+
+
 def test_compare_rows_reports_categorical_and_float_mismatches() -> None:
     mismatches = qc.compare_rows(
         "full",
