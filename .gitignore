@@ -11,6 +11,10 @@ __pycache__/
 .remember/
 .pytest_cache/
 
+# Lean CLI local state
+lean.json
+data/
+
 # scratch / one-off validation scripts
 _tmp_*
 _val*
