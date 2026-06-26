@@ -1,0 +1,12 @@
+{
+  "schema_version": "v1",
+  "tables": [
+    {
+      "name": "risk_metrics_inputs",
+      "path": "data/risk_metrics_inputs.json",
+      "rows": 2,
+      "sha256": "445524ff51858c186b9f0ce8139461b39229881753889c80915bbe0efb4e724d"
+    }
+  ]
+}
+

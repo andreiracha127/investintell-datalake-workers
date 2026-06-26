@@ -1,0 +1,15 @@
+{
+  "builder_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "builder_image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "canonical_snapshot_sha256": "d5515f4b3b4d0dbe26f5b0b1f0de8e38411b5fb754afc0c523654d2e8f306b16",
+  "contract_bundle_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+  "derived_feature_sha256": "8b86048a664b8cc8da1696520ecb5687c4d3c44da59d45ced5b97a34348849cd",
+  "input_pack_id": "open_macro_v03_input_pack_001",
+  "input_pack_sha256": "6278ea10425fde71bc95e4449e976bc746b0ae1f85fcc44e06d5af8ee9e898a3",
+  "input_pack_version": "v1",
+  "raw_snapshot_sha256": "0c5b30f687d9c640694cc6f610bf9b8ff05b15f675596b1d23ec021849ad6bf3",
+  "runtime_activation": false,
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_repo": "investintell-datalake-workers"
+}
+
