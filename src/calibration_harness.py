@@ -7725,7 +7725,13 @@ def normalize_a31_catalog(
         "config_count": len(normalized_configs),
         "configs": normalized_configs,
     }
-    return normalized, logical_payload_hash(normalized)
+    # Finding F1: the catalog hash must be reproducible regardless of where the
+    # catalog file is mounted (host vs container differ only by absolute path).
+    # source_path is kept as out-of-band diagnostic metadata but excluded from the
+    # hashed payload so config_catalog_hash (and the transitive evaluation_hash /
+    # object-store prefix) are path-independent.
+    hashable = {key: value for key, value in normalized.items() if key != "source_path"}
+    return normalized, logical_payload_hash(hashable)
 
 
 def a31_config_from_catalog_entry(entry: dict[str, Any]) -> tuple[A31Config, dict[str, Any]]:
