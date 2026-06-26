@@ -225,6 +225,29 @@ def test_npz_export_round_trips_records_with_logical_hash(tmp_path: Path) -> Non
     )
 
 
+def test_write_csv_gzip_is_byte_stable(tmp_path: Path) -> None:
+    rows = [{"b": 2, "a": "x"}, {"b": 3, "a": "y"}]
+    first = tmp_path / "first.csv.gz"
+    second = tmp_path / "second.csv.gz"
+
+    qc.write_csv_gzip(first, rows)
+    qc.write_csv_gzip(second, rows)
+
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_write_gzip_text_is_byte_stable(tmp_path: Path) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    first = tmp_path / "first.py.gz"
+    second = tmp_path / "second.py.gz"
+
+    qc.write_gzip_text(source, first)
+    qc.write_gzip_text(source, second)
+
+    assert first.read_bytes() == second.read_bytes()
+
+
 def test_materialize_harness_source_from_manifest_verifies_sha(tmp_path: Path) -> None:
     source_dir = tmp_path / "bundle" / "code"
     source_dir.mkdir(parents=True)
