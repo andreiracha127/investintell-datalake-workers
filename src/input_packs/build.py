@@ -12,6 +12,7 @@ import json
 import math
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -491,12 +492,35 @@ def reset_output_dir(output_dir: Path, *, force: bool) -> None:
             raise FileExistsError(f"output directory already exists: {output_dir}; pass --force to overwrite")
         resolved = output_dir.resolve()
         root = repo_root().resolve()
-        try:
-            resolved.relative_to(root)
-        except ValueError as exc:
-            raise ValueError(f"--force output must stay inside repository root: {resolved}") from exc
+        artifact_root = (root / "artifacts" / "input_packs").resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if _is_child_or_self(resolved, root):
+            is_safe = _is_strict_child(resolved, artifact_root)
+        else:
+            is_safe = _is_strict_child(resolved, temp_root)
+        if not is_safe:
+            raise ValueError(
+                "--force output must target a child of a safe artifact subtree "
+                f"(artifacts/input_packs or system temp), got: {resolved}"
+            )
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True, exist_ok=False)
+
+
+def _is_strict_child(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return path != root
+
+
+def _is_child_or_self(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def write_snapshot_exports(

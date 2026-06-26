@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "sha256:a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277",
+  "bundle_sha256": "sha256:1c0d9748c063314f51ad34abe6bc73d605eeeb23cef18b8e51573f95bcf6f877",
   "contract_version": "1.0.0",
   "files": [
     {
@@ -43,6 +43,10 @@
       "sha256": "decb2500353d4b44e916da343e00444f5bc14eae872059633ddf35ac1e82eaf9"
     },
     {
+      "path": "fixtures/valid/job-result.input-pack-dry-run.json",
+      "sha256": "860f44575106a02a0924993ce7e1b69624dd94000b7d3ff4b3878385db2737ed"
+    },
+    {
       "path": "fixtures/valid/job-result.passed.json",
       "sha256": "c797e5cb02755f55a1d85a7c1be8d4da83156c726f536b33466ea8c5a770140e"
     },
@@ -52,7 +56,7 @@
     },
     {
       "path": "job-result.schema.json",
-      "sha256": "95626166653241b6fed455c18b530b057cb66837e920dbfd6fe1d71880ea4fe7"
+      "sha256": "ad19a74a3fd883196d3ddb29689a4c9320e197b03431ec7025c1795c237ed71c"
     }
   ]
 }

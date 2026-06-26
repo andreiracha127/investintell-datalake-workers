@@ -34,10 +34,19 @@ def test_job_result_schema_keeps_runtime_activation_disabled() -> None:
     schema = _schema("job-result.schema.json")
 
     assert schema["title"] == "QuantEngineJobResult"
-    assert schema["properties"]["runtime_activation"]["const"] is False
-    assert schema["properties"]["a3_status"]["const"] == "open_macro_v03"
-    assert schema["properties"]["a4_status"]["const"] == "harness_ready_provisional_A3"
-    assert schema["properties"]["a5_status"]["const"] == "blocked"
+    variants = [schema["$defs"][variant["$ref"].removeprefix("#/$defs/")] for variant in schema["oneOf"]]
+    assert {variant["properties"]["job_type"]["const"] for variant in variants} == {
+        "a3_qc_parity",
+        "certified_input_pack_dry_run",
+    }
+    assert {variant["properties"]["a4_status"]["const"] for variant in variants} == {
+        "harness_ready_provisional_A3",
+        "input_pack_certified_for_calibration",
+    }
+    for variant in variants:
+        assert variant["properties"]["runtime_activation"]["const"] is False
+        assert variant["properties"]["a3_status"]["const"] == "open_macro_v03"
+        assert variant["properties"]["a5_status"]["const"] == "blocked"
 
 
 def test_engine_manifest_schema_declares_offline_execution() -> None:

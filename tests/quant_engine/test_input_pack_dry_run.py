@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT / "packages" / "investintell_quant_core" / "src"))
 sys.path.insert(0, str(ROOT))
 
 from investintell_quant_engine.cli import main
+import investintell_quant_engine.runners.input_pack as input_pack_runner
 from investintell_quant_engine.runners.input_pack import run_input_pack_dry_run
 from src.input_packs.build import build_pack
 
@@ -48,6 +50,15 @@ def test_dry_run_consumes_verified_pack_without_runtime_activation(tmp_path: Pat
     assert result["input_pack_sha256"] == _json(pack / "manifest.json")["input_pack_sha256"]
 
 
+def test_dry_run_result_matches_job_result_contract(tmp_path: Path) -> None:
+    pack = _build_pack(tmp_path)
+    schema = _json(ROOT / "contracts" / "quant-engine" / "v1" / "job-result.schema.json")
+
+    result = run_input_pack_dry_run(pack)
+
+    jsonschema.validate(result, schema)
+
+
 def test_dry_run_rejects_invalid_pack(tmp_path: Path) -> None:
     pack = _build_pack(tmp_path)
     rows = _json(pack / "data" / "derived" / "fund_nav_return_features.json")
@@ -58,6 +69,17 @@ def test_dry_run_rejects_invalid_pack(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="invalid certified input pack"):
+        run_input_pack_dry_run(pack)
+
+
+def test_dry_run_rejects_stale_contract_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pack = _build_pack(tmp_path)
+    monkeypatch.setattr(input_pack_runner, "current_contract_bundle_sha256", lambda: "0" * 64)
+
+    with pytest.raises(ValueError, match="contract_bundle_sha256 mismatch"):
         run_input_pack_dry_run(pack)
 
 

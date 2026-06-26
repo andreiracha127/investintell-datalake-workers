@@ -8,13 +8,21 @@ from typing import Any
 
 from investintell_quant_core.hashing.canonical import stable_hash
 
-from investintell_quant_engine._paths import ensure_repo_paths
+from investintell_quant_engine._paths import REPO_ROOT, ensure_repo_paths
+from investintell_quant_engine.contract_bundle import verify_bundle
 from investintell_quant_engine.preflight import validate_offline_request, validate_runtime_disabled
 
 ensure_repo_paths()
 
 from src.input_packs.hashing import canonical_json_sha256, load_json
 from src.input_packs.verifier import verify_pack
+
+
+def current_contract_bundle_sha256() -> str:
+    result = verify_bundle(REPO_ROOT / "contracts" / "quant-engine" / "v1")
+    if not result["ok"]:
+        raise ValueError(f"current quant-engine contract bundle is invalid: {json.dumps(result, sort_keys=True)}")
+    return str(result["bundle_sha256"]).removeprefix("sha256:")
 
 
 def run_input_pack_dry_run(
@@ -32,6 +40,13 @@ def run_input_pack_dry_run(
         raise ValueError(f"invalid certified input pack: {json.dumps(verification, sort_keys=True)}")
 
     manifest = load_json(root / "manifest.json")
+    expected_contract = current_contract_bundle_sha256()
+    pack_contract = str(manifest["contract_bundle_sha256"])
+    if pack_contract != expected_contract:
+        raise ValueError(
+            "certified input pack contract_bundle_sha256 mismatch: "
+            f"expected {expected_contract}, got {pack_contract}"
+        )
     source_snapshot_sha256 = canonical_json_sha256(
         {
             "raw_snapshot_sha256": manifest["raw_snapshot_sha256"],

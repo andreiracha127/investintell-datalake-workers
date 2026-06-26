@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import src.input_packs.build as build_module
 from src.input_packs.build import P0_INPUT_PACK_ID, build_pack, main
 from src.input_packs.verifier import verify_pack
 
@@ -85,6 +86,39 @@ def test_builder_rejects_unsupported_profile(tmp_path: Path) -> None:
             source_dir=SOURCE_DIR,
             output=tmp_path / "pack",
         )
+
+
+def test_force_rejects_repo_root_and_source_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_repo = tmp_path / "repo"
+    source_tree = fake_repo / "src"
+    safe_root = fake_repo / "artifacts" / "input_packs"
+    source_tree.mkdir(parents=True)
+    safe_root.mkdir(parents=True)
+    monkeypatch.setattr(build_module, "repo_root", lambda: fake_repo)
+
+    with pytest.raises(ValueError, match="safe artifact subtree"):
+        build_module.reset_output_dir(fake_repo, force=True)
+    with pytest.raises(ValueError, match="safe artifact subtree"):
+        build_module.reset_output_dir(source_tree, force=True)
+    with pytest.raises(ValueError, match="safe artifact subtree"):
+        build_module.reset_output_dir(safe_root, force=True)
+
+    assert fake_repo.exists()
+    assert source_tree.exists()
+    assert safe_root.exists()
+
+
+def test_force_allows_existing_pack_artifact_subdir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    fake_repo = tmp_path / "repo"
+    pack_dir = fake_repo / "artifacts" / "input_packs" / "open_macro_v03_2026-06-26"
+    pack_dir.mkdir(parents=True)
+    (pack_dir / "stale.txt").write_text("stale", encoding="utf-8")
+    monkeypatch.setattr(build_module, "repo_root", lambda: fake_repo)
+
+    build_module.reset_output_dir(pack_dir, force=True)
+
+    assert pack_dir.is_dir()
+    assert not (pack_dir / "stale.txt").exists()
 
 
 def test_p0_pack_does_not_use_derived_tables_as_official_inputs(tmp_path: Path) -> None:

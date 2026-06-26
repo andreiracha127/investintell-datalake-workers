@@ -2,55 +2,127 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://investintell.local/contracts/quant-engine/v1/job-result.schema.json",
   "title": "QuantEngineJobResult",
-  "type": "object",
-  "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "job_id",
-    "execution_id",
-    "run_fingerprint",
-    "status",
-    "classification",
-    "artifact_prefix",
-    "output_logical_hashes",
-    "errors",
-    "runtime_activation",
-    "a3_status",
-    "a4_status",
-    "a5_status"
+  "oneOf": [
+    {"$ref": "#/$defs/a3_qc_parity_result"},
+    {"$ref": "#/$defs/certified_input_pack_dry_run_result"}
   ],
-  "properties": {
-    "schema_version": {"const": 1},
-    "job_type": {"const": "a3_qc_parity"},
-    "job_id": {"type": "string", "minLength": 1},
-    "execution_id": {"type": "string", "minLength": 1},
-    "run_fingerprint": {"type": "string", "minLength": 12},
-    "status": {"enum": ["succeeded", "failed"]},
-    "classification": {"type": ["string", "null"]},
-    "jobs": {"type": "integer", "minimum": 1},
-    "artifact_prefix": {"type": "string"},
-    "output_logical_hashes": {
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "a3_qc_parity_result": {
       "type": "object",
-      "additionalProperties": {"type": "string"},
+      "additionalProperties": false,
       "required": [
-        "runtime_replay_logical_hash",
-        "counterfactual_replay_logical_hash",
-        "metrics_canonical_logical_hash",
-        "metrics_raw_sha256",
-        "model_evaluation_hash"
+        "schema_version",
+        "job_type",
+        "job_id",
+        "execution_id",
+        "run_fingerprint",
+        "status",
+        "classification",
+        "jobs",
+        "artifact_prefix",
+        "output_logical_hashes",
+        "errors",
+        "runtime_activation",
+        "a3_status",
+        "a4_status",
+        "a5_status"
       ],
       "properties": {
-        "runtime_replay_logical_hash": {"type": "string"},
-        "counterfactual_replay_logical_hash": {"type": "string"},
-        "metrics_canonical_logical_hash": {"type": "string"},
-        "metrics_raw_sha256": {"type": "string"},
-        "model_evaluation_hash": {"type": "string"}
+        "schema_version": {"const": 1},
+        "job_type": {"const": "a3_qc_parity"},
+        "job_id": {"type": "string", "minLength": 1},
+        "execution_id": {"type": "string", "minLength": 1},
+        "run_fingerprint": {"type": "string", "minLength": 12},
+        "status": {"enum": ["succeeded", "failed"]},
+        "classification": {"type": ["string", "null"]},
+        "jobs": {"type": "integer", "minimum": 1},
+        "artifact_prefix": {"type": "string"},
+        "output_logical_hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime_replay_logical_hash",
+            "counterfactual_replay_logical_hash",
+            "metrics_canonical_logical_hash",
+            "metrics_raw_sha256",
+            "model_evaluation_hash"
+          ],
+          "properties": {
+            "runtime_replay_logical_hash": {"$ref": "#/$defs/sha256Hex"},
+            "counterfactual_replay_logical_hash": {"$ref": "#/$defs/sha256Hex"},
+            "metrics_canonical_logical_hash": {"$ref": "#/$defs/sha256Hex"},
+            "metrics_raw_sha256": {"$ref": "#/$defs/sha256Hex"},
+            "model_evaluation_hash": {"type": "string", "minLength": 12}
+          }
+        },
+        "errors": {"type": "array"},
+        "runtime_activation": {"const": false},
+        "a3_status": {"const": "open_macro_v03"},
+        "a4_status": {"const": "harness_ready_provisional_A3"},
+        "a5_status": {"const": "blocked"}
       }
     },
-    "errors": {"type": "array"},
-    "runtime_activation": {"const": false},
-    "a3_status": {"const": "open_macro_v03"},
-    "a4_status": {"const": "harness_ready_provisional_A3"},
-    "a5_status": {"const": "blocked"}
+    "certified_input_pack_dry_run_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "job_type",
+        "job_id",
+        "execution_id",
+        "run_fingerprint",
+        "status",
+        "classification",
+        "input_pack_id",
+        "input_pack_sha256",
+        "contract_bundle_sha256",
+        "source_snapshot_sha256",
+        "output_logical_hashes",
+        "errors",
+        "runtime_activation",
+        "freeze_ready",
+        "a3_status",
+        "a4_status",
+        "a5_status"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "job_type": {"const": "certified_input_pack_dry_run"},
+        "job_id": {"type": "string", "minLength": 1},
+        "execution_id": {"type": "string", "minLength": 1},
+        "run_fingerprint": {"$ref": "#/$defs/sha256Hex"},
+        "status": {"const": "succeeded"},
+        "classification": {"const": "input_pack_verified"},
+        "input_pack_id": {"type": "string", "minLength": 1},
+        "input_pack_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "contract_bundle_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "source_snapshot_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "output_logical_hashes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_pack_sha256",
+            "source_snapshot_sha256"
+          ],
+          "properties": {
+            "input_pack_sha256": {"$ref": "#/$defs/sha256Hex"},
+            "source_snapshot_sha256": {"$ref": "#/$defs/sha256Hex"}
+          }
+        },
+        "errors": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "runtime_activation": {"const": false},
+        "freeze_ready": {"const": false},
+        "a3_status": {"const": "open_macro_v03"},
+        "a4_status": {"const": "input_pack_certified_for_calibration"},
+        "a5_status": {"const": "blocked"}
+      }
+    }
   }
 }
