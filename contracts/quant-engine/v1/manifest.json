@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "sha256:2cdea4d41608562bb3eff1cddd56769450adeb17e84899e31272d81a8f43b0d8",
+  "bundle_sha256": "sha256:a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277",
   "contract_version": "1.0.0",
   "files": [
     {
@@ -17,6 +17,10 @@
     {
       "path": "fixtures/invalid/job-request.missing-engine-image-digest.json",
       "sha256": "97cb0331703018bb27d759c6322ebdcbac71b1181dc9d66ab268f899ce271bc4"
+    },
+    {
+      "path": "fixtures/invalid/job-request.mutable-image-tag.json",
+      "sha256": "bf5abbdf3e367133a56952cc815de66e330b5f192e7642ff7968dd8b11242941"
     },
     {
       "path": "fixtures/invalid/job-request.offline-false.json",
@@ -44,7 +48,7 @@
     },
     {
       "path": "job-request.schema.json",
-      "sha256": "a143bafe60f8414a3b1c04cc93b4ae8568ad51264c8f7e55d83ce9b3a633d593"
+      "sha256": "9f7e50b4c1537b22fa28298fd08a945b00cf42b1644728ac24e133faa66816f6"
     },
     {
       "path": "job-result.schema.json",
