@@ -24,6 +24,14 @@
   "freeze_ready": false,
   "governance_note": "Golden capture only. No calibration, freeze, A5 advancement, runtime activation, production write, or frontend change is authorized by this artifact.",
   "large_data_versioned": false,
+  "microgrid_v03_config_hashes": {
+    "V03-G0-CONTROL": "4b263d560be163fb131d9fdf",
+    "V03-G1-FAMILY-CONSENSUS-60": "c572d9d2b8ecb378d5760b0c",
+    "V03-G1-FAMILY-CONSENSUS-67": "2486419fbb574516be98a8e0",
+    "V03-G1-FAMILY-WEIGHTED-MEDIAN": "84767bd7988a1b725556ed95",
+    "V03-G1-REVSOFT-P50": "c219e4713b5e0e81a2cba8bd",
+    "V03-G1-REVSOFT-P75": "12f27216f0a575daea5ea674"
+  },
   "observed": {
     "counterfactual_replay_logical_hash": "0238d3b5583e06381c3ae2914a80b64f58bc04c50fac455d7e6285228922b021",
     "counterfactual_row_count": 3221,
