@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/quant-engine/v1/engine-manifest.schema.json",
+  "title": "EngineManifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "created_at",
+    "job_type",
+    "jobs",
+    "offline",
+    "runtime_activation",
+    "quant_core_version",
+    "quant_engine_version",
+    "environment"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "artifact_type": {"const": "engine_manifest"},
+    "created_at": {"type": "string"},
+    "job_type": {"type": "string"},
+    "jobs": {"type": "integer", "minimum": 1},
+    "offline": {"const": true},
+    "runtime_activation": {"const": false},
+    "quant_core_version": {"type": "string"},
+    "quant_engine_version": {"type": "string"},
+    "environment": {"type": "object"}
+  }
+}
