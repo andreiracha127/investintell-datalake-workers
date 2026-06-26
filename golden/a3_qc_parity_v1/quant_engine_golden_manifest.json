@@ -43,10 +43,11 @@
     "runtime_row_count": 3221
   },
   "parent_hashes": {
-    "config_catalog_hash_observed": "a01049703fdb8bbee5cbcf2c455a1ec84f0b1d87dedb4c68f3082bdacdff2d3d",
+    "config_catalog_hash_observed": "43ecdc7180525c0793fc040187bdffd90d590ede99976434354bdf589e592e4d",
     "l2_macro_logical_hash": "9d46ac84d89df7b0ea72d2162aac9d5fa1ce0eb6b6d4cb9c69e0c47d82bfee43",
     "revision_uncertainty_logical_hash": "bc4b7fad71d942ec2529a3a9cfb4e81f54ea803037e6e384e828dc142d029fb3"
   },
+  "recapture_note": "2026-06-26: config_catalog_hash recaptured under change control after Finding F1a (source_path removed from the hashed A31 catalog payload in calibration_harness.normalize_a31_catalog). Only config_catalog_hash changed (a01049...->43ecdc...); all model/metric/runtime/counterfactual hashes and the bundle evaluation_hash are unchanged. See docs/architecture/quant-engine-determinism-findings.md.",
   "reproduction_output_dir": "_tmp_quant_engine_golden_baseline_current",
   "runtime_activation": false,
   "schema_version": 1,
