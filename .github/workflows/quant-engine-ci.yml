@@ -11,16 +11,24 @@ on:
   pull_request:
     paths:
       - "contracts/quant-engine/**"
+      - "schemas/input_packs/**"
+      - "src/input_packs/**"
       - "services/quant_engine/**"
       - "packages/investintell_quant_core/**"
       - "docker/quant-engine/**"
       - "scripts/contract_bundle.py"
+      - "scripts/repeatability_matrix.py"
       - "qc_a3_core.py"
       - "src/calibration_harness.py"
+      - "requirements.quant-engine.lock"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/input_packs/**"
       - "tests/quant_core/**"
       - "tests/quant_engine/**"
       - "tests/test_catalog_hash_path_independence.py"
       - "tests/test_qc_a3_core.py"
+      - "tests/test_repeatability_matrix.py"
   workflow_dispatch: {}
 
 jobs:

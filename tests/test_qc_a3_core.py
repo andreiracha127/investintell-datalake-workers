@@ -175,6 +175,101 @@ def test_compare_expected_metrics_skips_when_reference_dir_missing(tmp_path: Pat
     assert comparison["status"] == "skipped"
 
 
+def _minimal_config(tmp_path: Path, expected_dir: Path | None = None) -> qc.A3ParityConfig:
+    return qc.A3ParityConfig(
+        feature_manifest=tmp_path / "feature_manifest.json",
+        revision_uncertainty_manifest=tmp_path / "revision_uncertainty_manifest.json",
+        config_catalog=tmp_path / "catalog.json",
+        a32_grid_dir=tmp_path / "a32",
+        output_dir=tmp_path / "out",
+        expected_v03_grid_dir=expected_dir,
+    )
+
+
+def _expected_metrics_dir(tmp_path: Path, rows: list[dict]) -> Path:
+    expected_dir = tmp_path / "expected_metrics"
+    metrics_dir = expected_dir / "expected"
+    metrics_dir.mkdir(parents=True)
+    qc.write_json(metrics_dir / "macro_metric_rows.json", {"rows": rows})
+    return expected_dir
+
+
+def _metric_row(fold: str, value: float = 1.0) -> dict:
+    return {
+        "a31_config_name": qc.DEFAULT_A31_NAME,
+        "a32_config_name": qc.DEFAULT_A32_NAME,
+        "fold": fold,
+        "value": value,
+    }
+
+
+def test_compare_expected_metrics_rejects_unexpected_fold(tmp_path: Path) -> None:
+    expected_dir = _expected_metrics_dir(tmp_path, [_metric_row("train")])
+    comparison = qc.compare_expected_metrics(
+        _minimal_config(tmp_path, expected_dir),
+        [_metric_row("train"), _metric_row("extra")],
+    )
+
+    assert comparison["status"] == "failed"
+    assert comparison["unexpected_folds"] == ["extra"]
+    assert comparison["mismatch_count"] == 1
+
+
+def test_compare_expected_metrics_rejects_duplicate_actual_fold(tmp_path: Path) -> None:
+    expected_dir = _expected_metrics_dir(tmp_path, [_metric_row("train")])
+    comparison = qc.compare_expected_metrics(
+        _minimal_config(tmp_path, expected_dir),
+        [_metric_row("train"), _metric_row("train")],
+    )
+
+    assert comparison["status"] == "failed"
+    assert comparison["duplicate_actual_folds"] == ["train"]
+    assert comparison["mismatch_count"] == 1
+
+
+def test_compare_expected_metrics_rejects_missing_fold(tmp_path: Path) -> None:
+    expected_dir = _expected_metrics_dir(tmp_path, [_metric_row("train"), _metric_row("oos")])
+    comparison = qc.compare_expected_metrics(
+        _minimal_config(tmp_path, expected_dir),
+        [_metric_row("train")],
+    )
+
+    assert comparison["status"] == "failed"
+    assert comparison["missing_folds"] == ["oos"]
+    assert comparison["mismatch_count"] == 1
+
+
+def test_compare_expected_metrics_accepts_different_order_same_fold_set(tmp_path: Path) -> None:
+    expected_dir = _expected_metrics_dir(tmp_path, [_metric_row("train"), _metric_row("oos")])
+    comparison = qc.compare_expected_metrics(
+        _minimal_config(tmp_path, expected_dir),
+        [_metric_row("oos"), _metric_row("train")],
+    )
+
+    assert comparison["status"] == "passed"
+    assert comparison["actual_folds"] == ["oos", "train"]
+    assert comparison["expected_folds"] == ["oos", "train"]
+    assert comparison["mismatch_count"] == 0
+
+
+def test_main_returns_nonzero_when_run_parity_comparison_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        qc,
+        "parse_args",
+        lambda argv: ("run-parity", _minimal_config(tmp_path)),
+    )
+    monkeypatch.setattr(
+        qc,
+        "run_parity",
+        lambda config: {"comparison": {"status": "failed", "mismatches": []}},
+    )
+
+    assert qc.main(["run-parity"]) == 1
+    assert '"status": "failed"' in capsys.readouterr().out
+
+
 def test_require_harness_imports_worker_module() -> None:
     harness = qc.require_harness()
 
@@ -223,6 +318,24 @@ def test_npz_export_round_trips_records_with_logical_hash(tmp_path: Path) -> Non
     assert harness.logical_records_hash(qc.read_npz_records(npz_path)) == (
         harness.logical_records_hash(harness.read_parquet_records(parquet_path))
     )
+
+
+def test_npz_export_is_byte_stable_across_paths(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    records = [
+        {"business_date": "2026-06-24", "series_id": "ICSA", "value": 1.5},
+        {"business_date": "2026-06-25", "series_id": "ICSA", "value": 2.0},
+    ]
+    parquet_path = tmp_path / "panel.parquet"
+    first = tmp_path / "first" / "panel.npz"
+    second = tmp_path / "second" / "panel.npz"
+    pd.DataFrame(records).to_parquet(parquet_path, index=False)
+
+    qc.export_numeric_panel_npz(parquet_path, first)
+    qc.export_numeric_panel_npz(parquet_path, second)
+
+    assert first.read_bytes() == second.read_bytes()
+    assert qc.file_sha256(first) == qc.file_sha256(second)
 
 
 def test_write_csv_gzip_is_byte_stable(tmp_path: Path) -> None:

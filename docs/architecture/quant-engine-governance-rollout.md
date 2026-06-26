@@ -86,3 +86,16 @@ formula or candidate-selection rule changes as part of activation.
 
 Freeze of A3/A4 parameters, A5 advancement, runtime activation, production DB
 writes, frontend changes, and merge to `main` remain explicitly out of scope.
+
+## Deferred runtime follow-ups before shadow/A5
+
+- `data-quality`: enforce source availability expiry for `quadrant_macro` before
+  shadow/A5. The certified input-pack P0 gate must not change macro quadrant
+  runtime staleness semantics; this requires a dedicated runtime-worker PR that
+  propagates latest vintage `available_at`/release metadata into the expiry
+  decision.
+- `infra`: split regime gate advisory lock ownership and add lock-collision
+  tests. The P0 input-pack gate records the existing `LOCK_REGIME_GATE` /
+  `LOCK_SCREENER_METRICS` collision as accepted technical debt, but concurrent
+  runtime scheduling must not proceed until the lock ids are distinct and covered
+  by tests.

@@ -72,6 +72,10 @@ _REALTIME_ALL = {"realtime_start": "1776-07-04", "realtime_end": "9999-12-31"}
 _SCHEMA = "schemas/macro_observation_vintage.sql"
 
 
+class MacroVintageFetchError(RuntimeError):
+    """ALFRED/FRED request failed for a mandatory macro vintage source."""
+
+
 def ensure_schema(conn) -> None:
     import pathlib
     sql = pathlib.Path(_SCHEMA).read_text(encoding="utf-8")
@@ -82,21 +86,41 @@ def ensure_schema(conn) -> None:
 
 def fetch_vintages(client, api_key: str, series_id: str, bucket: TokenBucket) -> dict:
     """ALFRED all-vintages fetch (output_type=2) for one series. Retries on 5xx/429;
-    a 400 (discontinued/no-vintage series) returns an empty payload, never fails."""
+    request failures fail closed because these sources are mandatory provenance."""
     import time
     params = {"series_id": series_id, "api_key": api_key, "file_type": "json",
               "output_type": 2, **_REALTIME_ALL}
+    last_retry_status: int | None = None
     for attempt in range(3):
         bucket.acquire()
         resp = client.get(f"{FRED_BASE_URL}/series/observations", params=params)
         if resp.status_code in (429, 503) or resp.status_code >= 500:
+            last_retry_status = resp.status_code
             time.sleep(min(30.0, 2.0 * (2 ** attempt)))
             continue
         if resp.status_code == 400:
-            return {"observations": []}
-        resp.raise_for_status()
+            raise MacroVintageFetchError(_alfred_error_message(resp, series_id))
+        try:
+            resp.raise_for_status()
+        except Exception as exc:
+            raise MacroVintageFetchError(_alfred_error_message(resp, series_id)) from exc
         return resp.json()
-    return {"observations": []}
+    raise MacroVintageFetchError(
+        f"ALFRED request for {series_id} failed after retry exhaustion"
+        + (f" (last_status={last_retry_status})" if last_retry_status else "")
+    )
+
+
+def _alfred_error_message(resp, series_id: str) -> str:
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = {}
+    if isinstance(payload, dict):
+        detail = payload.get("error_message") or payload.get("message")
+        if detail:
+            return f"ALFRED request for {series_id} failed: {detail}"
+    return f"ALFRED request for {series_id} failed with status {resp.status_code}"
 
 
 def rows_to_records(rows: list[dict], source_spec_version: str) -> list[tuple]:

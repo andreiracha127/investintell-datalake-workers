@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -290,15 +291,28 @@ def compare_expected_metrics(
             "status": "failed",
             "reason": "expected metrics row not found",
         }
-    actual_by_fold = {str(row["fold"]): row for row in actual_metric_rows}
-    expected_by_fold = {str(row["fold"]): row for row in expected}
+    actual_by_fold = metric_rows_by_fold(actual_metric_rows)
+    expected_by_fold = metric_rows_by_fold(expected)
+    actual_folds = set(actual_by_fold)
+    expected_folds = set(expected_by_fold)
+    missing_folds = sorted(expected_folds - actual_folds)
+    unexpected_folds = sorted(actual_folds - expected_folds)
+    duplicate_actual_folds = duplicate_metric_folds(actual_by_fold)
+    duplicate_expected_folds = duplicate_metric_folds(expected_by_fold)
     mismatches: list[dict[str, Any]] = []
-    for fold, expected_row in sorted(expected_by_fold.items()):
-        actual_row = actual_by_fold.get(fold)
-        if actual_row is None:
-            mismatches.append({"fold": fold, "field": "<row>", "issue": "missing_actual"})
-            continue
-        mismatches.extend(compare_rows(fold, actual_row, expected_row))
+    for fold in missing_folds:
+        mismatches.append({"fold": fold, "field": "<row>", "issue": "missing_actual"})
+    for fold in unexpected_folds:
+        mismatches.append({"fold": fold, "field": "<row>", "issue": "unexpected_actual"})
+    for fold in duplicate_actual_folds:
+        mismatches.append({"fold": fold, "field": "<row>", "issue": "duplicate_actual"})
+    for fold in duplicate_expected_folds:
+        mismatches.append({"fold": fold, "field": "<row>", "issue": "duplicate_expected"})
+    non_comparable = set(
+        missing_folds + unexpected_folds + duplicate_actual_folds + duplicate_expected_folds
+    )
+    for fold in sorted((actual_folds & expected_folds) - non_comparable):
+        mismatches.extend(compare_rows(fold, actual_by_fold[fold][0], expected_by_fold[fold][0]))
     float_diffs = float_diff_summary(actual_metric_rows, expected)
     return {
         "enabled": True,
@@ -306,10 +320,27 @@ def compare_expected_metrics(
         "expected_metrics_path": str(expected_path),
         "actual_rows": len(actual_metric_rows),
         "expected_rows": len(expected),
+        "actual_folds": sorted(actual_folds),
+        "expected_folds": sorted(expected_folds),
+        "missing_folds": missing_folds,
+        "unexpected_folds": unexpected_folds,
+        "duplicate_actual_folds": duplicate_actual_folds,
+        "duplicate_expected_folds": duplicate_expected_folds,
         "mismatch_count": len(mismatches),
         "mismatches": mismatches[:50],
         **float_diffs,
     }
+
+
+def metric_rows_by_fold(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    by_fold: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_fold.setdefault(str(row["fold"]), []).append(row)
+    return by_fold
+
+
+def duplicate_metric_folds(rows_by_fold: dict[str, list[dict[str, Any]]]) -> list[str]:
+    return sorted(fold for fold, rows in rows_by_fold.items() if len(rows) > 1)
 
 
 def first_existing_metrics_path(base_dir: Path) -> Path | None:
@@ -668,7 +699,35 @@ def export_numeric_panel_npz(source_parquet: Path, target_npz: Path) -> None:
             arrays[column] = series.astype("string").fillna("").to_numpy(dtype=str)
     arrays["_columns"] = np.array(sorted(arrays), dtype=str)
     target_npz.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(target_npz, **arrays)
+    write_npz_canonical(target_npz, arrays)
+
+
+def write_npz_canonical(path: Path, arrays: dict[str, Any]) -> None:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - project requirements include numpy
+        raise RuntimeError("numpy is required to write QC NPZ panels") from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for name in sorted(arrays):
+            buffer = io.BytesIO()
+            np.lib.format.write_array(buffer, canonical_npz_array(np.asarray(arrays[name])), allow_pickle=False)
+            info = zipfile.ZipInfo(f"{name}.npy", date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3
+            info.external_attr = 0o600 << 16
+            zf.writestr(info, buffer.getvalue(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+
+
+def canonical_npz_array(array: Any) -> Any:
+    try:
+        import numpy as np
+    except ImportError as exc:  # pragma: no cover - project requirements include numpy
+        raise RuntimeError("numpy is required to canonicalize QC NPZ arrays") from exc
+    arr = np.ascontiguousarray(array)
+    if arr.dtype.kind in {"i", "u", "f", "c"} and arr.dtype.byteorder not in {"<", "|"}:
+        arr = arr.astype(arr.dtype.newbyteorder("<"), copy=False)
+    return arr
 
 
 def write_gzip_text(source: Path, target: Path) -> None:
@@ -1150,7 +1209,14 @@ def main(argv: list[str] | None = None) -> int:
     else:  # pragma: no cover
         raise ValueError(command)
     print(json.dumps(result, sort_keys=True))
-    return 0 if result.get("status") != "failed" else 1
+    return 1 if command_result_failed(result) else 0
+
+
+def command_result_failed(result: dict[str, Any]) -> bool:
+    if result.get("status") == "failed":
+        return True
+    comparison = result.get("comparison")
+    return isinstance(comparison, dict) and comparison.get("status") == "failed"
 
 
 if __name__ == "__main__":

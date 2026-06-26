@@ -31,6 +31,8 @@ sys.path.insert(0, str(ROOT))
 from investintell_quant_engine.outputs_manifest import build_outputs_manifest
 from investintell_quant_engine.repeatability import compare_run_group
 
+CONTAINER_UID = "65532:65532"
+
 # G0 case: input paths are relative to the combo root, taken from the golden
 # manifest's source_artifacts. They are joined to either the host combo root or
 # the in-container mount point.
@@ -93,30 +95,69 @@ def _run_host(case, *, combo_root: Path, out_dir: Path, jobs: int, worker_commit
 
 
 def _run_container(case, *, combo_root: Path, out_dir: Path, jobs: int, image: str, worker_commit: str) -> None:
-    if out_dir.exists():
-        shutil.rmtree(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _prepare_container_output_dir(out_dir)
     args = _cli_args(
         case, input_root="/input/combo", output_dir="/outputs", jobs=jobs,
         worker_commit=worker_commit,
     )
+    docker_base = _container_docker_base(combo_root=combo_root, out_dir=out_dir)
+    subprocess.run(
+        [
+            "docker", "run", "--rm",
+            *docker_base,
+            "--entrypoint", "/bin/sh",
+            image,
+            "-c", _container_isolation_probe_script(),
+        ],
+        check=True,
+        capture_output=True,
+    )
     docker_cmd = [
         "docker", "run", "--rm",
+        *docker_base,
+        image, *args,
+    ]
+    subprocess.run(docker_cmd, check=True, capture_output=True)
+
+
+def _prepare_container_output_dir(out_dir: Path) -> None:
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.chmod(0o777)
+
+
+def _container_docker_base(*, combo_root: Path, out_dir: Path) -> list[str]:
+    combo_src = combo_root.resolve()
+    output_src = out_dir.resolve()
+    return [
         # Hardened execution profile (mirrors compose.quant-engine.yml).
         "--network", "none",
         "--read-only",
-        "--user", "65532:65532",
+        "--user", CONTAINER_UID,
         "--security-opt", "no-new-privileges",
         "--cap-drop", "ALL",
         "--pids-limit", "256",
         "--memory", "4g",
         "--cpus", "2",
-        "--tmpfs", "/tmp",
-        "--mount", f"type=bind,src={combo_root},dst=/input/combo,readonly",
-        "--mount", f"type=bind,src={out_dir},dst=/outputs",
-        image, *args,
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=256m",
+        "--mount", f"type=bind,src={combo_src},dst=/input/combo,readonly",
+        "--mount", f"type=bind,src={output_src},dst=/outputs",
     ]
-    subprocess.run(docker_cmd, check=True, capture_output=True)
+
+
+def _container_isolation_probe_script() -> str:
+    return (
+        "set -eu; "
+        "echo ok > /outputs/.repeatability_write_probe; "
+        "rm /outputs/.repeatability_write_probe; "
+        "if sh -c 'echo bad > /input/combo/.repeatability_write_probe' 2>/dev/null; "
+        "then rm -f /input/combo/.repeatability_write_probe; "
+        "echo 'input mount is writable' >&2; exit 43; fi; "
+        "if sh -c 'echo bad > /app/.repeatability_write_probe' 2>/dev/null; "
+        "then rm -f /app/.repeatability_write_probe; "
+        "echo 'source tree is writable' >&2; exit 44; fi"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

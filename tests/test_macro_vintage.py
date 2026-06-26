@@ -1,5 +1,7 @@
 import pathlib
 
+import pytest
+
 from src import db
 
 
@@ -126,9 +128,56 @@ def test_run_returns_lock_busy_sentinel(monkeypatch) -> None:
     assert out["status"] == "lock_busy"
 
 
-import os as _os
+class _FakeBucket:
+    def acquire(self) -> None:
+        pass
 
-import pytest
+
+class _FakeResponse:
+    def __init__(self, status_code: int, payload: dict | None = None):
+        self.status_code = status_code
+        self._payload = payload or {}
+
+    def json(self) -> dict:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _FakeClient:
+    def __init__(self, responses: list[_FakeResponse]):
+        self.responses = list(responses)
+
+    def get(self, *args, **kwargs) -> _FakeResponse:
+        return self.responses.pop(0)
+
+
+def test_fetch_vintages_fails_closed_on_alfred_400() -> None:
+    client = _FakeClient([
+        _FakeResponse(400, {"error_message": "invalid api_key"}),
+    ])
+
+    with pytest.raises(mv.MacroVintageFetchError, match="invalid api_key"):
+        mv.fetch_vintages(client, "bad-key", "PAYEMS", _FakeBucket())
+
+
+def test_fetch_vintages_fails_closed_after_retry_exhaustion(monkeypatch) -> None:
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    client = _FakeClient([
+        _FakeResponse(503),
+        _FakeResponse(503),
+        _FakeResponse(503),
+    ])
+
+    with pytest.raises(mv.MacroVintageFetchError, match="retry exhaustion"):
+        mv.fetch_vintages(client, "key", "PAYEMS", _FakeBucket())
+
+
+import os as _os
 
 
 @pytest.mark.skipif(not _os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY")
