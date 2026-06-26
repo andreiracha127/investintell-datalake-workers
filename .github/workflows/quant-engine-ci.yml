@@ -15,7 +15,12 @@ on:
       - "packages/investintell_quant_core/**"
       - "docker/quant-engine/**"
       - "scripts/contract_bundle.py"
+      - "qc_a3_core.py"
+      - "src/calibration_harness.py"
+      - "tests/quant_core/**"
       - "tests/quant_engine/**"
+      - "tests/test_catalog_hash_path_independence.py"
+      - "tests/test_qc_a3_core.py"
   workflow_dispatch: {}
 
 jobs:
