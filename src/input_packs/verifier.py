@@ -15,6 +15,15 @@ from .manifest import (
     compute_input_pack_sha256,
 )
 
+COMPONENT_SCHEMA_FILES: dict[str, str] = {
+    "SOURCE.json": "source.schema.json",
+    "raw_snapshot_manifest.json": "snapshot_manifest.schema.json",
+    "canonical_snapshot_manifest.json": "snapshot_manifest.schema.json",
+    "derived_feature_manifest.json": "snapshot_manifest.schema.json",
+    "table_hashes.json": "table_hashes.schema.json",
+    "provenance.json": "provenance.schema.json",
+}
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
@@ -27,7 +36,10 @@ def _schema_errors(instance: dict[str, Any], schema_path: Path) -> list[str]:
         return [f"jsonschema unavailable: {exc}"]
 
     schema = load_json(schema_path)
-    validator = jsonschema.Draft202012Validator(schema)
+    validator = jsonschema.Draft202012Validator(
+        schema,
+        format_checker=jsonschema.FormatChecker(),
+    )
     return [
         f"{'/'.join(str(p) for p in error.absolute_path) or '<root>'}: {error.message}"
         for error in sorted(validator.iter_errors(instance), key=lambda e: list(e.absolute_path))
@@ -141,6 +153,10 @@ def verify_pack(
 
     parse_errors: list[str] = []
     manifest = _load_json_or_error(manifest_path, parse_errors) if manifest_path.exists() else {}
+    source = _load_json_or_error(root / "SOURCE.json", parse_errors) if (root / "SOURCE.json").exists() else {}
+    raw_snapshot = _load_json_or_error(root / "raw_snapshot_manifest.json", parse_errors) if (root / "raw_snapshot_manifest.json").exists() else {}
+    canonical_snapshot = _load_json_or_error(root / "canonical_snapshot_manifest.json", parse_errors) if (root / "canonical_snapshot_manifest.json").exists() else {}
+    derived_feature = _load_json_or_error(root / "derived_feature_manifest.json", parse_errors) if (root / "derived_feature_manifest.json").exists() else {}
     table_hashes = _load_json_or_error(root / "table_hashes.json", parse_errors) if (root / "table_hashes.json").exists() else {}
     provenance = _load_json_or_error(root / "provenance.json", parse_errors) if (root / "provenance.json").exists() else {}
 
@@ -148,6 +164,29 @@ def verify_pack(
     missing_required_dirs = sorted(path for path in REQUIRED_DIRS if not (root / path).is_dir())
 
     schema_errors = _schema_errors(manifest, schema_path) if manifest else ["manifest.json: missing or invalid"]
+    component_payloads = {
+        "SOURCE.json": source,
+        "raw_snapshot_manifest.json": raw_snapshot,
+        "canonical_snapshot_manifest.json": canonical_snapshot,
+        "derived_feature_manifest.json": derived_feature,
+        "table_hashes.json": table_hashes,
+        "provenance.json": provenance,
+    }
+    component_schema_errors = {
+        filename: errors
+        for filename, errors in (
+            (
+                filename,
+                _schema_errors(
+                    payload,
+                    _repo_root() / "schemas" / "input_packs" / COMPONENT_SCHEMA_FILES[filename],
+                ),
+            )
+            for filename, payload in component_payloads.items()
+            if payload
+        )
+        if errors
+    }
     component_hash_mismatches = _verify_component_hashes(root, manifest) if manifest else []
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
 
@@ -167,6 +206,7 @@ def verify_pack(
             not missing_required_files,
             not missing_required_dirs,
             not schema_errors,
+            not component_schema_errors,
             not component_hash_mismatches,
             not missing_table_artifacts,
             not table_hash_mismatches,
@@ -182,6 +222,7 @@ def verify_pack(
         "missing_required_files": missing_required_files,
         "missing_required_dirs": missing_required_dirs,
         "schema_errors": schema_errors,
+        "component_schema_errors": component_schema_errors,
         "component_hash_mismatches": component_hash_mismatches,
         "missing_table_artifacts": missing_table_artifacts,
         "table_hash_mismatches": table_hash_mismatches,
