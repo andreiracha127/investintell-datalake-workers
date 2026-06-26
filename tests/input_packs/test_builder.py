@@ -101,3 +101,15 @@ def test_p0_pack_does_not_use_derived_tables_as_official_inputs(tmp_path: Path) 
     assert official.isdisjoint(banned)
     assert "fund_risk_metrics" not in official
 
+
+def test_builder_contract_bundle_matches_worker_contract_manifest(tmp_path: Path) -> None:
+    build_pack(
+        profile="open_macro_v03",
+        as_of="2026-06-26",
+        source_dir=SOURCE_DIR,
+        output=tmp_path / "pack",
+    )
+    pack_manifest = _json(tmp_path / "pack" / "manifest.json")
+    contract_manifest = _json(ROOT / "contracts" / "quant-engine" / "v1" / "manifest.json")
+
+    assert pack_manifest["contract_bundle_sha256"] == contract_manifest["bundle_sha256"].removeprefix("sha256:")

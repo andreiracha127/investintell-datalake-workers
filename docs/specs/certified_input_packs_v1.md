@@ -40,7 +40,7 @@ certified_input_pack/
   "input_pack_id": "open_macro_v03_input_pack_001",
   "input_pack_version": "v1",
   "as_of": "YYYY-MM-DD",
-  "contract_bundle_sha256": "2cdea4d4...",
+  "contract_bundle_sha256": "a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277",
   "source_repo": "investintell-datalake-workers",
   "source_commit": "<commit>",
   "builder_commit": "<commit>",
@@ -55,6 +55,12 @@ certified_input_pack/
 
 The manifest deliberately keeps `runtime_activation=false`; activation belongs
 to later shadow/release gates, not to the pack contract.
+
+`contract_bundle_sha256` is the unprefixed SHA-256 hex digest from
+`contracts/quant-engine/v1/manifest.json`'s `bundle_sha256` field. The backend
+mirror stores the same contract identity with the `sha256:` prefix in
+`backend/contracts/quant-engine/v1/manifest.json` and
+`backend/app/contracts/quant_engine_v1.py`.
 
 ## Hashing Contract
 
