@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .bundle_io import parity_config_from_args
 from .manifests import engine_manifest
+from .outputs_manifest import build_outputs_manifest
 from .runners.parity import run_parity_job
 
 
@@ -31,6 +32,15 @@ def build_parser() -> argparse.ArgumentParser:
     parity.add_argument("--jobs", type=int, default=1)
     parity.add_argument("--result-json")
     parity.add_argument("--manifest-json")
+    parity.add_argument(
+        "--outputs-manifest",
+        help="Write a closed manifest of every artifact in --output-dir to this path.",
+    )
+    parity.add_argument(
+        "--outputs-manifest-canonical",
+        action="store_true",
+        help="Strip volatile fields (ids, timestamps, env) before hashing artifacts.",
+    )
     return parser
 
 
@@ -51,6 +61,16 @@ def main(argv: list[str] | None = None) -> int:
         write_json(Path(args.result_json), result)
     if args.manifest_json:
         write_json(Path(args.manifest_json), manifest)
+    if args.outputs_manifest:
+        # Build the manifest before writing it so it captures the artifacts the
+        # job produced (result/report/engine manifest) without referencing
+        # itself, even when the target path lives inside --output-dir.
+        outputs = build_outputs_manifest(
+            config.output_dir,
+            status=result.get("status", "failed"),
+            canonical=args.outputs_manifest_canonical,
+        )
+        write_json(Path(args.outputs_manifest), outputs)
     print(json.dumps(result, sort_keys=True))
     return 0 if result.get("status") == "succeeded" else 1
 
