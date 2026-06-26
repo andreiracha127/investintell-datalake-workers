@@ -10,6 +10,8 @@ import argparse
 import datetime as dt
 import json
 import math
+import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -18,7 +20,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from .hashing import canonical_json_sha256, file_sha256, sha256_bytes
+from .hashing import canonical_json_sha256, file_sha256
 from .manifest import build_manifest, write_manifest
 from .verifier import verify_pack
 
@@ -26,6 +28,7 @@ PROFILE_OPEN_MACRO_V03 = "open_macro_v03"
 P0_INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
 SOURCE_REPO = "investintell-datalake-workers"
 INPUT_PACK_VERSION = "v1"
+IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -236,6 +239,13 @@ def normalize_row(row: Mapping[str, Any], spec: TableSpec) -> dict[str, Any]:
     return normalized
 
 
+def require_key_columns(row: Mapping[str, Any], spec: TableSpec, source_path: Path) -> None:
+    missing = [column for column in spec.key_columns if column not in row or row[column] is None]
+    if missing:
+        joined = ", ".join(missing)
+        raise ValueError(f"{source_path.name}: {spec.name} row missing required key columns: {joined}")
+
+
 def row_sort_key(row: Mapping[str, Any], spec: TableSpec) -> tuple[Any, ...]:
     return tuple(row.get(column) for column in spec.key_columns)
 
@@ -251,6 +261,7 @@ def load_source_table(source_dir: Path, spec: TableSpec, as_of: dt.date) -> tupl
     raw_rows: list[dict[str, Any]] = []
     canonical_rows: list[dict[str, Any]] = []
     for raw in payload:
+        require_key_columns(raw, spec, path)
         if spec.as_of_column:
             observed = dt.date.fromisoformat(normalize_date(raw.get(spec.as_of_column)))
             if observed > as_of:
@@ -481,9 +492,32 @@ def contract_bundle_sha256() -> str:
     return value.removeprefix("sha256:")
 
 
-def builder_image_digest(source_commit: str) -> str:
-    payload = f"certified-input-pack-builder-p0:{source_commit}:{PROFILE_OPEN_MACRO_V03}".encode("utf-8")
-    return f"sha256:{sha256_bytes(payload)}"
+def builder_code_sha256() -> str:
+    root = repo_root()
+    files = [
+        *sorted((root / "src" / "input_packs").glob("*.py")),
+        *sorted((root / "schemas" / "input_packs").glob("*.json")),
+    ]
+    return canonical_json_sha256(
+        {
+            "builder_name": "certified-input-pack-builder-p0",
+            "files": [
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "sha256": file_sha256(path),
+                }
+                for path in files
+            ],
+        }
+    )
+
+
+def normalize_builder_image_digest(value: str | None) -> str | None:
+    if value is None or value == "":
+        return None
+    if not IMAGE_DIGEST_PATTERN.fullmatch(value):
+        raise ValueError("builder image digest must match sha256:<64 lowercase hex chars>")
+    return value
 
 
 def reset_output_dir(output_dir: Path, *, force: bool) -> None:
@@ -647,16 +681,26 @@ def write_component_manifests(
     )
 
 
-def write_source_and_provenance(output_dir: Path, *, as_of: dt.date, source_commit: str, image_digest: str) -> None:
+def write_source_and_provenance(
+    output_dir: Path,
+    *,
+    as_of: dt.date,
+    source_commit: str,
+    code_sha256: str,
+    image_digest: str | None,
+) -> None:
+    source_payload: dict[str, Any] = {
+        "builder_code_sha256": code_sha256,
+        "builder_commit": source_commit,
+        "builder_name": "certified-input-pack-builder-p0",
+        "source_commit": source_commit,
+        "source_repo": SOURCE_REPO,
+    }
+    if image_digest is not None:
+        source_payload["builder_image_digest"] = image_digest
     write_json(
         output_dir / "SOURCE.json",
-        {
-            "builder_commit": source_commit,
-            "builder_image_digest": image_digest,
-            "builder_name": "certified-input-pack-builder-p0",
-            "source_commit": source_commit,
-            "source_repo": SOURCE_REPO,
-        },
+        source_payload,
     )
     snapshot_suffix = as_of.strftime("%Y%m%d")
     write_json(
@@ -733,6 +777,7 @@ def build_pack(
     as_of: str,
     output: str | Path,
     source_dir: str | Path | None = None,
+    builder_image_digest: str | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     if profile != PROFILE_OPEN_MACRO_V03:
@@ -763,8 +808,17 @@ def build_pack(
     )
 
     source_commit = git_commit()
-    image_digest = builder_image_digest(source_commit)
-    write_source_and_provenance(output_dir, as_of=as_of_date, source_commit=source_commit, image_digest=image_digest)
+    code_sha256 = builder_code_sha256()
+    image_digest = normalize_builder_image_digest(
+        builder_image_digest if builder_image_digest is not None else os.environ.get("INPUT_PACK_BUILDER_IMAGE_DIGEST")
+    )
+    write_source_and_provenance(
+        output_dir,
+        as_of=as_of_date,
+        source_commit=source_commit,
+        code_sha256=code_sha256,
+        image_digest=image_digest,
+    )
     all_artifacts = [
         *raw_artifacts,
         *canonical_artifacts,
@@ -785,13 +839,15 @@ def build_pack(
         "source_repo": SOURCE_REPO,
         "source_commit": source_commit,
         "builder_commit": source_commit,
-        "builder_image_digest": image_digest,
+        "builder_code_sha256": code_sha256,
         "raw_snapshot_sha256": "",
         "canonical_snapshot_sha256": "",
         "derived_feature_sha256": "",
         "input_pack_sha256": "",
         "runtime_activation": False,
     }
+    if image_digest is not None:
+        base_manifest["builder_image_digest"] = image_digest
     manifest_path = write_manifest(output_dir, base_manifest)
     manifest = read_json(manifest_path)
     verification = verify_pack(output_dir)
@@ -825,6 +881,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory containing P0 source snapshot JSON files. Defaults to checked-in P0 fixtures.",
     )
+    parser.add_argument(
+        "--builder-image-digest",
+        default=None,
+        help=(
+            "Optional real builder container digest, sha256:<64 hex>. "
+            "If omitted, the pack records builder_code_sha256 instead of claiming an image digest."
+        ),
+    )
     parser.add_argument("--force", action="store_true", help="Overwrite an existing output directory inside this repo.")
     return parser
 
@@ -836,6 +900,7 @@ def main(argv: list[str] | None = None) -> int:
         as_of=args.as_of,
         output=args.output,
         source_dir=args.source_dir,
+        builder_image_digest=args.builder_image_digest,
         force=args.force,
     )
     print(json.dumps(result, indent=2, sort_keys=True))

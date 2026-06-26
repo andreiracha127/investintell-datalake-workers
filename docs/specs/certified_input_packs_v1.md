@@ -44,7 +44,7 @@ certified_input_pack/
   "source_repo": "investintell-datalake-workers",
   "source_commit": "<commit>",
   "builder_commit": "<commit>",
-  "builder_image_digest": "sha256:<digest>",
+  "builder_code_sha256": "<sha256>",
   "raw_snapshot_sha256": "<sha256>",
   "canonical_snapshot_sha256": "<sha256>",
   "derived_feature_sha256": "<sha256>",
@@ -55,6 +55,10 @@ certified_input_pack/
 
 The manifest deliberately keeps `runtime_activation=false`; activation belongs
 to later shadow/release gates, not to the pack contract.
+
+`builder_image_digest` may be present only when the pack is built by a known
+builder container and the value is that real image digest. Local builds record
+`builder_code_sha256` instead of claiming an image artifact.
 
 `contract_bundle_sha256` is the unprefixed SHA-256 hex digest from
 `contracts/quant-engine/v1/manifest.json`'s `bundle_sha256` field. The backend

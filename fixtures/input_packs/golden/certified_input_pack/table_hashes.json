@@ -161,7 +161,7 @@
       "name": "schema:input_pack_manifest.schema",
       "path": "schemas/input_pack_manifest.schema.json",
       "rows": 0,
-      "sha256": "794cc4ac3466f8837f311603653d7a0da7c6b73c60b0ce24246eec8c31d969f4"
+      "sha256": "2d49ba4807c0f985e101bc333e21c44fda30453eeeb3ccb6c7f09df622347424"
     },
     {
       "name": "schema:provenance.schema",
@@ -179,7 +179,7 @@
       "name": "schema:source.schema",
       "path": "schemas/source.schema.json",
       "rows": 0,
-      "sha256": "5cbb891916b31b63f031c74a5edd21a4940f35adc952803ed126ed341d17b1aa"
+      "sha256": "84be6bc7d63024efef4ec2e862ea7cadd0c87298db18516c2c787eb5b8227924"
     },
     {
       "name": "schema:table_hashes.schema",

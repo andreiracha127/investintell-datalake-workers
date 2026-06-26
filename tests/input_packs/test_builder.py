@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -39,6 +40,8 @@ def test_build_cli_creates_verified_open_macro_v03_pack(tmp_path: Path) -> None:
     assert verification["ok"] is True
     assert manifest["input_pack_id"] == P0_INPUT_PACK_ID
     assert manifest["runtime_activation"] is False
+    assert "builder_code_sha256" in manifest
+    assert "builder_image_digest" not in manifest
     assert (output / "reports" / "certification_summary.json").is_file()
 
 
@@ -84,6 +87,23 @@ def test_builder_rejects_unsupported_profile(tmp_path: Path) -> None:
             profile="fund_risk_metrics",
             as_of="2026-06-26",
             source_dir=SOURCE_DIR,
+            output=tmp_path / "pack",
+        )
+
+
+def test_builder_rejects_missing_required_key_columns(tmp_path: Path) -> None:
+    source_dir = tmp_path / "sources"
+    shutil.copytree(SOURCE_DIR, source_dir)
+    nav_path = source_dir / "nav_timeseries.json"
+    rows = _json(nav_path)
+    rows[0].pop("instrument_id")
+    nav_path.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing required key columns: instrument_id"):
+        build_pack(
+            profile="open_macro_v03",
+            as_of="2026-06-26",
+            source_dir=source_dir,
             output=tmp_path / "pack",
         )
 

@@ -184,6 +184,35 @@ def test_verifier_validates_component_manifest_schemas(tmp_path: Path) -> None:
     assert "table_hashes.json" in result["component_schema_errors"]
 
 
+def test_verifier_validates_empty_component_manifest_schemas(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    raw_manifest_path = pack / "raw_snapshot_manifest.json"
+    _write_json(raw_manifest_path, {})
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert "raw_snapshot_manifest.json" in result["component_schema_errors"]
+
+
+def test_verifier_cross_checks_component_artifact_hashes(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    raw_manifest_path = pack / "raw_snapshot_manifest.json"
+    raw_manifest = _read_json(raw_manifest_path)
+    raw_manifest["artifacts"][0]["sha256"] = "0" * 64
+    _write_json(raw_manifest_path, raw_manifest)
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["component_artifact_hash_mismatches"][0]["manifest"] == "raw_snapshot_manifest.json"
+    assert result["component_artifact_hash_mismatches"][0]["path"] == "data/raw/nav_timeseries.json"
+
+
 def test_input_pack_code_has_no_db_connector_imports() -> None:
     for path in (ROOT / "src" / "input_packs").glob("*.py"):
         text = path.read_text(encoding="utf-8").lower()

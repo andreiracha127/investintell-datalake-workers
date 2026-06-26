@@ -1,6 +1,6 @@
 {
   "builder_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "builder_image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "builder_code_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "canonical_snapshot_sha256": "d5515f4b3b4d0dbe26f5b0b1f0de8e38411b5fb754afc0c523654d2e8f306b16",
   "contract_bundle_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
   "derived_feature_sha256": "8b86048a664b8cc8da1696520ecb5687c4d3c44da59d45ced5b97a34348849cd",

@@ -15,7 +15,14 @@ def test_job_request_schema_has_required_contract_fields() -> None:
     schema = _schema("job-request.schema.json")
 
     assert schema["title"] == "QuantEngineJobRequest"
-    assert set(schema["required"]) >= {
+    variants = [schema["$defs"][variant["$ref"].removeprefix("#/$defs/")] for variant in schema["oneOf"]]
+    assert {variant["properties"]["job_type"].get("const") or "a3_family" for variant in variants} == {
+        "a3_family",
+        "certified_input_pack_dry_run",
+    }
+    a3_variant = schema["$defs"]["a3_qc_parity_request"]
+    input_pack_variant = schema["$defs"]["certified_input_pack_dry_run_request"]
+    assert set(a3_variant["required"]) >= {
         "input_bundle_uri",
         "input_bundle_logical_hash",
         "config_catalog_uri",
@@ -27,7 +34,18 @@ def test_job_request_schema_has_required_contract_fields() -> None:
         "jobs",
         "output_uri",
     }
-    assert schema["properties"]["offline"]["const"] is True
+    assert set(input_pack_variant["required"]) >= {
+        "input_pack_uri",
+        "input_pack_sha256",
+        "contract_bundle_sha256",
+        "source_snapshot_sha256",
+        "engine_image_digest",
+        "offline",
+        "jobs",
+        "output_uri",
+    }
+    for variant in variants:
+        assert variant["properties"]["offline"]["const"] is True
 
 
 def test_job_result_schema_keeps_runtime_activation_disabled() -> None:

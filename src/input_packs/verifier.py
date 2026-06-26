@@ -24,6 +24,11 @@ COMPONENT_SCHEMA_FILES: dict[str, str] = {
     "table_hashes.json": "table_hashes.schema.json",
     "provenance.json": "provenance.schema.json",
 }
+SNAPSHOT_MANIFEST_FILES = (
+    "raw_snapshot_manifest.json",
+    "canonical_snapshot_manifest.json",
+    "derived_feature_manifest.json",
+)
 
 
 def _repo_root() -> Path:
@@ -125,6 +130,64 @@ def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list
     return sorted(missing), sorted(mismatches, key=lambda m: m["path"])
 
 
+def _verify_component_artifact_hashes(
+    root: Path,
+    manifests: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    mismatches: list[dict[str, str]] = []
+    for manifest_name, payload in manifests.items():
+        artifacts = payload.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            rel = artifact.get("path")
+            expected = artifact.get("sha256")
+            if not isinstance(rel, str):
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": "<missing-path>",
+                        "expected": str(expected),
+                        "actual": "<no path>",
+                    }
+                )
+                continue
+            path = _pack_relative_path(root, rel)
+            if path is None:
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": "<inside pack>",
+                        "actual": "<outside pack>",
+                    }
+                )
+                continue
+            if not path.exists():
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": str(expected),
+                        "actual": "<missing>",
+                    }
+                )
+                continue
+            actual = file_sha256(path)
+            if expected != actual:
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": str(expected),
+                        "actual": actual,
+                    }
+                )
+    return sorted(mismatches, key=lambda m: (m["manifest"], m["path"]))
+
+
 def _unexpected_files(root: Path, table_hashes: dict[str, Any]) -> list[str]:
     expected = set(REQUIRED_FILES)
     for table in table_hashes.get("tables", []):
@@ -204,11 +267,15 @@ def verify_pack(
                 ),
             )
             for filename, payload in component_payloads.items()
-            if payload
+            if (root / filename).is_file()
         )
         if errors
     }
     component_hash_mismatches = _verify_component_hashes(root, manifest) if manifest else []
+    component_artifact_hash_mismatches = _verify_component_artifact_hashes(
+        root,
+        {filename: component_payloads[filename] for filename in SNAPSHOT_MANIFEST_FILES},
+    )
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
     unexpected_files = _unexpected_files(root, table_hashes)
 
@@ -230,6 +297,7 @@ def verify_pack(
             not schema_errors,
             not component_schema_errors,
             not component_hash_mismatches,
+            not component_artifact_hash_mismatches,
             not missing_table_artifacts,
             not table_hash_mismatches,
             not unexpected_files,
@@ -247,6 +315,7 @@ def verify_pack(
         "schema_errors": schema_errors,
         "component_schema_errors": component_schema_errors,
         "component_hash_mismatches": component_hash_mismatches,
+        "component_artifact_hash_mismatches": component_artifact_hash_mismatches,
         "missing_table_artifacts": missing_table_artifacts,
         "table_hash_mismatches": table_hash_mismatches,
         "unexpected_files": unexpected_files,

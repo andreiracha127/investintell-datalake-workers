@@ -6,6 +6,10 @@
       "pattern": "^[0-9a-f]{7,40}$",
       "type": "string"
     },
+    "builder_code_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
     "builder_image_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
@@ -27,7 +31,7 @@
     "source_repo",
     "source_commit",
     "builder_commit",
-    "builder_image_digest",
+    "builder_code_sha256",
     "builder_name"
   ],
   "title": "CertifiedInputPackSourceV1",
