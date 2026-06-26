@@ -1,0 +1,54 @@
+{
+  "bundle_sha256": "sha256:2cdea4d41608562bb3eff1cddd56769450adeb17e84899e31272d81a8f43b0d8",
+  "contract_version": "1.0.0",
+  "files": [
+    {
+      "path": "engine-manifest.schema.json",
+      "sha256": "26757f96bdff5ac90b0e6422f213faac0db5b5289def9c2f0eae7b7f9fa45b9f"
+    },
+    {
+      "path": "fixtures/invalid/engine-manifest.runtime-activation-true.json",
+      "sha256": "222040edf17972b85171fff08843425352dd4e43ba64963b1b91f9d6791f0a75"
+    },
+    {
+      "path": "fixtures/invalid/job-request.additional-property.json",
+      "sha256": "d4e83805e00ba3dc8149f2b71f1ae94546c68f9b140c680ff26a7950c713cc5e"
+    },
+    {
+      "path": "fixtures/invalid/job-request.missing-engine-image-digest.json",
+      "sha256": "97cb0331703018bb27d759c6322ebdcbac71b1181dc9d66ab268f899ce271bc4"
+    },
+    {
+      "path": "fixtures/invalid/job-request.offline-false.json",
+      "sha256": "39483a8c3ee2bcc1826dc6d2059d8acc1fabee86cfc22354fca7f0da3ce105e8"
+    },
+    {
+      "path": "fixtures/invalid/job-result.a5-not-blocked.json",
+      "sha256": "e2924c54355e5b64bbc75829bc00aa747294938a71c0743b17ac8842ef5c4c7c"
+    },
+    {
+      "path": "fixtures/invalid/job-result.runtime-activation-true.json",
+      "sha256": "8ed6e481498e3d3b02d36bbcb6c1159e574c4602882236c14ceb04a30a58afda"
+    },
+    {
+      "path": "fixtures/valid/engine-manifest.offline.json",
+      "sha256": "7378bbae98f3341c646df79d3fd89d7c932bd00009e4d140283cc8ee3c408702"
+    },
+    {
+      "path": "fixtures/valid/job-request.minimal.json",
+      "sha256": "decb2500353d4b44e916da343e00444f5bc14eae872059633ddf35ac1e82eaf9"
+    },
+    {
+      "path": "fixtures/valid/job-result.passed.json",
+      "sha256": "c797e5cb02755f55a1d85a7c1be8d4da83156c726f536b33466ea8c5a770140e"
+    },
+    {
+      "path": "job-request.schema.json",
+      "sha256": "a143bafe60f8414a3b1c04cc93b4ae8568ad51264c8f7e55d83ce9b3a633d593"
+    },
+    {
+      "path": "job-result.schema.json",
+      "sha256": "95626166653241b6fed455c18b530b057cb66837e920dbfd6fe1d71880ea4fe7"
+    }
+  ]
+}
