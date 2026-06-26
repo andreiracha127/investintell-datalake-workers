@@ -10,6 +10,7 @@ from pathlib import Path
 from .bundle_io import parity_config_from_args
 from .manifests import engine_manifest
 from .outputs_manifest import build_outputs_manifest
+from .runners.input_pack import run_input_pack_dry_run
 from .runners.parity import run_parity_job
 
 
@@ -41,12 +42,57 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Strip volatile fields (ids, timestamps, env) before hashing artifacts.",
     )
+    input_pack = sub.add_parser("dry-run-input-pack")
+    input_pack.add_argument("--input-pack", required=True)
+    input_pack.add_argument("--output-dir", required=True)
+    input_pack.add_argument("--job-id")
+    input_pack.add_argument("--jobs", type=int, default=1)
+    input_pack.add_argument("--result-json")
+    input_pack.add_argument("--manifest-json")
+    input_pack.add_argument(
+        "--outputs-manifest",
+        help="Write a closed manifest of every artifact in --output-dir to this path.",
+    )
+    input_pack.add_argument(
+        "--outputs-manifest-canonical",
+        action="store_true",
+        help="Strip volatile fields (ids, timestamps, env) before hashing artifacts.",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    if args.command == "dry-run-input-pack":
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        result = run_input_pack_dry_run(
+            args.input_pack,
+            job_id=args.job_id,
+            jobs=args.jobs,
+            offline=True,
+        )
+        manifest = {
+            **engine_manifest(job_type="certified_input_pack_dry_run", jobs=args.jobs, offline=True),
+            "input_pack_id": result["input_pack_id"],
+            "input_pack_sha256": result["input_pack_sha256"],
+            "contract_bundle_sha256": result["contract_bundle_sha256"],
+        }
+        if args.result_json:
+            write_json(Path(args.result_json), result)
+        if args.manifest_json:
+            write_json(Path(args.manifest_json), manifest)
+        if args.outputs_manifest:
+            outputs = build_outputs_manifest(
+                output_dir,
+                status=result.get("status", "failed"),
+                canonical=args.outputs_manifest_canonical,
+                exclude=[Path(args.outputs_manifest)],
+            )
+            write_json(Path(args.outputs_manifest), outputs)
+        print(json.dumps(result, sort_keys=True))
+        return 0
     if args.command != "run-parity":  # pragma: no cover
         parser.error(f"unsupported command {args.command}")
     config = parity_config_from_args(args)

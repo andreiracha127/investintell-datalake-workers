@@ -1,4 +1,5 @@
 arch==8.0.0
+jsonschema==4.26.0
 numpy==2.2.6
 pandas==3.0.1
 psycopg[binary]==3.3.3
