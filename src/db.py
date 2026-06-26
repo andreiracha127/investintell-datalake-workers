@@ -58,7 +58,7 @@ LOCK_REGIME_QUADRANT = 900_208
 # combo-regime-gate lock ownership here; reassign main-added metrics locks
 # before these services are allowed to run concurrently.
 LOCK_SCREENER_METRICS = 900_207
-LOCK_FUND_FACTORS = 900_208
+LOCK_FUND_FACTORS = 900_214
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211
