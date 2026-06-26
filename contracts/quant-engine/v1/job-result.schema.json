@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/quant-engine/v1/job-result.schema.json",
+  "title": "QuantEngineJobResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "job_id",
+    "execution_id",
+    "run_fingerprint",
+    "status",
+    "classification",
+    "artifact_prefix",
+    "output_logical_hashes",
+    "errors",
+    "runtime_activation",
+    "a3_status",
+    "a4_status",
+    "a5_status"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "job_type": {"const": "a3_qc_parity"},
+    "job_id": {"type": "string", "minLength": 1},
+    "execution_id": {"type": "string", "minLength": 1},
+    "run_fingerprint": {"type": "string", "minLength": 12},
+    "status": {"enum": ["succeeded", "failed"]},
+    "classification": {"type": ["string", "null"]},
+    "jobs": {"type": "integer", "minimum": 1},
+    "artifact_prefix": {"type": "string"},
+    "output_logical_hashes": {
+      "type": "object",
+      "additionalProperties": {"type": "string"},
+      "required": [
+        "runtime_replay_logical_hash",
+        "counterfactual_replay_logical_hash",
+        "metrics_canonical_logical_hash",
+        "metrics_raw_sha256",
+        "model_evaluation_hash"
+      ],
+      "properties": {
+        "runtime_replay_logical_hash": {"type": "string"},
+        "counterfactual_replay_logical_hash": {"type": "string"},
+        "metrics_canonical_logical_hash": {"type": "string"},
+        "metrics_raw_sha256": {"type": "string"},
+        "model_evaluation_hash": {"type": "string"}
+      }
+    },
+    "errors": {"type": "array"},
+    "runtime_activation": {"const": false},
+    "a3_status": {"const": "open_macro_v03"},
+    "a4_status": {"const": "harness_ready_provisional_A3"},
+    "a5_status": {"const": "blocked"}
+  }
+}
