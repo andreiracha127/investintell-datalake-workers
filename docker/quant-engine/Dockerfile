@@ -11,7 +11,7 @@ COPY packages/investintell_quant_core /app/packages/investintell_quant_core
 COPY services/quant_engine /app/services/quant_engine
 COPY qc_a3_core.py /app/qc_a3_core.py
 COPY src /app/src
-COPY docker/quant-engine/entrypoint.sh /app/docker/quant-engine/entrypoint.sh
+COPY --chmod=755 docker/quant-engine/entrypoint.sh /app/docker/quant-engine/entrypoint.sh
 
 ENV PYTHONPATH=/app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src
 
@@ -21,4 +21,3 @@ ENV PYTHONPATH=/app:/app/packages/investintell_quant_core/src:/app/services/quan
 # be writable by this user.
 USER 65532:65532
 ENTRYPOINT ["/app/docker/quant-engine/entrypoint.sh"]
-

@@ -17,7 +17,7 @@ V1 = ROOT / "contracts" / "quant-engine" / "v1"
 # makes any drift in either repository fail loud.
 BACKEND_MIRROR_SHA256 = {
     "engine-manifest.schema.json": "26757f96bdff5ac90b0e6422f213faac0db5b5289def9c2f0eae7b7f9fa45b9f",
-    "job-request.schema.json": "a143bafe60f8414a3b1c04cc93b4ae8568ad51264c8f7e55d83ce9b3a633d593",
+    "job-request.schema.json": "9f7e50b4c1537b22fa28298fd08a945b00cf42b1644728ac24e133faa66816f6",
     "job-result.schema.json": "95626166653241b6fed455c18b530b057cb66837e920dbfd6fe1d71880ea4fe7",
 }
 
