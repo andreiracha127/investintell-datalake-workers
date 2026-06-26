@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "dataset": {
+      "additionalProperties": false,
+      "properties": {
+        "dataset_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "dataset_namespace": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_namespace",
+        "dataset_name",
+        "snapshot_id"
+      ],
+      "type": "object"
+    },
+    "job": {
+      "additionalProperties": false,
+      "properties": {
+        "job_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "job_namespace": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_namespace",
+        "job_name"
+      ],
+      "type": "object"
+    },
+    "run": {
+      "additionalProperties": false,
+      "properties": {
+        "job_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "run_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "job_name"
+      ],
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "source_commit": {
+          "pattern": "^[0-9a-f]{7,40}$",
+          "type": "string"
+        },
+        "source_repo": {
+          "const": "investintell-datalake-workers",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_repo",
+        "source_commit"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "datasets": {
+      "items": {
+        "$ref": "#/$defs/dataset"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "jobs": {
+      "items": {
+        "$ref": "#/$defs/job"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "runs": {
+      "items": {
+        "$ref": "#/$defs/run"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "v1",
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/source"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "datasets",
+    "jobs",
+    "runs",
+    "sources"
+  ],
+  "title": "CertifiedInputPackProvenanceV1",
+  "type": "object"
+}
+

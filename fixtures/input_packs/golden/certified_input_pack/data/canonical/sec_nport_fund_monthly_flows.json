@@ -1,0 +1,26 @@
+[
+  {
+    "month_end": "2026-04-30",
+    "net_flow": 12000,
+    "series_id": "S000000001",
+    "total_net_assets": 1000000
+  },
+  {
+    "month_end": "2026-05-31",
+    "net_flow": -8000,
+    "series_id": "S000000001",
+    "total_net_assets": 1010000
+  },
+  {
+    "month_end": "2026-04-30",
+    "net_flow": 5000,
+    "series_id": "S000000002",
+    "total_net_assets": 800000
+  },
+  {
+    "month_end": "2026-05-31",
+    "net_flow": 3000,
+    "series_id": "S000000002",
+    "total_net_assets": 805000
+  }
+]

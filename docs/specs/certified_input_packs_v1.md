@@ -30,7 +30,7 @@ certified_input_pack/
   provenance.json
   schemas/
   data/
-  fixtures/
+  reports/
 ```
 
 `manifest.json` is the canonical index. The minimum v1 shape is:
@@ -94,6 +94,36 @@ The standalone verifier must fail closed when:
 
 The verifier must not connect to the DB. v1 verification is offline by design.
 
+## P0 Builder Interface
+
+The first concrete builder profile is `open_macro_v03`. It reads local raw
+snapshot JSON files, writes deterministic `data/raw`, normalized
+`data/canonical`, and `data/derived` artifacts, then verifies the pack
+standalone:
+
+```bash
+uv run python -m src.input_packs.build \
+  --profile open_macro_v03 \
+  --as-of 2026-06-26 \
+  --output artifacts/input_packs/open_macro_v03_2026-06-26
+```
+
+The P0 profile uses these official source snapshots:
+
+- `nav_timeseries`
+- `eod_prices`
+- `macro_data`
+- `instruments_universe`
+- `instrument_identity`
+- `fund_strategy_benchmark_proxy_map`
+- `strategy_reclassification_stage`
+- `sec_nport_holdings`
+- `sec_nport_fund_monthly_flows`
+
+Derived tables such as `fund_risk_metrics`, `factor_model_fits`, regime daily
+tables, and screener materialized views may be used only as comparison
+baselines. They are not official pack inputs.
+
 ## Certification Waves
 
 Wave 1: pack skeleton and source of truth.
@@ -156,9 +186,9 @@ Calibration may start only after a pack has:
 Until then, calibration remains blocked because live derived tables would
 contaminate the official input boundary.
 
-## Current Branch Scope
+## Builder P0 Branch Scope
 
-This branch owns only the v1 skeleton:
+The scaffold branch introduced the v1 skeleton:
 
 - `docs/specs/certified_input_packs_v1.md`
 - `src/input_packs/`
@@ -166,9 +196,12 @@ This branch owns only the v1 skeleton:
 - `schemas/input_packs/`
 - `fixtures/input_packs/`
 
-The expected sequence is:
+The P0 builder branch extends that surface with:
 
-1. `docs: define certified input pack v1 architecture`
-2. `feat(input-packs): add manifest and hashing primitives`
-3. `test(input-packs): capture deterministic pack golden`
+1. A real `open_macro_v03` builder CLI.
+2. Raw and canonical P0 snapshot exports.
+3. Minimal derived calibration features with feature-level lineage.
+4. Determinism and tamper-detection tests.
+5. Quant-engine dry-run consumption of a verified pack, with no DB or network
+   access and no runtime activation.
 

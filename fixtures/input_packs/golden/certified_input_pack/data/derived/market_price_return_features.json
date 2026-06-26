@@ -1,0 +1,26 @@
+[
+  {
+    "feature_name": "market_price_return_1d",
+    "observation_date": "2026-06-25",
+    "ticker": "AGG",
+    "value": 0.001527494908
+  },
+  {
+    "feature_name": "market_price_return_1d",
+    "observation_date": "2026-06-26",
+    "ticker": "AGG",
+    "value": 0.000508388409
+  },
+  {
+    "feature_name": "market_price_return_1d",
+    "observation_date": "2026-06-25",
+    "ticker": "SPY",
+    "value": 0.0021893815
+  },
+  {
+    "feature_name": "market_price_return_1d",
+    "observation_date": "2026-06-26",
+    "ticker": "SPY",
+    "value": 0.001274349172
+  }
+]

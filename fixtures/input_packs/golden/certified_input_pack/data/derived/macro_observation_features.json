@@ -1,0 +1,92 @@
+[
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-24",
+    "series_id": "BAA10Y",
+    "value": 1.91
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-25",
+    "series_id": "BAA10Y",
+    "value": 0.01
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-25",
+    "series_id": "BAA10Y",
+    "value": 1.92
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-26",
+    "series_id": "BAA10Y",
+    "value": -0.02
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-26",
+    "series_id": "BAA10Y",
+    "value": 1.9
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-24",
+    "series_id": "DFF",
+    "value": 4.35
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-25",
+    "series_id": "DFF",
+    "value": -0.01
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-25",
+    "series_id": "DFF",
+    "value": 4.34
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-26",
+    "series_id": "DFF",
+    "value": -0.01
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-26",
+    "series_id": "DFF",
+    "value": 4.33
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-24",
+    "series_id": "DGS10",
+    "value": 4.12
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-25",
+    "series_id": "DGS10",
+    "value": 0.03
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-25",
+    "series_id": "DGS10",
+    "value": 4.15
+  },
+  {
+    "feature_name": "macro_delta_1obs",
+    "observation_date": "2026-06-26",
+    "series_id": "DGS10",
+    "value": 0.03
+  },
+  {
+    "feature_name": "macro_level",
+    "observation_date": "2026-06-26",
+    "series_id": "DGS10",
+    "value": 4.18
+  }
+]

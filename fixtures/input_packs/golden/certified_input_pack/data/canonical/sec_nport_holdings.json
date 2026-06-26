@@ -1,0 +1,34 @@
+[
+  {
+    "holding_key": "CUSIP:464287200",
+    "market_value": 290000,
+    "pct_of_nav": 29,
+    "report_date": "2026-05-31",
+    "series_id": "S000000001",
+    "ticker": "IWM"
+  },
+  {
+    "holding_key": "CUSIP:78462F103",
+    "market_value": 560000,
+    "pct_of_nav": 56,
+    "report_date": "2026-05-31",
+    "series_id": "S000000001",
+    "ticker": "SPY"
+  },
+  {
+    "holding_key": "CUSIP:464287226",
+    "market_value": 610000,
+    "pct_of_nav": 61,
+    "report_date": "2026-05-31",
+    "series_id": "S000000002",
+    "ticker": "AGG"
+  },
+  {
+    "holding_key": "CUSIP:464288513",
+    "market_value": 210000,
+    "pct_of_nav": 21,
+    "report_date": "2026-05-31",
+    "series_id": "S000000002",
+    "ticker": "IEF"
+  }
+]

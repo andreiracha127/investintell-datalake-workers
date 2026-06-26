@@ -21,7 +21,7 @@ REQUIRED_FILES: tuple[str, ...] = (
     "provenance.json",
 )
 
-REQUIRED_DIRS: tuple[str, ...] = ("schemas", "data", "fixtures")
+REQUIRED_DIRS: tuple[str, ...] = ("schemas", "data", "reports")
 
 COMPONENT_HASH_FIELDS: Mapping[str, str] = {
     "raw_snapshot_manifest.json": "raw_snapshot_sha256",

@@ -1,0 +1,14 @@
+[
+  {
+    "as_of_month_end": "2026-05-31",
+    "feature_name": "flow_momentum_3m_input",
+    "series_id": "S000000001",
+    "value": 0.003980099502
+  },
+  {
+    "as_of_month_end": "2026-05-31",
+    "feature_name": "flow_momentum_3m_input",
+    "series_id": "S000000002",
+    "value": 0.009968847352
+  }
+]

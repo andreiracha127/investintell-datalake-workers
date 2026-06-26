@@ -13,6 +13,7 @@ from .manifest import (
     REQUIRED_DIRS,
     REQUIRED_FILES,
     compute_input_pack_sha256,
+    iter_pack_files,
 )
 
 COMPONENT_SCHEMA_FILES: dict[str, str] = {
@@ -117,6 +118,18 @@ def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list
     return sorted(missing), sorted(mismatches, key=lambda m: m["path"])
 
 
+def _unexpected_files(root: Path, table_hashes: dict[str, Any]) -> list[str]:
+    expected = set(REQUIRED_FILES)
+    for table in table_hashes.get("tables", []):
+        if isinstance(table, dict) and isinstance(table.get("path"), str):
+            expected.add(table["path"])
+    actual = {
+        path.relative_to(root).as_posix()
+        for path in iter_pack_files(root, include_manifest=True)
+    }
+    return sorted(actual - expected)
+
+
 def _provenance_complete(provenance: dict[str, Any]) -> bool:
     required_collections = ("datasets", "jobs", "runs", "sources")
     if any(not provenance.get(name) for name in required_collections):
@@ -189,6 +202,7 @@ def verify_pack(
     }
     component_hash_mismatches = _verify_component_hashes(root, manifest) if manifest else []
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
+    unexpected_files = _unexpected_files(root, table_hashes)
 
     actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
     expected_input_pack_sha256 = manifest.get("input_pack_sha256")
@@ -210,6 +224,7 @@ def verify_pack(
             not component_hash_mismatches,
             not missing_table_artifacts,
             not table_hash_mismatches,
+            not unexpected_files,
             input_pack_sha256_match,
             runtime_activation_ok,
             provenance_complete,
@@ -226,6 +241,7 @@ def verify_pack(
         "component_hash_mismatches": component_hash_mismatches,
         "missing_table_artifacts": missing_table_artifacts,
         "table_hash_mismatches": table_hash_mismatches,
+        "unexpected_files": unexpected_files,
         "expected_input_pack_sha256": expected_input_pack_sha256,
         "actual_input_pack_sha256": actual_input_pack_sha256,
         "input_pack_sha256_match": input_pack_sha256_match,

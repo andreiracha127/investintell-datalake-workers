@@ -1,0 +1,113 @@
+[
+  {
+    "feature_file": "data/derived/fund_nav_return_features.json",
+    "feature_name": "fund_nav_return_1d",
+    "sources": [
+      {
+        "columns": [
+          "instrument_id",
+          "nav_date",
+          "nav"
+        ],
+        "table": "nav_timeseries"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/market_price_return_features.json",
+    "feature_name": "market_price_return_1d",
+    "sources": [
+      {
+        "columns": [
+          "ticker",
+          "date",
+          "adjusted_close",
+          "close"
+        ],
+        "table": "eod_prices"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/macro_observation_features.json",
+    "feature_name": "macro_level_and_delta",
+    "sources": [
+      {
+        "columns": [
+          "series_id",
+          "obs_date",
+          "value"
+        ],
+        "table": "macro_data"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/fund_universe_features.json",
+    "feature_name": "fund_universe_identity_strategy_benchmark",
+    "sources": [
+      {
+        "columns": [
+          "instrument_id",
+          "ticker",
+          "asset_class",
+          "strategy"
+        ],
+        "table": "instruments_universe"
+      },
+      {
+        "columns": [
+          "instrument_id",
+          "cik_unpadded",
+          "sec_series_id"
+        ],
+        "table": "instrument_identity"
+      },
+      {
+        "columns": [
+          "strategy_label",
+          "benchmark_ticker"
+        ],
+        "table": "fund_strategy_benchmark_proxy_map"
+      },
+      {
+        "columns": [
+          "instrument_id",
+          "strategy_label",
+          "effective_date"
+        ],
+        "table": "strategy_reclassification_stage"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/holdings_summary_features.json",
+    "feature_name": "holdings_summary_inputs",
+    "sources": [
+      {
+        "columns": [
+          "series_id",
+          "report_date",
+          "holding_key",
+          "pct_of_nav"
+        ],
+        "table": "sec_nport_holdings"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/flow_momentum_features.json",
+    "feature_name": "flow_momentum_3m_input",
+    "sources": [
+      {
+        "columns": [
+          "series_id",
+          "month_end",
+          "total_net_assets",
+          "net_flow"
+        ],
+        "table": "sec_nport_fund_monthly_flows"
+      }
+    ]
+  }
+]

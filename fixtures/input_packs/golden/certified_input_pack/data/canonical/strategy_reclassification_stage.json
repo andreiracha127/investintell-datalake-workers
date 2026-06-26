@@ -1,0 +1,14 @@
+[
+  {
+    "effective_date": "2026-06-01",
+    "instrument_id": "FUND_A",
+    "source_table": "instruments_universe",
+    "strategy_label": "Equity Blend"
+  },
+  {
+    "effective_date": "2026-06-01",
+    "instrument_id": "FUND_B",
+    "source_table": "instruments_universe",
+    "strategy_label": "Bond Core"
+  }
+]

@@ -1,16 +1,15 @@
 {
-  "as_of": "2026-06-25",
-  "builder_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-  "builder_image_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-  "canonical_snapshot_sha256": "d5515f4b3b4d0dbe26f5b0b1f0de8e38411b5fb754afc0c523654d2e8f306b16",
-  "contract_bundle_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
-  "derived_feature_sha256": "8b86048a664b8cc8da1696520ecb5687c4d3c44da59d45ced5b97a34348849cd",
-  "input_pack_id": "open_macro_v03_input_pack_001",
-  "input_pack_sha256": "6278ea10425fde71bc95e4449e976bc746b0ae1f85fcc44e06d5af8ee9e898a3",
+  "as_of": "2026-06-26",
+  "builder_commit": "7a65d94e0637fbad7ae88814779919c05776b23d",
+  "builder_image_digest": "sha256:e57a54059da4d66241b08e6b7da086e68a127dafda0d545fb0f0d332948a53bb",
+  "canonical_snapshot_sha256": "a691ec12a5b47831b7b4009378836856e71145902a67d1faab0c398a7cb72dfc",
+  "contract_bundle_sha256": "a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277",
+  "derived_feature_sha256": "3efd73df711e7fbe17bf99e3facad30461b5f847922d46ca5a06b71881ed61e6",
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "input_pack_sha256": "52b149b5c003e1602108ea3e6edc70251cc4be8c7538615066ae7457b626ca39",
   "input_pack_version": "v1",
-  "raw_snapshot_sha256": "0c5b30f687d9c640694cc6f610bf9b8ff05b15f675596b1d23ec021849ad6bf3",
+  "raw_snapshot_sha256": "7735e772dc9a70ad3c939e7ff782754c904c1dc4609e8cede7123258155274e1",
   "runtime_activation": false,
-  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "source_commit": "7a65d94e0637fbad7ae88814779919c05776b23d",
   "source_repo": "investintell-datalake-workers"
 }
-

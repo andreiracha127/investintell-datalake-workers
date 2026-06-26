@@ -1,0 +1,44 @@
+[
+  {
+    "adjusted_close": "548.10",
+    "close": "548.10",
+    "date": "2026-06-24",
+    "ticker": "SPY",
+    "volume": 72000000
+  },
+  {
+    "adjusted_close": "549.30",
+    "close": "549.30",
+    "date": "2026-06-25",
+    "ticker": "SPY",
+    "volume": 73500000
+  },
+  {
+    "adjusted_close": "550.00",
+    "close": "550.00",
+    "date": "2026-06-26",
+    "ticker": "SPY",
+    "volume": 74800000
+  },
+  {
+    "adjusted_close": "98.20",
+    "close": "98.20",
+    "date": "2026-06-24",
+    "ticker": "AGG",
+    "volume": 8200000
+  },
+  {
+    "adjusted_close": "98.35",
+    "close": "98.35",
+    "date": "2026-06-25",
+    "ticker": "AGG",
+    "volume": 8400000
+  },
+  {
+    "adjusted_close": "98.40",
+    "close": "98.40",
+    "date": "2026-06-26",
+    "ticker": "AGG",
+    "volume": 8300000
+  }
+]

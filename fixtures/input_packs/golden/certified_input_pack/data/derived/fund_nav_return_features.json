@@ -1,0 +1,26 @@
+[
+  {
+    "feature_name": "fund_nav_return_1d",
+    "instrument_id": "FUND_A",
+    "observation_date": "2026-06-25",
+    "value": 0.005
+  },
+  {
+    "feature_name": "fund_nav_return_1d",
+    "instrument_id": "FUND_A",
+    "observation_date": "2026-06-26",
+    "value": 0.007462686567
+  },
+  {
+    "feature_name": "fund_nav_return_1d",
+    "instrument_id": "FUND_B",
+    "observation_date": "2026-06-25",
+    "value": 0.002512562814
+  },
+  {
+    "feature_name": "fund_nav_return_1d",
+    "instrument_id": "FUND_B",
+    "observation_date": "2026-06-26",
+    "value": 0.002506265664
+  }
+]

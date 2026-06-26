@@ -14,6 +14,8 @@ __pycache__/
 # Lean CLI local state
 lean.json
 data/
+!fixtures/input_packs/golden/certified_input_pack/data/
+!fixtures/input_packs/golden/certified_input_pack/data/**
 qc-a3-parity/results/
 qc-a3-parity/src/calibration_harness.py
 qc-a3-parity/src/db.py

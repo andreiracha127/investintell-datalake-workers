@@ -1,0 +1,65 @@
+[
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-24",
+    "series_id": "BAA10Y",
+    "source": "FRED",
+    "value": "1.91"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-25",
+    "series_id": "BAA10Y",
+    "source": "FRED",
+    "value": "1.92"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-26",
+    "series_id": "BAA10Y",
+    "source": "FRED",
+    "value": "1.90"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-24",
+    "series_id": "DFF",
+    "source": "FRED",
+    "value": "4.35"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-25",
+    "series_id": "DFF",
+    "source": "FRED",
+    "value": "4.34"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-26",
+    "series_id": "DFF",
+    "source": "FRED",
+    "value": "4.33"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-24",
+    "series_id": "DGS10",
+    "source": "FRED",
+    "value": "4.12"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-25",
+    "series_id": "DGS10",
+    "source": "FRED",
+    "value": "4.15"
+  },
+  {
+    "is_derived": false,
+    "obs_date": "2026-06-26",
+    "series_id": "DGS10",
+    "source": "FRED",
+    "value": "4.18"
+  }
+]

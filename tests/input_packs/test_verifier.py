@@ -54,7 +54,7 @@ def test_pack_hash_is_path_independent(tmp_path: Path) -> None:
 
 def test_verifier_detects_material_data_tampering(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
-    data_path = pack / "data" / "risk_metrics_inputs.json"
+    data_path = pack / "data" / "derived" / "fund_nav_return_features.json"
     rows = json.loads(data_path.read_text(encoding="utf-8"))
     rows[0]["value"] = 0.99
     _write_json(data_path, rows)
@@ -63,7 +63,7 @@ def test_verifier_detects_material_data_tampering(tmp_path: Path) -> None:
 
     assert result["ok"] is False
     assert result["input_pack_sha256_match"] is False
-    assert result["table_hash_mismatches"][0]["path"] == "data/risk_metrics_inputs.json"
+    assert result["table_hash_mismatches"][0]["path"] == "data/derived/fund_nav_return_features.json"
 
 
 def test_verifier_rejects_table_hash_paths_outside_pack(tmp_path: Path) -> None:
@@ -106,6 +106,27 @@ def test_verifier_detects_missing_required_file(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert "provenance.json" in result["missing_required_files"]
     assert result["provenance_complete"] is False
+
+
+def test_verifier_detects_missing_table_artifact(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    (pack / "data" / "canonical" / "nav_timeseries.json").unlink()
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert "data/canonical/nav_timeseries.json" in result["missing_table_artifacts"]
+
+
+def test_verifier_rejects_unlisted_extra_file(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    _write_json(pack / "data" / "derived" / "extra.json", {"unexpected": True})
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["unexpected_files"] == ["data/derived/extra.json"]
+    assert result["input_pack_sha256_match"] is False
 
 
 def test_verifier_rejects_runtime_activation(tmp_path: Path) -> None:

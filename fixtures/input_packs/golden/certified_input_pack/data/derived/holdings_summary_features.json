@@ -1,0 +1,18 @@
+[
+  {
+    "feature_name": "holdings_summary_inputs",
+    "holdings_count": 2,
+    "largest_holding_pct": 56.0,
+    "pct_nav_covered": 85.0,
+    "report_date": "2026-05-31",
+    "series_id": "S000000001"
+  },
+  {
+    "feature_name": "holdings_summary_inputs",
+    "holdings_count": 2,
+    "largest_holding_pct": 61.0,
+    "pct_nav_covered": 82.0,
+    "report_date": "2026-05-31",
+    "series_id": "S000000002"
+  }
+]
