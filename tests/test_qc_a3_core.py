@@ -118,6 +118,47 @@ def test_parse_args_accepts_upload_bundle_dir(tmp_path: Path) -> None:
     assert payload == {"bundle_dir": tmp_path / "bundle"}
 
 
+def test_upload_object_store_bundle_rejects_drifted_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_dir = tmp_path / "bundle"
+    data_dir = bundle_dir / "data"
+    data_dir.mkdir(parents=True)
+    artifact = data_dir / "metrics.json"
+    artifact.write_text('{"ok": true}\n', encoding="utf-8")
+    manifest = {
+        "runtime_activation": False,
+        "upload_policy": {"parquet_upload_allowed": False},
+        "object_store_prefix_immutable": "investintell/a3/qc-a3-parity/test",
+        "object_store_manifest_key": "investintell/a3/qc-a3-parity/test/object_store_manifest.json",
+        "object_files": {
+            "metrics": {
+                "relative_path": "data/metrics.json",
+                "object_store_key": "investintell/a3/qc-a3-parity/test/data/metrics.json",
+                "content_sha256": qc.file_sha256(artifact),
+            }
+        },
+        "source_files": {},
+    }
+    qc.write_json(bundle_dir / "object_store_manifest.json", manifest)
+    artifact.write_text('{"ok": false}\n', encoding="utf-8")
+
+    lean_calls: list[list[str]] = []
+
+    def fake_lean_text(args: list[str]) -> str:
+        lean_calls.append(args)
+        if args == ["whoami"]:
+            return "fixture-user"
+        raise AssertionError(f"unexpected upload call: {args}")
+
+    monkeypatch.setattr(qc, "lean_text", fake_lean_text)
+
+    with pytest.raises(ValueError, match="drifted object"):
+        qc.upload_object_store_bundle(bundle_dir)
+
+    assert lean_calls == [["whoami"]]
+
+
 def test_compare_expected_metrics_skips_when_reference_dir_missing(tmp_path: Path) -> None:
     config = qc.A3ParityConfig(
         feature_manifest=tmp_path / "feature_manifest.json",
@@ -182,6 +223,29 @@ def test_npz_export_round_trips_records_with_logical_hash(tmp_path: Path) -> Non
     assert harness.logical_records_hash(qc.read_npz_records(npz_path)) == (
         harness.logical_records_hash(harness.read_parquet_records(parquet_path))
     )
+
+
+def test_write_csv_gzip_is_byte_stable(tmp_path: Path) -> None:
+    rows = [{"b": 2, "a": "x"}, {"b": 3, "a": "y"}]
+    first = tmp_path / "first.csv.gz"
+    second = tmp_path / "second.csv.gz"
+
+    qc.write_csv_gzip(first, rows)
+    qc.write_csv_gzip(second, rows)
+
+    assert first.read_bytes() == second.read_bytes()
+
+
+def test_write_gzip_text_is_byte_stable(tmp_path: Path) -> None:
+    source = tmp_path / "source.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    first = tmp_path / "first.py.gz"
+    second = tmp_path / "second.py.gz"
+
+    qc.write_gzip_text(source, first)
+    qc.write_gzip_text(source, second)
+
+    assert first.read_bytes() == second.read_bytes()
 
 
 def test_materialize_harness_source_from_manifest_verifies_sha(tmp_path: Path) -> None:

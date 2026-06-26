@@ -1,0 +1,67 @@
+# PROPOSED, inert quant-engine CI gate.
+#
+# This repository currently has no GitHub Actions CI (it deploys via Railway).
+# This workflow is prepared as the "required status checks" surface described in
+# docs/architecture/quant-engine-governance-rollout.md. It does nothing until the
+# team enables Actions and wires branch protection. The registry build/SBOM/
+# provenance job requires registry secrets and is intentionally push-gated off.
+name: quant-engine-ci
+
+on:
+  pull_request:
+    paths:
+      - "contracts/quant-engine/**"
+      - "services/quant_engine/**"
+      - "packages/investintell_quant_core/**"
+      - "docker/quant-engine/**"
+      - "scripts/contract_bundle.py"
+      - "qc_a3_core.py"
+      - "src/calibration_harness.py"
+      - "tests/quant_core/**"
+      - "tests/quant_engine/**"
+      - "tests/test_catalog_hash_path_independence.py"
+      - "tests/test_qc_a3_core.py"
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.quant-engine.lock jsonschema pytest
+      - name: Run quant-engine and contract tests
+        run: |
+          python -m pytest tests/quant_engine tests/quant_core \
+            tests/test_qc_a3_core.py tests/test_catalog_hash_path_independence.py -q
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Verify contract bundle integrity
+        run: python scripts/contract_bundle.py verify
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build engine image with SBOM and provenance (no push)
+        # Pushing by digest to a registry requires secrets; enable in the
+        # governance wave. SBOM/provenance attestations are generated here.
+        run: |
+          docker buildx build \
+            --file docker/quant-engine/Dockerfile \
+            --attest type=sbom \
+            --attest type=provenance,mode=max,version=v1 \
+            --tag investintell-quant-engine:ci-${{ github.sha }} \
+            --load .

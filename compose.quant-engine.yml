@@ -1,0 +1,24 @@
+services:
+  quant-engine:
+    build:
+      context: .
+      dockerfile: docker/quant-engine/Dockerfile
+    # Hardened execution profile (least privilege, no network during compute).
+    network_mode: "none"
+    read_only: true
+    user: "65532:65532"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 4g
+    cpus: 2
+    tmpfs:
+      - /tmp
+    environment:
+      PYTHONPATH: /app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src
+    volumes:
+      # Inputs are read-only; only the explicit output mount is writable.
+      - E:/investintell-datalake-workers-combo:/input/combo:ro
+      - ./_tmp_quant_engine_container:/outputs

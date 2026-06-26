@@ -3,6 +3,7 @@ import csv
 import datetime as dt
 import gzip
 import hashlib
+import io
 import json
 import math
 import os
@@ -12,9 +13,19 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+QUANT_CORE_SRC = Path(__file__).resolve().parent / "packages" / "investintell_quant_core" / "src"
+if QUANT_CORE_SRC.exists() and str(QUANT_CORE_SRC) not in sys.path:
+    sys.path.insert(0, str(QUANT_CORE_SRC))
+
+from investintell_quant_core.a3 import metrics as core_metrics
+from investintell_quant_core.contracts.manifests import (
+    validate_feature_manifest_contract as core_validate_feature_manifest_contract,
+)
 
 
 DEFAULT_A31_NAME = "G2-CREDIT6040-15-SURVEY05"
@@ -130,15 +141,7 @@ def load_l2_macro_for_config(config: A3ParityConfig) -> tuple[dict[str, Any], Pa
 
 
 def validate_feature_manifest_contract(manifest: dict[str, Any]) -> None:
-    if manifest.get("parameter_independent") is not True:
-        raise ValueError("feature_manifest must be parameter_independent=true")
-    if manifest.get("counterfactual_runtime_allowed") is not False:
-        raise ValueError("feature_manifest must forbid counterfactual runtime use")
-    roles = manifest.get("selection_roles") or {}
-    if roles.get("latest") != "pit_runtime_candidate":
-        raise ValueError("feature_manifest.latest must be pit_runtime_candidate")
-    if roles.get("first_release") != "revised_vintage_counterfactual":
-        raise ValueError("feature_manifest.first_release must be revised_vintage_counterfactual")
+    core_validate_feature_manifest_contract(manifest)
 
 
 def load_revision_uncertainty_for_config(
@@ -343,64 +346,14 @@ def compare_rows(
     actual: dict[str, Any],
     expected: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    mismatches: list[dict[str, Any]] = []
-    for key in sorted(set(actual) | set(expected)):
-        if key not in actual or key not in expected:
-            mismatches.append({"fold": fold, "field": key, "issue": "missing_field"})
-            continue
-        lhs = actual[key]
-        rhs = expected[key]
-        if lhs is None and rhs is None:
-            continue
-        if values_equivalent(lhs, rhs):
-            continue
-        if is_number(lhs) and is_number(rhs):
-            mismatches.append({
-                "fold": fold,
-                "field": key,
-                "actual": lhs,
-                "expected": rhs,
-                "abs_diff": abs(float(lhs) - float(rhs)),
-            })
-        else:
-            mismatches.append({
-                "fold": fold,
-                "field": key,
-                "actual": normalize_scalar(lhs),
-                "expected": normalize_scalar(rhs),
-            })
-    return mismatches
+    return core_metrics.compare_rows(fold, actual, expected)
 
 
 def float_diff_summary(
     actual_rows: list[dict[str, Any]],
     expected_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    actual_by_fold = {str(row.get("fold")): row for row in actual_rows}
-    diffs: list[dict[str, Any]] = []
-    for expected in expected_rows:
-        fold = str(expected.get("fold"))
-        actual = actual_by_fold.get(fold)
-        if actual is None:
-            continue
-        for key in sorted(set(actual) & set(expected)):
-            collect_float_diffs(
-                diffs,
-                fold=fold,
-                field=key,
-                actual=actual[key],
-                expected=expected[key],
-            )
-    max_abs_diff = max((item["abs_diff"] for item in diffs), default=0.0)
-    max_rel_diff = max((item["rel_diff"] for item in diffs), default=0.0)
-    differing_fields = sorted({item["field"] for item in diffs})
-    return {
-        "float_abs_tolerance": FLOAT_TOLERANCE,
-        "float_rel_tolerance": FLOAT_REL_TOLERANCE,
-        "max_abs_diff": max_abs_diff,
-        "max_rel_diff": max_rel_diff,
-        "differing_float_fields": differing_fields,
-    }
+    return core_metrics.float_diff_summary(actual_rows, expected_rows)
 
 
 def collect_float_diffs(
@@ -411,19 +364,13 @@ def collect_float_diffs(
     actual: Any,
     expected: Any,
 ) -> None:
-    actual_json = parse_json_scalar(actual)
-    expected_json = parse_json_scalar(expected)
-    if actual_json is not None and expected_json is not None:
-        collect_json_float_diffs(
-            diffs,
-            fold=fold,
-            field=field,
-            actual=actual_json,
-            expected=expected_json,
-        )
-        return
-    if is_number(actual) and is_number(expected):
-        append_float_diff(diffs, fold=fold, field=field, actual=float(actual), expected=float(expected))
+    core_metrics.collect_float_diffs(
+        diffs,
+        fold=fold,
+        field=field,
+        actual=actual,
+        expected=expected,
+    )
 
 
 def collect_json_float_diffs(
@@ -434,28 +381,13 @@ def collect_json_float_diffs(
     actual: Any,
     expected: Any,
 ) -> None:
-    if is_number(actual) and is_number(expected):
-        append_float_diff(diffs, fold=fold, field=field, actual=float(actual), expected=float(expected))
-        return
-    if isinstance(actual, dict) and isinstance(expected, dict):
-        for key in sorted(set(actual) & set(expected)):
-            collect_json_float_diffs(
-                diffs,
-                fold=fold,
-                field=f"{field}.{key}",
-                actual=actual[key],
-                expected=expected[key],
-            )
-        return
-    if isinstance(actual, list) and isinstance(expected, list):
-        for index, (left, right) in enumerate(zip(actual, expected)):
-            collect_json_float_diffs(
-                diffs,
-                fold=fold,
-                field=f"{field}[{index}]",
-                actual=left,
-                expected=right,
-            )
+    core_metrics.collect_json_float_diffs(
+        diffs,
+        fold=fold,
+        field=field,
+        actual=actual,
+        expected=expected,
+    )
 
 
 def append_float_diff(
@@ -466,110 +398,48 @@ def append_float_diff(
     actual: float,
     expected: float,
 ) -> None:
-    abs_diff = abs(actual - expected)
-    if abs_diff == 0:
-        return
-    denominator = max(abs(expected), FLOAT_TOLERANCE)
-    diffs.append({
-        "fold": fold,
-        "field": field,
-        "actual": actual,
-        "expected": expected,
-        "abs_diff": abs_diff,
-        "rel_diff": abs_diff / denominator,
-    })
+    core_metrics.append_float_diff(
+        diffs,
+        fold=fold,
+        field=field,
+        actual=actual,
+        expected=expected,
+    )
 
 
 def is_number(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return core_metrics.is_number(value)
 
 
 def values_equivalent(lhs: Any, rhs: Any) -> bool:
-    if lhs is None and rhs is None:
-        return True
-    if is_number(lhs) and is_number(rhs):
-        return math.isclose(
-            float(lhs),
-            float(rhs),
-            rel_tol=FLOAT_REL_TOLERANCE,
-            abs_tol=FLOAT_TOLERANCE,
-        )
-    lhs_json = parse_json_scalar(lhs)
-    rhs_json = parse_json_scalar(rhs)
-    if lhs_json is not None and rhs_json is not None:
-        return json_values_equivalent(lhs_json, rhs_json)
-    return normalize_scalar(lhs) == normalize_scalar(rhs)
+    return core_metrics.values_equivalent(lhs, rhs)
 
 
 def parse_json_scalar(value: Any) -> Any | None:
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text or text[0] not in "[{":
-        return None
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        return None
+    return core_metrics.parse_json_scalar(value)
 
 
 def json_values_equivalent(lhs: Any, rhs: Any) -> bool:
-    if is_number(lhs) and is_number(rhs):
-        return math.isclose(
-            float(lhs),
-            float(rhs),
-            rel_tol=FLOAT_REL_TOLERANCE,
-            abs_tol=FLOAT_TOLERANCE,
-        )
-    if isinstance(lhs, dict) and isinstance(rhs, dict):
-        if set(lhs) != set(rhs):
-            return False
-        return all(json_values_equivalent(lhs[key], rhs[key]) for key in lhs)
-    if isinstance(lhs, list) and isinstance(rhs, list):
-        if len(lhs) != len(rhs):
-            return False
-        return all(json_values_equivalent(left, right) for left, right in zip(lhs, rhs))
-    return normalize_scalar(lhs) == normalize_scalar(rhs)
+    return core_metrics.json_values_equivalent(lhs, rhs)
 
 
 def normalize_scalar(value: Any) -> Any:
-    if hasattr(value, "item") and not isinstance(value, (str, bytes, bytearray)):
-        try:
-            return value.item()
-        except (AttributeError, TypeError, ValueError):
-            return value
-    return value
+    return core_metrics.normalize_scalar(value)
 
 
 def metric_rows_logical_hash(rows: list[dict[str, Any]]) -> str:
-    harness = require_harness()
-    return harness.logical_records_hash(canonical_metric_rows(rows))
+    return core_metrics.metric_rows_logical_hash(rows)
 
 
 def metric_rows_raw_sha256(rows: list[dict[str, Any]]) -> str:
-    payload = json.dumps(
-        rows,
-        sort_keys=True,
-        default=str,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return core_metrics.metric_rows_raw_sha256(rows)
 
 
 def metrics_hash_policy_payload(
     rows: list[dict[str, Any]],
     comparison: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
-        "metrics_hash_policy_version": METRICS_HASH_POLICY_VERSION,
-        "metrics_raw_sha256": metric_rows_raw_sha256(rows),
-        "metrics_canonical_logical_hash": metric_rows_logical_hash(rows),
-        "float_abs_tolerance": FLOAT_TOLERANCE,
-        "float_rel_tolerance": FLOAT_REL_TOLERANCE,
-        "max_abs_diff": comparison.get("max_abs_diff"),
-        "max_rel_diff": comparison.get("max_rel_diff"),
-        "differing_float_fields": comparison.get("differing_float_fields", []),
-    }
+    return core_metrics.metrics_hash_policy_payload(rows, comparison)
 
 
 def bundle_evaluation_hash(
@@ -578,47 +448,19 @@ def bundle_evaluation_hash(
     result: dict[str, Any],
     metrics_policy: dict[str, Any],
 ) -> str:
-    harness = require_harness()
-    return harness.logical_payload_hash({
-        "policy_version": BUNDLE_EVALUATION_HASH_POLICY_VERSION,
-        "schema_version": QC_A3_BRIDGE_SCHEMA_VERSION,
-        "worker_commit": worker_commit,
-        "model_evaluation_hash": result["evaluation_hash"],
-        "a31_config_hash": result["a31_hash"],
-        "a32_config_hash": result["a32_hash"],
-        "parent_l2_macro_logical_hash": result["l2_hash"],
-        "revision_uncertainty_logical_hash": result["uncertainty_hash"],
-        "metrics_hash_policy_version": metrics_policy["metrics_hash_policy_version"],
-        "metrics_canonical_logical_hash": metrics_policy["metrics_canonical_logical_hash"],
-    })[:24]
+    return core_metrics.bundle_evaluation_hash(
+        worker_commit=worker_commit,
+        result=result,
+        metrics_policy=metrics_policy,
+    )
 
 
 def canonical_metric_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {key: canonical_metric_value(value) for key, value in row.items()}
-        for row in rows
-    ]
+    return core_metrics.canonical_metric_rows(rows)
 
 
 def canonical_metric_value(value: Any) -> Any:
-    if is_number(value):
-        rounded = round(float(value), METRIC_HASH_FLOAT_DECIMALS)
-        return 0.0 if rounded == 0 else rounded
-    parsed = parse_json_scalar(value)
-    if parsed is not None:
-        return json.dumps(
-            canonical_metric_value(parsed),
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    if isinstance(value, dict):
-        return {
-            str(key): canonical_metric_value(item)
-            for key, item in sorted(value.items())
-        }
-    if isinstance(value, list):
-        return [canonical_metric_value(item) for item in value]
-    return normalize_scalar(value)
+    return core_metrics.canonical_metric_value(value)
 
 
 def read_npz_records(path: Path) -> list[dict[str, Any]]:
@@ -782,11 +624,19 @@ def export_bundle(config: A3ParityConfig) -> dict[str, Any]:
 def write_csv_gzip(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
-    with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+    with deterministic_gzip_text_writer(path) as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: csv_cell(row.get(key)) for key in fieldnames})
+
+
+@contextmanager
+def deterministic_gzip_text_writer(path: Path):
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+            with io.TextIOWrapper(gz, encoding="utf-8", newline="") as handle:
+                yield handle
 
 
 def csv_cell(value: Any) -> Any:
@@ -824,7 +674,7 @@ def export_numeric_panel_npz(source_parquet: Path, target_npz: Path) -> None:
 def write_gzip_text(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     text = source.read_text(encoding="utf-8")
-    with gzip.open(target, "wt", encoding="utf-8", newline="") as handle:
+    with deterministic_gzip_text_writer(target) as handle:
         handle.write(text)
 
 
@@ -1176,16 +1026,25 @@ def upload_object_store_bundle(bundle_dir: Path) -> dict[str, Any]:
     uploads: list[dict[str, Any]] = []
     for name, item in sorted({**object_files, **source_files}.items()):
         relative_path = Path(str(item["relative_path"]))
+        relative_posix = str(relative_path).replace("\\", "/")
         local_path = bundle_dir / relative_path
         key = str(item["object_store_key"])
+        expected_sha = str(item["content_sha256"])
+        actual_sha = file_sha256(local_path)
+        if actual_sha != expected_sha:
+            raise ValueError(
+                "refusing to upload drifted object "
+                f"{relative_posix}: "
+                f"expected {expected_sha}, actual {actual_sha}"
+            )
         command_started = time.perf_counter()
         output = lean_text(["cloud", "object-store", "set", key, str(local_path)])
         uploads.append({
             "name": name,
             "object_store_key": key,
-            "relative_path": str(relative_path).replace("\\", "/"),
+            "relative_path": relative_posix,
             "file_size_bytes": local_path.stat().st_size,
-            "content_sha256": file_sha256(local_path),
+            "content_sha256": actual_sha,
             "elapsed_seconds": time.perf_counter() - command_started,
             "lean_output": output,
         })

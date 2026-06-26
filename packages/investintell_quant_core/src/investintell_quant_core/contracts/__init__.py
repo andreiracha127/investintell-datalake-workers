@@ -1,0 +1,2 @@
+"""Core contract validation helpers."""
+
