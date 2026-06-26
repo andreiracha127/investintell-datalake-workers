@@ -66,6 +66,23 @@ def test_verifier_detects_material_data_tampering(tmp_path: Path) -> None:
     assert result["table_hash_mismatches"][0]["path"] == "data/risk_metrics_inputs.json"
 
 
+def test_verifier_rejects_table_hash_paths_outside_pack(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    table_hashes_path = pack / "table_hashes.json"
+    table_hashes = _read_json(table_hashes_path)
+    table_hashes["tables"][0]["path"] = "../outside.json"
+    _write_json(table_hashes_path, table_hashes)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["table_hash_mismatches"][0] == {
+        "path": "../outside.json",
+        "expected": "<inside pack>",
+        "actual": "<outside pack>",
+    }
+
+
 def test_verifier_detects_component_manifest_tampering(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     raw_manifest_path = pack / "raw_snapshot_manifest.json"
@@ -110,4 +127,3 @@ def test_input_pack_code_has_no_db_connector_imports() -> None:
         text = path.read_text(encoding="utf-8").lower()
         assert "psycopg" not in text
         assert "database_url" not in text
-

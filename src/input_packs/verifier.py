@@ -66,6 +66,20 @@ def _verify_component_hashes(root: Path, manifest: dict[str, Any]) -> list[dict[
     return mismatches
 
 
+def _pack_relative_path(root: Path, rel: str) -> Path | None:
+    """Resolve a table artifact path only when it stays inside ``root``."""
+    path = Path(rel)
+    if path.is_absolute():
+        return None
+    root_resolved = root.resolve()
+    candidate = (root / path).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return candidate
+
+
 def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list[str], list[dict[str, str]]]:
     missing: list[str] = []
     mismatches: list[dict[str, str]] = []
@@ -78,7 +92,10 @@ def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list
         if not isinstance(rel, str):
             mismatches.append({"path": "<missing-path>", "expected": str(expected), "actual": "<no path>"})
             continue
-        path = root / rel
+        path = _pack_relative_path(root, rel)
+        if path is None:
+            mismatches.append({"path": rel, "expected": "<inside pack>", "actual": "<outside pack>"})
+            continue
         if not path.exists():
             missing.append(rel)
             continue
@@ -175,4 +192,3 @@ def verify_pack(
         "runtime_activation_ok": runtime_activation_ok,
         "provenance_complete": provenance_complete,
     }
-
