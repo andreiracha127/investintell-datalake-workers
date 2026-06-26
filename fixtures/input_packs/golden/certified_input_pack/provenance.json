@@ -1,0 +1,29 @@
+{
+  "datasets": [
+    {
+      "dataset_name": "canonical_risk_metric_inputs",
+      "dataset_namespace": "lake://certified-input-packs",
+      "snapshot_id": "canonical_risk_metric_inputs_20260625"
+    }
+  ],
+  "jobs": [
+    {
+      "job_name": "certified_input_pack_builder",
+      "job_namespace": "investintell-datalake-workers"
+    }
+  ],
+  "runs": [
+    {
+      "job_name": "certified_input_pack_builder",
+      "run_id": "fixture-run-20260625"
+    }
+  ],
+  "schema_version": "v1",
+  "sources": [
+    {
+      "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source_repo": "investintell-datalake-workers"
+    }
+  ]
+}
+
