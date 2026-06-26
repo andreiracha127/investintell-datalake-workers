@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "job_type": "a3_qc_parity",
+  "input_bundle_uri": "s3://investintell-contracts/input-bundles/g0",
+  "input_bundle_logical_hash": "de46dfb7acaf40bf",
+  "config_catalog_uri": "s3://investintell-contracts/config-catalog.normalized.json",
+  "config_catalog_hash": "43ecdc7180525c0793fc040187bdffd90d590ede99976434354bdf589e592e4d",
+  "expected_parent_hashes": {
+    "l2_macro_logical_hash": "9d46ac84d89df7b0",
+    "revision_uncertainty_logical_hash": "bc4b7fad71d942ec"
+  },
+  "engine_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "quant_core_version": "0.1.0",
+  "offline": true,
+  "jobs": 4,
+  "output_uri": "s3://investintell-outputs/g0/job-1",
+  "runtime_activation": true
+}
