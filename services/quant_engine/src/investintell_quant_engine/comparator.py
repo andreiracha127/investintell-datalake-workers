@@ -51,8 +51,12 @@ def compare_manifests(expected: dict[str, Any], actual: dict[str, Any]) -> dict[
     duplicate_paths = sorted(set(exp_dups) | set(act_dups))
 
     status_match = expected.get("status") == actual.get("status")
+    # Engine outputs are expected to be non-empty: two empty manifests must never
+    # pass as "0 mismatches" even though no path is missing/unexpected/mismatched.
+    empty = not exp_artifacts or not act_artifacts
     ok = (
         status_match
+        and not empty
         and not missing
         and not unexpected
         and not mismatched
@@ -65,6 +69,7 @@ def compare_manifests(expected: dict[str, Any], actual: dict[str, Any]) -> dict[
         "actual_status": actual.get("status"),
         "expected_count": len(exp_artifacts),
         "actual_count": len(act_artifacts),
+        "empty": empty,
         "missing": missing,
         "unexpected": unexpected,
         "mismatched": mismatched,

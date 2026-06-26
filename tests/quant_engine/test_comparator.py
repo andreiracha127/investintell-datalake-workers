@@ -80,6 +80,15 @@ def test_empty_actual_against_full_expected_is_not_ok():
     assert result["actual_count"] == 0
 
 
+def test_empty_against_empty_is_not_ok():
+    # Outputs are expected to be non-empty; two empty manifests must not pass as
+    # "0 mismatches" (report: "nenhuma lista vazia passa como 0 mismatches").
+    empty = _manifest([])
+    result = compare_manifests(empty, empty)
+    assert result["ok"] is False
+    assert result["empty"] is True
+
+
 def test_duplicate_paths_are_flagged():
     expected = _manifest([_a("metrics.json", "aaa")])
     actual = _manifest([_a("metrics.json", "aaa"), _a("metrics.json", "aaa")])

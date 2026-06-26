@@ -91,6 +91,16 @@ def test_paths_are_relative_and_posix(tmp_path):
     assert manifest["artifacts"][0]["path"] == "nested/deep/result.json"
 
 
+def test_exclude_skips_named_paths(tmp_path):
+    # A previously-written outputs manifest living inside the output dir must not
+    # be folded into the new manifest (else re-runs become non-repeatable).
+    _write_json(tmp_path / "metrics.json", {"a": 1})
+    _write_json(tmp_path / "outputs_manifest.json", {"stale": True})
+    manifest = build_outputs_manifest(tmp_path, exclude=[tmp_path / "outputs_manifest.json"])
+    paths = [a["path"] for a in manifest["artifacts"]]
+    assert paths == ["metrics.json"]
+
+
 def test_volatile_fields_cover_known_nondeterministic_keys():
     for key in ("execution_id", "job_id", "created_at", "started_at", "finished_at", "environment", "artifact_prefix"):
         assert key in VOLATILE_FIELDS
