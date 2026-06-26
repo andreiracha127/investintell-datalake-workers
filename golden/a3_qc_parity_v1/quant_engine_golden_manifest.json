@@ -1,0 +1,57 @@
+{
+  "a3_status": "open_macro_v03",
+  "a4_status": "harness_ready_provisional_A3",
+  "a5_status": "blocked",
+  "artifact_type": "quant_engine_golden_manifest",
+  "baseline_case": {
+    "a31_config_hash": "4b263d560be163fb131d9fdf",
+    "a31_config_name": "V03-G0-CONTROL",
+    "a32_config_hash": "40823b2a6aba9b998109e23e",
+    "a32_config_name": "A32-G0.35-I0.35-X0.10-C0.60-D1.25",
+    "model_evaluation_hash": "10198d7603036c3327ac9e67"
+  },
+  "captured_at_utc": "2026-06-26T00:26:11.627540+00:00",
+  "comparison": {
+    "differing_float_fields": [],
+    "float_abs_tolerance": 1e-12,
+    "float_rel_tolerance": 1e-12,
+    "max_abs_diff": 0.0,
+    "max_rel_diff": 0.0,
+    "mismatch_count": 0,
+    "status": "passed"
+  },
+  "external_macro_access": false,
+  "freeze_ready": false,
+  "governance_note": "Golden capture only. No calibration, freeze, A5 advancement, runtime activation, production write, or frontend change is authorized by this artifact.",
+  "large_data_versioned": false,
+  "observed": {
+    "counterfactual_replay_logical_hash": "0238d3b5583e06381c3ae2914a80b64f58bc04c50fac455d7e6285228922b021",
+    "counterfactual_row_count": 3221,
+    "metric_row_count": 5,
+    "metrics_canonical_logical_hash": "70014a0a04fa26faf8aec88227f0f1fea381091acb6ac307fae30b77172300d3",
+    "metrics_hash_policy_version": "qc_a3_metrics_float_canonical_v1",
+    "metrics_raw_sha256": "a8966bda995a50426ec3244b5b83dd8fe72746b3cdb46c03cd771eced25ae497",
+    "runtime_replay_logical_hash": "de46dfb7acaf40bf368cfa9a06192a655b9f938e9000edc01d8a34fddf4a3024",
+    "runtime_row_count": 3221
+  },
+  "parent_hashes": {
+    "config_catalog_hash_observed": "a01049703fdb8bbee5cbcf2c455a1ec84f0b1d87dedb4c68f3082bdacdff2d3d",
+    "l2_macro_logical_hash": "9d46ac84d89df7b0ea72d2162aac9d5fa1ce0eb6b6d4cb9c69e0c47d82bfee43",
+    "revision_uncertainty_logical_hash": "bc4b7fad71d942ec2529a3a9cfb4e81f54ea803037e6e384e828dc142d029fb3"
+  },
+  "reproduction_output_dir": "_tmp_quant_engine_golden_baseline_current",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "source_artifacts": {
+    "a32_grid_dir": "E:\\investintell-datalake-workers-combo\\_tmp_a32_grid_selected_4827ce4_20260625",
+    "config_catalog": "E:\\investintell-datalake-workers-combo\\_tmp_qc_a3_parity_1138754_cloud_20260625\\manifests\\config_catalog.normalized.json",
+    "expected_v03_grid_dir": "E:\\investintell-datalake-workers-combo\\_tmp_a31_v03_revision_robust_g1_e6a72c3_20260625",
+    "feature_manifest": "E:\\investintell-datalake-workers-combo\\_tmp_qc_a3_parity_1138754_cloud_20260625\\manifests\\feature_manifest.json",
+    "macro_l2_npz": "E:\\investintell-datalake-workers-combo\\_tmp_qc_a3_parity_1138754_cloud_20260625\\panels\\macro_l2_union_numeric.npz",
+    "revision_uncertainty_manifest": "E:\\investintell-datalake-workers-combo\\_tmp_qc_a3_parity_1138754_cloud_20260625\\manifests\\revision_uncertainty_manifest.json",
+    "revision_uncertainty_npz": "E:\\investintell-datalake-workers-combo\\_tmp_qc_a3_parity_1138754_cloud_20260625\\panels\\revision_uncertainty_numeric.npz"
+  },
+  "worker_branch": "feat/quant-engine-isolation",
+  "worker_commit": "b01af4d621b4c09842ceec093679075cc30906cb",
+  "worker_git_dirty": false
+}
