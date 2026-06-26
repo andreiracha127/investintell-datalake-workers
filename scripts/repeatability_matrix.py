@@ -101,7 +101,17 @@ def _run_container(case, *, combo_root: Path, out_dir: Path, jobs: int, image: s
         worker_commit=worker_commit,
     )
     docker_cmd = [
-        "docker", "run", "--rm", "--network", "none",
+        "docker", "run", "--rm",
+        # Hardened execution profile (mirrors compose.quant-engine.yml).
+        "--network", "none",
+        "--read-only",
+        "--user", "65532:65532",
+        "--security-opt", "no-new-privileges",
+        "--cap-drop", "ALL",
+        "--pids-limit", "256",
+        "--memory", "4g",
+        "--cpus", "2",
+        "--tmpfs", "/tmp",
         "--mount", f"type=bind,src={combo_root},dst=/input/combo,readonly",
         "--mount", f"type=bind,src={out_dir},dst=/outputs",
         image, *args,
