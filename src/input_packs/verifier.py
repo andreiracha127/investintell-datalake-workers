@@ -30,6 +30,13 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _schema_root(pack_root: Path) -> Path:
+    embedded = pack_root / "schemas"
+    if (embedded / "input_pack_manifest.schema.json").is_file():
+        return embedded
+    return _repo_root() / "schemas" / "input_packs"
+
+
 def _schema_errors(instance: dict[str, Any], schema_path: Path) -> list[str]:
     try:
         import jsonschema
@@ -161,8 +168,9 @@ def verify_pack(
     schema_path = (
         Path(manifest_schema_path)
         if manifest_schema_path is not None
-        else _repo_root() / "schemas" / "input_packs" / "input_pack_manifest.schema.json"
+        else _schema_root(root) / "input_pack_manifest.schema.json"
     )
+    schema_root = _schema_root(root)
 
     parse_errors: list[str] = []
     manifest = _load_json_or_error(manifest_path, parse_errors) if manifest_path.exists() else {}
@@ -192,7 +200,7 @@ def verify_pack(
                 filename,
                 _schema_errors(
                     payload,
-                    _repo_root() / "schemas" / "input_packs" / COMPONENT_SCHEMA_FILES[filename],
+                    schema_root / COMPONENT_SCHEMA_FILES[filename],
                 ),
             )
             for filename, payload in component_payloads.items()

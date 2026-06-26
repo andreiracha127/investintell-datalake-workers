@@ -32,6 +32,20 @@ def test_golden_pack_verifies_offline() -> None:
     assert result["provenance_complete"] is True
 
 
+def test_verifier_uses_embedded_pack_schemas_when_repo_schemas_are_unavailable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pack = _copy_pack(tmp_path)
+    from src.input_packs import verifier
+
+    monkeypatch.setattr(verifier, "_repo_root", lambda: tmp_path / "missing_repo_root")
+
+    result = verifier.verify_pack(pack)
+
+    assert result["ok"] is True
+
+
 def test_build_manifest_reproduces_golden_hash(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     golden_manifest = _read_json(pack / "manifest.json")
