@@ -1,0 +1,8 @@
+numpy>=1.26
+pandas>=2.2
+pyarrow>=15.0
+PyYAML>=6.0
+scipy>=1.13
+arch>=7.0
+psycopg[binary]>=3.2
+

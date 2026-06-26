@@ -1,0 +1,12 @@
+services:
+  quant-engine:
+    build:
+      context: .
+      dockerfile: docker/quant-engine/Dockerfile
+    network_mode: "none"
+    environment:
+      PYTHONPATH: /app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src
+    volumes:
+      - .:/workspace:ro
+      - ./_tmp_quant_engine_container:/outputs
+
