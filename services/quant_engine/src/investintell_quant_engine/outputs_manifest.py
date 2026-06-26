@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -94,16 +95,24 @@ def build_outputs_manifest(
     *,
     status: str = "succeeded",
     canonical: bool = False,
+    exclude: Iterable[str | Path] = (),
 ) -> dict[str, Any]:
     """Walk ``output_dir`` and build a closed manifest of every file.
 
     Paths are relative to ``output_dir`` and POSIX-normalized for cross-platform
     stability. Artifacts are sorted by path so the manifest itself is canonical.
+
+    ``exclude`` lists files to skip (resolved to absolute paths). The manifest's
+    own target must be excluded when it lives inside ``output_dir``; otherwise a
+    stale copy from a previous run would be folded in and break repeatability.
     """
     root = Path(output_dir)
+    excluded = {Path(p).resolve() for p in exclude}
     artifacts: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
+            continue
+        if path.resolve() in excluded:
             continue
         rel = path.relative_to(root).as_posix()
         entry: dict[str, Any] = {

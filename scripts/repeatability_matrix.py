@@ -120,8 +120,9 @@ def main(argv: list[str] | None = None) -> int:
         "--environments",
         nargs="+",
         choices=["host", "container"],
-        default=["host"],
-        help="Which execution environments to run (host and/or container).",
+        default=["host", "container"],
+        help="Which execution environments to run. Defaults to the full "
+        "host-vs-container gate; pass e.g. '--environments host' to opt down.",
     )
     parser.add_argument("--min-runs", type=int, default=4)
     parser.add_argument(

@@ -62,13 +62,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.manifest_json:
         write_json(Path(args.manifest_json), manifest)
     if args.outputs_manifest:
-        # Build the manifest before writing it so it captures the artifacts the
-        # job produced (result/report/engine manifest) without referencing
-        # itself, even when the target path lives inside --output-dir.
+        # Exclude the manifest target from the walk so neither the manifest being
+        # written nor a stale copy from a previous run (when the target lives
+        # inside --output-dir) is folded in. Either would break repeatability.
         outputs = build_outputs_manifest(
             config.output_dir,
             status=result.get("status", "failed"),
             canonical=args.outputs_manifest_canonical,
+            exclude=[Path(args.outputs_manifest)],
         )
         write_json(Path(args.outputs_manifest), outputs)
     print(json.dumps(result, sort_keys=True))
