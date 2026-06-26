@@ -1,0 +1,22 @@
+[project]
+name = "investintell-quant-engine"
+version = "0.1.0"
+description = "Offline Investintell quant batch runner"
+requires-python = ">=3.11"
+dependencies = [
+  "investintell-quant-core==0.1.0",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "pyarrow>=15.0",
+  "PyYAML>=6.0",
+  "scipy>=1.13",
+  "arch>=7.0",
+]
+
+[project.scripts]
+investintell-quant-engine = "investintell_quant_engine.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
