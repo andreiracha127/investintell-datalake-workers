@@ -44,6 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     input_pack = sub.add_parser("dry-run-input-pack")
     input_pack.add_argument("--input-pack", required=True)
+    input_pack.add_argument("--input-pack-sha256")
+    input_pack.add_argument("--source-snapshot-sha256")
     input_pack.add_argument("--output-dir", required=True)
     input_pack.add_argument("--job-id")
     input_pack.add_argument("--jobs", type=int, default=1)
@@ -72,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
             job_id=args.job_id,
             jobs=args.jobs,
             offline=True,
+            expected_input_pack_sha256=args.input_pack_sha256,
+            expected_source_snapshot_sha256=args.source_snapshot_sha256,
         )
         manifest = {
             **engine_manifest(job_type="certified_input_pack_dry_run", jobs=args.jobs, offline=True),

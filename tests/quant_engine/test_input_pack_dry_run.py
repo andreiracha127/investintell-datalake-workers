@@ -16,6 +16,7 @@ from investintell_quant_engine.cli import main
 import investintell_quant_engine.runners.input_pack as input_pack_runner
 from investintell_quant_engine.runners.input_pack import run_input_pack_dry_run
 from src.input_packs.build import build_pack
+from src.input_packs.hashing import canonical_json_sha256
 
 SOURCE_DIR = ROOT / "fixtures" / "input_packs" / "p0_sources" / "open_macro_v03"
 
@@ -33,6 +34,16 @@ def _build_pack(tmp_path: Path) -> Path:
         output=output,
     )
     return output
+
+
+def _source_snapshot_sha256(pack: Path) -> str:
+    manifest = _json(pack / "manifest.json")
+    return canonical_json_sha256(
+        {
+            "raw_snapshot_sha256": manifest["raw_snapshot_sha256"],
+            "canonical_snapshot_sha256": manifest["canonical_snapshot_sha256"],
+        }
+    )
 
 
 def test_dry_run_consumes_verified_pack_without_runtime_activation(tmp_path: Path) -> None:
@@ -83,16 +94,41 @@ def test_dry_run_rejects_stale_contract_bundle(
         run_input_pack_dry_run(pack)
 
 
+def test_dry_run_rejects_unexpected_input_pack_hash(tmp_path: Path) -> None:
+    pack = _build_pack(tmp_path)
+
+    with pytest.raises(ValueError, match="input_pack_sha256 mismatch"):
+        run_input_pack_dry_run(pack, expected_input_pack_sha256="0" * 64)
+
+
+def test_dry_run_rejects_unexpected_source_snapshot_hash(tmp_path: Path) -> None:
+    pack = _build_pack(tmp_path)
+    manifest = _json(pack / "manifest.json")
+
+    with pytest.raises(ValueError, match="source_snapshot_sha256 mismatch"):
+        run_input_pack_dry_run(
+            pack,
+            expected_input_pack_sha256=manifest["input_pack_sha256"],
+            expected_source_snapshot_sha256="0" * 64,
+        )
+
+
 def test_dry_run_cli_outputs_are_canonical_jobs_independent(tmp_path: Path) -> None:
     pack = _build_pack(tmp_path)
     first = tmp_path / "jobs1"
     second = tmp_path / "jobs4"
+    manifest = _json(pack / "manifest.json")
+    source_snapshot_sha256 = _source_snapshot_sha256(pack)
 
     assert main(
         [
             "dry-run-input-pack",
             "--input-pack",
             str(pack),
+            "--input-pack-sha256",
+            manifest["input_pack_sha256"],
+            "--source-snapshot-sha256",
+            source_snapshot_sha256,
             "--output-dir",
             str(first),
             "--jobs",
@@ -111,6 +147,10 @@ def test_dry_run_cli_outputs_are_canonical_jobs_independent(tmp_path: Path) -> N
             "dry-run-input-pack",
             "--input-pack",
             str(pack),
+            "--input-pack-sha256",
+            manifest["input_pack_sha256"],
+            "--source-snapshot-sha256",
+            source_snapshot_sha256,
             "--output-dir",
             str(second),
             "--jobs",
@@ -143,3 +183,9 @@ def test_dry_run_runner_has_no_db_or_network_connector_imports() -> None:
     ).lower()
     for forbidden in ("psycopg", "database_url", "src.db", "requests", "httpx", "socket"):
         assert forbidden not in text
+
+
+def test_quant_engine_dockerfile_copies_trusted_input_pack_schemas() -> None:
+    text = (ROOT / "docker" / "quant-engine" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "COPY schemas/input_packs /app/schemas/input_packs" in text

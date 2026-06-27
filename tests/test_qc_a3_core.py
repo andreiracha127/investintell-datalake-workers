@@ -354,6 +354,29 @@ def test_qc_project_copy_writes_deterministic_npz(tmp_path: Path) -> None:
     assert first.read_bytes() == second.read_bytes()
 
 
+def test_qc_project_copy_writes_deterministic_gzip_outputs(tmp_path: Path) -> None:
+    project_qc = _load_qc_project_copy()
+    rows = [{"b": 2, "a": 1}, {"b": 4, "a": 3}]
+    first_csv = tmp_path / "first.csv.gz"
+    second_csv = tmp_path / "second.csv.gz"
+
+    project_qc.write_csv_gzip(first_csv, rows)
+    project_qc.write_csv_gzip(second_csv, rows)
+
+    assert first_csv.read_bytes() == second_csv.read_bytes()
+    with gzip.open(first_csv, "rt", encoding="utf-8") as handle:
+        assert handle.readline() == "a,b\n"
+
+    source = tmp_path / "source.py"
+    source.write_text("print('stable')\n", encoding="utf-8")
+    first_text = tmp_path / "first.py.gz"
+    second_text = tmp_path / "second.py.gz"
+    project_qc.write_gzip_text(source, first_text)
+    project_qc.write_gzip_text(source, second_text)
+
+    assert first_text.read_bytes() == second_text.read_bytes()
+
+
 def test_require_harness_imports_worker_module() -> None:
     harness = qc.require_harness()
 

@@ -25,12 +25,19 @@ def current_contract_bundle_sha256() -> str:
     return str(result["bundle_sha256"]).removeprefix("sha256:")
 
 
+def _validate_expected_hash(*, name: str, expected: str | None, actual: str) -> None:
+    if expected is not None and expected != actual:
+        raise ValueError(f"certified input pack {name} mismatch: expected {expected}, got {actual}")
+
+
 def run_input_pack_dry_run(
     input_pack: str | Path,
     *,
     job_id: str | None = None,
     jobs: int = 1,
     offline: bool = True,
+    expected_input_pack_sha256: str | None = None,
+    expected_source_snapshot_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify a Certified Input Pack without database or network access."""
     validate_offline_request(offline=offline, jobs=jobs)
@@ -52,6 +59,16 @@ def run_input_pack_dry_run(
             "raw_snapshot_sha256": manifest["raw_snapshot_sha256"],
             "canonical_snapshot_sha256": manifest["canonical_snapshot_sha256"],
         }
+    )
+    _validate_expected_hash(
+        name="input_pack_sha256",
+        expected=expected_input_pack_sha256,
+        actual=str(manifest["input_pack_sha256"]),
+    )
+    _validate_expected_hash(
+        name="source_snapshot_sha256",
+        expected=expected_source_snapshot_sha256,
+        actual=source_snapshot_sha256,
     )
     fingerprint_payload = {
         "schema_version": 1,

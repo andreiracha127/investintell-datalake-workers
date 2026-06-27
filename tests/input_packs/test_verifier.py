@@ -125,6 +125,81 @@ def test_verifier_requires_expected_p0_pack_content_even_when_hashes_match(tmp_p
     assert any("table_hashes.json: missing required P0 data artifacts" in error for error in result["expected_content_errors"])
 
 
+def test_verifier_rejects_empty_p0_data_artifact_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/raw/nav_timeseries.json"
+    _write_json(pack / rel, [])
+
+    raw_manifest = _read_json(pack / "raw_snapshot_manifest.json")
+    for artifact in raw_manifest["artifacts"]:
+        if artifact["path"] == rel:
+            artifact["rows"] = 0
+            artifact["sha256"] = file_sha256(pack / rel)
+            break
+    _write_json(pack / "raw_snapshot_manifest.json", raw_manifest)
+
+    table_hashes = _read_json(pack / "table_hashes.json")
+    for table in table_hashes["tables"]:
+        if table["path"] == rel:
+            table["rows"] = 0
+            table["sha256"] = file_sha256(pack / rel)
+            break
+    _write_json(pack / "table_hashes.json", table_hashes)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert f"{rel}: expected non-empty P0 artifact rows" in result["expected_content_errors"]
+
+
+def test_verifier_cross_checks_p0_artifact_row_counts_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/canonical/nav_timeseries.json"
+    actual_rows = len(json.loads((pack / rel).read_text(encoding="utf-8")))
+
+    canonical_manifest = _read_json(pack / "canonical_snapshot_manifest.json")
+    for artifact in canonical_manifest["artifacts"]:
+        if artifact["path"] == rel:
+            artifact["rows"] = actual_rows + 1
+            break
+    _write_json(pack / "canonical_snapshot_manifest.json", canonical_manifest)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        f"{rel}: component manifest rows {actual_rows + 1} do not match actual rows {actual_rows}"
+        in result["expected_content_errors"]
+    )
+
+
+def test_verifier_cross_checks_component_as_of_values_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    raw_manifest = _read_json(pack / "raw_snapshot_manifest.json")
+    raw_manifest["as_of"] = "2026-06-25"
+    _write_json(pack / "raw_snapshot_manifest.json", raw_manifest)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        "raw_snapshot_manifest.json: as_of '2026-06-25' does not match manifest as_of '2026-06-26'"
+        in result["expected_content_errors"]
+    )
+
+
 def test_build_manifest_reproduces_golden_hash(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     golden_manifest = _read_json(pack / "manifest.json")

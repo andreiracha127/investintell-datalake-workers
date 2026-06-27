@@ -256,7 +256,46 @@ def _table_paths(table_hashes: dict[str, Any]) -> set[str]:
     return paths
 
 
+def _artifact_rows_by_path(component_payloads: dict[str, dict[str, Any]]) -> dict[str, int]:
+    rows_by_path: dict[str, int] = {}
+    for filename in SNAPSHOT_MANIFEST_FILES:
+        artifacts = component_payloads.get(filename, {}).get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            path = artifact.get("path")
+            rows = artifact.get("rows")
+            if isinstance(path, str) and isinstance(rows, int):
+                rows_by_path[path] = rows
+    return rows_by_path
+
+
+def _table_rows_by_path(table_hashes: dict[str, Any]) -> dict[str, int]:
+    rows_by_path: dict[str, int] = {}
+    tables = table_hashes.get("tables", [])
+    if not isinstance(tables, list):
+        return rows_by_path
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        path = table.get("path")
+        rows = table.get("rows")
+        if isinstance(path, str) and isinstance(rows, int):
+            rows_by_path[path] = rows
+    return rows_by_path
+
+
+def _json_row_count(path: Path) -> int | None:
+    payload = load_json(path)
+    if not isinstance(payload, list):
+        return None
+    return len(payload)
+
+
 def _verify_expected_p0_content(
+    root: Path,
     manifest: dict[str, Any],
     component_payloads: dict[str, dict[str, Any]],
 ) -> list[str]:
@@ -264,9 +303,13 @@ def _verify_expected_p0_content(
     actual_pack_id = manifest.get("input_pack_id")
     if actual_pack_id != P0_INPUT_PACK_ID:
         errors.append(f"manifest.json: expected input_pack_id {P0_INPUT_PACK_ID}, got {actual_pack_id!r}")
+    expected_as_of = manifest.get("as_of")
 
     for filename, expected_paths in P0_EXPECTED_SNAPSHOT_ARTIFACTS.items():
-        actual_paths = _artifact_paths(component_payloads.get(filename, {}))
+        payload = component_payloads.get(filename, {})
+        if payload.get("as_of") != expected_as_of:
+            errors.append(f"{filename}: as_of {payload.get('as_of')!r} does not match manifest as_of {expected_as_of!r}")
+        actual_paths = _artifact_paths(payload)
         missing = sorted(expected_paths - actual_paths)
         unexpected = sorted(actual_paths - expected_paths)
         if missing:
@@ -283,6 +326,29 @@ def _verify_expected_p0_content(
         errors.append(f"table_hashes.json: missing required P0 data artifacts: {', '.join(missing_table_paths)}")
     if unexpected_data_paths:
         errors.append(f"table_hashes.json: unexpected P0 data artifacts: {', '.join(unexpected_data_paths)}")
+
+    artifact_rows = _artifact_rows_by_path(component_payloads)
+    table_rows = _table_rows_by_path(component_payloads.get("table_hashes.json", {}))
+    for rel in sorted(P0_REQUIRED_DATA_ARTIFACTS):
+        path = _pack_relative_path(root, rel)
+        if path is None or not path.exists():
+            continue
+        try:
+            actual_rows = _json_row_count(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"{rel}: cannot read P0 JSON artifact rows: {exc}")
+            continue
+        if actual_rows is None:
+            errors.append(f"{rel}: expected JSON array for P0 artifact")
+            continue
+        if actual_rows <= 0:
+            errors.append(f"{rel}: expected non-empty P0 artifact rows")
+        manifest_rows = artifact_rows.get(rel)
+        if manifest_rows is not None and manifest_rows != actual_rows:
+            errors.append(f"{rel}: component manifest rows {manifest_rows} do not match actual rows {actual_rows}")
+        table_hash_rows = table_rows.get(rel)
+        if table_hash_rows is not None and table_hash_rows != actual_rows:
+            errors.append(f"{rel}: table_hashes rows {table_hash_rows} do not match actual rows {actual_rows}")
 
     return errors
 
@@ -365,7 +431,7 @@ def verify_pack(
     )
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
     unexpected_files = _unexpected_files(root, table_hashes)
-    expected_content_errors = _verify_expected_p0_content(manifest, component_payloads) if manifest else []
+    expected_content_errors = _verify_expected_p0_content(root, manifest, component_payloads) if manifest else []
 
     actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
     expected_input_pack_sha256 = manifest.get("input_pack_sha256")

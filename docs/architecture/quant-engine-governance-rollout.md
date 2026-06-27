@@ -104,3 +104,10 @@ writes, frontend changes, and merge to `main` remain explicitly out of scope.
   read-model SQL; a dedicated runtime PR must order/filter by current `as_of`
   semantics so an old backfill cannot become the consumable current quadrant just
   because it was inserted most recently.
+- `calibration-formula`: honor each V02 macro series' cadence and
+  `freshness_limit_days` in `series_freshness`. This changes calibration
+  quality inputs and must be handled in the calibration branch, not in the P0
+  certified input-pack gate.
+- `runtime-observability`: report actually inserted macro vintage rows instead
+  of attempted rows after `ON CONFLICT DO NOTHING`. This touches productive
+  worker DB-write accounting and needs a dedicated runtime-worker PR.

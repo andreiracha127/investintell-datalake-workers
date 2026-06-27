@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -814,11 +815,19 @@ def export_bundle(config: A3ParityConfig) -> dict[str, Any]:
 def write_csv_gzip(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = sorted({key for row in rows for key in row})
-    with gzip.open(path, "wt", encoding="utf-8", newline="") as handle:
+    with deterministic_gzip_text_writer(path) as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for row in rows:
             writer.writerow({key: csv_cell(row.get(key)) for key in fieldnames})
+
+
+@contextmanager
+def deterministic_gzip_text_writer(path: Path):
+    with path.open("wb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as gz:
+            with io.TextIOWrapper(gz, encoding="utf-8", newline="") as handle:
+                yield handle
 
 
 def csv_cell(value: Any) -> Any:
@@ -884,7 +893,7 @@ def canonical_npz_array(array: Any) -> Any:
 def write_gzip_text(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     text = source.read_text(encoding="utf-8")
-    with gzip.open(target, "wt", encoding="utf-8", newline="") as handle:
+    with deterministic_gzip_text_writer(target) as handle:
         handle.write(text)
 
 
