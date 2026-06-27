@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
+import math
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,7 @@ from .manifest import (
     compute_input_pack_sha256,
     iter_pack_files,
 )
+from .p0_contract import P0_TABLE_SPECS, TableSpec
 
 COMPONENT_SCHEMA_FILES: dict[str, str] = {
     "SOURCE.json": "source.schema.json",
@@ -30,17 +34,7 @@ SNAPSHOT_MANIFEST_FILES = (
     "derived_feature_manifest.json",
 )
 P0_INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
-P0_SOURCE_TABLES = (
-    "nav_timeseries",
-    "eod_prices",
-    "macro_data",
-    "instruments_universe",
-    "instrument_identity",
-    "fund_strategy_benchmark_proxy_map",
-    "strategy_reclassification_stage",
-    "sec_nport_holdings",
-    "sec_nport_fund_monthly_flows",
-)
+P0_SOURCE_TABLES = tuple(spec.name for spec in P0_TABLE_SPECS)
 P0_RAW_ARTIFACT_PATHS = tuple(f"data/raw/{name}.json" for name in P0_SOURCE_TABLES)
 P0_CANONICAL_ARTIFACT_PATHS = tuple(f"data/canonical/{name}.json" for name in P0_SOURCE_TABLES)
 P0_DERIVED_ARTIFACT_PATHS = (
@@ -360,6 +354,125 @@ def _json_row_count(path: Path) -> int | None:
     return len(payload)
 
 
+def _is_iso_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return False
+    return value == value[:10]
+
+
+def _is_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return value is None
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    return False
+
+
+def _is_raw_number(value: Any) -> bool:
+    if _is_number(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        return Decimal(value).is_finite()
+    except InvalidOperation:
+        return False
+
+
+def _is_bool_or_raw_bool(value: Any, *, canonical: bool) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return True
+    if canonical:
+        return False
+    if isinstance(value, int) and value in (0, 1):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "t", "1", "yes", "y", "false", "f", "0", "no", "n"}
+    return False
+
+
+def _validate_p0_source_row(rel: str, row: dict[str, Any], index: int, spec: TableSpec, *, canonical: bool) -> list[str]:
+    errors: list[str] = []
+    missing = [column for column in spec.columns if column not in row]
+    if missing:
+        errors.append(f"{rel}[{index}]: missing required columns: {', '.join(missing)}")
+
+    for column in spec.key_columns:
+        value = row.get(column)
+        if value is None or isinstance(value, (dict, list)):
+            errors.append(f"{rel}[{index}]: invalid key column {column}")
+
+    for column in spec.date_columns:
+        if column in row and row[column] is not None and not _is_iso_date(row[column]):
+            errors.append(f"{rel}[{index}]: invalid date column {column}: {row[column]!r}")
+
+    for column in spec.numeric_columns:
+        if column in row:
+            ok = _is_number(row[column]) if canonical else _is_raw_number(row[column])
+            if not ok:
+                errors.append(f"{rel}[{index}]: invalid numeric column {column}: {row[column]!r}")
+
+    for column in spec.boolean_columns:
+        if column in row and not _is_bool_or_raw_bool(row[column], canonical=canonical):
+            errors.append(f"{rel}[{index}]: invalid boolean column {column}: {row[column]!r}")
+
+    return errors
+
+
+def _validate_p0_source_artifact(root: Path, rel: str, spec: TableSpec, *, canonical: bool) -> list[str]:
+    path = _pack_relative_path(root, rel)
+    if path is None or not path.exists():
+        return []
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return [f"{rel}: cannot read P0 JSON artifact rows: {exc}"]
+    if not isinstance(payload, list):
+        return [f"{rel}: expected JSON array for P0 artifact"]
+
+    errors: list[str] = []
+    seen_keys: set[tuple[Any, ...]] = set()
+    for index, row in enumerate(payload):
+        if not isinstance(row, dict):
+            errors.append(f"{rel}[{index}]: expected JSON object row")
+            continue
+        errors.extend(_validate_p0_source_row(rel, row, index, spec, canonical=canonical))
+        key = tuple(row.get(column) for column in spec.key_columns)
+        if all(value is not None and not isinstance(value, (dict, list)) for value in key):
+            if key in seen_keys:
+                errors.append(f"{rel}[{index}]: duplicate natural key {key!r}")
+            seen_keys.add(key)
+    return errors
+
+
+def _verify_p0_source_artifact_rows(root: Path) -> list[str]:
+    errors: list[str] = []
+    for spec in P0_TABLE_SPECS:
+        errors.extend(
+            _validate_p0_source_artifact(
+                root,
+                f"data/raw/{spec.name}.json",
+                spec,
+                canonical=False,
+            )
+        )
+        errors.extend(
+            _validate_p0_source_artifact(
+                root,
+                f"data/canonical/{spec.name}.json",
+                spec,
+                canonical=True,
+            )
+        )
+    return errors
+
+
 def _verify_expected_p0_content(
     root: Path,
     manifest: dict[str, Any],
@@ -416,6 +529,7 @@ def _verify_expected_p0_content(
         if table_hash_rows is not None and table_hash_rows != actual_rows:
             errors.append(f"{rel}: table_hashes rows {table_hash_rows} do not match actual rows {actual_rows}")
 
+    errors.extend(_verify_p0_source_artifact_rows(root))
     return errors
 
 

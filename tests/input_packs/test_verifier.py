@@ -181,6 +181,37 @@ def test_verifier_cross_checks_p0_artifact_row_counts_even_when_hashes_match(tmp
     )
 
 
+def test_verifier_validates_p0_source_rows_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/canonical/nav_timeseries.json"
+    rows = json.loads((pack / rel).read_text(encoding="utf-8"))
+    rows[0].pop("nav")
+    _write_json(pack / rel, rows)
+
+    canonical_manifest = _read_json(pack / "canonical_snapshot_manifest.json")
+    for artifact in canonical_manifest["artifacts"]:
+        if artifact["path"] == rel:
+            artifact["sha256"] = file_sha256(pack / rel)
+            break
+    _write_json(pack / "canonical_snapshot_manifest.json", canonical_manifest)
+
+    table_hashes = _read_json(pack / "table_hashes.json")
+    for table in table_hashes["tables"]:
+        if table["path"] == rel:
+            table["sha256"] = file_sha256(pack / rel)
+            break
+    _write_json(pack / "table_hashes.json", table_hashes)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert f"{rel}[0]: missing required columns: nav" in result["expected_content_errors"]
+
+
 def test_verifier_cross_checks_component_as_of_values_even_when_hashes_match(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     raw_manifest = _read_json(pack / "raw_snapshot_manifest.json")
