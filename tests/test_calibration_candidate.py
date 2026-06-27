@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,13 @@ from src.input_packs.hashing import canonical_json_sha256, file_sha256, load_jso
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN_PACK = ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack"
+
+
+def _engine_commit() -> str:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "5" * 40
 
 
 def _summary() -> dict[str, str]:
@@ -39,7 +47,7 @@ def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) 
         contract_bundle_sha256=summary["contract_bundle_sha256"],
         input_pack_p0_merge_commit=summary["builder_commit"],
         calibration_branch_base_commit=summary["builder_commit"],
-        engine_commit="5" * 40,
+        engine_commit=_engine_commit(),
         builder_commit=summary["builder_commit"],
         builder_code_sha256=None,
         engine_image_digest=None,
@@ -284,6 +292,24 @@ def test_engine_commit_is_required(tmp_path: Path) -> None:
     args.engine_commit = None
 
     with pytest.raises(ValueError, match="engine_commit must be provided explicitly"):
+        cc.run_calibration(args)
+
+
+def test_engine_commit_must_be_well_formed(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.engine_commit = "not-a-commit"
+
+    with pytest.raises(ValueError, match="40-character git commit SHA"):
+        cc.run_calibration(args)
+
+
+def test_engine_commit_must_exist_when_git_checkout_available(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
+    args = _args(tmp_path)
+    args.engine_commit = "9" * 40
+
+    with pytest.raises(ValueError, match="not a checkoutable commit"):
         cc.run_calibration(args)
 
 

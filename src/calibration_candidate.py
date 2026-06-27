@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import json
 import math
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +64,25 @@ def is_child_or_self(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def normalize_engine_commit(value: Any) -> str:
+    if not isinstance(value, str) or len(value) != 40 or not all(ch in "0123456789abcdefABCDEF" for ch in value):
+        raise ValueError("engine_commit must be a 40-character git commit SHA")
+    commit = value.lower()
+    repo_root = Path(__file__).resolve().parents[1]
+    if (repo_root / ".git").exists():
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=repo_root,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(f"engine_commit is not a checkoutable commit in this repository: {commit}")
+    return commit
 
 
 def sha256_payload(payload: Any) -> str:
@@ -615,7 +635,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         )
     if not args.engine_commit:
         raise ValueError("engine_commit must be provided explicitly")
-    engine_commit = args.engine_commit
+    engine_commit = normalize_engine_commit(args.engine_commit)
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:
         raise ValueError(
             f"builder_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
