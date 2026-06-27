@@ -1,0 +1,62 @@
+{
+  "artifact_type": "calibration_output_manifest",
+  "artifacts": [
+    {
+      "bytes": 1229,
+      "path": "baseline_comparison.json",
+      "sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6"
+    },
+    {
+      "bytes": 1986,
+      "path": "calibration_config.json",
+      "sha256": "237c285a86687c64bbf96a93d760fac23027e0d54655f0ecbfb192654d961e7c"
+    },
+    {
+      "bytes": 1675,
+      "path": "calibration_report.md",
+      "sha256": "18845029496664213858b813c7f24ffb956578b1aabb4002ec5dfcf8fb2bf3ed"
+    },
+    {
+      "bytes": 842,
+      "path": "invariant_report.json",
+      "sha256": "e82355360137561a23fc00958da718b1c4f2cf475248c3c44757cf2163073531"
+    },
+    {
+      "bytes": 97,
+      "path": "logs/calibration.log",
+      "sha256": "e48a459f5a76d4e1de118783686ec8f073ac01d05a364b5bbd748530184c7a9f"
+    },
+    {
+      "bytes": 3097,
+      "path": "metrics_manifest.json",
+      "sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c"
+    },
+    {
+      "bytes": 1621,
+      "path": "parameter_grid.json",
+      "sha256": "24ac8d8019b08e18e4926c1355c375040aa46471db8ceceb225297cd68053ebd"
+    },
+    {
+      "bytes": 770,
+      "path": "rejected_candidates.json",
+      "sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7"
+    },
+    {
+      "bytes": 4160,
+      "path": "reproducibility_report.json",
+      "sha256": "2970f667674df7a23cedb31b3998d4d6835ed4d0421fe4b632c294d4ae3120fe"
+    },
+    {
+      "bytes": 2221,
+      "path": "run_matrix.json",
+      "sha256": "cbd86f249c791f5ae2f0a087f0ec47a0ed48a9aa2d948fea6b62df928ff33106"
+    },
+    {
+      "bytes": 529,
+      "path": "selected_parameters.json",
+      "sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
+    }
+  ],
+  "calibration_id": "open_macro_v03_calibration_001",
+  "schema_version": 1
+}

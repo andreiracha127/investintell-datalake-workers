@@ -1,0 +1,83 @@
+{
+  "as_of": "2026-06-26",
+  "baseline_references": [
+    "G0",
+    "microgrid_v03",
+    "current_baseline_if_certified",
+    "neutral_reference"
+  ],
+  "calibration_id": "open_macro_v03_calibration_001",
+  "constraints": {
+    "institutional_limits": {
+      "beta": "explicitly_unset",
+      "daily_cvar_95": "explicitly_unset",
+      "exposure_bounds": "explicitly_unset",
+      "max_drawdown": "explicitly_unset",
+      "turnover": "explicitly_unset"
+    },
+    "technical": {
+      "A5": "blocked",
+      "finite_outputs_required": true,
+      "freeze_ready": false,
+      "runtime_activation": false,
+      "weights_sum_tolerance": 1e-12
+    }
+  },
+  "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
+  "db_access": false,
+  "final_approval_allowed": false,
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "input_pack_mount": "read_only",
+  "input_pack_p0_merge_commit": "50511d78a34ebc6b3b2a54ba82ad157d2c13be15",
+  "input_pack_sha256": "15601edef4d72a11769c5533459884467e0e7828de439eb374b1ae98a5a97df0",
+  "jobs_matrix": [
+    1,
+    4
+  ],
+  "network": "none",
+  "objective": {
+    "primary": "preserve_current_baseline_until_institutional_limits_exist",
+    "return_target": "not_used",
+    "tie_breaker": "simplicity_then_proximity_to_baseline"
+  },
+  "random_seed": 20260626,
+  "rejection_rules": [
+    "constraint_violation",
+    "nan_or_infinite_metric",
+    "non_deterministic_output",
+    "material_out_of_sample_degradation_when_threshold_defined",
+    "turnover_excess_when_threshold_defined",
+    "institutional_limits_explicitly_unset_blocks_final_approval"
+  ],
+  "require_bitwise_reproducibility": true,
+  "schema_version": 1,
+  "source_snapshot_sha256": "8947bf94003403de8ffaece43ea423afe635410b0b3ccbd92bf80443a7497234",
+  "status": "candidate",
+  "strategy": "open_macro_v03",
+  "windows": {
+    "out_of_sample": {
+      "end": "2026-06-26",
+      "start": "2026-06-26"
+    },
+    "stress": [
+      {
+        "end": "2026-06-26",
+        "name": "p0_latest_macro_rates",
+        "source": "certified_input_pack_only",
+        "start": "2026-06-24"
+      }
+    ],
+    "train": {
+      "end": "2026-06-24",
+      "start": "2026-06-24"
+    },
+    "validation": {
+      "end": "2026-06-25",
+      "start": "2026-06-25"
+    },
+    "walk_forward": {
+      "reason": "P0 fixture has a three-day deterministic evidence window only",
+      "supported": false
+    }
+  }
+}

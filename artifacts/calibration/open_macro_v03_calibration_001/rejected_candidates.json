@@ -1,0 +1,31 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "rejected_count": 4,
+  "rejections": [
+    {
+      "baseline_distance": 0.04,
+      "candidate_id": "growth_plus_2pp",
+      "objective_value": 0.003235475264,
+      "reason": "institutional_limits_explicitly_unset_blocks_final_approval"
+    },
+    {
+      "baseline_distance": 0.04,
+      "candidate_id": "inflation_plus_2pp",
+      "objective_value": 0.003235475264,
+      "reason": "institutional_limits_explicitly_unset_blocks_final_approval"
+    },
+    {
+      "baseline_distance": 0.01,
+      "candidate_id": "risk_tilt_plus_1pp",
+      "objective_value": 0.003005475264,
+      "reason": "institutional_limits_explicitly_unset_blocks_final_approval"
+    },
+    {
+      "baseline_distance": 0.01,
+      "candidate_id": "risk_tilt_minus_1pp",
+      "objective_value": 0.003005475264,
+      "reason": "institutional_limits_explicitly_unset_blocks_final_approval"
+    }
+  ],
+  "schema_version": 1
+}

@@ -1,0 +1,43 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "comparison_evidence": null,
+  "hashes": {
+    "jobs_1": {
+      "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
+      "invariant_report_sha256": "e82355360137561a23fc00958da718b1c4f2cf475248c3c44757cf2163073531",
+      "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
+      "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
+      "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
+    },
+    "jobs_4": {
+      "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
+      "invariant_report_sha256": "e82355360137561a23fc00958da718b1c4f2cf475248c3c44757cf2163073531",
+      "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
+      "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
+      "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
+    },
+    "repeat_jobs_1": {
+      "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
+      "invariant_report_sha256": "e82355360137561a23fc00958da718b1c4f2cf475248c3c44757cf2163073531",
+      "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
+      "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
+      "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
+    },
+    "repeat_jobs_4": {
+      "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
+      "invariant_report_sha256": "e82355360137561a23fc00958da718b1c4f2cf475248c3c44757cf2163073531",
+      "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
+      "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
+      "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
+    }
+  },
+  "jobs_parameter_effect": "deterministic candidate evaluator is invariant to jobs",
+  "ok": true,
+  "required_runs": [
+    "jobs=1",
+    "jobs=4",
+    "repeat jobs=1",
+    "repeat jobs=4"
+  ],
+  "schema_version": 1
+}
