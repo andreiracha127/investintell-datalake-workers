@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -22,6 +23,14 @@ def _engine_commit() -> str:
         return "5" * 40
 
 
+def _dockerfile_sha256(engine_commit: str) -> str:
+    try:
+        payload = subprocess.check_output(["git", "show", f"{engine_commit}:docker/quant-engine/Dockerfile"], cwd=ROOT)
+        return hashlib.sha256(payload).hexdigest()
+    except (OSError, subprocess.CalledProcessError):
+        return "3" * 64
+
+
 def _summary() -> dict[str, str]:
     manifest = load_json(GOLDEN_PACK / "manifest.json")
     return {
@@ -39,6 +48,7 @@ def _summary() -> dict[str, str]:
 
 def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) -> argparse.Namespace:
     summary = _summary()
+    engine_commit = _engine_commit()
     return argparse.Namespace(
         input_pack=str(GOLDEN_PACK),
         output_dir=str(output_dir),
@@ -47,13 +57,13 @@ def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) 
         contract_bundle_sha256=summary["contract_bundle_sha256"],
         input_pack_p0_merge_commit=summary["builder_commit"],
         calibration_branch_base_commit=summary["builder_commit"],
-        engine_commit=_engine_commit(),
+        engine_commit=engine_commit,
         builder_commit=summary["builder_commit"],
         builder_code_sha256=None,
         engine_image_digest=None,
         engine_image_id="sha256:" + "1" * 64,
         docker_context_sha256="2" * 64,
-        dockerfile_sha256="3" * 64,
+        dockerfile_sha256=_dockerfile_sha256(engine_commit),
         jobs=jobs,
         network="none",
         db_access=False,
@@ -310,6 +320,18 @@ def test_engine_commit_must_exist_when_git_checkout_available(tmp_path: Path) ->
     args.engine_commit = "9" * 40
 
     with pytest.raises(ValueError, match="not a checkoutable commit"):
+        cc.run_calibration(args)
+
+
+def test_dockerfile_sha256_must_match_committed_blob(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
+    args = _args(tmp_path)
+    args.dockerfile_sha256 = hashlib.sha256((ROOT / "docker" / "quant-engine" / "Dockerfile").read_bytes()).hexdigest()
+    if args.dockerfile_sha256 == _dockerfile_sha256(args.engine_commit):
+        args.dockerfile_sha256 = "9" * 64
+
+    with pytest.raises(ValueError, match="dockerfile_sha256 mismatch"):
         cc.run_calibration(args)
 
 

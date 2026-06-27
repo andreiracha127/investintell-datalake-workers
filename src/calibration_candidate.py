@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
 import subprocess
@@ -83,6 +84,29 @@ def normalize_engine_commit(value: Any) -> str:
         if result.returncode != 0:
             raise ValueError(f"engine_commit is not a checkoutable commit in this repository: {commit}")
     return commit
+
+
+def validate_dockerfile_sha256(value: Any, *, engine_commit: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or not all(ch in "0123456789abcdefABCDEF" for ch in value):
+        raise ValueError("dockerfile_sha256 must be a 64-character SHA-256 hex digest")
+    digest = value.lower()
+    repo_root = Path(__file__).resolve().parents[1]
+    if (repo_root / ".git").exists():
+        result = subprocess.run(
+            ["git", "show", f"{engine_commit}:docker/quant-engine/Dockerfile"],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise ValueError(
+                f"dockerfile_sha256 cannot be verified because Dockerfile is unavailable at {engine_commit}"
+            )
+        expected = hashlib.sha256(result.stdout).hexdigest()
+        if digest != expected:
+            raise ValueError(f"dockerfile_sha256 mismatch: expected committed blob hash {expected}, got {digest}")
+    return digest
 
 
 def sha256_payload(payload: Any) -> str:
@@ -636,6 +660,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     if not args.engine_commit:
         raise ValueError("engine_commit must be provided explicitly")
     engine_commit = normalize_engine_commit(args.engine_commit)
+    dockerfile_sha256 = validate_dockerfile_sha256(args.dockerfile_sha256, engine_commit=engine_commit)
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:
         raise ValueError(
             f"builder_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
@@ -762,7 +787,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_digest": args.engine_image_digest,
         "engine_image_id": args.engine_image_id,
         "docker_context_sha256": args.docker_context_sha256,
-        "dockerfile_sha256": args.dockerfile_sha256,
+        "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "jobs_1_hashes": hashes_for_labels(matrix_run_hashes, "jobs1"),
@@ -797,7 +822,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_digest": args.engine_image_digest,
         "engine_image_id": args.engine_image_id,
         "docker_context_sha256": args.docker_context_sha256,
-        "dockerfile_sha256": args.dockerfile_sha256,
+        "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "output_manifest_sha256": file_sha256(output_dir / "output_manifest.json"),
