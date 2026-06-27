@@ -9,19 +9,24 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import math
 import os
 import re
 import shutil
 import subprocess
 import tempfile
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from .hashing import canonical_json_sha256, file_sha256
 from .manifest import build_manifest, write_manifest
-from .p0_contract import P0_TABLE_SPECS, TableSpec
+from .p0_contract import (
+    P0_TABLE_SPECS,
+    TableSpec,
+    normalize_date,
+    normalize_row,
+    normalize_value,
+    row_sort_key,
+)
 from .verifier import verify_pack
 
 PROFILE_OPEN_MACRO_V03 = "open_macro_v03"
@@ -107,82 +112,11 @@ def parse_as_of(value: str) -> dt.date:
         raise ValueError(f"--as-of must be YYYY-MM-DD, got {value!r}") from exc
 
 
-def normalize_date(value: Any) -> str:
-    if isinstance(value, dt.date):
-        return value.isoformat()
-    if not isinstance(value, str):
-        raise ValueError(f"date value must be a string, got {type(value).__name__}")
-    return dt.date.fromisoformat(value[:10]).isoformat()
-
-
-def normalize_number(value: Any) -> float | int | None:
-    if value is None:
-        return None
-    try:
-        number = Decimal(str(value))
-    except InvalidOperation as exc:
-        raise ValueError(f"numeric value is invalid: {value!r}") from exc
-    if not number.is_finite():
-        raise ValueError(f"numeric value must be finite: {value!r}")
-    if number == number.to_integral_value():
-        return int(number)
-    as_float = float(number)
-    if not math.isfinite(as_float):
-        raise ValueError(f"numeric value must be finite: {value!r}")
-    return as_float
-
-
-def normalize_boolean(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "t", "1", "yes", "y"}:
-            return True
-        if normalized in {"false", "f", "0", "no", "n"}:
-            return False
-    raise ValueError(f"boolean value is invalid: {value!r}")
-
-
-def normalize_value(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {str(key): normalize_value(value[key]) for key in sorted(value)}
-    if isinstance(value, list):
-        return [normalize_value(item) for item in value]
-    return value
-
-
-def normalize_row(row: Mapping[str, Any], spec: TableSpec) -> dict[str, Any]:
-    normalized: dict[str, Any] = {}
-    for column in spec.columns:
-        value = row.get(column)
-        if column in spec.date_columns and value is not None:
-            normalized[column] = normalize_date(value)
-        elif column in spec.numeric_columns:
-            normalized[column] = normalize_number(value)
-        elif column in spec.boolean_columns and value is not None:
-            normalized[column] = normalize_boolean(value)
-        elif value is None:
-            normalized[column] = None
-        elif isinstance(value, (dict, list)):
-            normalized[column] = normalize_value(value)
-        else:
-            normalized[column] = str(value)
-    return normalized
-
-
 def require_key_columns(row: Mapping[str, Any], spec: TableSpec, source_path: Path) -> None:
     missing = [column for column in spec.key_columns if column not in row or row[column] is None]
     if missing:
         joined = ", ".join(missing)
         raise ValueError(f"{source_path.name}: {spec.name} row missing required key columns: {joined}")
-
-
-def row_sort_key(row: Mapping[str, Any], spec: TableSpec) -> tuple[Any, ...]:
-    return tuple(row.get(column) for column in spec.key_columns)
-
 
 def load_source_table(source_dir: Path, spec: TableSpec, as_of: dt.date) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     path = source_dir / f"{spec.name}.json"

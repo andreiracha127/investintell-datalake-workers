@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import math
 from dataclasses import dataclass
-from typing import Mapping
+from decimal import Decimal, InvalidOperation
+from typing import Any, Mapping
 
 
 @dataclass(frozen=True)
@@ -15,6 +18,78 @@ class TableSpec:
     boolean_columns: frozenset[str] = frozenset()
     date_columns: frozenset[str] = frozenset()
     as_of_column: str | None = None
+
+
+def normalize_date(value: Any) -> str:
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    if not isinstance(value, str):
+        raise ValueError(f"date value must be a string, got {type(value).__name__}")
+    return dt.date.fromisoformat(value[:10]).isoformat()
+
+
+def normalize_number(value: Any) -> float | int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"numeric value must not be boolean: {value!r}")
+    try:
+        number = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"numeric value is invalid: {value!r}") from exc
+    if not number.is_finite():
+        raise ValueError(f"numeric value must be finite: {value!r}")
+    if number == number.to_integral_value():
+        return int(number)
+    as_float = float(number)
+    if not math.isfinite(as_float):
+        raise ValueError(f"numeric value must be finite: {value!r}")
+    return as_float
+
+
+def normalize_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "f", "0", "no", "n"}:
+            return False
+    raise ValueError(f"boolean value is invalid: {value!r}")
+
+
+def normalize_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): normalize_value(value[key]) for key in sorted(value)}
+    if isinstance(value, list):
+        return [normalize_value(item) for item in value]
+    return value
+
+
+def normalize_row(row: Mapping[str, Any], spec: TableSpec) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for column in spec.columns:
+        value = row.get(column)
+        if column in spec.date_columns and value is not None:
+            normalized[column] = normalize_date(value)
+        elif column in spec.numeric_columns:
+            normalized[column] = normalize_number(value)
+        elif column in spec.boolean_columns and value is not None:
+            normalized[column] = normalize_boolean(value)
+        elif value is None:
+            normalized[column] = None
+        elif isinstance(value, (dict, list)):
+            normalized[column] = normalize_value(value)
+        else:
+            normalized[column] = str(value)
+    return normalized
+
+
+def row_sort_key(row: Mapping[str, Any], spec: TableSpec) -> tuple[Any, ...]:
+    return tuple(row.get(column) for column in spec.key_columns)
 
 
 P0_TABLE_SPECS: tuple[TableSpec, ...] = (

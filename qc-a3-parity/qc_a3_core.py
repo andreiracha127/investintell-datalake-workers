@@ -1245,16 +1245,25 @@ def upload_object_store_bundle(bundle_dir: Path) -> dict[str, Any]:
     uploads: list[dict[str, Any]] = []
     for name, item in sorted({**object_files, **source_files}.items()):
         relative_path = Path(str(item["relative_path"]))
+        relative_posix = str(relative_path).replace("\\", "/")
         local_path = bundle_dir / relative_path
         key = str(item["object_store_key"])
+        expected_sha = str(item["content_sha256"])
+        actual_sha = file_sha256(local_path)
+        if actual_sha != expected_sha:
+            raise ValueError(
+                "refusing to upload drifted object "
+                f"{relative_posix}: "
+                f"expected {expected_sha}, actual {actual_sha}"
+            )
         command_started = time.perf_counter()
         output = lean_text(["cloud", "object-store", "set", key, str(local_path)])
         uploads.append({
             "name": name,
             "object_store_key": key,
-            "relative_path": str(relative_path).replace("\\", "/"),
+            "relative_path": relative_posix,
             "file_size_bytes": local_path.stat().st_size,
-            "content_sha256": file_sha256(local_path),
+            "content_sha256": actual_sha,
             "elapsed_seconds": time.perf_counter() - command_started,
             "lean_output": output,
         })

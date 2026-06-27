@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -18,7 +19,7 @@ from .manifest import (
     compute_input_pack_sha256,
     iter_pack_files,
 )
-from .p0_contract import P0_TABLE_SPECS, TableSpec
+from .p0_contract import P0_TABLE_SPECS, TableSpec, normalize_row, row_sort_key
 
 COMPONENT_SCHEMA_FILES: dict[str, str] = {
     "SOURCE.json": "source.schema.json",
@@ -54,6 +55,83 @@ P0_EXPECTED_SNAPSHOT_ARTIFACTS = {
 P0_REQUIRED_DATA_ARTIFACTS = frozenset(
     (*P0_RAW_ARTIFACT_PATHS, *P0_CANONICAL_ARTIFACT_PATHS, *P0_DERIVED_ARTIFACT_PATHS)
 )
+
+
+@dataclass(frozen=True)
+class RowSchema:
+    required_columns: tuple[str, ...]
+    numeric_columns: frozenset[str] = frozenset()
+    integer_columns: frozenset[str] = frozenset()
+    boolean_columns: frozenset[str] = frozenset()
+    date_columns: frozenset[str] = frozenset()
+    list_columns: frozenset[str] = frozenset()
+    allowed_feature_names: frozenset[str] = frozenset()
+
+    @property
+    def allowed_columns(self) -> frozenset[str]:
+        return frozenset(self.required_columns)
+
+
+P0_DERIVED_ROW_SCHEMAS: dict[str, RowSchema] = {
+    "data/derived/fund_nav_return_features.json": RowSchema(
+        required_columns=("feature_name", "instrument_id", "observation_date", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"fund_nav_return_1d"}),
+    ),
+    "data/derived/market_price_return_features.json": RowSchema(
+        required_columns=("feature_name", "ticker", "observation_date", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"market_price_return_1d"}),
+    ),
+    "data/derived/macro_observation_features.json": RowSchema(
+        required_columns=("feature_name", "observation_date", "series_id", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"macro_level", "macro_delta_1obs"}),
+    ),
+    "data/derived/fund_universe_features.json": RowSchema(
+        required_columns=(
+            "asset_class",
+            "benchmark_ticker",
+            "cik_unpadded",
+            "feature_name",
+            "instrument_id",
+            "is_active",
+            "sec_series_id",
+            "strategy_label",
+            "ticker",
+        ),
+        boolean_columns=frozenset({"is_active"}),
+        allowed_feature_names=frozenset({"fund_universe_identity_strategy_benchmark"}),
+    ),
+    "data/derived/holdings_summary_features.json": RowSchema(
+        required_columns=(
+            "feature_name",
+            "holdings_count",
+            "largest_holding_pct",
+            "pct_nav_covered",
+            "report_date",
+            "series_id",
+        ),
+        numeric_columns=frozenset({"largest_holding_pct", "pct_nav_covered"}),
+        integer_columns=frozenset({"holdings_count"}),
+        date_columns=frozenset({"report_date"}),
+        allowed_feature_names=frozenset({"holdings_summary_inputs"}),
+    ),
+    "data/derived/flow_momentum_features.json": RowSchema(
+        required_columns=("as_of_month_end", "feature_name", "series_id", "value", "window_months"),
+        numeric_columns=frozenset({"value"}),
+        integer_columns=frozenset({"window_months"}),
+        date_columns=frozenset({"as_of_month_end"}),
+        allowed_feature_names=frozenset({"flow_momentum_window_input"}),
+    ),
+    "data/derived/feature_lineage.json": RowSchema(
+        required_columns=("feature_file", "feature_name", "sources"),
+        list_columns=frozenset({"sources"}),
+    ),
+}
 
 
 def _repo_root() -> Path:
@@ -372,6 +450,10 @@ def _is_number(value: Any) -> bool:
     return False
 
 
+def _is_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _is_raw_number(value: Any) -> bool:
     if _is_number(value):
         return True
@@ -397,7 +479,38 @@ def _is_bool_or_raw_bool(value: Any, *, canonical: bool) -> bool:
     return False
 
 
-def _validate_p0_source_row(rel: str, row: dict[str, Any], index: int, spec: TableSpec, *, canonical: bool) -> list[str]:
+def _manifest_as_of_date(manifest: dict[str, Any]) -> dt.date | None:
+    value = manifest.get("as_of")
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _load_json_array(root: Path, rel: str) -> tuple[list[Any] | None, str | None]:
+    path = _pack_relative_path(root, rel)
+    if path is None or not path.exists():
+        return None, None
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return None, f"{rel}: cannot read P0 JSON artifact rows: {exc}"
+    if not isinstance(payload, list):
+        return None, f"{rel}: expected JSON array for P0 artifact"
+    return payload, None
+
+
+def _validate_p0_source_row(
+    rel: str,
+    row: dict[str, Any],
+    index: int,
+    spec: TableSpec,
+    *,
+    canonical: bool,
+    pack_as_of: dt.date | None,
+) -> list[str]:
     errors: list[str] = []
     missing = [column for column in spec.columns if column not in row]
     if missing:
@@ -412,6 +525,13 @@ def _validate_p0_source_row(rel: str, row: dict[str, Any], index: int, spec: Tab
         if column in row and row[column] is not None and not _is_iso_date(row[column]):
             errors.append(f"{rel}[{index}]: invalid date column {column}: {row[column]!r}")
 
+    if pack_as_of is not None and spec.as_of_column:
+        value = row.get(spec.as_of_column)
+        if value is not None and _is_iso_date(value) and dt.date.fromisoformat(value) > pack_as_of:
+            errors.append(
+                f"{rel}[{index}]: {spec.as_of_column} {value!r} is after manifest as_of {pack_as_of.isoformat()!r}"
+            )
+
     for column in spec.numeric_columns:
         if column in row:
             ok = _is_number(row[column]) if canonical else _is_raw_number(row[column])
@@ -425,16 +545,19 @@ def _validate_p0_source_row(rel: str, row: dict[str, Any], index: int, spec: Tab
     return errors
 
 
-def _validate_p0_source_artifact(root: Path, rel: str, spec: TableSpec, *, canonical: bool) -> list[str]:
-    path = _pack_relative_path(root, rel)
-    if path is None or not path.exists():
+def _validate_p0_source_artifact(
+    root: Path,
+    rel: str,
+    spec: TableSpec,
+    *,
+    canonical: bool,
+    pack_as_of: dt.date | None,
+) -> list[str]:
+    payload, load_error = _load_json_array(root, rel)
+    if load_error:
+        return [load_error]
+    if payload is None:
         return []
-    try:
-        payload = load_json(path)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return [f"{rel}: cannot read P0 JSON artifact rows: {exc}"]
-    if not isinstance(payload, list):
-        return [f"{rel}: expected JSON array for P0 artifact"]
 
     errors: list[str] = []
     seen_keys: set[tuple[Any, ...]] = set()
@@ -442,7 +565,7 @@ def _validate_p0_source_artifact(root: Path, rel: str, spec: TableSpec, *, canon
         if not isinstance(row, dict):
             errors.append(f"{rel}[{index}]: expected JSON object row")
             continue
-        errors.extend(_validate_p0_source_row(rel, row, index, spec, canonical=canonical))
+        errors.extend(_validate_p0_source_row(rel, row, index, spec, canonical=canonical, pack_as_of=pack_as_of))
         key = tuple(row.get(column) for column in spec.key_columns)
         if all(value is not None and not isinstance(value, (dict, list)) for value in key):
             if key in seen_keys:
@@ -451,7 +574,27 @@ def _validate_p0_source_artifact(root: Path, rel: str, spec: TableSpec, *, canon
     return errors
 
 
-def _verify_p0_source_artifact_rows(root: Path) -> list[str]:
+def _verify_canonical_matches_raw(root: Path, spec: TableSpec) -> list[str]:
+    raw_rel = f"data/raw/{spec.name}.json"
+    canonical_rel = f"data/canonical/{spec.name}.json"
+    raw_rows, raw_error = _load_json_array(root, raw_rel)
+    canonical_rows, canonical_error = _load_json_array(root, canonical_rel)
+    if raw_error or canonical_error or raw_rows is None or canonical_rows is None:
+        return []
+    if any(not isinstance(row, dict) for row in (*raw_rows, *canonical_rows)):
+        return []
+
+    try:
+        expected = sorted((normalize_row(row, spec) for row in raw_rows), key=lambda row: row_sort_key(row, spec))
+    except ValueError as exc:
+        return [f"{raw_rel}: cannot normalize raw rows for canonical comparison: {exc}"]
+    actual = sorted(canonical_rows, key=lambda row: row_sort_key(row, spec))
+    if actual != expected:
+        return [f"{canonical_rel}: canonical rows do not match normalized {raw_rel} rows"]
+    return []
+
+
+def _verify_p0_source_artifact_rows(root: Path, *, pack_as_of: dt.date | None) -> list[str]:
     errors: list[str] = []
     for spec in P0_TABLE_SPECS:
         errors.extend(
@@ -460,6 +603,7 @@ def _verify_p0_source_artifact_rows(root: Path) -> list[str]:
                 f"data/raw/{spec.name}.json",
                 spec,
                 canonical=False,
+                pack_as_of=pack_as_of,
             )
         )
         errors.extend(
@@ -468,8 +612,85 @@ def _verify_p0_source_artifact_rows(root: Path) -> list[str]:
                 f"data/canonical/{spec.name}.json",
                 spec,
                 canonical=True,
+                pack_as_of=pack_as_of,
             )
         )
+        errors.extend(_verify_canonical_matches_raw(root, spec))
+    return errors
+
+
+def _validate_derived_lineage_sources(rel: str, value: Any, index: int) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return [f"{rel}[{index}]: invalid list column sources"]
+    errors: list[str] = []
+    for source_index, source in enumerate(value):
+        if not isinstance(source, dict):
+            errors.append(f"{rel}[{index}].sources[{source_index}]: expected JSON object source")
+            continue
+        table = source.get("table")
+        columns = source.get("columns")
+        if not isinstance(table, str) or not table:
+            errors.append(f"{rel}[{index}].sources[{source_index}]: invalid table")
+        if not isinstance(columns, list) or not columns or any(not isinstance(column, str) or not column for column in columns):
+            errors.append(f"{rel}[{index}].sources[{source_index}]: invalid columns")
+    return errors
+
+
+def _validate_derived_row(rel: str, row: dict[str, Any], index: int, schema: RowSchema) -> list[str]:
+    errors: list[str] = []
+    missing = [column for column in schema.required_columns if column not in row]
+    if missing:
+        errors.append(f"{rel}[{index}]: missing required columns: {', '.join(missing)}")
+
+    unexpected = sorted(set(row) - schema.allowed_columns)
+    if unexpected:
+        errors.append(f"{rel}[{index}]: unexpected columns: {', '.join(unexpected)}")
+
+    feature_name = row.get("feature_name")
+    if schema.allowed_feature_names and feature_name not in schema.allowed_feature_names:
+        errors.append(f"{rel}[{index}]: unexpected feature_name: {feature_name!r}")
+
+    for column in schema.date_columns:
+        if column in row and row[column] is not None and not _is_iso_date(row[column]):
+            errors.append(f"{rel}[{index}]: invalid date column {column}: {row[column]!r}")
+
+    for column in schema.numeric_columns:
+        if column in row and not _is_number(row[column]):
+            errors.append(f"{rel}[{index}]: invalid numeric column {column}: {row[column]!r}")
+
+    for column in schema.integer_columns:
+        if column in row and not _is_integer(row[column]):
+            errors.append(f"{rel}[{index}]: invalid integer column {column}: {row[column]!r}")
+
+    for column in schema.boolean_columns:
+        if column in row and not _is_bool_or_raw_bool(row[column], canonical=True):
+            errors.append(f"{rel}[{index}]: invalid boolean column {column}: {row[column]!r}")
+
+    for column in schema.list_columns:
+        if column not in row:
+            continue
+        if column == "sources":
+            errors.extend(_validate_derived_lineage_sources(rel, row[column], index))
+        elif not isinstance(row[column], list):
+            errors.append(f"{rel}[{index}]: invalid list column {column}")
+
+    return errors
+
+
+def _verify_derived_artifact_rows(root: Path) -> list[str]:
+    errors: list[str] = []
+    for rel, schema in P0_DERIVED_ROW_SCHEMAS.items():
+        payload, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if payload is None:
+            continue
+        for index, row in enumerate(payload):
+            if not isinstance(row, dict):
+                errors.append(f"{rel}[{index}]: expected JSON object row")
+                continue
+            errors.extend(_validate_derived_row(rel, row, index, schema))
     return errors
 
 
@@ -529,22 +750,43 @@ def _verify_expected_p0_content(
         if table_hash_rows is not None and table_hash_rows != actual_rows:
             errors.append(f"{rel}: table_hashes rows {table_hash_rows} do not match actual rows {actual_rows}")
 
-    errors.extend(_verify_p0_source_artifact_rows(root))
+    errors.extend(_verify_p0_source_artifact_rows(root, pack_as_of=_manifest_as_of_date(manifest)))
+    errors.extend(_verify_derived_artifact_rows(root))
     return errors
 
 
-def _provenance_complete(provenance: dict[str, Any]) -> bool:
+def _provenance_complete(provenance: dict[str, Any], *, expected_as_of: str | None) -> bool:
     required_collections = ("datasets", "jobs", "runs", "sources")
     if any(not provenance.get(name) for name in required_collections):
         return False
-    first_dataset = provenance["datasets"][0]
-    first_job = provenance["jobs"][0]
-    first_run = provenance["runs"][0]
-    first_source = provenance["sources"][0]
+    datasets = provenance.get("datasets")
+    jobs = provenance.get("jobs")
+    runs = provenance.get("runs")
+    sources = provenance.get("sources")
+    if not all(isinstance(collection, list) for collection in (datasets, jobs, runs, sources)):
+        return False
+    if not all(isinstance(item, dict) for collection in (datasets, jobs, runs, sources) for item in collection):
+        return False
+
+    datasets_by_name = {str(item.get("dataset_name")): item for item in datasets if item.get("dataset_name")}
+    if set(datasets_by_name) != set(P0_SOURCE_TABLES):
+        return False
+    if expected_as_of:
+        try:
+            snapshot_suffix = dt.date.fromisoformat(expected_as_of).strftime("%Y%m%d")
+        except ValueError:
+            return False
+        for name in P0_SOURCE_TABLES:
+            if datasets_by_name[name].get("snapshot_id") != f"{name}_{snapshot_suffix}":
+                return False
+    if any(not datasets_by_name[name].get("snapshot_id") for name in P0_SOURCE_TABLES):
+        return False
+
+    first_job = jobs[0]
+    first_run = runs[0]
+    first_source = sources[0]
     return all(
         [
-            first_dataset.get("dataset_name"),
-            first_dataset.get("snapshot_id"),
             first_job.get("job_name"),
             first_run.get("run_id"),
             first_source.get("source_repo"),
@@ -623,7 +865,7 @@ def verify_pack(
 
     runtime_activation = manifest.get("runtime_activation")
     runtime_activation_ok = runtime_activation is False
-    provenance_complete = _provenance_complete(provenance)
+    provenance_complete = _provenance_complete(provenance, expected_as_of=manifest.get("as_of") if manifest else None)
 
     ok = all(
         [

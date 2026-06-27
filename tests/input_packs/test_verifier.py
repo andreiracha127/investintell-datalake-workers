@@ -25,6 +25,53 @@ def _write_json(path: Path, payload) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def _payload_rows_and_columns(path: Path) -> tuple[int, list[str]]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, list):
+        columns = sorted({key for row in payload if isinstance(row, dict) for key in row})
+        return len(payload), columns
+    if isinstance(payload, dict):
+        return 1, sorted(payload)
+    return 0, []
+
+
+def _refresh_snapshot_artifact(pack: Path, manifest_name: str, rel: str) -> None:
+    rows, columns = _payload_rows_and_columns(pack / rel)
+    snapshot = _read_json(pack / manifest_name)
+    for artifact in snapshot["artifacts"]:
+        if artifact["path"] == rel:
+            artifact["rows"] = rows
+            artifact["columns"] = columns
+            artifact["sha256"] = file_sha256(pack / rel)
+            break
+    else:
+        raise AssertionError(f"artifact not found in {manifest_name}: {rel}")
+    _write_json(pack / manifest_name, snapshot)
+
+
+def _refresh_table_hash(pack: Path, rel: str) -> None:
+    rows, _columns = _payload_rows_and_columns(pack / rel)
+    table_hashes = _read_json(pack / "table_hashes.json")
+    for table in table_hashes["tables"]:
+        if table["path"] == rel:
+            table["rows"] = rows
+            table["sha256"] = file_sha256(pack / rel)
+            break
+    else:
+        raise AssertionError(f"table hash not found: {rel}")
+    _write_json(pack / "table_hashes.json", table_hashes)
+
+
+def _refresh_data_artifact(pack: Path, manifest_name: str, rel: str) -> None:
+    _refresh_snapshot_artifact(pack, manifest_name, rel)
+    _refresh_table_hash(pack, rel)
+
+
+def _refresh_manifest(pack: Path) -> None:
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+
 def test_golden_pack_verifies_offline() -> None:
     result = verify_pack(GOLDEN)
     assert result["ok"] is True
@@ -210,6 +257,84 @@ def test_verifier_validates_p0_source_rows_even_when_hashes_match(tmp_path: Path
     assert result["ok"] is False
     assert result["input_pack_sha256_match"] is True
     assert f"{rel}[0]: missing required columns: nav" in result["expected_content_errors"]
+
+
+def test_verifier_recomputes_canonical_rows_from_raw_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/canonical/instruments_universe.json"
+    rows = json.loads((pack / rel).read_text(encoding="utf-8"))
+    rows[0]["is_active"] = not rows[0]["is_active"]
+    _write_json(pack / rel, rows)
+    _refresh_data_artifact(pack, "canonical_snapshot_manifest.json", rel)
+    _refresh_manifest(pack)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        "data/canonical/instruments_universe.json: canonical rows do not match normalized "
+        "data/raw/instruments_universe.json rows"
+        in result["expected_content_errors"]
+    )
+
+
+def test_verifier_rejects_p0_source_rows_after_manifest_as_of_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    for rel, manifest_name in (
+        ("data/raw/eod_prices.json", "raw_snapshot_manifest.json"),
+        ("data/canonical/eod_prices.json", "canonical_snapshot_manifest.json"),
+    ):
+        rows = json.loads((pack / rel).read_text(encoding="utf-8"))
+        rows[0]["date"] = "2026-06-27"
+        _write_json(pack / rel, rows)
+        _refresh_data_artifact(pack, manifest_name, rel)
+    _refresh_manifest(pack)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        "data/raw/eod_prices.json[0]: date '2026-06-27' is after manifest as_of '2026-06-26'"
+        in result["expected_content_errors"]
+    )
+    assert (
+        "data/canonical/eod_prices.json[0]: date '2026-06-27' is after manifest as_of '2026-06-26'"
+        in result["expected_content_errors"]
+    )
+
+
+def test_verifier_validates_derived_feature_rows_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/derived/fund_nav_return_features.json"
+    _write_json(pack / rel, [{"bogus": "row"}])
+    _refresh_data_artifact(pack, "derived_feature_manifest.json", rel)
+    _refresh_manifest(pack)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        f"{rel}[0]: missing required columns: feature_name, instrument_id, observation_date, value"
+        in result["expected_content_errors"]
+    )
+    assert f"{rel}[0]: unexpected columns: bogus" in result["expected_content_errors"]
+
+
+def test_verifier_requires_provenance_dataset_for_every_p0_table_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    provenance = _read_json(pack / "provenance.json")
+    provenance["datasets"] = provenance["datasets"][:1]
+    _write_json(pack / "provenance.json", provenance)
+    _refresh_manifest(pack)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert result["provenance_complete"] is False
 
 
 def test_verifier_cross_checks_component_as_of_values_even_when_hashes_match(tmp_path: Path) -> None:
