@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import functools
 import hashlib
 import json
 import math
@@ -35,6 +36,17 @@ REQUIRED_MATRIX_LABELS = {
     "container_jobs4_r0",
     "container_jobs4_r1",
 }
+DOCKER_CONTEXT_PATHS = [
+    "requirements.quant-engine.lock",
+    "packages/investintell_quant_core",
+    "services/quant_engine",
+    "contracts/quant-engine",
+    "schemas/input_packs",
+    "qc_a3_core.py",
+    "src",
+    "docker/quant-engine/entrypoint.sh",
+    "docker/quant-engine/Dockerfile",
+]
 
 
 def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
@@ -67,34 +79,96 @@ def is_child_or_self(path: Path, root: Path) -> bool:
     return True
 
 
-def normalize_engine_commit(value: Any) -> str:
+def normalize_git_commit(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or len(value) != 40 or not all(ch in "0123456789abcdefABCDEF" for ch in value):
-        raise ValueError("engine_commit must be a 40-character git commit SHA")
-    commit = value.lower()
-    repo_root = Path(__file__).resolve().parents[1]
-    if (repo_root / ".git").exists():
-        result = subprocess.run(
-            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
-            cwd=repo_root,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise ValueError(f"engine_commit is not a checkoutable commit in this repository: {commit}")
+        raise ValueError(f"{field_name} must be a 40-character git commit SHA")
+    return value.lower()
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def require_checkoutable_commit(commit: str, *, field_name: str) -> None:
+    root = repo_root()
+    if not (root / ".git").exists():
+        return
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"{field_name} is not a checkoutable commit in this repository: {commit}")
+
+
+def require_ancestor_commit(commit: str, *, ancestor_of: str, field_name: str) -> None:
+    root = repo_root()
+    if not (root / ".git").exists():
+        return
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, ancestor_of],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"{field_name} must be an ancestor of {ancestor_of}: {commit}")
+
+
+def normalize_engine_commit(value: Any) -> str:
+    commit = normalize_git_commit(value, field_name="engine_commit")
+    require_checkoutable_commit(commit, field_name="engine_commit")
+    require_ancestor_commit(commit, ancestor_of="HEAD", field_name="engine_commit")
     return commit
 
 
-def validate_dockerfile_sha256(value: Any, *, engine_commit: str) -> str:
+def validate_sha256_hex(value: Any, *, field_name: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or not all(ch in "0123456789abcdefABCDEF" for ch in value):
-        raise ValueError("dockerfile_sha256 must be a 64-character SHA-256 hex digest")
-    digest = value.lower()
-    repo_root = Path(__file__).resolve().parents[1]
-    if (repo_root / ".git").exists():
+        raise ValueError(f"{field_name} must be a 64-character SHA-256 hex digest")
+    return value.lower()
+
+
+@functools.cache
+def committed_docker_context_sha256(engine_commit: str) -> str:
+    root = repo_root()
+    files_output = subprocess.check_output(
+        ["git", "ls-tree", "-r", "--name-only", engine_commit, "--", *DOCKER_CONTEXT_PATHS],
+        cwd=root,
+        text=True,
+    )
+    files = [line for line in files_output.splitlines() if line]
+    if not files:
+        raise ValueError(f"docker_context_sha256 cannot be verified because context is empty at {engine_commit}")
+    records = []
+    for file in files:
+        payload = subprocess.check_output(["git", "show", f"{engine_commit}:{file}"], cwd=root)
+        records.append(f"{file}\0{hashlib.sha256(payload).hexdigest()}")
+    return hashlib.sha256("\n".join(records).encode("utf-8")).hexdigest()
+
+
+def validate_docker_context_sha256(value: Any, *, engine_commit: str) -> str:
+    digest = validate_sha256_hex(value, field_name="docker_context_sha256")
+    root = repo_root()
+    if (root / ".git").exists():
+        expected = committed_docker_context_sha256(engine_commit)
+        if digest != expected:
+            raise ValueError(f"docker_context_sha256 mismatch: expected committed context hash {expected}, got {digest}")
+    return digest
+
+
+def validate_dockerfile_sha256(value: Any, *, engine_commit: str) -> str:
+    digest = validate_sha256_hex(value, field_name="dockerfile_sha256")
+    root = repo_root()
+    if (root / ".git").exists():
         result = subprocess.run(
             ["git", "show", f"{engine_commit}:docker/quant-engine/Dockerfile"],
-            cwd=repo_root,
+            cwd=root,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -107,6 +181,41 @@ def validate_dockerfile_sha256(value: Any, *, engine_commit: str) -> str:
         if digest != expected:
             raise ValueError(f"dockerfile_sha256 mismatch: expected committed blob hash {expected}, got {digest}")
     return digest
+
+
+def validate_input_pack_p0_merge_commit(value: Any, *, input_pack: Path, summary: dict[str, Any]) -> str:
+    commit = normalize_git_commit(value, field_name="input_pack_p0_merge_commit")
+    require_checkoutable_commit(commit, field_name="input_pack_p0_merge_commit")
+    root = repo_root()
+    if not (root / ".git").exists():
+        return commit
+    try:
+        relative_pack = input_pack.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"input pack must be inside repository to verify P0 merge commit: {input_pack}") from exc
+    result = subprocess.run(
+        ["git", "show", f"{commit}:{relative_pack}/manifest.json"],
+        cwd=root,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ValueError(f"input_pack_p0_merge_commit does not contain the certified pack manifest: {commit}")
+    committed_manifest = json.loads(result.stdout)
+    if committed_manifest.get("input_pack_sha256") != summary["input_pack_sha256"]:
+        raise ValueError(
+            "input_pack_p0_merge_commit does not contain the verified input pack: "
+            f"expected input_pack_sha256 {summary['input_pack_sha256']}, "
+            f"got {committed_manifest.get('input_pack_sha256')}"
+        )
+    if committed_manifest.get("builder_commit") != summary["builder_commit"]:
+        raise ValueError(
+            "input_pack_p0_merge_commit builder provenance mismatch: "
+            f"expected {summary['builder_commit']}, got {committed_manifest.get('builder_commit')}"
+        )
+    return commit
 
 
 def sha256_payload(payload: Any) -> str:
@@ -652,14 +761,15 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "contract_bundle_sha256": args.contract_bundle_sha256,
     }
     summary = pack_summary(input_pack, expected)
-    if args.input_pack_p0_merge_commit != summary["builder_commit"]:
-        raise ValueError(
-            f"input_pack_p0_merge_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
-            f"got {args.input_pack_p0_merge_commit}"
-        )
+    input_pack_p0_merge_commit = validate_input_pack_p0_merge_commit(
+        args.input_pack_p0_merge_commit,
+        input_pack=input_pack,
+        summary=summary,
+    )
     if not args.engine_commit:
         raise ValueError("engine_commit must be provided explicitly")
     engine_commit = normalize_engine_commit(args.engine_commit)
+    docker_context_sha256 = validate_docker_context_sha256(args.docker_context_sha256, engine_commit=engine_commit)
     dockerfile_sha256 = validate_dockerfile_sha256(args.dockerfile_sha256, engine_commit=engine_commit)
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:
         raise ValueError(
@@ -672,7 +782,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
             f"got {args.builder_code_sha256}"
         )
     builder_commit = summary["builder_commit"]
-    config = default_config(summary, merge_commit=args.input_pack_p0_merge_commit)
+    config = default_config(summary, merge_commit=input_pack_p0_merge_commit)
     grid = default_parameter_grid()
 
     config_path = output_dir / "calibration_config.json"
@@ -786,7 +896,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "builder_code_sha256": summary["builder_code_sha256"],
         "engine_image_digest": args.engine_image_digest,
         "engine_image_id": args.engine_image_id,
-        "docker_context_sha256": args.docker_context_sha256,
+        "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
@@ -814,14 +924,14 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "input_pack_sha256": summary["input_pack_sha256"],
         "source_snapshot_sha256": summary["source_snapshot_sha256"],
         "contract_bundle_sha256": summary["contract_bundle_sha256"],
-        "input_pack_p0_merge_commit": args.input_pack_p0_merge_commit,
+        "input_pack_p0_merge_commit": input_pack_p0_merge_commit,
         "calibration_branch_base_commit": args.calibration_branch_base_commit,
         "engine_commit": engine_commit,
         "builder_commit": builder_commit,
         "builder_code_sha256": summary["builder_code_sha256"],
         "engine_image_digest": args.engine_image_digest,
         "engine_image_id": args.engine_image_id,
-        "docker_context_sha256": args.docker_context_sha256,
+        "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
@@ -838,7 +948,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "A4": A4_STATUS,
         "A5": "blocked",
         "freeze_ready": False,
-        "rebuilt_from_main": True,
+        "rebuilt_from_main": False,
     }
     write_json(output_dir / "calibration_manifest.json", manifest)
     return manifest

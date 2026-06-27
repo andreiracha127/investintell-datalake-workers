@@ -1,15 +1,15 @@
 {
   "as_of": "2026-06-26",
   "builder_code_sha256": "5a1863cbe6194dba3344238f8c78c71ea9d4975877ed265c182bab6e3a9d45cd",
-  "builder_commit": "50511d78a34ebc6b3b2a54ba82ad157d2c13be15",
+  "builder_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
   "canonical_snapshot_sha256": "a691ec12a5b47831b7b4009378836856e71145902a67d1faab0c398a7cb72dfc",
   "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
   "derived_feature_sha256": "371ca37f8970d5dfee01956b1c7682617d4182e9ec389fca2f81de887044a37a",
   "input_pack_id": "open_macro_v03_certified_input_pack_001",
-  "input_pack_sha256": "15601edef4d72a11769c5533459884467e0e7828de439eb374b1ae98a5a97df0",
+  "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "input_pack_version": "v1",
   "raw_snapshot_sha256": "7735e772dc9a70ad3c939e7ff782754c904c1dc4609e8cede7123258155274e1",
   "runtime_activation": false,
-  "source_commit": "50511d78a34ebc6b3b2a54ba82ad157d2c13be15",
+  "source_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
   "source_repo": "investintell-datalake-workers"
 }

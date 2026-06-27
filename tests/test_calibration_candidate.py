@@ -31,6 +31,13 @@ def _dockerfile_sha256(engine_commit: str) -> str:
         return "3" * 64
 
 
+def _docker_context_sha256(engine_commit: str) -> str:
+    try:
+        return cc.committed_docker_context_sha256(engine_commit)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return "2" * 64
+
+
 def _summary() -> dict[str, str]:
     manifest = load_json(GOLDEN_PACK / "manifest.json")
     return {
@@ -46,23 +53,47 @@ def _summary() -> dict[str, str]:
     }
 
 
+def _commit_contains_pack(commit: str, summary: dict[str, str]) -> bool:
+    try:
+        payload = subprocess.check_output(
+            ["git", "show", f"{commit}:fixtures/input_packs/golden/certified_input_pack/manifest.json"],
+            cwd=ROOT,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return json.loads(payload).get("input_pack_sha256") == summary["input_pack_sha256"]
+
+
+def _input_pack_p0_merge_commit(summary: dict[str, str]) -> str:
+    for ref in ("origin/main", "main", "HEAD", summary["builder_commit"]):
+        try:
+            commit = subprocess.check_output(["git", "rev-parse", ref], cwd=ROOT, text=True).strip()
+        except (OSError, subprocess.CalledProcessError):
+            continue
+        if _commit_contains_pack(commit, summary):
+            return commit
+    return summary["builder_commit"]
+
+
 def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) -> argparse.Namespace:
     summary = _summary()
     engine_commit = _engine_commit()
+    input_pack_p0_merge_commit = _input_pack_p0_merge_commit(summary)
     return argparse.Namespace(
         input_pack=str(GOLDEN_PACK),
         output_dir=str(output_dir),
         input_pack_sha256=summary["input_pack_sha256"],
         source_snapshot_sha256=summary["source_snapshot_sha256"],
         contract_bundle_sha256=summary["contract_bundle_sha256"],
-        input_pack_p0_merge_commit=summary["builder_commit"],
-        calibration_branch_base_commit=summary["builder_commit"],
+        input_pack_p0_merge_commit=input_pack_p0_merge_commit,
+        calibration_branch_base_commit=input_pack_p0_merge_commit,
         engine_commit=engine_commit,
         builder_commit=summary["builder_commit"],
         builder_code_sha256=None,
         engine_image_digest=None,
         engine_image_id="sha256:" + "1" * 64,
-        docker_context_sha256="2" * 64,
+        docker_context_sha256=_docker_context_sha256(engine_commit),
         dockerfile_sha256=_dockerfile_sha256(engine_commit),
         jobs=jobs,
         network="none",
@@ -290,10 +321,12 @@ def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> Non
 
 
 def test_input_pack_merge_commit_must_match_verified_pack(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
     args = _args(tmp_path)
-    args.input_pack_p0_merge_commit = "9" * 40
+    args.input_pack_p0_merge_commit = _summary()["builder_commit"]
 
-    with pytest.raises(ValueError, match="input_pack_p0_merge_commit mismatch"):
+    with pytest.raises(ValueError, match="does not contain the verified input pack"):
         cc.run_calibration(args)
 
 
@@ -320,6 +353,35 @@ def test_engine_commit_must_exist_when_git_checkout_available(tmp_path: Path) ->
     args.engine_commit = "9" * 40
 
     with pytest.raises(ValueError, match="not a checkoutable commit"):
+        cc.run_calibration(args)
+
+
+def test_engine_commit_must_be_reachable_from_current_head(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
+    commit = subprocess.check_output(
+        ["git", "commit-tree", "HEAD^{tree}", "-m", "unreachable calibration engine"],
+        cwd=ROOT,
+        text=True,
+    ).strip()
+    args = _args(tmp_path)
+    args.engine_commit = commit
+    args.docker_context_sha256 = _docker_context_sha256(commit)
+    args.dockerfile_sha256 = _dockerfile_sha256(commit)
+
+    with pytest.raises(ValueError, match="ancestor of HEAD"):
+        cc.run_calibration(args)
+
+
+def test_docker_context_sha256_must_match_committed_context(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
+    args = _args(tmp_path)
+    args.docker_context_sha256 = "9" * 64
+    if args.docker_context_sha256 == _docker_context_sha256(args.engine_commit):
+        args.docker_context_sha256 = "8" * 64
+
+    with pytest.raises(ValueError, match="docker_context_sha256 mismatch"):
         cc.run_calibration(args)
 
 
