@@ -141,6 +141,15 @@ def validate_sha256_hex(value: Any, *, field_name: str) -> str:
     return value.lower()
 
 
+def validate_optional_prefixed_sha256(value: Any, *, field_name: str) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        raise ValueError(f"{field_name} must be a sha256:<64 hex> digest")
+    digest = validate_sha256_hex(value.removeprefix("sha256:"), field_name=field_name)
+    return f"sha256:{digest}"
+
+
 @functools.cache
 def committed_docker_context_sha256(engine_commit: str) -> str:
     root = repo_root()
@@ -675,19 +684,19 @@ def matrix_evidence_ok(
         return False
     if matrix_evidence.get("path_independence") is not True:
         return False
-    if engine_image_digest:
-        if matrix_evidence.get("docker_image_digest") != engine_image_digest:
-            return False
-    elif engine_image_id:
-        if matrix_evidence.get("docker_image_id") != engine_image_id:
-            return False
-    elif matrix_evidence.get("docker_image_digest") or matrix_evidence.get("docker_image_id"):
+    evidence_image_digest = matrix_evidence.get("docker_image_digest")
+    evidence_image_id = matrix_evidence.get("docker_image_id")
+    if engine_image_digest != evidence_image_digest:
+        return False
+    if engine_image_id != evidence_image_id:
         return False
     if matrix_evidence.get("ok") is not True or run_count < len(REQUIRED_MATRIX_LABELS) or mismatch_count != 0:
         return False
     comparisons = matrix_evidence.get("comparisons")
     base_label = matrix_evidence.get("base_label")
     if not isinstance(comparisons, dict) or not isinstance(base_label, str):
+        return False
+    if base_label not in REQUIRED_MATRIX_LABELS:
         return False
     for label in labels:
         comparison = comparisons.get(f"{base_label}_vs_{label}")
@@ -828,6 +837,11 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     if not args.engine_commit:
         raise ValueError("engine_commit must be provided explicitly")
     engine_commit = normalize_engine_commit(args.engine_commit)
+    engine_image_digest = validate_optional_prefixed_sha256(
+        args.engine_image_digest,
+        field_name="engine_image_digest",
+    )
+    engine_image_id = validate_optional_prefixed_sha256(args.engine_image_id, field_name="engine_image_id")
     docker_context_sha256 = validate_docker_context_sha256(args.docker_context_sha256, engine_commit=engine_commit)
     dockerfile_sha256 = validate_dockerfile_sha256(args.dockerfile_sha256, engine_commit=engine_commit)
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:
@@ -934,8 +948,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         matrix_evidence,
         artifact_hashes,
         matrix_run_hashes,
-        engine_image_digest=args.engine_image_digest,
-        engine_image_id=args.engine_image_id,
+        engine_image_digest=engine_image_digest,
+        engine_image_id=engine_image_id,
     )
     if not matrix_ok:
         matrix_run_hashes = {}
@@ -960,8 +974,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "source_snapshot_sha256": summary["source_snapshot_sha256"],
         "contract_bundle_sha256": summary["contract_bundle_sha256"],
         "builder_code_sha256": summary["builder_code_sha256"],
-        "engine_image_digest": args.engine_image_digest,
-        "engine_image_id": args.engine_image_id,
+        "engine_image_digest": engine_image_digest,
+        "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
@@ -995,8 +1009,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_commit": engine_commit,
         "builder_commit": builder_commit,
         "builder_code_sha256": summary["builder_code_sha256"],
-        "engine_image_digest": args.engine_image_digest,
-        "engine_image_id": args.engine_image_id,
+        "engine_image_digest": engine_image_digest,
+        "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),

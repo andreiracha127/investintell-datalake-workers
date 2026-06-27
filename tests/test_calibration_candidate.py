@@ -127,7 +127,9 @@ def _write_evidence(
     hashes: dict[str, str],
     *,
     labels: list[str] | None = None,
+    base_label: str = "host_jobs1_r0",
     include_isolation: bool = True,
+    docker_image_digest: str | None = None,
     docker_image_id: str | None = "sha256:" + "1" * 64,
     path_independence: bool | None = True,
 ) -> Path:
@@ -135,17 +137,17 @@ def _write_evidence(
     payload = {
         "schema_version": 1,
         "calibration_id": cc.CALIBRATION_ID,
-        "base_label": "host_jobs1_r0",
+        "base_label": base_label,
         "labels": labels,
-        "comparisons": {
-            f"host_jobs1_r0_vs_{label}": {"ok": True, "mismatched": [], "hashes": hashes} for label in labels
-        },
+        "comparisons": {f"{base_label}_vs_{label}": {"ok": True, "mismatched": [], "hashes": hashes} for label in labels},
         "run_count": len(labels),
         "mismatch_count": 0,
         "ok": True,
     }
     if include_isolation:
         payload.update({"network": "none", "db_access": False, "input_pack_mount": "read_only"})
+    if docker_image_digest is not None:
+        payload["docker_image_digest"] = docker_image_digest
     if docker_image_id is not None:
         payload["docker_image_id"] = docker_image_id
     if path_independence is not None:
@@ -309,6 +311,61 @@ def test_run_matrix_rejects_different_image_id(tmp_path: Path) -> None:
     assert run_matrix["ok"] is False
     assert run_matrix["hashes"] == {}
     assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_validates_digest_and_image_id_together(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "wrong_image_pair_evidence.json",
+        probe_matrix["current_run_hashes"],
+        docker_image_digest="sha256:" + "2" * 64,
+        docker_image_id="sha256:" + "9" * 64,
+    )
+    args = _args(tmp_path / "out", evidence_json=str(evidence))
+    args.engine_image_digest = "sha256:" + "2" * 64
+
+    cc.run_calibration(args)
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_requires_required_base_label(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "unlisted_base_evidence.json",
+        probe_matrix["current_run_hashes"],
+        base_label="manual_baseline",
+    )
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_engine_image_identifiers_must_be_sha256_prefixed(tmp_path: Path) -> None:
+    args = _args(tmp_path / "bad-image-id")
+    args.engine_image_id = "local-image-placeholder"
+
+    with pytest.raises(ValueError, match="engine_image_id must be a sha256:<64 hex> digest"):
+        cc.run_calibration(args)
+
+    args = _args(tmp_path / "bad-image-digest")
+    args.engine_image_digest = "not-a-digest"
+
+    with pytest.raises(ValueError, match="engine_image_digest must be a sha256:<64 hex> digest"):
+        cc.run_calibration(args)
 
 
 def test_run_matrix_requires_path_independence_evidence(tmp_path: Path) -> None:
