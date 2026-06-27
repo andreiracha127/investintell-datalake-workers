@@ -24,28 +24,36 @@ Governance invariants held throughout: A3 `open_macro_v03`, A4
 `harness_ready_provisional_A3`, A5 `blocked`, `freeze_ready=false`,
 `runtime_activation=false`.
 
-## Required CI status checks (proposed)
+## Required CI status checks
 
-`.github/workflows/quant-engine-ci.yml` is a proposed, inert gate. To make it a
-required status check the team must enable Actions and branch protection. Checks:
+GitHub Actions is not the CI executor for this repo. The required quant-engine
+gate is the external GitHub status context `railway/quant-engine-ci`, produced
+from the Railway service `quant-engine-ci-pr4` with `docker/railway-ci/Dockerfile`.
+The workflow file `.github/workflows/quant-engine-ci.yml` was removed so PRs do
+not start GitHub-hosted runners or depend on GitHub Actions billing.
+
+Checks covered by the Railway gate:
 
 | Check | Required on PR | Required to merge |
 |---|---|---|
-| `pytest` (quant suite + contracts) | yes | yes |
+| `pytest` (input packs, quant engine/core, calibration, repeatability) | yes | yes |
 | `contract_bundle.py verify` | yes | yes |
-| Repeatability matrix (host leg) | yes (nightly for container/cross-env) | yes |
-| Image build by digest | yes | yes |
-| SBOM generated | draft optional | yes |
-| Provenance generated | draft optional | yes |
+| Certified input-pack verification | yes | yes |
+| Calibration artifact hash/provenance/governance validation | yes | yes |
+| Railway image build by pinned Dockerfile | yes | yes |
+| SBOM generated | no | release only |
+| Provenance generated | no | release only |
 | Signature/attestation verify | no | release only |
 
-The repeatability matrix's container/cross-env legs need the input bundle and a
-Docker runner, so they run locally / nightly, not on every generic PR runner.
+The repeatability matrix evidence is committed as calibration artifacts and is
+rechecked by the Railway Dockerfile. Future release-only SBOM/provenance/signature
+work should remain separate from the PR CI executor decision unless the team
+explicitly opens that governance wave.
 
 ## Branch protection (proposed)
 
 - Require pull-request review (two reviewers per SLSA Source for protected branches).
-- Require the status checks above to pass.
+- Require `railway/quant-engine-ci` to pass.
 - Disallow direct pushes to `main`; no force-push.
 
 ## Two linked draft PRs
