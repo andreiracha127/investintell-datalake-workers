@@ -1,4 +1,7 @@
 tests/
+# quant-engine-ci-pr4 copies tests into docker/railway-ci/Dockerfile.
+!tests/
+!tests/**
 .pytest_cache/
 __pycache__/
 **/__pycache__/
