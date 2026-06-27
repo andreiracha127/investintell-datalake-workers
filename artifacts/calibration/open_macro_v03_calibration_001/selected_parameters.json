@@ -1,0 +1,18 @@
+{
+  "A5": "blocked",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "final_approval_allowed": false,
+  "freeze_ready": false,
+  "parameters": {
+    "defensive_floor_delta_pp": 0,
+    "growth_weight": 0.5,
+    "inflation_weight": 0.5,
+    "risk_cap_delta_pp": 0,
+    "risk_tilt": 0.0
+  },
+  "runtime_activation": false,
+  "schema_version": 1,
+  "selected_candidate_id": "baseline_current",
+  "selection_reason": "Institutional limits are explicitly unset; select the current baseline as the conservative candidate and block final approval.",
+  "selection_status": "candidate_baseline_selected"
+}

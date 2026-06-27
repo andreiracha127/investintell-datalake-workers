@@ -1,0 +1,145 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "candidate_metrics": [
+    {
+      "baseline_distance": 0.0,
+      "candidate_id": "baseline_current",
+      "finite": true,
+      "objective_value": 0.002995475264,
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "role": "baseline",
+      "turnover_proxy": 0.0,
+      "weights_sum": 1.0
+    },
+    {
+      "baseline_distance": 0.04,
+      "candidate_id": "growth_plus_2pp",
+      "finite": true,
+      "objective_value": 0.003235475264,
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.52,
+        "inflation_weight": 0.48,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "role": "local_probe",
+      "turnover_proxy": 0.04,
+      "weights_sum": 1.0
+    },
+    {
+      "baseline_distance": 0.04,
+      "candidate_id": "inflation_plus_2pp",
+      "finite": true,
+      "objective_value": 0.003235475264,
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.48,
+        "inflation_weight": 0.52,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "role": "local_probe",
+      "turnover_proxy": 0.04,
+      "weights_sum": 1.0
+    },
+    {
+      "baseline_distance": 0.01,
+      "candidate_id": "risk_tilt_plus_1pp",
+      "finite": true,
+      "objective_value": 0.003005475264,
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.01
+      },
+      "role": "local_probe",
+      "turnover_proxy": 0.01,
+      "weights_sum": 1.0
+    },
+    {
+      "baseline_distance": 0.01,
+      "candidate_id": "risk_tilt_minus_1pp",
+      "finite": true,
+      "objective_value": 0.003005475264,
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": -0.01
+      },
+      "role": "local_probe",
+      "turnover_proxy": 0.01,
+      "weights_sum": 1.0
+    }
+  ],
+  "final_approval_allowed": false,
+  "input_metrics": {
+    "fund_return": {
+      "count": 4,
+      "max": 0.007462686567,
+      "mean": 0.004370378761,
+      "min": 0.002506265664
+    },
+    "macro": {
+      "delta_count": 6,
+      "delta_mean": 0.005,
+      "level_count": 9,
+      "level_mean": 3.466666666667
+    },
+    "market_return": {
+      "count": 4,
+      "max": 0.0021893815,
+      "mean": 0.001374903497,
+      "min": 0.000508388409
+    },
+    "table_rows": {
+      "canonical_eod_prices": 6,
+      "canonical_fund_strategy_benchmark_proxy_map": 2,
+      "canonical_instrument_identity": 2,
+      "canonical_instruments_universe": 2,
+      "canonical_macro_data": 9,
+      "canonical_nav_timeseries": 6,
+      "canonical_sec_nport_fund_monthly_flows": 4,
+      "canonical_sec_nport_holdings": 4,
+      "canonical_strategy_reclassification_stage": 2,
+      "derived_feature_lineage": 7,
+      "derived_flow_momentum_features": 2,
+      "derived_fund_nav_return_features": 4,
+      "derived_fund_universe_features": 2,
+      "derived_holdings_summary_features": 2,
+      "derived_macro_observation_features": 15,
+      "derived_market_price_return_features": 4,
+      "raw_eod_prices": 6,
+      "raw_fund_strategy_benchmark_proxy_map": 2,
+      "raw_instrument_identity": 2,
+      "raw_instruments_universe": 2,
+      "raw_macro_data": 9,
+      "raw_nav_timeseries": 6,
+      "raw_sec_nport_fund_monthly_flows": 4,
+      "raw_sec_nport_holdings": 4,
+      "raw_strategy_reclassification_stage": 2,
+      "report:certification_summary": 1,
+      "schema:input_pack_manifest.schema": 0,
+      "schema:provenance.schema": 0,
+      "schema:snapshot_manifest.schema": 0,
+      "schema:source.schema": 0,
+      "schema:table_hashes.schema": 0
+    }
+  },
+  "objective": {
+    "primary": "preserve_current_baseline_until_institutional_limits_exist",
+    "return_target": "not_used",
+    "tie_breaker": "simplicity_then_proximity_to_baseline"
+  },
+  "schema_version": 1
+}

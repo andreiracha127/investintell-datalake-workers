@@ -1,0 +1,53 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "comparisons": {
+    "G0": {
+      "absolute_metrics": null,
+      "materiality_flags": [
+        "not_evaluable_without_certified_reference_artifact"
+      ],
+      "regression_flags": [],
+      "relative_deltas": null,
+      "status": "reference_not_certified_inside_input_pack"
+    },
+    "current_baseline_if_certified": {
+      "absolute_metrics": null,
+      "materiality_flags": [
+        "not_evaluable_without_certified_reference_artifact"
+      ],
+      "regression_flags": [],
+      "relative_deltas": null,
+      "status": "reference_not_certified_inside_input_pack"
+    },
+    "microgrid_v03": {
+      "absolute_metrics": null,
+      "materiality_flags": [
+        "not_evaluable_without_certified_reference_artifact"
+      ],
+      "regression_flags": [],
+      "relative_deltas": null,
+      "status": "reference_not_certified_inside_input_pack"
+    },
+    "neutral_reference": {
+      "absolute_metrics": {
+        "baseline_distance": 0.0,
+        "objective_value": 0.002995475264,
+        "status": "computed_from_certified_pack"
+      },
+      "accepted_degradation_reason": null,
+      "materiality_flags": [],
+      "regression_flags": [],
+      "relative_deltas": {
+        "baseline_distance": 0.0,
+        "objective_value": 0.0
+      },
+      "status": "computed_from_current_baseline_candidate"
+    }
+  },
+  "final_approval_blockers": [
+    "reference_baselines_not_certified_in_pack",
+    "institutional_limits_explicitly_unset"
+  ],
+  "schema_version": 1,
+  "selected_candidate_id": "baseline_current"
+}

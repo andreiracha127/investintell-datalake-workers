@@ -1,0 +1,76 @@
+{
+  "anti_overfit_controls": [
+    "fixed_small_grid",
+    "no_return_target",
+    "no_live_db_inputs",
+    "baseline_preferred_until_constraints_are_defined"
+  ],
+  "baseline_candidate_id": "baseline_current",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "candidates": [
+    {
+      "candidate_id": "baseline_current",
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "rationale": "baseline/default current candidate",
+      "role": "baseline"
+    },
+    {
+      "candidate_id": "growth_plus_2pp",
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.52,
+        "inflation_weight": 0.48,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "rationale": "small local increase around baseline growth weight",
+      "role": "local_probe"
+    },
+    {
+      "candidate_id": "inflation_plus_2pp",
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.48,
+        "inflation_weight": 0.52,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.0
+      },
+      "rationale": "small local increase around baseline inflation weight",
+      "role": "local_probe"
+    },
+    {
+      "candidate_id": "risk_tilt_plus_1pp",
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": 0.01
+      },
+      "rationale": "small local positive risk tilt probe",
+      "role": "local_probe"
+    },
+    {
+      "candidate_id": "risk_tilt_minus_1pp",
+      "parameters": {
+        "defensive_floor_delta_pp": 0,
+        "growth_weight": 0.5,
+        "inflation_weight": 0.5,
+        "risk_cap_delta_pp": 0,
+        "risk_tilt": -0.01
+      },
+      "rationale": "small local negative risk tilt probe",
+      "role": "local_probe"
+    }
+  ],
+  "ranking_policy": "reject_first_then_rank_by_simplicity_and_baseline_distance",
+  "schema_version": 1,
+  "search_policy": "small_conservative_local_grid",
+  "strategy": "open_macro_v03"
+}

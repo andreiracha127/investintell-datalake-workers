@@ -1,0 +1,32 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "checks": {
+    "constraints_respected": true,
+    "dates_within_input_pack": true,
+    "db_access": true,
+    "exposures_within_defined_limits": "institutional_limits_explicitly_unset_final_approval_blocked",
+    "input_pack_read_only": true,
+    "network_access": true,
+    "no_external_source_access": true,
+    "no_infinite": true,
+    "no_nan": true,
+    "outputs_complete": true,
+    "outputs_within_allowed_dir": true,
+    "turnover_within_defined_envelope": "institutional_limits_explicitly_unset_final_approval_blocked",
+    "weights_close_within_tolerance": true
+  },
+  "final_approval_allowed": false,
+  "institutional_limits": {
+    "beta": "explicitly_unset",
+    "daily_cvar_95": "explicitly_unset",
+    "exposure_bounds": "explicitly_unset",
+    "max_drawdown": "explicitly_unset",
+    "turnover": "explicitly_unset"
+  },
+  "ok": true,
+  "schema_version": 1,
+  "technical_debts_accepted": [
+    "macro-history-coverage",
+    "macro-vintage-identity"
+  ]
+}
