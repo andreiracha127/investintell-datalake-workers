@@ -58,8 +58,8 @@
     {
       "name": "derived_feature_lineage",
       "path": "data/derived/feature_lineage.json",
-      "rows": 6,
-      "sha256": "10622dd245bb67fafdefb863eb209c6d1a9e55f8b2699286c7331244af35a1c7"
+      "rows": 7,
+      "sha256": "288ef23b57782d9dc2e2a95144f6e0f98e0866058df9b6963f70b0849f632b10"
     },
     {
       "name": "derived_flow_momentum_features",

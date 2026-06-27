@@ -1,7 +1,7 @@
 {
-  "builder_code_sha256": "69ce2975b62a583d90950c65e40a1634e73471a6729da5f887deb10dbf795138",
-  "builder_commit": "a04815c08013dc8e5c037490c4fa743a1f0fe716",
+  "builder_code_sha256": "5a1863cbe6194dba3344238f8c78c71ea9d4975877ed265c182bab6e3a9d45cd",
+  "builder_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
   "builder_name": "certified-input-pack-builder-p0",
-  "source_commit": "a04815c08013dc8e5c037490c4fa743a1f0fe716",
+  "source_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
   "source_repo": "investintell-datalake-workers"
 }

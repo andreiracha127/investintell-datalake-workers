@@ -30,7 +30,21 @@
   },
   {
     "feature_file": "data/derived/macro_observation_features.json",
-    "feature_name": "macro_level_and_delta",
+    "feature_name": "macro_level",
+    "sources": [
+      {
+        "columns": [
+          "series_id",
+          "obs_date",
+          "value"
+        ],
+        "table": "macro_data"
+      }
+    ]
+  },
+  {
+    "feature_file": "data/derived/macro_observation_features.json",
+    "feature_name": "macro_delta_1obs",
     "sources": [
       {
         "columns": [
