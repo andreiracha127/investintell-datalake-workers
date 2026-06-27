@@ -62,9 +62,12 @@ def write_text(path: Path, text: str) -> None:
 
 
 def prepare_write_path(path: Path) -> None:
+    for candidate in (path, path.parent, *path.parent.parents):
+        if candidate.is_symlink():
+            raise ValueError(f"refusing to write through symlinked output path: {candidate}")
     path.parent.mkdir(parents=True, exist_ok=True)
     for candidate in (path, path.parent, *path.parent.parents):
-        if candidate.exists() and candidate.is_symlink():
+        if candidate.is_symlink():
             raise ValueError(f"refusing to write through symlinked output path: {candidate}")
 
 
@@ -686,6 +689,8 @@ def matrix_evidence_ok(
         return False
     evidence_image_digest = matrix_evidence.get("docker_image_digest")
     evidence_image_id = matrix_evidence.get("docker_image_id")
+    if engine_image_digest is None and engine_image_id is None:
+        return False
     if engine_image_digest != evidence_image_digest:
         return False
     if engine_image_id != evidence_image_id:
@@ -842,6 +847,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         field_name="engine_image_digest",
     )
     engine_image_id = validate_optional_prefixed_sha256(args.engine_image_id, field_name="engine_image_id")
+    if engine_image_digest is None and engine_image_id is None:
+        raise ValueError("engine_image_digest or engine_image_id must be provided")
     docker_context_sha256 = validate_docker_context_sha256(args.docker_context_sha256, engine_commit=engine_commit)
     dockerfile_sha256 = validate_dockerfile_sha256(args.dockerfile_sha256, engine_commit=engine_commit)
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:

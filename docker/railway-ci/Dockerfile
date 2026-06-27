@@ -7,6 +7,10 @@ WORKDIR /app
 ENV PYTHONPATH=/app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src \
     PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.quant-engine.lock /app/requirements.quant-engine.lock
 RUN pip install --no-cache-dir -r /app/requirements.quant-engine.lock jsonschema pytest
 
@@ -23,6 +27,13 @@ COPY docs/calibration /app/docs/calibration
 COPY qc-a3-parity /app/qc-a3-parity
 COPY docker/quant-engine /app/docker/quant-engine
 COPY qc_a3_core.py /app/qc_a3_core.py
+
+RUN git init . \
+    && git config user.email "ci@investintell.local" \
+    && git config user.name "Investintell CI" \
+    && git add . \
+    && git commit -m "railway ci synthetic checkout" \
+    && git rev-parse --verify HEAD
 
 RUN python - <<'PY'
 from pathlib import Path
@@ -51,11 +62,13 @@ RUN python - <<'PY'
 from pathlib import Path
 import json
 from src.input_packs.hashing import file_sha256
+from src.calibration_candidate import output_manifest
 
 root = Path("artifacts/calibration/open_macro_v03_calibration_001")
 manifest = json.loads((root / "calibration_manifest.json").read_text(encoding="utf-8"))
 run_matrix = json.loads((root / "run_matrix.json").read_text(encoding="utf-8"))
 invariant = json.loads((root / "invariant_report.json").read_text(encoding="utf-8"))
+stored_output_manifest = json.loads((root / "output_manifest.json").read_text(encoding="utf-8"))
 checks = {
     "calibration_config_sha256": "calibration_config.json",
     "parameter_grid_sha256": "parameter_grid.json",
@@ -72,6 +85,26 @@ for key, rel in checks.items():
     actual = file_sha256(root / rel)
     if manifest[key] != actual:
         raise SystemExit(f"{key} mismatch: expected {manifest[key]}, got {actual}")
+required_output_manifest_paths = {
+    "calibration_config.json",
+    "parameter_grid.json",
+    "selected_parameters.json",
+    "rejected_candidates.json",
+    "metrics_manifest.json",
+    "invariant_report.json",
+    "baseline_comparison.json",
+    "calibration_report.md",
+    "logs/calibration.log",
+}
+actual_output_manifest_paths = {entry.get("path") for entry in stored_output_manifest.get("artifacts", [])}
+if actual_output_manifest_paths != required_output_manifest_paths:
+    raise SystemExit(
+        "output_manifest artifacts mismatch: "
+        f"expected {sorted(required_output_manifest_paths)}, got {sorted(actual_output_manifest_paths)}"
+    )
+expected_output_manifest = output_manifest(root, sorted(required_output_manifest_paths))
+if stored_output_manifest != expected_output_manifest:
+    raise SystemExit("output_manifest entries do not match current artifact contents")
 required = {
     "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
     "runtime_activation": False,

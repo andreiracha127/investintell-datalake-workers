@@ -368,6 +368,15 @@ def test_engine_image_identifiers_must_be_sha256_prefixed(tmp_path: Path) -> Non
         cc.run_calibration(args)
 
 
+def test_engine_image_identifier_is_required(tmp_path: Path) -> None:
+    args = _args(tmp_path / "missing-image-provenance")
+    args.engine_image_digest = None
+    args.engine_image_id = None
+
+    with pytest.raises(ValueError, match="engine_image_digest or engine_image_id must be provided"):
+        cc.run_calibration(args)
+
+
 def test_run_matrix_requires_path_independence_evidence(tmp_path: Path) -> None:
     probe = tmp_path / "probe"
     cc.run_calibration(_args(probe))
@@ -445,6 +454,22 @@ def test_run_calibration_rejects_symlinked_output(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symlinked output path"):
         cc.run_calibration(_args(output_dir))
     assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+def test_run_calibration_rejects_dangling_symlinked_output(tmp_path: Path) -> None:
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside = outside_dir / "selected_parameters.json"
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    try:
+        os.symlink(outside, output_dir / "selected_parameters.json")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="symlinked output path"):
+        cc.run_calibration(_args(output_dir))
+    assert not outside.exists()
 
 
 def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> None:
