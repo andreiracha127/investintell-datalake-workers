@@ -97,7 +97,7 @@
   },
   {
     "feature_file": "data/derived/flow_momentum_features.json",
-    "feature_name": "flow_momentum_3m_input",
+    "feature_name": "flow_momentum_window_input",
     "sources": [
       {
         "columns": [
