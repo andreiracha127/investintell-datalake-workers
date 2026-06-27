@@ -5,7 +5,7 @@ Generate a candidate calibration pack from the merged Certified Input Pack P0 wi
 
 ## Inputs
 - input_pack_id: `open_macro_v03_certified_input_pack_001`
-- input_pack_sha256: `15601edef4d72a11769c5533459884467e0e7828de439eb374b1ae98a5a97df0`
+- input_pack_sha256: `ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f`
 - source_snapshot_sha256: `8947bf94003403de8ffaece43ea423afe635410b0b3ccbd92bf80443a7497234`
 - contract_bundle_sha256: `4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a`
 

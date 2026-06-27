@@ -1,6 +1,6 @@
 {
   "builder_code_sha256": "5a1863cbe6194dba3344238f8c78c71ea9d4975877ed265c182bab6e3a9d45cd",
-  "calibration_config_sha256": "237c285a86687c64bbf96a93d760fac23027e0d54655f0ecbfb192654d961e7c",
+  "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
   "calibration_id": "open_macro_v03_calibration_001",
   "comparison_evidence": {
     "base_label": "host_jobs1_r0",
@@ -11,7 +11,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -23,7 +23,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -35,7 +35,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -47,7 +47,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -59,7 +59,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -71,7 +71,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -83,7 +83,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -95,7 +95,7 @@
           "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
           "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
           "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-          "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+          "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
           "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
           "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
         },
@@ -104,20 +104,22 @@
       }
     },
     "db_access": false,
+    "docker_image_id": "sha256:e420d7e799305dca1a6b352cb624de3264ab6f9cdf7a2619b3a8d8c242b375f0",
     "input_pack_mount": "read_only",
     "labels": [
-      "container_jobs1_r0",
-      "container_jobs1_r1",
-      "container_jobs4_r0",
-      "container_jobs4_r1",
       "host_jobs1_r0",
       "host_jobs1_r1",
       "host_jobs4_r0",
-      "host_jobs4_r1"
+      "host_jobs4_r1",
+      "container_jobs1_r0",
+      "container_jobs1_r1",
+      "container_jobs4_r0",
+      "container_jobs4_r1"
     ],
     "mismatch_count": 0,
     "network": "none",
     "ok": true,
+    "path_independence": true,
     "run_count": 8,
     "schema_version": 1
   },
@@ -126,24 +128,24 @@
     "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
     "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
     "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-    "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+    "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
     "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
     "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
   },
   "db_access": false,
-  "docker_context_sha256": "17038a4309c0df76b6b17e3017fdaf6de0c3bd055a0edf346e328160f02e8f1f",
+  "docker_context_sha256": "70f553fdc67b3b0e489c82a62b3e4204b9af6b565048b4b2c5a5c3c0ed41ea40",
   "dockerfile_sha256": "7caa61e4fcb55df009e04b0dac3c8758802954b0369e6554bb7d62636b10b047",
   "engine_image_digest": null,
-  "engine_image_id": "sha256:8757d9ba159e0fd53c920b1db19c96b8be593aef87f3264cee29a13f7b4fc17c",
+  "engine_image_id": "sha256:e420d7e799305dca1a6b352cb624de3264ab6f9cdf7a2619b3a8d8c242b375f0",
   "evidence_ok": true,
   "evidence_required": true,
-  "input_pack_sha256": "15601edef4d72a11769c5533459884467e0e7828de439eb374b1ae98a5a97df0",
+  "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "jobs_1_hashes": {
     "container_jobs1_r0": {
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -151,7 +153,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -159,7 +161,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -167,7 +169,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     }
@@ -177,7 +179,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -185,7 +187,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -193,7 +195,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -201,7 +203,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     }
@@ -215,7 +217,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -223,7 +225,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -231,7 +233,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -239,7 +241,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -247,7 +249,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -255,7 +257,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -263,7 +265,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     },
@@ -271,7 +273,7 @@
       "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
       "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
       "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
-      "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
+      "output_manifest_sha256": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
       "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
       "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
     }
