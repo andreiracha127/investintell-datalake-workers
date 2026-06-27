@@ -152,7 +152,7 @@ DERIVED_FEATURE_LINEAGE: tuple[dict[str, Any], ...] = (
     },
     {
         "feature_file": "data/derived/flow_momentum_features.json",
-        "feature_name": "flow_momentum_3m_input",
+        "feature_name": "flow_momentum_window_input",
         "sources": [
             {
                 "table": "sec_nport_fund_monthly_flows",
@@ -468,9 +468,10 @@ def derive_flow_features(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, An
         features.append(
             {
                 "as_of_month_end": trailing[-1]["month_end"] if trailing else None,
-                "feature_name": "flow_momentum_3m_input",
+                "feature_name": "flow_momentum_window_input",
                 "series_id": series_id,
                 "value": round_feature(flow / denominator) if denominator else None,
+                "window_months": len(trailing),
             }
         )
     return sorted(features, key=lambda row: row["series_id"])

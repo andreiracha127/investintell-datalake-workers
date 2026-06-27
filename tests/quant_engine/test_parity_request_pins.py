@@ -30,8 +30,8 @@ def _report() -> dict:
         "a31_config_hash": "4b263d560be163fb131d9fdf",
         "a32_config_hash": "40823b2a6aba9b998109e23e",
         "parent_hashes": {
-            "l2_macro_logical_hash": "l2-hash",
-            "revision_uncertainty_logical_hash": "uncertainty-hash",
+            "l2_macro_logical_hash": "l2-logical-hash",
+            "revision_uncertainty_logical_hash": "uncertainty-logical-hash",
         },
         "runtime_replay_logical_hash": "0" * 64,
         "counterfactual_replay_logical_hash": "1" * 64,
@@ -50,14 +50,14 @@ def _patch_pin_sources(monkeypatch: pytest.MonkeyPatch, *, catalog_hash: str = "
     monkeypatch.setattr(
         parity_runner.qc,
         "load_l2_macro_for_config",
-        lambda config: ({}, Path("l2.parquet"), "l2-hash", []),
+        lambda config: ({}, Path("l2.parquet"), "l2-logical-hash", []),
     )
     monkeypatch.setattr(
         parity_runner.qc,
         "load_revision_uncertainty_for_config",
         lambda config: (
-            {"parent_hashes": {"l2_macro_logical_hash": "l2-hash"}},
-            "uncertainty-hash",
+            {"parent_hashes": {"l2_macro_logical_hash": "l2-logical-hash"}},
+            "uncertainty-logical-hash",
             [],
         ),
     )
@@ -82,7 +82,7 @@ def test_run_parity_rejects_request_pin_mismatch_before_running_parity(
     with pytest.raises(ValueError, match="expected_parent_hashes.l2_macro_logical_hash mismatch"):
         run_parity_job(
             _config(tmp_path),
-            expected_parent_hashes={"l2_macro_logical_hash": "other-l2"},
+            expected_parent_hashes={"l2_macro_logical_hash": "other-l2-pin"},
         )
 
 
@@ -93,8 +93,8 @@ def test_run_parity_accepts_matching_request_pins(
     _patch_pin_sources(monkeypatch)
     monkeypatch.setattr(parity_runner.qc, "run_parity", lambda config: _report())
     parent_hashes = {
-        "l2_macro_logical_hash": "l2-hash",
-        "revision_uncertainty_logical_hash": "uncertainty-hash",
+        "l2_macro_logical_hash": "l2-logical-hash",
+        "revision_uncertainty_logical_hash": "uncertainty-logical-hash",
     }
 
     result = run_parity_job(
@@ -106,6 +106,30 @@ def test_run_parity_accepts_matching_request_pins(
 
     assert result["status"] == "succeeded"
     assert result["runtime_activation"] is False
+
+
+def test_run_parity_accepts_schema_valid_request_pin_prefixes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_pin_sources(monkeypatch, catalog_hash="catalog-hash-value")
+    monkeypatch.setattr(parity_runner.qc, "run_parity", lambda config: _report())
+    parent_hashes = {
+        "l2_macro_logical_hash": "l2-logical-hash",
+        "revision_uncertainty_logical_hash": "uncertainty-logical-hash",
+    }
+
+    result = run_parity_job(
+        _config(tmp_path),
+        expected_input_bundle_logical_hash=a3_input_bundle_logical_hash(parent_hashes)[:16],
+        expected_config_catalog_hash="catalog-hash",
+        expected_parent_hashes={
+            "l2_macro_logical_hash": "l2-logical-ha",
+            "revision_uncertainty_logical_hash": "uncertainty-",
+        },
+    )
+
+    assert result["status"] == "succeeded"
 
 
 def test_run_parity_cli_threads_request_pins_to_runner(
@@ -157,9 +181,9 @@ def test_run_parity_cli_threads_request_pins_to_runner(
             "--config-catalog-hash",
             "catalog-hash",
             "--expected-l2-macro-logical-hash",
-            "l2-hash",
+            "l2-logical-hash",
             "--expected-revision-uncertainty-logical-hash",
-            "uncertainty-hash",
+            "uncertainty-logical-hash",
             "--jobs",
             "4",
         ]
@@ -168,7 +192,7 @@ def test_run_parity_cli_threads_request_pins_to_runner(
     assert captured["expected_input_bundle_logical_hash"] == "input-bundle-hash"
     assert captured["expected_config_catalog_hash"] == "catalog-hash"
     assert captured["expected_parent_hashes"] == {
-        "l2_macro_logical_hash": "l2-hash",
-        "revision_uncertainty_logical_hash": "uncertainty-hash",
+        "l2_macro_logical_hash": "l2-logical-hash",
+        "revision_uncertainty_logical_hash": "uncertainty-logical-hash",
     }
     assert captured["jobs"] == 4

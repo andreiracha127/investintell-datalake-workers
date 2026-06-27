@@ -28,7 +28,11 @@ def a3_input_bundle_logical_hash(parent_hashes: dict[str, str]) -> str:
 
 
 def _validate_expected_hash(*, name: str, expected: str | None, actual: str) -> None:
-    if expected is not None and expected != actual:
+    if expected is None:
+        return
+    if len(expected) < 12:
+        raise ValueError(f"a3 parity request {name} must be at least 12 characters")
+    if not actual.startswith(expected):
         raise ValueError(f"a3 parity request {name} mismatch: expected {expected}, got {actual}")
 
 

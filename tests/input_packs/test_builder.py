@@ -172,6 +172,50 @@ def test_builder_rejects_invalid_boolean_source_literal(tmp_path: Path) -> None:
         )
 
 
+def test_builder_records_flow_momentum_window_length(tmp_path: Path) -> None:
+    build_pack(
+        profile="open_macro_v03",
+        as_of="2026-06-26",
+        source_dir=SOURCE_DIR,
+        output=tmp_path / "pack",
+    )
+
+    features = _json(tmp_path / "pack" / "data" / "derived" / "flow_momentum_features.json")
+
+    assert features
+    assert {row["feature_name"] for row in features} == {"flow_momentum_window_input"}
+    assert {row["window_months"] for row in features} == {2}
+
+
+def test_derive_flow_features_does_not_label_partial_windows_as_three_month() -> None:
+    rows = [
+        {"series_id": "S1", "month_end": "2026-04-30", "total_net_assets": 100, "net_flow": 1},
+        {"series_id": "S1", "month_end": "2026-05-31", "total_net_assets": 100, "net_flow": 2},
+        {"series_id": "S2", "month_end": "2026-04-30", "total_net_assets": 100, "net_flow": 1},
+        {"series_id": "S2", "month_end": "2026-05-31", "total_net_assets": 100, "net_flow": 2},
+        {"series_id": "S2", "month_end": "2026-06-30", "total_net_assets": 100, "net_flow": 3},
+    ]
+
+    features = build_module.derive_flow_features(rows)
+
+    assert features == [
+        {
+            "as_of_month_end": "2026-05-31",
+            "feature_name": "flow_momentum_window_input",
+            "series_id": "S1",
+            "value": 0.03,
+            "window_months": 2,
+        },
+        {
+            "as_of_month_end": "2026-06-30",
+            "feature_name": "flow_momentum_window_input",
+            "series_id": "S2",
+            "value": 0.06,
+            "window_months": 3,
+        },
+    ]
+
+
 def test_force_rejects_repo_root_and_source_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_repo = tmp_path / "repo"
     source_tree = fake_repo / "src"
