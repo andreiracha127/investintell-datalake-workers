@@ -104,6 +104,15 @@ writes, frontend changes, and merge to `main` remain explicitly out of scope.
   read-model SQL; a dedicated runtime PR must order/filter by current `as_of`
   semantics so an old backfill cannot become the consumable current quadrant just
   because it was inserted most recently.
+- `macro-history-coverage`: enforce each source's
+  `minimum_valid_observations` before `quadrant_score.standardized_latest`
+  returns an available z-score. This changes macro quadrant runtime scoring and
+  coverage behavior, so it belongs in a dedicated runtime-worker PR before
+  shadow/A5 rather than the P0 certified input-pack gate.
+- `macro-vintage-identity`: include the actual PIT observation/vintage input
+  identities, or the full PIT input set, in `quadrant_macro`'s
+  `source_vintage_hash`. This changes productive snapshot identity semantics and
+  must be handled in a dedicated runtime-worker PR before shadow/A5.
 - `calibration-formula`: honor each V02 macro series' cadence and
   `freshness_limit_days` in `series_freshness`. This changes calibration
   quality inputs and must be handled in the calibration branch, not in the P0

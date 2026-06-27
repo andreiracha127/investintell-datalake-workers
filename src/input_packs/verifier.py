@@ -19,6 +19,15 @@ from .manifest import (
     compute_input_pack_sha256,
     iter_pack_files,
 )
+from .p0_derived import (
+    DERIVED_FEATURE_LINEAGE,
+    derive_flow_features,
+    derive_holdings_features,
+    derive_macro_features,
+    derive_nav_features,
+    derive_price_features,
+    derive_universe_features,
+)
 from .p0_contract import P0_TABLE_SPECS, TableSpec, normalize_row, row_sort_key
 
 COMPONENT_SCHEMA_FILES: dict[str, str] = {
@@ -694,6 +703,63 @@ def _verify_derived_artifact_rows(root: Path) -> list[str]:
     return errors
 
 
+def _load_canonical_sources(root: Path) -> tuple[dict[str, list[dict[str, Any]]] | None, list[str]]:
+    canonical: dict[str, list[dict[str, Any]]] = {}
+    errors: list[str] = []
+    for spec in P0_TABLE_SPECS:
+        rel = f"data/canonical/{spec.name}.json"
+        payload, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if payload is None:
+            continue
+        if any(not isinstance(row, dict) for row in payload):
+            continue
+        canonical[spec.name] = payload
+    missing = [spec.name for spec in P0_TABLE_SPECS if spec.name not in canonical]
+    if missing:
+        errors.append(f"canonical sources unavailable for derived recomputation: {', '.join(missing)}")
+    if errors:
+        return None, errors
+    return canonical, []
+
+
+def _expected_derived_artifacts(
+    canonical: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "data/derived/fund_nav_return_features.json": derive_nav_features(canonical["nav_timeseries"]),
+        "data/derived/market_price_return_features.json": derive_price_features(canonical["eod_prices"]),
+        "data/derived/macro_observation_features.json": derive_macro_features(canonical["macro_data"]),
+        "data/derived/fund_universe_features.json": derive_universe_features(canonical),
+        "data/derived/holdings_summary_features.json": derive_holdings_features(canonical["sec_nport_holdings"]),
+        "data/derived/flow_momentum_features.json": derive_flow_features(canonical["sec_nport_fund_monthly_flows"]),
+        "data/derived/feature_lineage.json": list(DERIVED_FEATURE_LINEAGE),
+    }
+
+
+def _verify_derived_artifacts_match_canonical(root: Path) -> list[str]:
+    canonical, load_errors = _load_canonical_sources(root)
+    if canonical is None:
+        return load_errors
+    errors: list[str] = []
+    try:
+        expected_artifacts = _expected_derived_artifacts(canonical)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"data/derived: cannot recompute derived artifacts from canonical sources: {exc}"]
+    for rel, expected_rows in expected_artifacts.items():
+        actual_rows, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if actual_rows is None:
+            continue
+        if actual_rows != expected_rows:
+            errors.append(f"{rel}: derived rows do not match canonical source recomputation")
+    return errors
+
+
 def _verify_expected_p0_content(
     root: Path,
     manifest: dict[str, Any],
@@ -752,6 +818,7 @@ def _verify_expected_p0_content(
 
     errors.extend(_verify_p0_source_artifact_rows(root, pack_as_of=_manifest_as_of_date(manifest)))
     errors.extend(_verify_derived_artifact_rows(root))
+    errors.extend(_verify_derived_artifacts_match_canonical(root))
     return errors
 
 

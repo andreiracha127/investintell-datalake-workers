@@ -487,6 +487,57 @@ def test_npz_export_is_byte_stable_across_paths(tmp_path: Path) -> None:
     assert qc.file_sha256(first) == qc.file_sha256(second)
 
 
+def test_materialize_panel_npz_copies_accepted_npz_input(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    harness = qc.require_harness()
+    records = [
+        {"business_date": "2026-06-24", "series_id": "ICSA", "value": 1.5},
+        {"business_date": "2026-06-25", "series_id": "ICSA", "value": 2.0},
+    ]
+    parquet_path = tmp_path / "panel.parquet"
+    source_npz = tmp_path / "source.npz"
+    target_npz = tmp_path / "exported" / "panel.npz"
+    pd.DataFrame(records).to_parquet(parquet_path, index=False)
+    qc.export_numeric_panel_npz(parquet_path, source_npz)
+    expected_hash = harness.logical_records_hash(qc.read_npz_records(source_npz))
+
+    qc.materialize_panel_npz(
+        source_npz,
+        target_npz,
+        expected_logical_hash=expected_hash,
+        label="fixture panel",
+    )
+
+    assert target_npz.read_bytes() == source_npz.read_bytes()
+    assert harness.logical_records_hash(qc.read_npz_records(target_npz)) == expected_hash
+
+
+def test_qc_project_copy_materialize_panel_npz_copies_accepted_npz_input(tmp_path: Path) -> None:
+    pd = pytest.importorskip("pandas")
+    project_qc = _load_qc_project_copy()
+    harness = project_qc.require_harness()
+    records = [
+        {"business_date": "2026-06-24", "series_id": "ICSA", "value": 1.5},
+        {"business_date": "2026-06-25", "series_id": "ICSA", "value": 2.0},
+    ]
+    parquet_path = tmp_path / "panel.parquet"
+    source_npz = tmp_path / "source.npz"
+    target_npz = tmp_path / "exported" / "panel.npz"
+    pd.DataFrame(records).to_parquet(parquet_path, index=False)
+    project_qc.export_numeric_panel_npz(parquet_path, source_npz)
+    expected_hash = harness.logical_records_hash(project_qc.read_npz_records(source_npz))
+
+    project_qc.materialize_panel_npz(
+        source_npz,
+        target_npz,
+        expected_logical_hash=expected_hash,
+        label="fixture panel",
+    )
+
+    assert target_npz.read_bytes() == source_npz.read_bytes()
+    assert harness.logical_records_hash(project_qc.read_npz_records(target_npz)) == expected_hash
+
+
 def test_write_csv_gzip_is_byte_stable(tmp_path: Path) -> None:
     rows = [{"b": 2, "a": "x"}, {"b": 3, "a": "y"}]
     first = tmp_path / "first.csv.gz"

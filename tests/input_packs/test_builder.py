@@ -45,6 +45,34 @@ def test_build_cli_creates_verified_open_macro_v03_pack(tmp_path: Path) -> None:
     assert (output / "reports" / "certification_summary.json").is_file()
 
 
+def test_macro_feature_lineage_uses_actual_feature_names(tmp_path: Path) -> None:
+    output = tmp_path / "pack"
+    build_pack(
+        profile="open_macro_v03",
+        as_of="2026-06-26",
+        source_dir=SOURCE_DIR,
+        output=output,
+    )
+
+    lineage = _json(output / "derived_feature_manifest.json")["lineage"]
+    macro_names = {
+        row["feature_name"]
+        for row in lineage
+        if row["feature_file"] == "data/derived/macro_observation_features.json"
+    }
+
+    assert macro_names == {"macro_level", "macro_delta_1obs"}
+
+
+def test_builder_code_sha256_is_line_ending_independent(tmp_path: Path) -> None:
+    lf = tmp_path / "lf.py"
+    crlf = tmp_path / "crlf.py"
+    lf.write_text("VALUE = 1\nprint(VALUE)\n", encoding="utf-8", newline="\n")
+    crlf.write_text("VALUE = 1\r\nprint(VALUE)\r\n", encoding="utf-8", newline="")
+
+    assert build_module.canonical_text_file_sha256(lf) == build_module.canonical_text_file_sha256(crlf)
+
+
 def test_build_is_deterministic_and_path_independent(tmp_path: Path) -> None:
     first = build_pack(
         profile="open_macro_v03",

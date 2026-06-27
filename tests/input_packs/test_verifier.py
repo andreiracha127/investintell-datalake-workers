@@ -323,6 +323,22 @@ def test_verifier_validates_derived_feature_rows_even_when_hashes_match(tmp_path
     assert f"{rel}[0]: unexpected columns: bogus" in result["expected_content_errors"]
 
 
+def test_verifier_recomputes_derived_features_from_canonical_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/derived/fund_nav_return_features.json"
+    rows = json.loads((pack / rel).read_text(encoding="utf-8"))
+    rows[0]["value"] = 0.123456789
+    _write_json(pack / rel, rows)
+    _refresh_data_artifact(pack, "derived_feature_manifest.json", rel)
+    _refresh_manifest(pack)
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert f"{rel}: derived rows do not match canonical source recomputation" in result["expected_content_errors"]
+
+
 def test_verifier_requires_provenance_dataset_for_every_p0_table_even_when_hashes_match(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     provenance = _read_json(pack / "provenance.json")

@@ -618,8 +618,18 @@ def export_bundle(config: A3ParityConfig) -> dict[str, Any]:
 
     l2_panel_path = panels_dir / "macro_l2_union_numeric.npz"
     uncertainty_panel_path = panels_dir / "revision_uncertainty_numeric.npz"
-    export_numeric_panel_npz(Path(result["l2_path"]), l2_panel_path)
-    export_numeric_panel_npz(revision_uncertainty_parquet, uncertainty_panel_path)
+    materialize_panel_npz(
+        Path(result["l2_path"]),
+        l2_panel_path,
+        expected_logical_hash=result["l2_hash"],
+        label="macro L2",
+    )
+    materialize_panel_npz(
+        config.revision_uncertainty_npz or revision_uncertainty_parquet,
+        uncertainty_panel_path,
+        expected_logical_hash=result["uncertainty_hash"],
+        label="revision uncertainty",
+    )
     write_gzip_text(
         Path("src") / "calibration_harness.py",
         code_dir / "calibration_harness.py.gz",
@@ -700,6 +710,28 @@ def export_numeric_panel_npz(source_parquet: Path, target_npz: Path) -> None:
     arrays["_columns"] = np.array(sorted(arrays), dtype=str)
     target_npz.parent.mkdir(parents=True, exist_ok=True)
     write_npz_canonical(target_npz, arrays)
+
+
+def materialize_panel_npz(
+    source_path: Path,
+    target_npz: Path,
+    *,
+    expected_logical_hash: str,
+    label: str,
+) -> None:
+    if source_path.suffix.lower() == ".npz":
+        target_npz.parent.mkdir(parents=True, exist_ok=True)
+        if source_path.resolve() != target_npz.resolve():
+            shutil.copy2(source_path, target_npz)
+    else:
+        export_numeric_panel_npz(source_path, target_npz)
+    harness = require_harness()
+    actual_hash = harness.logical_records_hash(read_npz_records(target_npz))
+    if actual_hash != expected_logical_hash:
+        raise ValueError(
+            f"{label} exported NPZ logical hash mismatch: "
+            f"expected {expected_logical_hash}, actual {actual_hash}"
+        )
 
 
 def write_npz_canonical(path: Path, arrays: dict[str, Any]) -> None:
