@@ -50,15 +50,22 @@ DOCKER_CONTEXT_PATHS = [
 
 
 def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_write_path(path)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def write_text(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    prepare_write_path(path)
     with path.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(text)
+
+
+def prepare_write_path(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for candidate in (path, path.parent, *path.parent.parents):
+        if candidate.exists() and candidate.is_symlink():
+            raise ValueError(f"refusing to write through symlinked output path: {candidate}")
 
 
 def ensure_child(path: Path, root: Path) -> Path:
@@ -183,9 +190,15 @@ def validate_dockerfile_sha256(value: Any, *, engine_commit: str) -> str:
     return digest
 
 
-def validate_input_pack_p0_merge_commit(value: Any, *, input_pack: Path, summary: dict[str, Any]) -> str:
-    commit = normalize_git_commit(value, field_name="input_pack_p0_merge_commit")
-    require_checkoutable_commit(commit, field_name="input_pack_p0_merge_commit")
+def validate_commit_contains_verified_pack(
+    value: Any,
+    *,
+    field_name: str,
+    input_pack: Path,
+    summary: dict[str, Any],
+) -> str:
+    commit = normalize_git_commit(value, field_name=field_name)
+    require_checkoutable_commit(commit, field_name=field_name)
     root = repo_root()
     if not (root / ".git").exists():
         return commit
@@ -202,19 +215,46 @@ def validate_input_pack_p0_merge_commit(value: Any, *, input_pack: Path, summary
         check=False,
     )
     if result.returncode != 0:
-        raise ValueError(f"input_pack_p0_merge_commit does not contain the certified pack manifest: {commit}")
+        raise ValueError(f"{field_name} does not contain the certified pack manifest: {commit}")
     committed_manifest = json.loads(result.stdout)
     if committed_manifest.get("input_pack_sha256") != summary["input_pack_sha256"]:
         raise ValueError(
-            "input_pack_p0_merge_commit does not contain the verified input pack: "
+            f"{field_name} does not contain the verified input pack: "
             f"expected input_pack_sha256 {summary['input_pack_sha256']}, "
             f"got {committed_manifest.get('input_pack_sha256')}"
         )
     if committed_manifest.get("builder_commit") != summary["builder_commit"]:
         raise ValueError(
-            "input_pack_p0_merge_commit builder provenance mismatch: "
+            f"{field_name} builder provenance mismatch: "
             f"expected {summary['builder_commit']}, got {committed_manifest.get('builder_commit')}"
         )
+    return commit
+
+
+def validate_input_pack_p0_merge_commit(value: Any, *, input_pack: Path, summary: dict[str, Any]) -> str:
+    return validate_commit_contains_verified_pack(
+        value,
+        field_name="input_pack_p0_merge_commit",
+        input_pack=input_pack,
+        summary=summary,
+    )
+
+
+def validate_calibration_branch_base_commit(
+    value: Any,
+    *,
+    input_pack_p0_merge_commit: str,
+    input_pack: Path,
+    summary: dict[str, Any],
+) -> str:
+    commit = validate_commit_contains_verified_pack(
+        value,
+        field_name="calibration_branch_base_commit",
+        input_pack=input_pack,
+        summary=summary,
+    )
+    require_ancestor_commit(input_pack_p0_merge_commit, ancestor_of=commit, field_name="calibration_branch_base_commit")
+    require_ancestor_commit(commit, ancestor_of="HEAD", field_name="calibration_branch_base_commit")
     return commit
 
 
@@ -605,6 +645,9 @@ def matrix_evidence_ok(
     matrix_evidence: dict[str, Any] | None,
     current_artifact_hashes: dict[str, str],
     matrix_run_hashes: dict[str, dict[str, str]],
+    *,
+    engine_image_digest: str | None,
+    engine_image_id: str | None,
 ) -> bool:
     if not isinstance(matrix_evidence, dict):
         return False
@@ -629,6 +672,16 @@ def matrix_evidence_ok(
     if matrix_evidence.get("db_access") is not False:
         return False
     if matrix_evidence.get("input_pack_mount") != "read_only":
+        return False
+    if matrix_evidence.get("path_independence") is not True:
+        return False
+    if engine_image_digest:
+        if matrix_evidence.get("docker_image_digest") != engine_image_digest:
+            return False
+    elif engine_image_id:
+        if matrix_evidence.get("docker_image_id") != engine_image_id:
+            return False
+    elif matrix_evidence.get("docker_image_digest") or matrix_evidence.get("docker_image_id"):
         return False
     if matrix_evidence.get("ok") is not True or run_count < len(REQUIRED_MATRIX_LABELS) or mismatch_count != 0:
         return False
@@ -766,6 +819,12 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         input_pack=input_pack,
         summary=summary,
     )
+    calibration_branch_base_commit = validate_calibration_branch_base_commit(
+        args.calibration_branch_base_commit,
+        input_pack_p0_merge_commit=input_pack_p0_merge_commit,
+        input_pack=input_pack,
+        summary=summary,
+    )
     if not args.engine_commit:
         raise ValueError("engine_commit must be provided explicitly")
     engine_commit = normalize_engine_commit(args.engine_commit)
@@ -871,9 +930,16 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     artifact_hashes = hashes_for({**paths, "output_manifest_sha256": output_dir / "output_manifest.json"})
     matrix_evidence = load_json(Path(args.evidence_json)) if args.evidence_json else None
     matrix_run_hashes = run_hashes_from_evidence(matrix_evidence)
-    matrix_ok = matrix_evidence_ok(matrix_evidence, artifact_hashes, matrix_run_hashes)
+    matrix_ok = matrix_evidence_ok(
+        matrix_evidence,
+        artifact_hashes,
+        matrix_run_hashes,
+        engine_image_digest=args.engine_image_digest,
+        engine_image_id=args.engine_image_id,
+    )
     if not matrix_ok:
         matrix_run_hashes = {}
+    path_independence = bool(matrix_ok and isinstance(matrix_evidence, dict) and matrix_evidence.get("path_independence") is True)
     run_matrix = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -904,7 +970,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "jobs_4_hashes": hashes_for_labels(matrix_run_hashes, "jobs4"),
         "repeat_run_hashes": matrix_run_hashes,
         "current_run_hashes": artifact_hashes,
-        "path_independence": True,
+        "path_independence": path_independence,
         "network": args.network,
         "db_access": args.db_access,
         "timestamp_execution_id_exclusion_policy": "no timestamps or execution ids are included in semantic artifacts",
@@ -925,7 +991,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "source_snapshot_sha256": summary["source_snapshot_sha256"],
         "contract_bundle_sha256": summary["contract_bundle_sha256"],
         "input_pack_p0_merge_commit": input_pack_p0_merge_commit,
-        "calibration_branch_base_commit": args.calibration_branch_base_commit,
+        "calibration_branch_base_commit": calibration_branch_base_commit,
         "engine_commit": engine_commit,
         "builder_commit": builder_commit,
         "builder_code_sha256": summary["builder_code_sha256"],

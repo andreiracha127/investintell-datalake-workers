@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -36,6 +37,24 @@ def _docker_context_sha256(engine_commit: str) -> str:
         return cc.committed_docker_context_sha256(engine_commit)
     except (OSError, subprocess.CalledProcessError, ValueError):
         return "2" * 64
+
+
+def _git_identity_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("GIT_AUTHOR_NAME", "Investintell CI")
+    env.setdefault("GIT_AUTHOR_EMAIL", "ci@investintell.local")
+    env.setdefault("GIT_COMMITTER_NAME", "Investintell CI")
+    env.setdefault("GIT_COMMITTER_EMAIL", "ci@investintell.local")
+    return env
+
+
+def _commit_tree(treeish: str, message: str) -> str:
+    return subprocess.check_output(
+        ["git", "commit-tree", treeish, "-m", message],
+        cwd=ROOT,
+        env=_git_identity_env(),
+        text=True,
+    ).strip()
 
 
 def _summary() -> dict[str, str]:
@@ -109,6 +128,8 @@ def _write_evidence(
     *,
     labels: list[str] | None = None,
     include_isolation: bool = True,
+    docker_image_id: str | None = "sha256:" + "1" * 64,
+    path_independence: bool | None = True,
 ) -> Path:
     labels = labels or sorted(cc.REQUIRED_MATRIX_LABELS)
     payload = {
@@ -125,6 +146,10 @@ def _write_evidence(
     }
     if include_isolation:
         payload.update({"network": "none", "db_access": False, "input_pack_mount": "read_only"})
+    if docker_image_id is not None:
+        payload["docker_image_id"] = docker_image_id
+    if path_independence is not None:
+        payload["path_independence"] = path_independence
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
@@ -267,6 +292,44 @@ def test_run_matrix_rejects_missing_isolation_metadata(tmp_path: Path) -> None:
     assert reproducibility["evidence_ok"] is False
 
 
+def test_run_matrix_rejects_different_image_id(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "wrong_image_evidence.json",
+        probe_matrix["current_run_hashes"],
+        docker_image_id="sha256:" + "9" * 64,
+    )
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_requires_path_independence_evidence(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "path_dependent_evidence.json",
+        probe_matrix["current_run_hashes"],
+        path_independence=False,
+    )
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert reproducibility["path_independence"] is False
+    assert reproducibility["evidence_ok"] is False
+
+
 def test_invariant_ok_tracks_failed_checks(tmp_path: Path) -> None:
     report = cc.build_invariant_report(
         output_dir=tmp_path,
@@ -312,6 +375,21 @@ def test_run_calibration_rejects_output_inside_input_pack() -> None:
         cc.run_calibration(args)
 
 
+def test_run_calibration_rejects_symlinked_output(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    outside.write_text("outside\n", encoding="utf-8")
+    output_dir = tmp_path / "out"
+    output_dir.mkdir()
+    try:
+        os.symlink(outside, output_dir / "selected_parameters.json")
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="symlinked output path"):
+        cc.run_calibration(_args(output_dir))
+    assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
 def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> None:
     args = _args(tmp_path)
     args.builder_commit = "9" * 40
@@ -323,10 +401,22 @@ def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> Non
 def test_input_pack_merge_commit_must_match_verified_pack(tmp_path: Path) -> None:
     if not (ROOT / ".git").exists():
         pytest.skip("git checkout metadata unavailable")
+    empty_tree = subprocess.check_output(["git", "mktree"], cwd=ROOT, input="", text=True).strip()
+    empty_commit = _commit_tree(empty_tree, "empty stale input pack commit")
     args = _args(tmp_path)
-    args.input_pack_p0_merge_commit = _summary()["builder_commit"]
+    args.input_pack_p0_merge_commit = empty_commit
 
-    with pytest.raises(ValueError, match="does not contain the verified input pack"):
+    with pytest.raises(ValueError, match="does not contain the certified pack manifest"):
+        cc.run_calibration(args)
+
+
+def test_calibration_branch_base_commit_must_be_checkoutable(tmp_path: Path) -> None:
+    if not (ROOT / ".git").exists():
+        pytest.skip("git checkout metadata unavailable")
+    args = _args(tmp_path)
+    args.calibration_branch_base_commit = "9" * 40
+
+    with pytest.raises(ValueError, match="calibration_branch_base_commit is not a checkoutable commit"):
         cc.run_calibration(args)
 
 
@@ -359,11 +449,7 @@ def test_engine_commit_must_exist_when_git_checkout_available(tmp_path: Path) ->
 def test_engine_commit_must_be_reachable_from_current_head(tmp_path: Path) -> None:
     if not (ROOT / ".git").exists():
         pytest.skip("git checkout metadata unavailable")
-    commit = subprocess.check_output(
-        ["git", "commit-tree", "HEAD^{tree}", "-m", "unreachable calibration engine"],
-        cwd=ROOT,
-        text=True,
-    ).strip()
+    commit = _commit_tree("HEAD^{tree}", "unreachable calibration engine")
     args = _args(tmp_path)
     args.engine_commit = commit
     args.docker_context_sha256 = _docker_context_sha256(commit)
