@@ -41,6 +41,8 @@
   "required": [
     "schema_version",
     "shadow_id",
+    "request_id",
+    "correlation_id",
     "execution_id",
     "run_fingerprint",
     "calibration_id",
@@ -50,8 +52,6 @@
     "finished_at",
     "status",
     "retryable",
-    "materiality_summary",
-    "divergence_summary",
     "runtime_activation",
     "official_result"
   ],
@@ -69,8 +69,48 @@
         "required": [
           "output_manifest_sha256",
           "invariant_report_sha256",
-          "baseline_comparison_sha256"
+          "baseline_comparison_sha256",
+          "materiality_summary",
+          "divergence_summary"
         ],
+        "properties": {
+          "materiality_summary": {
+            "type": "object",
+            "properties": {
+              "material_divergence": {
+                "const": false
+              },
+              "max_relative_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2.0
+              }
+            }
+          },
+          "divergence_summary": {
+            "type": "object",
+            "properties": {
+              "missing_outputs": {
+                "const": 0
+              },
+              "unexpected_outputs": {
+                "const": 0
+              },
+              "mismatch_count": {
+                "const": 0
+              },
+              "nan_or_inf_count": {
+                "const": 0
+              },
+              "constraint_violations": {
+                "const": 0
+              },
+              "invariant_failures": {
+                "const": 0
+              }
+            }
+          }
+        },
         "not": {
           "required": ["failure_class"]
         }
@@ -96,6 +136,14 @@
     },
     "shadow_id": {
       "const": "open_macro_v03_shadow_001"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 12
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 12
     },
     "execution_id": {
       "type": "string",

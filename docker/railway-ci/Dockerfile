@@ -23,8 +23,11 @@ COPY src /app/src
 COPY tests /app/tests
 COPY fixtures/input_packs /app/fixtures/input_packs
 COPY artifacts/calibration/open_macro_v03_calibration_001 /app/artifacts/calibration/open_macro_v03_calibration_001
+COPY artifacts/shadow/open_macro_v03_shadow_001 /app/artifacts/shadow/open_macro_v03_shadow_001
 COPY docs/calibration /app/docs/calibration
+COPY docs/shadow /app/docs/shadow
 COPY qc-a3-parity /app/qc-a3-parity
+COPY docker/railway-ci /app/docker/railway-ci
 COPY docker/quant-engine /app/docker/quant-engine
 COPY qc_a3_core.py /app/qc_a3_core.py
 
@@ -55,7 +58,8 @@ PY
 RUN python scripts/contract_bundle.py verify
 RUN python -m pytest tests/input_packs tests/quant_engine tests/quant_core \
     tests/test_calibration_candidate.py tests/test_qc_a3_core.py \
-    tests/test_catalog_hash_path_independence.py tests/test_repeatability_matrix.py -q
+    tests/test_catalog_hash_path_independence.py tests/test_repeatability_matrix.py \
+    tests/test_shadow_readiness.py -q
 RUN python -m compileall src/calibration_candidate.py src/input_packs services/quant_engine packages/investintell_quant_core
 
 RUN python - <<'PY'

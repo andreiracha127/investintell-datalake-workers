@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SHADOW_ROOT = ROOT / "artifacts" / "shadow" / "open_macro_v03_shadow_001"
 DOC = ROOT / "docs" / "shadow" / "open_macro_v03_shadow_readiness_001.md"
+RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
 
 
 def _json(name: str) -> dict:
@@ -85,6 +86,8 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     result = {
         "schema_version": 1,
         "shadow_id": "open_macro_v03_shadow_001",
+        "request_id": "req-open-macro-v03-shadow-001",
+        "correlation_id": "corr-open-macro-v03-shadow-001",
         "execution_id": "exec-open-macro-v03-shadow-001",
         "run_fingerprint": "a" * 64,
         "calibration_id": "open_macro_v03_calibration_001",
@@ -116,6 +119,12 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
 
     jsonschema.validate(result, schema)
 
+    for field in ("request_id", "correlation_id"):
+        missing_identifier = dict(result)
+        del missing_identifier[field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(missing_identifier, schema)
+
     success_with_failure_class = dict(result)
     success_with_failure_class["failure_class"] = "executor_failure"
     with pytest.raises(jsonschema.ValidationError):
@@ -134,6 +143,8 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "output_manifest_sha256",
             "invariant_report_sha256",
             "baseline_comparison_sha256",
+            "materiality_summary",
+            "divergence_summary",
         }
     }
     failed_without_artifacts["status"] = "failed"
@@ -145,6 +156,16 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     del failed_without_failure_class["failure_class"]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(failed_without_failure_class, schema)
+
+    succeeded_with_missing_output = deepcopy(result)
+    succeeded_with_missing_output["divergence_summary"]["missing_outputs"] = 1
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_with_missing_output, schema)
+
+    succeeded_with_hard_relative_delta = deepcopy(result)
+    succeeded_with_hard_relative_delta["materiality_summary"]["max_relative_delta_pct"] = 2.1
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_with_hard_relative_delta, schema)
 
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
@@ -220,3 +241,14 @@ def test_shadow_readiness_doc_declares_no_runtime_or_a5_activation() -> None:
     assert "runtime_activation: `false`" in text
     assert "No official DB writes" in text
     assert "No allocator publish path" in text
+
+
+def test_railway_ci_runs_shadow_readiness_gate() -> None:
+    text = RAILWAY_CI_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert (
+        "COPY artifacts/shadow/open_macro_v03_shadow_001 "
+        "/app/artifacts/shadow/open_macro_v03_shadow_001"
+    ) in text
+    assert "COPY docs/shadow /app/docs/shadow" in text
+    assert "tests/test_shadow_readiness.py" in text
