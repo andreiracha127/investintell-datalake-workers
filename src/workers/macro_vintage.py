@@ -151,9 +151,10 @@ def upsert_vintages(conn, records: list[tuple]) -> int:
     return len(records)
 
 
-def run(dsn: str, *, limit: int | None = None) -> dict:
+def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
     """Backfill + refresh all basket vintages. Idempotent (DO NOTHING). Re-runs
-    only add newly-published vintages. ``limit`` caps series count (smoke runs)."""
+    only add newly-published vintages. ``calc_date`` is accepted for the shared
+    runner contract and ignored; ``limit`` caps series count (smoke runs)."""
     api_key = os.environ["FRED_API_KEY"]
     specs = list(SEED_SOURCES)[: limit or len(SEED_SOURCES)]
     conn = connect(dsn)

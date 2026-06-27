@@ -212,6 +212,20 @@ def normalize_number(value: Any) -> float | int | None:
     return as_float
 
 
+def normalize_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "t", "1", "yes", "y"}:
+            return True
+        if normalized in {"false", "f", "0", "no", "n"}:
+            return False
+    raise ValueError(f"boolean value is invalid: {value!r}")
+
+
 def normalize_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): normalize_value(value[key]) for key in sorted(value)}
@@ -229,7 +243,7 @@ def normalize_row(row: Mapping[str, Any], spec: TableSpec) -> dict[str, Any]:
         elif column in spec.numeric_columns:
             normalized[column] = normalize_number(value)
         elif column in spec.boolean_columns and value is not None:
-            normalized[column] = bool(value)
+            normalized[column] = normalize_boolean(value)
         elif value is None:
             normalized[column] = None
         elif isinstance(value, (dict, list)):
@@ -260,14 +274,21 @@ def load_source_table(source_dir: Path, spec: TableSpec, as_of: dt.date) -> tupl
 
     raw_rows: list[dict[str, Any]] = []
     canonical_rows: list[dict[str, Any]] = []
+    seen_keys: set[tuple[Any, ...]] = set()
     for raw in payload:
         require_key_columns(raw, spec, path)
         if spec.as_of_column:
             observed = dt.date.fromisoformat(normalize_date(raw.get(spec.as_of_column)))
             if observed > as_of:
                 continue
+        canonical = normalize_row(raw, spec)
+        key = row_sort_key(canonical, spec)
+        if key in seen_keys:
+            joined = ", ".join(f"{column}={value!r}" for column, value in zip(spec.key_columns, key))
+            raise ValueError(f"{path.name}: {spec.name} duplicate natural key after as_of filter: {joined}")
+        seen_keys.add(key)
         raw_rows.append({str(key): normalize_value(raw[key]) for key in sorted(raw)})
-        canonical_rows.append(normalize_row(raw, spec))
+        canonical_rows.append(canonical)
     return (
         sorted(raw_rows, key=lambda row: row_sort_key(row, spec)),
         sorted(canonical_rows, key=lambda row: row_sort_key(row, spec)),

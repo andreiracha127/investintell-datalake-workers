@@ -108,6 +108,70 @@ def test_builder_rejects_missing_required_key_columns(tmp_path: Path) -> None:
         )
 
 
+def test_builder_rejects_duplicate_natural_keys_after_as_of_filter(tmp_path: Path) -> None:
+    source_dir = tmp_path / "sources"
+    shutil.copytree(SOURCE_DIR, source_dir)
+    nav_path = source_dir / "nav_timeseries.json"
+    rows = _json(nav_path)
+    duplicate = dict(rows[0])
+    duplicate["nav"] = 999
+    rows.insert(1, duplicate)
+    nav_path.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="duplicate natural key after as_of filter"):
+        build_pack(
+            profile="open_macro_v03",
+            as_of="2026-06-26",
+            source_dir=source_dir,
+            output=tmp_path / "pack",
+        )
+
+
+def test_builder_parses_boolean_source_literals_explicitly(tmp_path: Path) -> None:
+    source_dir = tmp_path / "sources"
+    shutil.copytree(SOURCE_DIR, source_dir)
+    universe_path = source_dir / "instruments_universe.json"
+    universe_rows = _json(universe_path)
+    universe_rows[0]["is_active"] = "false"
+    universe_path.write_text(
+        json.dumps(universe_rows, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    macro_path = source_dir / "macro_data.json"
+    macro_rows = _json(macro_path)
+    macro_rows[0]["is_derived"] = "0"
+    macro_path.write_text(json.dumps(macro_rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    build_pack(
+        profile="open_macro_v03",
+        as_of="2026-06-26",
+        source_dir=source_dir,
+        output=tmp_path / "pack",
+    )
+
+    canonical_universe = _json(tmp_path / "pack" / "data" / "canonical" / "instruments_universe.json")
+    canonical_macro = _json(tmp_path / "pack" / "data" / "canonical" / "macro_data.json")
+    assert canonical_universe[0]["is_active"] is False
+    assert canonical_macro[0]["is_derived"] is False
+
+
+def test_builder_rejects_invalid_boolean_source_literal(tmp_path: Path) -> None:
+    source_dir = tmp_path / "sources"
+    shutil.copytree(SOURCE_DIR, source_dir)
+    universe_path = source_dir / "instruments_universe.json"
+    rows = _json(universe_path)
+    rows[0]["is_active"] = "inactive"
+    universe_path.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="boolean value is invalid"):
+        build_pack(
+            profile="open_macro_v03",
+            as_of="2026-06-26",
+            source_dir=source_dir,
+            output=tmp_path / "pack",
+        )
+
+
 def test_force_rejects_repo_root_and_source_tree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fake_repo = tmp_path / "repo"
     source_tree = fake_repo / "src"

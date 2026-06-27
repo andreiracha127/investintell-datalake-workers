@@ -124,7 +124,7 @@ def test_run_returns_lock_busy_sentinel(monkeypatch) -> None:
     monkeypatch.setattr(mv, "connect", lambda dsn, **k: _FakeConn({}))
     monkeypatch.setattr(mv, "advisory_lock", _busy)
     monkeypatch.setattr(mv, "ensure_schema", lambda conn: None)
-    out = mv.run("postg://x")
+    out = mv.run("postg://x", calc_date="2026-06-26")
     assert out["status"] == "lock_busy"
 
 
