@@ -49,6 +49,14 @@ def ensure_child(path: Path, root: Path) -> Path:
     return resolved
 
 
+def is_child_or_self(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
+
+
 def git_commit(default: str | None = None) -> str:
     try:
         return subprocess.check_output(
@@ -444,8 +452,14 @@ def output_manifest(output_dir: Path, generated_files: list[str], exclude: set[s
     }
 
 
-def matrix_evidence_ok(matrix_evidence: dict[str, Any] | None) -> bool:
+def matrix_evidence_ok(
+    matrix_evidence: dict[str, Any] | None,
+    current_artifact_hashes: dict[str, str],
+    matrix_run_hashes: dict[str, dict[str, str]],
+) -> bool:
     if not isinstance(matrix_evidence, dict):
+        return False
+    if matrix_evidence.get("calibration_id") != CALIBRATION_ID:
         return False
     try:
         run_count = int(matrix_evidence.get("run_count", 0))
@@ -455,13 +469,35 @@ def matrix_evidence_ok(matrix_evidence: dict[str, Any] | None) -> bool:
     labels = matrix_evidence.get("labels")
     if not isinstance(labels, list) or len(labels) < 4:
         return False
+    if len({label for label in labels if isinstance(label, str)}) != len(labels):
+        return False
+    if set(labels) != set(matrix_run_hashes):
+        return False
     if matrix_evidence.get("network") not in (None, "none"):
         return False
     if matrix_evidence.get("db_access") not in (None, False):
         return False
     if matrix_evidence.get("input_pack_mount") not in (None, "read_only"):
         return False
-    return matrix_evidence.get("ok") is True and run_count >= 4 and mismatch_count == 0
+    if matrix_evidence.get("ok") is not True or run_count < 4 or mismatch_count != 0:
+        return False
+    comparisons = matrix_evidence.get("comparisons")
+    base_label = matrix_evidence.get("base_label")
+    if not isinstance(comparisons, dict) or not isinstance(base_label, str):
+        return False
+    for label in labels:
+        comparison = comparisons.get(f"{base_label}_vs_{label}")
+        if not isinstance(comparison, dict):
+            return False
+        if comparison.get("ok") is not True or comparison.get("mismatched") not in ([], None):
+            return False
+        hashes = matrix_run_hashes.get(label)
+        if hashes is None:
+            return False
+        for key, value in current_artifact_hashes.items():
+            if hashes.get(key) != value:
+                return False
+    return True
 
 
 def run_hashes_from_evidence(matrix_evidence: dict[str, Any] | None) -> dict[str, dict[str, str]]:
@@ -477,7 +513,12 @@ def run_hashes_from_evidence(matrix_evidence: dict[str, Any] | None) -> dict[str
         if not isinstance(label, str):
             continue
         comparison = comparisons.get(f"{base_label}_vs_{label}")
-        if isinstance(comparison, dict) and isinstance(comparison.get("hashes"), dict):
+        if (
+            isinstance(comparison, dict)
+            and comparison.get("ok") is True
+            and comparison.get("mismatched") in ([], None)
+            and isinstance(comparison.get("hashes"), dict)
+        ):
             run_hashes[label] = {str(key): str(value) for key, value in comparison["hashes"].items()}
     return run_hashes
 
@@ -551,6 +592,8 @@ def render_report(
 def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     input_pack = Path(args.input_pack).resolve()
     output_dir = Path(args.output_dir).resolve()
+    if is_child_or_self(output_dir, input_pack):
+        raise ValueError(f"output_dir must not be inside the certified input pack: {output_dir}")
     if args.db_access:
         raise ValueError("db_access must remain false")
     if args.network != "none":
@@ -654,11 +697,23 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         input_pack_mount=args.input_pack_mount,
     )
     write_json(output_dir / "invariant_report.json", invariant)
+    write_text(
+        output_dir / "calibration_report.md",
+        render_report(summary=summary, selected=selected, rejected=rejected, invariant=invariant, baseline=baseline),
+    )
 
-    artifact_hashes = hashes_for(paths)
+    output_manifest_files = [
+        rel for rel in generated_files if rel not in {"run_matrix.json", "reproducibility_report.json"}
+    ]
+    out_manifest = output_manifest(output_dir, output_manifest_files)
+    write_json(output_dir / "output_manifest.json", out_manifest)
+
+    artifact_hashes = hashes_for({**paths, "output_manifest_sha256": output_dir / "output_manifest.json"})
     matrix_evidence = load_json(Path(args.evidence_json)) if args.evidence_json else None
     matrix_run_hashes = run_hashes_from_evidence(matrix_evidence)
-    matrix_ok = matrix_evidence_ok(matrix_evidence)
+    matrix_ok = matrix_evidence_ok(matrix_evidence, artifact_hashes, matrix_run_hashes)
+    if not matrix_ok:
+        matrix_run_hashes = {}
     run_matrix = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -699,16 +754,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "comparison_evidence": matrix_evidence,
     }
     write_json(output_dir / "reproducibility_report.json", reproducibility)
-    write_text(
-        output_dir / "calibration_report.md",
-        render_report(summary=summary, selected=selected, rejected=rejected, invariant=invariant, baseline=baseline),
-    )
 
-    output_manifest_files = [
-        rel for rel in generated_files if rel not in {"run_matrix.json", "reproducibility_report.json"}
-    ]
-    out_manifest = output_manifest(output_dir, output_manifest_files)
-    write_json(output_dir / "output_manifest.json", out_manifest)
     manifest = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -730,6 +776,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "output_manifest_sha256": file_sha256(output_dir / "output_manifest.json"),
+        "run_matrix_sha256": file_sha256(output_dir / "run_matrix.json"),
+        "reproducibility_report_sha256": file_sha256(output_dir / "reproducibility_report.json"),
         "selected_parameters_sha256": file_sha256(output_dir / "selected_parameters.json"),
         "rejected_candidates_sha256": file_sha256(output_dir / "rejected_candidates.json"),
         "metrics_manifest_sha256": file_sha256(output_dir / "metrics_manifest.json"),

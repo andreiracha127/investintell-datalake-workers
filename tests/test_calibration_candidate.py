@@ -54,16 +54,8 @@ def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) 
     )
 
 
-def _write_evidence(path: Path) -> Path:
+def _write_evidence(path: Path, hashes: dict[str, str]) -> Path:
     labels = ["host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"]
-    hashes = {
-        "selected_parameters_sha256": "a" * 64,
-        "rejected_candidates_sha256": "b" * 64,
-        "metrics_manifest_sha256": "c" * 64,
-        "invariant_report_sha256": "d" * 64,
-        "baseline_comparison_sha256": "e" * 64,
-        "output_manifest_sha256": "f" * 64,
-    }
     payload = {
         "schema_version": 1,
         "calibration_id": cc.CALIBRATION_ID,
@@ -133,17 +125,43 @@ def test_run_matrix_requires_external_evidence(tmp_path: Path) -> None:
 
 
 def test_run_matrix_accepts_independent_evidence(tmp_path: Path) -> None:
-    evidence = _write_evidence(tmp_path / "matrix_evidence.json")
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(tmp_path / "matrix_evidence.json", probe_matrix["current_run_hashes"])
 
     cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
 
     run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
     reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    manifest = json.loads((tmp_path / "out" / "calibration_manifest.json").read_text(encoding="utf-8"))
     assert run_matrix["ok"] is True
     assert set(run_matrix["hashes"]) == {"host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"}
     assert set(reproducibility["jobs_1_hashes"]) == {"host_jobs1_r0", "container_jobs1_r0"}
     assert set(reproducibility["jobs_4_hashes"]) == {"host_jobs4_r0", "container_jobs4_r0"}
     assert reproducibility["evidence_ok"] is True
+    assert manifest["run_matrix_sha256"] == file_sha256(tmp_path / "out" / "run_matrix.json")
+    assert manifest["reproducibility_report_sha256"] == file_sha256(tmp_path / "out" / "reproducibility_report.json")
+
+
+def test_run_matrix_rejects_stale_evidence_hashes(tmp_path: Path) -> None:
+    stale_hashes = {
+        "selected_parameters_sha256": "a" * 64,
+        "rejected_candidates_sha256": "b" * 64,
+        "metrics_manifest_sha256": "c" * 64,
+        "invariant_report_sha256": "d" * 64,
+        "baseline_comparison_sha256": "e" * 64,
+        "output_manifest_sha256": "f" * 64,
+    }
+    evidence = _write_evidence(tmp_path / "stale_evidence.json", stale_hashes)
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
 
 
 def test_invariant_ok_tracks_failed_checks(tmp_path: Path) -> None:
@@ -178,6 +196,16 @@ def test_run_calibration_enforces_runtime_guards_for_direct_calls(tmp_path: Path
     args = _args(tmp_path)
     args.input_pack_mount = "read_write"
     with pytest.raises(ValueError, match="input pack mount must be read_only"):
+        cc.run_calibration(args)
+
+
+def test_run_calibration_rejects_output_inside_input_pack() -> None:
+    args = _args(GOLDEN_PACK)
+    with pytest.raises(ValueError, match="output_dir must not be inside the certified input pack"):
+        cc.run_calibration(args)
+
+    args = _args(GOLDEN_PACK / "calibration-output")
+    with pytest.raises(ValueError, match="output_dir must not be inside the certified input pack"):
         cc.run_calibration(args)
 
 
