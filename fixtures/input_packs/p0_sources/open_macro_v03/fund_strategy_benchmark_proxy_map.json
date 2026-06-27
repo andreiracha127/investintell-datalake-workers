@@ -1,0 +1,12 @@
+[
+  {
+    "benchmark_ticker": "SPY",
+    "proxy_source": "p0_fixture",
+    "strategy_label": "Equity Blend"
+  },
+  {
+    "benchmark_ticker": "AGG",
+    "proxy_source": "p0_fixture",
+    "strategy_label": "Bond Core"
+  }
+]

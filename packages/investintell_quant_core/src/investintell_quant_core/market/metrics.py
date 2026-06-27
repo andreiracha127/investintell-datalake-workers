@@ -1,0 +1,2 @@
+"""Market diagnostic metrics namespace."""
+

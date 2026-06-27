@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "description": "macro_v03_revision_robust one-factor screen. Reuses current L2 union and fixed A32 selected candidate; no new series and no A3 freeze.",
+  "configs": [
+    {
+      "name": "V03-G0-CONTROL",
+      "round": "V03-G0",
+      "description": "Current provisional A31 control: G2-CREDIT6040-15-SURVEY05 with A32 fixed outside this catalog.",
+      "aggregation_method": "huberized_weighted_mean",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    },
+    {
+      "name": "V03-G1-FAMILY-WEIGHTED-MEDIAN",
+      "round": "V03-G1",
+      "description": "One-factor change: family aggregation uses weighted median.",
+      "aggregation_method": "huberized_weighted_mean",
+      "axis_aggregation_method": "weighted_median",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    },
+    {
+      "name": "V03-G1-REVSOFT-P50",
+      "round": "V03-G1",
+      "description": "One-factor change: PIT revision soft threshold using P50 absolute revision.",
+      "revision_soft_threshold_quantile": "p50",
+      "aggregation_method": "huberized_weighted_mean",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    },
+    {
+      "name": "V03-G1-REVSOFT-P75",
+      "round": "V03-G1",
+      "description": "One-factor change: PIT revision soft threshold using P75 absolute revision.",
+      "revision_soft_threshold_quantile": "p75",
+      "aggregation_method": "huberized_weighted_mean",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    },
+    {
+      "name": "V03-G1-FAMILY-CONSENSUS-60",
+      "round": "V03-G1",
+      "description": "One-factor change: axis is neutral unless 60pct of active family weight agrees on sign.",
+      "family_consensus_min": 0.60,
+      "aggregation_method": "huberized_weighted_mean",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    },
+    {
+      "name": "V03-G1-FAMILY-CONSENSUS-67",
+      "round": "V03-G1",
+      "description": "One-factor change: axis is neutral unless 67pct of active family weight agrees on sign.",
+      "family_consensus_min": 0.67,
+      "aggregation_method": "huberized_weighted_mean",
+      "transformation_weights": {
+        "quantity_index": {"acceleration_3m": 0.30, "acceleration_6m": 0.40, "change_12m": 0.30},
+        "price_index": {"acceleration_3m": 0.35, "acceleration_6m": 0.40, "change_12m": 0.25}
+      },
+      "family_weights": {
+        "growth": {"real_activity": 0.60, "labor": 0.20, "credit_survey": 0.15, "survey_diffusion": 0.05},
+        "inflation": {"consumer_prices": 0.4117647059, "producer_prices": 0.2352941176, "wages": 0.2352941176, "expectations": 0.1176470588}
+      },
+      "series_weights": {
+        "ACOGNO": 1.0, "INDPRO": 1.0, "PCEC96": 1.0, "PAYEMS": 1.0,
+        "CPILFESL": 1.0, "PPIFIS": 1.0, "AHETPI": 1.0, "MICH": 1.0,
+        "DRTSCILM": 0.6, "DRSDCILM": 0.4,
+        "GACDFSA066MSFRBPHI": 0.25, "NOCDFSA066MSFRBPHI": 0.25,
+        "GACDISA066MSFRBNY": 0.25, "NOCDISA066MSFRBNY": 0.25
+      },
+      "series_transform_overrides": {
+        "DRTSCILM": "quarterly_survey_level_v1",
+        "DRSDCILM": "quarterly_survey_level_v1",
+        "GACDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "NOCDFSA066MSFRBPHI": "diffusion_zero_centered",
+        "GACDISA066MSFRBNY": "diffusion_zero_centered",
+        "NOCDISA066MSFRBNY": "diffusion_zero_centered"
+      }
+    }
+  ]
+}

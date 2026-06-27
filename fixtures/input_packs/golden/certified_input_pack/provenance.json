@@ -1,0 +1,68 @@
+{
+  "datasets": [
+    {
+      "dataset_name": "nav_timeseries",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "nav_timeseries_20260626"
+    },
+    {
+      "dataset_name": "eod_prices",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "eod_prices_20260626"
+    },
+    {
+      "dataset_name": "macro_data",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "macro_data_20260626"
+    },
+    {
+      "dataset_name": "instruments_universe",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "instruments_universe_20260626"
+    },
+    {
+      "dataset_name": "instrument_identity",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "instrument_identity_20260626"
+    },
+    {
+      "dataset_name": "fund_strategy_benchmark_proxy_map",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "fund_strategy_benchmark_proxy_map_20260626"
+    },
+    {
+      "dataset_name": "strategy_reclassification_stage",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "strategy_reclassification_stage_20260626"
+    },
+    {
+      "dataset_name": "sec_nport_holdings",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "sec_nport_holdings_20260626"
+    },
+    {
+      "dataset_name": "sec_nport_fund_monthly_flows",
+      "dataset_namespace": "lake://certified-input-packs/open_macro_v03/p0",
+      "snapshot_id": "sec_nport_fund_monthly_flows_20260626"
+    }
+  ],
+  "jobs": [
+    {
+      "job_name": "certified-input-pack-builder-p0",
+      "job_namespace": "investintell-datalake-workers"
+    }
+  ],
+  "runs": [
+    {
+      "job_name": "certified-input-pack-builder-p0",
+      "run_id": "open_macro_v03_certified_input_pack_001_20260626"
+    }
+  ],
+  "schema_version": "v1",
+  "sources": [
+    {
+      "source_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
+      "source_repo": "investintell-datalake-workers"
+    }
+  ]
+}

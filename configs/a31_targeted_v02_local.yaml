@@ -1,0 +1,140 @@
+schema_version: 1
+description: A3.1 local search around Round C temporal-stable Pareto. A32 remains A32-REF for all entries.
+configs:
+  - name: A31-CLOCAL-TEMPORAL-STABLE-HUBER100
+    round: C-local
+    description: Temporal stable with tighter Huber 1.00.
+    robust_clip: 1.00
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-HUBER125
+    round: C-local
+    description: Temporal stable with Huber 1.25.
+    robust_clip: 1.25
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-WAGES025
+    round: C-local
+    description: Temporal stable plus 2.5pp away from wages.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.025
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-WAGES050
+    round: C-local
+    description: Temporal stable plus 5pp away from wages.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, expectations, producer_prices]
+      delta: 0.05
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-PCEC025
+    round: C-local
+    description: Temporal stable plus 2.5pp from PCEC96 to ACOGNO/INDPRO.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+    series_weight_shift:
+      source: PCEC96
+      recipients: [ACOGNO, INDPRO]
+      delta: 0.025
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-PCEC050
+    round: C-local
+    description: Temporal stable plus 5pp from PCEC96 to ACOGNO/INDPRO.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+    series_weight_shift:
+      source: PCEC96
+      recipients: [ACOGNO, INDPRO]
+      delta: 0.05
+
+  - name: A31-CLOCAL-TEMPORAL-STABLE-EMA-HL2
+    round: C-local
+    description: Temporal stable plus EMA by release, half-life 2 releases.
+    release_smoothing: ema_half_life_2
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25
+
+  - name: A31-CLOCAL-QTY-STABLE-PRICE-BALANCED
+    round: C-local
+    description: Quantity stable with price balanced.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.30
+        acceleration_6m: 0.40
+        change_12m: 0.30
+      price_index:
+        acceleration_3m: 0.45
+        acceleration_6m: 0.35
+        change_12m: 0.20
+
+  - name: A31-CLOCAL-QTY-BALANCED-PRICE-STABLE
+    round: C-local
+    description: Quantity balanced with price stable.
+    transformation_weights:
+      quantity_index:
+        acceleration_3m: 0.40
+        acceleration_6m: 0.35
+        change_12m: 0.25
+      price_index:
+        acceleration_3m: 0.35
+        acceleration_6m: 0.40
+        change_12m: 0.25

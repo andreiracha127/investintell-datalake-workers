@@ -1,0 +1,89 @@
+schema_version: 1
+description: A3.1 local combinations built only from one-factor variants that improved candidate revision stability.
+configs:
+  - name: A31-LOCAL-HUBER125-CONSUMER
+    round: B
+    description: Combine tighter Huber clipping with 5pp away from consumer prices.
+    robust_clip: 1.25
+    family_weight_shift:
+      axis: inflation
+      source: consumer_prices
+      recipients: [producer_prices, wages, expectations]
+      delta: 0.05
+
+  - name: A31-LOCAL-HUBER125-WAGES
+    round: B
+    description: Combine tighter Huber clipping with 5pp away from wages.
+    robust_clip: 1.25
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, producer_prices, expectations]
+      delta: 0.05
+
+  - name: A31-LOCAL-HUBER125-GROWTH-REAL
+    round: B
+    description: Combine tighter Huber clipping with 5pp from real activity to labor.
+    robust_clip: 1.25
+    family_weight_shift:
+      axis: growth
+      source: real_activity
+      recipients: [labor]
+      delta: 0.05
+
+  - name: A31-LOCAL-MEDIAN-CONSUMER
+    round: B
+    description: Combine median aggregation with 5pp away from consumer prices.
+    aggregation_method: median
+    family_weight_shift:
+      axis: inflation
+      source: consumer_prices
+      recipients: [producer_prices, wages, expectations]
+      delta: 0.05
+
+  - name: A31-LOCAL-MEDIAN-WAGES
+    round: B
+    description: Combine median aggregation with 5pp away from wages.
+    aggregation_method: median
+    family_weight_shift:
+      axis: inflation
+      source: wages
+      recipients: [consumer_prices, producer_prices, expectations]
+      delta: 0.05
+
+  - name: A31-LOCAL-MEDIAN-GROWTH-REAL
+    round: B
+    description: Combine median aggregation with 5pp from real activity to labor.
+    aggregation_method: median
+    family_weight_shift:
+      axis: growth
+      source: real_activity
+      recipients: [labor]
+      delta: 0.05
+
+  - name: A31-LOCAL-CONSUMER-WAGES
+    round: B
+    description: Combine the two inflation shifts that improved revision stability individually.
+    family_weight_shifts:
+      - axis: inflation
+        source: consumer_prices
+        recipients: [producer_prices, wages, expectations]
+        delta: 0.05
+      - axis: inflation
+        source: wages
+        recipients: [consumer_prices, producer_prices, expectations]
+        delta: 0.05
+
+  - name: A31-LOCAL-HUBER125-CONSUMER-GROWTH
+    round: B
+    description: Combine tighter Huber clipping, consumer shift, and growth real-to-labor shift.
+    robust_clip: 1.25
+    family_weight_shifts:
+      - axis: inflation
+        source: consumer_prices
+        recipients: [producer_prices, wages, expectations]
+        delta: 0.05
+      - axis: growth
+        source: real_activity
+        recipients: [labor]
+        delta: 0.05

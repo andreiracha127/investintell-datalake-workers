@@ -11,6 +11,15 @@ __pycache__/
 .remember/
 .pytest_cache/
 
+# Lean CLI local state
+lean.json
+data/
+!fixtures/input_packs/golden/certified_input_pack/data/
+!fixtures/input_packs/golden/certified_input_pack/data/**
+qc-a3-parity/results/
+qc-a3-parity/src/calibration_harness.py
+qc-a3-parity/src/db.py
+
 # scratch / one-off validation scripts
 _tmp_*
 _val*

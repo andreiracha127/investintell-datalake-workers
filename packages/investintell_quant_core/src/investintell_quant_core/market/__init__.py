@@ -1,0 +1,2 @@
+"""Market diagnostic calculation namespace."""
+

@@ -1,0 +1,24 @@
+[
+  {
+    "asset_class": "equity",
+    "benchmark_ticker": "SPY",
+    "cik_unpadded": "1000001",
+    "feature_name": "fund_universe_identity_strategy_benchmark",
+    "instrument_id": "FUND_A",
+    "is_active": true,
+    "sec_series_id": "S000000001",
+    "strategy_label": "Equity Blend",
+    "ticker": "FNDAX"
+  },
+  {
+    "asset_class": "fixed_income",
+    "benchmark_ticker": "AGG",
+    "cik_unpadded": "1000002",
+    "feature_name": "fund_universe_identity_strategy_benchmark",
+    "instrument_id": "FUND_B",
+    "is_active": true,
+    "sec_series_id": "S000000002",
+    "strategy_label": "Bond Core",
+    "ticker": "FNDBX"
+  }
+]

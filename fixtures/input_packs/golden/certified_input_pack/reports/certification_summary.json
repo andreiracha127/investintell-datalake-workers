@@ -1,0 +1,29 @@
+{
+  "as_of": "2026-06-26",
+  "engine_network_required": false,
+  "excluded_as_official_inputs": [
+    "fund_risk_metrics",
+    "fund_risk_latest_mv",
+    "funds_list_mv",
+    "factor_model_fits",
+    "fund_factor_exposures",
+    "regime_composite_daily",
+    "credit_regime_daily",
+    "screener_equity_snapshot_mv"
+  ],
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "official_source_tables": [
+    "nav_timeseries",
+    "eod_prices",
+    "macro_data",
+    "instruments_universe",
+    "instrument_identity",
+    "fund_strategy_benchmark_proxy_map",
+    "strategy_reclassification_stage",
+    "sec_nport_holdings",
+    "sec_nport_fund_monthly_flows"
+  ],
+  "profile": "open_macro_v03",
+  "runtime_activation": false,
+  "schema_version": "v1"
+}

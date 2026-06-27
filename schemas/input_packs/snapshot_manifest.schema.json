@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "artifact": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dataset_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "rows": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_name",
+        "path",
+        "sha256",
+        "rows",
+        "columns"
+      ],
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "lineage": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_file": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "feature_name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "columns": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "table": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "table",
+                "columns"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "feature_file",
+          "feature_name",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "as_of": {
+      "format": "date",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "v1",
+      "type": "string"
+    },
+    "snapshot_kind": {
+      "enum": [
+        "raw",
+        "canonical",
+        "derived_feature"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "snapshot_kind",
+    "as_of",
+    "artifacts"
+  ],
+  "title": "CertifiedInputPackSnapshotManifestV1",
+  "type": "object"
+}
+

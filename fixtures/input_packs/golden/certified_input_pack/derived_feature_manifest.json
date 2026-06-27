@@ -1,0 +1,225 @@
+{
+  "artifacts": [
+    {
+      "columns": [
+        "feature_name",
+        "instrument_id",
+        "observation_date",
+        "value"
+      ],
+      "dataset_name": "derived_fund_nav_return_features",
+      "path": "data/derived/fund_nav_return_features.json",
+      "rows": 4,
+      "sha256": "c366a8f51b3f626f94073aeae23dd99606447067307f655d12fe213f3dfde21d"
+    },
+    {
+      "columns": [
+        "feature_name",
+        "observation_date",
+        "ticker",
+        "value"
+      ],
+      "dataset_name": "derived_market_price_return_features",
+      "path": "data/derived/market_price_return_features.json",
+      "rows": 4,
+      "sha256": "2ef55236493defd50e8e16169ddab555da7de51a207655c89bf948114bb8a2ed"
+    },
+    {
+      "columns": [
+        "feature_name",
+        "observation_date",
+        "series_id",
+        "value"
+      ],
+      "dataset_name": "derived_macro_observation_features",
+      "path": "data/derived/macro_observation_features.json",
+      "rows": 15,
+      "sha256": "74ad786cc2728e31825c4a200b8b0a0141d8379738fecfd24915af03d2173318"
+    },
+    {
+      "columns": [
+        "asset_class",
+        "benchmark_ticker",
+        "cik_unpadded",
+        "feature_name",
+        "instrument_id",
+        "is_active",
+        "sec_series_id",
+        "strategy_label",
+        "ticker"
+      ],
+      "dataset_name": "derived_fund_universe_features",
+      "path": "data/derived/fund_universe_features.json",
+      "rows": 2,
+      "sha256": "e3717c7b45a7581dd816d01ccad868ed0ee5f5d3d25e149944934f681fa55d14"
+    },
+    {
+      "columns": [
+        "feature_name",
+        "holdings_count",
+        "largest_holding_pct",
+        "pct_nav_covered",
+        "report_date",
+        "series_id"
+      ],
+      "dataset_name": "derived_holdings_summary_features",
+      "path": "data/derived/holdings_summary_features.json",
+      "rows": 2,
+      "sha256": "63c84f9c68d462649db1a253137294c5a74989285bd2d514cb64c45ced89684f"
+    },
+    {
+      "columns": [
+        "as_of_month_end",
+        "feature_name",
+        "series_id",
+        "value",
+        "window_months"
+      ],
+      "dataset_name": "derived_flow_momentum_features",
+      "path": "data/derived/flow_momentum_features.json",
+      "rows": 2,
+      "sha256": "37eae11415d21908e3b812b2ec8996226940969c7ec33035ec655677b685722c"
+    },
+    {
+      "columns": [
+        "feature_file",
+        "feature_name",
+        "sources"
+      ],
+      "dataset_name": "derived_feature_lineage",
+      "path": "data/derived/feature_lineage.json",
+      "rows": 7,
+      "sha256": "288ef23b57782d9dc2e2a95144f6e0f98e0866058df9b6963f70b0849f632b10"
+    }
+  ],
+  "as_of": "2026-06-26",
+  "lineage": [
+    {
+      "feature_file": "data/derived/fund_nav_return_features.json",
+      "feature_name": "fund_nav_return_1d",
+      "sources": [
+        {
+          "columns": [
+            "instrument_id",
+            "nav_date",
+            "nav"
+          ],
+          "table": "nav_timeseries"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/market_price_return_features.json",
+      "feature_name": "market_price_return_1d",
+      "sources": [
+        {
+          "columns": [
+            "ticker",
+            "date",
+            "adjusted_close",
+            "close"
+          ],
+          "table": "eod_prices"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/macro_observation_features.json",
+      "feature_name": "macro_level",
+      "sources": [
+        {
+          "columns": [
+            "series_id",
+            "obs_date",
+            "value"
+          ],
+          "table": "macro_data"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/macro_observation_features.json",
+      "feature_name": "macro_delta_1obs",
+      "sources": [
+        {
+          "columns": [
+            "series_id",
+            "obs_date",
+            "value"
+          ],
+          "table": "macro_data"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/fund_universe_features.json",
+      "feature_name": "fund_universe_identity_strategy_benchmark",
+      "sources": [
+        {
+          "columns": [
+            "instrument_id",
+            "ticker",
+            "asset_class",
+            "strategy"
+          ],
+          "table": "instruments_universe"
+        },
+        {
+          "columns": [
+            "instrument_id",
+            "cik_unpadded",
+            "sec_series_id"
+          ],
+          "table": "instrument_identity"
+        },
+        {
+          "columns": [
+            "strategy_label",
+            "benchmark_ticker"
+          ],
+          "table": "fund_strategy_benchmark_proxy_map"
+        },
+        {
+          "columns": [
+            "instrument_id",
+            "strategy_label",
+            "effective_date"
+          ],
+          "table": "strategy_reclassification_stage"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/holdings_summary_features.json",
+      "feature_name": "holdings_summary_inputs",
+      "sources": [
+        {
+          "columns": [
+            "series_id",
+            "report_date",
+            "holding_key",
+            "pct_of_nav"
+          ],
+          "table": "sec_nport_holdings"
+        }
+      ]
+    },
+    {
+      "feature_file": "data/derived/flow_momentum_features.json",
+      "feature_name": "flow_momentum_window_input",
+      "sources": [
+        {
+          "columns": [
+            "series_id",
+            "month_end",
+            "total_net_assets",
+            "net_flow"
+          ],
+          "table": "sec_nport_fund_monthly_flows"
+        }
+      ]
+    }
+  ],
+  "schema_version": "v1",
+  "snapshot_kind": "derived_feature"
+}

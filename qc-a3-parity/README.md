@@ -1,0 +1,50 @@
+# qc-a3-parity
+
+QuantConnect Research parity pilot for the Investintell A3 macro harness.
+
+This project is diagnostic-only:
+
+- core A3 inputs come from immutable Investintell PIT panels in Object Store;
+- QC FRED/History must not feed the macro classifier;
+- returns are not an A3 selection objective;
+- `runtime_activation=false`;
+- `A4=harness_ready_provisional_A3`;
+- `A5=blocked`.
+
+Object Store manifest key is read from `object_store_manifest_key.txt`, the
+`QC_A3_OBJECT_STORE_MANIFEST_KEY` environment variable, or the notebook's
+hardcoded immutable fallback key.
+
+```text
+investintell/a3/qc-a3-parity/<commit>/<bundle_evaluation_hash>/object_store_manifest.json
+```
+
+`qc_a3_parity.ipynb` requires QuantConnect cloud by default. In that mode it
+fails loudly if it uses the local bundle fallback, runs on WSL2, or cannot read a
+Research node identifier. Some QC Research sessions don't expose a node env var;
+the notebook records `research_node=qc_research` with
+`research_node_source=fallback` in that case. The notebook also initializes a
+git repo in the ephemeral QC project directory when none exists, because the
+parity bridge records git cleanliness. Run it twice after a kernel restart. It
+writes:
+
+```text
+results/qc_cloud_parity_report.json
+results/qc_cloud_environment.json
+```
+
+Approval gate:
+
+```text
+runtime rows        = 3221
+counterfactual rows = 3221
+metric rows         = 5
+mismatch_count      = 0
+external_macro_access = false
+```
+
+The large `src/calibration_harness.py` file is materialized at runtime from a
+SHA-verified `calibration_harness.py.gz` Object Store object because QC cloud
+source files have a size limit. The notebook also writes a short `src/db.py`
+stub at runtime that fails loudly if anything tries to access a database from
+Research.

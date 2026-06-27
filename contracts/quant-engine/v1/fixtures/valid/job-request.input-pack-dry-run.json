@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "job_type": "certified_input_pack_dry_run",
+  "input_pack_uri": "s3://investintell-input-packs/open_macro_v03_2026-06-26",
+  "input_pack_sha256": "846bedbdaed043fe6ccc3db51f72ee9fc0998287f2dff105bfc9affc03afe11e",
+  "contract_bundle_sha256": "1c0d9748c063314f51ad34abe6bc73d605eeeb23cef18b8e51573f95bcf6f877",
+  "source_snapshot_sha256": "8947bf94003403de8ffaece43ea423afe635410b0b3ccbd92bf80443a7497234",
+  "engine_image_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "quant_core_version": "0.1.0",
+  "offline": true,
+  "jobs": 4,
+  "output_uri": "s3://investintell-outputs/input-pack-p0/job-1"
+}

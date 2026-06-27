@@ -10,6 +10,12 @@
 #   factor_model      -> monthly (after characteristics)
 #   nport_lookthrough -> weekly  (N-PORT é mensal/trimestral; dom 04:00 UTC)
 #   credit_regime     -> daily 06:30 UTC (2 req Tiingo; precisa TIINGO_API_KEY)
+#   regime_composite  -> daily ~06:40 UTC (after credit_regime; needs FRED_API_KEY + Tiingo)
+#   regime_gate       -> daily ~06:50 UTC (self-contained: fetches SPY/HYG/IEF/TIP via
+#                        Tiingo; needs TIINGO_API_KEY). Schedule AFTER regime_composite and
+#                        BEFORE the backend portfolio_drift_daily run so its flip-read sees
+#                        a fresh gate. WORKER=regime_gate; backfill once via
+#                        `python -m src.run regime_gate`.
 # Ingestion (docs/INGESTION_DESIGN.md §2 — order by cron offsets):
 #   macro_ingestion      -> daily 05:00 UTC (needs FRED_API_KEY)
 #   treasury_ingestion   -> daily 05:00 UTC

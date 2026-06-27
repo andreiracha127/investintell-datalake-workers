@@ -1,0 +1,979 @@
+"""Offline verifier for Certified Input Packs v1."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import math
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+
+from .hashing import file_sha256, load_json
+from .manifest import (
+    COMPONENT_HASH_FIELDS,
+    MANIFEST_NAME,
+    REQUIRED_DIRS,
+    REQUIRED_FILES,
+    compute_input_pack_sha256,
+    iter_pack_files,
+)
+from .p0_derived import (
+    DERIVED_FEATURE_LINEAGE,
+    derive_flow_features,
+    derive_holdings_features,
+    derive_macro_features,
+    derive_nav_features,
+    derive_price_features,
+    derive_universe_features,
+)
+from .p0_contract import P0_TABLE_SPECS, TableSpec, normalize_row, row_sort_key
+
+COMPONENT_SCHEMA_FILES: dict[str, str] = {
+    "SOURCE.json": "source.schema.json",
+    "raw_snapshot_manifest.json": "snapshot_manifest.schema.json",
+    "canonical_snapshot_manifest.json": "snapshot_manifest.schema.json",
+    "derived_feature_manifest.json": "snapshot_manifest.schema.json",
+    "table_hashes.json": "table_hashes.schema.json",
+    "provenance.json": "provenance.schema.json",
+}
+SNAPSHOT_MANIFEST_FILES = (
+    "raw_snapshot_manifest.json",
+    "canonical_snapshot_manifest.json",
+    "derived_feature_manifest.json",
+)
+P0_INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
+P0_SOURCE_TABLES = tuple(spec.name for spec in P0_TABLE_SPECS)
+P0_RAW_ARTIFACT_PATHS = tuple(f"data/raw/{name}.json" for name in P0_SOURCE_TABLES)
+P0_CANONICAL_ARTIFACT_PATHS = tuple(f"data/canonical/{name}.json" for name in P0_SOURCE_TABLES)
+P0_DERIVED_ARTIFACT_PATHS = (
+    "data/derived/fund_nav_return_features.json",
+    "data/derived/market_price_return_features.json",
+    "data/derived/macro_observation_features.json",
+    "data/derived/fund_universe_features.json",
+    "data/derived/holdings_summary_features.json",
+    "data/derived/flow_momentum_features.json",
+    "data/derived/feature_lineage.json",
+)
+P0_EXPECTED_SNAPSHOT_ARTIFACTS = {
+    "raw_snapshot_manifest.json": frozenset(P0_RAW_ARTIFACT_PATHS),
+    "canonical_snapshot_manifest.json": frozenset(P0_CANONICAL_ARTIFACT_PATHS),
+    "derived_feature_manifest.json": frozenset(P0_DERIVED_ARTIFACT_PATHS),
+}
+P0_REQUIRED_DATA_ARTIFACTS = frozenset(
+    (*P0_RAW_ARTIFACT_PATHS, *P0_CANONICAL_ARTIFACT_PATHS, *P0_DERIVED_ARTIFACT_PATHS)
+)
+
+
+@dataclass(frozen=True)
+class RowSchema:
+    required_columns: tuple[str, ...]
+    numeric_columns: frozenset[str] = frozenset()
+    integer_columns: frozenset[str] = frozenset()
+    boolean_columns: frozenset[str] = frozenset()
+    date_columns: frozenset[str] = frozenset()
+    list_columns: frozenset[str] = frozenset()
+    allowed_feature_names: frozenset[str] = frozenset()
+
+    @property
+    def allowed_columns(self) -> frozenset[str]:
+        return frozenset(self.required_columns)
+
+
+P0_DERIVED_ROW_SCHEMAS: dict[str, RowSchema] = {
+    "data/derived/fund_nav_return_features.json": RowSchema(
+        required_columns=("feature_name", "instrument_id", "observation_date", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"fund_nav_return_1d"}),
+    ),
+    "data/derived/market_price_return_features.json": RowSchema(
+        required_columns=("feature_name", "ticker", "observation_date", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"market_price_return_1d"}),
+    ),
+    "data/derived/macro_observation_features.json": RowSchema(
+        required_columns=("feature_name", "observation_date", "series_id", "value"),
+        numeric_columns=frozenset({"value"}),
+        date_columns=frozenset({"observation_date"}),
+        allowed_feature_names=frozenset({"macro_level", "macro_delta_1obs"}),
+    ),
+    "data/derived/fund_universe_features.json": RowSchema(
+        required_columns=(
+            "asset_class",
+            "benchmark_ticker",
+            "cik_unpadded",
+            "feature_name",
+            "instrument_id",
+            "is_active",
+            "sec_series_id",
+            "strategy_label",
+            "ticker",
+        ),
+        boolean_columns=frozenset({"is_active"}),
+        allowed_feature_names=frozenset({"fund_universe_identity_strategy_benchmark"}),
+    ),
+    "data/derived/holdings_summary_features.json": RowSchema(
+        required_columns=(
+            "feature_name",
+            "holdings_count",
+            "largest_holding_pct",
+            "pct_nav_covered",
+            "report_date",
+            "series_id",
+        ),
+        numeric_columns=frozenset({"largest_holding_pct", "pct_nav_covered"}),
+        integer_columns=frozenset({"holdings_count"}),
+        date_columns=frozenset({"report_date"}),
+        allowed_feature_names=frozenset({"holdings_summary_inputs"}),
+    ),
+    "data/derived/flow_momentum_features.json": RowSchema(
+        required_columns=("as_of_month_end", "feature_name", "series_id", "value", "window_months"),
+        numeric_columns=frozenset({"value"}),
+        integer_columns=frozenset({"window_months"}),
+        date_columns=frozenset({"as_of_month_end"}),
+        allowed_feature_names=frozenset({"flow_momentum_window_input"}),
+    ),
+    "data/derived/feature_lineage.json": RowSchema(
+        required_columns=("feature_file", "feature_name", "sources"),
+        list_columns=frozenset({"sources"}),
+    ),
+}
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _schema_root(pack_root: Path) -> Path:
+    repo_schemas = _repo_root() / "schemas" / "input_packs"
+    if (repo_schemas / "input_pack_manifest.schema.json").is_file():
+        return repo_schemas
+    embedded = pack_root / "schemas"
+    if (embedded / "input_pack_manifest.schema.json").is_file():
+        return embedded
+    return repo_schemas
+
+
+def _schema_errors(instance: dict[str, Any], schema_path: Path) -> list[str]:
+    try:
+        import jsonschema
+    except ImportError as exc:  # pragma: no cover - existing tests already require it.
+        return [f"jsonschema unavailable: {exc}"]
+
+    schema = load_json(schema_path)
+    validator = jsonschema.Draft202012Validator(
+        schema,
+        format_checker=jsonschema.FormatChecker(),
+    )
+    return [
+        f"{'/'.join(str(p) for p in error.absolute_path) or '<root>'}: {error.message}"
+        for error in sorted(validator.iter_errors(instance), key=lambda e: list(e.absolute_path))
+    ]
+
+
+def _load_json_or_error(path: Path, errors: list[str]) -> dict[str, Any]:
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        errors.append(f"{path.name}: {exc}")
+        return {}
+    if not isinstance(payload, dict):
+        errors.append(f"{path.name}: expected JSON object")
+        return {}
+    return payload
+
+
+def _verify_component_hashes(root: Path, manifest: dict[str, Any]) -> list[dict[str, str]]:
+    mismatches: list[dict[str, str]] = []
+    for filename, field in COMPONENT_HASH_FIELDS.items():
+        path = root / filename
+        if not path.exists():
+            continue
+        expected = manifest.get(field)
+        actual = file_sha256(path)
+        if expected != actual:
+            mismatches.append(
+                {
+                    "path": filename,
+                    "field": field,
+                    "expected": str(expected),
+                    "actual": actual,
+                }
+            )
+    return mismatches
+
+
+def _pack_relative_path(root: Path, rel: str) -> Path | None:
+    """Resolve a table artifact path only when it stays inside ``root``."""
+    path = Path(rel)
+    if path.is_absolute():
+        return None
+    root_resolved = root.resolve()
+    candidate = (root / path).resolve()
+    try:
+        candidate.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return candidate
+
+
+def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list[str], list[dict[str, str]]]:
+    missing: list[str] = []
+    mismatches: list[dict[str, str]] = []
+    for table in table_hashes.get("tables", []):
+        if not isinstance(table, dict):
+            mismatches.append({"path": "<invalid-entry>", "expected": "<object>", "actual": type(table).__name__})
+            continue
+        rel = table.get("path")
+        expected = table.get("sha256")
+        if not isinstance(rel, str):
+            mismatches.append({"path": "<missing-path>", "expected": str(expected), "actual": "<no path>"})
+            continue
+        path = _pack_relative_path(root, rel)
+        if path is None:
+            mismatches.append({"path": rel, "expected": "<inside pack>", "actual": "<outside pack>"})
+            continue
+        if not path.exists():
+            missing.append(rel)
+            continue
+        actual = file_sha256(path)
+        if expected != actual:
+            mismatches.append({"path": rel, "expected": str(expected), "actual": actual})
+    return sorted(missing), sorted(mismatches, key=lambda m: m["path"])
+
+
+def _verify_component_artifact_hashes(
+    root: Path,
+    manifests: dict[str, dict[str, Any]],
+) -> list[dict[str, str]]:
+    mismatches: list[dict[str, str]] = []
+    for manifest_name, payload in manifests.items():
+        artifacts = payload.get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            rel = artifact.get("path")
+            expected = artifact.get("sha256")
+            if not isinstance(rel, str):
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": "<missing-path>",
+                        "expected": str(expected),
+                        "actual": "<no path>",
+                    }
+                )
+                continue
+            path = _pack_relative_path(root, rel)
+            if path is None:
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": "<inside pack>",
+                        "actual": "<outside pack>",
+                    }
+                )
+                continue
+            if not path.exists():
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": str(expected),
+                        "actual": "<missing>",
+                    }
+                )
+                continue
+            actual = file_sha256(path)
+            if expected != actual:
+                mismatches.append(
+                    {
+                        "manifest": manifest_name,
+                        "path": rel,
+                        "expected": str(expected),
+                        "actual": actual,
+                    }
+                )
+    return sorted(mismatches, key=lambda m: (m["manifest"], m["path"]))
+
+
+def _unexpected_files(root: Path, table_hashes: dict[str, Any]) -> list[str]:
+    expected = set(REQUIRED_FILES)
+    for table in table_hashes.get("tables", []):
+        if isinstance(table, dict) and isinstance(table.get("path"), str):
+            expected.add(table["path"])
+    actual = {
+        path.relative_to(root).as_posix()
+        for path in iter_pack_files(root, include_manifest=True)
+    }
+    return sorted(actual - expected)
+
+
+def _artifact_paths(payload: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    artifacts = payload.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return paths
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get("path"), str):
+            paths.add(artifact["path"])
+    return paths
+
+
+def _table_paths(table_hashes: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    tables = table_hashes.get("tables", [])
+    if not isinstance(tables, list):
+        return paths
+    for table in tables:
+        if isinstance(table, dict) and isinstance(table.get("path"), str):
+            paths.add(table["path"])
+    return paths
+
+
+def _artifact_rows_by_path(component_payloads: dict[str, dict[str, Any]]) -> dict[str, int]:
+    rows_by_path: dict[str, int] = {}
+    for filename in SNAPSHOT_MANIFEST_FILES:
+        artifacts = component_payloads.get(filename, {}).get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            path = artifact.get("path")
+            rows = artifact.get("rows")
+            if isinstance(path, str) and isinstance(rows, int):
+                rows_by_path[path] = rows
+    return rows_by_path
+
+
+def _table_rows_by_path(table_hashes: dict[str, Any]) -> dict[str, int]:
+    rows_by_path: dict[str, int] = {}
+    tables = table_hashes.get("tables", [])
+    if not isinstance(tables, list):
+        return rows_by_path
+    for table in tables:
+        if not isinstance(table, dict):
+            continue
+        path = table.get("path")
+        rows = table.get("rows")
+        if isinstance(path, str) and isinstance(rows, int):
+            rows_by_path[path] = rows
+    return rows_by_path
+
+
+def _duplicate_path_errors(component_payloads: dict[str, dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    seen_artifacts: dict[str, str] = {}
+    for filename in SNAPSHOT_MANIFEST_FILES:
+        local_seen: set[str] = set()
+        artifacts = component_payloads.get(filename, {}).get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            path = artifact.get("path")
+            if not isinstance(path, str):
+                continue
+            if path in local_seen:
+                errors.append(f"{filename}: duplicate artifact path {path}")
+            local_seen.add(path)
+            prior_manifest = seen_artifacts.get(path)
+            if prior_manifest is not None and prior_manifest != filename:
+                errors.append(f"{filename}: artifact path {path} also appears in {prior_manifest}")
+            else:
+                seen_artifacts[path] = filename
+
+    table_seen: set[str] = set()
+    tables = component_payloads.get("table_hashes.json", {}).get("tables", [])
+    if isinstance(tables, list):
+        for table in tables:
+            if not isinstance(table, dict):
+                continue
+            path = table.get("path")
+            if not isinstance(path, str):
+                continue
+            if path in table_seen:
+                errors.append(f"table_hashes.json: duplicate table path {path}")
+            table_seen.add(path)
+    return sorted(errors)
+
+
+def _identity_errors(
+    manifest: dict[str, Any],
+    source: dict[str, Any],
+    provenance: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    for field in ("source_repo", "source_commit", "builder_commit", "builder_code_sha256"):
+        expected = manifest.get(field)
+        actual = source.get(field)
+        if actual != expected:
+            errors.append(f"SOURCE.json: {field} {actual!r} does not match manifest {expected!r}")
+
+    sources = provenance.get("sources", [])
+    if isinstance(sources, list):
+        for index, entry in enumerate(sources):
+            if not isinstance(entry, dict):
+                continue
+            for field in ("source_repo", "source_commit"):
+                expected = manifest.get(field)
+                actual = entry.get(field)
+                if actual != expected:
+                    errors.append(
+                        f"provenance.json: sources[{index}].{field} {actual!r} "
+                        f"does not match manifest {expected!r}"
+                    )
+    return errors
+
+
+def _json_row_count(path: Path) -> int | None:
+    payload = load_json(path)
+    if not isinstance(payload, list):
+        return None
+    return len(payload)
+
+
+def _is_iso_date(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        dt.date.fromisoformat(value[:10])
+    except ValueError:
+        return False
+    return value == value[:10]
+
+
+def _is_number(value: Any) -> bool:
+    if isinstance(value, bool) or value is None:
+        return value is None
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    return False
+
+
+def _is_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_raw_number(value: Any) -> bool:
+    if _is_number(value):
+        return True
+    if not isinstance(value, str):
+        return False
+    try:
+        return Decimal(value).is_finite()
+    except InvalidOperation:
+        return False
+
+
+def _is_bool_or_raw_bool(value: Any, *, canonical: bool) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return True
+    if canonical:
+        return False
+    if isinstance(value, int) and value in (0, 1):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "t", "1", "yes", "y", "false", "f", "0", "no", "n"}
+    return False
+
+
+def _manifest_as_of_date(manifest: dict[str, Any]) -> dt.date | None:
+    value = manifest.get("as_of")
+    if not isinstance(value, str):
+        return None
+    try:
+        return dt.date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _load_json_array(root: Path, rel: str) -> tuple[list[Any] | None, str | None]:
+    path = _pack_relative_path(root, rel)
+    if path is None or not path.exists():
+        return None, None
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError, ValueError) as exc:
+        return None, f"{rel}: cannot read P0 JSON artifact rows: {exc}"
+    if not isinstance(payload, list):
+        return None, f"{rel}: expected JSON array for P0 artifact"
+    return payload, None
+
+
+def _validate_p0_source_row(
+    rel: str,
+    row: dict[str, Any],
+    index: int,
+    spec: TableSpec,
+    *,
+    canonical: bool,
+    pack_as_of: dt.date | None,
+) -> list[str]:
+    errors: list[str] = []
+    missing = [column for column in spec.columns if column not in row]
+    if missing:
+        errors.append(f"{rel}[{index}]: missing required columns: {', '.join(missing)}")
+
+    for column in spec.key_columns:
+        value = row.get(column)
+        if value is None or isinstance(value, (dict, list)):
+            errors.append(f"{rel}[{index}]: invalid key column {column}")
+
+    for column in spec.date_columns:
+        if column in row and row[column] is not None and not _is_iso_date(row[column]):
+            errors.append(f"{rel}[{index}]: invalid date column {column}: {row[column]!r}")
+
+    if pack_as_of is not None and spec.as_of_column:
+        value = row.get(spec.as_of_column)
+        if value is not None and _is_iso_date(value) and dt.date.fromisoformat(value) > pack_as_of:
+            errors.append(
+                f"{rel}[{index}]: {spec.as_of_column} {value!r} is after manifest as_of {pack_as_of.isoformat()!r}"
+            )
+
+    for column in spec.numeric_columns:
+        if column in row:
+            ok = _is_number(row[column]) if canonical else _is_raw_number(row[column])
+            if not ok:
+                errors.append(f"{rel}[{index}]: invalid numeric column {column}: {row[column]!r}")
+
+    for column in spec.boolean_columns:
+        if column in row and not _is_bool_or_raw_bool(row[column], canonical=canonical):
+            errors.append(f"{rel}[{index}]: invalid boolean column {column}: {row[column]!r}")
+
+    return errors
+
+
+def _validate_p0_source_artifact(
+    root: Path,
+    rel: str,
+    spec: TableSpec,
+    *,
+    canonical: bool,
+    pack_as_of: dt.date | None,
+) -> list[str]:
+    payload, load_error = _load_json_array(root, rel)
+    if load_error:
+        return [load_error]
+    if payload is None:
+        return []
+
+    errors: list[str] = []
+    seen_keys: set[tuple[Any, ...]] = set()
+    for index, row in enumerate(payload):
+        if not isinstance(row, dict):
+            errors.append(f"{rel}[{index}]: expected JSON object row")
+            continue
+        errors.extend(_validate_p0_source_row(rel, row, index, spec, canonical=canonical, pack_as_of=pack_as_of))
+        key = tuple(row.get(column) for column in spec.key_columns)
+        if all(value is not None and not isinstance(value, (dict, list)) for value in key):
+            if key in seen_keys:
+                errors.append(f"{rel}[{index}]: duplicate natural key {key!r}")
+            seen_keys.add(key)
+    return errors
+
+
+def _verify_canonical_matches_raw(root: Path, spec: TableSpec) -> list[str]:
+    raw_rel = f"data/raw/{spec.name}.json"
+    canonical_rel = f"data/canonical/{spec.name}.json"
+    raw_rows, raw_error = _load_json_array(root, raw_rel)
+    canonical_rows, canonical_error = _load_json_array(root, canonical_rel)
+    if raw_error or canonical_error or raw_rows is None or canonical_rows is None:
+        return []
+    if any(not isinstance(row, dict) for row in (*raw_rows, *canonical_rows)):
+        return []
+
+    try:
+        expected = sorted((normalize_row(row, spec) for row in raw_rows), key=lambda row: row_sort_key(row, spec))
+    except ValueError as exc:
+        return [f"{raw_rel}: cannot normalize raw rows for canonical comparison: {exc}"]
+    actual = sorted(canonical_rows, key=lambda row: row_sort_key(row, spec))
+    if actual != expected:
+        return [f"{canonical_rel}: canonical rows do not match normalized {raw_rel} rows"]
+    return []
+
+
+def _verify_p0_source_artifact_rows(root: Path, *, pack_as_of: dt.date | None) -> list[str]:
+    errors: list[str] = []
+    for spec in P0_TABLE_SPECS:
+        errors.extend(
+            _validate_p0_source_artifact(
+                root,
+                f"data/raw/{spec.name}.json",
+                spec,
+                canonical=False,
+                pack_as_of=pack_as_of,
+            )
+        )
+        errors.extend(
+            _validate_p0_source_artifact(
+                root,
+                f"data/canonical/{spec.name}.json",
+                spec,
+                canonical=True,
+                pack_as_of=pack_as_of,
+            )
+        )
+        errors.extend(_verify_canonical_matches_raw(root, spec))
+    return errors
+
+
+def _validate_derived_lineage_sources(rel: str, value: Any, index: int) -> list[str]:
+    if not isinstance(value, list) or not value:
+        return [f"{rel}[{index}]: invalid list column sources"]
+    errors: list[str] = []
+    for source_index, source in enumerate(value):
+        if not isinstance(source, dict):
+            errors.append(f"{rel}[{index}].sources[{source_index}]: expected JSON object source")
+            continue
+        table = source.get("table")
+        columns = source.get("columns")
+        if not isinstance(table, str) or not table:
+            errors.append(f"{rel}[{index}].sources[{source_index}]: invalid table")
+        if not isinstance(columns, list) or not columns or any(not isinstance(column, str) or not column for column in columns):
+            errors.append(f"{rel}[{index}].sources[{source_index}]: invalid columns")
+    return errors
+
+
+def _validate_derived_row(rel: str, row: dict[str, Any], index: int, schema: RowSchema) -> list[str]:
+    errors: list[str] = []
+    missing = [column for column in schema.required_columns if column not in row]
+    if missing:
+        errors.append(f"{rel}[{index}]: missing required columns: {', '.join(missing)}")
+
+    unexpected = sorted(set(row) - schema.allowed_columns)
+    if unexpected:
+        errors.append(f"{rel}[{index}]: unexpected columns: {', '.join(unexpected)}")
+
+    feature_name = row.get("feature_name")
+    if schema.allowed_feature_names and feature_name not in schema.allowed_feature_names:
+        errors.append(f"{rel}[{index}]: unexpected feature_name: {feature_name!r}")
+
+    for column in schema.date_columns:
+        if column in row and row[column] is not None and not _is_iso_date(row[column]):
+            errors.append(f"{rel}[{index}]: invalid date column {column}: {row[column]!r}")
+
+    for column in schema.numeric_columns:
+        if column in row and not _is_number(row[column]):
+            errors.append(f"{rel}[{index}]: invalid numeric column {column}: {row[column]!r}")
+
+    for column in schema.integer_columns:
+        if column in row and not _is_integer(row[column]):
+            errors.append(f"{rel}[{index}]: invalid integer column {column}: {row[column]!r}")
+
+    for column in schema.boolean_columns:
+        if column in row and not _is_bool_or_raw_bool(row[column], canonical=True):
+            errors.append(f"{rel}[{index}]: invalid boolean column {column}: {row[column]!r}")
+
+    for column in schema.list_columns:
+        if column not in row:
+            continue
+        if column == "sources":
+            errors.extend(_validate_derived_lineage_sources(rel, row[column], index))
+        elif not isinstance(row[column], list):
+            errors.append(f"{rel}[{index}]: invalid list column {column}")
+
+    return errors
+
+
+def _verify_derived_artifact_rows(root: Path) -> list[str]:
+    errors: list[str] = []
+    for rel, schema in P0_DERIVED_ROW_SCHEMAS.items():
+        payload, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if payload is None:
+            continue
+        for index, row in enumerate(payload):
+            if not isinstance(row, dict):
+                errors.append(f"{rel}[{index}]: expected JSON object row")
+                continue
+            errors.extend(_validate_derived_row(rel, row, index, schema))
+    return errors
+
+
+def _load_canonical_sources(root: Path) -> tuple[dict[str, list[dict[str, Any]]] | None, list[str]]:
+    canonical: dict[str, list[dict[str, Any]]] = {}
+    errors: list[str] = []
+    for spec in P0_TABLE_SPECS:
+        rel = f"data/canonical/{spec.name}.json"
+        payload, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if payload is None:
+            continue
+        if any(not isinstance(row, dict) for row in payload):
+            continue
+        canonical[spec.name] = payload
+    missing = [spec.name for spec in P0_TABLE_SPECS if spec.name not in canonical]
+    if missing:
+        errors.append(f"canonical sources unavailable for derived recomputation: {', '.join(missing)}")
+    if errors:
+        return None, errors
+    return canonical, []
+
+
+def _expected_derived_artifacts(
+    canonical: dict[str, list[dict[str, Any]]],
+) -> dict[str, list[dict[str, Any]]]:
+    return {
+        "data/derived/fund_nav_return_features.json": derive_nav_features(canonical["nav_timeseries"]),
+        "data/derived/market_price_return_features.json": derive_price_features(canonical["eod_prices"]),
+        "data/derived/macro_observation_features.json": derive_macro_features(canonical["macro_data"]),
+        "data/derived/fund_universe_features.json": derive_universe_features(canonical),
+        "data/derived/holdings_summary_features.json": derive_holdings_features(canonical["sec_nport_holdings"]),
+        "data/derived/flow_momentum_features.json": derive_flow_features(canonical["sec_nport_fund_monthly_flows"]),
+        "data/derived/feature_lineage.json": list(DERIVED_FEATURE_LINEAGE),
+    }
+
+
+def _verify_derived_artifacts_match_canonical(root: Path) -> list[str]:
+    canonical, load_errors = _load_canonical_sources(root)
+    if canonical is None:
+        return load_errors
+    errors: list[str] = []
+    try:
+        expected_artifacts = _expected_derived_artifacts(canonical)
+    except (KeyError, TypeError, ValueError) as exc:
+        return [f"data/derived: cannot recompute derived artifacts from canonical sources: {exc}"]
+    for rel, expected_rows in expected_artifacts.items():
+        actual_rows, load_error = _load_json_array(root, rel)
+        if load_error:
+            errors.append(load_error)
+            continue
+        if actual_rows is None:
+            continue
+        if actual_rows != expected_rows:
+            errors.append(f"{rel}: derived rows do not match canonical source recomputation")
+    return errors
+
+
+def _verify_expected_p0_content(
+    root: Path,
+    manifest: dict[str, Any],
+    component_payloads: dict[str, dict[str, Any]],
+) -> list[str]:
+    errors: list[str] = []
+    actual_pack_id = manifest.get("input_pack_id")
+    if actual_pack_id != P0_INPUT_PACK_ID:
+        errors.append(f"manifest.json: expected input_pack_id {P0_INPUT_PACK_ID}, got {actual_pack_id!r}")
+    expected_as_of = manifest.get("as_of")
+
+    for filename, expected_paths in P0_EXPECTED_SNAPSHOT_ARTIFACTS.items():
+        payload = component_payloads.get(filename, {})
+        if payload.get("as_of") != expected_as_of:
+            errors.append(f"{filename}: as_of {payload.get('as_of')!r} does not match manifest as_of {expected_as_of!r}")
+        actual_paths = _artifact_paths(payload)
+        missing = sorted(expected_paths - actual_paths)
+        unexpected = sorted(actual_paths - expected_paths)
+        if missing:
+            errors.append(f"{filename}: missing required P0 artifacts: {', '.join(missing)}")
+        if unexpected:
+            errors.append(f"{filename}: unexpected P0 artifacts: {', '.join(unexpected)}")
+
+    table_paths = _table_paths(component_payloads.get("table_hashes.json", {}))
+    missing_table_paths = sorted(P0_REQUIRED_DATA_ARTIFACTS - table_paths)
+    unexpected_data_paths = sorted(
+        path for path in table_paths - P0_REQUIRED_DATA_ARTIFACTS if path.startswith("data/")
+    )
+    if missing_table_paths:
+        errors.append(f"table_hashes.json: missing required P0 data artifacts: {', '.join(missing_table_paths)}")
+    if unexpected_data_paths:
+        errors.append(f"table_hashes.json: unexpected P0 data artifacts: {', '.join(unexpected_data_paths)}")
+
+    artifact_rows = _artifact_rows_by_path(component_payloads)
+    table_rows = _table_rows_by_path(component_payloads.get("table_hashes.json", {}))
+    for rel in sorted(P0_REQUIRED_DATA_ARTIFACTS):
+        path = _pack_relative_path(root, rel)
+        if path is None or not path.exists():
+            continue
+        try:
+            actual_rows = _json_row_count(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            errors.append(f"{rel}: cannot read P0 JSON artifact rows: {exc}")
+            continue
+        if actual_rows is None:
+            errors.append(f"{rel}: expected JSON array for P0 artifact")
+            continue
+        if actual_rows <= 0:
+            errors.append(f"{rel}: expected non-empty P0 artifact rows")
+        manifest_rows = artifact_rows.get(rel)
+        if manifest_rows is not None and manifest_rows != actual_rows:
+            errors.append(f"{rel}: component manifest rows {manifest_rows} do not match actual rows {actual_rows}")
+        table_hash_rows = table_rows.get(rel)
+        if table_hash_rows is not None and table_hash_rows != actual_rows:
+            errors.append(f"{rel}: table_hashes rows {table_hash_rows} do not match actual rows {actual_rows}")
+
+    errors.extend(_verify_p0_source_artifact_rows(root, pack_as_of=_manifest_as_of_date(manifest)))
+    errors.extend(_verify_derived_artifact_rows(root))
+    errors.extend(_verify_derived_artifacts_match_canonical(root))
+    return errors
+
+
+def _provenance_complete(provenance: dict[str, Any], *, expected_as_of: str | None) -> bool:
+    required_collections = ("datasets", "jobs", "runs", "sources")
+    if any(not provenance.get(name) for name in required_collections):
+        return False
+    datasets = provenance.get("datasets")
+    jobs = provenance.get("jobs")
+    runs = provenance.get("runs")
+    sources = provenance.get("sources")
+    if not all(isinstance(collection, list) for collection in (datasets, jobs, runs, sources)):
+        return False
+    if not all(isinstance(item, dict) for collection in (datasets, jobs, runs, sources) for item in collection):
+        return False
+
+    datasets_by_name = {str(item.get("dataset_name")): item for item in datasets if item.get("dataset_name")}
+    if set(datasets_by_name) != set(P0_SOURCE_TABLES):
+        return False
+    if expected_as_of:
+        try:
+            snapshot_suffix = dt.date.fromisoformat(expected_as_of).strftime("%Y%m%d")
+        except ValueError:
+            return False
+        for name in P0_SOURCE_TABLES:
+            if datasets_by_name[name].get("snapshot_id") != f"{name}_{snapshot_suffix}":
+                return False
+    if any(not datasets_by_name[name].get("snapshot_id") for name in P0_SOURCE_TABLES):
+        return False
+
+    first_job = jobs[0]
+    first_run = runs[0]
+    first_source = sources[0]
+    return all(
+        [
+            first_job.get("job_name"),
+            first_run.get("run_id"),
+            first_source.get("source_repo"),
+            first_source.get("source_commit"),
+        ]
+    )
+
+
+def verify_pack(
+    pack_dir: str | Path,
+    *,
+    manifest_schema_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Verify a pack without connecting to external systems."""
+    root = Path(pack_dir)
+    manifest_path = root / MANIFEST_NAME
+    if manifest_schema_path is not None:
+        schema_path = Path(manifest_schema_path)
+        schema_root = schema_path.parent
+    else:
+        schema_root = _schema_root(root)
+        schema_path = schema_root / "input_pack_manifest.schema.json"
+
+    parse_errors: list[str] = []
+    manifest = _load_json_or_error(manifest_path, parse_errors) if manifest_path.exists() else {}
+    source = _load_json_or_error(root / "SOURCE.json", parse_errors) if (root / "SOURCE.json").exists() else {}
+    raw_snapshot = _load_json_or_error(root / "raw_snapshot_manifest.json", parse_errors) if (root / "raw_snapshot_manifest.json").exists() else {}
+    canonical_snapshot = _load_json_or_error(root / "canonical_snapshot_manifest.json", parse_errors) if (root / "canonical_snapshot_manifest.json").exists() else {}
+    derived_feature = _load_json_or_error(root / "derived_feature_manifest.json", parse_errors) if (root / "derived_feature_manifest.json").exists() else {}
+    table_hashes = _load_json_or_error(root / "table_hashes.json", parse_errors) if (root / "table_hashes.json").exists() else {}
+    provenance = _load_json_or_error(root / "provenance.json", parse_errors) if (root / "provenance.json").exists() else {}
+
+    missing_required_files = sorted(path for path in REQUIRED_FILES if not (root / path).is_file())
+    missing_required_dirs = sorted(path for path in REQUIRED_DIRS if not (root / path).is_dir())
+
+    schema_errors = _schema_errors(manifest, schema_path) if manifest else ["manifest.json: missing or invalid"]
+    component_payloads = {
+        "SOURCE.json": source,
+        "raw_snapshot_manifest.json": raw_snapshot,
+        "canonical_snapshot_manifest.json": canonical_snapshot,
+        "derived_feature_manifest.json": derived_feature,
+        "table_hashes.json": table_hashes,
+        "provenance.json": provenance,
+    }
+    component_schema_errors = {
+        filename: errors
+        for filename, errors in (
+            (
+                filename,
+                _schema_errors(
+                    payload,
+                    schema_root / COMPONENT_SCHEMA_FILES[filename],
+                ),
+            )
+            for filename, payload in component_payloads.items()
+            if (root / filename).is_file()
+        )
+        if errors
+    }
+    component_hash_mismatches = _verify_component_hashes(root, manifest) if manifest else []
+    component_artifact_hash_mismatches = _verify_component_artifact_hashes(
+        root,
+        {filename: component_payloads[filename] for filename in SNAPSHOT_MANIFEST_FILES},
+    )
+    missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
+    unexpected_files = _unexpected_files(root, table_hashes)
+    duplicate_path_errors = _duplicate_path_errors(component_payloads)
+    identity_errors = _identity_errors(manifest, source, provenance) if manifest else []
+    expected_content_errors = _verify_expected_p0_content(root, manifest, component_payloads) if manifest else []
+
+    actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
+    expected_input_pack_sha256 = manifest.get("input_pack_sha256")
+    input_pack_sha256_match = bool(
+        expected_input_pack_sha256 and expected_input_pack_sha256 == actual_input_pack_sha256
+    )
+
+    runtime_activation = manifest.get("runtime_activation")
+    runtime_activation_ok = runtime_activation is False
+    provenance_complete = _provenance_complete(provenance, expected_as_of=manifest.get("as_of") if manifest else None)
+
+    ok = all(
+        [
+            not parse_errors,
+            not missing_required_files,
+            not missing_required_dirs,
+            not schema_errors,
+            not component_schema_errors,
+            not component_hash_mismatches,
+            not component_artifact_hash_mismatches,
+            not missing_table_artifacts,
+            not table_hash_mismatches,
+            not unexpected_files,
+            not duplicate_path_errors,
+            not identity_errors,
+            not expected_content_errors,
+            input_pack_sha256_match,
+            runtime_activation_ok,
+            provenance_complete,
+        ]
+    )
+
+    return {
+        "ok": ok,
+        "parse_errors": parse_errors,
+        "missing_required_files": missing_required_files,
+        "missing_required_dirs": missing_required_dirs,
+        "schema_errors": schema_errors,
+        "component_schema_errors": component_schema_errors,
+        "component_hash_mismatches": component_hash_mismatches,
+        "component_artifact_hash_mismatches": component_artifact_hash_mismatches,
+        "missing_table_artifacts": missing_table_artifacts,
+        "table_hash_mismatches": table_hash_mismatches,
+        "unexpected_files": unexpected_files,
+        "duplicate_path_errors": duplicate_path_errors,
+        "identity_errors": identity_errors,
+        "expected_content_errors": expected_content_errors,
+        "expected_input_pack_sha256": expected_input_pack_sha256,
+        "actual_input_pack_sha256": actual_input_pack_sha256,
+        "input_pack_sha256_match": input_pack_sha256_match,
+        "runtime_activation": runtime_activation,
+        "runtime_activation_ok": runtime_activation_ok,
+        "provenance_complete": provenance_complete,
+    }

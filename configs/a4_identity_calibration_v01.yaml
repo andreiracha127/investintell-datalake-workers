@@ -1,0 +1,100 @@
+schema_version: 1
+status: harness_ready_provisional_A3
+activation_ready: false
+parameter_freeze: false
+a5_status: blocked
+
+decision_policy_version: a3_progression_v2
+macro_trajectory_set:
+  principal:
+    a31_config_name: V02B-G1-CREDIT-6040-15
+    role: provisional_sloos_credit
+    risk_flag: elevated_vintage_instability
+  challenger:
+    a31_config_name: G2-CREDIT6040-15-SURVEY05
+    role: dominant_g2_combination
+    risk_flag: null
+  anchor:
+    a31_config_name: A31-C-TEMPORAL-STABLE
+    role: exhausted_v01_anchor
+    risk_flag: elevated_vintage_instability
+
+a32_grid_source:
+  catalog: configs/a31_a32_selected_v01.yaml
+  grid: first_limited_a32
+  u_floor: 0.65
+  score_scale: 1.00
+  dispersion_limit: 1.25
+
+a4_1_identity_gate:
+  gate: identity
+  allowed_scope:
+    - replay_smoke
+    - book_compilation
+    - feasibility_tests
+    - metrics_generation
+    - identity_gate_validation
+    - lineage_tests
+  forbidden_scope:
+    - center_selection
+    - maxdd_cvar_policy_comparison
+    - half_width_calibration
+    - gamma_selection
+    - beta_cap_calibration
+    - gate_calibration
+  frozen_parameters:
+    recovery: true
+    expansion: true
+    half_widths: true
+    gamma: true
+    cvar_limits: true
+    beta_caps: true
+  future_calibration_scope_after_A3_freeze:
+    - slowdown_centers
+    - contraction_centers
+    - risk_assets_cap
+    - defensive_floor
+  local_search:
+    center_delta_pp: 2
+    max_l1_distance_pp_per_row: 8
+    risk_cap_delta_pp: 3
+    defensive_floor_delta_pp: 3
+  hard_gates:
+    - centers_sum_to_100pct
+    - profile_ladder_preserved
+    - zero_post_solve_constraint_violations
+    - controlled_infeasibility_only
+    - no_weight_relaxation_or_silent_renormalization
+
+a4_2_observation_before_constraints:
+  fixed_income_components:
+    - GOVT
+    - LQD
+    - HYG
+    - TIP
+    - BND
+  report_by_rebalance:
+    - average_weight
+    - p95_weight
+    - risk_contribution
+    - turnover
+    - time_at_cap
+    - proxy_usage
+    - marginal_cvar
+    - marginal_beta
+  constraint_policy: observe_first_then_restrict_only_on_persistent_pathology
+
+a4_3_robust_selection:
+  objective: worst_case_across_macro_trajectories
+  required_metrics:
+    - constraints_violations
+    - infeasibility_frequency_and_cause
+    - profile_ladder
+    - cvar_daily_95
+    - beta
+    - max_drawdown
+    - ulcer
+    - recovery_time
+    - turnover
+    - effective_n
+  no_return_target: true

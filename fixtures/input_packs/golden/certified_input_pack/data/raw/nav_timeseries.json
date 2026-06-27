@@ -1,0 +1,38 @@
+[
+  {
+    "instrument_id": "FUND_A",
+    "nav": "100.0000",
+    "nav_date": "2026-06-24",
+    "source": "tiingo"
+  },
+  {
+    "instrument_id": "FUND_A",
+    "nav": "100.5000",
+    "nav_date": "2026-06-25",
+    "source": "tiingo"
+  },
+  {
+    "instrument_id": "FUND_A",
+    "nav": "101.2500",
+    "nav_date": "2026-06-26",
+    "source": "tiingo"
+  },
+  {
+    "instrument_id": "FUND_B",
+    "nav": "99.5000",
+    "nav_date": "2026-06-24",
+    "source": "tiingo"
+  },
+  {
+    "instrument_id": "FUND_B",
+    "nav": "99.7500",
+    "nav_date": "2026-06-25",
+    "source": "tiingo"
+  },
+  {
+    "instrument_id": "FUND_B",
+    "nav": "100.0000",
+    "nav_date": "2026-06-26",
+    "source": "tiingo"
+  }
+]

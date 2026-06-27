@@ -1,0 +1,24 @@
+[
+  {
+    "asset_class": "equity",
+    "attributes": {
+      "fund_family": "Investintell Fixture",
+      "region": "US"
+    },
+    "instrument_id": "FUND_A",
+    "is_active": true,
+    "strategy": "Equity Blend",
+    "ticker": "FNDAX"
+  },
+  {
+    "asset_class": "fixed_income",
+    "attributes": {
+      "fund_family": "Investintell Fixture",
+      "region": "US"
+    },
+    "instrument_id": "FUND_B",
+    "is_active": true,
+    "strategy": "Bond Core",
+    "ticker": "FNDBX"
+  }
+]

@@ -1,0 +1,191 @@
+{
+  "schema_version": "v1",
+  "tables": [
+    {
+      "name": "canonical_eod_prices",
+      "path": "data/canonical/eod_prices.json",
+      "rows": 6,
+      "sha256": "b425758ca25fc9e2017e4a3e4616a85417210e505b776c76a93e76f863a5fbd8"
+    },
+    {
+      "name": "canonical_fund_strategy_benchmark_proxy_map",
+      "path": "data/canonical/fund_strategy_benchmark_proxy_map.json",
+      "rows": 2,
+      "sha256": "11a8527d57897ab8224e2a9c53320331a969c162d7fbe8e56072abfb4194bff9"
+    },
+    {
+      "name": "canonical_instrument_identity",
+      "path": "data/canonical/instrument_identity.json",
+      "rows": 2,
+      "sha256": "b4d99f6f631f936cb8e65e94a68e4c68670de75a5fa502531aeabe30cb56f540"
+    },
+    {
+      "name": "canonical_instruments_universe",
+      "path": "data/canonical/instruments_universe.json",
+      "rows": 2,
+      "sha256": "c1ebf8f604cae52b547e4f13a8b4dbaca66d79a2876955934ccd5959f3c2ee32"
+    },
+    {
+      "name": "canonical_macro_data",
+      "path": "data/canonical/macro_data.json",
+      "rows": 9,
+      "sha256": "93ffe47904915535011f74f3c1cc967535a24344df08045f80a1688d79918ca9"
+    },
+    {
+      "name": "canonical_nav_timeseries",
+      "path": "data/canonical/nav_timeseries.json",
+      "rows": 6,
+      "sha256": "2c1e872599fe2032ef29e0b44dc518e66fa41b6a1e0d5a263022aedc60036272"
+    },
+    {
+      "name": "canonical_sec_nport_fund_monthly_flows",
+      "path": "data/canonical/sec_nport_fund_monthly_flows.json",
+      "rows": 4,
+      "sha256": "cba50cce9b4772967171216058ce7c11e76426324bf814bc6fc91c3d8fa9cf1e"
+    },
+    {
+      "name": "canonical_sec_nport_holdings",
+      "path": "data/canonical/sec_nport_holdings.json",
+      "rows": 4,
+      "sha256": "2ddec940743c497fc38fa4157ef429d80dfd28303dfb637abe281fd243aad454"
+    },
+    {
+      "name": "canonical_strategy_reclassification_stage",
+      "path": "data/canonical/strategy_reclassification_stage.json",
+      "rows": 2,
+      "sha256": "5d526f61815ff543f07fd5203a37a49110f3553cfbb8b6e372be79bee3b76efc"
+    },
+    {
+      "name": "derived_feature_lineage",
+      "path": "data/derived/feature_lineage.json",
+      "rows": 7,
+      "sha256": "288ef23b57782d9dc2e2a95144f6e0f98e0866058df9b6963f70b0849f632b10"
+    },
+    {
+      "name": "derived_flow_momentum_features",
+      "path": "data/derived/flow_momentum_features.json",
+      "rows": 2,
+      "sha256": "37eae11415d21908e3b812b2ec8996226940969c7ec33035ec655677b685722c"
+    },
+    {
+      "name": "derived_fund_nav_return_features",
+      "path": "data/derived/fund_nav_return_features.json",
+      "rows": 4,
+      "sha256": "c366a8f51b3f626f94073aeae23dd99606447067307f655d12fe213f3dfde21d"
+    },
+    {
+      "name": "derived_fund_universe_features",
+      "path": "data/derived/fund_universe_features.json",
+      "rows": 2,
+      "sha256": "e3717c7b45a7581dd816d01ccad868ed0ee5f5d3d25e149944934f681fa55d14"
+    },
+    {
+      "name": "derived_holdings_summary_features",
+      "path": "data/derived/holdings_summary_features.json",
+      "rows": 2,
+      "sha256": "63c84f9c68d462649db1a253137294c5a74989285bd2d514cb64c45ced89684f"
+    },
+    {
+      "name": "derived_macro_observation_features",
+      "path": "data/derived/macro_observation_features.json",
+      "rows": 15,
+      "sha256": "74ad786cc2728e31825c4a200b8b0a0141d8379738fecfd24915af03d2173318"
+    },
+    {
+      "name": "derived_market_price_return_features",
+      "path": "data/derived/market_price_return_features.json",
+      "rows": 4,
+      "sha256": "2ef55236493defd50e8e16169ddab555da7de51a207655c89bf948114bb8a2ed"
+    },
+    {
+      "name": "raw_eod_prices",
+      "path": "data/raw/eod_prices.json",
+      "rows": 6,
+      "sha256": "4b233b5aedfefdd6463a25fedbd986f03d0e8ded753e832396fff60f40ad10cb"
+    },
+    {
+      "name": "raw_fund_strategy_benchmark_proxy_map",
+      "path": "data/raw/fund_strategy_benchmark_proxy_map.json",
+      "rows": 2,
+      "sha256": "11a8527d57897ab8224e2a9c53320331a969c162d7fbe8e56072abfb4194bff9"
+    },
+    {
+      "name": "raw_instrument_identity",
+      "path": "data/raw/instrument_identity.json",
+      "rows": 2,
+      "sha256": "b4d99f6f631f936cb8e65e94a68e4c68670de75a5fa502531aeabe30cb56f540"
+    },
+    {
+      "name": "raw_instruments_universe",
+      "path": "data/raw/instruments_universe.json",
+      "rows": 2,
+      "sha256": "c1ebf8f604cae52b547e4f13a8b4dbaca66d79a2876955934ccd5959f3c2ee32"
+    },
+    {
+      "name": "raw_macro_data",
+      "path": "data/raw/macro_data.json",
+      "rows": 9,
+      "sha256": "cb1017dbb5c34b700f8fe0d48bd820499d30869e91a5782108d8077521899d6d"
+    },
+    {
+      "name": "raw_nav_timeseries",
+      "path": "data/raw/nav_timeseries.json",
+      "rows": 6,
+      "sha256": "787effe9bb4ea57d457ec26d6babcb963b10daee6682df41a1e9519144328859"
+    },
+    {
+      "name": "raw_sec_nport_fund_monthly_flows",
+      "path": "data/raw/sec_nport_fund_monthly_flows.json",
+      "rows": 4,
+      "sha256": "81e46ba308ea83e44b066fe26e3a0d93819139da21288be5db5d14c798777865"
+    },
+    {
+      "name": "raw_sec_nport_holdings",
+      "path": "data/raw/sec_nport_holdings.json",
+      "rows": 4,
+      "sha256": "5a52704ab06254c736a6520bbfd05d2fad70cc5a9dff6970094719f3b08233a4"
+    },
+    {
+      "name": "raw_strategy_reclassification_stage",
+      "path": "data/raw/strategy_reclassification_stage.json",
+      "rows": 2,
+      "sha256": "5d526f61815ff543f07fd5203a37a49110f3553cfbb8b6e372be79bee3b76efc"
+    },
+    {
+      "name": "report:certification_summary",
+      "path": "reports/certification_summary.json",
+      "rows": 1,
+      "sha256": "4848af424c0178c28fccffe17aee5af21638a07f6196b6a92cb81d0e46139fd3"
+    },
+    {
+      "name": "schema:input_pack_manifest.schema",
+      "path": "schemas/input_pack_manifest.schema.json",
+      "rows": 0,
+      "sha256": "2d49ba4807c0f985e101bc333e21c44fda30453eeeb3ccb6c7f09df622347424"
+    },
+    {
+      "name": "schema:provenance.schema",
+      "path": "schemas/provenance.schema.json",
+      "rows": 0,
+      "sha256": "0784c8682c20dc1a81ecfb5aa56a47e465f9857342e995ea5732764ba897bbb4"
+    },
+    {
+      "name": "schema:snapshot_manifest.schema",
+      "path": "schemas/snapshot_manifest.schema.json",
+      "rows": 0,
+      "sha256": "c8a386782d06e06edbb3d3000c92912e4f1979ac9127ea886783cce2c827b613"
+    },
+    {
+      "name": "schema:source.schema",
+      "path": "schemas/source.schema.json",
+      "rows": 0,
+      "sha256": "84be6bc7d63024efef4ec2e862ea7cadd0c87298db18516c2c787eb5b8227924"
+    },
+    {
+      "name": "schema:table_hashes.schema",
+      "path": "schemas/table_hashes.schema.json",
+      "rows": 0,
+      "sha256": "6d77418d9a8580b40bbfb42faefb8065ab2a0443b946710258808be1d3f17ba9"
+    }
+  ]
+}

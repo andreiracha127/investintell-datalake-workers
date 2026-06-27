@@ -1,0 +1,16 @@
+[
+  {
+    "cik_unpadded": "1000001",
+    "cusip": "111111111",
+    "instrument_id": "FUND_A",
+    "isin": "US1111111111",
+    "sec_series_id": "S000000001"
+  },
+  {
+    "cik_unpadded": "1000002",
+    "cusip": "222222222",
+    "instrument_id": "FUND_B",
+    "isin": "US2222222222",
+    "sec_series_id": "S000000002"
+  }
+]

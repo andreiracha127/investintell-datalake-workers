@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "artifact_type": "engine_manifest",
+  "created_at": "2026-06-26T00:40:38.461049+00:00",
+  "job_type": "a3_qc_parity",
+  "jobs": 1,
+  "offline": true,
+  "runtime_activation": true,
+  "quant_core_version": "0.1.0",
+  "quant_engine_version": "0.1.0",
+  "environment": {
+    "python_version": "3.13.12",
+    "platform": "linux"
+  }
+}

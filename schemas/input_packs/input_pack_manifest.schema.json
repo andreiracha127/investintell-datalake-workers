@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "as_of": {
+      "format": "date",
+      "type": "string"
+    },
+    "builder_commit": {
+      "pattern": "^[0-9a-f]{7,40}$",
+      "type": "string"
+    },
+    "builder_code_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "builder_image_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "canonical_snapshot_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "contract_bundle_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "derived_feature_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "input_pack_id": {
+      "pattern": "^[a-z0-9][a-z0-9_-]*$",
+      "type": "string"
+    },
+    "input_pack_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "input_pack_version": {
+      "const": "v1",
+      "type": "string"
+    },
+    "raw_snapshot_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "runtime_activation": {
+      "const": false,
+      "type": "boolean"
+    },
+    "source_commit": {
+      "pattern": "^[0-9a-f]{7,40}$",
+      "type": "string"
+    },
+    "source_repo": {
+      "const": "investintell-datalake-workers",
+      "type": "string"
+    }
+  },
+  "required": [
+    "input_pack_id",
+    "input_pack_version",
+    "as_of",
+    "contract_bundle_sha256",
+    "source_repo",
+    "source_commit",
+    "builder_commit",
+    "builder_code_sha256",
+    "raw_snapshot_sha256",
+    "canonical_snapshot_sha256",
+    "derived_feature_sha256",
+    "input_pack_sha256",
+    "runtime_activation"
+  ],
+  "title": "CertifiedInputPackManifestV1",
+  "type": "object"
+}
+

@@ -1,0 +1,121 @@
+{
+  "artifacts": [
+    {
+      "columns": [
+        "instrument_id",
+        "nav",
+        "nav_date",
+        "source"
+      ],
+      "dataset_name": "raw_nav_timeseries",
+      "path": "data/raw/nav_timeseries.json",
+      "rows": 6,
+      "sha256": "787effe9bb4ea57d457ec26d6babcb963b10daee6682df41a1e9519144328859"
+    },
+    {
+      "columns": [
+        "adjusted_close",
+        "close",
+        "date",
+        "ticker",
+        "volume"
+      ],
+      "dataset_name": "raw_eod_prices",
+      "path": "data/raw/eod_prices.json",
+      "rows": 6,
+      "sha256": "4b233b5aedfefdd6463a25fedbd986f03d0e8ded753e832396fff60f40ad10cb"
+    },
+    {
+      "columns": [
+        "is_derived",
+        "obs_date",
+        "series_id",
+        "source",
+        "value"
+      ],
+      "dataset_name": "raw_macro_data",
+      "path": "data/raw/macro_data.json",
+      "rows": 9,
+      "sha256": "cb1017dbb5c34b700f8fe0d48bd820499d30869e91a5782108d8077521899d6d"
+    },
+    {
+      "columns": [
+        "asset_class",
+        "attributes",
+        "instrument_id",
+        "is_active",
+        "strategy",
+        "ticker"
+      ],
+      "dataset_name": "raw_instruments_universe",
+      "path": "data/raw/instruments_universe.json",
+      "rows": 2,
+      "sha256": "c1ebf8f604cae52b547e4f13a8b4dbaca66d79a2876955934ccd5959f3c2ee32"
+    },
+    {
+      "columns": [
+        "cik_unpadded",
+        "cusip",
+        "instrument_id",
+        "isin",
+        "sec_series_id"
+      ],
+      "dataset_name": "raw_instrument_identity",
+      "path": "data/raw/instrument_identity.json",
+      "rows": 2,
+      "sha256": "b4d99f6f631f936cb8e65e94a68e4c68670de75a5fa502531aeabe30cb56f540"
+    },
+    {
+      "columns": [
+        "benchmark_ticker",
+        "proxy_source",
+        "strategy_label"
+      ],
+      "dataset_name": "raw_fund_strategy_benchmark_proxy_map",
+      "path": "data/raw/fund_strategy_benchmark_proxy_map.json",
+      "rows": 2,
+      "sha256": "11a8527d57897ab8224e2a9c53320331a969c162d7fbe8e56072abfb4194bff9"
+    },
+    {
+      "columns": [
+        "effective_date",
+        "instrument_id",
+        "source_table",
+        "strategy_label"
+      ],
+      "dataset_name": "raw_strategy_reclassification_stage",
+      "path": "data/raw/strategy_reclassification_stage.json",
+      "rows": 2,
+      "sha256": "5d526f61815ff543f07fd5203a37a49110f3553cfbb8b6e372be79bee3b76efc"
+    },
+    {
+      "columns": [
+        "holding_key",
+        "market_value",
+        "pct_of_nav",
+        "report_date",
+        "series_id",
+        "ticker"
+      ],
+      "dataset_name": "raw_sec_nport_holdings",
+      "path": "data/raw/sec_nport_holdings.json",
+      "rows": 4,
+      "sha256": "5a52704ab06254c736a6520bbfd05d2fad70cc5a9dff6970094719f3b08233a4"
+    },
+    {
+      "columns": [
+        "month_end",
+        "net_flow",
+        "series_id",
+        "total_net_assets"
+      ],
+      "dataset_name": "raw_sec_nport_fund_monthly_flows",
+      "path": "data/raw/sec_nport_fund_monthly_flows.json",
+      "rows": 4,
+      "sha256": "81e46ba308ea83e44b066fe26e3a0d93819139da21288be5db5d14c798777865"
+    }
+  ],
+  "as_of": "2026-06-26",
+  "schema_version": "v1",
+  "snapshot_kind": "raw"
+}

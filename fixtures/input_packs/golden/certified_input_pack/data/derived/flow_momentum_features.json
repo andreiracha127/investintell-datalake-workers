@@ -1,0 +1,16 @@
+[
+  {
+    "as_of_month_end": "2026-05-31",
+    "feature_name": "flow_momentum_window_input",
+    "series_id": "S000000001",
+    "value": 0.003980099502,
+    "window_months": 2
+  },
+  {
+    "as_of_month_end": "2026-05-31",
+    "feature_name": "flow_momentum_window_input",
+    "series_id": "S000000002",
+    "value": 0.009968847352,
+    "window_months": 2
+  }
+]

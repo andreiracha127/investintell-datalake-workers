@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/quant-engine/v1/job-request.schema.json",
+  "title": "QuantEngineJobRequest",
+  "oneOf": [
+    {"$ref": "#/$defs/a3_qc_parity_request"},
+    {"$ref": "#/$defs/certified_input_pack_dry_run_request"}
+  ],
+  "$defs": {
+    "sha256Hex": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "sha256Digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "a3_qc_parity_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "job_type",
+        "input_bundle_uri",
+        "input_bundle_logical_hash",
+        "config_catalog_uri",
+        "config_catalog_hash",
+        "expected_parent_hashes",
+        "engine_image_digest",
+        "quant_core_version",
+        "offline",
+        "jobs",
+        "output_uri"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "job_type": {"const": "a3_qc_parity"},
+        "input_bundle_uri": {"type": "string", "minLength": 1},
+        "input_bundle_logical_hash": {"type": "string", "minLength": 12},
+        "config_catalog_uri": {"type": "string", "minLength": 1},
+        "config_catalog_hash": {"type": "string", "minLength": 12},
+        "expected_parent_hashes": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "required": ["l2_macro_logical_hash", "revision_uncertainty_logical_hash"],
+          "properties": {
+            "l2_macro_logical_hash": {"type": "string", "minLength": 12},
+            "revision_uncertainty_logical_hash": {"type": "string", "minLength": 12}
+          }
+        },
+        "engine_image_digest": {"$ref": "#/$defs/sha256Digest"},
+        "quant_core_version": {"type": "string", "minLength": 1},
+        "offline": {"const": true},
+        "jobs": {"type": "integer", "minimum": 1},
+        "output_uri": {"type": "string", "minLength": 1}
+      }
+    },
+    "certified_input_pack_dry_run_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "job_type",
+        "input_pack_uri",
+        "input_pack_sha256",
+        "contract_bundle_sha256",
+        "source_snapshot_sha256",
+        "engine_image_digest",
+        "quant_core_version",
+        "offline",
+        "jobs",
+        "output_uri"
+      ],
+      "properties": {
+        "schema_version": {"const": 1},
+        "job_type": {"const": "certified_input_pack_dry_run"},
+        "input_pack_uri": {"type": "string", "minLength": 1},
+        "input_pack_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "contract_bundle_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "source_snapshot_sha256": {"$ref": "#/$defs/sha256Hex"},
+        "engine_image_digest": {"$ref": "#/$defs/sha256Digest"},
+        "quant_core_version": {"type": "string", "minLength": 1},
+        "offline": {"const": true},
+        "jobs": {"type": "integer", "minimum": 1},
+        "output_uri": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}
