@@ -15,7 +15,27 @@
     },
     "timestamp": {
       "type": "string",
-      "format": "date-time"
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+    },
+    "failureClass": {
+      "type": "string",
+      "enum": [
+        "missing_output",
+        "unexpected_output",
+        "mismatch_count_non_zero",
+        "nan_or_inf",
+        "constraint_violation",
+        "run_fingerprint_inconsistent",
+        "output_manifest_incomplete",
+        "non_reproducible_result",
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "invariant_failure",
+        "hard_relative_delta_exceeded",
+        "executor_failure"
+      ]
     }
   },
   "required": [
@@ -26,18 +46,49 @@
     "calibration_id",
     "input_pack_sha256",
     "engine_image_digest",
-    "output_manifest_sha256",
-    "invariant_report_sha256",
-    "baseline_comparison_sha256",
     "started_at",
     "finished_at",
     "status",
-    "failure_class",
     "retryable",
     "materiality_summary",
     "divergence_summary",
     "runtime_activation",
     "official_result"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": [
+          "output_manifest_sha256",
+          "invariant_report_sha256",
+          "baseline_comparison_sha256"
+        ],
+        "not": {
+          "required": ["failure_class"]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["failed", "rejected"]
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["failure_class"]
+      }
+    }
   ],
   "properties": {
     "schema_version": {
@@ -81,21 +132,7 @@
       "enum": ["succeeded", "failed", "rejected"]
     },
     "failure_class": {
-      "type": ["string", "null"],
-      "enum": [
-        null,
-        "missing_output",
-        "unexpected_output",
-        "mismatch_count_non_zero",
-        "nan_or_inf",
-        "constraint_violation",
-        "run_fingerprint_inconsistent",
-        "output_manifest_incomplete",
-        "non_reproducible_result",
-        "runtime_activation_attempt",
-        "invariant_failure",
-        "executor_failure"
-      ]
+      "$ref": "#/$defs/failureClass"
     },
     "retryable": {
       "type": "boolean"
@@ -125,7 +162,8 @@
         "unexpected_outputs",
         "mismatch_count",
         "nan_or_inf_count",
-        "constraint_violations"
+        "constraint_violations",
+        "invariant_failures"
       ],
       "properties": {
         "missing_outputs": {
@@ -145,6 +183,10 @@
           "minimum": 0
         },
         "constraint_violations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invariant_failures": {
           "type": "integer",
           "minimum": 0
         }

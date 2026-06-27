@@ -15,9 +15,9 @@ later isolated pilot.
 - `engine_commit`
 - `engine_image_digest`
 - `output_artifact_uri`
-- `output_manifest_sha256`
-- `invariant_report_sha256`
-- `baseline_comparison_sha256`
+- `output_manifest_sha256` when produced
+- `invariant_report_sha256` when produced
+- `baseline_comparison_sha256` when produced
 - `duration_ms`
 - `memory_peak_bytes`
 - `cpu_time_ms`
@@ -45,6 +45,8 @@ later isolated pilot.
 - `runtime_activation=false` on every event.
 - `allow_db_write=false` on every envelope.
 - `allow_allocator_publish=false` on every envelope.
-- Artifact hashes are present and immutable.
+- Successful result manifests include immutable artifact hashes.
+- Failed or rejected result manifests preserve the concrete `failure_class`
+  without fabricated artifact hashes.
 - Correlation identifiers join envelope, execution log, result manifest, and
   comparison output.

@@ -38,8 +38,7 @@
     "allow_db_write",
     "allow_allocator_publish",
     "execution_policy",
-    "output_artifact_uri",
-    "output_manifest_sha256"
+    "output_artifact_uri"
   ],
   "properties": {
     "schema_version": {
@@ -107,6 +106,7 @@
       "minLength": 1
     },
     "output_manifest_sha256": {
+      "description": "Optional expected output manifest hash when it is known before dispatch; actual produced hashes are recorded in the result manifest.",
       "$ref": "#/$defs/sha256Hex"
     }
   }

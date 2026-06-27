@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -63,10 +64,13 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         "allow_allocator_publish": False,
         "execution_policy": "isolated_external_executor_no_productive_runtime_docker",
         "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/exec-open-macro-v03-shadow-001",
-        "output_manifest_sha256": "b" * 64,
     }
 
     jsonschema.validate(envelope, schema)
+    with_expected_output_hash = dict(envelope)
+    with_expected_output_hash["output_manifest_sha256"] = "b" * 64
+    jsonschema.validate(with_expected_output_hash, schema)
+
     for field in ("runtime_activation", "allow_db_write", "allow_allocator_publish"):
         bad = dict(envelope)
         bad[field] = True
@@ -92,7 +96,6 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "started_at": "2026-06-27T21:34:05Z",
         "finished_at": "2026-06-27T21:35:05Z",
         "status": "succeeded",
-        "failure_class": None,
         "retryable": False,
         "materiality_summary": {
             "threshold_version": "open_macro_v03_shadow_materiality_v1",
@@ -105,12 +108,62 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "mismatch_count": 0,
             "nan_or_inf_count": 0,
             "constraint_violations": 0,
+            "invariant_failures": 0,
         },
         "runtime_activation": False,
         "official_result": False,
     }
 
     jsonschema.validate(result, schema)
+
+    success_with_failure_class = dict(result)
+    success_with_failure_class["failure_class"] = "executor_failure"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(success_with_failure_class, schema)
+
+    success_without_output_hash = dict(result)
+    del success_without_output_hash["output_manifest_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(success_without_output_hash, schema)
+
+    failed_without_artifacts = {
+        key: value
+        for key, value in result.items()
+        if key
+        not in {
+            "output_manifest_sha256",
+            "invariant_report_sha256",
+            "baseline_comparison_sha256",
+        }
+    }
+    failed_without_artifacts["status"] = "failed"
+    failed_without_artifacts["failure_class"] = "executor_failure"
+    failed_without_artifacts["retryable"] = True
+    jsonschema.validate(failed_without_artifacts, schema)
+
+    failed_without_failure_class = dict(failed_without_artifacts)
+    del failed_without_failure_class["failure_class"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(failed_without_failure_class, schema)
+
+    invalid_timestamp = dict(result)
+    invalid_timestamp["started_at"] = "not-a-date"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invalid_timestamp, schema)
+
+    missing_invariant_count = deepcopy(result)
+    del missing_invariant_count["divergence_summary"]["invariant_failures"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_invariant_count, schema)
+
+    assert set(schema["$defs"]["failureClass"]["enum"]) >= {
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "invariant_failure",
+        "hard_relative_delta_exceeded",
+    }
+
     for field in ("runtime_activation", "official_result"):
         bad = dict(result)
         bad[field] = True
@@ -129,6 +182,8 @@ def test_baseline_comparison_policy_rejects_required_failure_classes() -> None:
     assert policy["materiality_thresholds"]["mismatch_count_max"] == 0
     assert policy["materiality_thresholds"]["nan_or_inf_count_max"] == 0
     assert policy["materiality_thresholds"]["constraint_violations_max"] == 0
+    assert policy["materiality_thresholds"]["invariant_failures_max"] == 0
+    assert policy["materiality_thresholds"]["hard_reject_relative_delta_pct"] == 2.0
     assert set(policy["rejection_rules"]) >= {
         "missing_output",
         "unexpected_output",
@@ -139,6 +194,17 @@ def test_baseline_comparison_policy_rejects_required_failure_classes() -> None:
         "output_manifest_incomplete",
         "non_reproducible_result",
         "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "invariant_failure",
+        "hard_relative_delta_exceeded",
+    }
+    assert set(policy["promotion_to_shadow_pilot_rules"]) >= {
+        "invariant_failures_zero",
+        "relative_deltas_below_hard_reject_threshold",
+        "no_official_db_write_attempt",
+        "no_allocator_publish_attempt",
     }
     assert policy["forbidden_effects"]["allocator_publish"] == "forbidden"
     assert policy["forbidden_effects"]["official_db_write"] == "forbidden"

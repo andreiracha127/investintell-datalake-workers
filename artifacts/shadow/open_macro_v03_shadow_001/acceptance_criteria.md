@@ -24,9 +24,12 @@ pilot or productive activation.
 
 - Job envelope validates against `shadow_job_envelope.schema.json`.
 - Result manifest validates against `shadow_result_manifest.schema.json`.
-- Output manifest hash is present and reproducible.
-- Invariant report hash is present and green.
-- Baseline comparison hash is present and green.
+- Successful result manifests include reproducible output, invariant report, and
+  baseline comparison hashes.
+- Failed or rejected result manifests record the `failure_class` without
+  fabricating artifact hashes that were not produced.
+- Invariant report hash is present and green for successful executions.
+- Baseline comparison hash is present and green for successful executions.
 - Baseline comparison policy rejects all hard failure classes.
 - Technical and quantitative review records the exact pilot window, executor,
   artifact location, and rollback owner.
@@ -44,3 +47,5 @@ pilot or productive activation.
 - Any attempt to activate runtime.
 - Any attempt to write official DB results.
 - Any attempt to publish to the allocator.
+- Any invariant failure.
+- Any relative delta above the hard-reject threshold.
