@@ -4,6 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
+import pytest
+
 from src import calibration_candidate as cc
 from src.input_packs.hashing import canonical_json_sha256, file_sha256, load_json
 
@@ -27,7 +29,7 @@ def _summary() -> dict[str, str]:
     }
 
 
-def _args(output_dir: Path, *, jobs: int = 1) -> argparse.Namespace:
+def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) -> argparse.Namespace:
     summary = _summary()
     return argparse.Namespace(
         input_pack=str(GOLDEN_PACK),
@@ -48,8 +50,37 @@ def _args(output_dir: Path, *, jobs: int = 1) -> argparse.Namespace:
         network="none",
         db_access=False,
         input_pack_mount="read_only",
-        evidence_json=None,
+        evidence_json=evidence_json,
     )
+
+
+def _write_evidence(path: Path) -> Path:
+    labels = ["host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"]
+    hashes = {
+        "selected_parameters_sha256": "a" * 64,
+        "rejected_candidates_sha256": "b" * 64,
+        "metrics_manifest_sha256": "c" * 64,
+        "invariant_report_sha256": "d" * 64,
+        "baseline_comparison_sha256": "e" * 64,
+        "output_manifest_sha256": "f" * 64,
+    }
+    payload = {
+        "schema_version": 1,
+        "calibration_id": cc.CALIBRATION_ID,
+        "base_label": "host_jobs1_r0",
+        "labels": labels,
+        "comparisons": {
+            f"host_jobs1_r0_vs_{label}": {"ok": True, "mismatched": [], "hashes": hashes} for label in labels
+        },
+        "run_count": len(labels),
+        "mismatch_count": 0,
+        "network": "none",
+        "db_access": False,
+        "input_pack_mount": "read_only",
+        "ok": True,
+    }
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
 
 
 def test_calibration_candidate_generates_required_artifacts(tmp_path: Path) -> None:
@@ -87,6 +118,90 @@ def test_calibration_candidate_generates_required_artifacts(tmp_path: Path) -> N
     assert invariant["ok"] is True
     assert invariant["checks"]["db_access"] is True
     assert invariant["checks"]["network_access"] is True
+
+
+def test_run_matrix_requires_external_evidence(tmp_path: Path) -> None:
+    cc.run_calibration(_args(tmp_path))
+
+    run_matrix = json.loads((tmp_path / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["evidence_required"] is True
+    assert run_matrix["comparison_evidence"] is None
+    assert run_matrix["hashes"] == {}
+    assert run_matrix["ok"] is False
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_accepts_independent_evidence(tmp_path: Path) -> None:
+    evidence = _write_evidence(tmp_path / "matrix_evidence.json")
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is True
+    assert set(run_matrix["hashes"]) == {"host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"}
+    assert set(reproducibility["jobs_1_hashes"]) == {"host_jobs1_r0", "container_jobs1_r0"}
+    assert set(reproducibility["jobs_4_hashes"]) == {"host_jobs4_r0", "container_jobs4_r0"}
+    assert reproducibility["evidence_ok"] is True
+
+
+def test_invariant_ok_tracks_failed_checks(tmp_path: Path) -> None:
+    report = cc.build_invariant_report(
+        output_dir=tmp_path,
+        generated_files=["missing.json"],
+        config={"constraints": {"institutional_limits": {"status": "explicitly_unset"}}},
+        candidate_rows=[{"candidate_id": "x", "weights_sum": 1.0, "objective_value": 0.0}],
+        network="bridge",
+        db_access=True,
+        input_pack_mount="read_write",
+    )
+
+    assert report["ok"] is False
+    assert report["checks"]["outputs_complete"] is False
+    assert report["checks"]["db_access"] is False
+    assert report["checks"]["network_access"] is False
+    assert report["checks"]["input_pack_read_only"] is False
+
+
+def test_run_calibration_enforces_runtime_guards_for_direct_calls(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.db_access = True
+    with pytest.raises(ValueError, match="db_access must remain false"):
+        cc.run_calibration(args)
+
+    args = _args(tmp_path)
+    args.network = "bridge"
+    with pytest.raises(ValueError, match="network must be none"):
+        cc.run_calibration(args)
+
+    args = _args(tmp_path)
+    args.input_pack_mount = "read_write"
+    with pytest.raises(ValueError, match="input pack mount must be read_only"):
+        cc.run_calibration(args)
+
+
+def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.builder_commit = "9" * 40
+
+    with pytest.raises(ValueError, match="builder_commit mismatch"):
+        cc.run_calibration(args)
+
+
+def test_output_manifest_excludes_stale_files_and_records_disk_size(tmp_path: Path) -> None:
+    stale = tmp_path / "stale_debug.json"
+    stale.write_text('{"leftover": true}\n', encoding="utf-8")
+
+    cc.run_calibration(_args(tmp_path))
+
+    manifest = json.loads((tmp_path / "output_manifest.json").read_text(encoding="utf-8"))
+    paths = {entry["path"] for entry in manifest["artifacts"]}
+    assert "stale_debug.json" not in paths
+    assert "run_matrix.json" not in paths
+    assert "reproducibility_report.json" not in paths
+    for entry in manifest["artifacts"]:
+        assert entry["bytes"] == (tmp_path / entry["path"]).stat().st_size
 
 
 def test_calibration_candidate_is_jobs_invariant(tmp_path: Path) -> None:

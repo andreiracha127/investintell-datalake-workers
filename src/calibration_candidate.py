@@ -382,31 +382,41 @@ def build_invariant_report(
     values = finite_values(candidate_rows)
     weights_ok = all(abs(float(row["weights_sum"]) - 1.0) <= 1e-12 for row in candidate_rows)
     files_ok = all((output_dir / rel).exists() for rel in generated_files)
+    try:
+        for rel in generated_files:
+            ensure_child(output_dir / rel, output_dir)
+        outputs_within_allowed_dir = True
+    except ValueError:
+        outputs_within_allowed_dir = False
+    checks = {
+        "no_nan": not any(math.isnan(v) for v in values),
+        "no_infinite": not any(math.isinf(v) for v in values),
+        "outputs_complete": files_ok,
+        "constraints_respected": True,
+        "weights_close_within_tolerance": weights_ok,
+        "exposures_within_defined_limits": "institutional_limits_explicitly_unset_final_approval_blocked",
+        "turnover_within_defined_envelope": "institutional_limits_explicitly_unset_final_approval_blocked",
+        "dates_within_input_pack": True,
+        "db_access": db_access is False,
+        "network_access": network == "none",
+        "input_pack_read_only": input_pack_mount == "read_only",
+        "no_external_source_access": True,
+        "outputs_within_allowed_dir": outputs_within_allowed_dir,
+    }
     return {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
-        "ok": True,
-        "checks": {
-            "no_nan": not any(math.isnan(v) for v in values),
-            "no_infinite": not any(math.isinf(v) for v in values),
-            "outputs_complete": files_ok,
-            "constraints_respected": True,
-            "weights_close_within_tolerance": weights_ok,
-            "exposures_within_defined_limits": "institutional_limits_explicitly_unset_final_approval_blocked",
-            "turnover_within_defined_envelope": "institutional_limits_explicitly_unset_final_approval_blocked",
-            "dates_within_input_pack": True,
-            "db_access": db_access is False,
-            "network_access": network == "none",
-            "external_source_access": False,
-            "outputs_within_allowed_dir": True,
-        },
+        "ok": all(value for value in checks.values() if isinstance(value, bool)),
+        "checks": checks,
         "institutional_limits": config["constraints"]["institutional_limits"],
         "final_approval_allowed": False,
         "technical_debts_accepted": TECHNICAL_DEBTS,
     }
 
 
-def output_manifest(output_dir: Path, exclude: set[str]) -> dict[str, Any]:
+def output_manifest(output_dir: Path, generated_files: list[str], exclude: set[str] | None = None) -> dict[str, Any]:
+    excluded = exclude or set()
+
     def digestible_bytes(path: Path) -> bytes:
         suffix = path.suffix.lower()
         if suffix == ".json":
@@ -416,20 +426,62 @@ def output_manifest(output_dir: Path, exclude: set[str]) -> dict[str, Any]:
         return path.read_bytes()
 
     artifacts = []
-    for path in sorted(output_dir.rglob("*")):
+    for rel in sorted(set(generated_files)):
+        if rel in excluded:
+            continue
+        path = ensure_child(output_dir / rel, output_dir)
         if not path.is_file():
             continue
-        rel = path.relative_to(output_dir).as_posix()
-        if rel in exclude:
-            continue
         canonical_bytes = digestible_bytes(path)
-        artifacts.append({"path": rel, "sha256": sha256_bytes(canonical_bytes), "bytes": len(canonical_bytes)})
+        artifacts.append({"path": rel, "sha256": sha256_bytes(canonical_bytes), "bytes": path.stat().st_size})
     return {
         "schema_version": 1,
         "artifact_type": "calibration_output_manifest",
         "calibration_id": CALIBRATION_ID,
         "artifacts": artifacts,
     }
+
+
+def matrix_evidence_ok(matrix_evidence: dict[str, Any] | None) -> bool:
+    if not isinstance(matrix_evidence, dict):
+        return False
+    try:
+        run_count = int(matrix_evidence.get("run_count", 0))
+        mismatch_count = int(matrix_evidence.get("mismatch_count", -1))
+    except (TypeError, ValueError):
+        return False
+    labels = matrix_evidence.get("labels")
+    if not isinstance(labels, list) or len(labels) < 4:
+        return False
+    if matrix_evidence.get("network") not in (None, "none"):
+        return False
+    if matrix_evidence.get("db_access") not in (None, False):
+        return False
+    if matrix_evidence.get("input_pack_mount") not in (None, "read_only"):
+        return False
+    return matrix_evidence.get("ok") is True and run_count >= 4 and mismatch_count == 0
+
+
+def run_hashes_from_evidence(matrix_evidence: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    if not isinstance(matrix_evidence, dict):
+        return {}
+    base_label = matrix_evidence.get("base_label")
+    labels = matrix_evidence.get("labels")
+    comparisons = matrix_evidence.get("comparisons")
+    if not isinstance(base_label, str) or not isinstance(labels, list) or not isinstance(comparisons, dict):
+        return {}
+    run_hashes: dict[str, dict[str, str]] = {}
+    for label in labels:
+        if not isinstance(label, str):
+            continue
+        comparison = comparisons.get(f"{base_label}_vs_{label}")
+        if isinstance(comparison, dict) and isinstance(comparison.get("hashes"), dict):
+            run_hashes[label] = {str(key): str(value) for key, value in comparison["hashes"].items()}
+    return run_hashes
+
+
+def hashes_for_labels(run_hashes: dict[str, dict[str, str]], token: str) -> dict[str, dict[str, str]]:
+    return {label: hashes for label, hashes in run_hashes.items() if token in label}
 
 
 def hashes_for(paths: dict[str, Path]) -> dict[str, str]:
@@ -497,6 +549,12 @@ def render_report(
 def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     input_pack = Path(args.input_pack).resolve()
     output_dir = Path(args.output_dir).resolve()
+    if args.db_access:
+        raise ValueError("db_access must remain false")
+    if args.network != "none":
+        raise ValueError("network must be none")
+    if args.input_pack_mount != "read_only":
+        raise ValueError("input pack mount must be read_only")
     output_dir.mkdir(parents=True, exist_ok=True)
     ensure_child(output_dir, output_dir)
 
@@ -508,7 +566,17 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     }
     summary = pack_summary(input_pack, expected)
     engine_commit = args.engine_commit or git_commit(args.input_pack_p0_merge_commit)
-    builder_commit = args.builder_commit or summary["builder_commit"]
+    if args.builder_commit and args.builder_commit != summary["builder_commit"]:
+        raise ValueError(
+            f"builder_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
+            f"got {args.builder_commit}"
+        )
+    if args.builder_code_sha256 and args.builder_code_sha256 != summary["builder_code_sha256"]:
+        raise ValueError(
+            f"builder_code_sha256 mismatch: expected verified pack hash {summary['builder_code_sha256']}, "
+            f"got {args.builder_code_sha256}"
+        )
+    builder_commit = summary["builder_commit"]
     config = default_config(summary, merge_commit=args.input_pack_p0_merge_commit)
     grid = default_parameter_grid()
 
@@ -586,21 +654,19 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     write_json(output_dir / "invariant_report.json", invariant)
 
     artifact_hashes = hashes_for(paths)
-    run_hashes = {
-        "jobs_1": artifact_hashes,
-        "jobs_4": artifact_hashes,
-        "repeat_jobs_1": artifact_hashes,
-        "repeat_jobs_4": artifact_hashes,
-    }
     matrix_evidence = load_json(Path(args.evidence_json)) if args.evidence_json else None
+    matrix_run_hashes = run_hashes_from_evidence(matrix_evidence)
+    matrix_ok = matrix_evidence_ok(matrix_evidence)
     run_matrix = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
         "required_runs": ["jobs=1", "jobs=4", "repeat jobs=1", "repeat jobs=4"],
         "jobs_parameter_effect": "deterministic candidate evaluator is invariant to jobs",
-        "hashes": run_hashes,
+        "current_run_hashes": artifact_hashes,
+        "hashes": matrix_run_hashes,
         "comparison_evidence": matrix_evidence,
-        "ok": True if matrix_evidence is None else bool(matrix_evidence.get("ok")),
+        "evidence_required": True,
+        "ok": matrix_ok,
     }
     write_json(output_dir / "run_matrix.json", run_matrix)
 
@@ -617,14 +683,17 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "dockerfile_sha256": args.dockerfile_sha256,
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
-        "jobs_1_hashes": artifact_hashes,
-        "jobs_4_hashes": artifact_hashes,
-        "repeat_run_hashes": run_hashes,
+        "jobs_1_hashes": hashes_for_labels(matrix_run_hashes, "jobs1"),
+        "jobs_4_hashes": hashes_for_labels(matrix_run_hashes, "jobs4"),
+        "repeat_run_hashes": matrix_run_hashes,
+        "current_run_hashes": artifact_hashes,
         "path_independence": True,
         "network": args.network,
         "db_access": args.db_access,
         "timestamp_execution_id_exclusion_policy": "no timestamps or execution ids are included in semantic artifacts",
         "output_canonicalization_policy": "canonical JSON with sorted keys and stable file hashes",
+        "evidence_required": True,
+        "evidence_ok": matrix_ok,
         "comparison_evidence": matrix_evidence,
     }
     write_json(output_dir / "reproducibility_report.json", reproducibility)
@@ -633,7 +702,10 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         render_report(summary=summary, selected=selected, rejected=rejected, invariant=invariant, baseline=baseline),
     )
 
-    out_manifest = output_manifest(output_dir, exclude={"output_manifest.json", "calibration_manifest.json"})
+    output_manifest_files = [
+        rel for rel in generated_files if rel not in {"run_matrix.json", "reproducibility_report.json"}
+    ]
+    out_manifest = output_manifest(output_dir, output_manifest_files)
     write_json(output_dir / "output_manifest.json", out_manifest)
     manifest = {
         "schema_version": 1,
