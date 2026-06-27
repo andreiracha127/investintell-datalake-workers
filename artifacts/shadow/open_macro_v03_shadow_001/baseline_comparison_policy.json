@@ -1,0 +1,89 @@
+{
+  "policy_id": "open_macro_v03_shadow_baseline_comparison_policy_v1",
+  "shadow_id": "open_macro_v03_shadow_001",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "official_baseline": {
+    "baseline_id": "baseline_current",
+    "role": "official_runtime_reference",
+    "remains_official": true
+  },
+  "candidate": {
+    "candidate_id": "open_macro_v03_calibration_001",
+    "role": "calibration_candidate_validated",
+    "official_result": false,
+    "runtime_activation": false
+  },
+  "metrics": {
+    "absolute": [
+      "missing_outputs",
+      "unexpected_outputs",
+      "mismatch_count",
+      "nan_or_inf_count",
+      "constraint_violations",
+      "invariant_failures"
+    ],
+    "relative_deltas": [
+      "return_metric_delta_pct",
+      "risk_metric_delta_pct",
+      "allocation_weight_delta_pct",
+      "classification_rate_delta_pct"
+    ],
+    "regressions": [
+      "latency_p95_regression_pct",
+      "memory_peak_regression_pct",
+      "retry_rate_delta_pct"
+    ]
+  },
+  "materiality_thresholds": {
+    "missing_outputs_max": 0,
+    "unexpected_outputs_max": 0,
+    "mismatch_count_max": 0,
+    "nan_or_inf_count_max": 0,
+    "constraint_violations_max": 0,
+    "invariant_failures_max": 0,
+    "hard_reject_relative_delta_pct": 2.0,
+    "review_required_relative_delta_pct": 0.5,
+    "latency_p95_regression_review_pct": 10.0,
+    "memory_peak_regression_review_pct": 10.0,
+    "retry_rate_delta_review_pct": 1.0
+  },
+  "numeric_tolerances": {
+    "float_abs_tolerance": 1e-12,
+    "float_rel_tolerance": 1e-10,
+    "hash_comparison": "exact"
+  },
+  "rejection_rules": [
+    "missing_output",
+    "unexpected_output",
+    "mismatch_count_non_zero",
+    "nan_or_inf",
+    "constraint_violation",
+    "run_fingerprint_inconsistent",
+    "output_manifest_incomplete",
+    "non_reproducible_result",
+    "runtime_activation_attempt"
+  ],
+  "promotion_to_shadow_pilot_rules": [
+    "all_required_outputs_present",
+    "no_unexpected_outputs",
+    "mismatch_count_zero",
+    "no_nan_or_inf",
+    "all_constraints_satisfied",
+    "run_fingerprint_consistent",
+    "output_manifest_complete",
+    "result_reproducible",
+    "runtime_activation_false",
+    "allow_db_write_false",
+    "allow_allocator_publish_false",
+    "technical_and_quantitative_review_recorded"
+  ],
+  "forbidden_effects": {
+    "allocator_publish": "forbidden",
+    "official_db_write": "forbidden",
+    "production_endpoint_activation": "forbidden",
+    "formula_change": "forbidden",
+    "input_pack_change": "forbidden",
+    "calibration_pack_change": "forbidden",
+    "contract_v1_change_without_new_bundle": "forbidden"
+  }
+}

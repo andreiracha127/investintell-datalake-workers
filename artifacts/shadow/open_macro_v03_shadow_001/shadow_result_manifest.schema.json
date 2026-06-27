@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/shadow/open_macro_v03_shadow_001/shadow_result_manifest.schema.json",
+  "title": "OpenMacroV03ShadowResultManifest001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schema_version",
+    "shadow_id",
+    "execution_id",
+    "run_fingerprint",
+    "calibration_id",
+    "input_pack_sha256",
+    "engine_image_digest",
+    "output_manifest_sha256",
+    "invariant_report_sha256",
+    "baseline_comparison_sha256",
+    "started_at",
+    "finished_at",
+    "status",
+    "failure_class",
+    "retryable",
+    "materiality_summary",
+    "divergence_summary",
+    "runtime_activation",
+    "official_result"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "shadow_id": {
+      "const": "open_macro_v03_shadow_001"
+    },
+    "execution_id": {
+      "type": "string",
+      "minLength": 12
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "calibration_id": {
+      "const": "open_macro_v03_calibration_001"
+    },
+    "input_pack_sha256": {
+      "const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
+    },
+    "engine_image_digest": {
+      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+    },
+    "output_manifest_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "invariant_report_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "baseline_comparison_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "started_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "finished_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "status": {
+      "enum": ["succeeded", "failed", "rejected"]
+    },
+    "failure_class": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "missing_output",
+        "unexpected_output",
+        "mismatch_count_non_zero",
+        "nan_or_inf",
+        "constraint_violation",
+        "run_fingerprint_inconsistent",
+        "output_manifest_incomplete",
+        "non_reproducible_result",
+        "runtime_activation_attempt",
+        "invariant_failure",
+        "executor_failure"
+      ]
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "materiality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threshold_version", "material_divergence", "max_relative_delta_pct"],
+      "properties": {
+        "threshold_version": {
+          "const": "open_macro_v03_shadow_materiality_v1"
+        },
+        "material_divergence": {
+          "type": "boolean"
+        },
+        "max_relative_delta_pct": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "divergence_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missing_outputs",
+        "unexpected_outputs",
+        "mismatch_count",
+        "nan_or_inf_count",
+        "constraint_violations"
+      ],
+      "properties": {
+        "missing_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unexpected_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mismatch_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nan_or_inf_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "constraint_violations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runtime_activation": {
+      "const": false
+    },
+    "official_result": {
+      "const": false
+    }
+  }
+}
