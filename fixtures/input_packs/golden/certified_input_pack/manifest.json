@@ -1,15 +1,15 @@
 {
   "as_of": "2026-06-26",
-  "builder_code_sha256": "84d4e7415c5092fc80c7d7b5c080a385cd33f1b6e329bc9e3fdb0bf6c436fa21",
-  "builder_commit": "0c619c4cd11d8ae177df11f3b32091f9351cec9c",
+  "builder_code_sha256": "caec1a22f93bbc44d8c41e6c8f9468df12f0d90441b27cc7124ba41a9ec489ee",
+  "builder_commit": "2b60827a9a245e733709195aeced7576dcf3eec2",
   "canonical_snapshot_sha256": "a691ec12a5b47831b7b4009378836856e71145902a67d1faab0c398a7cb72dfc",
   "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
   "derived_feature_sha256": "3efd73df711e7fbe17bf99e3facad30461b5f847922d46ca5a06b71881ed61e6",
   "input_pack_id": "open_macro_v03_certified_input_pack_001",
-  "input_pack_sha256": "dc3eb2ae562032a89cfcb4d46e1f9623d28e1ce75a2bdc3a03f30cfb7c7e0876",
+  "input_pack_sha256": "63969be2b0652fe98938d2884bdac6417608df7b4ea056aa5c0a6eefff5ca60b",
   "input_pack_version": "v1",
   "raw_snapshot_sha256": "7735e772dc9a70ad3c939e7ff782754c904c1dc4609e8cede7123258155274e1",
   "runtime_activation": false,
-  "source_commit": "0c619c4cd11d8ae177df11f3b32091f9351cec9c",
+  "source_commit": "2b60827a9a245e733709195aeced7576dcf3eec2",
   "source_repo": "investintell-datalake-workers"
 }
