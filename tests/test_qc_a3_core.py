@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -9,6 +10,17 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import qc_a3_core as qc
+
+
+def _load_qc_project_copy():
+    module_path = Path(__file__).resolve().parents[1] / "qc-a3-parity" / "qc_a3_core.py"
+    spec = importlib.util.spec_from_file_location("qc_a3_project_copy", module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[str(spec.name)] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_store_key_uses_stable_object_store_prefix() -> None:
@@ -227,6 +239,35 @@ def test_compare_expected_metrics_rejects_duplicate_actual_fold(tmp_path: Path) 
     assert comparison["mismatch_count"] == 1
 
 
+def test_qc_project_copy_rejects_unexpected_and_duplicate_folds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_qc = _load_qc_project_copy()
+    monkeypatch.setattr(project_qc, "require_harness", lambda: object())
+    expected_dir = tmp_path / "expected_metrics"
+    metrics_dir = expected_dir / "expected"
+    metrics_dir.mkdir(parents=True)
+    project_qc.write_json(metrics_dir / "macro_metric_rows.json", {"rows": [_metric_row("train")]})
+
+    comparison = project_qc.compare_expected_metrics(
+        project_qc.A3ParityConfig(
+            feature_manifest=tmp_path / "feature_manifest.json",
+            revision_uncertainty_manifest=tmp_path / "revision_uncertainty_manifest.json",
+            config_catalog=tmp_path / "catalog.json",
+            a32_grid_dir=tmp_path / "a32",
+            output_dir=tmp_path / "out",
+            expected_v03_grid_dir=expected_dir,
+        ),
+        [_metric_row("train"), _metric_row("train"), _metric_row("extra")],
+    )
+
+    assert comparison["status"] == "failed"
+    assert comparison["unexpected_folds"] == ["extra"]
+    assert comparison["duplicate_actual_folds"] == ["train"]
+    assert comparison["mismatch_count"] == 2
+
+
 def test_compare_expected_metrics_rejects_missing_fold(tmp_path: Path) -> None:
     expected_dir = _expected_metrics_dir(tmp_path, [_metric_row("train"), _metric_row("oos")])
     comparison = qc.compare_expected_metrics(
@@ -268,6 +309,49 @@ def test_main_returns_nonzero_when_run_parity_comparison_fails(
 
     assert qc.main(["run-parity"]) == 1
     assert '"status": "failed"' in capsys.readouterr().out
+
+
+def test_qc_project_copy_run_parity_comparison_failure_exits_nonzero(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    project_qc = _load_qc_project_copy()
+    monkeypatch.setattr(
+        project_qc,
+        "parse_args",
+        lambda argv: ("run-parity", project_qc.A3ParityConfig(
+            feature_manifest=tmp_path / "feature_manifest.json",
+            revision_uncertainty_manifest=tmp_path / "revision_uncertainty_manifest.json",
+            config_catalog=tmp_path / "catalog.json",
+            a32_grid_dir=tmp_path / "a32",
+            output_dir=tmp_path / "out",
+        )),
+    )
+    monkeypatch.setattr(
+        project_qc,
+        "run_parity",
+        lambda config: {"comparison": {"status": "failed", "mismatches": []}},
+    )
+
+    assert project_qc.main(["run-parity"]) == 1
+    assert '"status": "failed"' in capsys.readouterr().out
+
+
+def test_qc_project_copy_writes_deterministic_npz(tmp_path: Path) -> None:
+    np = pytest.importorskip("numpy")
+    project_qc = _load_qc_project_copy()
+    arrays = {
+        "z": np.array([2.0, 1.0], dtype=np.float64),
+        "name": np.array(["b", "a"], dtype=str),
+    }
+
+    first = tmp_path / "first.npz"
+    second = tmp_path / "second.npz"
+    project_qc.write_npz_canonical(first, arrays)
+    project_qc.write_npz_canonical(second, arrays)
+
+    assert first.read_bytes() == second.read_bytes()
 
 
 def test_require_harness_imports_worker_module() -> None:

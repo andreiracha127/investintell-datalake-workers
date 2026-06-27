@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "sha256:0d8ad7e471f5caeaa7dda2180d34ad3eb4d28c6add18529c633ebb2815dd4031",
+  "bundle_sha256": "sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
   "contract_version": "1.0.0",
   "files": [
     {
@@ -56,7 +56,7 @@
     },
     {
       "path": "job-request.schema.json",
-      "sha256": "950ce8ba820f8fe78c9105fae5715ab3213c784d55ae6a18c51762a0eeaaf317"
+      "sha256": "a6c463ce9aaffa54a6ecf936750dd1ebad727d7c9540fd66db1aec6d69e8114d"
     },
     {
       "path": "job-result.schema.json",

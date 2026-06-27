@@ -31,6 +31,7 @@ def test_golden_pack_verifies_offline() -> None:
     assert result["input_pack_sha256_match"] is True
     assert result["runtime_activation_ok"] is True
     assert result["provenance_complete"] is True
+    assert result["expected_content_errors"] == []
 
 
 def test_verifier_uses_embedded_pack_schemas_when_repo_schemas_are_unavailable(
@@ -74,6 +75,54 @@ def test_verifier_prefers_trusted_repo_schemas_over_embedded_pack_schemas(tmp_pa
     assert result["ok"] is False
     assert result["input_pack_sha256_match"] is True
     assert "raw_snapshot_manifest.json" in result["component_schema_errors"]
+
+
+def test_verifier_requires_expected_p0_pack_content_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    for data_file in (pack / "data").rglob("*"):
+        if data_file.is_file():
+            data_file.unlink()
+
+    table_hashes = _read_json(pack / "table_hashes.json")
+    table_hashes["tables"] = [
+        table for table in table_hashes["tables"] if not str(table["path"]).startswith("data/")
+    ]
+    _write_json(pack / "table_hashes.json", table_hashes)
+
+    report_artifact = {
+        "columns": ["schema_version", "input_pack_id", "profile", "as_of"],
+        "dataset_name": "report:certification_summary",
+        "path": "reports/certification_summary.json",
+        "rows": 1,
+        "sha256": file_sha256(pack / "reports" / "certification_summary.json"),
+    }
+    for filename, snapshot_kind in (
+        ("raw_snapshot_manifest.json", "raw"),
+        ("canonical_snapshot_manifest.json", "canonical"),
+        ("derived_feature_manifest.json", "derived_feature"),
+    ):
+        original = _read_json(pack / filename)
+        payload = {
+            "schema_version": original["schema_version"],
+            "snapshot_kind": snapshot_kind,
+            "as_of": original["as_of"],
+            "artifacts": [report_artifact],
+        }
+        if snapshot_kind == "derived_feature":
+            payload["lineage"] = original["lineage"]
+        _write_json(pack / filename, payload)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert any("raw_snapshot_manifest.json: missing required P0 artifacts" in error for error in result["expected_content_errors"])
+    assert any("canonical_snapshot_manifest.json: missing required P0 artifacts" in error for error in result["expected_content_errors"])
+    assert any("derived_feature_manifest.json: missing required P0 artifacts" in error for error in result["expected_content_errors"])
+    assert any("table_hashes.json: missing required P0 data artifacts" in error for error in result["expected_content_errors"])
 
 
 def test_build_manifest_reproduces_golden_hash(tmp_path: Path) -> None:

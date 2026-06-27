@@ -29,6 +29,37 @@ SNAPSHOT_MANIFEST_FILES = (
     "canonical_snapshot_manifest.json",
     "derived_feature_manifest.json",
 )
+P0_INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
+P0_SOURCE_TABLES = (
+    "nav_timeseries",
+    "eod_prices",
+    "macro_data",
+    "instruments_universe",
+    "instrument_identity",
+    "fund_strategy_benchmark_proxy_map",
+    "strategy_reclassification_stage",
+    "sec_nport_holdings",
+    "sec_nport_fund_monthly_flows",
+)
+P0_RAW_ARTIFACT_PATHS = tuple(f"data/raw/{name}.json" for name in P0_SOURCE_TABLES)
+P0_CANONICAL_ARTIFACT_PATHS = tuple(f"data/canonical/{name}.json" for name in P0_SOURCE_TABLES)
+P0_DERIVED_ARTIFACT_PATHS = (
+    "data/derived/fund_nav_return_features.json",
+    "data/derived/market_price_return_features.json",
+    "data/derived/macro_observation_features.json",
+    "data/derived/fund_universe_features.json",
+    "data/derived/holdings_summary_features.json",
+    "data/derived/flow_momentum_features.json",
+    "data/derived/feature_lineage.json",
+)
+P0_EXPECTED_SNAPSHOT_ARTIFACTS = {
+    "raw_snapshot_manifest.json": frozenset(P0_RAW_ARTIFACT_PATHS),
+    "canonical_snapshot_manifest.json": frozenset(P0_CANONICAL_ARTIFACT_PATHS),
+    "derived_feature_manifest.json": frozenset(P0_DERIVED_ARTIFACT_PATHS),
+}
+P0_REQUIRED_DATA_ARTIFACTS = frozenset(
+    (*P0_RAW_ARTIFACT_PATHS, *P0_CANONICAL_ARTIFACT_PATHS, *P0_DERIVED_ARTIFACT_PATHS)
+)
 
 
 def _repo_root() -> Path:
@@ -203,6 +234,59 @@ def _unexpected_files(root: Path, table_hashes: dict[str, Any]) -> list[str]:
     return sorted(actual - expected)
 
 
+def _artifact_paths(payload: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    artifacts = payload.get("artifacts", [])
+    if not isinstance(artifacts, list):
+        return paths
+    for artifact in artifacts:
+        if isinstance(artifact, dict) and isinstance(artifact.get("path"), str):
+            paths.add(artifact["path"])
+    return paths
+
+
+def _table_paths(table_hashes: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    tables = table_hashes.get("tables", [])
+    if not isinstance(tables, list):
+        return paths
+    for table in tables:
+        if isinstance(table, dict) and isinstance(table.get("path"), str):
+            paths.add(table["path"])
+    return paths
+
+
+def _verify_expected_p0_content(
+    manifest: dict[str, Any],
+    component_payloads: dict[str, dict[str, Any]],
+) -> list[str]:
+    errors: list[str] = []
+    actual_pack_id = manifest.get("input_pack_id")
+    if actual_pack_id != P0_INPUT_PACK_ID:
+        errors.append(f"manifest.json: expected input_pack_id {P0_INPUT_PACK_ID}, got {actual_pack_id!r}")
+
+    for filename, expected_paths in P0_EXPECTED_SNAPSHOT_ARTIFACTS.items():
+        actual_paths = _artifact_paths(component_payloads.get(filename, {}))
+        missing = sorted(expected_paths - actual_paths)
+        unexpected = sorted(actual_paths - expected_paths)
+        if missing:
+            errors.append(f"{filename}: missing required P0 artifacts: {', '.join(missing)}")
+        if unexpected:
+            errors.append(f"{filename}: unexpected P0 artifacts: {', '.join(unexpected)}")
+
+    table_paths = _table_paths(component_payloads.get("table_hashes.json", {}))
+    missing_table_paths = sorted(P0_REQUIRED_DATA_ARTIFACTS - table_paths)
+    unexpected_data_paths = sorted(
+        path for path in table_paths - P0_REQUIRED_DATA_ARTIFACTS if path.startswith("data/")
+    )
+    if missing_table_paths:
+        errors.append(f"table_hashes.json: missing required P0 data artifacts: {', '.join(missing_table_paths)}")
+    if unexpected_data_paths:
+        errors.append(f"table_hashes.json: unexpected P0 data artifacts: {', '.join(unexpected_data_paths)}")
+
+    return errors
+
+
 def _provenance_complete(provenance: dict[str, Any]) -> bool:
     required_collections = ("datasets", "jobs", "runs", "sources")
     if any(not provenance.get(name) for name in required_collections):
@@ -281,6 +365,7 @@ def verify_pack(
     )
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
     unexpected_files = _unexpected_files(root, table_hashes)
+    expected_content_errors = _verify_expected_p0_content(manifest, component_payloads) if manifest else []
 
     actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
     expected_input_pack_sha256 = manifest.get("input_pack_sha256")
@@ -304,6 +389,7 @@ def verify_pack(
             not missing_table_artifacts,
             not table_hash_mismatches,
             not unexpected_files,
+            not expected_content_errors,
             input_pack_sha256_match,
             runtime_activation_ok,
             provenance_complete,
@@ -322,6 +408,7 @@ def verify_pack(
         "missing_table_artifacts": missing_table_artifacts,
         "table_hash_mismatches": table_hash_mismatches,
         "unexpected_files": unexpected_files,
+        "expected_content_errors": expected_content_errors,
         "expected_input_pack_sha256": expected_input_pack_sha256,
         "actual_input_pack_sha256": actual_input_pack_sha256,
         "input_pack_sha256_match": input_pack_sha256_match,

@@ -16,8 +16,8 @@ def test_job_request_schema_has_required_contract_fields() -> None:
 
     assert schema["title"] == "QuantEngineJobRequest"
     variants = [schema["$defs"][variant["$ref"].removeprefix("#/$defs/")] for variant in schema["oneOf"]]
-    assert {variant["properties"]["job_type"].get("const") or "a3_family" for variant in variants} == {
-        "a3_family",
+    assert {variant["properties"]["job_type"]["const"] for variant in variants} == {
+        "a3_qc_parity",
         "certified_input_pack_dry_run",
     }
     a3_variant = schema["$defs"]["a3_qc_parity_request"]

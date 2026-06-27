@@ -34,7 +34,7 @@
       ],
       "properties": {
         "schema_version": {"const": 1},
-        "job_type": {"enum": ["a3_qc_parity", "a31_grid", "a32_grid", "market_grid", "scope_decision"]},
+        "job_type": {"const": "a3_qc_parity"},
         "input_bundle_uri": {"type": "string", "minLength": 1},
         "input_bundle_logical_hash": {"type": "string", "minLength": 12},
         "config_catalog_uri": {"type": "string", "minLength": 1},
