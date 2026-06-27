@@ -123,6 +123,7 @@
     "baseline_comparison_sha256": "296624b2c5bf7e1d88994148c093c33f6ed08bddf1af9cebc824641ba2eca4d6",
     "invariant_report_sha256": "0e193ae9b267f8442554cabee3143fbb1cefd7c1cfda25e56f4eecc57913d874",
     "metrics_manifest_sha256": "bea08aef2f9b8adfe324c0881e78d310f4f3fce74e47028c79e3aaefea63c60c",
+    "output_manifest_sha256": "268e37f2d9f448f9e8666dc12d623f25ee5347fefd9ae789c794d624a2b8cfbc",
     "rejected_candidates_sha256": "ccb41065bc85e63d1fa2c1aa172a4407c5f86d2baea7bb070b52ec14741ae5a7",
     "selected_parameters_sha256": "5165db4826d363a8ce2d5c52011081a25654d4bbe7e1c17030cb02990bb6900e"
   },
