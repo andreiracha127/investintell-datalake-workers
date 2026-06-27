@@ -1,9 +1,11 @@
 # open_macro_v03 calibration 001
 
-Status: candidate
+Status: calibration_candidate_validated
 
 This note records the candidate calibration pack generated from the post-merge
-Certified Input Pack P0 baseline. The full machine-readable report lives in
+Certified Input Pack P0 baseline. PR #4 merged this pack to `main` at
+`08fccef698195decaf814fcdd03c45e249bae8ad`; the pack is validated as a
+calibration candidate only. The full machine-readable report lives in
 `artifacts/calibration/open_macro_v03_calibration_001/`.
 
 ## Inputs
@@ -27,5 +29,6 @@ The accepted technical debt remains:
 - `macro-history-coverage`
 - `macro-vintage-identity`
 
-Next gate: technical and quantitative review of the candidate calibration
-evidence before any shadow-readiness preparation.
+Next gate: inert Shadow Readiness preparation. This does not start shadow
+execution, activate runtime, unblock A5, mark freeze readiness, or publish any
+official allocator result.
