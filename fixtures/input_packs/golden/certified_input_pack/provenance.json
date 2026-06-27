@@ -61,7 +61,7 @@
   "schema_version": "v1",
   "sources": [
     {
-      "source_commit": "53dfb67ca3497ab80b780e1ca65ff50d6f698c7d",
+      "source_commit": "a04815c08013dc8e5c037490c4fa743a1f0fe716",
       "source_repo": "investintell-datalake-workers"
     }
   ]
