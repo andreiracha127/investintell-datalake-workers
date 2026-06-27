@@ -99,3 +99,8 @@ writes, frontend changes, and merge to `main` remain explicitly out of scope.
   `LOCK_SCREENER_METRICS` collision as accepted technical debt, but concurrent
   runtime scheduling must not proceed until the lock ids are distinct and covered
   by tests.
+- `runtime-read-model`: keep historical quadrant backfills from winning
+  `regime_quadrant_current_v`. The P0 input-pack gate must not change runtime
+  read-model SQL; a dedicated runtime PR must order/filter by current `as_of`
+  semantics so an old backfill cannot become the consumable current quadrant just
+  because it was inserted most recently.

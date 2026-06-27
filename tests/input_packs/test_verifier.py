@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from src.input_packs import build_manifest, verify_pack
+from src.input_packs.hashing import file_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 GOLDEN = ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack"
@@ -44,6 +45,35 @@ def test_verifier_uses_embedded_pack_schemas_when_repo_schemas_are_unavailable(
     result = verifier.verify_pack(pack)
 
     assert result["ok"] is True
+
+
+def test_verifier_prefers_trusted_repo_schemas_over_embedded_pack_schemas(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    _write_json(pack / "raw_snapshot_manifest.json", {})
+    _write_json(
+        pack / "schemas" / "snapshot_manifest.schema.json",
+        {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+        },
+    )
+
+    table_hashes_path = pack / "table_hashes.json"
+    table_hashes = _read_json(table_hashes_path)
+    for table in table_hashes["tables"]:
+        if table["path"] == "schemas/snapshot_manifest.schema.json":
+            table["sha256"] = file_sha256(pack / table["path"])
+            break
+    _write_json(table_hashes_path, table_hashes)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert "raw_snapshot_manifest.json" in result["component_schema_errors"]
 
 
 def test_build_manifest_reproduces_golden_hash(tmp_path: Path) -> None:

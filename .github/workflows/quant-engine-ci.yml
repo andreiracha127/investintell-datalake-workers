@@ -45,8 +45,9 @@ jobs:
           pip install -r requirements.quant-engine.lock jsonschema pytest
       - name: Run quant-engine and contract tests
         run: |
-          python -m pytest tests/quant_engine tests/quant_core \
-            tests/test_qc_a3_core.py tests/test_catalog_hash_path_independence.py -q
+          python -m pytest tests/input_packs tests/quant_engine tests/quant_core \
+            tests/test_qc_a3_core.py tests/test_catalog_hash_path_independence.py \
+            tests/test_repeatability_matrix.py -q
 
   contracts:
     runs-on: ubuntu-latest

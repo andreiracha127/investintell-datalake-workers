@@ -36,10 +36,13 @@ def _repo_root() -> Path:
 
 
 def _schema_root(pack_root: Path) -> Path:
+    repo_schemas = _repo_root() / "schemas" / "input_packs"
+    if (repo_schemas / "input_pack_manifest.schema.json").is_file():
+        return repo_schemas
     embedded = pack_root / "schemas"
     if (embedded / "input_pack_manifest.schema.json").is_file():
         return embedded
-    return _repo_root() / "schemas" / "input_packs"
+    return repo_schemas
 
 
 def _schema_errors(instance: dict[str, Any], schema_path: Path) -> list[str]:
@@ -228,12 +231,12 @@ def verify_pack(
     """Verify a pack without connecting to external systems."""
     root = Path(pack_dir)
     manifest_path = root / MANIFEST_NAME
-    schema_path = (
-        Path(manifest_schema_path)
-        if manifest_schema_path is not None
-        else _schema_root(root) / "input_pack_manifest.schema.json"
-    )
-    schema_root = _schema_root(root)
+    if manifest_schema_path is not None:
+        schema_path = Path(manifest_schema_path)
+        schema_root = schema_path.parent
+    else:
+        schema_root = _schema_root(root)
+        schema_path = schema_root / "input_pack_manifest.schema.json"
 
     parse_errors: list[str] = []
     manifest = _load_json_or_error(manifest_path, parse_errors) if manifest_path.exists() else {}
