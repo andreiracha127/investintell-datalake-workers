@@ -11,8 +11,6 @@ import argparse
 import datetime as dt
 import json
 import math
-import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +23,16 @@ A3_STATUS = "open_macro_v03"
 A4_STATUS = "calibration_candidate_running"
 AS_OF = "2026-06-26"
 TECHNICAL_DEBTS = ["macro-history-coverage", "macro-vintage-identity"]
+REQUIRED_MATRIX_LABELS = {
+    "host_jobs1_r0",
+    "host_jobs1_r1",
+    "host_jobs4_r0",
+    "host_jobs4_r1",
+    "container_jobs1_r0",
+    "container_jobs1_r1",
+    "container_jobs4_r0",
+    "container_jobs4_r1",
+}
 
 
 def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
@@ -55,18 +63,6 @@ def is_child_or_self(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def git_commit(default: str | None = None) -> str:
-    try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=Path(__file__).resolve().parents[1],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        return default or "0" * 40
 
 
 def sha256_payload(payload: Any) -> str:
@@ -467,19 +463,21 @@ def matrix_evidence_ok(
     except (TypeError, ValueError):
         return False
     labels = matrix_evidence.get("labels")
-    if not isinstance(labels, list) or len(labels) < 4:
+    if not isinstance(labels, list):
         return False
     if len({label for label in labels if isinstance(label, str)}) != len(labels):
         return False
+    if set(labels) != REQUIRED_MATRIX_LABELS:
+        return False
     if set(labels) != set(matrix_run_hashes):
         return False
-    if matrix_evidence.get("network") not in (None, "none"):
+    if matrix_evidence.get("network") != "none":
         return False
-    if matrix_evidence.get("db_access") not in (None, False):
+    if matrix_evidence.get("db_access") is not False:
         return False
-    if matrix_evidence.get("input_pack_mount") not in (None, "read_only"):
+    if matrix_evidence.get("input_pack_mount") != "read_only":
         return False
-    if matrix_evidence.get("ok") is not True or run_count < 4 or mismatch_count != 0:
+    if matrix_evidence.get("ok") is not True or run_count < len(REQUIRED_MATRIX_LABELS) or mismatch_count != 0:
         return False
     comparisons = matrix_evidence.get("comparisons")
     base_label = matrix_evidence.get("base_label")
@@ -610,7 +608,14 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "contract_bundle_sha256": args.contract_bundle_sha256,
     }
     summary = pack_summary(input_pack, expected)
-    engine_commit = args.engine_commit or git_commit(args.input_pack_p0_merge_commit)
+    if args.input_pack_p0_merge_commit != summary["builder_commit"]:
+        raise ValueError(
+            f"input_pack_p0_merge_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
+            f"got {args.input_pack_p0_merge_commit}"
+        )
+    if not args.engine_commit:
+        raise ValueError("engine_commit must be provided explicitly")
+    engine_commit = args.engine_commit
     if args.builder_commit and args.builder_commit != summary["builder_commit"]:
         raise ValueError(
             f"builder_commit mismatch: expected verified pack commit {summary['builder_commit']}, "
@@ -803,7 +808,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contract-bundle-sha256", required=True)
     parser.add_argument("--input-pack-p0-merge-commit", required=True)
     parser.add_argument("--calibration-branch-base-commit", required=True)
-    parser.add_argument("--engine-commit")
+    parser.add_argument("--engine-commit", required=True)
     parser.add_argument("--builder-commit")
     parser.add_argument("--builder-code-sha256")
     parser.add_argument("--engine-image-digest", default=None)

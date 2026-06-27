@@ -37,8 +37,8 @@ def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) 
         input_pack_sha256=summary["input_pack_sha256"],
         source_snapshot_sha256=summary["source_snapshot_sha256"],
         contract_bundle_sha256=summary["contract_bundle_sha256"],
-        input_pack_p0_merge_commit="5" * 40,
-        calibration_branch_base_commit="5" * 40,
+        input_pack_p0_merge_commit=summary["builder_commit"],
+        calibration_branch_base_commit=summary["builder_commit"],
         engine_commit="5" * 40,
         builder_commit=summary["builder_commit"],
         builder_code_sha256=None,
@@ -54,8 +54,14 @@ def _args(output_dir: Path, *, jobs: int = 1, evidence_json: str | None = None) 
     )
 
 
-def _write_evidence(path: Path, hashes: dict[str, str]) -> Path:
-    labels = ["host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"]
+def _write_evidence(
+    path: Path,
+    hashes: dict[str, str],
+    *,
+    labels: list[str] | None = None,
+    include_isolation: bool = True,
+) -> Path:
+    labels = labels or sorted(cc.REQUIRED_MATRIX_LABELS)
     payload = {
         "schema_version": 1,
         "calibration_id": cc.CALIBRATION_ID,
@@ -66,11 +72,10 @@ def _write_evidence(path: Path, hashes: dict[str, str]) -> Path:
         },
         "run_count": len(labels),
         "mismatch_count": 0,
-        "network": "none",
-        "db_access": False,
-        "input_pack_mount": "read_only",
         "ok": True,
     }
+    if include_isolation:
+        payload.update({"network": "none", "db_access": False, "input_pack_mount": "read_only"})
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
 
@@ -136,9 +141,19 @@ def test_run_matrix_accepts_independent_evidence(tmp_path: Path) -> None:
     reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
     manifest = json.loads((tmp_path / "out" / "calibration_manifest.json").read_text(encoding="utf-8"))
     assert run_matrix["ok"] is True
-    assert set(run_matrix["hashes"]) == {"host_jobs1_r0", "host_jobs4_r0", "container_jobs1_r0", "container_jobs4_r0"}
-    assert set(reproducibility["jobs_1_hashes"]) == {"host_jobs1_r0", "container_jobs1_r0"}
-    assert set(reproducibility["jobs_4_hashes"]) == {"host_jobs4_r0", "container_jobs4_r0"}
+    assert set(run_matrix["hashes"]) == cc.REQUIRED_MATRIX_LABELS
+    assert set(reproducibility["jobs_1_hashes"]) == {
+        "host_jobs1_r0",
+        "host_jobs1_r1",
+        "container_jobs1_r0",
+        "container_jobs1_r1",
+    }
+    assert set(reproducibility["jobs_4_hashes"]) == {
+        "host_jobs4_r0",
+        "host_jobs4_r1",
+        "container_jobs4_r0",
+        "container_jobs4_r1",
+    }
     assert reproducibility["evidence_ok"] is True
     assert manifest["run_matrix_sha256"] == file_sha256(tmp_path / "out" / "run_matrix.json")
     assert manifest["reproducibility_report_sha256"] == file_sha256(tmp_path / "out" / "reproducibility_report.json")
@@ -154,6 +169,45 @@ def test_run_matrix_rejects_stale_evidence_hashes(tmp_path: Path) -> None:
         "output_manifest_sha256": "f" * 64,
     }
     evidence = _write_evidence(tmp_path / "stale_evidence.json", stale_hashes)
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_rejects_missing_jobs_coverage(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "jobs1_only_evidence.json",
+        probe_matrix["current_run_hashes"],
+        labels=["host_jobs1_r0", "host_jobs1_r1", "container_jobs1_r0", "container_jobs1_r1"],
+    )
+
+    cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
+
+    run_matrix = json.loads((tmp_path / "out" / "run_matrix.json").read_text(encoding="utf-8"))
+    reproducibility = json.loads((tmp_path / "out" / "reproducibility_report.json").read_text(encoding="utf-8"))
+    assert run_matrix["ok"] is False
+    assert run_matrix["hashes"] == {}
+    assert reproducibility["jobs_4_hashes"] == {}
+    assert reproducibility["evidence_ok"] is False
+
+
+def test_run_matrix_rejects_missing_isolation_metadata(tmp_path: Path) -> None:
+    probe = tmp_path / "probe"
+    cc.run_calibration(_args(probe))
+    probe_matrix = json.loads((probe / "run_matrix.json").read_text(encoding="utf-8"))
+    evidence = _write_evidence(
+        tmp_path / "legacy_evidence.json",
+        probe_matrix["current_run_hashes"],
+        include_isolation=False,
+    )
 
     cc.run_calibration(_args(tmp_path / "out", evidence_json=str(evidence)))
 
@@ -214,6 +268,22 @@ def test_builder_commit_override_must_match_verified_pack(tmp_path: Path) -> Non
     args.builder_commit = "9" * 40
 
     with pytest.raises(ValueError, match="builder_commit mismatch"):
+        cc.run_calibration(args)
+
+
+def test_input_pack_merge_commit_must_match_verified_pack(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.input_pack_p0_merge_commit = "9" * 40
+
+    with pytest.raises(ValueError, match="input_pack_p0_merge_commit mismatch"):
+        cc.run_calibration(args)
+
+
+def test_engine_commit_is_required(tmp_path: Path) -> None:
+    args = _args(tmp_path)
+    args.engine_commit = None
+
+    with pytest.raises(ValueError, match="engine_commit must be provided explicitly"):
         cc.run_calibration(args)
 
 
