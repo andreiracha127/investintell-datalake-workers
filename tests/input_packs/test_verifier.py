@@ -200,6 +200,60 @@ def test_verifier_cross_checks_component_as_of_values_even_when_hashes_match(tmp
     )
 
 
+def test_verifier_cross_checks_source_and_provenance_identity_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rewritten_source_commit = "1" * 40
+    rewritten_builder_commit = "2" * 40
+    source = _read_json(pack / "SOURCE.json")
+    source["source_commit"] = rewritten_source_commit
+    source["builder_commit"] = rewritten_builder_commit
+    _write_json(pack / "SOURCE.json", source)
+
+    provenance = _read_json(pack / "provenance.json")
+    provenance["sources"][0]["source_commit"] = rewritten_source_commit
+    _write_json(pack / "provenance.json", provenance)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert (
+        f"SOURCE.json: source_commit {rewritten_source_commit!r} does not match manifest {manifest['source_commit']!r}"
+        in result["identity_errors"]
+    )
+    assert (
+        f"SOURCE.json: builder_commit {rewritten_builder_commit!r} does not match manifest {manifest['builder_commit']!r}"
+        in result["identity_errors"]
+    )
+    assert any("provenance.json: sources[0].source_commit" in error for error in result["identity_errors"])
+
+
+def test_verifier_rejects_duplicate_artifact_paths_even_when_hashes_match(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    raw_manifest = _read_json(pack / "raw_snapshot_manifest.json")
+    raw_manifest["artifacts"].append(dict(raw_manifest["artifacts"][0]))
+    _write_json(pack / "raw_snapshot_manifest.json", raw_manifest)
+
+    table_hashes = _read_json(pack / "table_hashes.json")
+    duplicate_table_path = table_hashes["tables"][0]["path"]
+    table_hashes["tables"].append(dict(table_hashes["tables"][0]))
+    _write_json(pack / "table_hashes.json", table_hashes)
+
+    manifest = _read_json(pack / "manifest.json")
+    _write_json(pack / "manifest.json", build_manifest(pack, manifest))
+
+    result = verify_pack(pack)
+
+    duplicate_path = raw_manifest["artifacts"][0]["path"]
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is True
+    assert f"raw_snapshot_manifest.json: duplicate artifact path {duplicate_path}" in result["duplicate_path_errors"]
+    assert f"table_hashes.json: duplicate table path {duplicate_table_path}" in result["duplicate_path_errors"]
+
+
 def test_build_manifest_reproduces_golden_hash(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     golden_manifest = _read_json(pack / "manifest.json")

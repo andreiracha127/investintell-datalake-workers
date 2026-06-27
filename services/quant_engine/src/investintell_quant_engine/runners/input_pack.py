@@ -38,6 +38,7 @@ def run_input_pack_dry_run(
     offline: bool = True,
     expected_input_pack_sha256: str | None = None,
     expected_source_snapshot_sha256: str | None = None,
+    expected_contract_bundle_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Verify a Certified Input Pack without database or network access."""
     validate_offline_request(offline=offline, jobs=jobs)
@@ -49,6 +50,11 @@ def run_input_pack_dry_run(
     manifest = load_json(root / "manifest.json")
     expected_contract = current_contract_bundle_sha256()
     pack_contract = str(manifest["contract_bundle_sha256"])
+    _validate_expected_hash(
+        name="contract_bundle_sha256",
+        expected=expected_contract_bundle_sha256,
+        actual=pack_contract,
+    )
     if pack_contract != expected_contract:
         raise ValueError(
             "certified input pack contract_bundle_sha256 mismatch: "

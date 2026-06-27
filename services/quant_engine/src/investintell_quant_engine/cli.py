@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
     parity.add_argument("--a31-name", default="G2-CREDIT6040-15-SURVEY05")
     parity.add_argument("--a32-name", default="A32-G0.35-I0.35-X0.10-C0.60-D1.25")
     parity.add_argument("--worker-commit")
+    parity.add_argument("--input-bundle-logical-hash")
+    parity.add_argument("--config-catalog-hash")
+    parity.add_argument("--expected-l2-macro-logical-hash")
+    parity.add_argument("--expected-revision-uncertainty-logical-hash")
     parity.add_argument("--job-id")
     parity.add_argument("--jobs", type=int, default=1)
     parity.add_argument("--result-json")
@@ -46,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     input_pack.add_argument("--input-pack", required=True)
     input_pack.add_argument("--input-pack-sha256")
     input_pack.add_argument("--source-snapshot-sha256")
+    input_pack.add_argument("--contract-bundle-sha256")
     input_pack.add_argument("--output-dir", required=True)
     input_pack.add_argument("--job-id")
     input_pack.add_argument("--jobs", type=int, default=1)
@@ -76,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
             offline=True,
             expected_input_pack_sha256=args.input_pack_sha256,
             expected_source_snapshot_sha256=args.source_snapshot_sha256,
+            expected_contract_bundle_sha256=args.contract_bundle_sha256,
         )
         manifest = {
             **engine_manifest(job_type="certified_input_pack_dry_run", jobs=args.jobs, offline=True),
@@ -105,6 +111,12 @@ def main(argv: list[str] | None = None) -> int:
         job_id=args.job_id,
         jobs=args.jobs,
         offline=True,
+        expected_input_bundle_logical_hash=args.input_bundle_logical_hash,
+        expected_config_catalog_hash=args.config_catalog_hash,
+        expected_parent_hashes={
+            "l2_macro_logical_hash": args.expected_l2_macro_logical_hash,
+            "revision_uncertainty_logical_hash": args.expected_revision_uncertainty_logical_hash,
+        },
     )
     manifest = engine_manifest(job_type="a3_qc_parity", jobs=args.jobs, offline=True)
     if args.result_json:

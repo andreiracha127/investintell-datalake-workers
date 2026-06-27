@@ -287,6 +287,72 @@ def _table_rows_by_path(table_hashes: dict[str, Any]) -> dict[str, int]:
     return rows_by_path
 
 
+def _duplicate_path_errors(component_payloads: dict[str, dict[str, Any]]) -> list[str]:
+    errors: list[str] = []
+    seen_artifacts: dict[str, str] = {}
+    for filename in SNAPSHOT_MANIFEST_FILES:
+        local_seen: set[str] = set()
+        artifacts = component_payloads.get(filename, {}).get("artifacts", [])
+        if not isinstance(artifacts, list):
+            continue
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            path = artifact.get("path")
+            if not isinstance(path, str):
+                continue
+            if path in local_seen:
+                errors.append(f"{filename}: duplicate artifact path {path}")
+            local_seen.add(path)
+            prior_manifest = seen_artifacts.get(path)
+            if prior_manifest is not None and prior_manifest != filename:
+                errors.append(f"{filename}: artifact path {path} also appears in {prior_manifest}")
+            else:
+                seen_artifacts[path] = filename
+
+    table_seen: set[str] = set()
+    tables = component_payloads.get("table_hashes.json", {}).get("tables", [])
+    if isinstance(tables, list):
+        for table in tables:
+            if not isinstance(table, dict):
+                continue
+            path = table.get("path")
+            if not isinstance(path, str):
+                continue
+            if path in table_seen:
+                errors.append(f"table_hashes.json: duplicate table path {path}")
+            table_seen.add(path)
+    return sorted(errors)
+
+
+def _identity_errors(
+    manifest: dict[str, Any],
+    source: dict[str, Any],
+    provenance: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    for field in ("source_repo", "source_commit", "builder_commit", "builder_code_sha256"):
+        expected = manifest.get(field)
+        actual = source.get(field)
+        if actual != expected:
+            errors.append(f"SOURCE.json: {field} {actual!r} does not match manifest {expected!r}")
+
+    sources = provenance.get("sources", [])
+    if isinstance(sources, list):
+        for index, entry in enumerate(sources):
+            if not isinstance(entry, dict):
+                continue
+            for field in ("source_repo", "source_commit"):
+                expected = manifest.get(field)
+                actual = entry.get(field)
+                if actual != expected:
+                    errors.append(
+                        f"provenance.json: sources[{index}].{field} {actual!r} "
+                        f"does not match manifest {expected!r}"
+                    )
+    return errors
+
+
 def _json_row_count(path: Path) -> int | None:
     payload = load_json(path)
     if not isinstance(payload, list):
@@ -431,6 +497,8 @@ def verify_pack(
     )
     missing_table_artifacts, table_hash_mismatches = _verify_table_hashes(root, table_hashes)
     unexpected_files = _unexpected_files(root, table_hashes)
+    duplicate_path_errors = _duplicate_path_errors(component_payloads)
+    identity_errors = _identity_errors(manifest, source, provenance) if manifest else []
     expected_content_errors = _verify_expected_p0_content(root, manifest, component_payloads) if manifest else []
 
     actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
@@ -455,6 +523,8 @@ def verify_pack(
             not missing_table_artifacts,
             not table_hash_mismatches,
             not unexpected_files,
+            not duplicate_path_errors,
+            not identity_errors,
             not expected_content_errors,
             input_pack_sha256_match,
             runtime_activation_ok,
@@ -474,6 +544,8 @@ def verify_pack(
         "missing_table_artifacts": missing_table_artifacts,
         "table_hash_mismatches": table_hash_mismatches,
         "unexpected_files": unexpected_files,
+        "duplicate_path_errors": duplicate_path_errors,
+        "identity_errors": identity_errors,
         "expected_content_errors": expected_content_errors,
         "expected_input_pack_sha256": expected_input_pack_sha256,
         "actual_input_pack_sha256": actual_input_pack_sha256,

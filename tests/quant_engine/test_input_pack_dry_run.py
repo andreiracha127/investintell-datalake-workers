@@ -113,6 +113,13 @@ def test_dry_run_rejects_unexpected_source_snapshot_hash(tmp_path: Path) -> None
         )
 
 
+def test_dry_run_rejects_unexpected_contract_bundle_hash(tmp_path: Path) -> None:
+    pack = _build_pack(tmp_path)
+
+    with pytest.raises(ValueError, match="contract_bundle_sha256 mismatch"):
+        run_input_pack_dry_run(pack, expected_contract_bundle_sha256="0" * 64)
+
+
 def test_dry_run_cli_outputs_are_canonical_jobs_independent(tmp_path: Path) -> None:
     pack = _build_pack(tmp_path)
     first = tmp_path / "jobs1"
@@ -129,6 +136,8 @@ def test_dry_run_cli_outputs_are_canonical_jobs_independent(tmp_path: Path) -> N
             manifest["input_pack_sha256"],
             "--source-snapshot-sha256",
             source_snapshot_sha256,
+            "--contract-bundle-sha256",
+            manifest["contract_bundle_sha256"],
             "--output-dir",
             str(first),
             "--jobs",
@@ -151,6 +160,8 @@ def test_dry_run_cli_outputs_are_canonical_jobs_independent(tmp_path: Path) -> N
             manifest["input_pack_sha256"],
             "--source-snapshot-sha256",
             source_snapshot_sha256,
+            "--contract-bundle-sha256",
+            manifest["contract_bundle_sha256"],
             "--output-dir",
             str(second),
             "--jobs",
