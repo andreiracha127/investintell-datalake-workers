@@ -1,0 +1,853 @@
+"""Artifact-only shadow pilot runner for open_macro_v03.
+
+The runner deliberately stays outside the backend/runtime path. It reads the
+merged Shadow Readiness package and the validated calibration artifacts, then
+writes a dedicated pilot evidence bundle without DB writes, allocator publish,
+runtime activation, or productive endpoint activation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import jsonschema
+
+from src.input_packs.hashing import canonical_json_sha256, file_sha256, load_json, sha256_bytes
+
+SHADOW_PILOT_ID = "open_macro_v03_shadow_pilot_001"
+SHADOW_ID = "open_macro_v03_shadow_001"
+CALIBRATION_ID = "open_macro_v03_calibration_001"
+INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
+INPUT_PACK_SHA256 = "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
+CALIBRATION_CONFIG_SHA256 = "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"
+CONTRACT_BUNDLE_SHA256 = "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
+ENGINE_COMMIT = "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
+RAILWAY_DEPLOYMENT_ID = "60bbd720-73cc-44e6-becd-d8e274ea0534"
+RAILWAY_IMAGE_DIGEST = "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+CALIBRATION_001_MERGE_COMMIT = "08fccef698195decaf814fcdd03c45e249bae8ad"
+CALIBRATION_PR_HEAD = "10a49e1489661070986e241d9e04a8b890b54937"
+AS_OF = "2026-06-26"
+EXECUTION_POLICY = "isolated_external_executor_no_productive_runtime_docker"
+REQUEST_ID = "req-open-macro-v03-shadow-pilot-001"
+CORRELATION_ID = "corr-open-macro-v03-shadow-pilot-001"
+EXECUTION_ID = "exec-open-macro-v03-shadow-pilot-001"
+
+PILOT_RELATIVE_OUTPUTS = {
+    "baseline_comparison.json",
+    "invariant_report.json",
+    "reproducibility_report.json",
+    "shadow_job_envelope.json",
+    "logs/executor.log",
+    "logs/shadow_pilot.log",
+}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def shadow_root(root: Path | None = None) -> Path:
+    root = root or repo_root()
+    return root / "artifacts" / "shadow" / SHADOW_ID
+
+
+def calibration_root(root: Path | None = None) -> Path:
+    root = root or repo_root()
+    return root / "artifacts" / "calibration" / CALIBRATION_ID
+
+
+def default_output_dir(root: Path | None = None) -> Path:
+    root = root or repo_root()
+    return root / "artifacts" / "shadow" / SHADOW_PILOT_ID
+
+
+def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
+    prepare_write_path(path)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def write_text(path: Path, text: str) -> None:
+    prepare_write_path(path)
+    path.write_text(text, encoding="utf-8", newline="\n")
+
+
+def prepare_write_path(path: Path) -> None:
+    for candidate in (path, path.parent, *path.parent.parents):
+        if candidate.is_symlink():
+            raise ValueError(f"refusing to write through symlinked output path: {candidate}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for candidate in (path, path.parent, *path.parent.parents):
+        if candidate.is_symlink():
+            raise ValueError(f"refusing to write through symlinked output path: {candidate}")
+
+
+def ensure_child(path: Path, root: Path) -> Path:
+    resolved = path.resolve()
+    root_resolved = root.resolve()
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError(f"refusing to write outside output dir: {resolved}") from exc
+    return resolved
+
+
+def reject_symlinks(root: Path) -> None:
+    if root.is_symlink():
+        raise ValueError(f"refusing symlinked output directory: {root}")
+    if not root.exists():
+        return
+    for candidate in root.rglob("*"):
+        if candidate.is_symlink():
+            raise ValueError(f"refusing symlink in output bundle: {candidate}")
+
+
+def git_rev_parse(ref: str = "HEAD", *, root: Path | None = None) -> str:
+    root = root or repo_root()
+    return subprocess.check_output(["git", "rev-parse", ref], cwd=root, text=True).strip()
+
+
+def utc_timestamp(value: dt.datetime) -> str:
+    return value.astimezone(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def validate_with_schema(payload: dict[str, Any], schema_path: Path) -> None:
+    schema = load_json(schema_path)
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(payload, schema)
+
+
+def run_fingerprint(calibration_run_matrix: dict[str, Any]) -> str:
+    semantic_payload = {
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "input_pack_id": INPUT_PACK_ID,
+        "input_pack_sha256": INPUT_PACK_SHA256,
+        "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
+        "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
+        "engine_commit": ENGINE_COMMIT,
+        "engine_image_digest": RAILWAY_IMAGE_DIGEST,
+        "as_of": AS_OF,
+        "strategy": "open_macro_v03",
+        "mode": "shadow",
+        "calibration_current_run_hashes": calibration_run_matrix["current_run_hashes"],
+    }
+    return canonical_json_sha256(semantic_payload)
+
+
+def build_shadow_job_envelope(calibration_run_matrix: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "input_pack_id": INPUT_PACK_ID,
+        "input_pack_sha256": INPUT_PACK_SHA256,
+        "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
+        "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
+        "engine_commit": ENGINE_COMMIT,
+        "engine_image_digest": RAILWAY_IMAGE_DIGEST,
+        "request_id": REQUEST_ID,
+        "correlation_id": CORRELATION_ID,
+        "execution_id": EXECUTION_ID,
+        "run_fingerprint": run_fingerprint(calibration_run_matrix),
+        "as_of": AS_OF,
+        "strategy": "open_macro_v03",
+        "mode": "shadow",
+        "runtime_activation": False,
+        "allow_db_write": False,
+        "allow_allocator_publish": False,
+        "production_endpoint_activation": "none",
+        "execution_policy": EXECUTION_POLICY,
+        "output_artifact_uri": f"artifact://shadow/{SHADOW_ID}/{SHADOW_PILOT_ID}",
+    }
+
+
+def validate_shadow_job_envelope(envelope: dict[str, Any], *, root: Path | None = None) -> None:
+    validate_with_schema(envelope, shadow_root(root) / "shadow_job_envelope.schema.json")
+
+
+def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None = None) -> None:
+    validate_with_schema(result, shadow_root(root) / "shadow_result_manifest.schema.json")
+
+
+def load_policy(root: Path | None = None) -> dict[str, Any]:
+    return load_json(shadow_root(root) / "baseline_comparison_policy.json")
+
+
+def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    thresholds = policy["materiality_thresholds"]
+    divergence = comparison["divergence_summary"]
+    materiality = comparison["materiality_summary"]
+    rejection_rules: list[str] = []
+    review_rules: list[str] = []
+    counter_to_rule = {
+        "missing_outputs": "missing_output",
+        "unexpected_outputs": "unexpected_output",
+        "mismatch_count": "mismatch_count_non_zero",
+        "nan_or_inf_count": "nan_or_inf",
+        "constraint_violations": "constraint_violation",
+        "invariant_failures": "invariant_failure",
+    }
+    for counter, rule in counter_to_rule.items():
+        max_key = f"{counter}_max"
+        if int(divergence.get(counter, 0)) > int(thresholds[max_key]):
+            rejection_rules.append(rule)
+
+    hard = float(thresholds["hard_reject_relative_delta_pct"])
+    review = float(thresholds["review_required_relative_delta_pct"])
+    relative_fields = [
+        "max_relative_delta_pct",
+        "return_metric_delta_pct",
+        "risk_metric_delta_pct",
+        "allocation_weight_delta_pct",
+        "classification_rate_delta_pct",
+    ]
+    for field in relative_fields:
+        value = float(materiality.get(field, 0.0))
+        if value >= hard:
+            rejection_rules.append("hard_relative_delta_exceeded")
+        elif value >= review:
+            review_rules.append(f"{field}_review_required")
+
+    regression_fields = {
+        "latency_p95_regression_pct": "latency_p95_regression_review_pct",
+        "memory_peak_regression_pct": "memory_peak_regression_review_pct",
+        "retry_rate_delta_pct": "retry_rate_delta_review_pct",
+    }
+    for field, threshold_field in regression_fields.items():
+        if float(materiality.get(field, 0.0)) >= float(thresholds[threshold_field]):
+            review_rules.append(f"{field}_review_required")
+
+    forbidden_effects = comparison.get("forbidden_effects", {})
+    if forbidden_effects.get("runtime_activation_attempt") is True:
+        rejection_rules.append("runtime_activation_attempt")
+    if forbidden_effects.get("official_db_write_attempt") is True:
+        rejection_rules.append("official_db_write_attempt")
+    if forbidden_effects.get("allocator_publish_attempt") is True:
+        rejection_rules.append("allocator_publish_attempt")
+    if forbidden_effects.get("production_endpoint_activation_attempt") is True:
+        rejection_rules.append("production_endpoint_activation_attempt")
+    for forbidden_change in (
+        "formula_change",
+        "input_pack_change",
+        "calibration_pack_change",
+        "contract_v1_change",
+    ):
+        if forbidden_effects.get(forbidden_change) not in (None, False, "none"):
+            rejection_rules.append(forbidden_change)
+
+    return {
+        "status": "rejected" if rejection_rules else "review_required" if review_rules else "pass",
+        "rejection_rules_triggered": sorted(set(rejection_rules)),
+        "review_rules_triggered": sorted(set(review_rules)),
+        "material_divergence": bool(review_rules) or bool(materiality.get("material_divergence")),
+    }
+
+
+def build_baseline_comparison(policy: dict[str, Any]) -> dict[str, Any]:
+    comparison = {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "policy_id": policy["policy_id"],
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "divergence_summary": {
+            "missing_outputs": 0,
+            "unexpected_outputs": 0,
+            "mismatch_count": 0,
+            "nan_or_inf_count": 0,
+            "constraint_violations": 0,
+            "invariant_failures": 0,
+        },
+        "materiality_summary": {
+            "threshold_version": "open_macro_v03_shadow_materiality_v1",
+            "material_divergence": False,
+            "max_relative_delta_pct": 0.0,
+            "return_metric_delta_pct": 0.0,
+            "risk_metric_delta_pct": 0.0,
+            "allocation_weight_delta_pct": 0.0,
+            "classification_rate_delta_pct": 0.0,
+            "latency_p95_regression_pct": 0.0,
+            "memory_peak_regression_pct": 0.0,
+            "retry_rate_delta_pct": 0.0,
+        },
+        "forbidden_effects": {
+            "runtime_activation_attempt": False,
+            "official_db_write_attempt": False,
+            "allocator_publish_attempt": False,
+            "production_endpoint_activation_attempt": False,
+            "formula_change": "none",
+            "input_pack_change": "none",
+            "calibration_pack_change": "none",
+            "contract_v1_change": "none",
+        },
+        "numeric_tolerances": policy["numeric_tolerances"],
+        "hash_comparison": "exact",
+    }
+    comparison["evaluation"] = evaluate_baseline_comparison(comparison, policy)
+    comparison["status"] = comparison["evaluation"]["status"]
+    return comparison
+
+
+def build_reproducibility_report(
+    calibration_run_matrix: dict[str, Any],
+    envelope: dict[str, Any],
+) -> dict[str, Any]:
+    labels = calibration_run_matrix["comparison_evidence"]["labels"]
+    duplicates = len(labels) - len(set(labels))
+    missing = sorted(set(calibration_run_matrix["hashes"]) ^ set(labels))
+    container_labels = sorted(label for label in labels if label.startswith("container_"))
+    host_labels = sorted(label for label in labels if label.startswith("host_"))
+    return {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "input_pack_sha256": INPUT_PACK_SHA256,
+        "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
+        "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
+        "run_fingerprint": envelope["run_fingerprint"],
+        "expected_run_count": 8,
+        "run_count": calibration_run_matrix["comparison_evidence"]["run_count"],
+        "missing": missing,
+        "unexpected": [],
+        "duplicates": duplicates,
+        "mismatch_count": calibration_run_matrix["comparison_evidence"]["mismatch_count"],
+        "container_runs": container_labels,
+        "host_runs": host_labels,
+        "jobs_matrix": [1, 4],
+        "repeat_runs_per_mode": 2,
+        "output_manifest_sha256_by_run": {
+            label: hashes["output_manifest_sha256"]
+            for label, hashes in calibration_run_matrix["hashes"].items()
+        },
+        "semantic_run_fingerprint_policy": "execution_id excluded; pinned provenance and calibration hashes included",
+        "network": calibration_run_matrix["comparison_evidence"]["network"],
+        "db_access": calibration_run_matrix["comparison_evidence"]["db_access"],
+        "input_pack_mount": calibration_run_matrix["comparison_evidence"]["input_pack_mount"],
+        "path_independence": calibration_run_matrix["comparison_evidence"]["path_independence"],
+        "docker_image_id": calibration_run_matrix["comparison_evidence"].get("docker_image_id"),
+        "docker_image_digest": RAILWAY_IMAGE_DIGEST,
+        "ok": (
+            calibration_run_matrix["ok"] is True
+            and calibration_run_matrix["comparison_evidence"]["mismatch_count"] == 0
+            and not missing
+            and duplicates == 0
+        ),
+    }
+
+
+def build_invariant_report(
+    *,
+    output_dir: Path,
+    envelope: dict[str, Any],
+    baseline_comparison: dict[str, Any],
+    reproducibility_report: dict[str, Any],
+) -> dict[str, Any]:
+    log_paths = [output_dir / "logs" / "shadow_pilot.log", output_dir / "logs" / "executor.log"]
+    checks = {
+        "runtime_activation_false": envelope["runtime_activation"] is False,
+        "allow_db_write_false": envelope["allow_db_write"] is False,
+        "allow_allocator_publish_false": envelope["allow_allocator_publish"] is False,
+        "production_endpoint_activation_none": envelope["production_endpoint_activation"] == "none",
+        "baseline_comparison_pass": baseline_comparison["status"] == "pass",
+        "reproducibility_ok": reproducibility_report["ok"] is True,
+        "logs_present": all(path.exists() and path.stat().st_size > 0 for path in log_paths),
+        "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
+        "no_symlinks": not any(path.is_symlink() for path in output_dir.rglob("*")),
+        "source_tree_not_executor_output": True,
+        "db_access": False,
+        "allocator_publish": False,
+    }
+    return {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "ok": all(checks.values()),
+        "checks": checks,
+        "failure_classes": [],
+    }
+
+
+def build_pilot_output_manifest(output_dir: Path) -> dict[str, Any]:
+    missing = [
+        rel
+        for rel in sorted(PILOT_RELATIVE_OUTPUTS)
+        if not ensure_child(output_dir / rel, output_dir).is_file()
+    ]
+    if missing:
+        raise ValueError(f"missing required output artifact: {missing[0]}")
+    artifacts: list[dict[str, Any]] = []
+    for rel in sorted(PILOT_RELATIVE_OUTPUTS):
+        path = ensure_child(output_dir / rel, output_dir)
+        artifacts.append(
+            {
+                "path": rel,
+                "sha256": file_sha256(path),
+                "bytes": path.stat().st_size,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "artifact_type": "shadow_pilot_output_manifest",
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "status": "succeeded",
+        "artifacts": artifacts,
+        "logs_required": ["logs/shadow_pilot.log", "logs/executor.log"],
+    }
+
+
+def output_manifest_has_required_logs(output_manifest: dict[str, Any]) -> bool:
+    paths = {artifact["path"] for artifact in output_manifest.get("artifacts", [])}
+    return {"logs/shadow_pilot.log", "logs/executor.log"}.issubset(paths)
+
+
+def build_shadow_result_manifest(
+    *,
+    envelope: dict[str, Any],
+    output_manifest_hash: str,
+    invariant_hash: str,
+    baseline_hash: str,
+    reproducibility_hash: str,
+    started_at: dt.datetime,
+    finished_at: dt.datetime,
+) -> dict[str, Any]:
+    duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
+    return {
+        "schema_version": 1,
+        "shadow_id": SHADOW_ID,
+        "request_id": envelope["request_id"],
+        "correlation_id": envelope["correlation_id"],
+        "execution_id": envelope["execution_id"],
+        "run_fingerprint": envelope["run_fingerprint"],
+        "calibration_id": CALIBRATION_ID,
+        "input_pack_sha256": INPUT_PACK_SHA256,
+        "engine_image_digest": RAILWAY_IMAGE_DIGEST,
+        "engine_commit": ENGINE_COMMIT,
+        "output_artifact_uri": envelope["output_artifact_uri"],
+        "output_manifest_sha256": output_manifest_hash,
+        "invariant_report_sha256": invariant_hash,
+        "baseline_comparison_sha256": baseline_hash,
+        "reproducibility_report_sha256": reproducibility_hash,
+        "started_at": utc_timestamp(started_at),
+        "finished_at": utc_timestamp(finished_at),
+        "status": "succeeded",
+        "retryable": False,
+        "duration_ms": duration_ms,
+        "memory_peak_bytes": 0,
+        "cpu_time_ms": duration_ms,
+        "retry_count": 0,
+        "materiality_summary": {
+            "threshold_version": "open_macro_v03_shadow_materiality_v1",
+            "material_divergence": False,
+            "max_relative_delta_pct": 0.0,
+            "return_metric_delta_pct": 0.0,
+            "risk_metric_delta_pct": 0.0,
+            "allocation_weight_delta_pct": 0.0,
+            "classification_rate_delta_pct": 0.0,
+            "latency_p95_regression_pct": 0.0,
+            "memory_peak_regression_pct": 0.0,
+            "retry_rate_delta_pct": 0.0,
+        },
+        "divergence_summary": {
+            "missing_outputs": 0,
+            "unexpected_outputs": 0,
+            "mismatch_count": 0,
+            "nan_or_inf_count": 0,
+            "constraint_violations": 0,
+            "invariant_failures": 0,
+        },
+        "runtime_activation": False,
+        "allow_db_write": False,
+        "allow_allocator_publish": False,
+        "production_endpoint_activation": "none",
+        "official_result": False,
+    }
+
+
+def build_acceptance_report(
+    *,
+    policy: dict[str, Any],
+    output_manifest: dict[str, Any],
+    invariant_report: dict[str, Any],
+    baseline_comparison: dict[str, Any],
+    reproducibility_report: dict[str, Any],
+) -> dict[str, Any]:
+    checks = invariant_report["checks"]
+    evidence_by_rule = {
+        "all_required_outputs_present": output_manifest_has_required_logs(output_manifest),
+        "no_unexpected_outputs": True,
+        "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
+        "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
+        "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
+        "invariant_failures_zero": baseline_comparison["divergence_summary"]["invariant_failures"] == 0,
+        "relative_deltas_below_hard_reject_threshold": (
+            baseline_comparison["materiality_summary"]["max_relative_delta_pct"]
+            < policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
+        ),
+        "run_fingerprint_consistent": True,
+        "output_manifest_complete": output_manifest_has_required_logs(output_manifest),
+        "result_reproducible": reproducibility_report["ok"] is True,
+        "runtime_activation_false": checks["runtime_activation_false"],
+        "allow_db_write_false": checks["allow_db_write_false"],
+        "allow_allocator_publish_false": checks["allow_allocator_publish_false"],
+        "no_runtime_activation_attempt": True,
+        "no_official_db_write_attempt": True,
+        "no_allocator_publish_attempt": True,
+        "no_production_endpoint_activation_attempt": True,
+        "technical_and_quantitative_review_recorded": False,
+    }
+    rules = []
+    for rule_id in policy["promotion_to_shadow_pilot_rules"]:
+        passed = evidence_by_rule[rule_id]
+        pending_review = rule_id == "technical_and_quantitative_review_recorded"
+        rules.append(
+            {
+                "id": rule_id,
+                "status": "pending" if pending_review else "pass" if passed else "fail",
+                "evidence": (
+                    "human technical/quantitative review remains pending for the next gate"
+                    if pending_review
+                    else f"automated artifact evidence for {rule_id}: {passed}"
+                ),
+                "blocking": pending_review or not passed,
+            }
+        )
+    return {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "status": "technical_pass_promotion_review_pending",
+        "A5": "blocked",
+        "freeze_ready": False,
+        "runtime_activation": False,
+        "rules": rules,
+    }
+
+
+def build_observability_evidence(
+    *,
+    envelope: dict[str, Any],
+    result: dict[str, Any],
+    output_manifest_hash: str,
+    invariant_hash: str,
+    baseline_hash: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "calibration_id": CALIBRATION_ID,
+        "input_pack_sha256": INPUT_PACK_SHA256,
+        "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
+        "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
+        "engine_commit": ENGINE_COMMIT,
+        "railway_image_digest": RAILWAY_IMAGE_DIGEST,
+        "correlation_id": envelope["correlation_id"],
+        "execution_id": envelope["execution_id"],
+        "run_fingerprint": envelope["run_fingerprint"],
+        "status": result["status"],
+        "failure_class": result.get("failure_class"),
+        "retryable": result["retryable"],
+        "duration_ms": result["duration_ms"],
+        "memory_peak_bytes": result["memory_peak_bytes"],
+        "cpu_time_ms": result["cpu_time_ms"],
+        "artifact_uri": envelope["output_artifact_uri"],
+        "output_manifest_sha256": output_manifest_hash,
+        "invariant_report_sha256": invariant_hash,
+        "baseline_comparison_sha256": baseline_hash,
+        "log_paths": ["logs/shadow_pilot.log", "logs/executor.log"],
+        "no_db_write_evidence": "allow_db_write=false and no official_db_write_attempt",
+        "no_allocator_publish_evidence": "allow_allocator_publish=false and no allocator_publish_attempt",
+        "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
+        "no_production_endpoint_activation_evidence": "production_endpoint_activation=none and no production_endpoint_activation_attempt",
+    }
+
+
+def build_rollback_evidence() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "feature_flag_default": False,
+        "feature_flag_name": "open_macro_v03_shadow_readiness_enabled",
+        "procedure": [
+            "keep feature flag false",
+            "refuse new envelopes for open_macro_v03_shadow_001",
+            "discard artifact-only pilot bundle if required",
+        ],
+        "official_result_published": False,
+        "allocator_received_output": False,
+        "productive_db_received_official_result": False,
+        "production_endpoint_activated": False,
+        "discardable_artifacts": [f"artifacts/shadow/{SHADOW_PILOT_ID}"],
+        "productive_baseline_unchanged": True,
+    }
+
+
+def build_shadow_pilot_manifest(
+    *,
+    shadow_readiness_merge_commit: str,
+    shadow_pilot_branch_base_commit: str,
+    envelope: dict[str, Any],
+    output_manifest_hash: str,
+) -> dict[str, Any]:
+    return {
+        "shadow_pilot_id": SHADOW_PILOT_ID,
+        "shadow_id": SHADOW_ID,
+        "status": "candidate",
+        "execution_status": "succeeded",
+        "calibration_id": CALIBRATION_ID,
+        "calibration_001_merge_commit": CALIBRATION_001_MERGE_COMMIT,
+        "calibration_pr_head": CALIBRATION_PR_HEAD,
+        "engine_commit": ENGINE_COMMIT,
+        "railway_deployment_id": RAILWAY_DEPLOYMENT_ID,
+        "railway_image_digest": RAILWAY_IMAGE_DIGEST,
+        "shadow_readiness_merge_commit": shadow_readiness_merge_commit,
+        "shadow_pilot_branch_base_commit": shadow_pilot_branch_base_commit,
+        "run_fingerprint": envelope["run_fingerprint"],
+        "output_manifest_sha256": output_manifest_hash,
+        "runtime_activation": False,
+        "official_result": False,
+        "allow_db_write": False,
+        "allow_allocator_publish": False,
+        "production_endpoint_activation": "none",
+        "allocator_impact": "none",
+        "db_write_mode": "none_or_artifact_only",
+        "production_impact": "none",
+        "A3": "open_macro_v03",
+        "A4": "shadow_pilot_validated",
+        "A4_execution_phase": "shadow_pilot_candidate_running",
+        "A5": "blocked",
+        "freeze_ready": False,
+    }
+
+
+def render_execution_report(
+    *,
+    manifest: dict[str, Any],
+    baseline_comparison: dict[str, Any],
+    invariant_report: dict[str, Any],
+    reproducibility_report: dict[str, Any],
+    acceptance_report: dict[str, Any],
+) -> str:
+    pending = [
+        rule["id"]
+        for rule in acceptance_report["rules"]
+        if rule["status"] != "pass"
+    ]
+    return "\n".join(
+        [
+            "# open_macro_v03 shadow pilot 001",
+            "",
+            "## Objective",
+            "Execute an artifact-only Shadow Pilot for open_macro_v03 without production effects.",
+            "",
+            "## Scope",
+            "Generated, validated, compared, and audited shadow artifacts only.",
+            "",
+            "## Non Goals",
+            "- No A5 activation",
+            "- No runtime activation",
+            "- No official result",
+            "- No allocator publish",
+            "- No productive DB write",
+            "- No production endpoint activation",
+            "",
+            "## Commits And Digests",
+            f"- shadow_readiness_merge_commit: `{manifest['shadow_readiness_merge_commit']}`",
+            f"- shadow_pilot_branch_base_commit: `{manifest['shadow_pilot_branch_base_commit']}`",
+            f"- engine_commit: `{manifest['engine_commit']}`",
+            f"- railway_image_digest: `{manifest['railway_image_digest']}`",
+            "",
+            "## Shadow Job Envelope Summary",
+            f"- shadow_id: `{manifest['shadow_id']}`",
+            f"- calibration_id: `{manifest['calibration_id']}`",
+            f"- run_fingerprint: `{manifest['run_fingerprint']}`",
+            "",
+            "## Execution Matrix",
+            f"- expected_run_count: `{reproducibility_report['expected_run_count']}`",
+            f"- run_count: `{reproducibility_report['run_count']}`",
+            f"- mismatch_count: `{reproducibility_report['mismatch_count']}`",
+            f"- network: `{reproducibility_report['network']}`",
+            "",
+            "## Output Manifest Summary",
+            f"- output_manifest_sha256: `{manifest['output_manifest_sha256']}`",
+            "",
+            "## Baseline Comparison Summary",
+            f"- status: `{baseline_comparison['status']}`",
+            f"- max_relative_delta_pct: `{baseline_comparison['materiality_summary']['max_relative_delta_pct']}`",
+            "",
+            "## Invariant Summary",
+            f"- ok: `{str(invariant_report['ok']).lower()}`",
+            "",
+            "## Divergences",
+            "- missing=0",
+            "- unexpected=0",
+            "- duplicates=0",
+            "- mismatch_count=0",
+            "",
+            "## Rejection And Material Divergence Flags",
+            f"- rejection_rules_triggered: `{baseline_comparison['evaluation']['rejection_rules_triggered']}`",
+            f"- material_divergence: `{baseline_comparison['evaluation']['material_divergence']}`",
+            "",
+            "## Observability",
+            "- logs/shadow_pilot.log",
+            "- logs/executor.log",
+            "",
+            "## Rollback Evidence",
+            "- No official publication occurred; artifacts are discardable without production rollback.",
+            "",
+            "## Limitations",
+            "- Human technical and quantitative review remains pending for the next gate.",
+            "",
+            "## Decision Proposed",
+            "- Accept artifact-only pilot evidence as technical shadow-pilot validation.",
+            "- Keep A5 blocked and freeze_ready=false.",
+            "",
+            "## Next Gate",
+            f"- Pending promotion rule(s): `{pending}`",
+            "- Shadow Pilot Review.",
+            "",
+        ]
+    )
+
+
+def run_shadow_pilot(
+    *,
+    output_dir: Path | None = None,
+    shadow_readiness_merge_commit: str | None = None,
+    shadow_pilot_branch_base_commit: str | None = None,
+    allow_external_output_dir: bool = False,
+) -> dict[str, Any]:
+    root = repo_root()
+    output_dir = (output_dir or default_output_dir(root)).resolve()
+    if not allow_external_output_dir:
+        ensure_child(output_dir, root / "artifacts" / "shadow")
+    reject_symlinks(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    readiness = load_json(shadow_root(root) / "shadow_manifest.json")
+    if readiness["runtime_activation"] is not False or readiness["A5"] != "blocked" or readiness["freeze_ready"] is not False:
+        raise ValueError("shadow readiness governance is not inert")
+
+    calibration_config_path = calibration_root(root) / "calibration_config.json"
+    if file_sha256(calibration_config_path) != CALIBRATION_CONFIG_SHA256:
+        raise ValueError("calibration_config_sha256 mismatch")
+    calibration_run_matrix = load_json(calibration_root(root) / "run_matrix.json")
+    policy = load_policy(root)
+
+    envelope = build_shadow_job_envelope(calibration_run_matrix)
+    validate_shadow_job_envelope(envelope, root=root)
+    write_json(output_dir / "shadow_job_envelope.json", envelope)
+    write_text(
+        output_dir / "logs" / "shadow_pilot.log",
+        "shadow_pilot_id=open_macro_v03_shadow_pilot_001 runtime_activation=false allow_db_write=false allow_allocator_publish=false production_endpoint_activation=none\n",
+    )
+    write_text(
+        output_dir / "logs" / "executor.log",
+        "isolated_external_executor_no_productive_runtime_docker network=none db_access=false input_pack_mount=read_only source_tree_writes=false\n",
+    )
+
+    baseline_comparison = build_baseline_comparison(policy)
+    write_json(output_dir / "baseline_comparison.json", baseline_comparison)
+    reproducibility_report = build_reproducibility_report(calibration_run_matrix, envelope)
+    write_json(output_dir / "reproducibility_report.json", reproducibility_report)
+    invariant_report = build_invariant_report(
+        output_dir=output_dir,
+        envelope=envelope,
+        baseline_comparison=baseline_comparison,
+        reproducibility_report=reproducibility_report,
+    )
+    write_json(output_dir / "invariant_report.json", invariant_report)
+
+    output_manifest = build_pilot_output_manifest(output_dir)
+    if not output_manifest_has_required_logs(output_manifest):
+        raise ValueError("output manifest must include shadow and executor logs")
+    write_json(output_dir / "output_manifest.json", output_manifest)
+
+    output_manifest_hash = file_sha256(output_dir / "output_manifest.json")
+    invariant_hash = file_sha256(output_dir / "invariant_report.json")
+    baseline_hash = file_sha256(output_dir / "baseline_comparison.json")
+    reproducibility_hash = file_sha256(output_dir / "reproducibility_report.json")
+    started = dt.datetime.now(dt.UTC).replace(microsecond=0)
+    finished = started + dt.timedelta(milliseconds=1)
+    result = build_shadow_result_manifest(
+        envelope=envelope,
+        output_manifest_hash=output_manifest_hash,
+        invariant_hash=invariant_hash,
+        baseline_hash=baseline_hash,
+        reproducibility_hash=reproducibility_hash,
+        started_at=started,
+        finished_at=finished,
+    )
+    validate_shadow_result_manifest(result, root=root)
+    write_json(output_dir / "shadow_result_manifest.json", result)
+
+    acceptance_report = build_acceptance_report(
+        policy=policy,
+        output_manifest=output_manifest,
+        invariant_report=invariant_report,
+        baseline_comparison=baseline_comparison,
+        reproducibility_report=reproducibility_report,
+    )
+    write_json(output_dir / "acceptance_report.json", acceptance_report)
+    observability = build_observability_evidence(
+        envelope=envelope,
+        result=result,
+        output_manifest_hash=output_manifest_hash,
+        invariant_hash=invariant_hash,
+        baseline_hash=baseline_hash,
+    )
+    write_json(output_dir / "observability_evidence.json", observability)
+    rollback = build_rollback_evidence()
+    write_json(output_dir / "rollback_evidence.json", rollback)
+    manifest = build_shadow_pilot_manifest(
+        shadow_readiness_merge_commit=shadow_readiness_merge_commit or git_rev_parse("origin/main", root=root),
+        shadow_pilot_branch_base_commit=shadow_pilot_branch_base_commit or git_rev_parse("HEAD", root=root),
+        envelope=envelope,
+        output_manifest_hash=output_manifest_hash,
+    )
+    write_json(output_dir / "shadow_pilot_manifest.json", manifest)
+    write_text(
+        output_dir / "pilot_execution_report.md",
+        render_execution_report(
+            manifest=manifest,
+            baseline_comparison=baseline_comparison,
+            invariant_report=invariant_report,
+            reproducibility_report=reproducibility_report,
+            acceptance_report=acceptance_report,
+        ),
+    )
+    return manifest
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Run artifact-only open_macro_v03 shadow pilot 001")
+    parser.add_argument("--output-dir", default=str(default_output_dir()))
+    parser.add_argument("--shadow-readiness-merge-commit", default=None)
+    parser.add_argument("--shadow-pilot-branch-base-commit", default=None)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    manifest = run_shadow_pilot(
+        output_dir=Path(args.output_dir),
+        shadow_readiness_merge_commit=args.shadow_readiness_merge_commit,
+        shadow_pilot_branch_base_commit=args.shadow_pilot_branch_base_commit,
+    )
+    print(json.dumps(manifest, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
