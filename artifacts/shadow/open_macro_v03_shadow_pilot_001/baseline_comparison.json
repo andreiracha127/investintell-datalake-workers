@@ -1,0 +1,50 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "divergence_summary": {
+    "constraint_violations": 0,
+    "invariant_failures": 0,
+    "mismatch_count": 0,
+    "missing_outputs": 0,
+    "nan_or_inf_count": 0,
+    "unexpected_outputs": 0
+  },
+  "evaluation": {
+    "material_divergence": false,
+    "rejection_rules_triggered": [],
+    "review_rules_triggered": [],
+    "status": "pass"
+  },
+  "forbidden_effects": {
+    "allocator_publish_attempt": false,
+    "calibration_pack_change": "none",
+    "contract_v1_change": "none",
+    "formula_change": "none",
+    "input_pack_change": "none",
+    "official_db_write_attempt": false,
+    "production_endpoint_activation_attempt": false,
+    "runtime_activation_attempt": false
+  },
+  "hash_comparison": "exact",
+  "materiality_summary": {
+    "allocation_weight_delta_pct": 0.0,
+    "classification_rate_delta_pct": 0.0,
+    "latency_p95_regression_pct": 0.0,
+    "material_divergence": false,
+    "max_relative_delta_pct": 0.0,
+    "memory_peak_regression_pct": 0.0,
+    "retry_rate_delta_pct": 0.0,
+    "return_metric_delta_pct": 0.0,
+    "risk_metric_delta_pct": 0.0,
+    "threshold_version": "open_macro_v03_shadow_materiality_v1"
+  },
+  "numeric_tolerances": {
+    "float_abs_tolerance": 1e-12,
+    "float_rel_tolerance": 1e-10,
+    "hash_comparison": "exact"
+  },
+  "policy_id": "open_macro_v03_shadow_baseline_comparison_policy_v1",
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
+  "status": "pass"
+}

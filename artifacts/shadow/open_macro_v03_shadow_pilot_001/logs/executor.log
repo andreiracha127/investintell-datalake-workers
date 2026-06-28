@@ -1,0 +1,1 @@
+isolated_external_executor_no_productive_runtime_docker network=none db_access=false input_pack_mount=read_only source_tree_writes=false
