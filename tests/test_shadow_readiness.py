@@ -57,7 +57,7 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         "correlation_id": "corr-open-macro-v03-shadow-001",
         "execution_id": "exec-open-macro-v03-shadow-001",
         "run_fingerprint": "a" * 64,
-        "as_of": "2026-06-27",
+        "as_of": "2026-06-26",
         "strategy": "open_macro_v03",
         "mode": "shadow",
         "runtime_activation": False,
@@ -77,6 +77,21 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         bad[field] = True
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(bad, schema)
+
+    drifted_as_of = dict(envelope)
+    drifted_as_of["as_of"] = "2026-06-27"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(drifted_as_of, schema)
+
+    for productive_uri in (
+        "s3://prod-allocator/open_macro_v03/exec-001",
+        "artifact://shadow/other_shadow/exec-001",
+        "db://official/results/exec-001",
+    ):
+        productive_output = dict(envelope)
+        productive_output["output_artifact_uri"] = productive_uri
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(productive_output, schema)
 
 
 def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
@@ -114,6 +129,8 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "invariant_failures": 0,
         },
         "runtime_activation": False,
+        "allow_db_write": False,
+        "allow_allocator_publish": False,
         "official_result": False,
     }
 
@@ -185,11 +202,21 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "hard_relative_delta_exceeded",
     }
 
-    for field in ("runtime_activation", "official_result"):
+    for field in (
+        "runtime_activation",
+        "allow_db_write",
+        "allow_allocator_publish",
+        "official_result",
+    ):
         bad = dict(result)
         bad[field] = True
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(bad, schema)
+
+        missing_flag = dict(result)
+        del missing_flag[field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(missing_flag, schema)
 
 
 def test_baseline_comparison_policy_rejects_required_failure_classes() -> None:

@@ -53,6 +53,8 @@
     "status",
     "retryable",
     "runtime_activation",
+    "allow_db_write",
+    "allow_allocator_publish",
     "official_result"
   ],
   "allOf": [
@@ -241,6 +243,12 @@
       }
     },
     "runtime_activation": {
+      "const": false
+    },
+    "allow_db_write": {
+      "const": false
+    },
+    "allow_allocator_publish": {
       "const": false
     },
     "official_result": {

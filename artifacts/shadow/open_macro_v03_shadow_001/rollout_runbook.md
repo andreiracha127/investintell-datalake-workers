@@ -21,9 +21,11 @@ shadow mode.
    `shadow_job_envelope.schema.json`.
 4. Execute only in an isolated runner with official side effects disabled.
 5. Write only inert artifacts and manifests.
-6. Validate the result manifest.
-7. Compare against the official baseline using
+6. Compare against the official baseline using
    `baseline_comparison_policy.json`.
+7. Validate the result manifest, which records the baseline comparison hash,
+   materiality summary, and divergence summary produced by the previous step
+   for successful runs.
 8. Review material divergence and invariant status before any next gate.
 
 ## Explicit Non-Goals
