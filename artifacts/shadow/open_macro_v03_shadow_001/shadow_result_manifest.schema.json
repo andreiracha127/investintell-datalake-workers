@@ -48,6 +48,8 @@
     "calibration_id",
     "input_pack_sha256",
     "engine_image_digest",
+    "engine_commit",
+    "output_artifact_uri",
     "started_at",
     "finished_at",
     "status",
@@ -74,7 +76,11 @@
           "baseline_comparison_sha256",
           "reproducibility_report_sha256",
           "materiality_summary",
-          "divergence_summary"
+          "divergence_summary",
+          "duration_ms",
+          "memory_peak_bytes",
+          "cpu_time_ms",
+          "retry_count"
         ],
         "properties": {
           "materiality_summary": {
@@ -189,6 +195,13 @@
     "engine_image_digest": {
       "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
     },
+    "engine_commit": {
+      "const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
+    },
+    "output_artifact_uri": {
+      "type": "string",
+      "pattern": "^artifact://shadow/open_macro_v03_shadow_001/[^\\s]+$"
+    },
     "output_manifest_sha256": {
       "$ref": "#/$defs/sha256Hex"
     },
@@ -215,6 +228,22 @@
     },
     "retryable": {
       "type": "boolean"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_peak_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cpu_time_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0
     },
     "materiality_summary": {
       "type": "object",

@@ -108,6 +108,8 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "calibration_id": "open_macro_v03_calibration_001",
         "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
         "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
+        "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
+        "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/exec-open-macro-v03-shadow-001",
         "output_manifest_sha256": "b" * 64,
         "invariant_report_sha256": "c" * 64,
         "baseline_comparison_sha256": "d" * 64,
@@ -116,6 +118,10 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "finished_at": "2026-06-27T21:35:05Z",
         "status": "succeeded",
         "retryable": False,
+        "duration_ms": 60000,
+        "memory_peak_bytes": 524288000,
+        "cpu_time_ms": 45000,
+        "retry_count": 0,
         "materiality_summary": {
             "threshold_version": "open_macro_v03_shadow_materiality_v1",
             "material_divergence": False,
@@ -164,6 +170,10 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "reproducibility_report_sha256",
             "materiality_summary",
             "divergence_summary",
+            "duration_ms",
+            "memory_peak_bytes",
+            "cpu_time_ms",
+            "retry_count",
         }
     }
     failed_without_artifacts["status"] = "failed"
@@ -206,6 +216,28 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     del succeeded_without_reproducibility["reproducibility_report_sha256"]
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(succeeded_without_reproducibility, schema)
+
+    for field in ("engine_commit", "output_artifact_uri"):
+        missing_provenance = dict(result)
+        del missing_provenance[field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(missing_provenance, schema)
+
+    productive_artifact_uri = dict(result)
+    productive_artifact_uri["output_artifact_uri"] = "s3://prod-allocator/exec-001"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(productive_artifact_uri, schema)
+
+    for field in ("duration_ms", "memory_peak_bytes", "cpu_time_ms", "retry_count"):
+        succeeded_without_operational = deepcopy(result)
+        del succeeded_without_operational[field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(succeeded_without_operational, schema)
+
+        negative_operational = deepcopy(result)
+        negative_operational[field] = -1
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(negative_operational, schema)
 
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
@@ -291,6 +323,13 @@ def test_shadow_readiness_doc_declares_no_runtime_or_a5_activation() -> None:
     assert "runtime_activation: `false`" in text
     assert "No official DB writes" in text
     assert "No allocator publish path" in text
+
+
+def test_acceptance_criteria_documents_execution_window_gate() -> None:
+    text = (SHADOW_ROOT / "acceptance_criteria.md").read_text(encoding="utf-8")
+
+    assert "non-positive execution window" in text
+    assert "JSON Schema cannot compare two fields" in text
 
 
 def test_railway_ci_runs_shadow_readiness_gate() -> None:

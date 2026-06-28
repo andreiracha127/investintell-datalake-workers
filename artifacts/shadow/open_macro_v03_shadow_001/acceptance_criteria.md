@@ -28,6 +28,10 @@ pilot or productive activation.
   baseline comparison hashes.
 - Failed or rejected result manifests record the `failure_class` without
   fabricating artifact hashes that were not produced.
+- The pilot result validator rejects a non-positive execution window
+  (`finished_at` earlier than `started_at`) and a `duration_ms` inconsistent
+  with the recorded timestamps. JSON Schema cannot compare two fields, so this
+  is enforced at the gate, not in `shadow_result_manifest.schema.json`.
 - Invariant report hash is present and green for successful executions.
 - Baseline comparison hash is present and green for successful executions.
 - Baseline comparison policy rejects all hard failure classes.
