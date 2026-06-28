@@ -111,6 +111,7 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "output_manifest_sha256": "b" * 64,
         "invariant_report_sha256": "c" * 64,
         "baseline_comparison_sha256": "d" * 64,
+        "reproducibility_report_sha256": "e" * 64,
         "started_at": "2026-06-27T21:34:05Z",
         "finished_at": "2026-06-27T21:35:05Z",
         "status": "succeeded",
@@ -160,6 +161,7 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "output_manifest_sha256",
             "invariant_report_sha256",
             "baseline_comparison_sha256",
+            "reproducibility_report_sha256",
             "materiality_summary",
             "divergence_summary",
         }
@@ -183,6 +185,27 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     succeeded_with_hard_relative_delta["materiality_summary"]["max_relative_delta_pct"] = 2.1
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(succeeded_with_hard_relative_delta, schema)
+
+    succeeded_at_hard_reject_boundary = deepcopy(result)
+    succeeded_at_hard_reject_boundary["materiality_summary"]["max_relative_delta_pct"] = 2.0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_at_hard_reject_boundary, schema)
+
+    succeeded_review_required = deepcopy(result)
+    succeeded_review_required["materiality_summary"]["max_relative_delta_pct"] = 1.0
+    succeeded_review_required["materiality_summary"]["material_divergence"] = True
+    jsonschema.validate(succeeded_review_required, schema)
+
+    succeeded_review_required_suppressed = deepcopy(result)
+    succeeded_review_required_suppressed["materiality_summary"]["max_relative_delta_pct"] = 1.0
+    succeeded_review_required_suppressed["materiality_summary"]["material_divergence"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_review_required_suppressed, schema)
+
+    succeeded_without_reproducibility = deepcopy(result)
+    del succeeded_without_reproducibility["reproducibility_report_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_without_reproducibility, schema)
 
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"

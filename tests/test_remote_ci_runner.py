@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REMOTE_RUNNER = ROOT / "scripts" / "ci" / "run_remote_railway_ci.ps1"
 PRE_PUSH_HOOK = ROOT / ".githooks" / "pre-push"
 REMOTE_CI_DOC = ROOT / "docs" / "architecture" / "remote-ssh-ci.md"
+RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
 
 
 def test_remote_ci_runner_targets_legion_and_archives_current_commit() -> None:
@@ -33,6 +34,19 @@ def test_remote_ci_runner_handles_docker_desktop_ssh_sessions() -> None:
     assert "DOCKER_BUILDKIT" in text
     assert "REMOTE_CI_BUILDKIT_CREDENTIAL_HELPER_FALLBACK=true" in text
     assert "error getting credentials|specified logon session|credsStore" in text
+
+
+def test_railway_ci_dockerfile_stays_legacy_builder_compatible() -> None:
+    # The credential-helper fallback drops to the legacy builder
+    # (DOCKER_BUILDKIT=0), which cannot parse heredoc RUN blocks (a BuildKit-only
+    # syntax). The Dockerfile must therefore avoid heredocs and call extracted
+    # scripts instead, so the fallback can actually build the image.
+    text = RAILWAY_CI_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "<<'PY'" not in text
+    assert "<<PY" not in text
+    assert "RUN python docker/railway-ci/verify_input_pack.py" in text
+    assert "RUN python docker/railway-ci/verify_calibration_artifacts.py" in text
 
 
 def test_pre_push_hook_invokes_remote_ci_runner() -> None:

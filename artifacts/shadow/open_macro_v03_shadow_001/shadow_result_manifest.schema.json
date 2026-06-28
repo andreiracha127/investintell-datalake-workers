@@ -72,6 +72,7 @@
           "output_manifest_sha256",
           "invariant_report_sha256",
           "baseline_comparison_sha256",
+          "reproducibility_report_sha256",
           "materiality_summary",
           "divergence_summary"
         ],
@@ -79,13 +80,10 @@
           "materiality_summary": {
             "type": "object",
             "properties": {
-              "material_divergence": {
-                "const": false
-              },
               "max_relative_delta_pct": {
                 "type": "number",
                 "minimum": 0,
-                "maximum": 2.0
+                "exclusiveMaximum": 2.0
               }
             }
           },
@@ -115,7 +113,35 @@
         },
         "not": {
           "required": ["failure_class"]
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["max_relative_delta_pct"],
+                  "properties": {
+                    "max_relative_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
       }
     },
     {
@@ -170,6 +196,9 @@
       "$ref": "#/$defs/sha256Hex"
     },
     "baseline_comparison_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "reproducibility_report_sha256": {
       "$ref": "#/$defs/sha256Hex"
     },
     "started_at": {
