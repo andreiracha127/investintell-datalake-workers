@@ -139,6 +139,7 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "runtime_activation": False,
         "allow_db_write": False,
         "allow_allocator_publish": False,
+        "production_endpoint_activation": "none",
         "official_result": False,
     }
 
@@ -271,6 +272,32 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with_relative_deltas["materiality_summary"]["classification_rate_delta_pct"] = 0.0
     jsonschema.validate(with_relative_deltas, schema)
 
+    per_metric_hard_delta = deepcopy(result)
+    per_metric_hard_delta["materiality_summary"]["return_metric_delta_pct"] = 3.0
+    per_metric_hard_delta["materiality_summary"]["max_relative_delta_pct"] = 0.0
+    per_metric_hard_delta["materiality_summary"]["material_divergence"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(per_metric_hard_delta, schema)
+
+    per_metric_at_hard_delta_boundary = deepcopy(result)
+    per_metric_at_hard_delta_boundary["materiality_summary"]["risk_metric_delta_pct"] = 2.0
+    per_metric_at_hard_delta_boundary["materiality_summary"]["material_divergence"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(per_metric_at_hard_delta_boundary, schema)
+
+    per_metric_review_delta = deepcopy(result)
+    per_metric_review_delta["materiality_summary"]["allocation_weight_delta_pct"] = 0.75
+    per_metric_review_delta["materiality_summary"]["material_divergence"] = True
+    jsonschema.validate(per_metric_review_delta, schema)
+
+    per_metric_review_delta_suppressed = deepcopy(result)
+    per_metric_review_delta_suppressed["materiality_summary"][
+        "classification_rate_delta_pct"
+    ] = 0.75
+    per_metric_review_delta_suppressed["materiality_summary"]["material_divergence"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(per_metric_review_delta_suppressed, schema)
+
     for regression_field, breach_value in (
         ("latency_p95_regression_pct", 12.0),
         ("memory_peak_regression_pct", 12.0),
@@ -315,6 +342,17 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(mismatch_rejection_without_breach, schema)
 
+    invariant_rejection = deepcopy(result)
+    invariant_rejection["status"] = "rejected"
+    invariant_rejection["failure_class"] = "invariant_failure"
+    invariant_rejection["divergence_summary"]["invariant_failures"] = 1
+    jsonschema.validate(invariant_rejection, schema)
+
+    invariant_rejection_without_report = deepcopy(invariant_rejection)
+    del invariant_rejection_without_report["invariant_report_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(invariant_rejection_without_report, schema)
+
     manifest_incomplete_rejection = deepcopy(result)
     manifest_incomplete_rejection["status"] = "rejected"
     manifest_incomplete_rejection["failure_class"] = "output_manifest_incomplete"
@@ -335,6 +373,29 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(non_reproducible_without_hash, schema)
 
+    for failure_class in (
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+    ):
+        side_effect_attempt = deepcopy(failed_without_artifacts)
+        side_effect_attempt["status"] = "rejected"
+        side_effect_attempt["failure_class"] = failure_class
+        side_effect_attempt["side_effect_attempt_evidence_sha256"] = "f" * 64
+        side_effect_attempt["side_effect_attempt_count"] = 1
+        jsonschema.validate(side_effect_attempt, schema)
+
+        side_effect_attempt_without_evidence = deepcopy(side_effect_attempt)
+        del side_effect_attempt_without_evidence["side_effect_attempt_evidence_sha256"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(side_effect_attempt_without_evidence, schema)
+
+        side_effect_attempt_without_count = deepcopy(side_effect_attempt)
+        del side_effect_attempt_without_count["side_effect_attempt_count"]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(side_effect_attempt_without_count, schema)
+
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
     with pytest.raises(jsonschema.ValidationError):
@@ -354,6 +415,7 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         "runtime_activation_attempt",
         "official_db_write_attempt",
         "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
         "invariant_failure",
         "hard_relative_delta_exceeded",
     }
@@ -373,6 +435,16 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         del missing_flag[field]
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(missing_flag, schema)
+
+    activated_endpoint = dict(result)
+    activated_endpoint["production_endpoint_activation"] = "enabled"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(activated_endpoint, schema)
+
+    missing_endpoint_attestation = dict(result)
+    del missing_endpoint_attestation["production_endpoint_activation"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(missing_endpoint_attestation, schema)
 
 
 def test_baseline_comparison_policy_rejects_required_failure_classes() -> None:
