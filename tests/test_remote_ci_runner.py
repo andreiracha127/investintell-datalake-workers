@@ -36,6 +36,22 @@ def test_remote_ci_runner_handles_docker_desktop_ssh_sessions() -> None:
     assert "error getting credentials|specified logon session|credsStore" in text
 
 
+def test_remote_ci_runner_fails_closed_on_remote_error() -> None:
+    # The gate must abort the push when the remote CI did not actually pass,
+    # even if the SSH transport returns exit 0 (e.g. Docker daemon down). It
+    # must not print REMOTE_CI_STATUS=PASS on a remote failure.
+    text = REMOTE_RUNNER.read_text(encoding="utf-8")
+
+    # Remote side: native command errors are controlled via exit codes and any
+    # unhandled exception aborts with a non-zero exit plus the exit marker.
+    assert "PSNativeCommandUseErrorActionPreference" in text
+    assert "trap {" in text
+
+    # Local side: PASS requires both a clean SSH exit and the remote exit marker.
+    assert "$ciExit" in text
+    assert "$sshExit -ne 0 -or $ciExit -ne 0" in text
+
+
 def test_railway_ci_dockerfile_stays_legacy_builder_compatible() -> None:
     # The credential-helper fallback drops to the legacy builder
     # (DOCKER_BUILDKIT=0), which cannot parse heredoc RUN blocks (a BuildKit-only

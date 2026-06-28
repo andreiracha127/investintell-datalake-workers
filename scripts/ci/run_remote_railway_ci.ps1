@@ -70,6 +70,8 @@ if ($LASTEXITCODE -ne 0) {
 $remoteScript = @"
 `$ErrorActionPreference = 'Stop'
 `$ProgressPreference = 'SilentlyContinue'
+`$PSNativeCommandUseErrorActionPreference = `$false
+trap { Write-Output 'REMOTE_CI_EXIT=1'; Write-Output ('REMOTE_CI_ERROR: ' + `$_.Exception.Message); exit 1 }
 `$sha = '$sha'
 `$shortSha = '$shortSha'
 `$branch = '$branch'
@@ -188,7 +190,10 @@ $sshText -split "`r?`n" |
         $line -notmatch '^#< CLIXML' -and $line -notmatch '^<Objs Version='
     } |
     ForEach-Object { Write-Output $_ }
-if ($sshExit -ne 0) {
-    throw "Remote Railway CI failed on $RemoteHost for $sha"
+$ciExitLine = ($sshText -split "`r?`n" | Where-Object { $_ -match '^REMOTE_CI_EXIT=' } | Select-Object -Last 1)
+$ciExit = if ($ciExitLine -match '^REMOTE_CI_EXIT=(\d+)') { [int]$Matches[1] } else { $null }
+if ($sshExit -ne 0 -or $ciExit -ne 0) {
+    $remoteExitText = if ($null -eq $ciExit) { 'missing' } else { [string]$ciExit }
+    throw "Remote Railway CI failed on $RemoteHost for $sha (sshExit=$sshExit, remoteExit=$remoteExitText)"
 }
 Write-Output "REMOTE_CI_STATUS=PASS"
