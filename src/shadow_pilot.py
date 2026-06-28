@@ -63,6 +63,74 @@ EXPECTED_REPRODUCIBILITY_LABELS = frozenset(
     for repeat in (0, 1)
 )
 
+MATERIALITY_NUMERIC_FIELDS = (
+    "max_relative_delta_pct",
+    "return_metric_delta_pct",
+    "risk_metric_delta_pct",
+    "allocation_weight_delta_pct",
+    "classification_rate_delta_pct",
+    "latency_p95_regression_pct",
+    "memory_peak_regression_pct",
+    "retry_rate_delta_pct",
+)
+DIVERGENCE_COUNTERS = (
+    "missing_outputs",
+    "unexpected_outputs",
+    "mismatch_count",
+    "nan_or_inf_count",
+    "constraint_violations",
+    "invariant_failures",
+)
+
+
+class EvidenceError(ValueError):
+    """Raised when externally-derived evidence fails a strict binding/structure gate.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` / ``pytest.raises``
+    sites keep working, while signalling that the evidence itself (identity, field
+    presence, finiteness, or marker shape) is malformed rather than merely divergent.
+    """
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def require_fields(payload: dict[str, Any], names: tuple[str, ...], *, where: str) -> None:
+    """Reject evidence that omits a required key (absence must never read as a default)."""
+    if not isinstance(payload, dict):
+        raise EvidenceError(f"{where}: expected an object, got {type(payload).__name__}")
+    for name in names:
+        if name not in payload:
+            raise EvidenceError(f"{where}: missing required field {name!r}")
+
+
+def require_identity(payload: dict[str, Any], expected: dict[str, Any], *, where: str) -> None:
+    """Bind evidence to this pilot: each key must be present and equal (bools by identity)."""
+    if not isinstance(payload, dict):
+        raise EvidenceError(f"{where}: expected an object, got {type(payload).__name__}")
+    for key, want in expected.items():
+        if key not in payload:
+            raise EvidenceError(f"{where}: missing identity field {key!r}")
+        actual = payload[key]
+        matched = actual is want if isinstance(want, bool) else actual == want
+        if not matched:
+            raise EvidenceError(f"{where}: identity mismatch for {key!r}: {actual!r} != {want!r}")
+
+
+def require_finite(payload: dict[str, Any], numeric_fields: tuple[str, ...], *, where: str) -> None:
+    """Reject missing, non-numeric, or non-finite (NaN/Inf) numeric evidence."""
+    for field in numeric_fields:
+        if field not in payload:
+            raise EvidenceError(f"{where}: missing numeric field {field!r}")
+        value = payload[field]
+        if not _is_number(value) or not math.isfinite(float(value)):
+            raise EvidenceError(f"{where}: non-finite or non-numeric field {field!r}={value!r}")
+
+
+def expected_output_artifact_uri() -> str:
+    return f"artifact://shadow/{SHADOW_ID}/{SHADOW_PILOT_ID}"
+
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -209,10 +277,26 @@ def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None
         raise jsonschema.ValidationError(
             f"duration_ms must match started_at/finished_at delta: {expected_duration_ms}"
         )
+    if result.get("status") == "succeeded":
+        # JSON Schema "number" accepts NaN/Inf, and its regex only matches the URI
+        # shape; pin finiteness and the exact artifact URI for a succeeded result.
+        try:
+            require_finite(result["materiality_summary"], MATERIALITY_NUMERIC_FIELDS, where="materiality_summary")
+            require_finite(result["divergence_summary"], DIVERGENCE_COUNTERS, where="divergence_summary")
+        except EvidenceError as exc:
+            raise jsonschema.ValidationError(str(exc)) from exc
+        expected_uri = expected_output_artifact_uri()
+        if result.get("output_artifact_uri") != expected_uri:
+            raise jsonschema.ValidationError(f"output_artifact_uri must equal {expected_uri}")
 
 
 def validate_shadow_readiness_manifest_is_inert(readiness: dict[str, Any]) -> None:
     expected_exact = {
+        "shadow_id": SHADOW_ID,
+        "status": "readiness_candidate",
+        "A3": "open_macro_v03",
+        "A4": "shadow_readiness_prepared",
+        "execution_status": "not_started",
         "calibration_id": CALIBRATION_ID,
         "calibration_001_merge_commit": CALIBRATION_001_MERGE_COMMIT,
         "calibration_pr_head": CALIBRATION_PR_HEAD,
@@ -267,9 +351,27 @@ def load_policy(root: Path | None = None) -> dict[str, Any]:
 
 
 def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, Any]) -> dict[str, Any]:
+    require_identity(
+        comparison,
+        {
+            "schema_version": 1,
+            "shadow_id": SHADOW_ID,
+            "shadow_pilot_id": SHADOW_PILOT_ID,
+            "calibration_id": CALIBRATION_ID,
+            "policy_id": policy["policy_id"],
+        },
+        where="baseline_comparison",
+    )
+    require_fields(
+        comparison,
+        ("divergence_summary", "materiality_summary", "forbidden_effects"),
+        where="baseline_comparison",
+    )
     thresholds = policy["materiality_thresholds"]
     divergence = comparison["divergence_summary"]
     materiality = comparison["materiality_summary"]
+    require_fields(divergence, DIVERGENCE_COUNTERS, where="baseline_comparison.divergence_summary")
+    require_fields(materiality, MATERIALITY_NUMERIC_FIELDS, where="baseline_comparison.materiality_summary")
     rejection_rules: list[str] = []
     review_rules: list[str] = []
     counter_to_rule = {
@@ -282,7 +384,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
     }
     for counter, rule in counter_to_rule.items():
         max_key = f"{counter}_max"
-        if int(divergence.get(counter, 0)) > int(thresholds[max_key]):
+        if int(divergence[counter]) > int(thresholds[max_key]):
             rejection_rules.append(rule)
 
     hard = float(thresholds["hard_reject_relative_delta_pct"])
@@ -295,7 +397,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "classification_rate_delta_pct",
     ]
     for field in relative_fields:
-        value = float(materiality.get(field, 0.0))
+        value = float(materiality[field])
         if not math.isfinite(value):
             rejection_rules.append("nan_or_inf")
             continue
@@ -310,7 +412,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "retry_rate_delta_pct": "retry_rate_delta_review_pct",
     }
     for field, threshold_field in regression_fields.items():
-        value = float(materiality.get(field, 0.0))
+        value = float(materiality[field])
         if not math.isfinite(value):
             rejection_rules.append("nan_or_inf")
             continue
@@ -324,7 +426,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "allocator_publish_attempt",
         "production_endpoint_activation_attempt",
     ):
-        if attempt_key in forbidden_effects and forbidden_effects[attempt_key] is not False:
+        if forbidden_effects.get(attempt_key) is not False:
             rejection_rules.append(attempt_key)
     for forbidden_change in (
         "formula_change",
@@ -333,7 +435,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "contract_v1_change",
         "contract_v1_change_without_new_bundle",
     ):
-        if forbidden_effects.get(forbidden_change) not in (None, False, "none"):
+        if forbidden_effects.get(forbidden_change) != "none":
             rejection_rules.append(forbidden_change)
     if bool(materiality.get("material_divergence")):
         review_rules.append("explicit_material_divergence")
@@ -491,6 +593,7 @@ def build_invariant_report(
     envelope: dict[str, Any],
     baseline_comparison: dict[str, Any],
     reproducibility_report: dict[str, Any],
+    policy: dict[str, Any],
 ) -> dict[str, Any]:
     log_paths = [output_dir / "logs" / "shadow_pilot.log", output_dir / "logs" / "executor.log"]
     checks = {
@@ -498,7 +601,7 @@ def build_invariant_report(
         "allow_db_write_false": envelope["allow_db_write"] is False,
         "allow_allocator_publish_false": envelope["allow_allocator_publish"] is False,
         "production_endpoint_activation_none": envelope["production_endpoint_activation"] == "none",
-        "baseline_comparison_pass": baseline_comparison["status"] == "pass",
+        "baseline_comparison_pass": evaluate_baseline_comparison(baseline_comparison, policy)["status"] == "pass",
         "reproducibility_ok": reproducibility_report["ok"] is True,
         "logs_present": all(path.exists() and path.stat().st_size > 0 for path in log_paths),
         "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
@@ -651,7 +754,8 @@ def relative_deltas_below_hard_reject_threshold(
     hard_threshold = policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
     materiality = baseline_comparison["materiality_summary"]
     fields = {"max_relative_delta_pct", *policy["metrics"]["relative_deltas"]}
-    return all(float(materiality.get(field, 0.0)) < hard_threshold for field in fields)
+    require_fields(materiality, tuple(sorted(fields)), where="baseline_comparison.materiality_summary")
+    return all(float(materiality[field]) < hard_threshold for field in fields)
 
 
 def build_shadow_result_manifest(
@@ -677,6 +781,13 @@ def build_shadow_result_manifest(
         raise ValueError("cannot emit succeeded result for red reproducibility report")
     if reproducibility_report.get("run_fingerprint") != envelope["run_fingerprint"]:
         raise ValueError("cannot emit succeeded result for mismatched reproducibility fingerprint")
+    require_identity(
+        reproducibility_report,
+        {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
+        where="reproducibility_report",
+    )
+    if envelope.get("output_artifact_uri") != expected_output_artifact_uri():
+        raise EvidenceError("cannot emit succeeded result for mis-bound output_artifact_uri")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     materiality_summary = dict(baseline_comparison["materiality_summary"])
     divergence_summary = dict(baseline_comparison["divergence_summary"])
@@ -727,11 +838,16 @@ def build_acceptance_report(
     checks = invariant_report["checks"]
     forbidden_effects = baseline_comparison.get("forbidden_effects", {})
     baseline_evaluation = evaluate_baseline_comparison(baseline_comparison, policy)
+    require_identity(
+        reproducibility_report,
+        {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
+        where="reproducibility_report",
+    )
     rejection_rules = set(baseline_evaluation["rejection_rules_triggered"])
     baseline_rejected = baseline_evaluation["status"] == "rejected"
 
     def no_forbidden_attempt(attempt_key: str) -> bool:
-        return forbidden_effects.get(attempt_key) is not True and attempt_key not in rejection_rules
+        return forbidden_effects.get(attempt_key) is False and attempt_key not in rejection_rules
 
     raw_evidence_by_rule = {
         "all_required_outputs_present": (
@@ -1041,6 +1157,7 @@ def run_shadow_pilot(
         envelope=envelope,
         baseline_comparison=baseline_comparison,
         reproducibility_report=reproducibility_report,
+        policy=policy,
     )
     write_json(output_dir / "invariant_report.json", invariant_report)
 

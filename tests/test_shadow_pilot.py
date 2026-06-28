@@ -26,7 +26,13 @@ def _envelope() -> dict:
 
 def _reproducibility_report(envelope: dict | None = None, *, ok: bool = True) -> dict:
     envelope = envelope or _envelope()
-    return {"ok": ok, "run_fingerprint": envelope["run_fingerprint"]}
+    return {
+        "ok": ok,
+        "run_fingerprint": envelope["run_fingerprint"],
+        "shadow_id": sp.SHADOW_ID,
+        "shadow_pilot_id": sp.SHADOW_PILOT_ID,
+        "calibration_id": sp.CALIBRATION_ID,
+    }
 
 
 def _result() -> dict:
