@@ -1,12 +1,12 @@
 {
   "calibration_id": "open_macro_v03_calibration_001",
   "checks": {
-    "allocator_publish": false,
     "allow_allocator_publish_false": true,
     "allow_db_write_false": true,
     "baseline_comparison_pass": true,
-    "db_access": false,
     "logs_present": true,
+    "no_allocator_publish": true,
+    "no_db_access": true,
     "no_symlinks": true,
     "output_dir_dedicated": true,
     "production_endpoint_activation_none": true,
@@ -15,7 +15,7 @@
     "source_tree_not_executor_output": true
   },
   "failure_classes": [],
-  "ok": false,
+  "ok": true,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001"

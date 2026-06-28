@@ -361,8 +361,8 @@ def build_invariant_report(
         "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
         "no_symlinks": not any(path.is_symlink() for path in output_dir.rglob("*")),
         "source_tree_not_executor_output": True,
-        "db_access": False,
-        "allocator_publish": False,
+        "no_db_access": True,
+        "no_allocator_publish": True,
     }
     return {
         "schema_version": 1,

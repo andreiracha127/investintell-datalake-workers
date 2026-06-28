@@ -182,6 +182,8 @@ def test_shadow_pilot_runner_generates_valid_artifact_bundle(tmp_path: Path) -> 
     assert review_rule["status"] == "pending"
     assert review_rule["blocking"] is True
     assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")
+    invariant = json.loads((out / "invariant_report.json").read_text(encoding="utf-8"))
+    assert invariant["ok"] is True
 
 
 def test_committed_shadow_pilot_artifacts_validate() -> None:
@@ -190,9 +192,11 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
     result = json.loads((out / "shadow_result_manifest.json").read_text(encoding="utf-8"))
     manifest = json.loads((out / "shadow_pilot_manifest.json").read_text(encoding="utf-8"))
     output_manifest = json.loads((out / "output_manifest.json").read_text(encoding="utf-8"))
+    invariant = json.loads((out / "invariant_report.json").read_text(encoding="utf-8"))
 
     sp.validate_shadow_job_envelope(envelope, root=ROOT)
     sp.validate_shadow_result_manifest(result, root=ROOT)
+    assert invariant["ok"] is True
     assert sp.output_manifest_has_required_logs(output_manifest)
     assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")
     assert manifest["A5"] == "blocked"

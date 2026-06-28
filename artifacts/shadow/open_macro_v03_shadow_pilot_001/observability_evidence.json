@@ -11,7 +11,7 @@
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
   "failure_class": null,
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
-  "invariant_report_sha256": "9c2e754a78774948c8eed880ddb996bcdd038bc3030322bf6ff208efffb37fb7",
+  "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "log_paths": [
     "logs/shadow_pilot.log",
     "logs/executor.log"
@@ -21,7 +21,7 @@
   "no_db_write_evidence": "allow_db_write=false and no official_db_write_attempt",
   "no_production_endpoint_activation_evidence": "production_endpoint_activation=none and no production_endpoint_activation_attempt",
   "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
-  "output_manifest_sha256": "3801807a55a1e395bd8a3c487dff905903c278dbc07ebebf94af631e29302149",
+  "output_manifest_sha256": "5243ab65dd5a16982a1de78374d0bd808859344295cf71623ab81f9a7ad32be6",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "retryable": false,
   "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",

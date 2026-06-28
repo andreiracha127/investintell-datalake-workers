@@ -32,14 +32,14 @@ Generated, validated, compared, and audited shadow artifacts only.
 - network: `none`
 
 ## Output Manifest Summary
-- output_manifest_sha256: `3801807a55a1e395bd8a3c487dff905903c278dbc07ebebf94af631e29302149`
+- output_manifest_sha256: `5243ab65dd5a16982a1de78374d0bd808859344295cf71623ab81f9a7ad32be6`
 
 ## Baseline Comparison Summary
 - status: `pass`
 - max_relative_delta_pct: `0.0`
 
 ## Invariant Summary
-- ok: `false`
+- ok: `true`
 
 ## Divergences
 - missing=0
