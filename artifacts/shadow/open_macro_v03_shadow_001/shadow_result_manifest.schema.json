@@ -37,6 +37,15 @@
         "hard_relative_delta_exceeded",
         "executor_failure"
       ]
+    },
+    "sideEffectAttemptFailureClass": {
+      "type": "string",
+      "enum": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt"
+      ]
     }
   },
   "required": [
@@ -60,6 +69,7 @@
     "runtime_activation",
     "allow_db_write",
     "allow_allocator_publish",
+    "production_endpoint_activation",
     "official_result"
   ],
   "allOf": [
@@ -88,6 +98,26 @@
             "type": "object",
             "properties": {
               "max_relative_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "return_metric_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "risk_metric_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "allocation_weight_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "classification_rate_delta_pct": {
                 "type": "number",
                 "minimum": 0,
                 "exclusiveMaximum": 2.0
@@ -130,6 +160,110 @@
                   "required": ["max_relative_delta_pct"],
                   "properties": {
                     "max_relative_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["return_metric_delta_pct"],
+                  "properties": {
+                    "return_metric_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["risk_metric_delta_pct"],
+                  "properties": {
+                    "risk_metric_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["allocation_weight_delta_pct"],
+                  "properties": {
+                    "allocation_weight_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["classification_rate_delta_pct"],
+                  "properties": {
+                    "classification_rate_delta_pct": {
                       "minimum": 0.5
                     }
                   }
@@ -318,7 +452,11 @@
         "required": ["failure_class"]
       },
       "then": {
-        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "required": [
+          "baseline_comparison_sha256",
+          "divergence_summary",
+          "invariant_report_sha256"
+        ],
         "properties": {
           "divergence_summary": {
             "properties": { "invariant_failures": { "minimum": 1 } }
@@ -356,6 +494,20 @@
       },
       "then": {
         "required": ["reproducibility_report_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_class": { "$ref": "#/$defs/sideEffectAttemptFailureClass" }
+        },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "side_effect_attempt_evidence_sha256",
+          "side_effect_attempt_count"
+        ]
       }
     }
   ],
@@ -439,6 +591,13 @@
     "retry_count": {
       "type": "integer",
       "minimum": 0
+    },
+    "side_effect_attempt_evidence_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "side_effect_attempt_count": {
+      "type": "integer",
+      "minimum": 1
     },
     "materiality_summary": {
       "type": "object",
@@ -524,6 +683,9 @@
     },
     "allow_allocator_publish": {
       "const": false
+    },
+    "production_endpoint_activation": {
+      "const": "none"
     },
     "official_result": {
       "const": false
