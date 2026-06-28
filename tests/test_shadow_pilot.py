@@ -34,6 +34,26 @@ def _result() -> dict:
     )
 
 
+def _output_manifest_with_logs() -> dict:
+    return {
+        "artifacts": [
+            {"path": "logs/shadow_pilot.log"},
+            {"path": "logs/executor.log"},
+        ]
+    }
+
+
+def _invariant_report(*, ok: bool = True) -> dict:
+    return {
+        "ok": ok,
+        "checks": {
+            "runtime_activation_false": True,
+            "allow_db_write_false": True,
+            "allow_allocator_publish_false": True,
+        },
+    }
+
+
 def test_shadow_pilot_envelope_validates_pinned_provenance() -> None:
     envelope = _envelope()
     sp.validate_shadow_job_envelope(envelope, root=ROOT)
@@ -67,6 +87,20 @@ def test_shadow_result_manifest_rejects_divergent_or_retryable_success() -> None
     retryable["retryable"] = True
     with pytest.raises(jsonschema.ValidationError):
         sp.validate_shadow_result_manifest(retryable, root=ROOT)
+
+
+def test_shadow_result_manifest_rejects_inconsistent_duration_window() -> None:
+    result = _result()
+
+    zero_window = deepcopy(result)
+    zero_window["finished_at"] = zero_window["started_at"]
+    with pytest.raises(jsonschema.ValidationError, match="finished_at"):
+        sp.validate_shadow_result_manifest(zero_window, root=ROOT)
+
+    bad_duration = deepcopy(result)
+    bad_duration["duration_ms"] = 1
+    with pytest.raises(jsonschema.ValidationError, match="duration_ms"):
+        sp.validate_shadow_result_manifest(bad_duration, root=ROOT)
 
 
 def test_side_effect_attempt_result_is_rejected_and_non_retryable() -> None:
@@ -118,6 +152,66 @@ def test_baseline_comparison_thresholds_are_enforced() -> None:
     review_eval = sp.evaluate_baseline_comparison(review, policy)
     assert review_eval["status"] == "review_required"
     assert review_eval["material_divergence"] is True
+
+
+def test_reproducibility_report_requires_exact_run_matrix_membership() -> None:
+    matrix = deepcopy(CALIBRATION_RUN_MATRIX)
+    old_label = matrix["comparison_evidence"]["labels"][0]
+    new_label = "host_jobs2_r0"
+    matrix["comparison_evidence"]["labels"][0] = new_label
+    matrix["hashes"][new_label] = matrix["hashes"].pop(old_label)
+
+    report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix))
+
+    assert report["ok"] is False
+    assert old_label in report["missing"]
+    assert new_label in report["unexpected"]
+
+    wrong_count = deepcopy(CALIBRATION_RUN_MATRIX)
+    wrong_count["comparison_evidence"]["run_count"] = 7
+    count_report = sp.build_reproducibility_report(wrong_count, sp.build_shadow_job_envelope(wrong_count))
+    assert count_report["ok"] is False
+
+
+def test_acceptance_report_blocks_when_invariant_report_is_red() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(ok=False),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+    )
+
+    rule = next(rule for rule in report["rules"] if rule["id"] == "invariant_failures_zero")
+    assert rule["status"] == "fail"
+    assert rule["blocking"] is True
+    assert report["status"] == "artifact_gate_failed"
+
+
+def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["forbidden_effects"]["allocator_publish_attempt"] = True
+    baseline["evaluation"] = sp.evaluate_baseline_comparison(baseline, policy)
+    baseline["status"] = baseline["evaluation"]["status"]
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+    )
+
+    rule = next(rule for rule in report["rules"] if rule["id"] == "no_allocator_publish_attempt")
+    assert rule["status"] == "fail"
+    assert rule["blocking"] is True
+    assert report["status"] == "artifact_gate_failed"
 
 
 def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> None:

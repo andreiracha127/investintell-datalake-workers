@@ -12,6 +12,16 @@
   "docker_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "docker_image_id": "sha256:e420d7e799305dca1a6b352cb624de3264ab6f9cdf7a2619b3a8d8c242b375f0",
   "duplicates": 0,
+  "expected_labels": [
+    "container_jobs1_r0",
+    "container_jobs1_r1",
+    "container_jobs4_r0",
+    "container_jobs4_r1",
+    "host_jobs1_r0",
+    "host_jobs1_r1",
+    "host_jobs4_r0",
+    "host_jobs4_r1"
+  ],
   "expected_run_count": 8,
   "host_runs": [
     "host_jobs1_r0",
@@ -27,6 +37,7 @@
   ],
   "mismatch_count": 0,
   "missing": [],
+  "missing_hashes": [],
   "network": "none",
   "ok": true,
   "output_manifest_sha256_by_run": {
@@ -47,5 +58,6 @@
   "semantic_run_fingerprint_policy": "execution_id excluded; pinned provenance and calibration hashes included",
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
-  "unexpected": []
+  "unexpected": [],
+  "unexpected_hashes": []
 }

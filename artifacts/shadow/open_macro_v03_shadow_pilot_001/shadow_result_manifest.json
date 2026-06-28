@@ -4,7 +4,7 @@
   "baseline_comparison_sha256": "00152223e059e540690a990a8b7aa95dc15f86df801c35d71d0c772c85a2ad33",
   "calibration_id": "open_macro_v03_calibration_001",
   "correlation_id": "corr-open-macro-v03-shadow-pilot-001",
-  "cpu_time_ms": 1,
+  "cpu_time_ms": 1000,
   "divergence_summary": {
     "constraint_violations": 0,
     "invariant_failures": 0,
@@ -13,11 +13,11 @@
     "nan_or_inf_count": 0,
     "unexpected_outputs": 0
   },
-  "duration_ms": 1,
+  "duration_ms": 1000,
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
-  "finished_at": "2026-06-28T14:17:20Z",
+  "finished_at": "2026-06-28T14:39:41Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "materiality_summary": {
@@ -35,9 +35,9 @@
   "memory_peak_bytes": 0,
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "5243ab65dd5a16982a1de78374d0bd808859344295cf71623ab81f9a7ad32be6",
+  "output_manifest_sha256": "597aba8630845d7cb0db8dd1f8854fd5339be9d94c1bda13417f4de7c153fa01",
   "production_endpoint_activation": "none",
-  "reproducibility_report_sha256": "55cdf95b4f8bde163af7c1ee1ee8e9062f75e11b1a9253f3e425ddd54523cdd7",
+  "reproducibility_report_sha256": "754da8d3a96fe249a42b4dece62f9894144a843f488647ac13a57e96f9f0411a",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
   "retry_count": 0,
   "retryable": false,
@@ -45,6 +45,6 @@
   "runtime_activation": false,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
-  "started_at": "2026-06-28T14:17:20Z",
+  "started_at": "2026-06-28T14:39:40Z",
   "status": "succeeded"
 }

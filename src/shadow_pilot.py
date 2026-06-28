@@ -45,6 +45,12 @@ PILOT_RELATIVE_OUTPUTS = {
     "logs/executor.log",
     "logs/shadow_pilot.log",
 }
+EXPECTED_REPRODUCIBILITY_LABELS = frozenset(
+    f"{mode}_jobs{jobs}_r{repeat}"
+    for mode in ("host", "container")
+    for jobs in (1, 4)
+    for repeat in (0, 1)
+)
 
 
 def repo_root() -> Path:
@@ -115,6 +121,10 @@ def utc_timestamp(value: dt.datetime) -> str:
     return value.astimezone(dt.UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def parse_utc_timestamp(value: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.UTC)
+
+
 def validate_with_schema(payload: dict[str, Any], schema_path: Path) -> None:
     schema = load_json(schema_path)
     jsonschema.Draft202012Validator.check_schema(schema)
@@ -173,6 +183,18 @@ def validate_shadow_job_envelope(envelope: dict[str, Any], *, root: Path | None 
 
 def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None = None) -> None:
     validate_with_schema(result, shadow_root(root) / "shadow_result_manifest.schema.json")
+    started_at = parse_utc_timestamp(result["started_at"])
+    finished_at = parse_utc_timestamp(result["finished_at"])
+    if finished_at <= started_at:
+        raise jsonschema.ValidationError("finished_at must be after started_at")
+    duration_ms = int(result["duration_ms"])
+    if duration_ms <= 0:
+        raise jsonschema.ValidationError("duration_ms must be positive")
+    expected_duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+    if duration_ms != expected_duration_ms:
+        raise jsonschema.ValidationError(
+            f"duration_ms must match started_at/finished_at delta: {expected_duration_ms}"
+        )
 
 
 def load_policy(root: Path | None = None) -> dict[str, Any]:
@@ -299,10 +321,17 @@ def build_reproducibility_report(
     envelope: dict[str, Any],
 ) -> dict[str, Any]:
     labels = calibration_run_matrix["comparison_evidence"]["labels"]
+    label_set = set(labels)
+    hash_labels = set(calibration_run_matrix["hashes"])
+    expected_labels = set(EXPECTED_REPRODUCIBILITY_LABELS)
     duplicates = len(labels) - len(set(labels))
-    missing = sorted(set(calibration_run_matrix["hashes"]) ^ set(labels))
+    missing = sorted(expected_labels - label_set)
+    unexpected = sorted(label_set - expected_labels)
+    missing_hashes = sorted(label_set - hash_labels)
+    unexpected_hashes = sorted(hash_labels - label_set)
     container_labels = sorted(label for label in labels if label.startswith("container_"))
     host_labels = sorted(label for label in labels if label.startswith("host_"))
+    run_count = calibration_run_matrix["comparison_evidence"]["run_count"]
     return {
         "schema_version": 1,
         "shadow_pilot_id": SHADOW_PILOT_ID,
@@ -312,10 +341,13 @@ def build_reproducibility_report(
         "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
         "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
         "run_fingerprint": envelope["run_fingerprint"],
-        "expected_run_count": 8,
-        "run_count": calibration_run_matrix["comparison_evidence"]["run_count"],
+        "expected_run_count": len(EXPECTED_REPRODUCIBILITY_LABELS),
+        "run_count": run_count,
+        "expected_labels": sorted(EXPECTED_REPRODUCIBILITY_LABELS),
         "missing": missing,
-        "unexpected": [],
+        "unexpected": unexpected,
+        "missing_hashes": missing_hashes,
+        "unexpected_hashes": unexpected_hashes,
         "duplicates": duplicates,
         "mismatch_count": calibration_run_matrix["comparison_evidence"]["mismatch_count"],
         "container_runs": container_labels,
@@ -335,8 +367,14 @@ def build_reproducibility_report(
         "docker_image_digest": RAILWAY_IMAGE_DIGEST,
         "ok": (
             calibration_run_matrix["ok"] is True
+            and run_count == len(EXPECTED_REPRODUCIBILITY_LABELS)
+            and label_set == expected_labels
+            and hash_labels == label_set
             and calibration_run_matrix["comparison_evidence"]["mismatch_count"] == 0
             and not missing
+            and not unexpected
+            and not missing_hashes
+            and not unexpected_hashes
             and duplicates == 0
         ),
     }
@@ -481,13 +519,22 @@ def build_acceptance_report(
     reproducibility_report: dict[str, Any],
 ) -> dict[str, Any]:
     checks = invariant_report["checks"]
+    forbidden_effects = baseline_comparison.get("forbidden_effects", {})
+    rejection_rules = set(baseline_comparison.get("evaluation", {}).get("rejection_rules_triggered", []))
+
+    def no_forbidden_attempt(attempt_key: str) -> bool:
+        return forbidden_effects.get(attempt_key) is not True and attempt_key not in rejection_rules
+
     evidence_by_rule = {
         "all_required_outputs_present": output_manifest_has_required_logs(output_manifest),
         "no_unexpected_outputs": True,
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
         "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
-        "invariant_failures_zero": baseline_comparison["divergence_summary"]["invariant_failures"] == 0,
+        "invariant_failures_zero": (
+            baseline_comparison["divergence_summary"]["invariant_failures"] == 0
+            and invariant_report["ok"] is True
+        ),
         "relative_deltas_below_hard_reject_threshold": (
             baseline_comparison["materiality_summary"]["max_relative_delta_pct"]
             < policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
@@ -498,10 +545,10 @@ def build_acceptance_report(
         "runtime_activation_false": checks["runtime_activation_false"],
         "allow_db_write_false": checks["allow_db_write_false"],
         "allow_allocator_publish_false": checks["allow_allocator_publish_false"],
-        "no_runtime_activation_attempt": True,
-        "no_official_db_write_attempt": True,
-        "no_allocator_publish_attempt": True,
-        "no_production_endpoint_activation_attempt": True,
+        "no_runtime_activation_attempt": no_forbidden_attempt("runtime_activation_attempt"),
+        "no_official_db_write_attempt": no_forbidden_attempt("official_db_write_attempt"),
+        "no_allocator_publish_attempt": no_forbidden_attempt("allocator_publish_attempt"),
+        "no_production_endpoint_activation_attempt": no_forbidden_attempt("production_endpoint_activation_attempt"),
         "technical_and_quantitative_review_recorded": False,
     }
     rules = []
@@ -520,12 +567,13 @@ def build_acceptance_report(
                 "blocking": pending_review or not passed,
             }
         )
+    automated_failure = any(rule["status"] == "fail" for rule in rules)
     return {
         "schema_version": 1,
         "shadow_pilot_id": SHADOW_PILOT_ID,
         "shadow_id": SHADOW_ID,
         "calibration_id": CALIBRATION_ID,
-        "status": "technical_pass_promotion_review_pending",
+        "status": "artifact_gate_failed" if automated_failure else "technical_pass_promotion_review_pending",
         "A5": "blocked",
         "freeze_ready": False,
         "runtime_activation": False,
@@ -779,7 +827,7 @@ def run_shadow_pilot(
     baseline_hash = file_sha256(output_dir / "baseline_comparison.json")
     reproducibility_hash = file_sha256(output_dir / "reproducibility_report.json")
     started = dt.datetime.now(dt.UTC).replace(microsecond=0)
-    finished = started + dt.timedelta(milliseconds=1)
+    finished = started + dt.timedelta(seconds=1)
     result = build_shadow_result_manifest(
         envelope=envelope,
         output_manifest_hash=output_manifest_hash,

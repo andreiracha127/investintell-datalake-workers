@@ -22,9 +22,9 @@
       "sha256": "f2ba3cc9fcdccc061505734d7e8f1c63226f910ec19775f08680534ad856047b"
     },
     {
-      "bytes": 2234,
+      "bytes": 2512,
       "path": "reproducibility_report.json",
-      "sha256": "55cdf95b4f8bde163af7c1ee1ee8e9062f75e11b1a9253f3e425ddd54523cdd7"
+      "sha256": "754da8d3a96fe249a42b4dece62f9894144a843f488647ac13a57e96f9f0411a"
     },
     {
       "bytes": 1321,
