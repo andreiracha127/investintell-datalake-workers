@@ -1,7 +1,7 @@
 {
   "allow_allocator_publish": false,
   "allow_db_write": false,
-  "baseline_comparison_sha256": "00152223e059e540690a990a8b7aa95dc15f86df801c35d71d0c772c85a2ad33",
+  "baseline_comparison_sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394",
   "calibration_id": "open_macro_v03_calibration_001",
   "correlation_id": "corr-open-macro-v03-shadow-pilot-001",
   "cpu_time_ms": 1000,
@@ -17,7 +17,7 @@
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
-  "finished_at": "2026-06-28T14:39:41Z",
+  "finished_at": "2026-06-28T16:31:08Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "materiality_summary": {
@@ -35,7 +35,7 @@
   "memory_peak_bytes": 0,
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "597aba8630845d7cb0db8dd1f8854fd5339be9d94c1bda13417f4de7c153fa01",
+  "output_manifest_sha256": "e7347ffc037f8ae57c003daff3d8421147b1dbff76eda75108e7648d1d4dd814",
   "production_endpoint_activation": "none",
   "reproducibility_report_sha256": "754da8d3a96fe249a42b4dece62f9894144a843f488647ac13a57e96f9f0411a",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
@@ -45,6 +45,6 @@
   "runtime_activation": false,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
-  "started_at": "2026-06-28T14:39:40Z",
+  "started_at": "2026-06-28T16:31:07Z",
   "status": "succeeded"
 }

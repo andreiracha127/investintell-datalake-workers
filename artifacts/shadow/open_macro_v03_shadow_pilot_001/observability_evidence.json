@@ -1,6 +1,6 @@
 {
   "artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "baseline_comparison_sha256": "00152223e059e540690a990a8b7aa95dc15f86df801c35d71d0c772c85a2ad33",
+  "baseline_comparison_sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394",
   "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
   "calibration_id": "open_macro_v03_calibration_001",
   "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
@@ -21,7 +21,7 @@
   "no_db_write_evidence": "allow_db_write=false and no official_db_write_attempt",
   "no_production_endpoint_activation_evidence": "production_endpoint_activation=none and no production_endpoint_activation_attempt",
   "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
-  "output_manifest_sha256": "597aba8630845d7cb0db8dd1f8854fd5339be9d94c1bda13417f4de7c153fa01",
+  "output_manifest_sha256": "e7347ffc037f8ae57c003daff3d8421147b1dbff76eda75108e7648d1d4dd814",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "retryable": false,
   "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",

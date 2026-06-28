@@ -2,9 +2,9 @@
   "artifact_type": "shadow_pilot_output_manifest",
   "artifacts": [
     {
-      "bytes": 1594,
+      "bytes": 1648,
       "path": "baseline_comparison.json",
-      "sha256": "00152223e059e540690a990a8b7aa95dc15f86df801c35d71d0c772c85a2ad33"
+      "sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394"
     },
     {
       "bytes": 683,
@@ -39,5 +39,6 @@
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
-  "status": "succeeded"
+  "status": "succeeded",
+  "unexpected_outputs": []
 }

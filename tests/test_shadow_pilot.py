@@ -25,6 +25,8 @@ def _result() -> dict:
     envelope = _envelope()
     return sp.build_shadow_result_manifest(
         envelope=envelope,
+        invariant_report=_invariant_report(),
+        reproducibility_report={"ok": True},
         output_manifest_hash="a" * 64,
         invariant_hash="b" * 64,
         baseline_hash="c" * 64,
@@ -39,7 +41,8 @@ def _output_manifest_with_logs() -> dict:
         "artifacts": [
             {"path": "logs/shadow_pilot.log"},
             {"path": "logs/executor.log"},
-        ]
+        ],
+        "unexpected_outputs": [],
     }
 
 
@@ -154,6 +157,17 @@ def test_baseline_comparison_thresholds_are_enforced() -> None:
     assert review_eval["material_divergence"] is True
 
 
+def test_baseline_comparison_policy_rejects_contract_v1_change_key() -> None:
+    policy = sp.load_policy(ROOT)
+    comparison = sp.build_baseline_comparison(policy)
+    comparison["forbidden_effects"]["contract_v1_change_without_new_bundle"] = "changed"
+
+    evaluation = sp.evaluate_baseline_comparison(comparison, policy)
+
+    assert evaluation["status"] == "rejected"
+    assert "contract_v1_change_without_new_bundle" in evaluation["rejection_rules_triggered"]
+
+
 def test_reproducibility_report_requires_exact_run_matrix_membership() -> None:
     matrix = deepcopy(CALIBRATION_RUN_MATRIX)
     old_label = matrix["comparison_evidence"]["labels"][0]
@@ -173,6 +187,21 @@ def test_reproducibility_report_requires_exact_run_matrix_membership() -> None:
     assert count_report["ok"] is False
 
 
+def test_reproducibility_report_requires_isolated_execution_fields() -> None:
+    for field, bad_value in (
+        ("network", "bridge"),
+        ("db_access", True),
+        ("input_pack_mount", "read_write"),
+        ("path_independence", False),
+    ):
+        matrix = deepcopy(CALIBRATION_RUN_MATRIX)
+        matrix["comparison_evidence"][field] = bad_value
+
+        report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix))
+
+        assert report["ok"] is False
+
+
 def test_acceptance_report_blocks_when_invariant_report_is_red() -> None:
     policy = sp.load_policy(ROOT)
     baseline = sp.build_baseline_comparison(policy)
@@ -184,6 +213,7 @@ def test_acceptance_report_blocks_when_invariant_report_is_red() -> None:
         invariant_report=_invariant_report(ok=False),
         baseline_comparison=baseline,
         reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
     )
 
     rule = next(rule for rule in report["rules"] if rule["id"] == "invariant_failures_zero")
@@ -206,12 +236,46 @@ def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
         invariant_report=_invariant_report(),
         baseline_comparison=baseline,
         reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
     )
 
     rule = next(rule for rule in report["rules"] if rule["id"] == "no_allocator_publish_attempt")
     assert rule["status"] == "fail"
     assert rule["blocking"] is True
     assert report["status"] == "artifact_gate_failed"
+
+
+def test_acceptance_report_blocks_unexpected_outputs_and_fingerprint_mismatch() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+
+    unexpected_report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest={
+            "artifacts": [{"path": "logs/shadow_pilot.log"}, {"path": "logs/executor.log"}],
+            "unexpected_outputs": ["stale.json"],
+        },
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+    unexpected_rule = next(rule for rule in unexpected_report["rules"] if rule["id"] == "no_unexpected_outputs")
+    assert unexpected_rule["status"] == "fail"
+    assert unexpected_report["status"] == "artifact_gate_failed"
+
+    fingerprint_report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint="0" * 64,
+    )
+    fingerprint_rule = next(rule for rule in fingerprint_report["rules"] if rule["id"] == "run_fingerprint_consistent")
+    assert fingerprint_rule["status"] == "fail"
+    assert fingerprint_report["status"] == "artifact_gate_failed"
 
 
 def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> None:
@@ -222,6 +286,78 @@ def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="missing required output artifact"):
         sp.build_pilot_output_manifest(tmp_path)
+
+
+def test_output_manifest_rejects_unexpected_artifacts(tmp_path: Path) -> None:
+    for rel in sp.PILOT_RELATIVE_OUTPUTS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("ok\n", encoding="utf-8")
+    (tmp_path / "stale.json").write_text("old\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unexpected output artifact"):
+        sp.build_pilot_output_manifest(tmp_path)
+
+
+def test_result_manifest_requires_green_invariant_and_reproducibility_reports() -> None:
+    envelope = _envelope()
+    kwargs = {
+        "envelope": envelope,
+        "output_manifest_hash": "a" * 64,
+        "invariant_hash": "b" * 64,
+        "baseline_hash": "c" * 64,
+        "reproducibility_hash": "d" * 64,
+        "started_at": sp.dt.datetime(2026, 6, 28, 12, 0, tzinfo=sp.dt.UTC),
+        "finished_at": sp.dt.datetime(2026, 6, 28, 12, 0, 1, tzinfo=sp.dt.UTC),
+    }
+
+    with pytest.raises(ValueError, match="red invariant"):
+        sp.build_shadow_result_manifest(
+            **kwargs,
+            invariant_report=_invariant_report(ok=False),
+            reproducibility_report={"ok": True},
+        )
+
+    with pytest.raises(ValueError, match="red reproducibility"):
+        sp.build_shadow_result_manifest(
+            **kwargs,
+            invariant_report=_invariant_report(),
+            reproducibility_report={"ok": False},
+        )
+
+
+def test_readiness_manifest_requires_all_inert_fields() -> None:
+    readiness = json.loads((ROOT / "artifacts" / "shadow" / sp.SHADOW_ID / "shadow_manifest.json").read_text(encoding="utf-8"))
+    sp.validate_shadow_readiness_manifest_is_inert(readiness)
+
+    for field, bad_value in (
+        ("official_result", True),
+        ("allocator_impact", "publish"),
+        ("db_write_mode", "productive"),
+        ("production_endpoint_activation", "shadow"),
+        ("formula_changes", "changed"),
+        ("input_pack_changes", "changed"),
+        ("calibration_pack_changes", "changed"),
+        ("contract_v1_changes", "changed"),
+    ):
+        bad = deepcopy(readiness)
+        bad[field] = bad_value
+        with pytest.raises(ValueError, match=field):
+            sp.validate_shadow_readiness_manifest_is_inert(bad)
+
+
+def test_calibration_run_matrix_hash_is_pinned(tmp_path: Path) -> None:
+    source_dir = ROOT / "artifacts" / "calibration" / sp.CALIBRATION_ID
+    calibration_dir = tmp_path / "artifacts" / "calibration" / sp.CALIBRATION_ID
+    calibration_dir.mkdir(parents=True)
+    for name in ("calibration_manifest.json", "calibration_config.json", "run_matrix.json"):
+        (calibration_dir / name).write_text((source_dir / name).read_text(encoding="utf-8"), encoding="utf-8")
+
+    sp.validate_calibration_artifact_hashes(tmp_path)
+    (calibration_dir / "run_matrix.json").write_text('{"ok": true}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="run_matrix_sha256"):
+        sp.validate_calibration_artifact_hashes(tmp_path)
 
 
 def test_output_isolation_rejects_dangling_symlink_and_outside_write(tmp_path: Path) -> None:

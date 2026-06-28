@@ -18,6 +18,7 @@
     "allocator_publish_attempt": false,
     "calibration_pack_change": "none",
     "contract_v1_change": "none",
+    "contract_v1_change_without_new_bundle": "none",
     "formula_change": "none",
     "input_pack_change": "none",
     "official_db_write_attempt": false,

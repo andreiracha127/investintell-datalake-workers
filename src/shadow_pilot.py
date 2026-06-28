@@ -45,6 +45,15 @@ PILOT_RELATIVE_OUTPUTS = {
     "logs/executor.log",
     "logs/shadow_pilot.log",
 }
+FINAL_PILOT_RELATIVE_OUTPUTS = PILOT_RELATIVE_OUTPUTS | {
+    "acceptance_report.json",
+    "observability_evidence.json",
+    "output_manifest.json",
+    "pilot_execution_report.md",
+    "rollback_evidence.json",
+    "shadow_pilot_manifest.json",
+    "shadow_result_manifest.json",
+}
 EXPECTED_REPRODUCIBILITY_LABELS = frozenset(
     f"{mode}_jobs{jobs}_r{repeat}"
     for mode in ("host", "container")
@@ -197,6 +206,41 @@ def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None
         )
 
 
+def validate_shadow_readiness_manifest_is_inert(readiness: dict[str, Any]) -> None:
+    expected_exact = {
+        "runtime_activation": False,
+        "A5": "blocked",
+        "freeze_ready": False,
+        "official_result": False,
+        "allocator_impact": "none",
+        "production_endpoint_activation": "none",
+        "formula_changes": "none",
+        "input_pack_changes": "none",
+        "calibration_pack_changes": "none",
+        "contract_v1_changes": "none",
+        "production_impact": "none",
+    }
+    for field, expected in expected_exact.items():
+        if readiness.get(field) != expected:
+            raise ValueError(f"shadow readiness governance is not inert: {field}")
+    if readiness.get("db_write_mode") not in ("none", "none_or_artifact_only"):
+        raise ValueError("shadow readiness governance is not inert: db_write_mode")
+
+
+def validate_calibration_artifact_hashes(root: Path | None = None) -> dict[str, Any]:
+    calibration_dir = calibration_root(root)
+    manifest = load_json(calibration_dir / "calibration_manifest.json")
+    expected_config_hash = manifest.get("calibration_config_sha256")
+    actual_config_hash = file_sha256(calibration_dir / "calibration_config.json")
+    if expected_config_hash != actual_config_hash or actual_config_hash != CALIBRATION_CONFIG_SHA256:
+        raise ValueError("calibration_config_sha256 mismatch")
+    expected_run_matrix_hash = manifest.get("run_matrix_sha256")
+    actual_run_matrix_hash = file_sha256(calibration_dir / "run_matrix.json")
+    if expected_run_matrix_hash != actual_run_matrix_hash:
+        raise ValueError("run_matrix_sha256 mismatch")
+    return manifest
+
+
 def load_policy(root: Path | None = None) -> dict[str, Any]:
     return load_json(shadow_root(root) / "baseline_comparison_policy.json")
 
@@ -259,6 +303,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "input_pack_change",
         "calibration_pack_change",
         "contract_v1_change",
+        "contract_v1_change_without_new_bundle",
     ):
         if forbidden_effects.get(forbidden_change) not in (None, False, "none"):
             rejection_rules.append(forbidden_change)
@@ -307,6 +352,7 @@ def build_baseline_comparison(policy: dict[str, Any]) -> dict[str, Any]:
             "input_pack_change": "none",
             "calibration_pack_change": "none",
             "contract_v1_change": "none",
+            "contract_v1_change_without_new_bundle": "none",
         },
         "numeric_tolerances": policy["numeric_tolerances"],
         "hash_comparison": "exact",
@@ -332,6 +378,10 @@ def build_reproducibility_report(
     container_labels = sorted(label for label in labels if label.startswith("container_"))
     host_labels = sorted(label for label in labels if label.startswith("host_"))
     run_count = calibration_run_matrix["comparison_evidence"]["run_count"]
+    network = calibration_run_matrix["comparison_evidence"]["network"]
+    db_access = calibration_run_matrix["comparison_evidence"]["db_access"]
+    input_pack_mount = calibration_run_matrix["comparison_evidence"]["input_pack_mount"]
+    path_independence = calibration_run_matrix["comparison_evidence"]["path_independence"]
     return {
         "schema_version": 1,
         "shadow_pilot_id": SHADOW_PILOT_ID,
@@ -359,10 +409,10 @@ def build_reproducibility_report(
             for label, hashes in calibration_run_matrix["hashes"].items()
         },
         "semantic_run_fingerprint_policy": "execution_id excluded; pinned provenance and calibration hashes included",
-        "network": calibration_run_matrix["comparison_evidence"]["network"],
-        "db_access": calibration_run_matrix["comparison_evidence"]["db_access"],
-        "input_pack_mount": calibration_run_matrix["comparison_evidence"]["input_pack_mount"],
-        "path_independence": calibration_run_matrix["comparison_evidence"]["path_independence"],
+        "network": network,
+        "db_access": db_access,
+        "input_pack_mount": input_pack_mount,
+        "path_independence": path_independence,
         "docker_image_id": calibration_run_matrix["comparison_evidence"].get("docker_image_id"),
         "docker_image_digest": RAILWAY_IMAGE_DIGEST,
         "ok": (
@@ -376,6 +426,10 @@ def build_reproducibility_report(
             and not missing_hashes
             and not unexpected_hashes
             and duplicates == 0
+            and network == "none"
+            and db_access is False
+            and input_pack_mount == "read_only"
+            and path_independence is True
         ),
     }
 
@@ -421,6 +475,14 @@ def build_pilot_output_manifest(output_dir: Path) -> dict[str, Any]:
     ]
     if missing:
         raise ValueError(f"missing required output artifact: {missing[0]}")
+    output_files = {
+        path.relative_to(output_dir).as_posix()
+        for path in output_dir.rglob("*")
+        if path.is_file()
+    }
+    unexpected = sorted(output_files - FINAL_PILOT_RELATIVE_OUTPUTS)
+    if unexpected:
+        raise ValueError(f"unexpected output artifact: {unexpected[0]}")
     artifacts: list[dict[str, Any]] = []
     for rel in sorted(PILOT_RELATIVE_OUTPUTS):
         path = ensure_child(output_dir / rel, output_dir)
@@ -439,6 +501,7 @@ def build_pilot_output_manifest(output_dir: Path) -> dict[str, Any]:
         "status": "succeeded",
         "artifacts": artifacts,
         "logs_required": ["logs/shadow_pilot.log", "logs/executor.log"],
+        "unexpected_outputs": unexpected,
     }
 
 
@@ -447,9 +510,15 @@ def output_manifest_has_required_logs(output_manifest: dict[str, Any]) -> bool:
     return {"logs/shadow_pilot.log", "logs/executor.log"}.issubset(paths)
 
 
+def output_manifest_has_no_unexpected_outputs(output_manifest: dict[str, Any]) -> bool:
+    return not output_manifest.get("unexpected_outputs")
+
+
 def build_shadow_result_manifest(
     *,
     envelope: dict[str, Any],
+    invariant_report: dict[str, Any],
+    reproducibility_report: dict[str, Any],
     output_manifest_hash: str,
     invariant_hash: str,
     baseline_hash: str,
@@ -457,6 +526,10 @@ def build_shadow_result_manifest(
     started_at: dt.datetime,
     finished_at: dt.datetime,
 ) -> dict[str, Any]:
+    if invariant_report["ok"] is not True:
+        raise ValueError("cannot emit succeeded result for red invariant report")
+    if reproducibility_report["ok"] is not True:
+        raise ValueError("cannot emit succeeded result for red reproducibility report")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     return {
         "schema_version": 1,
@@ -517,6 +590,7 @@ def build_acceptance_report(
     invariant_report: dict[str, Any],
     baseline_comparison: dict[str, Any],
     reproducibility_report: dict[str, Any],
+    expected_run_fingerprint: str,
 ) -> dict[str, Any]:
     checks = invariant_report["checks"]
     forbidden_effects = baseline_comparison.get("forbidden_effects", {})
@@ -527,7 +601,7 @@ def build_acceptance_report(
 
     evidence_by_rule = {
         "all_required_outputs_present": output_manifest_has_required_logs(output_manifest),
-        "no_unexpected_outputs": True,
+        "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest),
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
         "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
@@ -539,7 +613,7 @@ def build_acceptance_report(
             baseline_comparison["materiality_summary"]["max_relative_delta_pct"]
             < policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
         ),
-        "run_fingerprint_consistent": True,
+        "run_fingerprint_consistent": reproducibility_report["run_fingerprint"] == expected_run_fingerprint,
         "output_manifest_complete": output_manifest_has_required_logs(output_manifest),
         "result_reproducible": reproducibility_report["ok"] is True,
         "runtime_activation_false": checks["runtime_activation_false"],
@@ -784,12 +858,8 @@ def run_shadow_pilot(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     readiness = load_json(shadow_root(root) / "shadow_manifest.json")
-    if readiness["runtime_activation"] is not False or readiness["A5"] != "blocked" or readiness["freeze_ready"] is not False:
-        raise ValueError("shadow readiness governance is not inert")
-
-    calibration_config_path = calibration_root(root) / "calibration_config.json"
-    if file_sha256(calibration_config_path) != CALIBRATION_CONFIG_SHA256:
-        raise ValueError("calibration_config_sha256 mismatch")
+    validate_shadow_readiness_manifest_is_inert(readiness)
+    validate_calibration_artifact_hashes(root)
     calibration_run_matrix = load_json(calibration_root(root) / "run_matrix.json")
     policy = load_policy(root)
 
@@ -830,6 +900,8 @@ def run_shadow_pilot(
     finished = started + dt.timedelta(seconds=1)
     result = build_shadow_result_manifest(
         envelope=envelope,
+        invariant_report=invariant_report,
+        reproducibility_report=reproducibility_report,
         output_manifest_hash=output_manifest_hash,
         invariant_hash=invariant_hash,
         baseline_hash=baseline_hash,
@@ -846,6 +918,7 @@ def run_shadow_pilot(
         invariant_report=invariant_report,
         baseline_comparison=baseline_comparison,
         reproducibility_report=reproducibility_report,
+        expected_run_fingerprint=envelope["run_fingerprint"],
     )
     write_json(output_dir / "acceptance_report.json", acceptance_report)
     observability = build_observability_evidence(
