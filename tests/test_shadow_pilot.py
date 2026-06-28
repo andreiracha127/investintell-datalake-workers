@@ -24,6 +24,11 @@ def _envelope() -> dict:
     return sp.build_shadow_job_envelope(CALIBRATION_RUN_MATRIX)
 
 
+def _reproducibility_report(envelope: dict | None = None, *, ok: bool = True) -> dict:
+    envelope = envelope or _envelope()
+    return {"ok": ok, "run_fingerprint": envelope["run_fingerprint"]}
+
+
 def _result() -> dict:
     envelope = _envelope()
     policy = sp.load_policy(ROOT)
@@ -32,7 +37,7 @@ def _result() -> dict:
         invariant_report=_invariant_report(),
         baseline_comparison=sp.build_baseline_comparison(policy),
         policy=policy,
-        reproducibility_report={"ok": True},
+        reproducibility_report=_reproducibility_report(envelope),
         output_manifest_hash="a" * 64,
         invariant_hash="b" * 64,
         baseline_hash="c" * 64,
@@ -44,6 +49,10 @@ def _result() -> dict:
 
 def _output_manifest_with_logs() -> dict:
     return {
+        "artifact_type": "shadow_pilot_output_manifest",
+        "shadow_pilot_id": sp.SHADOW_PILOT_ID,
+        "shadow_id": sp.SHADOW_ID,
+        "status": "succeeded",
         "artifacts": [
             {"path": rel, "sha256": "a" * 64, "bytes": 1}
             for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)
@@ -167,6 +176,39 @@ def test_baseline_comparison_thresholds_are_enforced() -> None:
     assert review_eval["status"] == "review_required"
     assert review_eval["material_divergence"] is True
 
+    declared = deepcopy(comparison)
+    declared["materiality_summary"]["material_divergence"] = True
+    declared_eval = sp.evaluate_baseline_comparison(declared, policy)
+    assert declared_eval["status"] == "review_required"
+    assert declared_eval["material_divergence"] is True
+    assert "explicit_material_divergence" in declared_eval["review_rules_triggered"]
+    assert declared_eval["rejection_rules_triggered"] == []
+
+
+@pytest.mark.parametrize("field", ["max_relative_delta_pct", "latency_p95_regression_pct"])
+def test_baseline_comparison_rejects_non_finite_materiality_with_stale_counter(field: str) -> None:
+    policy = sp.load_policy(ROOT)
+    comparison = sp.build_baseline_comparison(policy)
+    comparison["divergence_summary"]["nan_or_inf_count"] = 0
+    comparison["materiality_summary"][field] = float("nan")
+
+    evaluation = sp.evaluate_baseline_comparison(comparison, policy)
+
+    assert evaluation["status"] == "rejected"
+    assert "nan_or_inf" in evaluation["rejection_rules_triggered"]
+
+
+@pytest.mark.parametrize("bad_value", [True, 1, 0, "true", "false", None, {}, []])
+def test_baseline_comparison_rejects_malformed_side_effect_attempt_markers(bad_value: object) -> None:
+    policy = sp.load_policy(ROOT)
+    comparison = sp.build_baseline_comparison(policy)
+    comparison["forbidden_effects"]["allocator_publish_attempt"] = bad_value
+
+    evaluation = sp.evaluate_baseline_comparison(comparison, policy)
+
+    assert evaluation["status"] == "rejected"
+    assert "allocator_publish_attempt" in evaluation["rejection_rules_triggered"]
+
 
 def test_baseline_comparison_policy_rejects_contract_v1_change_key() -> None:
     policy = sp.load_policy(ROOT)
@@ -288,6 +330,35 @@ def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
     rule = next(rule for rule in report["rules"] if rule["id"] == "no_allocator_publish_attempt")
     assert rule["status"] == "fail"
     assert rule["blocking"] is True
+    assert report["status"] == "artifact_gate_failed"
+
+
+def test_acceptance_report_recomputes_malformed_side_effect_attempt_marker() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["forbidden_effects"]["allocator_publish_attempt"] = "true"
+    baseline["status"] = "pass"
+    baseline["evaluation"] = {
+        "status": "pass",
+        "rejection_rules_triggered": [],
+        "review_rules_triggered": [],
+        "material_divergence": False,
+    }
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    rule = next(rule for rule in report["rules"] if rule["id"] == "no_allocator_publish_attempt")
+    assert rule["status"] == "fail"
+    assert rule["blocking"] is True
+    assert "allocator_publish_attempt" in rule["evidence"]
     assert report["status"] == "artifact_gate_failed"
 
 
@@ -458,11 +529,54 @@ def test_acceptance_report_checks_each_relative_delta_field() -> None:
 
 def test_output_manifest_requires_hash_and_byte_metadata() -> None:
     metadata_missing = {
+        "artifact_type": "shadow_pilot_output_manifest",
+        "shadow_pilot_id": sp.SHADOW_PILOT_ID,
+        "shadow_id": sp.SHADOW_ID,
+        "status": "succeeded",
         "artifacts": [{"path": rel} for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)],
         "unexpected_outputs": [],
     }
 
     assert sp.output_manifest_has_required_outputs(metadata_missing) is False
+
+
+def test_output_manifest_requires_identity_header_fields() -> None:
+    manifest = _output_manifest_with_logs()
+    assert sp.output_manifest_has_required_outputs(manifest) is True
+
+    for field, bad_value in (
+        ("artifact_type", "shadow_result_manifest"),
+        ("status", "failed"),
+        ("shadow_id", "other-shadow"),
+        ("shadow_pilot_id", "other-pilot"),
+    ):
+        bad_manifest = deepcopy(manifest)
+        bad_manifest[field] = bad_value
+        assert sp.output_manifest_has_required_outputs(bad_manifest) is False
+
+
+@pytest.mark.parametrize(("field", "bad_value"), [("status", "failed"), ("shadow_pilot_id", "other-pilot")])
+def test_acceptance_report_rejects_failed_or_misbound_output_manifest(field: str, bad_value: str) -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+    output_manifest = _output_manifest_with_logs()
+    output_manifest[field] = bad_value
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=output_manifest,
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    required_rule = next(rule for rule in report["rules"] if rule["id"] == "all_required_outputs_present")
+    complete_rule = next(rule for rule in report["rules"] if rule["id"] == "output_manifest_complete")
+    assert required_rule["status"] == "fail"
+    assert complete_rule["status"] == "fail"
+    assert report["status"] == "artifact_gate_failed"
 
 
 def test_output_manifest_checks_current_file_metadata(tmp_path: Path) -> None:
@@ -553,14 +667,21 @@ def test_result_manifest_requires_green_invariant_and_reproducibility_reports() 
         sp.build_shadow_result_manifest(
             **kwargs,
             invariant_report=_invariant_report(ok=False),
-            reproducibility_report={"ok": True},
+            reproducibility_report=_reproducibility_report(envelope),
         )
 
     with pytest.raises(ValueError, match="red reproducibility"):
         sp.build_shadow_result_manifest(
             **kwargs,
             invariant_report=_invariant_report(),
-            reproducibility_report={"ok": False},
+            reproducibility_report=_reproducibility_report(envelope, ok=False),
+        )
+
+    with pytest.raises(ValueError, match="mismatched reproducibility fingerprint"):
+        sp.build_shadow_result_manifest(
+            **kwargs,
+            invariant_report=_invariant_report(),
+            reproducibility_report={"ok": True, "run_fingerprint": "0" * 64},
         )
 
 
@@ -582,7 +703,7 @@ def test_result_manifest_requires_green_baseline_comparison() -> None:
             invariant_report=_invariant_report(),
             baseline_comparison=baseline,
             policy=policy,
-            reproducibility_report={"ok": True},
+            reproducibility_report=_reproducibility_report(),
             output_manifest_hash="a" * 64,
             invariant_hash="b" * 64,
             baseline_hash="c" * 64,
@@ -605,7 +726,7 @@ def test_result_manifest_copies_green_baseline_summaries() -> None:
         invariant_report=_invariant_report(),
         baseline_comparison=baseline,
         policy=policy,
-        reproducibility_report={"ok": True},
+        reproducibility_report=_reproducibility_report(),
         output_manifest_hash="a" * 64,
         invariant_hash="b" * 64,
         baseline_hash="c" * 64,

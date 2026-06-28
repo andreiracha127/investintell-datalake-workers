@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import math
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -295,6 +296,9 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
     ]
     for field in relative_fields:
         value = float(materiality.get(field, 0.0))
+        if not math.isfinite(value):
+            rejection_rules.append("nan_or_inf")
+            continue
         if value >= hard:
             rejection_rules.append("hard_relative_delta_exceeded")
         elif value >= review:
@@ -306,18 +310,22 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
         "retry_rate_delta_pct": "retry_rate_delta_review_pct",
     }
     for field, threshold_field in regression_fields.items():
-        if float(materiality.get(field, 0.0)) >= float(thresholds[threshold_field]):
+        value = float(materiality.get(field, 0.0))
+        if not math.isfinite(value):
+            rejection_rules.append("nan_or_inf")
+            continue
+        if value >= float(thresholds[threshold_field]):
             review_rules.append(f"{field}_review_required")
 
     forbidden_effects = comparison.get("forbidden_effects", {})
-    if forbidden_effects.get("runtime_activation_attempt") is True:
-        rejection_rules.append("runtime_activation_attempt")
-    if forbidden_effects.get("official_db_write_attempt") is True:
-        rejection_rules.append("official_db_write_attempt")
-    if forbidden_effects.get("allocator_publish_attempt") is True:
-        rejection_rules.append("allocator_publish_attempt")
-    if forbidden_effects.get("production_endpoint_activation_attempt") is True:
-        rejection_rules.append("production_endpoint_activation_attempt")
+    for attempt_key in (
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+    ):
+        if attempt_key in forbidden_effects and forbidden_effects[attempt_key] is not False:
+            rejection_rules.append(attempt_key)
     for forbidden_change in (
         "formula_change",
         "input_pack_change",
@@ -327,6 +335,8 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
     ):
         if forbidden_effects.get(forbidden_change) not in (None, False, "none"):
             rejection_rules.append(forbidden_change)
+    if bool(materiality.get("material_divergence")):
+        review_rules.append("explicit_material_divergence")
 
     return {
         "status": "rejected" if rejection_rules else "review_required" if review_rules else "pass",
@@ -567,6 +577,14 @@ def output_manifest_has_required_outputs(
     output_manifest: dict[str, Any],
     output_dir: Path | None = None,
 ) -> bool:
+    if output_manifest.get("artifact_type") != "shadow_pilot_output_manifest":
+        return False
+    if output_manifest.get("status") != "succeeded":
+        return False
+    if output_manifest.get("shadow_id") != SHADOW_ID:
+        return False
+    if output_manifest.get("shadow_pilot_id") != SHADOW_PILOT_ID:
+        return False
     entries: dict[str, dict[str, Any]] = {}
     for artifact in output_manifest.get("artifacts", []):
         rel = artifact.get("path")
@@ -657,6 +675,8 @@ def build_shadow_result_manifest(
         raise ValueError("cannot emit succeeded result for red baseline comparison")
     if reproducibility_report["ok"] is not True:
         raise ValueError("cannot emit succeeded result for red reproducibility report")
+    if reproducibility_report.get("run_fingerprint") != envelope["run_fingerprint"]:
+        raise ValueError("cannot emit succeeded result for mismatched reproducibility fingerprint")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     materiality_summary = dict(baseline_comparison["materiality_summary"])
     divergence_summary = dict(baseline_comparison["divergence_summary"])
