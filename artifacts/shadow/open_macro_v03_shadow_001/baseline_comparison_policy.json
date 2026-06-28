@@ -82,8 +82,10 @@
     "runtime_activation_false",
     "allow_db_write_false",
     "allow_allocator_publish_false",
+    "no_runtime_activation_attempt",
     "no_official_db_write_attempt",
     "no_allocator_publish_attempt",
+    "no_production_endpoint_activation_attempt",
     "technical_and_quantitative_review_recorded"
   ],
   "forbidden_effects": {

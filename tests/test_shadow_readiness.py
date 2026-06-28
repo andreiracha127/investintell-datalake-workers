@@ -401,6 +401,7 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         side_effect_attempt["failure_class"] = failure_class
         side_effect_attempt["side_effect_attempt_evidence_sha256"] = "f" * 64
         side_effect_attempt["side_effect_attempt_count"] = 1
+        side_effect_attempt["retryable"] = False
         jsonschema.validate(side_effect_attempt, schema)
 
         side_effect_attempt_without_evidence = deepcopy(side_effect_attempt)
@@ -412,6 +413,11 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         del side_effect_attempt_without_count["side_effect_attempt_count"]
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(side_effect_attempt_without_count, schema)
+
+        side_effect_attempt_retryable = deepcopy(side_effect_attempt)
+        side_effect_attempt_retryable["retryable"] = True
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(side_effect_attempt_retryable, schema)
 
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
@@ -496,8 +502,10 @@ def test_baseline_comparison_policy_rejects_required_failure_classes() -> None:
     assert set(policy["promotion_to_shadow_pilot_rules"]) >= {
         "invariant_failures_zero",
         "relative_deltas_below_hard_reject_threshold",
+        "no_runtime_activation_attempt",
         "no_official_db_write_attempt",
         "no_allocator_publish_attempt",
+        "no_production_endpoint_activation_attempt",
     }
     assert policy["forbidden_effects"]["allocator_publish"] == "forbidden"
     assert policy["forbidden_effects"]["official_db_write"] == "forbidden"
