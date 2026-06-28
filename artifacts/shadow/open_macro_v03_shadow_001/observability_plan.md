@@ -11,6 +11,9 @@ later isolated pilot.
 - `correlation_id`
 - `execution_id`
 - `run_fingerprint`
+- `status`
+- `started_at`
+- `finished_at`
 - `input_pack_sha256`
 - `engine_commit`
 - `engine_image_digest`
@@ -39,6 +42,10 @@ later isolated pilot.
 - Any `runtime_activation` attempt.
 - Any DB write attempt.
 - Any allocator publish attempt.
+- Any production endpoint activation attempt.
+- Latency p95 regression beyond the policy review threshold.
+- Memory peak regression beyond the policy review threshold.
+- Retry-rate delta beyond the policy review threshold.
 
 ## Healthy Signals
 

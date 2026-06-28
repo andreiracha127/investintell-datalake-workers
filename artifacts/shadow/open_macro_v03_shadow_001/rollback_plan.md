@@ -29,6 +29,8 @@ to the baseline if a later pilot is prepared or started.
 
 - Search execution logs for `allow_allocator_publish=true`.
 - Search execution logs for `allow_db_write=true`.
+- Search execution logs for `runtime_activation=true` and any
+  `runtime_activation_attempt`.
 - Search DB audit logs for `shadow_id=open_macro_v03_shadow_001`.
 - Search allocator logs for `calibration_id=open_macro_v03_calibration_001`.
 - Verify no public productive endpoint was added for the shadow result.

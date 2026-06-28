@@ -52,6 +52,7 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         "input_pack_id": "open_macro_v03_certified_input_pack_001",
         "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
         "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
+        "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
         "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
         "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
         "request_id": "req-open-macro-v03-shadow-001",
@@ -64,6 +65,7 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         "runtime_activation": False,
         "allow_db_write": False,
         "allow_allocator_publish": False,
+        "production_endpoint_activation": "none",
         "execution_policy": "isolated_external_executor_no_productive_runtime_docker",
         "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/exec-open-macro-v03-shadow-001",
     }
@@ -93,6 +95,17 @@ def test_shadow_job_envelope_schema_is_inert() -> None:
         productive_output["output_artifact_uri"] = productive_uri
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(productive_output, schema)
+
+    for required_field in ("contract_bundle_sha256", "production_endpoint_activation"):
+        missing = dict(envelope)
+        del missing[required_field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(missing, schema)
+
+    endpoint_active = dict(envelope)
+    endpoint_active["production_endpoint_activation"] = "active"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(endpoint_active, schema)
 
 
 def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
@@ -429,6 +442,25 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(impossible_timestamp, schema)
 
+    succeeded_retryable = dict(result)
+    succeeded_retryable["retryable"] = True
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(succeeded_retryable, schema)
+
+    executor_failure_rejected = deepcopy(failed_without_artifacts)
+    executor_failure_rejected["status"] = "rejected"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(executor_failure_rejected, schema)
+
+    policy_class_failed = deepcopy(failed_without_artifacts)
+    policy_class_failed["status"] = "failed"
+    policy_class_failed["failure_class"] = "official_db_write_attempt"
+    policy_class_failed["side_effect_attempt_evidence_sha256"] = "f" * 64
+    policy_class_failed["side_effect_attempt_count"] = 1
+    policy_class_failed["retryable"] = False
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(policy_class_failed, schema)
+
     missing_invariant_count = deepcopy(result)
     del missing_invariant_count["divergence_summary"]["invariant_failures"]
     with pytest.raises(jsonschema.ValidationError):
@@ -528,6 +560,20 @@ def test_acceptance_criteria_documents_execution_window_gate() -> None:
 
     assert "non-positive execution window" in text
     assert "JSON Schema cannot compare two fields" in text
+
+
+def test_observability_and_rollback_cover_all_side_effects() -> None:
+    obs = (SHADOW_ROOT / "observability_plan.md").read_text(encoding="utf-8")
+    assert "Any production endpoint activation attempt." in obs
+    assert "Latency p95 regression beyond the policy review threshold." in obs
+    assert "Memory peak regression beyond the policy review threshold." in obs
+    assert "Retry-rate delta beyond the policy review threshold." in obs
+    assert "`status`" in obs
+    assert "`started_at`" in obs
+    assert "`finished_at`" in obs
+
+    rollback = (SHADOW_ROOT / "rollback_plan.md").read_text(encoding="utf-8")
+    assert "runtime_activation_attempt" in rollback
 
 
 def test_railway_ci_runs_shadow_readiness_gate() -> None:

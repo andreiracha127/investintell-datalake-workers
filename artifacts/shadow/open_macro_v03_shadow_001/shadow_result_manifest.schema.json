@@ -94,6 +94,9 @@
           "cpu_time_ms"
         ],
         "properties": {
+          "retryable": {
+            "const": false
+          },
           "materiality_summary": {
             "type": "object",
             "properties": {
@@ -525,6 +528,43 @@
             "const": false
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "executor_failure" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "properties": { "status": { "const": "failed" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_class": {
+            "enum": [
+              "missing_output",
+              "unexpected_output",
+              "mismatch_count_non_zero",
+              "nan_or_inf",
+              "constraint_violation",
+              "run_fingerprint_inconsistent",
+              "output_manifest_incomplete",
+              "non_reproducible_result",
+              "runtime_activation_attempt",
+              "official_db_write_attempt",
+              "allocator_publish_attempt",
+              "production_endpoint_activation_attempt",
+              "invariant_failure",
+              "hard_relative_delta_exceeded"
+            ]
+          }
+        },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "properties": { "status": { "const": "rejected" } }
       }
     }
   ],

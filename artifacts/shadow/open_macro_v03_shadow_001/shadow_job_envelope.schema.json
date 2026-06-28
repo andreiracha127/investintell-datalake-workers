@@ -21,6 +21,7 @@
     "input_pack_id",
     "input_pack_sha256",
     "calibration_config_sha256",
+    "contract_bundle_sha256",
     "engine_commit",
     "engine_image_digest",
     "request_id",
@@ -33,6 +34,7 @@
     "runtime_activation",
     "allow_db_write",
     "allow_allocator_publish",
+    "production_endpoint_activation",
     "execution_policy",
     "output_artifact_uri"
   ],
@@ -54,6 +56,9 @@
     },
     "calibration_config_sha256": {
       "const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"
+    },
+    "contract_bundle_sha256": {
+      "const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
     },
     "engine_commit": {
       "const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
@@ -93,6 +98,9 @@
     },
     "allow_allocator_publish": {
       "const": false
+    },
+    "production_endpoint_activation": {
+      "const": "none"
     },
     "execution_policy": {
       "const": "isolated_external_executor_no_productive_runtime_docker"
