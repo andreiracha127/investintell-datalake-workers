@@ -54,6 +54,8 @@
     "finished_at",
     "status",
     "retryable",
+    "duration_ms",
+    "retry_count",
     "runtime_activation",
     "allow_db_write",
     "allow_allocator_publish",
@@ -77,10 +79,8 @@
           "reproducibility_report_sha256",
           "materiality_summary",
           "divergence_summary",
-          "duration_ms",
           "memory_peak_bytes",
-          "cpu_time_ms",
-          "retry_count"
+          "cpu_time_ms"
         ],
         "properties": {
           "materiality_summary": {
@@ -162,6 +162,31 @@
       "then": {
         "required": ["failure_class"]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_class": {
+            "enum": [
+              "missing_output",
+              "unexpected_output",
+              "mismatch_count_non_zero",
+              "nan_or_inf",
+              "constraint_violation",
+              "invariant_failure",
+              "hard_relative_delta_exceeded"
+            ]
+          }
+        },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "baseline_comparison_sha256",
+          "divergence_summary",
+          "materiality_summary"
+        ]
+      }
     }
   ],
   "properties": {
@@ -193,7 +218,7 @@
       "const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
     },
     "engine_image_digest": {
-      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+      "$ref": "#/$defs/sha256Digest"
     },
     "engine_commit": {
       "const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
@@ -259,6 +284,15 @@
         "max_relative_delta_pct": {
           "type": "number",
           "minimum": 0
+        },
+        "latency_p95_regression_pct": {
+          "type": "number"
+        },
+        "memory_peak_regression_pct": {
+          "type": "number"
+        },
+        "retry_rate_delta_pct": {
+          "type": "number"
         }
       }
     },

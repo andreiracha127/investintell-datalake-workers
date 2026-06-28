@@ -76,7 +76,7 @@ Checks covered by the Railway gate:
 | Calibration artifact hash/provenance/governance validation | yes | yes |
 | Railway image build by pinned Dockerfile | yes | yes |
 | Railway source-connected deployment trigger | yes | yes |
-| PR-head status `railway/quant-engine-ci` from Railway-native PR integration | yes | yes |
+| PR-head status `railway/quant-engine-ci` from Railway-native PR integration | pending (enable PR Environments + verify first PR-head deploy) | pending |
 | SBOM generated | no | release only |
 | Provenance generated | no | release only |
 | Signature/attestation verify | no | release only |

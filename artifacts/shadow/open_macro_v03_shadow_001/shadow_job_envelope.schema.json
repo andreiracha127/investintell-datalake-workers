@@ -59,7 +59,7 @@
       "const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
     },
     "engine_image_digest": {
-      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+      "$ref": "#/$defs/sha256Digest"
     },
     "request_id": {
       "type": "string",

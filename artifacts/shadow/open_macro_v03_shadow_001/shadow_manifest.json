@@ -3,7 +3,7 @@
   "status": "readiness_candidate",
   "calibration_id": "open_macro_v03_calibration_001",
   "calibration_001_merge_commit": "08fccef698195decaf814fcdd03c45e249bae8ad",
-  "pr_head": "10a49e1489661070986e241d9e04a8b890b54937",
+  "calibration_pr_head": "10a49e1489661070986e241d9e04a8b890b54937",
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "railway_deployment_id": "60bbd720-73cc-44e6-becd-d8e274ea0534",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",

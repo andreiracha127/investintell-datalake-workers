@@ -24,6 +24,7 @@ def test_shadow_manifest_pins_validated_calibration_without_activation() -> None
     assert manifest["status"] == "readiness_candidate"
     assert manifest["calibration_id"] == "open_macro_v03_calibration_001"
     assert manifest["calibration_001_merge_commit"] == "08fccef698195decaf814fcdd03c45e249bae8ad"
+    assert manifest["calibration_pr_head"] == "10a49e1489661070986e241d9e04a8b890b54937"
     assert manifest["engine_commit"] == "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
     assert manifest["railway_image_digest"] == (
         "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
@@ -170,10 +171,8 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
             "reproducibility_report_sha256",
             "materiality_summary",
             "divergence_summary",
-            "duration_ms",
             "memory_peak_bytes",
             "cpu_time_ms",
-            "retry_count",
         }
     }
     failed_without_artifacts["status"] = "failed"
@@ -238,6 +237,44 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         negative_operational[field] = -1
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(negative_operational, schema)
+
+    for field in ("duration_ms", "retry_count"):
+        failed_missing_telemetry = deepcopy(failed_without_artifacts)
+        del failed_missing_telemetry[field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(failed_missing_telemetry, schema)
+
+    failed_without_resource_metrics = deepcopy(failed_without_artifacts)
+    for field in ("memory_peak_bytes", "cpu_time_ms"):
+        failed_without_resource_metrics.pop(field, None)
+    jsonschema.validate(failed_without_resource_metrics, schema)
+
+    other_engine_digest = dict(result)
+    other_engine_digest["engine_image_digest"] = "sha256:" + "f" * 64
+    jsonschema.validate(other_engine_digest, schema)
+
+    bad_engine_digest = dict(result)
+    bad_engine_digest["engine_image_digest"] = "not-a-digest"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad_engine_digest, schema)
+
+    with_regressions = deepcopy(result)
+    with_regressions["materiality_summary"]["latency_p95_regression_pct"] = 12.0
+    with_regressions["materiality_summary"]["memory_peak_regression_pct"] = 3.0
+    with_regressions["materiality_summary"]["retry_rate_delta_pct"] = 0.5
+    jsonschema.validate(with_regressions, schema)
+
+    comparison_rejection = deepcopy(result)
+    comparison_rejection["status"] = "rejected"
+    comparison_rejection["failure_class"] = "hard_relative_delta_exceeded"
+    comparison_rejection["materiality_summary"]["material_divergence"] = True
+    comparison_rejection["materiality_summary"]["max_relative_delta_pct"] = 2.5
+    jsonschema.validate(comparison_rejection, schema)
+
+    comparison_rejection_missing_evidence = deepcopy(comparison_rejection)
+    del comparison_rejection_missing_evidence["baseline_comparison_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(comparison_rejection_missing_evidence, schema)
 
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
