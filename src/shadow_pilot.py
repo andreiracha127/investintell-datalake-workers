@@ -632,6 +632,8 @@ def build_shadow_result_manifest(
     *,
     envelope: dict[str, Any],
     invariant_report: dict[str, Any],
+    baseline_comparison: dict[str, Any],
+    policy: dict[str, Any],
     reproducibility_report: dict[str, Any],
     output_manifest_hash: str,
     invariant_hash: str,
@@ -642,6 +644,9 @@ def build_shadow_result_manifest(
 ) -> dict[str, Any]:
     if invariant_report["ok"] is not True:
         raise ValueError("cannot emit succeeded result for red invariant report")
+    baseline_evaluation = evaluate_baseline_comparison(baseline_comparison, policy)
+    if baseline_evaluation["status"] != "pass":
+        raise ValueError("cannot emit succeeded result for red baseline comparison")
     if reproducibility_report["ok"] is not True:
         raise ValueError("cannot emit succeeded result for red reproducibility report")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
@@ -709,8 +714,9 @@ def build_acceptance_report(
 ) -> dict[str, Any]:
     checks = invariant_report["checks"]
     forbidden_effects = baseline_comparison.get("forbidden_effects", {})
-    rejection_rules = set(baseline_comparison.get("evaluation", {}).get("rejection_rules_triggered", []))
-    baseline_rejected = baseline_comparison.get("status") == "rejected" or bool(rejection_rules)
+    baseline_evaluation = evaluate_baseline_comparison(baseline_comparison, policy)
+    rejection_rules = set(baseline_evaluation["rejection_rules_triggered"])
+    baseline_rejected = baseline_evaluation["status"] == "rejected"
 
     def no_forbidden_attempt(attempt_key: str) -> bool:
         return forbidden_effects.get(attempt_key) is not True and attempt_key not in rejection_rules
@@ -720,7 +726,10 @@ def build_acceptance_report(
             output_manifest_has_required_outputs(output_manifest, output_dir)
             and baseline_comparison["divergence_summary"]["missing_outputs"] == 0
         ),
-        "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest, output_dir),
+        "no_unexpected_outputs": (
+            output_manifest_has_no_unexpected_outputs(output_manifest, output_dir)
+            and baseline_comparison["divergence_summary"]["unexpected_outputs"] == 0
+        ),
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
         "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
@@ -1039,6 +1048,8 @@ def run_shadow_pilot(
     result = build_shadow_result_manifest(
         envelope=envelope,
         invariant_report=invariant_report,
+        baseline_comparison=baseline_comparison,
+        policy=policy,
         reproducibility_report=reproducibility_report,
         output_manifest_hash=output_manifest_hash,
         invariant_hash=invariant_hash,

@@ -26,9 +26,12 @@ def _envelope() -> dict:
 
 def _result() -> dict:
     envelope = _envelope()
+    policy = sp.load_policy(ROOT)
     return sp.build_shadow_result_manifest(
         envelope=envelope,
         invariant_report=_invariant_report(),
+        baseline_comparison=sp.build_baseline_comparison(policy),
+        policy=policy,
         reproducibility_report={"ok": True},
         output_manifest_hash="a" * 64,
         invariant_hash="b" * 64,
@@ -283,6 +286,34 @@ def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
     assert report["status"] == "artifact_gate_failed"
 
 
+def test_acceptance_report_recomputes_stale_forbidden_change_evaluation() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["forbidden_effects"]["formula_change"] = "changed"
+    baseline["status"] = "pass"
+    baseline["evaluation"] = {
+        "status": "pass",
+        "rejection_rules_triggered": [],
+        "review_rules_triggered": [],
+        "material_divergence": False,
+    }
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    required_rule = next(rule for rule in report["rules"] if rule["id"] == "all_required_outputs_present")
+    assert required_rule["status"] == "fail"
+    assert "formula_change" in required_rule["evidence"]
+    assert report["status"] == "artifact_gate_failed"
+
+
 def test_acceptance_report_blocks_unexpected_outputs_and_fingerprint_mismatch() -> None:
     policy = sp.load_policy(ROOT)
     baseline = sp.build_baseline_comparison(policy)
@@ -314,6 +345,34 @@ def test_acceptance_report_blocks_unexpected_outputs_and_fingerprint_mismatch() 
     fingerprint_rule = next(rule for rule in fingerprint_report["rules"] if rule["id"] == "run_fingerprint_consistent")
     assert fingerprint_rule["status"] == "fail"
     assert fingerprint_report["status"] == "artifact_gate_failed"
+
+
+def test_acceptance_report_checks_baseline_unexpected_outputs_counter() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["divergence_summary"]["unexpected_outputs"] = 1
+    baseline["status"] = "pass"
+    baseline["evaluation"] = {
+        "status": "pass",
+        "rejection_rules_triggered": [],
+        "review_rules_triggered": [],
+        "material_divergence": False,
+    }
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    unexpected_rule = next(rule for rule in report["rules"] if rule["id"] == "no_unexpected_outputs")
+    assert unexpected_rule["status"] == "fail"
+    assert "unexpected_output" in unexpected_rule["evidence"]
+    assert report["status"] == "artifact_gate_failed"
 
 
 def test_acceptance_report_requires_full_output_manifest() -> None:
@@ -471,8 +530,12 @@ def test_output_manifest_rejects_unexpected_artifacts(tmp_path: Path) -> None:
 
 def test_result_manifest_requires_green_invariant_and_reproducibility_reports() -> None:
     envelope = _envelope()
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
     kwargs = {
         "envelope": envelope,
+        "baseline_comparison": baseline,
+        "policy": policy,
         "output_manifest_hash": "a" * 64,
         "invariant_hash": "b" * 64,
         "baseline_hash": "c" * 64,
@@ -493,6 +556,34 @@ def test_result_manifest_requires_green_invariant_and_reproducibility_reports() 
             **kwargs,
             invariant_report=_invariant_report(),
             reproducibility_report={"ok": False},
+        )
+
+
+def test_result_manifest_requires_green_baseline_comparison() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["divergence_summary"]["unexpected_outputs"] = 1
+    baseline["status"] = "pass"
+    baseline["evaluation"] = {
+        "status": "pass",
+        "rejection_rules_triggered": [],
+        "review_rules_triggered": [],
+        "material_divergence": False,
+    }
+
+    with pytest.raises(ValueError, match="red baseline"):
+        sp.build_shadow_result_manifest(
+            envelope=_envelope(),
+            invariant_report=_invariant_report(),
+            baseline_comparison=baseline,
+            policy=policy,
+            reproducibility_report={"ok": True},
+            output_manifest_hash="a" * 64,
+            invariant_hash="b" * 64,
+            baseline_hash="c" * 64,
+            reproducibility_hash="d" * 64,
+            started_at=sp.dt.datetime(2026, 6, 28, 12, 0, tzinfo=sp.dt.UTC),
+            finished_at=sp.dt.datetime(2026, 6, 28, 12, 0, 1, tzinfo=sp.dt.UTC),
         )
 
 
