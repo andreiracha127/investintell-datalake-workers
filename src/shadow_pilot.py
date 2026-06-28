@@ -132,13 +132,16 @@ def utc_timestamp(value: dt.datetime) -> str:
 
 
 def parse_utc_timestamp(value: str) -> dt.datetime:
-    return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.UTC)
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.UTC)
+    except ValueError as exc:
+        raise jsonschema.ValidationError(f"invalid UTC timestamp: {value}") from exc
 
 
 def validate_with_schema(payload: dict[str, Any], schema_path: Path) -> None:
     schema = load_json(schema_path)
     jsonschema.Draft202012Validator.check_schema(schema)
-    jsonschema.validate(payload, schema)
+    jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(payload)
 
 
 def run_fingerprint(calibration_run_matrix: dict[str, Any]) -> str:
@@ -230,7 +233,12 @@ def validate_shadow_readiness_manifest_is_inert(readiness: dict[str, Any]) -> No
         "production_impact": "none",
     }
     for field, expected in expected_exact.items():
-        if readiness.get(field) != expected:
+        actual = readiness.get(field)
+        if isinstance(expected, bool):
+            valid = actual is expected
+        else:
+            valid = actual == expected
+        if not valid:
             raise ValueError(f"shadow readiness governance is not inert: {field}")
     if readiness.get("db_write_mode") not in ("none", "none_or_artifact_only"):
         raise ValueError("shadow readiness governance is not inert: db_write_mode")
@@ -650,6 +658,8 @@ def build_shadow_result_manifest(
     if reproducibility_report["ok"] is not True:
         raise ValueError("cannot emit succeeded result for red reproducibility report")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
+    materiality_summary = dict(baseline_comparison["materiality_summary"])
+    divergence_summary = dict(baseline_comparison["divergence_summary"])
     return {
         "schema_version": 1,
         "shadow_id": SHADOW_ID,
@@ -674,26 +684,8 @@ def build_shadow_result_manifest(
         "memory_peak_bytes": 0,
         "cpu_time_ms": duration_ms,
         "retry_count": 0,
-        "materiality_summary": {
-            "threshold_version": "open_macro_v03_shadow_materiality_v1",
-            "material_divergence": False,
-            "max_relative_delta_pct": 0.0,
-            "return_metric_delta_pct": 0.0,
-            "risk_metric_delta_pct": 0.0,
-            "allocation_weight_delta_pct": 0.0,
-            "classification_rate_delta_pct": 0.0,
-            "latency_p95_regression_pct": 0.0,
-            "memory_peak_regression_pct": 0.0,
-            "retry_rate_delta_pct": 0.0,
-        },
-        "divergence_summary": {
-            "missing_outputs": 0,
-            "unexpected_outputs": 0,
-            "mismatch_count": 0,
-            "nan_or_inf_count": 0,
-            "constraint_violations": 0,
-            "invariant_failures": 0,
-        },
+        "materiality_summary": materiality_summary,
+        "divergence_summary": divergence_summary,
         "runtime_activation": False,
         "allow_db_write": False,
         "allow_allocator_publish": False,

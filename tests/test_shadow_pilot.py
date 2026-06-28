@@ -101,6 +101,11 @@ def test_shadow_result_manifest_rejects_divergent_or_retryable_success() -> None
 def test_shadow_result_manifest_rejects_inconsistent_duration_window() -> None:
     result = _result()
 
+    invalid_calendar_date = deepcopy(result)
+    invalid_calendar_date["started_at"] = "2026-02-31T00:00:00Z"
+    with pytest.raises(jsonschema.ValidationError, match="timestamp|date-time"):
+        sp.validate_shadow_result_manifest(invalid_calendar_date, root=ROOT)
+
     zero_window = deepcopy(result)
     zero_window["finished_at"] = zero_window["started_at"]
     with pytest.raises(jsonschema.ValidationError, match="finished_at"):
@@ -587,6 +592,32 @@ def test_result_manifest_requires_green_baseline_comparison() -> None:
         )
 
 
+def test_result_manifest_copies_green_baseline_summaries() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["materiality_summary"]["max_relative_delta_pct"] = 0.1
+    baseline["materiality_summary"]["return_metric_delta_pct"] = 0.1
+    baseline["materiality_summary"]["latency_p95_regression_pct"] = 9.0
+    assert sp.evaluate_baseline_comparison(baseline, policy)["status"] == "pass"
+
+    result = sp.build_shadow_result_manifest(
+        envelope=_envelope(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        policy=policy,
+        reproducibility_report={"ok": True},
+        output_manifest_hash="a" * 64,
+        invariant_hash="b" * 64,
+        baseline_hash="c" * 64,
+        reproducibility_hash="d" * 64,
+        started_at=sp.dt.datetime(2026, 6, 28, 12, 0, tzinfo=sp.dt.UTC),
+        finished_at=sp.dt.datetime(2026, 6, 28, 12, 0, 1, tzinfo=sp.dt.UTC),
+    )
+
+    assert result["materiality_summary"] == baseline["materiality_summary"]
+    assert result["divergence_summary"] == baseline["divergence_summary"]
+
+
 def test_observability_evidence_contains_required_structured_fields() -> None:
     envelope = _envelope()
     result = _result()
@@ -659,6 +690,16 @@ def test_readiness_manifest_requires_all_inert_fields() -> None:
     ):
         bad = deepcopy(readiness)
         bad[field] = bad_value
+        with pytest.raises(ValueError, match=field):
+            sp.validate_shadow_readiness_manifest_is_inert(bad)
+
+
+def test_readiness_manifest_requires_literal_boolean_pins() -> None:
+    readiness = json.loads((ROOT / "artifacts" / "shadow" / sp.SHADOW_ID / "shadow_manifest.json").read_text(encoding="utf-8"))
+
+    for field in ("runtime_activation", "freeze_ready", "feature_flag_default", "official_result"):
+        bad = deepcopy(readiness)
+        bad[field] = 0
         with pytest.raises(ValueError, match=field):
             sp.validate_shadow_readiness_manifest_is_inert(bad)
 
