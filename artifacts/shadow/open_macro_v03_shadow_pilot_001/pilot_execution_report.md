@@ -32,7 +32,7 @@ Generated, validated, compared, and audited shadow artifacts only.
 - network: `none`
 
 ## Output Manifest Summary
-- output_manifest_sha256: `5724abb8106d02caed726d53da1446dd83d4f90cb2c1fe18ad95ecf135f01e14`
+- output_manifest_sha256: `b462a89d8cc53797922606a0b06506cde91c799301a09fd075c19200f678fb72`
 
 ## Baseline Comparison Summary
 - status: `pass`

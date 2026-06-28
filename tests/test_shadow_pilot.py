@@ -42,7 +42,7 @@ def _result() -> dict:
 def _output_manifest_with_logs() -> dict:
     return {
         "artifacts": [
-            {"path": rel}
+            {"path": rel, "sha256": "a" * 64, "bytes": 1}
             for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)
         ],
         "unexpected_outputs": [],
@@ -341,6 +341,60 @@ def test_acceptance_report_requires_full_output_manifest() -> None:
     assert report["status"] == "artifact_gate_failed"
 
 
+def test_acceptance_report_blocks_baseline_rejection_status() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["divergence_summary"]["missing_outputs"] = 1
+    baseline["evaluation"] = sp.evaluate_baseline_comparison(baseline, policy)
+    baseline["status"] = baseline["evaluation"]["status"]
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    required_rule = next(rule for rule in report["rules"] if rule["id"] == "all_required_outputs_present")
+    assert baseline["status"] == "rejected"
+    assert "missing_output" in baseline["evaluation"]["rejection_rules_triggered"]
+    assert required_rule["status"] == "fail"
+    assert report["status"] == "artifact_gate_failed"
+
+
+def test_output_manifest_requires_hash_and_byte_metadata() -> None:
+    metadata_missing = {
+        "artifacts": [{"path": rel} for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)],
+        "unexpected_outputs": [],
+    }
+
+    assert sp.output_manifest_has_required_outputs(metadata_missing) is False
+
+
+def test_output_manifest_checks_current_file_metadata(tmp_path: Path) -> None:
+    for rel in sp.PILOT_RELATIVE_OUTPUTS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix == ".json":
+            path.write_text(json.dumps({"path": rel}) + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"{rel}\n", encoding="utf-8")
+
+    output_manifest = sp.build_pilot_output_manifest(tmp_path)
+    assert sp.output_manifest_has_required_outputs(output_manifest, tmp_path) is True
+
+    bad_hash = deepcopy(output_manifest)
+    bad_hash["artifacts"][0]["sha256"] = "0" * 64
+    assert sp.output_manifest_has_required_outputs(bad_hash, tmp_path) is False
+
+    bad_size = deepcopy(output_manifest)
+    bad_size["artifacts"][0]["bytes"] += 1
+    assert sp.output_manifest_has_required_outputs(bad_size, tmp_path) is False
+
+
 def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> None:
     for rel in sp.PILOT_RELATIVE_OUTPUTS - {"logs/executor.log"}:
         path = tmp_path / rel
@@ -470,6 +524,16 @@ def test_calibration_run_matrix_hash_is_pinned(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="run_matrix_sha256"):
         sp.validate_calibration_artifact_hashes(tmp_path)
 
+    manifest = json.loads((calibration_dir / "calibration_manifest.json").read_text(encoding="utf-8"))
+    manifest["run_matrix_sha256"] = file_sha256(calibration_dir / "run_matrix.json")
+    (calibration_dir / "calibration_manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="run_matrix_sha256"):
+        sp.validate_calibration_artifact_hashes(tmp_path)
+
 
 def test_output_isolation_rejects_dangling_symlink_and_outside_write(tmp_path: Path) -> None:
     out = tmp_path / "out"
@@ -540,7 +604,7 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
     sp.validate_shadow_result_manifest(result, root=ROOT)
     assert invariant["ok"] is True
     assert sp.output_manifest_has_required_logs(output_manifest)
-    assert sp.output_manifest_has_required_outputs(output_manifest)
+    assert sp.output_manifest_has_required_outputs(output_manifest, out)
     assert observability["output_artifact_uri"] == envelope["output_artifact_uri"]
     assert observability["engine_image_digest"] == result["engine_image_digest"]
     assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")

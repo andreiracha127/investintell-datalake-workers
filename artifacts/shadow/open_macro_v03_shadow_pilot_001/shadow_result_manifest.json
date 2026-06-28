@@ -17,7 +17,7 @@
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
-  "finished_at": "2026-06-28T16:53:24Z",
+  "finished_at": "2026-06-28T17:26:21Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "materiality_summary": {
@@ -35,7 +35,7 @@
   "memory_peak_bytes": 0,
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "5724abb8106d02caed726d53da1446dd83d4f90cb2c1fe18ad95ecf135f01e14",
+  "output_manifest_sha256": "b462a89d8cc53797922606a0b06506cde91c799301a09fd075c19200f678fb72",
   "production_endpoint_activation": "none",
   "reproducibility_report_sha256": "a13413a5dbfc64fd5ccf38e7c3a011aec9e3e3c24418e45be5bed1ad98adafa4",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
@@ -45,6 +45,6 @@
   "runtime_activation": false,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
-  "started_at": "2026-06-28T16:53:23Z",
+  "started_at": "2026-06-28T17:26:20Z",
   "status": "succeeded"
 }

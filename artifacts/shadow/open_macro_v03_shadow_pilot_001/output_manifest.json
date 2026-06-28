@@ -2,12 +2,12 @@
   "artifact_type": "shadow_pilot_output_manifest",
   "artifacts": [
     {
-      "bytes": 1648,
+      "bytes": 1597,
       "path": "baseline_comparison.json",
       "sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394"
     },
     {
-      "bytes": 683,
+      "bytes": 661,
       "path": "invariant_report.json",
       "sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78"
     },
@@ -22,12 +22,12 @@
       "sha256": "f2ba3cc9fcdccc061505734d7e8f1c63226f910ec19775f08680534ad856047b"
     },
     {
-      "bytes": 2659,
+      "bytes": 2592,
       "path": "reproducibility_report.json",
       "sha256": "a13413a5dbfc64fd5ccf38e7c3a011aec9e3e3c24418e45be5bed1ad98adafa4"
     },
     {
-      "bytes": 1321,
+      "bytes": 1297,
       "path": "shadow_job_envelope.json",
       "sha256": "8127c0ca875690609b77a66bbc7b9afdf9b0e4d2822383730ad819ea5f036778"
     }

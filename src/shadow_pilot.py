@@ -25,6 +25,7 @@ CALIBRATION_ID = "open_macro_v03_calibration_001"
 INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
 INPUT_PACK_SHA256 = "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
 CALIBRATION_CONFIG_SHA256 = "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"
+CALIBRATION_RUN_MATRIX_SHA256 = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CONTRACT_BUNDLE_SHA256 = "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
 ENGINE_COMMIT = "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
 RAILWAY_DEPLOYMENT_ID = "60bbd720-73cc-44e6-becd-d8e274ea0534"
@@ -83,7 +84,7 @@ def default_output_dir(root: Path | None = None) -> Path:
 
 def write_json(path: Path, payload: dict[str, Any] | list[Any]) -> None:
     prepare_write_path(path)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8", newline="\n")
 
 
 def write_text(path: Path, text: str) -> None:
@@ -236,7 +237,10 @@ def validate_calibration_artifact_hashes(root: Path | None = None) -> dict[str, 
         raise ValueError("calibration_config_sha256 mismatch")
     expected_run_matrix_hash = manifest.get("run_matrix_sha256")
     actual_run_matrix_hash = file_sha256(calibration_dir / "run_matrix.json")
-    if expected_run_matrix_hash != actual_run_matrix_hash:
+    if (
+        expected_run_matrix_hash != actual_run_matrix_hash
+        or actual_run_matrix_hash != CALIBRATION_RUN_MATRIX_SHA256
+    ):
         raise ValueError("run_matrix_sha256 mismatch")
     return manifest
 
@@ -531,9 +535,45 @@ def output_manifest_has_required_logs(output_manifest: dict[str, Any]) -> bool:
     return {"logs/shadow_pilot.log", "logs/executor.log"}.issubset(paths)
 
 
-def output_manifest_has_required_outputs(output_manifest: dict[str, Any]) -> bool:
-    paths = {artifact["path"] for artifact in output_manifest.get("artifacts", [])}
-    return PILOT_RELATIVE_OUTPUTS.issubset(paths)
+def is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def output_manifest_has_required_outputs(
+    output_manifest: dict[str, Any],
+    output_dir: Path | None = None,
+) -> bool:
+    entries: dict[str, dict[str, Any]] = {}
+    for artifact in output_manifest.get("artifacts", []):
+        rel = artifact.get("path")
+        if not isinstance(rel, str) or rel in entries:
+            return False
+        entries[rel] = artifact
+
+    for rel in sorted(PILOT_RELATIVE_OUTPUTS):
+        artifact = entries.get(rel)
+        if artifact is None:
+            return False
+        if not is_sha256_hex(artifact.get("sha256")):
+            return False
+        if not isinstance(artifact.get("bytes"), int) or artifact["bytes"] < 0:
+            return False
+        if output_dir is not None:
+            try:
+                path = ensure_child(output_dir / rel, output_dir)
+            except ValueError:
+                return False
+            if not path.is_file():
+                return False
+            if artifact["sha256"] != file_sha256(path):
+                return False
+            if artifact["bytes"] != path.stat().st_size:
+                return False
+    return True
 
 
 def output_manifest_has_no_unexpected_outputs(output_manifest: dict[str, Any]) -> bool:
@@ -613,6 +653,7 @@ def build_acceptance_report(
     *,
     policy: dict[str, Any],
     output_manifest: dict[str, Any],
+    output_dir: Path | None = None,
     invariant_report: dict[str, Any],
     baseline_comparison: dict[str, Any],
     reproducibility_report: dict[str, Any],
@@ -621,12 +662,16 @@ def build_acceptance_report(
     checks = invariant_report["checks"]
     forbidden_effects = baseline_comparison.get("forbidden_effects", {})
     rejection_rules = set(baseline_comparison.get("evaluation", {}).get("rejection_rules_triggered", []))
+    baseline_rejected = baseline_comparison.get("status") == "rejected" or bool(rejection_rules)
 
     def no_forbidden_attempt(attempt_key: str) -> bool:
         return forbidden_effects.get(attempt_key) is not True and attempt_key not in rejection_rules
 
-    evidence_by_rule = {
-        "all_required_outputs_present": output_manifest_has_required_outputs(output_manifest),
+    raw_evidence_by_rule = {
+        "all_required_outputs_present": (
+            output_manifest_has_required_outputs(output_manifest, output_dir)
+            and baseline_comparison["divergence_summary"]["missing_outputs"] == 0
+        ),
         "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest),
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
@@ -653,17 +698,23 @@ def build_acceptance_report(
     }
     rules = []
     for rule_id in policy["promotion_to_shadow_pilot_rules"]:
-        passed = evidence_by_rule[rule_id]
         pending_review = rule_id == "technical_and_quantitative_review_recorded"
+        passed = raw_evidence_by_rule[rule_id] and (pending_review or not baseline_rejected)
+        evidence = (
+            "human technical/quantitative review remains pending for the next gate"
+            if pending_review
+            else f"automated artifact evidence for {rule_id}: {passed}"
+        )
+        if baseline_rejected and not pending_review:
+            evidence = (
+                f"baseline comparison rejected via {sorted(rejection_rules)}; "
+                f"automated artifact evidence for {rule_id}: {raw_evidence_by_rule[rule_id]}"
+            )
         rules.append(
             {
                 "id": rule_id,
                 "status": "pending" if pending_review else "pass" if passed else "fail",
-                "evidence": (
-                    "human technical/quantitative review remains pending for the next gate"
-                    if pending_review
-                    else f"automated artifact evidence for {rule_id}: {passed}"
-                ),
+                "evidence": evidence,
                 "blocking": pending_review or not passed,
             }
         )
@@ -927,6 +978,8 @@ def run_shadow_pilot(
     output_manifest = build_pilot_output_manifest(output_dir)
     if not output_manifest_has_required_logs(output_manifest):
         raise ValueError("output manifest must include shadow and executor logs")
+    if not output_manifest_has_required_outputs(output_manifest, output_dir):
+        raise ValueError("output manifest must include complete artifact hashes and sizes")
     write_json(output_dir / "output_manifest.json", output_manifest)
 
     output_manifest_hash = file_sha256(output_dir / "output_manifest.json")
@@ -952,6 +1005,7 @@ def run_shadow_pilot(
     acceptance_report = build_acceptance_report(
         policy=policy,
         output_manifest=output_manifest,
+        output_dir=output_dir,
         invariant_report=invariant_report,
         baseline_comparison=baseline_comparison,
         reproducibility_report=reproducibility_report,

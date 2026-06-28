@@ -13,7 +13,7 @@
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
   "failure_class": null,
-  "finished_at": "2026-06-28T16:53:24Z",
+  "finished_at": "2026-06-28T17:26:21Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "log_paths": [
@@ -27,7 +27,7 @@
   "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "5724abb8106d02caed726d53da1446dd83d4f90cb2c1fe18ad95ecf135f01e14",
+  "output_manifest_sha256": "b462a89d8cc53797922606a0b06506cde91c799301a09fd075c19200f678fb72",
   "production_endpoint_activation": "none",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
@@ -38,6 +38,6 @@
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
-  "started_at": "2026-06-28T16:53:23Z",
+  "started_at": "2026-06-28T17:26:20Z",
   "status": "succeeded"
 }
