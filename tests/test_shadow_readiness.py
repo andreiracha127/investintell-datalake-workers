@@ -331,6 +331,23 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(comparison_rejection_without_breach, schema)
 
+    fingerprint_rejection = deepcopy(failed_without_artifacts)
+    fingerprint_rejection["status"] = "rejected"
+    fingerprint_rejection["failure_class"] = "run_fingerprint_inconsistent"
+    fingerprint_rejection["expected_run_fingerprint"] = "1" * 64
+    fingerprint_rejection["run_fingerprint_evidence_sha256"] = "2" * 64
+    jsonschema.validate(fingerprint_rejection, schema)
+
+    fingerprint_rejection_without_expected = deepcopy(fingerprint_rejection)
+    del fingerprint_rejection_without_expected["expected_run_fingerprint"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(fingerprint_rejection_without_expected, schema)
+
+    fingerprint_rejection_without_evidence = deepcopy(fingerprint_rejection)
+    del fingerprint_rejection_without_evidence["run_fingerprint_evidence_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(fingerprint_rejection_without_evidence, schema)
+
     mismatch_rejection = deepcopy(result)
     mismatch_rejection["status"] = "rejected"
     mismatch_rejection["failure_class"] = "mismatch_count_non_zero"
