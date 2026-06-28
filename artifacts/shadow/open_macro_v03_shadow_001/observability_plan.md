@@ -29,6 +29,8 @@ later isolated pilot.
 - `runtime_activation`
 - `allow_db_write`
 - `allow_allocator_publish`
+- `production_endpoint_activation`
+- `official_result`
 
 ## Alerts
 
@@ -37,6 +39,7 @@ later isolated pilot.
 - Missing or unexpected output.
 - Non-zero mismatch count.
 - NaN or inf.
+- Constraint violation.
 - Run fingerprint inconsistency.
 - Output manifest incompleteness.
 - Any `runtime_activation` attempt.

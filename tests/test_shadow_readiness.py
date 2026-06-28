@@ -571,9 +571,15 @@ def test_observability_and_rollback_cover_all_side_effects() -> None:
     assert "`status`" in obs
     assert "`started_at`" in obs
     assert "`finished_at`" in obs
+    assert "`production_endpoint_activation`" in obs
+    assert "`official_result`" in obs
+    assert "Constraint violation." in obs
 
     rollback = (SHADOW_ROOT / "rollback_plan.md").read_text(encoding="utf-8")
     assert "runtime_activation_attempt" in rollback
+    assert "official_db_write_attempt" in rollback
+    assert "allocator_publish_attempt" in rollback
+    assert "production_endpoint_activation_attempt" in rollback
 
 
 def test_railway_ci_runs_shadow_readiness_gate() -> None:
