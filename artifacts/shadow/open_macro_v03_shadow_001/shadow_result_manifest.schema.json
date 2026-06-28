@@ -15,7 +15,8 @@
     },
     "timestamp": {
       "type": "string",
-      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d{1,6})?Z$"
     },
     "failureClass": {
       "type": "string",
@@ -146,6 +147,84 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["latency_p95_regression_pct"],
+                  "properties": {
+                    "latency_p95_regression_pct": {
+                      "minimum": 10.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["memory_peak_regression_pct"],
+                  "properties": {
+                    "memory_peak_regression_pct": {
+                      "minimum": 10.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["retry_rate_delta_pct"],
+                  "properties": {
+                    "retry_rate_delta_pct": {
+                      "minimum": 1.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
           }
         ]
       }
@@ -165,27 +244,118 @@
     },
     {
       "if": {
-        "properties": {
-          "failure_class": {
-            "enum": [
-              "missing_output",
-              "unexpected_output",
-              "mismatch_count_non_zero",
-              "nan_or_inf",
-              "constraint_violation",
-              "invariant_failure",
-              "hard_relative_delta_exceeded"
-            ]
-          }
-        },
+        "properties": { "failure_class": { "const": "missing_output" } },
         "required": ["failure_class"]
       },
       "then": {
-        "required": [
-          "baseline_comparison_sha256",
-          "divergence_summary",
-          "materiality_summary"
-        ]
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "missing_outputs": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "unexpected_output" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "unexpected_outputs": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "mismatch_count_non_zero" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "mismatch_count": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "nan_or_inf" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "nan_or_inf_count": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "constraint_violation" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "constraint_violations": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "invariant_failure" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "invariant_failures": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "hard_relative_delta_exceeded" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "materiality_summary"],
+        "properties": {
+          "materiality_summary": {
+            "properties": { "max_relative_delta_pct": { "minimum": 2.0 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "output_manifest_incomplete" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["output_manifest_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "non_reproducible_result" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["reproducibility_report_sha256"]
       }
     }
   ],
@@ -284,6 +454,18 @@
         "max_relative_delta_pct": {
           "type": "number",
           "minimum": 0
+        },
+        "return_metric_delta_pct": {
+          "type": "number"
+        },
+        "risk_metric_delta_pct": {
+          "type": "number"
+        },
+        "allocation_weight_delta_pct": {
+          "type": "number"
+        },
+        "classification_rate_delta_pct": {
+          "type": "number"
         },
         "latency_p95_regression_pct": {
           "type": "number"

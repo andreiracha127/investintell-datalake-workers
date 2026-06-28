@@ -259,10 +259,33 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
         jsonschema.validate(bad_engine_digest, schema)
 
     with_regressions = deepcopy(result)
-    with_regressions["materiality_summary"]["latency_p95_regression_pct"] = 12.0
+    with_regressions["materiality_summary"]["latency_p95_regression_pct"] = 5.0
     with_regressions["materiality_summary"]["memory_peak_regression_pct"] = 3.0
     with_regressions["materiality_summary"]["retry_rate_delta_pct"] = 0.5
     jsonschema.validate(with_regressions, schema)
+
+    with_relative_deltas = deepcopy(result)
+    with_relative_deltas["materiality_summary"]["return_metric_delta_pct"] = 0.1
+    with_relative_deltas["materiality_summary"]["risk_metric_delta_pct"] = 0.2
+    with_relative_deltas["materiality_summary"]["allocation_weight_delta_pct"] = 0.05
+    with_relative_deltas["materiality_summary"]["classification_rate_delta_pct"] = 0.0
+    jsonschema.validate(with_relative_deltas, schema)
+
+    for regression_field, breach_value in (
+        ("latency_p95_regression_pct", 12.0),
+        ("memory_peak_regression_pct", 12.0),
+        ("retry_rate_delta_pct", 1.5),
+    ):
+        regression_breach_reviewed = deepcopy(result)
+        regression_breach_reviewed["materiality_summary"][regression_field] = breach_value
+        regression_breach_reviewed["materiality_summary"]["material_divergence"] = True
+        jsonschema.validate(regression_breach_reviewed, schema)
+
+        regression_breach_suppressed = deepcopy(result)
+        regression_breach_suppressed["materiality_summary"][regression_field] = breach_value
+        regression_breach_suppressed["materiality_summary"]["material_divergence"] = False
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(regression_breach_suppressed, schema)
 
     comparison_rejection = deepcopy(result)
     comparison_rejection["status"] = "rejected"
@@ -276,10 +299,51 @@ def test_shadow_result_manifest_schema_keeps_result_unofficial() -> None:
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(comparison_rejection_missing_evidence, schema)
 
+    comparison_rejection_without_breach = deepcopy(comparison_rejection)
+    comparison_rejection_without_breach["materiality_summary"]["max_relative_delta_pct"] = 0.0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(comparison_rejection_without_breach, schema)
+
+    mismatch_rejection = deepcopy(result)
+    mismatch_rejection["status"] = "rejected"
+    mismatch_rejection["failure_class"] = "mismatch_count_non_zero"
+    mismatch_rejection["divergence_summary"]["mismatch_count"] = 3
+    jsonschema.validate(mismatch_rejection, schema)
+
+    mismatch_rejection_without_breach = deepcopy(mismatch_rejection)
+    mismatch_rejection_without_breach["divergence_summary"]["mismatch_count"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(mismatch_rejection_without_breach, schema)
+
+    manifest_incomplete_rejection = deepcopy(result)
+    manifest_incomplete_rejection["status"] = "rejected"
+    manifest_incomplete_rejection["failure_class"] = "output_manifest_incomplete"
+    jsonschema.validate(manifest_incomplete_rejection, schema)
+
+    manifest_incomplete_without_hash = deepcopy(manifest_incomplete_rejection)
+    del manifest_incomplete_without_hash["output_manifest_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(manifest_incomplete_without_hash, schema)
+
+    non_reproducible_rejection = deepcopy(result)
+    non_reproducible_rejection["status"] = "rejected"
+    non_reproducible_rejection["failure_class"] = "non_reproducible_result"
+    jsonschema.validate(non_reproducible_rejection, schema)
+
+    non_reproducible_without_hash = deepcopy(non_reproducible_rejection)
+    del non_reproducible_without_hash["reproducibility_report_sha256"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(non_reproducible_without_hash, schema)
+
     invalid_timestamp = dict(result)
     invalid_timestamp["started_at"] = "not-a-date"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(invalid_timestamp, schema)
+
+    impossible_timestamp = dict(result)
+    impossible_timestamp["finished_at"] = "2026-99-99T99:99:99Z"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(impossible_timestamp, schema)
 
     missing_invariant_count = deepcopy(result)
     del missing_invariant_count["divergence_summary"]["invariant_failures"]

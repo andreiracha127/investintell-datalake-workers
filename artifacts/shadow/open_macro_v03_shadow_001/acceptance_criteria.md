@@ -32,6 +32,10 @@ pilot or productive activation.
   (`finished_at` earlier than `started_at`) and a `duration_ms` inconsistent
   with the recorded timestamps. JSON Schema cannot compare two fields, so this
   is enforced at the gate, not in `shadow_result_manifest.schema.json`.
+- The pilot result validator enforces calendar-valid `started_at`/`finished_at`
+  with a date-time format checker. The schema's range-checked pattern rejects
+  impossible components (for example month `99`) but cannot reject a valid-looking
+  but non-existent calendar date such as February 31.
 - Invariant report hash is present and green for successful executions.
 - Baseline comparison hash is present and green for successful executions.
 - Baseline comparison policy rejects all hard failure classes.
