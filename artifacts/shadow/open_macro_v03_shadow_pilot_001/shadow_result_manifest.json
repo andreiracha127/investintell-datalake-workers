@@ -1,7 +1,7 @@
 {
   "allow_allocator_publish": false,
   "allow_db_write": false,
-  "baseline_comparison_sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394",
+  "baseline_comparison_sha256": "18401a2bfc7372158b6cb29b6ec93039ae16ea53beb9e682d307629049706a2c",
   "calibration_id": "open_macro_v03_calibration_001",
   "correlation_id": "corr-open-macro-v03-shadow-pilot-001",
   "cpu_time_ms": 1000,
@@ -17,9 +17,9 @@
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
-  "finished_at": "2026-06-28T17:26:21Z",
+  "finished_at": "2026-06-28T17:49:10Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
-  "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
+  "invariant_report_sha256": "c0414f3e22573381b6d786ab63e22bccbf7a10a3c21e753bce00a1ddebb069bd",
   "materiality_summary": {
     "allocation_weight_delta_pct": 0.0,
     "classification_rate_delta_pct": 0.0,
@@ -35,9 +35,9 @@
   "memory_peak_bytes": 0,
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "b462a89d8cc53797922606a0b06506cde91c799301a09fd075c19200f678fb72",
+  "output_manifest_sha256": "29e3e4d23743894370e224137acb686694b4c828dd22ae2300ea99557a9eed79",
   "production_endpoint_activation": "none",
-  "reproducibility_report_sha256": "a13413a5dbfc64fd5ccf38e7c3a011aec9e3e3c24418e45be5bed1ad98adafa4",
+  "reproducibility_report_sha256": "c7c6614df1f245adf1f9be4c438b23ed3b4c548625942acbb36a17d25a591ffa",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
   "retry_count": 0,
   "retryable": false,
@@ -45,6 +45,6 @@
   "runtime_activation": false,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
-  "started_at": "2026-06-28T17:26:20Z",
+  "started_at": "2026-06-28T17:49:09Z",
   "status": "succeeded"
 }

@@ -209,9 +209,17 @@ def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None
 
 def validate_shadow_readiness_manifest_is_inert(readiness: dict[str, Any]) -> None:
     expected_exact = {
+        "calibration_id": CALIBRATION_ID,
+        "calibration_001_merge_commit": CALIBRATION_001_MERGE_COMMIT,
+        "calibration_pr_head": CALIBRATION_PR_HEAD,
+        "engine_commit": ENGINE_COMMIT,
+        "railway_deployment_id": RAILWAY_DEPLOYMENT_ID,
+        "railway_image_digest": RAILWAY_IMAGE_DIGEST,
         "runtime_activation": False,
         "A5": "blocked",
         "freeze_ready": False,
+        "feature_flag_default": False,
+        "feature_flag_name": "open_macro_v03_shadow_readiness_enabled",
         "official_result": False,
         "allocator_impact": "none",
         "production_endpoint_activation": "none",
@@ -514,7 +522,7 @@ def build_pilot_output_manifest(output_dir: Path) -> dict[str, Any]:
         artifacts.append(
             {
                 "path": rel,
-                "sha256": file_sha256(path),
+                "sha256": artifact_file_sha256(path),
                 "bytes": path.stat().st_size,
             }
         )
@@ -543,6 +551,10 @@ def is_sha256_hex(value: Any) -> bool:
     )
 
 
+def artifact_file_sha256(path: Path) -> str:
+    return file_sha256(path, canonical_json=False)
+
+
 def output_manifest_has_required_outputs(
     output_manifest: dict[str, Any],
     output_dir: Path | None = None,
@@ -553,6 +565,8 @@ def output_manifest_has_required_outputs(
         if not isinstance(rel, str) or rel in entries:
             return False
         entries[rel] = artifact
+    if set(entries) != PILOT_RELATIVE_OUTPUTS:
+        return False
 
     for rel in sorted(PILOT_RELATIVE_OUTPUTS):
         artifact = entries.get(rel)
@@ -569,15 +583,49 @@ def output_manifest_has_required_outputs(
                 return False
             if not path.is_file():
                 return False
-            if artifact["sha256"] != file_sha256(path):
+            if artifact["sha256"] != artifact_file_sha256(path):
                 return False
             if artifact["bytes"] != path.stat().st_size:
                 return False
     return True
 
 
-def output_manifest_has_no_unexpected_outputs(output_manifest: dict[str, Any]) -> bool:
-    return not output_manifest.get("unexpected_outputs")
+def output_manifest_unexpected_outputs(
+    output_manifest: dict[str, Any],
+    output_dir: Path | None = None,
+) -> list[str]:
+    unexpected = set(output_manifest.get("unexpected_outputs") or [])
+    artifact_paths = {
+        artifact.get("path")
+        for artifact in output_manifest.get("artifacts", [])
+        if isinstance(artifact.get("path"), str)
+    }
+    unexpected.update(artifact_paths - PILOT_RELATIVE_OUTPUTS)
+    if output_dir is not None and output_dir.exists():
+        output_files = {
+            path.relative_to(output_dir).as_posix()
+            for path in output_dir.rglob("*")
+            if path.is_file()
+        }
+        unexpected.update(output_files - FINAL_PILOT_RELATIVE_OUTPUTS)
+    return sorted(unexpected)
+
+
+def output_manifest_has_no_unexpected_outputs(
+    output_manifest: dict[str, Any],
+    output_dir: Path | None = None,
+) -> bool:
+    return not output_manifest_unexpected_outputs(output_manifest, output_dir)
+
+
+def relative_deltas_below_hard_reject_threshold(
+    baseline_comparison: dict[str, Any],
+    policy: dict[str, Any],
+) -> bool:
+    hard_threshold = policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
+    materiality = baseline_comparison["materiality_summary"]
+    fields = {"max_relative_delta_pct", *policy["metrics"]["relative_deltas"]}
+    return all(float(materiality.get(field, 0.0)) < hard_threshold for field in fields)
 
 
 def build_shadow_result_manifest(
@@ -672,7 +720,7 @@ def build_acceptance_report(
             output_manifest_has_required_outputs(output_manifest, output_dir)
             and baseline_comparison["divergence_summary"]["missing_outputs"] == 0
         ),
-        "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest),
+        "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest, output_dir),
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
         "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
@@ -680,12 +728,12 @@ def build_acceptance_report(
             baseline_comparison["divergence_summary"]["invariant_failures"] == 0
             and invariant_report["ok"] is True
         ),
-        "relative_deltas_below_hard_reject_threshold": (
-            baseline_comparison["materiality_summary"]["max_relative_delta_pct"]
-            < policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
+        "relative_deltas_below_hard_reject_threshold": relative_deltas_below_hard_reject_threshold(
+            baseline_comparison,
+            policy,
         ),
         "run_fingerprint_consistent": reproducibility_report["run_fingerprint"] == expected_run_fingerprint,
-        "output_manifest_complete": output_manifest_has_required_outputs(output_manifest),
+        "output_manifest_complete": output_manifest_has_required_outputs(output_manifest, output_dir),
         "result_reproducible": reproducibility_report["ok"] is True,
         "runtime_activation_false": checks["runtime_activation_false"],
         "allow_db_write_false": checks["allow_db_write_false"],
@@ -982,10 +1030,10 @@ def run_shadow_pilot(
         raise ValueError("output manifest must include complete artifact hashes and sizes")
     write_json(output_dir / "output_manifest.json", output_manifest)
 
-    output_manifest_hash = file_sha256(output_dir / "output_manifest.json")
-    invariant_hash = file_sha256(output_dir / "invariant_report.json")
-    baseline_hash = file_sha256(output_dir / "baseline_comparison.json")
-    reproducibility_hash = file_sha256(output_dir / "reproducibility_report.json")
+    output_manifest_hash = artifact_file_sha256(output_dir / "output_manifest.json")
+    invariant_hash = artifact_file_sha256(output_dir / "invariant_report.json")
+    baseline_hash = artifact_file_sha256(output_dir / "baseline_comparison.json")
+    reproducibility_hash = artifact_file_sha256(output_dir / "reproducibility_report.json")
     started = dt.datetime.now(dt.UTC).replace(microsecond=0)
     finished = started + dt.timedelta(seconds=1)
     result = build_shadow_result_manifest(

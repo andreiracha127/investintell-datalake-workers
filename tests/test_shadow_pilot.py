@@ -365,6 +365,33 @@ def test_acceptance_report_blocks_baseline_rejection_status() -> None:
     assert report["status"] == "artifact_gate_failed"
 
 
+def test_acceptance_report_checks_each_relative_delta_field() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    baseline["materiality_summary"]["return_metric_delta_pct"] = 2.0
+    baseline["status"] = "pass"
+    baseline["evaluation"] = {
+        "status": "pass",
+        "rejection_rules_triggered": [],
+        "review_rules_triggered": [],
+        "material_divergence": False,
+    }
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest_with_logs(),
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    rule = next(rule for rule in report["rules"] if rule["id"] == "relative_deltas_below_hard_reject_threshold")
+    assert rule["status"] == "fail"
+    assert report["status"] == "artifact_gate_failed"
+
+
 def test_output_manifest_requires_hash_and_byte_metadata() -> None:
     metadata_missing = {
         "artifacts": [{"path": rel} for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)],
@@ -385,6 +412,11 @@ def test_output_manifest_checks_current_file_metadata(tmp_path: Path) -> None:
 
     output_manifest = sp.build_pilot_output_manifest(tmp_path)
     assert sp.output_manifest_has_required_outputs(output_manifest, tmp_path) is True
+    json_artifact = next(
+        artifact for artifact in output_manifest["artifacts"] if artifact["path"] == "baseline_comparison.json"
+    )
+    assert json_artifact["sha256"] == sp.artifact_file_sha256(tmp_path / "baseline_comparison.json")
+    assert json_artifact["sha256"] != file_sha256(tmp_path / "baseline_comparison.json")
 
     bad_hash = deepcopy(output_manifest)
     bad_hash["artifacts"][0]["sha256"] = "0" * 64
@@ -393,6 +425,27 @@ def test_output_manifest_checks_current_file_metadata(tmp_path: Path) -> None:
     bad_size = deepcopy(output_manifest)
     bad_size["artifacts"][0]["bytes"] += 1
     assert sp.output_manifest_has_required_outputs(bad_size, tmp_path) is False
+
+
+def test_output_manifest_rejects_extra_artifact_paths_and_files(tmp_path: Path) -> None:
+    for rel in sp.PILOT_RELATIVE_OUTPUTS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.suffix == ".json":
+            path.write_text(json.dumps({"path": rel}) + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"{rel}\n", encoding="utf-8")
+
+    output_manifest = sp.build_pilot_output_manifest(tmp_path)
+    extra_path_manifest = deepcopy(output_manifest)
+    extra_path_manifest["artifacts"].append(
+        {"path": "extra.json", "sha256": "a" * 64, "bytes": 2}
+    )
+    assert sp.output_manifest_has_required_outputs(extra_path_manifest, tmp_path) is False
+    assert sp.output_manifest_has_no_unexpected_outputs(extra_path_manifest, tmp_path) is False
+
+    (tmp_path / "extra.json").write_text("{}\n", encoding="utf-8")
+    assert sp.output_manifest_has_no_unexpected_outputs(output_manifest, tmp_path) is False
 
 
 def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> None:
@@ -496,6 +549,14 @@ def test_readiness_manifest_requires_all_inert_fields() -> None:
     sp.validate_shadow_readiness_manifest_is_inert(readiness)
 
     for field, bad_value in (
+        ("calibration_id", "other_calibration"),
+        ("calibration_001_merge_commit", "0" * 40),
+        ("calibration_pr_head", "1" * 40),
+        ("engine_commit", "2" * 40),
+        ("railway_deployment_id", "different-deployment"),
+        ("railway_image_digest", "sha256:" + "3" * 64),
+        ("feature_flag_default", True),
+        ("feature_flag_name", "other_flag"),
         ("official_result", True),
         ("allocator_impact", "publish"),
         ("db_write_mode", "productive"),
@@ -586,7 +647,10 @@ def test_shadow_pilot_runner_generates_valid_artifact_bundle(tmp_path: Path) -> 
     review_rule = next(rule for rule in acceptance["rules"] if rule["id"] == "technical_and_quantitative_review_recorded")
     assert review_rule["status"] == "pending"
     assert review_rule["blocking"] is True
-    assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")
+    assert manifest["output_manifest_sha256"] == sp.artifact_file_sha256(out / "output_manifest.json")
+    assert result["baseline_comparison_sha256"] == sp.artifact_file_sha256(out / "baseline_comparison.json")
+    assert result["invariant_report_sha256"] == sp.artifact_file_sha256(out / "invariant_report.json")
+    assert result["reproducibility_report_sha256"] == sp.artifact_file_sha256(out / "reproducibility_report.json")
     invariant = json.loads((out / "invariant_report.json").read_text(encoding="utf-8"))
     assert invariant["ok"] is True
 
@@ -607,7 +671,12 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
     assert sp.output_manifest_has_required_outputs(output_manifest, out)
     assert observability["output_artifact_uri"] == envelope["output_artifact_uri"]
     assert observability["engine_image_digest"] == result["engine_image_digest"]
-    assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")
+    assert manifest["output_manifest_sha256"] == sp.artifact_file_sha256(out / "output_manifest.json")
+    assert result["baseline_comparison_sha256"] == sp.artifact_file_sha256(out / "baseline_comparison.json")
+    assert result["invariant_report_sha256"] == sp.artifact_file_sha256(out / "invariant_report.json")
+    assert result["reproducibility_report_sha256"] == sp.artifact_file_sha256(out / "reproducibility_report.json")
+    assert observability["baseline_comparison_sha256"] == result["baseline_comparison_sha256"]
+    assert observability["invariant_report_sha256"] == result["invariant_report_sha256"]
     assert manifest["A5"] == "blocked"
     assert manifest["runtime_activation"] is False
     assert manifest["freeze_ready"] is False

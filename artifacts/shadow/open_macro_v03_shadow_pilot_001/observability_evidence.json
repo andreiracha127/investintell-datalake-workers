@@ -2,7 +2,7 @@
   "allow_allocator_publish": false,
   "allow_db_write": false,
   "artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "baseline_comparison_sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394",
+  "baseline_comparison_sha256": "18401a2bfc7372158b6cb29b6ec93039ae16ea53beb9e682d307629049706a2c",
   "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
   "calibration_id": "open_macro_v03_calibration_001",
   "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
@@ -13,9 +13,9 @@
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
   "failure_class": null,
-  "finished_at": "2026-06-28T17:26:21Z",
+  "finished_at": "2026-06-28T17:49:10Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
-  "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
+  "invariant_report_sha256": "c0414f3e22573381b6d786ab63e22bccbf7a10a3c21e753bce00a1ddebb069bd",
   "log_paths": [
     "logs/shadow_pilot.log",
     "logs/executor.log"
@@ -27,7 +27,7 @@
   "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
-  "output_manifest_sha256": "b462a89d8cc53797922606a0b06506cde91c799301a09fd075c19200f678fb72",
+  "output_manifest_sha256": "29e3e4d23743894370e224137acb686694b4c828dd22ae2300ea99557a9eed79",
   "production_endpoint_activation": "none",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "request_id": "req-open-macro-v03-shadow-pilot-001",
@@ -38,6 +38,6 @@
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
-  "started_at": "2026-06-28T17:26:20Z",
+  "started_at": "2026-06-28T17:49:09Z",
   "status": "succeeded"
 }
