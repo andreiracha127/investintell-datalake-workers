@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CALIBRATION_RUN_MATRIX = json.loads(
     (ROOT / "artifacts" / "calibration" / sp.CALIBRATION_ID / "run_matrix.json").read_text(encoding="utf-8")
 )
+CALIBRATION_MANIFEST = json.loads(
+    (ROOT / "artifacts" / "calibration" / sp.CALIBRATION_ID / "calibration_manifest.json").read_text(encoding="utf-8")
+)
 
 
 def _envelope() -> dict:
@@ -39,8 +42,8 @@ def _result() -> dict:
 def _output_manifest_with_logs() -> dict:
     return {
         "artifacts": [
-            {"path": "logs/shadow_pilot.log"},
-            {"path": "logs/executor.log"},
+            {"path": rel}
+            for rel in sorted(sp.PILOT_RELATIVE_OUTPUTS)
         ],
         "unexpected_outputs": [],
     }
@@ -175,7 +178,7 @@ def test_reproducibility_report_requires_exact_run_matrix_membership() -> None:
     matrix["comparison_evidence"]["labels"][0] = new_label
     matrix["hashes"][new_label] = matrix["hashes"].pop(old_label)
 
-    report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix))
+    report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix), CALIBRATION_MANIFEST)
 
     assert report["ok"] is False
     assert old_label in report["missing"]
@@ -183,8 +186,23 @@ def test_reproducibility_report_requires_exact_run_matrix_membership() -> None:
 
     wrong_count = deepcopy(CALIBRATION_RUN_MATRIX)
     wrong_count["comparison_evidence"]["run_count"] = 7
-    count_report = sp.build_reproducibility_report(wrong_count, sp.build_shadow_job_envelope(wrong_count))
+    count_report = sp.build_reproducibility_report(
+        wrong_count,
+        sp.build_shadow_job_envelope(wrong_count),
+        CALIBRATION_MANIFEST,
+    )
     assert count_report["ok"] is False
+
+
+def test_reproducibility_report_recomputes_per_run_hash_equality() -> None:
+    matrix = deepcopy(CALIBRATION_RUN_MATRIX)
+    label = matrix["comparison_evidence"]["labels"][0]
+    matrix["hashes"][label]["output_manifest_sha256"] = "0" * 64
+
+    report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix), CALIBRATION_MANIFEST)
+
+    assert report["ok"] is False
+    assert label in report["run_hash_mismatches"]
 
 
 def test_reproducibility_report_requires_isolated_execution_fields() -> None:
@@ -197,15 +215,35 @@ def test_reproducibility_report_requires_isolated_execution_fields() -> None:
         matrix = deepcopy(CALIBRATION_RUN_MATRIX)
         matrix["comparison_evidence"][field] = bad_value
 
-        report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix))
+        report = sp.build_reproducibility_report(matrix, sp.build_shadow_job_envelope(matrix), CALIBRATION_MANIFEST)
 
         assert report["ok"] is False
+
+
+def test_reproducibility_report_gates_image_provenance() -> None:
+    report = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+    assert report["ok"] is True
+    assert report["docker_image_id"] == CALIBRATION_MANIFEST["engine_image_id"]
+    assert report["docker_image_digest"] == CALIBRATION_MANIFEST["engine_image_digest"]
+    assert report["docker_image_provenance_ok"] is True
+
+    bad_id = deepcopy(CALIBRATION_RUN_MATRIX)
+    bad_id["comparison_evidence"]["docker_image_id"] = "sha256:" + "0" * 64
+    bad_id_report = sp.build_reproducibility_report(bad_id, sp.build_shadow_job_envelope(bad_id), CALIBRATION_MANIFEST)
+    assert bad_id_report["ok"] is False
+    assert bad_id_report["docker_image_provenance_ok"] is False
+
+    digest_required = deepcopy(CALIBRATION_MANIFEST)
+    digest_required["engine_image_digest"] = sp.RAILWAY_IMAGE_DIGEST
+    missing_digest_report = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), digest_required)
+    assert missing_digest_report["ok"] is False
+    assert missing_digest_report["docker_image_provenance_ok"] is False
 
 
 def test_acceptance_report_blocks_when_invariant_report_is_red() -> None:
     policy = sp.load_policy(ROOT)
     baseline = sp.build_baseline_comparison(policy)
-    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
 
     report = sp.build_acceptance_report(
         policy=policy,
@@ -228,7 +266,7 @@ def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
     baseline["forbidden_effects"]["allocator_publish_attempt"] = True
     baseline["evaluation"] = sp.evaluate_baseline_comparison(baseline, policy)
     baseline["status"] = baseline["evaluation"]["status"]
-    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
 
     report = sp.build_acceptance_report(
         policy=policy,
@@ -248,7 +286,7 @@ def test_acceptance_report_derives_forbidden_side_effect_rules() -> None:
 def test_acceptance_report_blocks_unexpected_outputs_and_fingerprint_mismatch() -> None:
     policy = sp.load_policy(ROOT)
     baseline = sp.build_baseline_comparison(policy)
-    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope())
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
 
     unexpected_report = sp.build_acceptance_report(
         policy=policy,
@@ -276,6 +314,31 @@ def test_acceptance_report_blocks_unexpected_outputs_and_fingerprint_mismatch() 
     fingerprint_rule = next(rule for rule in fingerprint_report["rules"] if rule["id"] == "run_fingerprint_consistent")
     assert fingerprint_rule["status"] == "fail"
     assert fingerprint_report["status"] == "artifact_gate_failed"
+
+
+def test_acceptance_report_requires_full_output_manifest() -> None:
+    policy = sp.load_policy(ROOT)
+    baseline = sp.build_baseline_comparison(policy)
+    reproducibility = sp.build_reproducibility_report(CALIBRATION_RUN_MATRIX, _envelope(), CALIBRATION_MANIFEST)
+    logs_only = {
+        "artifacts": [{"path": "logs/shadow_pilot.log"}, {"path": "logs/executor.log"}],
+        "unexpected_outputs": [],
+    }
+
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=logs_only,
+        invariant_report=_invariant_report(),
+        baseline_comparison=baseline,
+        reproducibility_report=reproducibility,
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+
+    required_rule = next(rule for rule in report["rules"] if rule["id"] == "all_required_outputs_present")
+    complete_rule = next(rule for rule in report["rules"] if rule["id"] == "output_manifest_complete")
+    assert required_rule["status"] == "fail"
+    assert complete_rule["status"] == "fail"
+    assert report["status"] == "artifact_gate_failed"
 
 
 def test_output_manifest_requires_shadow_and_executor_logs(tmp_path: Path) -> None:
@@ -324,6 +387,54 @@ def test_result_manifest_requires_green_invariant_and_reproducibility_reports() 
             invariant_report=_invariant_report(),
             reproducibility_report={"ok": False},
         )
+
+
+def test_observability_evidence_contains_required_structured_fields() -> None:
+    envelope = _envelope()
+    result = _result()
+    evidence = sp.build_observability_evidence(
+        envelope=envelope,
+        result=result,
+        output_manifest_hash="a" * 64,
+        invariant_hash="b" * 64,
+        baseline_hash="c" * 64,
+    )
+    required = {
+        "shadow_id",
+        "calibration_id",
+        "request_id",
+        "correlation_id",
+        "execution_id",
+        "run_fingerprint",
+        "status",
+        "started_at",
+        "finished_at",
+        "input_pack_sha256",
+        "engine_commit",
+        "engine_image_digest",
+        "output_artifact_uri",
+        "output_manifest_sha256",
+        "invariant_report_sha256",
+        "baseline_comparison_sha256",
+        "duration_ms",
+        "memory_peak_bytes",
+        "cpu_time_ms",
+        "failure_class",
+        "retry_count",
+        "runtime_activation",
+        "allow_db_write",
+        "allow_allocator_publish",
+        "production_endpoint_activation",
+        "official_result",
+    }
+    assert required.issubset(evidence)
+    assert evidence["output_artifact_uri"] == envelope["output_artifact_uri"]
+    assert evidence["engine_image_digest"] == result["engine_image_digest"]
+    assert evidence["runtime_activation"] is False
+    assert evidence["allow_db_write"] is False
+    assert evidence["allow_allocator_publish"] is False
+    assert evidence["production_endpoint_activation"] == "none"
+    assert evidence["official_result"] is False
 
 
 def test_readiness_manifest_requires_all_inert_fields() -> None:
@@ -423,11 +534,15 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
     manifest = json.loads((out / "shadow_pilot_manifest.json").read_text(encoding="utf-8"))
     output_manifest = json.loads((out / "output_manifest.json").read_text(encoding="utf-8"))
     invariant = json.loads((out / "invariant_report.json").read_text(encoding="utf-8"))
+    observability = json.loads((out / "observability_evidence.json").read_text(encoding="utf-8"))
 
     sp.validate_shadow_job_envelope(envelope, root=ROOT)
     sp.validate_shadow_result_manifest(result, root=ROOT)
     assert invariant["ok"] is True
     assert sp.output_manifest_has_required_logs(output_manifest)
+    assert sp.output_manifest_has_required_outputs(output_manifest)
+    assert observability["output_artifact_uri"] == envelope["output_artifact_uri"]
+    assert observability["engine_image_digest"] == result["engine_image_digest"]
     assert manifest["output_manifest_sha256"] == file_sha256(out / "output_manifest.json")
     assert manifest["A5"] == "blocked"
     assert manifest["runtime_activation"] is False

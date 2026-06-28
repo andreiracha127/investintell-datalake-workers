@@ -1,4 +1,6 @@
 {
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
   "artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
   "baseline_comparison_sha256": "a356cf5697751e4fe2dec46d4d5a1135741ded304e5bf8fb7fdfdcf7fd644394",
   "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
@@ -8,8 +10,10 @@
   "cpu_time_ms": 1000,
   "duration_ms": 1000,
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
+  "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "execution_id": "exec-open-macro-v03-shadow-pilot-001",
   "failure_class": null,
+  "finished_at": "2026-06-28T16:53:24Z",
   "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
   "invariant_report_sha256": "6e9146be984b77bd2e2c6339f1b6ab1c7d9a0af8f39370be15f3b08b4dca5d78",
   "log_paths": [
@@ -21,12 +25,19 @@
   "no_db_write_evidence": "allow_db_write=false and no official_db_write_attempt",
   "no_production_endpoint_activation_evidence": "production_endpoint_activation=none and no production_endpoint_activation_attempt",
   "no_runtime_activation_evidence": "runtime_activation=false and no runtime_activation_attempt",
-  "output_manifest_sha256": "e7347ffc037f8ae57c003daff3d8421147b1dbff76eda75108e7648d1d4dd814",
+  "official_result": false,
+  "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_shadow_pilot_001",
+  "output_manifest_sha256": "5724abb8106d02caed726d53da1446dd83d4f90cb2c1fe18ad95ecf135f01e14",
+  "production_endpoint_activation": "none",
   "railway_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
+  "request_id": "req-open-macro-v03-shadow-pilot-001",
+  "retry_count": 0,
   "retryable": false,
   "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",
+  "runtime_activation": false,
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
+  "started_at": "2026-06-28T16:53:23Z",
   "status": "succeeded"
 }

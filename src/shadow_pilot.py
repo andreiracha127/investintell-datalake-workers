@@ -365,6 +365,7 @@ def build_baseline_comparison(policy: dict[str, Any]) -> dict[str, Any]:
 def build_reproducibility_report(
     calibration_run_matrix: dict[str, Any],
     envelope: dict[str, Any],
+    calibration_manifest: dict[str, Any],
 ) -> dict[str, Any]:
     labels = calibration_run_matrix["comparison_evidence"]["labels"]
     label_set = set(labels)
@@ -382,6 +383,16 @@ def build_reproducibility_report(
     db_access = calibration_run_matrix["comparison_evidence"]["db_access"]
     input_pack_mount = calibration_run_matrix["comparison_evidence"]["input_pack_mount"]
     path_independence = calibration_run_matrix["comparison_evidence"]["path_independence"]
+    current_run_hashes = calibration_run_matrix["current_run_hashes"]
+    run_hash_mismatches = sorted(
+        label
+        for label, hashes in calibration_run_matrix["hashes"].items()
+        if hashes != current_run_hashes
+    )
+    docker_image_id = calibration_run_matrix["comparison_evidence"].get("docker_image_id")
+    docker_image_digest = calibration_run_matrix["comparison_evidence"].get("docker_image_digest")
+    expected_docker_image_id = calibration_manifest.get("engine_image_id")
+    expected_docker_image_digest = calibration_manifest.get("engine_image_digest")
     return {
         "schema_version": 1,
         "shadow_pilot_id": SHADOW_PILOT_ID,
@@ -398,6 +409,7 @@ def build_reproducibility_report(
         "unexpected": unexpected,
         "missing_hashes": missing_hashes,
         "unexpected_hashes": unexpected_hashes,
+        "run_hash_mismatches": run_hash_mismatches,
         "duplicates": duplicates,
         "mismatch_count": calibration_run_matrix["comparison_evidence"]["mismatch_count"],
         "container_runs": container_labels,
@@ -413,8 +425,14 @@ def build_reproducibility_report(
         "db_access": db_access,
         "input_pack_mount": input_pack_mount,
         "path_independence": path_independence,
-        "docker_image_id": calibration_run_matrix["comparison_evidence"].get("docker_image_id"),
-        "docker_image_digest": RAILWAY_IMAGE_DIGEST,
+        "docker_image_id": docker_image_id,
+        "docker_image_digest": docker_image_digest,
+        "expected_docker_image_id": expected_docker_image_id,
+        "expected_docker_image_digest": expected_docker_image_digest,
+        "docker_image_provenance_ok": (
+            docker_image_id == expected_docker_image_id
+            and docker_image_digest == expected_docker_image_digest
+        ),
         "ok": (
             calibration_run_matrix["ok"] is True
             and run_count == len(EXPECTED_REPRODUCIBILITY_LABELS)
@@ -425,11 +443,14 @@ def build_reproducibility_report(
             and not unexpected
             and not missing_hashes
             and not unexpected_hashes
+            and not run_hash_mismatches
             and duplicates == 0
             and network == "none"
             and db_access is False
             and input_pack_mount == "read_only"
             and path_independence is True
+            and docker_image_id == expected_docker_image_id
+            and docker_image_digest == expected_docker_image_digest
         ),
     }
 
@@ -508,6 +529,11 @@ def build_pilot_output_manifest(output_dir: Path) -> dict[str, Any]:
 def output_manifest_has_required_logs(output_manifest: dict[str, Any]) -> bool:
     paths = {artifact["path"] for artifact in output_manifest.get("artifacts", [])}
     return {"logs/shadow_pilot.log", "logs/executor.log"}.issubset(paths)
+
+
+def output_manifest_has_required_outputs(output_manifest: dict[str, Any]) -> bool:
+    paths = {artifact["path"] for artifact in output_manifest.get("artifacts", [])}
+    return PILOT_RELATIVE_OUTPUTS.issubset(paths)
 
 
 def output_manifest_has_no_unexpected_outputs(output_manifest: dict[str, Any]) -> bool:
@@ -600,7 +626,7 @@ def build_acceptance_report(
         return forbidden_effects.get(attempt_key) is not True and attempt_key not in rejection_rules
 
     evidence_by_rule = {
-        "all_required_outputs_present": output_manifest_has_required_logs(output_manifest),
+        "all_required_outputs_present": output_manifest_has_required_outputs(output_manifest),
         "no_unexpected_outputs": output_manifest_has_no_unexpected_outputs(output_manifest),
         "mismatch_count_zero": baseline_comparison["divergence_summary"]["mismatch_count"] == 0,
         "no_nan_or_inf": baseline_comparison["divergence_summary"]["nan_or_inf_count"] == 0,
@@ -614,7 +640,7 @@ def build_acceptance_report(
             < policy["materiality_thresholds"]["hard_reject_relative_delta_pct"]
         ),
         "run_fingerprint_consistent": reproducibility_report["run_fingerprint"] == expected_run_fingerprint,
-        "output_manifest_complete": output_manifest_has_required_logs(output_manifest),
+        "output_manifest_complete": output_manifest_has_required_outputs(output_manifest),
         "result_reproducible": reproducibility_report["ok"] is True,
         "runtime_activation_false": checks["runtime_activation_false"],
         "allow_db_write_false": checks["allow_db_write_false"],
@@ -668,24 +694,35 @@ def build_observability_evidence(
         "shadow_pilot_id": SHADOW_PILOT_ID,
         "shadow_id": SHADOW_ID,
         "calibration_id": CALIBRATION_ID,
+        "request_id": envelope["request_id"],
         "input_pack_sha256": INPUT_PACK_SHA256,
         "calibration_config_sha256": CALIBRATION_CONFIG_SHA256,
         "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
         "engine_commit": ENGINE_COMMIT,
+        "engine_image_digest": result["engine_image_digest"],
         "railway_image_digest": RAILWAY_IMAGE_DIGEST,
         "correlation_id": envelope["correlation_id"],
         "execution_id": envelope["execution_id"],
         "run_fingerprint": envelope["run_fingerprint"],
         "status": result["status"],
+        "started_at": result["started_at"],
+        "finished_at": result["finished_at"],
         "failure_class": result.get("failure_class"),
         "retryable": result["retryable"],
+        "retry_count": result["retry_count"],
         "duration_ms": result["duration_ms"],
         "memory_peak_bytes": result["memory_peak_bytes"],
         "cpu_time_ms": result["cpu_time_ms"],
         "artifact_uri": envelope["output_artifact_uri"],
+        "output_artifact_uri": envelope["output_artifact_uri"],
         "output_manifest_sha256": output_manifest_hash,
         "invariant_report_sha256": invariant_hash,
         "baseline_comparison_sha256": baseline_hash,
+        "runtime_activation": result["runtime_activation"],
+        "allow_db_write": result["allow_db_write"],
+        "allow_allocator_publish": result["allow_allocator_publish"],
+        "production_endpoint_activation": result["production_endpoint_activation"],
+        "official_result": result["official_result"],
         "log_paths": ["logs/shadow_pilot.log", "logs/executor.log"],
         "no_db_write_evidence": "allow_db_write=false and no official_db_write_attempt",
         "no_allocator_publish_evidence": "allow_allocator_publish=false and no allocator_publish_attempt",
@@ -859,7 +896,7 @@ def run_shadow_pilot(
 
     readiness = load_json(shadow_root(root) / "shadow_manifest.json")
     validate_shadow_readiness_manifest_is_inert(readiness)
-    validate_calibration_artifact_hashes(root)
+    calibration_manifest = validate_calibration_artifact_hashes(root)
     calibration_run_matrix = load_json(calibration_root(root) / "run_matrix.json")
     policy = load_policy(root)
 
@@ -877,7 +914,7 @@ def run_shadow_pilot(
 
     baseline_comparison = build_baseline_comparison(policy)
     write_json(output_dir / "baseline_comparison.json", baseline_comparison)
-    reproducibility_report = build_reproducibility_report(calibration_run_matrix, envelope)
+    reproducibility_report = build_reproducibility_report(calibration_run_matrix, envelope, calibration_manifest)
     write_json(output_dir / "reproducibility_report.json", reproducibility_report)
     invariant_report = build_invariant_report(
         output_dir=output_dir,
