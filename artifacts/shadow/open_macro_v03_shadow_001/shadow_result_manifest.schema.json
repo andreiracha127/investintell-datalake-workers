@@ -1,0 +1,757 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/shadow/open_macro_v03_shadow_001/shadow_result_manifest.schema.json",
+  "title": "OpenMacroV03ShadowResultManifest001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^\\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d{1,6})?Z$"
+    },
+    "failureClass": {
+      "type": "string",
+      "enum": [
+        "missing_output",
+        "unexpected_output",
+        "mismatch_count_non_zero",
+        "nan_or_inf",
+        "constraint_violation",
+        "run_fingerprint_inconsistent",
+        "output_manifest_incomplete",
+        "non_reproducible_result",
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "invariant_failure",
+        "hard_relative_delta_exceeded",
+        "executor_failure"
+      ]
+    },
+    "sideEffectAttemptFailureClass": {
+      "type": "string",
+      "enum": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "shadow_id",
+    "request_id",
+    "correlation_id",
+    "execution_id",
+    "run_fingerprint",
+    "calibration_id",
+    "input_pack_sha256",
+    "engine_image_digest",
+    "engine_commit",
+    "output_artifact_uri",
+    "started_at",
+    "finished_at",
+    "status",
+    "retryable",
+    "duration_ms",
+    "retry_count",
+    "runtime_activation",
+    "allow_db_write",
+    "allow_allocator_publish",
+    "production_endpoint_activation",
+    "official_result"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "succeeded"
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": [
+          "output_manifest_sha256",
+          "invariant_report_sha256",
+          "baseline_comparison_sha256",
+          "reproducibility_report_sha256",
+          "materiality_summary",
+          "divergence_summary",
+          "memory_peak_bytes",
+          "cpu_time_ms"
+        ],
+        "properties": {
+          "retryable": {
+            "const": false
+          },
+          "materiality_summary": {
+            "type": "object",
+            "properties": {
+              "max_relative_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "return_metric_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "risk_metric_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "allocation_weight_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              },
+              "classification_rate_delta_pct": {
+                "type": "number",
+                "minimum": 0,
+                "exclusiveMaximum": 2.0
+              }
+            }
+          },
+          "divergence_summary": {
+            "type": "object",
+            "properties": {
+              "missing_outputs": {
+                "const": 0
+              },
+              "unexpected_outputs": {
+                "const": 0
+              },
+              "mismatch_count": {
+                "const": 0
+              },
+              "nan_or_inf_count": {
+                "const": 0
+              },
+              "constraint_violations": {
+                "const": 0
+              },
+              "invariant_failures": {
+                "const": 0
+              }
+            }
+          }
+        },
+        "not": {
+          "required": ["failure_class"]
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["max_relative_delta_pct"],
+                  "properties": {
+                    "max_relative_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["return_metric_delta_pct"],
+                  "properties": {
+                    "return_metric_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["risk_metric_delta_pct"],
+                  "properties": {
+                    "risk_metric_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["allocation_weight_delta_pct"],
+                  "properties": {
+                    "allocation_weight_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["classification_rate_delta_pct"],
+                  "properties": {
+                    "classification_rate_delta_pct": {
+                      "minimum": 0.5
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["latency_p95_regression_pct"],
+                  "properties": {
+                    "latency_p95_regression_pct": {
+                      "minimum": 10.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["memory_peak_regression_pct"],
+                  "properties": {
+                    "memory_peak_regression_pct": {
+                      "minimum": 10.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["materiality_summary"],
+              "properties": {
+                "materiality_summary": {
+                  "required": ["retry_rate_delta_pct"],
+                  "properties": {
+                    "retry_rate_delta_pct": {
+                      "minimum": 1.0
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "materiality_summary": {
+                  "properties": {
+                    "material_divergence": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": ["failed", "rejected"]
+          }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["failure_class"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "missing_output" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "missing_outputs": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "unexpected_output" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "unexpected_outputs": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "mismatch_count_non_zero" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "mismatch_count": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "nan_or_inf" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "nan_or_inf_count": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "constraint_violation" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "divergence_summary"],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "constraint_violations": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "invariant_failure" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "baseline_comparison_sha256",
+          "divergence_summary",
+          "invariant_report_sha256"
+        ],
+        "properties": {
+          "divergence_summary": {
+            "properties": { "invariant_failures": { "minimum": 1 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "hard_relative_delta_exceeded" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["baseline_comparison_sha256", "materiality_summary"],
+        "properties": {
+          "materiality_summary": {
+            "properties": { "max_relative_delta_pct": { "minimum": 2.0 } }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "run_fingerprint_inconsistent" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "expected_run_fingerprint",
+          "run_fingerprint_evidence_sha256"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "output_manifest_incomplete" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["output_manifest_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "non_reproducible_result" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": ["reproducibility_report_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_class": { "$ref": "#/$defs/sideEffectAttemptFailureClass" }
+        },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "side_effect_attempt_evidence_sha256",
+          "side_effect_attempt_count"
+        ],
+        "properties": {
+          "retryable": {
+            "const": false
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "failure_class": { "const": "executor_failure" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "properties": { "status": { "const": "failed" } }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "failure_class": {
+            "enum": [
+              "missing_output",
+              "unexpected_output",
+              "mismatch_count_non_zero",
+              "nan_or_inf",
+              "constraint_violation",
+              "run_fingerprint_inconsistent",
+              "output_manifest_incomplete",
+              "non_reproducible_result",
+              "runtime_activation_attempt",
+              "official_db_write_attempt",
+              "allocator_publish_attempt",
+              "production_endpoint_activation_attempt",
+              "invariant_failure",
+              "hard_relative_delta_exceeded"
+            ]
+          }
+        },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "properties": { "status": { "const": "rejected" } }
+      }
+    }
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "shadow_id": {
+      "const": "open_macro_v03_shadow_001"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 12
+    },
+    "correlation_id": {
+      "type": "string",
+      "minLength": 12
+    },
+    "execution_id": {
+      "type": "string",
+      "minLength": 12
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "expected_run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "run_fingerprint_evidence_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "calibration_id": {
+      "const": "open_macro_v03_calibration_001"
+    },
+    "input_pack_sha256": {
+      "const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
+    },
+    "engine_image_digest": {
+      "$ref": "#/$defs/sha256Digest"
+    },
+    "engine_commit": {
+      "const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
+    },
+    "output_artifact_uri": {
+      "type": "string",
+      "pattern": "^artifact://shadow/open_macro_v03_shadow_001/[^\\s]+$"
+    },
+    "output_manifest_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "invariant_report_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "baseline_comparison_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "reproducibility_report_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "started_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "finished_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "status": {
+      "enum": ["succeeded", "failed", "rejected"]
+    },
+    "failure_class": {
+      "$ref": "#/$defs/failureClass"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_peak_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cpu_time_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "retry_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "side_effect_attempt_evidence_sha256": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "side_effect_attempt_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "materiality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["threshold_version", "material_divergence", "max_relative_delta_pct"],
+      "properties": {
+        "threshold_version": {
+          "const": "open_macro_v03_shadow_materiality_v1"
+        },
+        "material_divergence": {
+          "type": "boolean"
+        },
+        "max_relative_delta_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "return_metric_delta_pct": {
+          "type": "number"
+        },
+        "risk_metric_delta_pct": {
+          "type": "number"
+        },
+        "allocation_weight_delta_pct": {
+          "type": "number"
+        },
+        "classification_rate_delta_pct": {
+          "type": "number"
+        },
+        "latency_p95_regression_pct": {
+          "type": "number"
+        },
+        "memory_peak_regression_pct": {
+          "type": "number"
+        },
+        "retry_rate_delta_pct": {
+          "type": "number"
+        }
+      }
+    },
+    "divergence_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missing_outputs",
+        "unexpected_outputs",
+        "mismatch_count",
+        "nan_or_inf_count",
+        "constraint_violations",
+        "invariant_failures"
+      ],
+      "properties": {
+        "missing_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unexpected_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mismatch_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nan_or_inf_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "constraint_violations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invariant_failures": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "runtime_activation": {
+      "const": false
+    },
+    "allow_db_write": {
+      "const": false
+    },
+    "allow_allocator_publish": {
+      "const": false
+    },
+    "production_endpoint_activation": {
+      "const": "none"
+    },
+    "official_result": {
+      "const": false
+    }
+  }
+}

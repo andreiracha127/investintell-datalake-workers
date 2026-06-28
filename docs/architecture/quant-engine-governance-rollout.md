@@ -26,11 +26,45 @@ Governance invariants held throughout: A3 `open_macro_v03`, A4
 
 ## Required CI status checks
 
-GitHub Actions is not the CI executor for this repo. The required quant-engine
-gate is the external GitHub status context `railway/quant-engine-ci`, produced
-from the Railway service `quant-engine-ci-pr4` with `docker/railway-ci/Dockerfile`.
-The workflow file `.github/workflows/quant-engine-ci.yml` was removed so PRs do
-not start GitHub-hosted runners or depend on GitHub Actions billing.
+GitHub Actions is not available as the trigger/status bridge for this repo:
+the account currently cannot start hosted Actions runners because of a billing
+lock. The required quant-engine gate therefore remains Railway-native. The
+Railway service `quant-engine-ci-pr4` is connected to GitHub source
+`andreiracha127/investintell-datalake-workers` on branch `main` and uses
+`docker/railway-ci/Dockerfile` for the actual gate.
+
+Platform evidence from 2026-06-27:
+
+- service: `quant-engine-ci-pr4`
+- service_id: `8f2613c1-66ce-4ec6-a2a7-b5a55290becc`
+- project_id: `1cc3be4b-c600-43ee-9525-69e05818e5fa`
+- production_environment_id: `745b95ea-a8bf-4f24-b202-b22b491b0f10`
+- source repo: `andreiracha127/investintell-datalake-workers`
+- source branch: `main`
+- source-connect verification deployment:
+  `ffba3b4d-07f3-438b-aa5d-a11d83cd496b = SUCCESS`
+- source-connect verification image digest:
+  `sha256:827876c8926b57d08a9fcf93749501d387aa8d66d3dabb44d3204c940a775eda`
+
+To make `railway/quant-engine-ci` appear on every PR-head push without Actions,
+enable Railway PR Environments or the equivalent Railway-native PR deploy/status
+integration for this connected source. Do not reintroduce a GitHub Actions
+runner bridge unless the billing lock is resolved and the team explicitly wants
+GitHub-hosted runners as a trigger shim.
+
+Railway PR Environments are a project-level toggle, not a per-service CLI flag:
+
+1. Open Railway project `investintell-workers`.
+2. Go to Project Settings -> Environments.
+3. Enable PR Environments.
+4. Enable Focused PR Environments so PRs deploy only affected services instead
+   of every connected worker service.
+5. Keep bot PR environments disabled unless dependency-bot CI cost is accepted.
+
+After that toggle, each PR push should create or update an isolated Railway PR
+environment for the connected repo, then Railway should report its deployment
+status back to GitHub. Verify the first PR-head deployment targets the PR SHA,
+not `main`, before requiring the status in branch protection.
 
 Checks covered by the Railway gate:
 
@@ -41,6 +75,8 @@ Checks covered by the Railway gate:
 | Certified input-pack verification | yes | yes |
 | Calibration artifact hash/provenance/governance validation | yes | yes |
 | Railway image build by pinned Dockerfile | yes | yes |
+| Railway source-connected deployment trigger | yes | yes |
+| PR-head status `railway/quant-engine-ci` from Railway-native PR integration | pending (enable PR Environments + verify first PR-head deploy) | pending |
 | SBOM generated | no | release only |
 | Provenance generated | no | release only |
 | Signature/attestation verify | no | release only |
