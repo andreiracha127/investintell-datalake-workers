@@ -1,6 +1,6 @@
 # open_macro_v03 calibration 001
 
-Status: calibration_candidate_validated
+Status: candidate
 
 This note records the candidate calibration pack generated from the post-merge
 Certified Input Pack P0 baseline. PR #4 merged this pack to `main` at
