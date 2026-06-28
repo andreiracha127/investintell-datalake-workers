@@ -480,6 +480,18 @@
     },
     {
       "if": {
+        "properties": { "failure_class": { "const": "run_fingerprint_inconsistent" } },
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "expected_run_fingerprint",
+          "run_fingerprint_evidence_sha256"
+        ]
+      }
+    },
+    {
+      "if": {
         "properties": { "failure_class": { "const": "output_manifest_incomplete" } },
         "required": ["failure_class"]
       },
@@ -531,6 +543,12 @@
       "minLength": 12
     },
     "run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "expected_run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "run_fingerprint_evidence_sha256": {
       "$ref": "#/$defs/sha256Hex"
     },
     "calibration_id": {
