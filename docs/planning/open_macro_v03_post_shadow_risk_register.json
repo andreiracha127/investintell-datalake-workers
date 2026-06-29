@@ -1,0 +1,83 @@
+{
+  "planning_id": "open_macro_v03_post_shadow_planning_001",
+  "status": "planning_only",
+  "risks": [
+    {
+      "id": "P0-001",
+      "priority": "P0",
+      "title": "A5 must remain blocked until explicit approval",
+      "evidence": "docs/shadow/open_macro_v03_shadow_pilot_001.md and artifacts/shadow/open_macro_v03_shadow_pilot_001/acceptance_report.json keep A5=blocked and leave technical_and_quantitative_review_recorded pending.",
+      "mitigation": "PR 7 may create review and preflight decision artifacts only; it must not set A5 unblocked or freeze_ready true."
+    },
+    {
+      "id": "P0-002",
+      "priority": "P0",
+      "title": "No productive side effects allowed in post-shadow planning or PR 7",
+      "evidence": "shadow_job_envelope.schema.json and shadow_result_manifest.schema.json pin runtime_activation=false, allow_db_write=false, allow_allocator_publish=false, production_endpoint_activation=none, official_result=false.",
+      "mitigation": "Keep changes under docs/planning for this branch and under inert artifact/review paths for PR 7."
+    },
+    {
+      "id": "P0-003",
+      "priority": "P0",
+      "title": "Human technical and quantitative review is still blocking",
+      "evidence": "acceptance_report.json marks technical_and_quantitative_review_recorded as pending and blocking even after all automated artifact rules pass.",
+      "mitigation": "PR 7 should produce explicit technical, quantitative, and risk review checklists and a promotion gate matrix."
+    },
+    {
+      "id": "P1-001",
+      "priority": "P1",
+      "title": "Backend contract mirror is stale relative to workers main",
+      "evidence": "Workers main contract bundle is sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a; backend mirror read from investintell-light-quant-engine-contracts pins sha256:a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277.",
+      "mitigation": "Keep PR 7 workers-docs/artifact-review only; schedule backend contract sync in a later dedicated PR before any backend/runtime claim."
+    },
+    {
+      "id": "P1-002",
+      "priority": "P1",
+      "title": "Calibration baseline references remain not certified in the input pack",
+      "evidence": "calibration baseline_comparison.json lists reference_baselines_not_certified_in_pack and institutional_limits_explicitly_unset as final_approval_blockers.",
+      "mitigation": "Treat baseline comparison as review evidence, not final A5 proof; document accepted deltas and unresolved reference limitations in PR 7."
+    },
+    {
+      "id": "P1-003",
+      "priority": "P1",
+      "title": "Railway PR status integration is documented but not proven by this branch",
+      "evidence": "quant-engine-governance-rollout.md says Railway PR Environments/status integration is pending; .github/workflows is empty on main.",
+      "mitigation": "Do not claim deploy success without Railway-backed evidence; require Railway CI evidence before future activation."
+    },
+    {
+      "id": "P1-004",
+      "priority": "P1",
+      "title": "Backend allocator runtime is live and complex",
+      "evidence": "investintell-light-combo portfolio_builder.py contains regime_aware runtime path with quadrant/gate reads, solver preflight, and post-verification.",
+      "mitigation": "Exclude backend/control-plane runtime from PR 7; use a later runtime skeleton PR with feature flag default=false if approved."
+    },
+    {
+      "id": "P2-001",
+      "priority": "P2",
+      "title": "Macro history coverage remains out of scope",
+      "evidence": "docs/architecture/quant-engine-governance-rollout.md lists macro-history-coverage as deferred runtime follow-up.",
+      "mitigation": "Keep as a separate runtime-worker PR; do not mix with A5 preflight artifacts."
+    },
+    {
+      "id": "P2-002",
+      "priority": "P2",
+      "title": "Macro vintage identity remains out of scope",
+      "evidence": "docs/calibration/open_macro_v03_calibration_001.md and governance rollout list macro-vintage-identity as accepted/deferred debt.",
+      "mitigation": "Keep productive snapshot identity semantics unchanged until a dedicated runtime-worker PR."
+    },
+    {
+      "id": "P2-003",
+      "priority": "P2",
+      "title": "Regime gate advisory lock and quadrant staleness debts must not be mixed in",
+      "evidence": "governance rollout lists advisory lock collision and quadrant runtime staleness/read-model items as deferred runtime follow-ups.",
+      "mitigation": "Keep SQL/runtime lock/read-model changes out of PR 7."
+    },
+    {
+      "id": "P3-001",
+      "priority": "P3",
+      "title": "Documentation state names have drift across old docs and current artifacts",
+      "evidence": "AGENTS.md contains older A4 wording, while PR #6 docs/artifacts use A4=shadow_pilot_validated.",
+      "mitigation": "Planning doc should explicitly state that PR #6 artifacts are the post-shadow source for A4 and older docs are historical context."
+    }
+  ]
+}
