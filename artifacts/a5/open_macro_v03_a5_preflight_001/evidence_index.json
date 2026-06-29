@@ -8,7 +8,7 @@
       "artifact_path": "fixtures/input_packs/golden/certified_input_pack/manifest.json",
       "evidence_id": "input_pack_certified_manifest_effective",
       "notes": "Effective certified input pack path. Expected artifacts/input_packs path is absent on this branch; manifest pins input_pack_id open_macro_v03_certified_input_pack_001 and runtime_activation=false.",
-      "sha256": "fd10c68e86ec87bb4652eba6ea1d4a4e867634b6b9f5de8a0e62fbd5b22f81f9",
+      "sha256": "2718f9dfcbbd44ceb88d2644abab8b8d9af06408d818ea0e9d91c47d31dbb665",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -27,7 +27,7 @@
       "evidence_id": "a5_preflight_manifest",
       "notes": "A5 preflight manifest is inert: A5=blocked, runtime_activation=false, freeze_ready=false, official_result=false, no allocator/db/endpoint impact.",
       "sha256": "701ca98b9ed9e5fe6df5556614c1edb78880d36d5f679c196a5a4d6e9470ce38",
-      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "source_commit": "e202632d90902bc8de40ba0e642965f803dd097f",
       "status": "present",
       "verified": true
     },
@@ -45,6 +45,15 @@
       "evidence_id": "calibration_manifest",
       "notes": "Candidate calibration manifest keeps A5=blocked, runtime_activation=false, freeze_ready=false and pins the input pack and contract bundle hashes.",
       "sha256": "7817d268693599298f16edf6476f2b57e98a09e58a171b53170ee83f88877eda",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json",
+      "evidence_id": "calibration_config",
+      "notes": "Calibration config records the out_of_sample window and p0_latest_macro_rates stress window while keeping final approval blocked.",
+      "sha256": "5fd6e0a12de3b6ea34aa1fa718e796a7ed4ae51f757d4a0217bdc8267eec56b8",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -89,7 +98,7 @@
       "artifact_path": "docs/shadow/open_macro_v03_shadow_readiness_001.md",
       "evidence_id": "shadow_readiness_doc",
       "notes": "Readiness doc states no shadow execution, A5 blocked, runtime_activation=false, freeze_ready=false and no productive effects.",
-      "sha256": "dc9f1fbcf17fffc2fae3e27e2949f088bf0e2e34e28d7de94c86071f1b055e29",
+      "sha256": "85edf4b938f1f0e05c52bd9eb0e75abda24de38119322768eb7c71d4930bab34",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -152,7 +161,7 @@
       "artifact_path": "docs/planning/open_macro_v03_post_shadow_planning_001.md",
       "evidence_id": "remote_ci_status_pr7",
       "notes": "PR #7 records Pre-push Remote Railway CI status PASS. Current A5 branch remote CI remains to be captured after this package is committed and pushed.",
-      "sha256": "6ed3ba03770869c55fc4a98cb7dbe6a79e8cb2dbf557391e6df694d90fa67d06",
+      "sha256": "55ddd1b43056e0e511cdc68e57c01838518cf00acd943576c1e0d452ac8542c6",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -215,7 +224,7 @@
       "artifact_path": "docs/planning/open_macro_v03_post_shadow_planning_001.md",
       "evidence_id": "post_shadow_planning_doc",
       "notes": "Planning doc merged through PR #7 and maps future inert A5 preflight path.",
-      "sha256": "6ed3ba03770869c55fc4a98cb7dbe6a79e8cb2dbf557391e6df694d90fa67d06",
+      "sha256": "55ddd1b43056e0e511cdc68e57c01838518cf00acd943576c1e0d452ac8542c6",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -224,7 +233,7 @@
       "artifact_path": "docs/planning/open_macro_v03_post_shadow_risk_register.json",
       "evidence_id": "post_shadow_risk_register",
       "notes": "Risk register keeps A5 blocked and lists runtime/backend/input/calibration/contract debts out of scope.",
-      "sha256": "3bc9ab70908cc92f2677880779feeecdc1dd32950d17f6feea3df8f94ae2db39",
+      "sha256": "736dad25f768fb5819fbcc559fca1362855dd75f87a1b020302e95c59c7f7e7d",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -233,7 +242,7 @@
       "artifact_path": "docs/architecture/quant-engine-governance-rollout.md",
       "evidence_id": "governance_rollout_doc",
       "notes": "Governance rollout says A5 unblocks only under change control after recorded readiness review; runtime activation remains out of scope.",
-      "sha256": "b9ce3834d54cbf74dab3980ad510f5ca7ebd346e36ba9c049c434c50d6c5d81a",
+      "sha256": "2d8a8e33a273fa86ce208a21e4edbeb5a133cfb18ddafe7cbece52420a9b08c6",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -242,7 +251,7 @@
       "artifact_path": "docs/shadow/open_macro_v03_shadow_pilot_001.md",
       "evidence_id": "shadow_pilot_doc",
       "notes": "Pilot doc states artifact-only evidence, no A5, no runtime, no allocator, no DB write, no endpoint activation.",
-      "sha256": "c716748680cedd81cd220d341388f375dcc3f07cb4750cff8d18b0b3119e64ed",
+      "sha256": "97d6c01664c22e2877ead547c21843958eb12d4fe0a73b1dabc7a1b3488e91d2",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -251,7 +260,7 @@
       "artifact_path": "scripts/repeatability_matrix.py",
       "evidence_id": "repeatability_matrix_script",
       "notes": "Script defines host/container jobs matrix and hardened container isolation flags.",
-      "sha256": "d42abcf93f2c4f58bd4955de6961c354004a04b485d83b3444b5a8b22e6a8b54",
+      "sha256": "30493916e1a8ddf8324047cefe2924563c4c65a6935cc7d228f047a9c53af7ad",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -260,7 +269,7 @@
       "artifact_path": "scripts/contract_bundle.py",
       "evidence_id": "contract_bundle_verifier_script",
       "notes": "Verifier exposes the contract_bundle.py verify gate used locally and in Railway CI.",
-      "sha256": "2670b8984f96458c3aef90a9f88db16260080b5e490548a239ebe6dfe64026e3",
+      "sha256": "f9a53f73b5bc1068c1f01d66510c4a8196383377f7ecd3ce542aa82e2a12b789",
       "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
       "status": "present",
       "verified": true
@@ -269,5 +278,5 @@
   "missing_blocking_count": 0,
   "missing_optional_count": 1,
   "overall_status": "present_with_missing_optional",
-  "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6"
+  "source_commit": "e202632d90902bc8de40ba0e642965f803dd097f"
 }

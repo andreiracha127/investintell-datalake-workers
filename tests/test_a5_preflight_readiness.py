@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +17,27 @@ def _json(name: str) -> dict:
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _committed_or_normalized_file_bytes(source_commit: str, artifact_path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "show", f"{source_commit}:{artifact_path}"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode == 0:
+        return result.stdout
+    commit_exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{source_commit}^{{commit}}"],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+    assert not commit_exists, f"{artifact_path} is unavailable at source_commit {source_commit}"
+    return (ROOT / artifact_path).read_bytes().replace(b"\r\n", b"\n")
 
 
 def test_a5_preflight_manifest_keeps_governance_inert() -> None:
@@ -62,6 +85,8 @@ def test_evidence_index_allows_only_nonblocking_optional_missing() -> None:
             assert item["verified"] is True
             assert item["sha256"] and len(item["sha256"]) == 64
             assert (ROOT / item["artifact_path"]).is_file()
+            artifact_bytes = _committed_or_normalized_file_bytes(item["source_commit"], item["artifact_path"])
+            assert hashlib.sha256(artifact_bytes).hexdigest() == item["sha256"]
 
 
 def test_promotion_l4_cannot_pass_or_activate_a5() -> None:
@@ -140,6 +165,29 @@ def test_checklist_evidence_ids_are_declared_in_index() -> None:
         checklist = _json(checklist_name)
         for item in checklist["items"]:
             assert set(item["evidence_ids"]).issubset(evidence_ids)
+
+
+def test_quantitative_window_checks_cite_calibration_config() -> None:
+    evidence_ids = {item["evidence_id"] for item in _json("evidence_index.json")["items"]}
+    quantitative = _json("quantitative_review_checklist.json")
+    items = {item["id"]: item for item in quantitative["items"]}
+    calibration_config = json.loads(
+        (ROOT / "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "calibration_config" in evidence_ids
+    assert items["out_of_sample_evidence_present"]["evidence_ids"] == ["calibration_config"]
+    assert items["stress_windows_evidence_present"]["evidence_ids"] == ["calibration_config"]
+    assert calibration_config["windows"]["out_of_sample"] == {
+        "end": "2026-06-26",
+        "start": "2026-06-26",
+    }
+    assert any(
+        window["name"] == "p0_latest_macro_rates"
+        for window in calibration_config["windows"]["stress"]
+    )
 
 
 def test_docs_report_final_state_and_recommendation() -> None:
