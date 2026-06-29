@@ -140,6 +140,20 @@ EXTERNAL_EXECUTOR_EXPECTED_TOKENS: Final[dict[str, str]] = {
     "writable_mounts": "output",
     "source_tree_writes": "false",
 }
+CONTROL_PLANE_VALIDATOR_EXPECTED_TOKENS: Final[dict[str, str]] = {
+    "runtime_activation": "false",
+    "allow_db_write": "false",
+    "allow_allocator_publish": "false",
+    "official_result": "false",
+    "production_endpoint_activation": "none",
+    "backend_executes_engine": "false",
+    "backend_executes_docker": "false",
+    "backend_executes_subprocess": "false",
+}
+LOG_PINNED_TOKENS: Final[dict[str, str]] = {
+    "A5": "blocked",
+    "freeze_ready": "false",
+}
 LOG_FORBIDDEN_TRUE_KEYS: Final[frozenset[str]] = frozenset(
     (
         "runtime_activation",
@@ -165,6 +179,9 @@ LOG_FORBIDDEN_PRESENCE_KEYS: Final[frozenset[str]] = frozenset(
         "official_db_write_attempt",
         "allocator_publish_attempt",
         "production_endpoint_activation_attempt",
+        "backend_executes_engine_attempt",
+        "backend_executes_docker_attempt",
+        "backend_executes_subprocess_attempt",
     )
 )
 EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = (
@@ -289,6 +306,7 @@ VALIDATION_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "checks",
     )
 )
+VALIDATION_REPORT_CHECK_FIELDS: Final[frozenset[str]] = frozenset(("id", "status"))
 EXECUTOR_ACCEPTANCE_FIELDS: Final[frozenset[str]] = frozenset(
     (
         "schema_version",
@@ -312,6 +330,32 @@ EXECUTOR_ACCEPTANCE_FIELDS: Final[frozenset[str]] = frozenset(
         *PINNED_PROVENANCE,
         *SIDE_EFFECT_PINS,
         *BACKEND_NO_EXEC_PINS,
+    )
+)
+EXECUTOR_ACCEPTANCE_MOUNT_FIELDS: Final[frozenset[str]] = frozenset(("name", "mode"))
+EXECUTOR_RESULT_REFERENCE_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "status",
+        "artifact_uri",
+        "output_artifact_uri",
+        "output_manifest_path",
+        "shadow_result_manifest_path",
+        *SIDE_EFFECT_PINS,
+        *BACKEND_NO_EXEC_PINS,
+    )
+)
+OUTPUT_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "artifact_type",
+        "handshake_id",
+        "shadow_id",
+        "status",
+        "logs_required",
+        "unexpected_outputs",
+        "artifacts",
     )
 )
 REPRODUCIBILITY_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
@@ -363,6 +407,9 @@ NO_SIDE_EFFECTS_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         *SIDE_EFFECT_PINS,
         *BACKEND_NO_EXEC_PINS,
     )
+)
+NO_SIDE_EFFECTS_REPORT_CHECK_FIELDS: Final[frozenset[str]] = frozenset(
+    ("id", "allowed", "status")
 )
 DIVERGENCE_FIELDS: Final[tuple[str, ...]] = (
     "missing_outputs",
@@ -687,6 +734,11 @@ def _validate_mounts(mounts: Any) -> None:
     entries: list[Mapping[str, Any]] = []
     for entry in mounts:
         mapping = _require_mapping(entry, where="executor_acceptance.mounts[]")
+        _reject_unexpected_fields(
+            mapping,
+            EXECUTOR_ACCEPTANCE_MOUNT_FIELDS,
+            where="executor_acceptance.mounts[]",
+        )
         name = mapping.get("name")
         if not isinstance(name, str):
             raise HandshakeValidationError("executor_acceptance.mounts[]: name must be a string")
@@ -882,6 +934,11 @@ def _parse_mount_spec(spec: str) -> tuple[dict[str, str], set[str]]:
 
 
 def validate_executor_result_reference(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(
+        payload,
+        EXECUTOR_RESULT_REFERENCE_FIELDS,
+        where="executor_result_reference",
+    )
     _require_pins(
         payload,
         {
@@ -982,6 +1039,7 @@ def _require_zero_divergence(divergence: Mapping[str, Any]) -> None:
 
 
 def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, OUTPUT_MANIFEST_FIELDS, where="output_manifest")
     _require_pins(
         payload,
         {
@@ -1055,6 +1113,23 @@ def _validate_required_logs(root: Path) -> None:
         if unexpected:
             raise HandshakeValidationError(
                 f"required logs contain contradictory attestation {key}={unexpected}"
+            )
+    for key, expected in LOG_PINNED_TOKENS.items():
+        unexpected = sorted({value for value in values_by_key.get(key, []) if value != expected})
+        if unexpected:
+            raise HandshakeValidationError(
+                f"required logs contain contradictory attestation {key}={unexpected}"
+            )
+    for key, expected in CONTROL_PLANE_VALIDATOR_EXPECTED_TOKENS.items():
+        values = values_by_path_key.get(("logs/control_plane_validator.log", key), [])
+        if not values:
+            raise HandshakeValidationError(
+                f"logs/control_plane_validator.log missing attestation {key}={expected}"
+            )
+        unexpected = sorted({value for value in values if value != expected})
+        if unexpected:
+            raise HandshakeValidationError(
+                f"logs/control_plane_validator.log contains contradictory attestation {key}={unexpected}"
             )
     for key, expected in EXTERNAL_EXECUTOR_EXPECTED_TOKENS.items():
         values = values_by_path_key.get(("logs/external_executor.log", key), [])
@@ -1164,6 +1239,11 @@ def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
     seen: dict[str, Mapping[str, Any]] = {}
     for check in checks:
         entry = _require_mapping(check, where="no_side_effects_report.check")
+        _reject_unexpected_fields(
+            entry,
+            NO_SIDE_EFFECTS_REPORT_CHECK_FIELDS,
+            where="no_side_effects_report.check",
+        )
         check_id = entry.get("id")
         if not isinstance(check_id, str):
             raise HandshakeValidationError("no_side_effects_report.check: id must be a string")
@@ -1202,6 +1282,11 @@ def validate_validation_report(payload: Mapping[str, Any]) -> None:
     seen: set[str] = set()
     for check in checks:
         entry = _require_mapping(check, where="validation_report.check")
+        _reject_unexpected_fields(
+            entry,
+            VALIDATION_REPORT_CHECK_FIELDS,
+            where="validation_report.check",
+        )
         check_id = entry.get("id")
         if not isinstance(check_id, str):
             raise HandshakeValidationError("validation_report.check: id must be a string")

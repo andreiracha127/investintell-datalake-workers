@@ -565,6 +565,12 @@ def test_executor_acceptance_rejects_extra_duplicate_or_malformed_mounts() -> No
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_executor_acceptance(malformed, envelope)
 
+    unexpected_fields = deepcopy(acceptance)
+    unexpected_fields["mounts"][0]["actual_mode"] = "read_write"
+    unexpected_fields["mounts"][0]["source"] = "/"
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_executor_acceptance(unexpected_fields, envelope)
+
 
 def test_executor_result_reference_pins_manifest_paths() -> None:
     reference = _artifact("executor_result_reference.json")
@@ -579,6 +585,22 @@ def test_executor_result_reference_pins_manifest_paths() -> None:
     bad_result_path["shadow_result_manifest_path"] = "stale/shadow_result_manifest.json"
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_executor_result_reference(bad_result_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation_attempt", True),
+        ("official_db_write_attempt", True),
+        ("unexpected_reference_property", "value"),
+    ],
+)
+def test_executor_result_reference_rejects_unexpected_fields(field: str, bad: object) -> None:
+    reference = _artifact("executor_result_reference.json")
+    reference[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_executor_result_reference(reference)
 
 
 def test_shadow_result_manifest_rejects_side_effect_attempt_on_success() -> None:
@@ -713,6 +735,32 @@ def test_output_manifest_requires_logs_and_current_hashes() -> None:
         hs.validate_output_manifest(HANDSHAKE_ROOT, bad_hash)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("official_result", True),
+        ("runtime_activation_attempt", True),
+        ("unexpected_output_manifest_property", "value"),
+    ],
+)
+def test_verify_handshake_rejects_unexpected_output_manifest_fields_after_result_hash_refresh(
+    tmp_path: Path,
+    field: str,
+    bad: object,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    manifest = _json(root / "output_manifest.json")
+    manifest[field] = bad
+    _write_json(root / "output_manifest.json", manifest)
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(hs.HandshakeValidationError, match="output_manifest: unexpected fields"):
+        hs.verify_handshake(root)
+
+
 def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
     root = tmp_path / "handshake"
     shutil.copytree(HANDSHAKE_ROOT, root)
@@ -728,7 +776,15 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
     [
         ("logs/control_plane_validator.log", "runtime_activation_attempt=true"),
         ("logs/control_plane_validator.log", "runtime_activation_attempt=blocked"),
+        ("logs/control_plane_validator.log", "A5=unblocked"),
+        ("logs/control_plane_validator.log", "freeze_ready=true"),
         ("logs/control_plane_validator.log", "allow_db_write=true allow_db_write=false"),
+        ("logs/control_plane_validator.log", "backend_executes_engine_attempt=true"),
+        ("logs/control_plane_validator.log", "backend_executes_engine_attempt=false"),
+        ("logs/control_plane_validator.log", "backend_executes_docker_attempt=true"),
+        ("logs/control_plane_validator.log", "backend_executes_docker_attempt=false"),
+        ("logs/control_plane_validator.log", "backend_executes_subprocess_attempt=true"),
+        ("logs/control_plane_validator.log", "backend_executes_subprocess_attempt=false"),
         ("logs/external_executor.log", "allocator_publish_attempt=true"),
         ("logs/external_executor.log", "allocator_publish_attempt=false"),
         ("logs/external_executor.log", "official_db_write_attempt=1"),
@@ -813,6 +869,45 @@ def test_output_manifest_requires_executor_isolation_attestations_from_executor_
     _refresh_manifest_entry(root, manifest, control_rel)
 
     with pytest.raises(hs.HandshakeValidationError, match="logs/external_executor.log"):
+        hs.validate_output_manifest(root, manifest)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "runtime_activation=false",
+        "allow_db_write=false",
+        "allow_allocator_publish=false",
+        "official_result=false",
+        "production_endpoint_activation=none",
+        "backend_executes_engine=false",
+        "backend_executes_docker=false",
+        "backend_executes_subprocess=false",
+    ],
+)
+def test_output_manifest_requires_control_plane_attestations_from_control_plane_log(
+    tmp_path: Path,
+    token: str,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    control_rel = "logs/control_plane_validator.log"
+    executor_rel = "logs/external_executor.log"
+    control_log = root / control_rel
+    executor_log = root / executor_rel
+    control_log.write_text(
+        control_log.read_text(encoding="utf-8").replace(f" {token}", ""),
+        encoding="utf-8",
+    )
+    executor_log.write_text(
+        executor_log.read_text(encoding="utf-8") + f" {token}\n",
+        encoding="utf-8",
+    )
+    manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, manifest, control_rel)
+    _refresh_manifest_entry(root, manifest, executor_rel)
+
+    with pytest.raises(hs.HandshakeValidationError, match="logs/control_plane_validator.log"):
         hs.validate_output_manifest(root, manifest)
 
 
@@ -938,6 +1033,14 @@ def test_no_side_effects_report_rejects_unexpected_top_level_fields(
         hs.validate_no_side_effects_report(report)
 
 
+def test_no_side_effects_report_rejects_unexpected_check_fields() -> None:
+    report = _artifact("no_side_effects_report.json")
+    report["checks"][0]["observed"] = True
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_no_side_effects_report(report)
+
+
 def test_validation_report_requires_green_expected_checks() -> None:
     report = _artifact("validation_report.json")
     hs.validate_validation_report(report)
@@ -973,6 +1076,22 @@ def test_validation_report_rejects_unexpected_governance_fields(
 ) -> None:
     report = _artifact("validation_report.json")
     report[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_validation_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("actual", "fail"),
+        ("observed", "missing"),
+        ("unexpected_check_property", "value"),
+    ],
+)
+def test_validation_report_rejects_unexpected_check_fields(field: str, bad: object) -> None:
+    report = _artifact("validation_report.json")
+    report["checks"][0][field] = bad
 
     with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
         hs.validate_validation_report(report)
