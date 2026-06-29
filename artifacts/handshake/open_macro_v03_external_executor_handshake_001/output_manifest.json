@@ -2,13 +2,13 @@
   "artifact_type": "external_executor_handshake_output_manifest",
   "artifacts": [
     {"bytes": 1624, "path": "control_plane_request.json", "sha256": "1fa3c10f56a5291a4e2aa89760511e50b6176ecc4d846e4aed49b751ea824780"},
-    {"bytes": 2253, "path": "executor_acceptance.json", "sha256": "fcefe6573b5ff8c5ae879d65f9fe9dcf5f3caadacbd620ecc6f9eba2161e5422"},
+    {"bytes": 2358, "path": "executor_acceptance.json", "sha256": "f0b58819a4545670ee8614aaefebd20cb6a5088ebc26fbd688d40ec4eb41457a"},
     {"bytes": 800, "path": "executor_result_reference.json", "sha256": "4a7d14a5a5e411f0e3dfaab3ffcf9c409fe7a19f2531e2cc7e1f3ced2cfd84eb"},
     {"bytes": 1392, "path": "handshake_report.md", "sha256": "fa5249a50274e0ce79c690b866d4fc9b63d38773ebd62ccdeb812c430ec5e00c"},
     {"bytes": 258, "path": "logs/control_plane_validator.log", "sha256": "76f046d1a2948396e9e03f6346423dbe2f799c787b92164e235a94b4ab2b75b4"},
     {"bytes": 270, "path": "logs/external_executor.log", "sha256": "89634c1d05076e707b67cbf2cb1a0cb9fa37c783aa58b610edcf6bf0d3ec48a0"},
     {"bytes": 1122, "path": "no_side_effects_report.json", "sha256": "da1a9bd26e0cdecbdd755da4bc11d2bfed712fc5a25f9643d2ea44ac081bca58"},
-    {"bytes": 1584, "path": "reproducibility_report.json", "sha256": "393b4b4d6c3fcff861863a4c201506e90fe9235bcec837ce36f3ee8b6ad3b038"},
+    {"bytes": 2408, "path": "reproducibility_report.json", "sha256": "e9ab75c9744f1063103c86fa8eb1ec09acd52a7a3fa71d854f42991fa3525c9e"},
     {"bytes": 1357, "path": "shadow_job_envelope.json", "sha256": "3b875786f3fdf534c7e8d4c107fc55a009f9c0cc9d7ae07dabd4105f7d833388"},
     {"bytes": 655, "path": "validation_report.json", "sha256": "688c1f4ae1397f4efce007dacdd2bcab7f8ee874c670430af8ceb3c7bb6d663f"}
   ],

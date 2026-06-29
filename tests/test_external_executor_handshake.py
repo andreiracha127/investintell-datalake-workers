@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
@@ -56,7 +57,10 @@ def test_shadow_result_manifest_validates_against_shadow_schema() -> None:
     jsonschema.validate(result, schema)
     hs.validate_shadow_result_manifest(
         result,
-        output_manifest_sha256=hs.file_sha256(HANDSHAKE_ROOT / "output_manifest.json"),
+        evidence_hashes={
+            field: hs.file_sha256(HANDSHAKE_ROOT / rel)
+            for field, rel in hs.SHADOW_RESULT_EVIDENCE_HASH_FILES.items()
+        },
     )
 
 
@@ -149,6 +153,69 @@ def test_executor_acceptance_requires_docker_network_none() -> None:
         hs.validate_executor_acceptance(acceptance, envelope)
 
 
+def test_executor_acceptance_rejects_network_flags_after_image() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    network_index = policy.index("--network")
+    del policy[network_index : network_index + 2]
+    acceptance["docker_run_policy"] = [*policy, "--network", "none"]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_rejects_multiple_network_flags() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    image_index = len(policy) - 1
+    acceptance["docker_run_policy"] = [*policy[:image_index], "--network", "bridge", *policy[image_index:]]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize("image", [None, "investintell/quant-engine:latest", "investintell/quant-engine@sha256:" + "f" * 64])
+def test_executor_acceptance_requires_pinned_matching_image(image: str | None) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    acceptance["docker_run_policy"] = policy[:-1] if image is None else [*policy[:-1], image]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "mount_spec",
+    [
+        "type=bind,src=/input_pack,dst=/input_pack",
+        "type=bind,src=/calibration,dst=/calibration",
+        "type=bind,src=/contracts,dst=/contracts",
+    ],
+)
+def test_executor_acceptance_requires_readonly_input_bind_flags(mount_spec: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    policy[policy.index(f"{mount_spec},readonly")] = mount_spec
+    acceptance["docker_run_policy"] = policy
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_accepts_ro_input_bind_alias() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["docker_run_policy"] = [
+        token.replace(",readonly", ",ro") for token in acceptance["docker_run_policy"]
+    ]
+
+    hs.validate_executor_acceptance(acceptance, envelope)
+
+
 def test_executor_acceptance_requires_output_only_writable_mount() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
@@ -161,6 +228,41 @@ def test_executor_acceptance_requires_output_only_writable_mount() -> None:
 
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_rejects_extra_duplicate_or_malformed_mounts() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+
+    extra = deepcopy(acceptance)
+    extra["mounts"].append({"name": "host_root", "mode": "read_only"})
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(extra, envelope)
+
+    duplicate = deepcopy(acceptance)
+    duplicate["mounts"].append({"name": "input_pack", "mode": "read_only"})
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(duplicate, envelope)
+
+    malformed = deepcopy(acceptance)
+    malformed["mounts"].append("input_pack")
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(malformed, envelope)
+
+
+def test_executor_result_reference_pins_manifest_paths() -> None:
+    reference = _artifact("executor_result_reference.json")
+    hs.validate_executor_result_reference(reference)
+
+    bad_output_path = deepcopy(reference)
+    bad_output_path["output_manifest_path"] = "stale/output_manifest.json"
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_result_reference(bad_output_path)
+
+    bad_result_path = deepcopy(reference)
+    bad_result_path["shadow_result_manifest_path"] = "stale/shadow_result_manifest.json"
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_result_reference(bad_result_path)
 
 
 def test_shadow_result_manifest_rejects_side_effect_attempt_on_success() -> None:
@@ -180,6 +282,79 @@ def test_shadow_result_manifest_rejects_non_zero_divergence() -> None:
         hs.validate_shadow_result_manifest(result)
 
 
+@pytest.mark.parametrize("field", ("started_at", "finished_at", "duration_ms", "memory_peak_bytes", "cpu_time_ms"))
+def test_shadow_result_manifest_requires_success_metadata(field: str) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    del result[field]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_shadow_result_manifest(result)
+
+
+def test_shadow_result_manifest_rejects_inconsistent_duration_window() -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result["finished_at"] = "2026-06-29T16:59:59Z"
+    with pytest.raises(hs.HandshakeValidationError, match="finished_at"):
+        hs.validate_shadow_result_manifest(result)
+
+    result = _artifact("shadow_result_manifest.json")
+    result["duration_ms"] = 1
+    with pytest.raises(hs.HandshakeValidationError, match="duration_ms"):
+        hs.validate_shadow_result_manifest(result)
+
+
+@pytest.mark.parametrize("field", hs.SHADOW_RESULT_EVIDENCE_HASH_FILES)
+def test_shadow_result_manifest_binds_evidence_hashes(field: str) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result[field] = "0" * 64
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_shadow_result_manifest(
+            result,
+            evidence_hashes={
+                key: hs.file_sha256(HANDSHAKE_ROOT / rel)
+                for key, rel in hs.SHADOW_RESULT_EVIDENCE_HASH_FILES.items()
+            },
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "return_metric_delta_pct",
+        "risk_metric_delta_pct",
+        "allocation_weight_delta_pct",
+        "classification_rate_delta_pct",
+        "latency_p95_regression_pct",
+        "memory_peak_regression_pct",
+        "retry_rate_delta_pct",
+    ],
+)
+def test_shadow_result_manifest_rejects_non_zero_materiality_delta(field: str) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result["materiality_summary"][field] = 0.1
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_shadow_result_manifest(result)
+
+
+def test_handshake_rejects_boolean_values_for_numeric_pins() -> None:
+    request = _artifact("control_plane_request.json")
+    request["schema_version"] = True
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_control_plane_request(request)
+
+    result = _artifact("shadow_result_manifest.json")
+    result["divergence_summary"]["mismatch_count"] = False
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_shadow_result_manifest(result)
+
+    result = _artifact("shadow_result_manifest.json")
+    result["materiality_summary"]["max_relative_delta_pct"] = False
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_shadow_result_manifest(result)
+
+
 def test_output_manifest_requires_logs_and_current_hashes() -> None:
     manifest = _artifact("output_manifest.json")
     hs.validate_output_manifest(HANDSHAKE_ROOT, manifest)
@@ -195,6 +370,16 @@ def test_output_manifest_requires_logs_and_current_hashes() -> None:
         hs.validate_output_manifest(HANDSHAKE_ROOT, bad_hash)
 
 
+def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    manifest = _json(root / "output_manifest.json")
+    (root / "logs" / "extra.log").write_text("unexpected\n", encoding="utf-8")
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected files on disk"):
+        hs.validate_output_manifest(root, manifest)
+
+
 def test_reproducibility_report_requires_green_jobs_matrix() -> None:
     report = _artifact("reproducibility_report.json")
     hs.validate_reproducibility_report(report)
@@ -205,6 +390,9 @@ def test_reproducibility_report_requires_green_jobs_matrix() -> None:
         ("expected_run_count", 7),
         ("missing", ["host_jobs1_r0"]),
         ("unexpected", ["host_jobs8_r0"]),
+        ("missing_hashes", ["host_jobs1_r0"]),
+        ("unexpected_hashes", ["host_jobs8_r0"]),
+        ("output_manifest_sha256_by_run", {label: "0" * 64 for label in hs.EXPECTED_LABELS}),
         ("run_hash_mismatches", ["container_jobs1_r0"]),
         ("duplicates", 1),
         ("mismatch_count", 1),
@@ -218,6 +406,55 @@ def test_reproducibility_report_requires_green_jobs_matrix() -> None:
         broken[field] = bad
         with pytest.raises(hs.HandshakeValidationError):
             hs.validate_reproducibility_report(broken)
+
+
+@pytest.mark.parametrize("field", ("missing_hashes", "unexpected_hashes", "output_manifest_sha256_by_run"))
+def test_reproducibility_report_requires_hash_membership_evidence(field: str) -> None:
+    report = _artifact("reproducibility_report.json")
+    del report[field]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_reproducibility_report(report)
+
+
+def test_no_side_effects_report_requires_expected_checks() -> None:
+    report = _artifact("no_side_effects_report.json")
+    hs.validate_no_side_effects_report(report)
+
+    missing = deepcopy(report)
+    missing["checks"] = [check for check in missing["checks"] if check["id"] != "backend_docker_execution"]
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_no_side_effects_report(missing)
+
+    unexpected = deepcopy(report)
+    unexpected["checks"].append({"id": "unrelated_check", "allowed": False, "status": "pass"})
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_no_side_effects_report(unexpected)
+
+    duplicate = deepcopy(report)
+    duplicate["checks"].append(deepcopy(duplicate["checks"][0]))
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_no_side_effects_report(duplicate)
+
+
+def test_validation_report_requires_green_expected_checks() -> None:
+    report = _artifact("validation_report.json")
+    hs.validate_validation_report(report)
+
+    missing = deepcopy(report)
+    missing["checks"] = [check for check in missing["checks"] if check["id"] != "logs_present"]
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_validation_report(missing)
+
+    failed = deepcopy(report)
+    failed["checks"][0]["status"] = "fail"
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_validation_report(failed)
+
+    empty = deepcopy(report)
+    empty["checks"] = []
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_validation_report(empty)
 
 
 def test_feature_flag_default_remains_false() -> None:

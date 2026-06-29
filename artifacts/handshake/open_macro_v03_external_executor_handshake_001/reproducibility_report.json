@@ -36,9 +36,20 @@
   "jobs_matrix": [1, 4],
   "mismatch_count": 0,
   "missing": [],
+  "missing_hashes": [],
   "network": "none",
   "ok": true,
   "output_mount": "read_write",
+  "output_manifest_sha256_by_run": {
+    "container_jobs1_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs1_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs4_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs4_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs1_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs1_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs4_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs4_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+  },
   "path_independence": true,
   "repeat_runs_per_mode": 2,
   "run_count": 8,
@@ -47,5 +58,6 @@
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001",
   "unexpected": [],
+  "unexpected_hashes": [],
   "writable_mounts": ["output"]
 }

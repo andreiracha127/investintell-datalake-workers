@@ -7,6 +7,7 @@ backend routes, allocator code, or quant-engine runtime paths.
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -28,6 +29,7 @@ ENGINE_COMMIT: Final = "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
 ENGINE_IMAGE_DIGEST: Final = "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
 RUN_FINGERPRINT: Final = "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106"
 ENVELOPE_AS_OF: Final = "2026-06-26"
+EXPECTED_RUN_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
 
 REQUEST_ID: Final = "req-open-macro-v03-external-executor-handshake-001"
 CORRELATION_ID: Final = "corr-open-macro-v03-external-executor-handshake-001"
@@ -80,6 +82,77 @@ ROOT_REQUIRED_FILES: Final[tuple[str, ...]] = (
     "handshake_report.md",
     *LOGS_REQUIRED,
 )
+EXPECTED_MOUNT_NAMES: Final[tuple[str, ...]] = (
+    "input_pack",
+    "calibration",
+    "contract_bundle",
+    "output",
+)
+EXPECTED_INPUT_BIND_TARGETS: Final[frozenset[str]] = frozenset(
+    ("/input_pack", "/calibration", "/contracts")
+)
+DOCKER_RUN_OPTIONS_WITH_VALUE: Final[frozenset[str]] = frozenset(
+    (
+        "--add-host",
+        "--cap-add",
+        "--cap-drop",
+        "--cidfile",
+        "--cpus",
+        "--device",
+        "--dns",
+        "--dns-search",
+        "--entrypoint",
+        "--env",
+        "--env-file",
+        "--group-add",
+        "--hostname",
+        "--ipc",
+        "--label",
+        "--log-driver",
+        "--log-opt",
+        "--memory",
+        "--mount",
+        "--name",
+        "--net",
+        "--network",
+        "--pid",
+        "--platform",
+        "--pull",
+        "--restart",
+        "--security-opt",
+        "--stop-signal",
+        "--stop-timeout",
+        "--ulimit",
+        "--user",
+        "--userns",
+        "--volume",
+        "--workdir",
+        "-e",
+        "-l",
+        "-m",
+        "-u",
+        "-v",
+        "-w",
+    )
+)
+EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = (
+    "runtime_activation",
+    "official_result",
+    "db_write",
+    "allocator_publish",
+    "production_endpoint_activation",
+    "backend_engine_execution",
+    "backend_docker_execution",
+    "backend_subprocess_execution",
+)
+EXPECTED_VALIDATION_CHECK_IDS: Final[tuple[str, ...]] = (
+    "control_plane_request_valid",
+    "shadow_job_envelope_valid",
+    "executor_acceptance_valid",
+    "no_side_effects",
+    "reproducibility_reference_green",
+    "logs_present",
+)
 SIDE_EFFECT_PINS: Final[dict[str, object]] = {
     "runtime_activation": False,
     "A5": "blocked",
@@ -115,6 +188,26 @@ RESULT_PROVENANCE: Final[dict[str, object]] = {
     "input_pack_sha256": INPUT_PACK_SHA256,
     "engine_commit": ENGINE_COMMIT,
     "engine_image_digest": ENGINE_IMAGE_DIGEST,
+}
+MATERIALITY_PINS: Final[dict[str, object]] = {
+    "threshold_version": "open_macro_v03_shadow_materiality_v1",
+    "material_divergence": False,
+    "max_relative_delta_pct": 0.0,
+    "return_metric_delta_pct": 0.0,
+    "risk_metric_delta_pct": 0.0,
+    "allocation_weight_delta_pct": 0.0,
+    "classification_rate_delta_pct": 0.0,
+    "latency_p95_regression_pct": 0.0,
+    "memory_peak_regression_pct": 0.0,
+    "retry_rate_delta_pct": 0.0,
+}
+SHADOW_RESULT_EVIDENCE_HASH_FILES: Final[dict[str, str]] = {
+    "output_manifest_sha256": "output_manifest.json",
+    "reproducibility_report_sha256": "reproducibility_report.json",
+    # The handshake evidence bundle maps result-manifest evidence slots onto the
+    # local validation reports that replace pilot invariant/baseline reports.
+    "invariant_report_sha256": "no_side_effects_report.json",
+    "baseline_comparison_sha256": "validation_report.json",
 }
 
 
@@ -183,7 +276,12 @@ def _require_mapping(payload: Any, *, where: str) -> Mapping[str, Any]:
 
 def _require_equal(payload: Mapping[str, Any], key: str, expected: object, *, where: str) -> None:
     actual = payload.get(key)
-    matched = actual is expected if isinstance(expected, bool) else actual == expected
+    if isinstance(expected, bool):
+        matched = actual is expected
+    elif isinstance(expected, (int, float)):
+        matched = type(actual) is type(expected) and actual == expected
+    else:
+        matched = actual == expected
     if not matched:
         raise HandshakeValidationError(f"{where}: {key} {actual!r} != {expected!r}")
 
@@ -326,13 +424,32 @@ def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[s
         if payload.get(key) != envelope.get(key):
             raise HandshakeValidationError(f"executor_acceptance: envelope mismatch for {key}")
     _validate_mounts(payload.get("mounts"))
-    _validate_docker_run_policy(payload.get("docker_run_policy"))
+    _validate_docker_run_policy(
+        payload.get("docker_run_policy"),
+        expected_image_digest=str(payload["engine_image_digest"]),
+    )
 
 
 def _validate_mounts(mounts: Any) -> None:
     if not isinstance(mounts, list):
         raise HandshakeValidationError("executor_acceptance.mounts must be a list")
-    by_name = {entry.get("name"): entry for entry in mounts if isinstance(entry, Mapping)}
+    names: list[str] = []
+    entries: list[Mapping[str, Any]] = []
+    for entry in mounts:
+        mapping = _require_mapping(entry, where="executor_acceptance.mounts[]")
+        name = mapping.get("name")
+        if not isinstance(name, str):
+            raise HandshakeValidationError("executor_acceptance.mounts[]: name must be a string")
+        names.append(name)
+        entries.append(mapping)
+    duplicates = sorted({name for name in names if names.count(name) > 1})
+    if duplicates:
+        raise HandshakeValidationError(f"executor_acceptance: duplicate mounts {duplicates}")
+    if set(names) != set(EXPECTED_MOUNT_NAMES):
+        raise HandshakeValidationError(
+            f"executor_acceptance: mount names must be exactly {sorted(EXPECTED_MOUNT_NAMES)}"
+        )
+    by_name = {entry["name"]: entry for entry in entries}
     for name in ("input_pack", "calibration", "contract_bundle"):
         if by_name.get(name, {}).get("mode") != "read_only":
             raise HandshakeValidationError(f"executor_acceptance: {name} mount must be read_only")
@@ -343,14 +460,143 @@ def _validate_mounts(mounts: Any) -> None:
         raise HandshakeValidationError(f"executor_acceptance: unexpected writable mounts {writable}")
 
 
-def _validate_docker_run_policy(policy: Any) -> None:
-    if not isinstance(policy, list) or "--network" not in policy:
+def _validate_docker_run_policy(policy: Any, *, expected_image_digest: str) -> None:
+    if not isinstance(policy, list) or any(not isinstance(token, str) for token in policy):
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy must be a token list")
+    options, image, command_args = _split_docker_run_policy(policy)
+
+    network_values = _network_values(options)
+    if network_values != ["none"]:
         raise HandshakeValidationError("executor_acceptance: docker_run_policy must require --network none")
-    network_index = policy.index("--network")
-    if network_index + 1 >= len(policy) or policy[network_index + 1] != "none":
-        raise HandshakeValidationError("executor_acceptance: docker_run_policy must require --network none")
-    if "--read-only" not in policy:
+    if any(_is_network_flag(token) for token in command_args):
+        raise HandshakeValidationError("executor_acceptance: docker network flags must appear before image")
+    if "--read-only" not in options:
         raise HandshakeValidationError("executor_acceptance: docker_run_policy must require --read-only")
+    if "@" not in image:
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy image must be pinned by digest")
+    image_digest = image.rsplit("@", 1)[1]
+    if image_digest != expected_image_digest:
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy image digest mismatch")
+    _validate_input_bind_mounts(options)
+
+
+def _split_docker_run_policy(policy: list[str]) -> tuple[list[str], str, list[str]]:
+    if policy[:2] != ["docker", "run"]:
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy must start with docker run")
+    options: list[str] = []
+    index = 2
+    while index < len(policy):
+        token = policy[index]
+        if token == "--":
+            index += 1
+            break
+        if not token.startswith("-"):
+            break
+        options.append(token)
+        option_name = token.split("=", 1)[0]
+        if "=" in token:
+            index += 1
+        elif option_name in DOCKER_RUN_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(policy):
+                raise HandshakeValidationError(
+                    f"executor_acceptance: docker option {token} requires a value"
+                )
+            options.append(policy[index + 1])
+            index += 2
+        else:
+            index += 1
+    if index >= len(policy):
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy must include pinned image")
+    return options, policy[index], policy[index + 1 :]
+
+
+def _is_network_flag(token: str) -> bool:
+    return token in {"--network", "--net"} or token.startswith("--network=") or token.startswith("--net=")
+
+
+def _network_values(options: Sequence[str]) -> list[str | None]:
+    values: list[str | None] = []
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token in {"--network", "--net"}:
+            values.append(options[index + 1] if index + 1 < len(options) else None)
+            index += 2
+        elif token.startswith("--network=") or token.startswith("--net="):
+            values.append(token.split("=", 1)[1])
+            index += 1
+        else:
+            index += 1
+    return values
+
+
+def _validate_input_bind_mounts(options: Sequence[str]) -> None:
+    seen_targets: set[str] = set()
+    for spec in _docker_mount_specs(options):
+        attrs, flags = _parse_mount_spec(spec)
+        if attrs.get("type") != "bind":
+            continue
+        target = attrs.get("dst") or attrs.get("destination") or attrs.get("target")
+        if target in EXPECTED_INPUT_BIND_TARGETS:
+            readonly = (
+                "readonly" in flags
+                or "ro" in flags
+                or attrs.get("readonly") in {"true", "1"}
+                or attrs.get("ro") in {"true", "1"}
+            )
+            if not readonly:
+                raise HandshakeValidationError(
+                    f"executor_acceptance: input bind mount {target} must be readonly"
+                )
+            seen_targets.add(target)
+    missing = sorted(EXPECTED_INPUT_BIND_TARGETS - seen_targets)
+    if missing:
+        raise HandshakeValidationError(f"executor_acceptance: docker_run_policy missing input binds {missing}")
+
+
+def _docker_mount_specs(options: Sequence[str]) -> list[str]:
+    specs: list[str] = []
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token == "--mount":
+            specs.append(options[index + 1])
+            index += 2
+        elif token.startswith("--mount="):
+            specs.append(token.split("=", 1)[1])
+            index += 1
+        elif token in {"--volume", "-v"}:
+            specs.append(_volume_to_mount_spec(options[index + 1]))
+            index += 2
+        elif token.startswith("--volume="):
+            specs.append(_volume_to_mount_spec(token.split("=", 1)[1]))
+            index += 1
+        else:
+            index += 1
+    return specs
+
+
+def _volume_to_mount_spec(spec: str) -> str:
+    parts = spec.split(":")
+    if len(parts) < 2:
+        return ""
+    flags = ",".join(parts[2:])
+    return f"type=bind,dst={parts[1]}{',' + flags if flags else ''}"
+
+
+def _parse_mount_spec(spec: str) -> tuple[dict[str, str], set[str]]:
+    attrs: dict[str, str] = {}
+    flags: set[str] = set()
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        key, sep, value = part.partition("=")
+        if sep:
+            attrs[key] = value
+        else:
+            flags.add(part)
+    return attrs, flags
 
 
 def validate_executor_result_reference(payload: Mapping[str, Any]) -> None:
@@ -362,6 +608,8 @@ def validate_executor_result_reference(payload: Mapping[str, Any]) -> None:
             "status": "artifact_reference_only",
             "artifact_uri": OUTPUT_ARTIFACT_URI,
             "output_artifact_uri": OUTPUT_ARTIFACT_URI,
+            "output_manifest_path": "output_manifest.json",
+            "shadow_result_manifest_path": "shadow_result_manifest.json",
             **SIDE_EFFECT_PINS,
             **BACKEND_NO_EXEC_PINS,
         },
@@ -370,7 +618,7 @@ def validate_executor_result_reference(payload: Mapping[str, Any]) -> None:
 
 
 def validate_shadow_result_manifest(
-    payload: Mapping[str, Any], *, output_manifest_sha256: str | None = None
+    payload: Mapping[str, Any], *, evidence_hashes: Mapping[str, str] | None = None
 ) -> None:
     _require_pins(
         payload,
@@ -389,20 +637,55 @@ def validate_shadow_result_manifest(
         },
         where="shadow_result_manifest",
     )
+    _require_fields(
+        payload,
+        ("started_at", "finished_at", "duration_ms", "memory_peak_bytes", "cpu_time_ms"),
+        where="shadow_result_manifest",
+    )
     _require_artifact_uri(payload.get("output_artifact_uri"), where="shadow_result_manifest")
+    _validate_result_timing(payload)
+    _require_int(payload, "memory_peak_bytes", where="shadow_result_manifest", minimum=0)
+    _require_int(payload, "cpu_time_ms", where="shadow_result_manifest", minimum=0)
     if "failure_class" in payload or "side_effect_attempt_count" in payload:
         raise HandshakeValidationError("shadow_result_manifest: success cannot carry failure evidence")
-    if output_manifest_sha256 is not None:
-        _require_equal(
-            payload,
-            "output_manifest_sha256",
-            output_manifest_sha256,
-            where="shadow_result_manifest",
-        )
+    if evidence_hashes is not None:
+        for field, expected_hash in evidence_hashes.items():
+            _require_equal(payload, field, expected_hash, where="shadow_result_manifest")
     _require_zero_divergence(_require_mapping(payload.get("divergence_summary"), where="divergence_summary"))
     materiality = _require_mapping(payload.get("materiality_summary"), where="materiality_summary")
-    _require_equal(materiality, "material_divergence", False, where="materiality_summary")
-    _require_equal(materiality, "max_relative_delta_pct", 0.0, where="materiality_summary")
+    _require_pins(materiality, MATERIALITY_PINS, where="materiality_summary")
+
+
+def _validate_result_timing(payload: Mapping[str, Any]) -> None:
+    started_at = _parse_utc_timestamp(payload.get("started_at"), where="shadow_result_manifest.started_at")
+    finished_at = _parse_utc_timestamp(payload.get("finished_at"), where="shadow_result_manifest.finished_at")
+    duration_ms = _require_int(payload, "duration_ms", where="shadow_result_manifest", minimum=1)
+    if finished_at <= started_at:
+        raise HandshakeValidationError("shadow_result_manifest: finished_at must be after started_at")
+    expected_duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+    if duration_ms != expected_duration_ms:
+        raise HandshakeValidationError(
+            f"shadow_result_manifest: duration_ms must match timestamp delta {expected_duration_ms}"
+        )
+
+
+def _parse_utc_timestamp(value: Any, *, where: str) -> dt.datetime:
+    if not isinstance(value, str):
+        raise HandshakeValidationError(f"{where}: expected UTC timestamp string")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HandshakeValidationError(f"{where}: invalid UTC timestamp {value!r}") from exc
+    if parsed.tzinfo is None:
+        raise HandshakeValidationError(f"{where}: timestamp must include timezone")
+    return parsed.astimezone(dt.UTC)
+
+
+def _require_int(payload: Mapping[str, Any], key: str, *, where: str, minimum: int) -> int:
+    value = payload.get(key)
+    if type(value) is not int or value < minimum:
+        raise HandshakeValidationError(f"{where}: {key} must be an int >= {minimum}")
+    return value
 
 
 def _require_zero_divergence(divergence: Mapping[str, Any]) -> None:
@@ -434,11 +717,22 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, list):
         raise HandshakeValidationError("output_manifest.artifacts must be a list")
-    by_path = {entry.get("path"): entry for entry in artifacts if isinstance(entry, Mapping)}
+    by_path: dict[str, Mapping[str, Any]] = {}
+    for entry in artifacts:
+        mapping = _require_mapping(entry, where="output_manifest.artifacts[]")
+        rel = mapping.get("path")
+        if not isinstance(rel, str):
+            raise HandshakeValidationError("output_manifest.artifacts[]: path must be a string")
+        if rel in by_path:
+            raise HandshakeValidationError(f"output_manifest duplicate artifact path: {rel}")
+        by_path[rel] = mapping
     if set(by_path) != set(OUTPUT_ARTIFACT_PATHS):
         raise HandshakeValidationError(
             f"output_manifest artifacts mismatch: {sorted(set(by_path) ^ set(OUTPUT_ARTIFACT_PATHS))}"
         )
+    unexpected_files = _unexpected_output_files(root)
+    if unexpected_files:
+        raise HandshakeValidationError(f"output_manifest unexpected files on disk: {unexpected_files}")
     for rel in OUTPUT_ARTIFACT_PATHS:
         entry = _require_mapping(by_path[rel], where=f"output_manifest[{rel}]")
         path = _ensure_child(root / rel, root)
@@ -449,6 +743,15 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
     for rel in LOGS_REQUIRED:
         if rel not in by_path:
             raise HandshakeValidationError(f"output_manifest missing required log {rel}")
+
+
+def _unexpected_output_files(root: Path) -> list[str]:
+    allowed = set(ROOT_REQUIRED_FILES) | set(OUTPUT_ARTIFACT_PATHS)
+    return sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and path.relative_to(root).as_posix() not in allowed
+    )
 
 
 def _ensure_child(path: Path, root: Path) -> Path:
@@ -478,6 +781,11 @@ def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
             "expected_labels": list(EXPECTED_LABELS),
             "missing": [],
             "unexpected": [],
+            "missing_hashes": [],
+            "unexpected_hashes": [],
+            "output_manifest_sha256_by_run": {
+                label: EXPECTED_RUN_OUTPUT_MANIFEST_SHA256 for label in EXPECTED_LABELS
+            },
             "run_hash_mismatches": [],
             "duplicates": 0,
             "mismatch_count": 0,
@@ -518,10 +826,23 @@ def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
     checks = payload.get("checks")
     if not isinstance(checks, list) or not checks:
         raise HandshakeValidationError("no_side_effects_report checks must be a non-empty list")
+    seen: dict[str, Mapping[str, Any]] = {}
     for check in checks:
         entry = _require_mapping(check, where="no_side_effects_report.check")
+        check_id = entry.get("id")
+        if not isinstance(check_id, str):
+            raise HandshakeValidationError("no_side_effects_report.check: id must be a string")
+        if check_id in seen:
+            raise HandshakeValidationError(f"no_side_effects_report duplicate check id: {check_id}")
+        seen[check_id] = entry
         _require_equal(entry, "allowed", False, where="no_side_effects_report.check")
         _require_equal(entry, "status", "pass", where="no_side_effects_report.check")
+    if set(seen) != set(EXPECTED_NO_SIDE_EFFECT_CHECK_IDS):
+        missing = sorted(set(EXPECTED_NO_SIDE_EFFECT_CHECK_IDS) - set(seen))
+        unexpected = sorted(set(seen) - set(EXPECTED_NO_SIDE_EFFECT_CHECK_IDS))
+        raise HandshakeValidationError(
+            f"no_side_effects_report check ids mismatch: missing={missing} unexpected={unexpected}"
+        )
 
 
 def validate_validation_report(payload: Mapping[str, Any]) -> None:
@@ -539,6 +860,22 @@ def validate_validation_report(payload: Mapping[str, Any]) -> None:
         },
         where="validation_report",
     )
+    checks = payload.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise HandshakeValidationError("validation_report checks must be a non-empty list")
+    seen: set[str] = set()
+    for check in checks:
+        entry = _require_mapping(check, where="validation_report.check")
+        check_id = entry.get("id")
+        if not isinstance(check_id, str):
+            raise HandshakeValidationError("validation_report.check: id must be a string")
+        if check_id in seen:
+            raise HandshakeValidationError(f"validation_report duplicate check id: {check_id}")
+        seen.add(check_id)
+        _require_equal(entry, "status", "pass", where="validation_report.check")
+    missing = sorted(set(EXPECTED_VALIDATION_CHECK_IDS) - seen)
+    if missing:
+        raise HandshakeValidationError(f"validation_report missing expected checks {missing}")
 
 
 def verify_handshake(root: Path | None = None) -> dict[str, Any]:
@@ -577,7 +914,13 @@ def verify_handshake(root: Path | None = None) -> dict[str, Any]:
     validate_no_side_effects_report(no_side_effects)
     validate_reproducibility_report(reproducibility)
     validate_output_manifest(bundle_root, output_manifest)
-    validate_shadow_result_manifest(result, output_manifest_sha256=file_sha256(bundle_root / "output_manifest.json"))
+    validate_shadow_result_manifest(
+        result,
+        evidence_hashes={
+            field: file_sha256(bundle_root / rel)
+            for field, rel in SHADOW_RESULT_EVIDENCE_HASH_FILES.items()
+        },
+    )
 
     return {
         "handshake_id": HANDSHAKE_ID,

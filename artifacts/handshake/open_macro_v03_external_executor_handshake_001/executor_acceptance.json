@@ -26,7 +26,8 @@
     "--mount",
     "type=bind,src=/contracts,dst=/contracts,readonly",
     "--mount",
-    "type=bind,src=/outputs,dst=/outputs"
+    "type=bind,src=/outputs,dst=/outputs",
+    "investintell/quant-engine@sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
   ],
   "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
   "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
