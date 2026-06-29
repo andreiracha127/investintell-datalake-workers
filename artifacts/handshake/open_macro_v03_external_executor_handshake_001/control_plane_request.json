@@ -26,6 +26,7 @@
   "request_id": "req-open-macro-v03-external-executor-handshake-001",
   "runtime_activation": false,
   "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "runtime_skeleton_merge_commit": "87e69a8cfb7aa646d1d0c7c9d7610ce914514cc7",
   "schema_version": 1,
   "shadow_id": "open_macro_v03_shadow_001"
 }

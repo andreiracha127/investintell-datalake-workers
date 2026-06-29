@@ -26,6 +26,15 @@ def _artifact(name: str) -> dict:
     return _json(HANDSHAKE_ROOT / name)
 
 
+def _refresh_manifest_entry(root: Path, manifest: dict, rel: str) -> None:
+    for entry in manifest["artifacts"]:
+        if entry["path"] == rel:
+            entry["sha256"] = hs.file_sha256(root / rel)
+            entry["bytes"] = hs.file_logical_bytes(root / rel)
+            return
+    raise AssertionError(f"missing manifest entry for {rel}")
+
+
 def test_external_executor_handshake_artifacts_verify_offline() -> None:
     result = hs.verify_handshake(HANDSHAKE_ROOT)
 
@@ -77,6 +86,7 @@ def test_shadow_result_manifest_validates_against_shadow_schema() -> None:
         ("input_pack_sha256", "0" * 64),
         ("calibration_config_sha256", "1" * 64),
         ("contract_bundle_sha256", "2" * 64),
+        ("runtime_skeleton_merge_commit", "0" * 40),
     ],
 )
 def test_control_plane_request_rejects_activation_and_provenance_drift(
@@ -112,6 +122,21 @@ def test_shadow_job_envelope_rejects_activation_and_provenance_drift(
 
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_shadow_job_envelope(envelope)
+
+
+def test_handshake_manifest_pins_runtime_skeleton_merge_commit() -> None:
+    manifest = _artifact("handshake_manifest.json")
+    hs.validate_handshake_manifest(manifest)
+
+    missing = deepcopy(manifest)
+    del missing["runtime_skeleton_merge_commit"]
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_handshake_manifest(missing)
+
+    spoofed = deepcopy(manifest)
+    spoofed["runtime_skeleton_merge_commit"] = "0" * 40
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_handshake_manifest(spoofed)
 
 
 def test_executor_acceptance_rejects_provenance_mismatch() -> None:
@@ -214,6 +239,91 @@ def test_executor_acceptance_accepts_ro_input_bind_alias() -> None:
     ]
 
     hs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "bad_mount",
+    [
+        "type=bind,src=/other_input_pack,dst=/input_pack,readonly",
+        "type=bind,src=/input_pack,dst=/other_input_pack,readonly",
+        "type=bind,src=/outputs,dst=/outputs,readonly",
+    ],
+)
+def test_executor_acceptance_requires_exact_docker_bind_mounts(bad_mount: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    if "src=/outputs" in bad_mount:
+        policy[policy.index("type=bind,src=/outputs,dst=/outputs")] = bad_mount
+    else:
+        policy[policy.index("type=bind,src=/input_pack,dst=/input_pack,readonly")] = bad_mount
+    acceptance["docker_run_policy"] = policy
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_rejects_missing_extra_or_duplicate_docker_binds() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+
+    missing_output = deepcopy(acceptance)
+    policy = list(missing_output["docker_run_policy"])
+    output_index = policy.index("type=bind,src=/outputs,dst=/outputs")
+    del policy[output_index - 1 : output_index + 1]
+    missing_output["docker_run_policy"] = policy
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(missing_output, envelope)
+
+    extra = deepcopy(acceptance)
+    policy = list(extra["docker_run_policy"])
+    image_index = len(policy) - 1
+    extra["docker_run_policy"] = [
+        *policy[:image_index],
+        "--mount",
+        "type=bind,src=/,dst=/host,readonly",
+        *policy[image_index:],
+    ]
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(extra, envelope)
+
+    duplicate = deepcopy(acceptance)
+    policy = list(duplicate["docker_run_policy"])
+    image_index = len(policy) - 1
+    duplicate["docker_run_policy"] = [
+        *policy[:image_index],
+        "--mount",
+        "type=bind,src=/input_pack,dst=/input_pack,readonly",
+        *policy[image_index:],
+    ]
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(duplicate, envelope)
+
+
+@pytest.mark.parametrize(
+    "bad_options",
+    [
+        ["--privileged"],
+        ["--pid=host"],
+        ["--pid", "host"],
+        ["--cap-add=SYS_ADMIN"],
+        ["--cap-add", "SYS_ADMIN"],
+        ["--device=/dev/kvm"],
+        ["--ipc=host"],
+        ["--userns=host"],
+    ],
+)
+def test_executor_acceptance_rejects_privileged_docker_options_before_image(
+    bad_options: list[str],
+) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    image_index = len(policy) - 1
+    acceptance["docker_run_policy"] = [*policy[:image_index], *bad_options, *policy[image_index:]]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
 
 
 def test_executor_acceptance_requires_output_only_writable_mount() -> None:
@@ -338,6 +448,24 @@ def test_shadow_result_manifest_rejects_non_zero_materiality_delta(field: str) -
         hs.validate_shadow_result_manifest(result)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("A5", "unblocked"),
+        ("freeze_ready", True),
+        ("runtime_activation_attempt", True),
+        ("a5_status", "unblocked"),
+        ("unexpected_result_property", "value"),
+    ],
+)
+def test_shadow_result_manifest_rejects_unexpected_result_fields(field: str, bad: object) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_shadow_result_manifest(result)
+
+
 def test_handshake_rejects_boolean_values_for_numeric_pins() -> None:
     request = _artifact("control_plane_request.json")
     request["schema_version"] = True
@@ -377,6 +505,31 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
     (root / "logs" / "extra.log").write_text("unexpected\n", encoding="utf-8")
 
     with pytest.raises(hs.HandshakeValidationError, match="unexpected files on disk"):
+        hs.validate_output_manifest(root, manifest)
+
+
+@pytest.mark.parametrize(
+    ("rel", "token"),
+    [
+        ("logs/control_plane_validator.log", "runtime_activation_attempt=true"),
+        ("logs/control_plane_validator.log", "allow_db_write=true allow_db_write=false"),
+        ("logs/external_executor.log", "allocator_publish_attempt=true"),
+        ("logs/external_executor.log", "production_endpoint_activation=public"),
+    ],
+)
+def test_output_manifest_scans_required_logs_for_side_effect_attempts(
+    tmp_path: Path,
+    rel: str,
+    token: str,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    log_path = root / rel
+    log_path.write_text(log_path.read_text(encoding="utf-8") + f" {token}\n", encoding="utf-8")
+    manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, manifest, rel)
+
+    with pytest.raises(hs.HandshakeValidationError):
         hs.validate_output_manifest(root, manifest)
 
 

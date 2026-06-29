@@ -35,7 +35,7 @@
   "memory_peak_bytes": 0,
   "official_result": false,
   "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_external_executor_handshake_001",
-  "output_manifest_sha256": "3dcf19453b5bd0f64f68a181f6e9323555e059b2edfb78dacbab7f70dd197267",
+  "output_manifest_sha256": "965e7450e40edcbe2ff31ea61263d352df55415d2375ba1b9926d1cad364fc03",
   "production_endpoint_activation": "none",
   "reproducibility_report_sha256": "e9ab75c9744f1063103c86fa8eb1ec09acd52a7a3fa71d854f42991fa3525c9e",
   "request_id": "req-open-macro-v03-external-executor-handshake-001",

@@ -88,51 +88,55 @@ EXPECTED_MOUNT_NAMES: Final[tuple[str, ...]] = (
     "contract_bundle",
     "output",
 )
-EXPECTED_INPUT_BIND_TARGETS: Final[frozenset[str]] = frozenset(
-    ("/input_pack", "/calibration", "/contracts")
+EXPECTED_DOCKER_BIND_MOUNTS: Final[frozenset[tuple[str, str, str]]] = frozenset(
+    (
+        ("/input_pack", "/input_pack", "read_only"),
+        ("/calibration", "/calibration", "read_only"),
+        ("/contracts", "/contracts", "read_only"),
+        ("/outputs", "/outputs", "read_write"),
+    )
+)
+ALLOWED_DOCKER_RUN_OPTIONS: Final[frozenset[str]] = frozenset(
+    ("--rm", "--read-only", "--network", "--net", "--mount", "--volume", "-v")
 )
 DOCKER_RUN_OPTIONS_WITH_VALUE: Final[frozenset[str]] = frozenset(
+    ("--mount", "--net", "--network", "--volume", "-v")
+)
+LOG_EXPECTED_TOKENS: Final[dict[str, str]] = {
+    "runtime_activation": "false",
+    "allow_db_write": "false",
+    "allow_allocator_publish": "false",
+    "official_result": "false",
+    "production_endpoint_activation": "none",
+    "backend_executes_engine": "false",
+    "backend_executes_docker": "false",
+    "backend_executes_subprocess": "false",
+    "db_write": "false",
+    "allocator_publish": "false",
+    "source_tree_writes": "false",
+    "network": "none",
+    "input_pack_mount": "read_only",
+    "calibration_mount": "read_only",
+    "output_mount": "read_write",
+    "writable_mounts": "output",
+}
+LOG_FORBIDDEN_TRUE_KEYS: Final[frozenset[str]] = frozenset(
     (
-        "--add-host",
-        "--cap-add",
-        "--cap-drop",
-        "--cidfile",
-        "--cpus",
-        "--device",
-        "--dns",
-        "--dns-search",
-        "--entrypoint",
-        "--env",
-        "--env-file",
-        "--group-add",
-        "--hostname",
-        "--ipc",
-        "--label",
-        "--log-driver",
-        "--log-opt",
-        "--memory",
-        "--mount",
-        "--name",
-        "--net",
-        "--network",
-        "--pid",
-        "--platform",
-        "--pull",
-        "--restart",
-        "--security-opt",
-        "--stop-signal",
-        "--stop-timeout",
-        "--ulimit",
-        "--user",
-        "--userns",
-        "--volume",
-        "--workdir",
-        "-e",
-        "-l",
-        "-m",
-        "-u",
-        "-v",
-        "-w",
+        "runtime_activation",
+        "runtime_activation_attempt",
+        "allow_db_write",
+        "db_write",
+        "db_access",
+        "official_db_write_attempt",
+        "allow_allocator_publish",
+        "allocator_publish",
+        "allocator_publish_attempt",
+        "official_result",
+        "backend_executes_engine",
+        "backend_executes_docker",
+        "backend_executes_subprocess",
+        "production_endpoint_activation_attempt",
+        "source_tree_writes",
     )
 )
 EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = (
@@ -209,6 +213,48 @@ SHADOW_RESULT_EVIDENCE_HASH_FILES: Final[dict[str, str]] = {
     "invariant_report_sha256": "no_side_effects_report.json",
     "baseline_comparison_sha256": "validation_report.json",
 }
+DIVERGENCE_FIELDS: Final[tuple[str, ...]] = (
+    "missing_outputs",
+    "unexpected_outputs",
+    "mismatch_count",
+    "nan_or_inf_count",
+    "constraint_violations",
+    "invariant_failures",
+)
+SHADOW_RESULT_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "shadow_id",
+        "request_id",
+        "correlation_id",
+        "execution_id",
+        "run_fingerprint",
+        "status",
+        "retryable",
+        "retry_count",
+        "calibration_id",
+        "input_pack_sha256",
+        "engine_commit",
+        "engine_image_digest",
+        "runtime_activation",
+        "official_result",
+        "allow_db_write",
+        "allow_allocator_publish",
+        "production_endpoint_activation",
+        "output_artifact_uri",
+        "started_at",
+        "finished_at",
+        "duration_ms",
+        "memory_peak_bytes",
+        "cpu_time_ms",
+        "output_manifest_sha256",
+        "invariant_report_sha256",
+        "baseline_comparison_sha256",
+        "reproducibility_report_sha256",
+        "divergence_summary",
+        "materiality_summary",
+    )
+)
 
 
 class HandshakeValidationError(ValueError):
@@ -297,6 +343,12 @@ def _require_fields(payload: Mapping[str, Any], fields: Sequence[str], *, where:
         raise HandshakeValidationError(f"{where}: missing required fields {missing}")
 
 
+def _reject_unexpected_fields(payload: Mapping[str, Any], allowed: set[str] | frozenset[str], *, where: str) -> None:
+    unexpected = sorted(set(payload) - allowed)
+    if unexpected:
+        raise HandshakeValidationError(f"{where}: unexpected fields {unexpected}")
+
+
 def _require_artifact_uri(value: Any, *, where: str) -> None:
     if value != OUTPUT_ARTIFACT_URI:
         raise HandshakeValidationError(f"{where}: output artifact URI must be {OUTPUT_ARTIFACT_URI}")
@@ -320,6 +372,7 @@ def validate_handshake_manifest(payload: Mapping[str, Any]) -> None:
             "status": "candidate",
             "control_plane_contract_merge_commit": CONTROL_PLANE_CONTRACT_MERGE_COMMIT,
             "runtime_skeleton_id": RUNTIME_SKELETON_ID,
+            "runtime_skeleton_merge_commit": RUNTIME_SKELETON_MERGE_COMMIT,
             "shadow_id": SHADOW_ID,
             "calibration_id": CALIBRATION_ID,
             "mode": "shadow",
@@ -353,6 +406,7 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
             "handshake_id": HANDSHAKE_ID,
             "control_plane_contract_merge_commit": CONTROL_PLANE_CONTRACT_MERGE_COMMIT,
             "runtime_skeleton_id": RUNTIME_SKELETON_ID,
+            "runtime_skeleton_merge_commit": RUNTIME_SKELETON_MERGE_COMMIT,
             "shadow_id": SHADOW_ID,
             "mode": "shadow",
             "request_id": REQUEST_ID,
@@ -464,6 +518,7 @@ def _validate_docker_run_policy(policy: Any, *, expected_image_digest: str) -> N
     if not isinstance(policy, list) or any(not isinstance(token, str) for token in policy):
         raise HandshakeValidationError("executor_acceptance: docker_run_policy must be a token list")
     options, image, command_args = _split_docker_run_policy(policy)
+    _validate_allowed_docker_options(options)
 
     network_values = _network_values(options)
     if network_values != ["none"]:
@@ -477,7 +532,7 @@ def _validate_docker_run_policy(policy: Any, *, expected_image_digest: str) -> N
     image_digest = image.rsplit("@", 1)[1]
     if image_digest != expected_image_digest:
         raise HandshakeValidationError("executor_acceptance: docker_run_policy image digest mismatch")
-    _validate_input_bind_mounts(options)
+    _validate_docker_bind_mounts(options)
 
 
 def _split_docker_run_policy(policy: list[str]) -> tuple[list[str], str, list[str]]:
@@ -514,6 +569,24 @@ def _is_network_flag(token: str) -> bool:
     return token in {"--network", "--net"} or token.startswith("--network=") or token.startswith("--net=")
 
 
+def _validate_allowed_docker_options(options: Sequence[str]) -> None:
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if not token.startswith("-"):
+            index += 1
+            continue
+        option_name = token.split("=", 1)[0]
+        if option_name not in ALLOWED_DOCKER_RUN_OPTIONS:
+            raise HandshakeValidationError(f"executor_acceptance: forbidden docker option {option_name}")
+        if "=" in token:
+            index += 1
+        elif option_name in DOCKER_RUN_OPTIONS_WITH_VALUE:
+            index += 2
+        else:
+            index += 1
+
+
 def _network_values(options: Sequence[str]) -> list[str | None]:
     values: list[str | None] = []
     index = 0
@@ -530,28 +603,29 @@ def _network_values(options: Sequence[str]) -> list[str | None]:
     return values
 
 
-def _validate_input_bind_mounts(options: Sequence[str]) -> None:
-    seen_targets: set[str] = set()
+def _validate_docker_bind_mounts(options: Sequence[str]) -> None:
+    mounts: list[tuple[str, str, str]] = []
     for spec in _docker_mount_specs(options):
         attrs, flags = _parse_mount_spec(spec)
         if attrs.get("type") != "bind":
-            continue
+            raise HandshakeValidationError("executor_acceptance: docker mounts must all be bind mounts")
+        source = attrs.get("src") or attrs.get("source")
         target = attrs.get("dst") or attrs.get("destination") or attrs.get("target")
-        if target in EXPECTED_INPUT_BIND_TARGETS:
-            readonly = (
-                "readonly" in flags
-                or "ro" in flags
-                or attrs.get("readonly") in {"true", "1"}
-                or attrs.get("ro") in {"true", "1"}
-            )
-            if not readonly:
-                raise HandshakeValidationError(
-                    f"executor_acceptance: input bind mount {target} must be readonly"
-                )
-            seen_targets.add(target)
-    missing = sorted(EXPECTED_INPUT_BIND_TARGETS - seen_targets)
-    if missing:
-        raise HandshakeValidationError(f"executor_acceptance: docker_run_policy missing input binds {missing}")
+        if not source or not target:
+            raise HandshakeValidationError("executor_acceptance: bind mounts must include source and destination")
+        readonly = (
+            "readonly" in flags
+            or "ro" in flags
+            or attrs.get("readonly") in {"true", "1"}
+            or attrs.get("ro") in {"true", "1"}
+        )
+        mounts.append((source, target, "read_only" if readonly else "read_write"))
+    if len(mounts) != len(set(mounts)):
+        raise HandshakeValidationError("executor_acceptance: duplicate docker bind mounts")
+    if set(mounts) != set(EXPECTED_DOCKER_BIND_MOUNTS):
+        raise HandshakeValidationError(
+            f"executor_acceptance: docker bind mounts mismatch: {sorted(mounts)}"
+        )
 
 
 def _docker_mount_specs(options: Sequence[str]) -> list[str]:
@@ -581,7 +655,7 @@ def _volume_to_mount_spec(spec: str) -> str:
     if len(parts) < 2:
         return ""
     flags = ",".join(parts[2:])
-    return f"type=bind,dst={parts[1]}{',' + flags if flags else ''}"
+    return f"type=bind,src={parts[0]},dst={parts[1]}{',' + flags if flags else ''}"
 
 
 def _parse_mount_spec(spec: str) -> tuple[dict[str, str], set[str]]:
@@ -620,6 +694,7 @@ def validate_executor_result_reference(payload: Mapping[str, Any]) -> None:
 def validate_shadow_result_manifest(
     payload: Mapping[str, Any], *, evidence_hashes: Mapping[str, str] | None = None
 ) -> None:
+    _reject_unexpected_fields(payload, SHADOW_RESULT_MANIFEST_FIELDS, where="shadow_result_manifest")
     _require_pins(
         payload,
         {
@@ -651,8 +726,11 @@ def validate_shadow_result_manifest(
     if evidence_hashes is not None:
         for field, expected_hash in evidence_hashes.items():
             _require_equal(payload, field, expected_hash, where="shadow_result_manifest")
-    _require_zero_divergence(_require_mapping(payload.get("divergence_summary"), where="divergence_summary"))
+    divergence = _require_mapping(payload.get("divergence_summary"), where="divergence_summary")
+    _reject_unexpected_fields(divergence, set(DIVERGENCE_FIELDS), where="divergence_summary")
+    _require_zero_divergence(divergence)
     materiality = _require_mapping(payload.get("materiality_summary"), where="materiality_summary")
+    _reject_unexpected_fields(materiality, set(MATERIALITY_PINS), where="materiality_summary")
     _require_pins(materiality, MATERIALITY_PINS, where="materiality_summary")
 
 
@@ -689,14 +767,7 @@ def _require_int(payload: Mapping[str, Any], key: str, *, where: str, minimum: i
 
 
 def _require_zero_divergence(divergence: Mapping[str, Any]) -> None:
-    for field in (
-        "missing_outputs",
-        "unexpected_outputs",
-        "mismatch_count",
-        "nan_or_inf_count",
-        "constraint_violations",
-        "invariant_failures",
-    ):
+    for field in DIVERGENCE_FIELDS:
         _require_equal(divergence, field, 0, where="divergence_summary")
 
 
@@ -743,6 +814,33 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
     for rel in LOGS_REQUIRED:
         if rel not in by_path:
             raise HandshakeValidationError(f"output_manifest missing required log {rel}")
+    _validate_required_logs(root)
+
+
+def _validate_required_logs(root: Path) -> None:
+    pairs: list[tuple[str, str]] = []
+    for rel in LOGS_REQUIRED:
+        path = _ensure_child(root / rel, root)
+        pairs.extend(_parse_log_token_pairs(path.read_text(encoding="utf-8")))
+    for key, value in pairs:
+        if key in LOG_FORBIDDEN_TRUE_KEYS and value == "true":
+            raise HandshakeValidationError(f"required logs contain forbidden side-effect token {key}=true")
+        if key == "production_endpoint_activation" and value != "none":
+            raise HandshakeValidationError(
+                "required logs contain forbidden production_endpoint_activation token"
+            )
+    for key, expected in LOG_EXPECTED_TOKENS.items():
+        if (key, expected) not in pairs:
+            raise HandshakeValidationError(f"required logs missing attestation {key}={expected}")
+
+
+def _parse_log_token_pairs(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for raw in text.split():
+        key, sep, value = raw.partition("=")
+        if sep:
+            pairs.append((key, value))
+    return pairs
 
 
 def _unexpected_output_files(root: Path) -> list[str]:
