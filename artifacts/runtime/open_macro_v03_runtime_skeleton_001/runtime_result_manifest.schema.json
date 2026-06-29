@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/runtime/open_macro_v03_runtime_skeleton_001/runtime_result_manifest.schema.json",
+  "title": "OpenMacroV03RuntimeSkeletonResultManifest001",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "runtime_skeleton_id",
+    "strategy",
+    "a5_preflight_id",
+    "request_id",
+    "correlation_id",
+    "execution_id",
+    "result_mode",
+    "status",
+    "runtime_activation",
+    "A5",
+    "freeze_ready",
+    "official_result",
+    "allow_db_write",
+    "allow_allocator_publish",
+    "allocator_publish",
+    "db_write_official",
+    "production_endpoint_activation",
+    "feature_flag_default",
+    "docker_execution_from_backend",
+    "artifact_uri"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "runtime_skeleton_id": {"const": "open_macro_v03_runtime_skeleton_001"},
+    "strategy": {"const": "open_macro_v03"},
+    "a5_preflight_id": {"const": "open_macro_v03_a5_preflight_001"},
+    "request_id": {"type": "string", "minLength": 12},
+    "correlation_id": {"type": "string", "minLength": 12},
+    "execution_id": {"type": "string", "minLength": 12},
+    "result_mode": {"const": "artifact_only_inert_manifest"},
+    "status": {"enum": ["not_executed", "rejected"]},
+    "runtime_activation": {"const": false},
+    "A5": {"const": "blocked"},
+    "freeze_ready": {"const": false},
+    "official_result": {"const": false},
+    "allow_db_write": {"const": false},
+    "allow_allocator_publish": {"const": false},
+    "allocator_publish": {"const": false},
+    "db_write_official": {"const": false},
+    "production_endpoint_activation": {"const": "none"},
+    "feature_flag_default": {"const": false},
+    "docker_execution_from_backend": {"const": false},
+    "artifact_uri": {"type": "string", "pattern": "^artifact://runtime/open_macro_v03_runtime_skeleton_001/[^\\s]+$"},
+    "failure_class": {
+      "enum": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "docker_execution_from_backend_attempt",
+        "identity_drift",
+        "contract_drift"
+      ]
+    },
+    "side_effect_attempt_count": {"type": "integer", "minimum": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "rejected"}}, "required": ["status"]},
+      "then": {"required": ["failure_class"]}
+    },
+    {
+      "if": {"required": ["failure_class"]},
+      "then": {"properties": {"status": {"const": "rejected"}}}
+    }
+  ]
+}

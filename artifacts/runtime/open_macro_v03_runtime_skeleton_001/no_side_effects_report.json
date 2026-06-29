@@ -1,0 +1,25 @@
+{
+  "A5": "blocked",
+  "checks": [
+    {"allowed": false, "id": "runtime_activation", "status": "pass"},
+    {"allowed": false, "id": "allocator_publish", "status": "pass"},
+    {"allowed": false, "id": "official_db_write", "status": "pass"},
+    {"allowed": false, "id": "production_endpoint_activation", "status": "pass"},
+    {"allowed": false, "id": "docker_execution_from_backend", "status": "pass"},
+    {"allowed": false, "id": "formula_change", "status": "pass"},
+    {"allowed": false, "id": "input_pack_change", "status": "pass"},
+    {"allowed": false, "id": "calibration_pack_change", "status": "pass"},
+    {"allowed": false, "id": "contract_v1_change", "status": "pass"}
+  ],
+  "db_write_official": false,
+  "docker_execution_from_backend": false,
+  "feature_flag_default": false,
+  "freeze_ready": false,
+  "no_side_effects_report_id": "open_macro_v03_runtime_skeleton_no_side_effects_001",
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false,
+  "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "status": "pass",
+  "stop_if_backend_wiring_required": "missing_safe_control_plane_abstraction"
+}
