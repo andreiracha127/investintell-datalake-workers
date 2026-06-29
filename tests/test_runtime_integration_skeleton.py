@@ -80,6 +80,7 @@ def _valid_result() -> dict:
         "allocator_publish": False,
         "db_write_official": False,
         "production_endpoint_activation": "none",
+        "feature_flag_name": "open_macro_v03_runtime_activation",
         "feature_flag_default": False,
         "docker_execution_from_backend": False,
         "artifact_uri": "artifact://runtime/open_macro_v03_runtime_skeleton_001/result-001",
@@ -130,6 +131,7 @@ def test_runtime_skeleton_manifest_keeps_governance_inert() -> None:
         ("calibration_config_sha256", "0" * 64),
         ("contract_bundle_sha256", "0" * 64),
         ("engine_commit", "0" * 40),
+        ("engine_image_digest", "sha256:" + "0" * 64),
         ("formula_changes", "changed"),
         ("input_pack_changes", "changed"),
         ("calibration_pack_changes", "changed"),
@@ -159,6 +161,7 @@ def test_runtime_job_envelope_schema_rejects_activation_and_identity_drift(field
         ("allocator_publish", True),
         ("db_write_official", True),
         ("production_endpoint_activation", "public"),
+        ("feature_flag_name", "other_runtime_activation"),
         ("feature_flag_default", True),
         ("docker_execution_from_backend", True),
     ],
@@ -184,7 +187,123 @@ def test_runtime_result_rejected_status_requires_failure_class() -> None:
 
     result["failure_class"] = "runtime_activation_attempt"
     result["side_effect_attempt_count"] = 1
+    result["side_effect_attempt_evidence_sha256"] = "a" * 64
     jsonschema.validate(result, schema)
+
+
+@pytest.mark.parametrize(
+    "failure_class",
+    [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "docker_execution_from_backend_attempt",
+    ],
+)
+def test_runtime_result_side_effect_rejections_require_audit_evidence(failure_class: str) -> None:
+    schema = _json("runtime_result_manifest.schema.json")
+    result = _valid_result()
+    result.update(
+        {
+            "status": "rejected",
+            "failure_class": failure_class,
+            "side_effect_attempt_count": 1,
+            "side_effect_attempt_evidence_sha256": "a" * 64,
+        }
+    )
+    jsonschema.validate(result, schema)
+
+    for required_field in (
+        "side_effect_attempt_count",
+        "side_effect_attempt_evidence_sha256",
+    ):
+        broken = deepcopy(result)
+        del broken[required_field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(broken, schema)
+
+
+def test_runtime_result_identity_drift_requires_observed_identity_values() -> None:
+    schema = _json("runtime_result_manifest.schema.json")
+    envelope = _valid_envelope()
+    result = _valid_result()
+    required_fields = [
+        "input_pack_id",
+        "input_pack_sha256",
+        "calibration_id",
+        "calibration_config_sha256",
+        "engine_commit",
+        "engine_image_digest",
+        "observed_input_pack_id",
+        "observed_input_pack_sha256",
+        "observed_calibration_id",
+        "observed_calibration_config_sha256",
+        "observed_engine_commit",
+        "observed_engine_image_digest",
+    ]
+    result.update(
+        {
+            "status": "rejected",
+            "failure_class": "identity_drift",
+            "input_pack_id": envelope["input_pack_id"],
+            "input_pack_sha256": envelope["input_pack_sha256"],
+            "calibration_id": envelope["calibration_id"],
+            "calibration_config_sha256": envelope["calibration_config_sha256"],
+            "engine_commit": envelope["engine_commit"],
+            "engine_image_digest": envelope["engine_image_digest"],
+            "observed_input_pack_id": "open_macro_v03_certified_input_pack_drifted",
+            "observed_input_pack_sha256": "0" * 64,
+            "observed_calibration_id": "open_macro_v03_calibration_drifted",
+            "observed_calibration_config_sha256": "1" * 64,
+            "observed_engine_commit": "2" * 40,
+            "observed_engine_image_digest": "sha256:" + "3" * 64,
+        }
+    )
+    jsonschema.validate(result, schema)
+
+    for required_field in required_fields:
+        broken = deepcopy(result)
+        del broken[required_field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(broken, schema)
+
+
+def test_runtime_result_contract_drift_requires_observed_contract_identity_values() -> None:
+    schema = _json("runtime_result_manifest.schema.json")
+    envelope = _valid_envelope()
+    result = _valid_result()
+    required_fields = [
+        "contract_bundle_sha256",
+        "contract_version",
+        "engine_commit",
+        "engine_image_digest",
+        "observed_contract_bundle_sha256",
+        "observed_contract_version",
+        "observed_engine_commit",
+        "observed_engine_image_digest",
+    ]
+    result.update(
+        {
+            "status": "rejected",
+            "failure_class": "contract_drift",
+            "contract_bundle_sha256": envelope["contract_bundle_sha256"],
+            "contract_version": envelope["contract_version"],
+            "engine_commit": envelope["engine_commit"],
+            "engine_image_digest": envelope["engine_image_digest"],
+            "observed_contract_bundle_sha256": "4" * 64,
+            "observed_contract_version": "1.0.1",
+            "observed_engine_commit": "5" * 40,
+            "observed_engine_image_digest": "sha256:" + "6" * 64,
+        }
+    )
+    jsonschema.validate(result, schema)
+
+    for required_field in required_fields:
+        broken = deepcopy(result)
+        del broken[required_field]
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(broken, schema)
 
 
 def test_feature_flag_guard_defaults_false_and_allows_no_environment() -> None:
