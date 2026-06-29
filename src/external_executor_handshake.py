@@ -106,6 +106,10 @@ ALLOWED_DOCKER_RUN_OPTIONS: Final[frozenset[str]] = frozenset(
 DOCKER_RUN_OPTIONS_WITH_VALUE: Final[frozenset[str]] = frozenset(
     ("--mount", "--net", "--network", "--volume", "-v")
 )
+ALLOWED_DOCKER_BIND_ATTRS: Final[frozenset[str]] = frozenset(
+    ("type", "src", "source", "dst", "destination", "target", "readonly", "ro")
+)
+ALLOWED_DOCKER_BIND_FLAGS: Final[frozenset[str]] = frozenset(("readonly", "ro"))
 LOG_EXPECTED_TOKENS: Final[dict[str, str]] = {
     "runtime_activation": "false",
     "allow_db_write": "false",
@@ -122,8 +126,19 @@ LOG_EXPECTED_TOKENS: Final[dict[str, str]] = {
     "network": "none",
     "input_pack_mount": "read_only",
     "calibration_mount": "read_only",
+    "contract_bundle_mount": "read_only",
     "output_mount": "read_write",
     "writable_mounts": "output",
+}
+EXTERNAL_EXECUTOR_EXPECTED_TOKENS: Final[dict[str, str]] = {
+    "db_access": "false",
+    "network": "none",
+    "input_pack_mount": "read_only",
+    "calibration_mount": "read_only",
+    "contract_bundle_mount": "read_only",
+    "output_mount": "read_write",
+    "writable_mounts": "output",
+    "source_tree_writes": "false",
 }
 LOG_FORBIDDEN_TRUE_KEYS: Final[frozenset[str]] = frozenset(
     (
@@ -272,6 +287,81 @@ VALIDATION_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "A5",
         "official_result",
         "checks",
+    )
+)
+EXECUTOR_ACCEPTANCE_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "status",
+        "accepted",
+        "request_id",
+        "correlation_id",
+        "execution_id",
+        "run_fingerprint",
+        "provenance_match",
+        "execution_policy",
+        "docker_network",
+        "input_pack_mount",
+        "calibration_mount",
+        "output_mount",
+        "writable_mounts",
+        "requires_docker_network_none",
+        "mounts",
+        "docker_run_policy",
+        *PINNED_PROVENANCE,
+        *SIDE_EFFECT_PINS,
+        *BACKEND_NO_EXEC_PINS,
+    )
+)
+REPRODUCIBILITY_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "shadow_id",
+        "calibration_id",
+        "input_pack_sha256",
+        "calibration_config_sha256",
+        "contract_bundle_sha256",
+        "run_fingerprint",
+        "expected_run_count",
+        "run_count",
+        "expected_labels",
+        "missing",
+        "unexpected",
+        "missing_hashes",
+        "unexpected_hashes",
+        "output_manifest_sha256_by_run",
+        "run_hash_mismatches",
+        "duplicates",
+        "mismatch_count",
+        "container_runs",
+        "host_runs",
+        "jobs_matrix",
+        "repeat_runs_per_mode",
+        "network",
+        "db_access",
+        "input_pack_mount",
+        "calibration_mount",
+        "output_mount",
+        "writable_mounts",
+        "path_independence",
+        "docker_image_digest",
+        "docker_image_provenance_ok",
+        "ok",
+    )
+)
+NO_SIDE_EFFECTS_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "status",
+        "db_write_mode",
+        "allocator_impact",
+        "production_impact",
+        "checks",
+        *SIDE_EFFECT_PINS,
+        *BACKEND_NO_EXEC_PINS,
     )
 )
 DIVERGENCE_FIELDS: Final[tuple[str, ...]] = (
@@ -554,6 +644,7 @@ def validate_shadow_job_envelope_output_manifest_binding(
 
 
 def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, EXECUTOR_ACCEPTANCE_FIELDS, where="executor_acceptance")
     _require_pins(
         payload,
         {
@@ -718,6 +809,12 @@ def _validate_docker_bind_mounts(options: Sequence[str]) -> None:
     mounts: list[tuple[str, str, str]] = []
     for spec in _docker_mount_specs(options):
         attrs, flags = _parse_mount_spec(spec)
+        unexpected_attrs = sorted(set(attrs) - ALLOWED_DOCKER_BIND_ATTRS)
+        unexpected_flags = sorted(flags - ALLOWED_DOCKER_BIND_FLAGS)
+        if unexpected_attrs or unexpected_flags:
+            raise HandshakeValidationError(
+                "executor_acceptance: docker bind mounts include unsupported options"
+            )
         if attrs.get("type") != "bind":
             raise HandshakeValidationError("executor_acceptance: docker mounts must all be bind mounts")
         source = attrs.get("src") or attrs.get("source")
@@ -959,16 +1056,17 @@ def _validate_required_logs(root: Path) -> None:
             raise HandshakeValidationError(
                 f"required logs contain contradictory attestation {key}={unexpected}"
             )
-    external_db_access = values_by_path_key.get(("logs/external_executor.log", "db_access"), [])
-    if not external_db_access:
-        raise HandshakeValidationError(
-            "logs/external_executor.log missing attestation db_access=false"
-        )
-    unexpected_db_access = sorted({value for value in external_db_access if value != "false"})
-    if unexpected_db_access:
-        raise HandshakeValidationError(
-            f"logs/external_executor.log contains contradictory attestation db_access={unexpected_db_access}"
-        )
+    for key, expected in EXTERNAL_EXECUTOR_EXPECTED_TOKENS.items():
+        values = values_by_path_key.get(("logs/external_executor.log", key), [])
+        if not values:
+            raise HandshakeValidationError(
+                f"logs/external_executor.log missing attestation {key}={expected}"
+            )
+        unexpected = sorted({value for value in values if value != expected})
+        if unexpected:
+            raise HandshakeValidationError(
+                f"logs/external_executor.log contains contradictory attestation {key}={unexpected}"
+            )
 
 
 def _parse_log_token_pairs(text: str) -> list[tuple[str, str]]:
@@ -1000,6 +1098,7 @@ def _ensure_child(path: Path, root: Path) -> Path:
 
 
 def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, REPRODUCIBILITY_REPORT_FIELDS, where="reproducibility_report")
     _require_pins(
         payload,
         {
@@ -1044,6 +1143,7 @@ def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
 
 
 def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, NO_SIDE_EFFECTS_REPORT_FIELDS, where="no_side_effects_report")
     _require_pins(
         payload,
         {

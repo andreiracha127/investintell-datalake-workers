@@ -301,6 +301,41 @@ def test_executor_acceptance_rejects_mount_policy_drift(field: str, bad: object)
         hs.validate_executor_acceptance(acceptance, envelope)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation_attempt", True),
+        ("official_db_write_attempt", True),
+    ],
+)
+def test_executor_acceptance_rejects_unexpected_fields(field: str, bad: object) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_verify_handshake_rejects_unexpected_executor_acceptance_fields_after_hash_refresh(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    acceptance = _json(root / "executor_acceptance.json")
+    acceptance["official_db_write_attempt"] = True
+    _write_json(root / "executor_acceptance.json", acceptance)
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "executor_acceptance.json")
+    _write_json(root / "output_manifest.json", output_manifest)
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.verify_handshake(root)
+
+
 def test_executor_acceptance_requires_docker_network_none() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
@@ -403,6 +438,34 @@ def test_executor_acceptance_requires_exact_docker_bind_mounts(bad_mount: str) -
     acceptance["docker_run_policy"] = policy
 
     with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "bad_mount",
+    [
+        "type=bind,src=/input_pack,dst=/input_pack,readonly,bind-recursive=writable",
+        "type=bind,src=/input_pack,dst=/input_pack,readonly,bind-propagation=rshared",
+        "type=bind,src=/calibration,dst=/calibration,readonly,bind-propagation=shared",
+        "type=bind,src=/contracts,dst=/contracts,readonly,rshared",
+        "type=bind,src=/outputs,dst=/outputs,bind-propagation=rshared",
+    ],
+)
+def test_executor_acceptance_rejects_unsafe_extra_bind_options(bad_mount: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    if "src=/outputs" in bad_mount:
+        policy[policy.index("type=bind,src=/outputs,dst=/outputs")] = bad_mount
+    elif "src=/calibration" in bad_mount:
+        policy[policy.index("type=bind,src=/calibration,dst=/calibration,readonly")] = bad_mount
+    elif "src=/contracts" in bad_mount:
+        policy[policy.index("type=bind,src=/contracts,dst=/contracts,readonly")] = bad_mount
+    else:
+        policy[policy.index("type=bind,src=/input_pack,dst=/input_pack,readonly")] = bad_mount
+    acceptance["docker_run_policy"] = policy
+
+    with pytest.raises(hs.HandshakeValidationError, match="unsupported options"):
         hs.validate_executor_acceptance(acceptance, envelope)
 
 
@@ -673,6 +736,7 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
         ("logs/external_executor.log", "production_endpoint_activation=public"),
         ("logs/external_executor.log", "network=none network=bridge"),
         ("logs/external_executor.log", "input_pack_mount=read_only input_pack_mount=read_write"),
+        ("logs/external_executor.log", "contract_bundle_mount=read_only contract_bundle_mount=read_write"),
         ("logs/external_executor.log", "db_access=false db_access=read_only"),
         ("logs/control_plane_validator.log", "runtime_activation=false runtime_activation=true"),
         ("logs/control_plane_validator.log", "allow_db_write=false allow_db_write=maybe"),
@@ -710,6 +774,45 @@ def test_output_manifest_requires_external_executor_db_access_attestation(
     _refresh_manifest_entry(root, manifest, rel)
 
     with pytest.raises(hs.HandshakeValidationError, match="db_access=false"):
+        hs.validate_output_manifest(root, manifest)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "db_access=false",
+        "network=none",
+        "input_pack_mount=read_only",
+        "calibration_mount=read_only",
+        "contract_bundle_mount=read_only",
+        "output_mount=read_write",
+        "writable_mounts=output",
+        "source_tree_writes=false",
+    ],
+)
+def test_output_manifest_requires_executor_isolation_attestations_from_executor_log(
+    tmp_path: Path,
+    token: str,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    executor_rel = "logs/external_executor.log"
+    control_rel = "logs/control_plane_validator.log"
+    executor_log = root / executor_rel
+    control_log = root / control_rel
+    executor_log.write_text(
+        executor_log.read_text(encoding="utf-8").replace(f" {token}", ""),
+        encoding="utf-8",
+    )
+    control_log.write_text(
+        control_log.read_text(encoding="utf-8") + f" {token}\n",
+        encoding="utf-8",
+    )
+    manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, manifest, executor_rel)
+    _refresh_manifest_entry(root, manifest, control_rel)
+
+    with pytest.raises(hs.HandshakeValidationError, match="logs/external_executor.log"):
         hs.validate_output_manifest(root, manifest)
 
 
@@ -768,6 +871,25 @@ def test_reproducibility_report_requires_green_jobs_matrix() -> None:
             hs.validate_reproducibility_report(broken)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation", True),
+        ("runtime_activation_attempt", True),
+        ("unexpected_governance_field", False),
+    ],
+)
+def test_reproducibility_report_rejects_unexpected_top_level_fields(
+    field: str,
+    bad: object,
+) -> None:
+    report = _artifact("reproducibility_report.json")
+    report[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_reproducibility_report(report)
+
+
 @pytest.mark.parametrize("field", ("missing_hashes", "unexpected_hashes", "output_manifest_sha256_by_run"))
 def test_reproducibility_report_requires_hash_membership_evidence(field: str) -> None:
     report = _artifact("reproducibility_report.json")
@@ -795,6 +917,25 @@ def test_no_side_effects_report_requires_expected_checks() -> None:
     duplicate["checks"].append(deepcopy(duplicate["checks"][0]))
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_no_side_effects_report(duplicate)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation_attempt", True),
+        ("official_db_write_attempt", True),
+        ("unexpected_report_property", "value"),
+    ],
+)
+def test_no_side_effects_report_rejects_unexpected_top_level_fields(
+    field: str,
+    bad: object,
+) -> None:
+    report = _artifact("no_side_effects_report.json")
+    report[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_no_side_effects_report(report)
 
 
 def test_validation_report_requires_green_expected_checks() -> None:
