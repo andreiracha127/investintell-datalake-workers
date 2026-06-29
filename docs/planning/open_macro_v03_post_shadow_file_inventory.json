@@ -7,16 +7,20 @@
     {
       "path": "AGENTS.md",
       "workspace": "investintell-datalake-workers-main",
-      "reason": "Local project instructions and governance baseline.",
+      "evidence_scope": "local_only_untracked_environment",
+      "pr_evidence_tree": false,
+      "reason": "Local-only untracked project instructions and governance baseline.",
       "symbols_or_entrypoints": [],
-      "observations": "Requires Serena and Auggie context first; older open-PR state says A3=open_macro_v03, A5=blocked, freeze_ready=false, runtime_activation=false."
+      "observations": "Local environment evidence only, not part of the PR evidence tree. Requires Serena and Auggie context first; older open-PR state says A3=open_macro_v03, A5=blocked, freeze_ready=false, runtime_activation=false."
     },
     {
       "path": ".codex/AGENTS.md",
       "workspace": "investintell-datalake-workers-main",
-      "reason": "Mirrored local instructions.",
+      "evidence_scope": "local_only_untracked_environment",
+      "pr_evidence_tree": false,
+      "reason": "Local-only untracked mirrored instructions.",
       "symbols_or_entrypoints": [],
-      "observations": "Same instructions and governance state as AGENTS.md."
+      "observations": "Local environment evidence only, not part of the PR evidence tree. Same instructions and governance state as AGENTS.md."
     },
     {
       "path": "README.md",
@@ -392,6 +396,7 @@
     {
       "path": "backend/app/contracts/quant_engine_v1.py",
       "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
       "reason": "Backend mirrored quant-engine bundle verifier.",
       "symbols_or_entrypoints": ["verify_bundle", "verify_schema_hashes", "bundle_sha256", "iter_bundle_files", "EXPECTED_BUNDLE_SHA256"],
       "observations": "Mirror is inert and verifies bundle hash/SOURCE; expected digest is older than current workers main digest and needs future explicit sync before backend claims."
@@ -399,6 +404,7 @@
     {
       "path": "backend/contracts/quant-engine/v1/SOURCE.json",
       "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
       "reason": "Backend mirror governance source metadata.",
       "symbols_or_entrypoints": [],
       "observations": "Says no engine execution, no container invocation, no allocator/builder runtime change; pins A5 blocked and runtime_activation false."
@@ -406,6 +412,7 @@
     {
       "path": "backend/tests/test_quant_engine_contracts.py",
       "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
       "reason": "Backend contract mirror tests.",
       "symbols_or_entrypoints": ["test_quant_engine_contract_bundle_sha256_matches_manifest", "test_source_metadata_pins_inert_runtime_and_bundle", "test_valid_fixtures_pass_their_schema", "test_invalid_fixtures_are_rejected_by_their_schema"],
       "observations": "Covers schema hash stability, inert governance constants, bundle drift, fixtures."
@@ -413,6 +420,7 @@
     {
       "path": "backend/app/api/routes/builder.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Current allocator endpoint and async optimize job route.",
       "symbols_or_entrypoints": ["POST /builder/optimize", "GET /builder/optimize/{job_id}", "optimize", "optimize_job_status", "_run_optimize_job"],
       "observations": "This is allocator optimization, not quant-engine runtime activation."
@@ -420,6 +428,7 @@
     {
       "path": "backend/app/services/portfolio_builder.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Current allocator runtime path.",
       "symbols_or_entrypoints": ["run_optimize", "_preflight_compiled_problem", "_post_verify_compiled_solution", "QUADRANT_MODEL_VERSION", "CompiledRegimeProblem"],
       "observations": "regime_aware reads quadrant/gate, builds effective policy, solves and post-verifies weights; future runtime integration must avoid mixing with PR 7."
@@ -427,6 +436,7 @@
     {
       "path": "backend/app/services/quadrant_reader.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Backend consumable quadrant read model.",
       "symbols_or_entrypoints": ["QuadrantSnapshotRow", "effective_status", "fetch_quadrant_snapshot"],
       "observations": "Reads regime_quadrant_snapshot with status/confidence/available_at/stale_after filters."
@@ -434,6 +444,7 @@
     {
       "path": "backend/app/services/effective_policy.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Backend policy composition path.",
       "symbols_or_entrypoints": ["EffectiveRegimePolicy", "EffectivePolicyError", "build_effective_policy"],
       "observations": "Composes quadrant and gate snapshots; fails loud on missing/non-consumable gate/quadrant."
@@ -441,6 +452,7 @@
     {
       "path": "backend/app/services/taa_bands.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Backend regime gate reader and gate staleness risk area.",
       "symbols_or_entrypoints": ["GateRegimeSnapshot", "fetch_gate_regime"],
       "observations": "Latest regime_gate_daily row reader; staleness/future-date controls are handled by portfolio_builder regime_aware path, not PR 7."
@@ -448,6 +460,7 @@
     {
       "path": "backend/app/services/optimize_jobs.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Existing job state machine.",
       "symbols_or_entrypoints": ["create_job", "get_job", "mark_running", "mark_succeeded", "mark_failed"],
       "observations": "Persists builder optimize jobs, not quant-engine jobs."
@@ -455,6 +468,7 @@
     {
       "path": "backend/app/models/optimize_job.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Existing optimize_jobs model.",
       "symbols_or_entrypoints": ["OptimizeJob", "JOB_STATUSES"],
       "observations": "JSONB request/result/error for builder optimization jobs; not suitable for silent quant-engine execution reuse."
@@ -462,6 +476,7 @@
     {
       "path": "backend/app/core/config.py",
       "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
       "reason": "Feature flag surface check.",
       "symbols_or_entrypoints": ["Settings", "get_settings"],
       "observations": "No quant-engine runtime feature flag in inspected combo worktree."
@@ -469,6 +484,7 @@
     {
       "path": "backend/app/api/routes/jobs.py",
       "workspace": "investintell-light-main-benchmark",
+      "source_commit": "9ef29899864ed683291717872c5f3caef2527df0",
       "reason": "Legacy/main async job polling route check.",
       "symbols_or_entrypoints": ["GET /jobs/{job_id}", "get_job_status"],
       "observations": "Backtest/Monte Carlo job API, not quant-engine activation."
@@ -476,6 +492,7 @@
     {
       "path": "backend/app/core/config.py",
       "workspace": "investintell-light-main-benchmark",
+      "source_commit": "9ef29899864ed683291717872c5f3caef2527df0",
       "reason": "Legacy/main feature flag surface check.",
       "symbols_or_entrypoints": ["Settings", "use_async_jobs", "get_settings"],
       "observations": "use_async_jobs controls backtest/MC async jobs, not quant-engine."

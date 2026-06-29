@@ -27,7 +27,7 @@
       "id": "P1-001",
       "priority": "P1",
       "title": "Backend contract mirror is stale relative to workers main",
-      "evidence": "Workers main contract bundle is sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a; backend mirror read from investintell-light-quant-engine-contracts pins sha256:a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277.",
+      "evidence": "Workers main contract bundle is sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a; backend mirror read from investintell-light-quant-engine-contracts at source_commit 5ffea2fca17a4ae03258dfcccb7cc34a123d9936 pins sha256:a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277.",
       "mitigation": "Keep PR 7 workers-docs/artifact-review only; schedule backend contract sync in a later dedicated PR before any backend/runtime claim."
     },
     {
@@ -48,7 +48,7 @@
       "id": "P1-004",
       "priority": "P1",
       "title": "Backend allocator runtime is live and complex",
-      "evidence": "investintell-light-combo portfolio_builder.py contains regime_aware runtime path with quadrant/gate reads, solver preflight, and post-verification.",
+      "evidence": "investintell-light-combo at source_commit a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174 portfolio_builder.py contains regime_aware runtime path with quadrant/gate reads, solver preflight, and post-verification.",
       "mitigation": "Exclude backend/control-plane runtime from PR 7; use a later runtime skeleton PR with feature flag default=false if approved."
     },
     {
@@ -76,7 +76,7 @@
       "id": "P3-001",
       "priority": "P3",
       "title": "Documentation state names have drift across old docs and current artifacts",
-      "evidence": "AGENTS.md contains older A4 wording, while PR #6 docs/artifacts use A4=shadow_pilot_validated.",
+      "evidence": "Local-only untracked AGENTS.md contains older A4 wording, while PR #6 docs/artifacts use A4=shadow_pilot_validated.",
       "mitigation": "Planning doc should explicitly state that PR #6 artifacts are the post-shadow source for A4 and older docs are historical context."
     }
   ]
