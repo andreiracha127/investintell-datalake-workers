@@ -1,0 +1,28 @@
+{
+  "A5": "blocked",
+  "allocator_impact": "none",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "backend_executes_docker": false,
+  "backend_executes_engine": false,
+  "backend_executes_subprocess": false,
+  "checks": [
+    {"allowed": false, "id": "runtime_activation", "status": "pass"},
+    {"allowed": false, "id": "official_result", "status": "pass"},
+    {"allowed": false, "id": "db_write", "status": "pass"},
+    {"allowed": false, "id": "allocator_publish", "status": "pass"},
+    {"allowed": false, "id": "production_endpoint_activation", "status": "pass"},
+    {"allowed": false, "id": "backend_engine_execution", "status": "pass"},
+    {"allowed": false, "id": "backend_docker_execution", "status": "pass"},
+    {"allowed": false, "id": "backend_subprocess_execution", "status": "pass"}
+  ],
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "production_impact": "none",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "pass"
+}

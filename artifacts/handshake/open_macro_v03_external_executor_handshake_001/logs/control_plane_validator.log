@@ -1,0 +1,1 @@
+handshake_id=open_macro_v03_external_executor_handshake_001 validator=control_plane status=pass runtime_activation=false allow_db_write=false allow_allocator_publish=false official_result=false backend_executes_docker=false backend_executes_subprocess=false

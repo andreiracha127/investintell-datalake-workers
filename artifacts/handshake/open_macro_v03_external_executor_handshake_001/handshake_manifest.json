@@ -1,0 +1,20 @@
+{
+  "A5": "blocked",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "backend_executes_docker": false,
+  "backend_executes_engine": false,
+  "backend_executes_subprocess": false,
+  "calibration_id": "open_macro_v03_calibration_001",
+  "control_plane_contract_merge_commit": "ba7bc6c2f2f472fdf9e8318de5fd3804efc2cc71",
+  "execution_policy": "isolated_external_executor_no_productive_runtime_docker",
+  "freeze_ready": false,
+  "handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "mode": "shadow",
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false,
+  "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "shadow_id": "open_macro_v03_shadow_001",
+  "status": "candidate"
+}
