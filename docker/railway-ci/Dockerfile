@@ -30,6 +30,7 @@ COPY .githooks /app/.githooks
 COPY docs/calibration /app/docs/calibration
 COPY docs/architecture /app/docs/architecture
 COPY docs/a5 /app/docs/a5
+COPY docs/planning /app/docs/planning
 COPY docs/shadow /app/docs/shadow
 COPY qc-a3-parity /app/qc-a3-parity
 COPY docker/railway-ci /app/docker/railway-ci

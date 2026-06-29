@@ -164,4 +164,5 @@ def test_railway_ci_includes_a5_preflight_governance_test() -> None:
         "/app/artifacts/a5/open_macro_v03_a5_preflight_001"
     ) in text
     assert "COPY docs/a5 /app/docs/a5" in text
+    assert "COPY docs/planning /app/docs/planning" in text
     assert "tests/test_a5_preflight_readiness.py" in text
