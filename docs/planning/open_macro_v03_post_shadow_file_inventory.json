@@ -1,0 +1,501 @@
+{
+  "planning_id": "open_macro_v03_post_shadow_planning_001",
+  "branch": "feat/open-macro-v03-post-shadow-planning-001",
+  "base_head": "09a42a0d80513a8ccfab432317eec6949b3c97cd",
+  "mode": "read_only_planning",
+  "files_read": [
+    {
+      "path": "AGENTS.md",
+      "workspace": "investintell-datalake-workers-main",
+      "evidence_scope": "local_only_untracked_environment",
+      "pr_evidence_tree": false,
+      "reason": "Local-only untracked project instructions and governance baseline.",
+      "symbols_or_entrypoints": [],
+      "observations": "Local environment evidence only, not part of the PR evidence tree. Requires Serena and Auggie context first; older open-PR state says A3=open_macro_v03, A5=blocked, freeze_ready=false, runtime_activation=false."
+    },
+    {
+      "path": ".codex/AGENTS.md",
+      "workspace": "investintell-datalake-workers-main",
+      "evidence_scope": "local_only_untracked_environment",
+      "pr_evidence_tree": false,
+      "reason": "Local-only untracked mirrored instructions.",
+      "symbols_or_entrypoints": [],
+      "observations": "Local environment evidence only, not part of the PR evidence tree. Same instructions and governance state as AGENTS.md."
+    },
+    {
+      "path": "README.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Repository principles, worker contract, Railway deployment entrypoint.",
+      "symbols_or_entrypoints": ["src.run_worker", "src/db.py::connect", "src/db.py::advisory_lock"],
+      "observations": "Workers write to TimescaleDB in normal worker paths; quant-engine planning must remain isolated from productive DB writes."
+    },
+    {
+      "path": "docs/architecture/quant-engine-governance-rollout.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Rollout governance and A5 gate sequencing.",
+      "symbols_or_entrypoints": [],
+      "observations": "Current main uses Railway-native CI, keeps A5 blocked, and lists deferred runtime follow-ups."
+    },
+    {
+      "path": "docs/specs/certified_input_packs_v1.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Certified Input Packs v1 contract and calibration boundary.",
+      "symbols_or_entrypoints": ["python -m src.input_packs.build"],
+      "observations": "Official calibration/shadow must consume certified input packs instead of live DB fallback."
+    },
+    {
+      "path": "docs/calibration/open_macro_v03_calibration_001.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration candidate governance note.",
+      "symbols_or_entrypoints": [],
+      "observations": "Calibration remains candidate only; no runtime activation, A5 blocked, freeze_ready false."
+    },
+    {
+      "path": "docs/shadow/open_macro_v03_shadow_readiness_001.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Readiness package and forbidden scope.",
+      "symbols_or_entrypoints": [],
+      "observations": "Defines inert shadow envelope/result/comparison policy and forbids productive effects."
+    },
+    {
+      "path": "docs/shadow/open_macro_v03_shadow_pilot_001.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "PR #6 artifact-only shadow pilot record.",
+      "symbols_or_entrypoints": ["python -m src.shadow_pilot"],
+      "observations": "A4=shadow_pilot_validated, A5 blocked, freeze_ready false, runtime_activation false, official_result false."
+    },
+    {
+      "path": "docs/architecture/quant-engine-current-inventory.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Earlier inventory of workers and backend allocator surface.",
+      "symbols_or_entrypoints": ["src/calibration_harness.py", "src/qc_a3_core.py", "portfolio_builder.run_optimize"],
+      "observations": "Documents quant-core boundary and backend non-goals before runtime activation."
+    },
+    {
+      "path": "docs/architecture/quant-engine-supply-chain-sandbox.md",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Docker digest and hardened sandbox controls.",
+      "symbols_or_entrypoints": ["docker/quant-engine/Dockerfile", "scripts/repeatability_matrix.py"],
+      "observations": "Container profile uses pinned base image, network none, non-root, read-only FS, explicit output mount."
+    },
+    {
+      "path": "src/input_packs/build.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Certified input pack builder and CLI.",
+      "symbols_or_entrypoints": ["build_pack", "build_parser", "main", "write_report", "builder_code_sha256", "contract_bundle_sha256"],
+      "observations": "Builds open_macro_v03 pack, writes runtime_activation=false, verifies with verify_pack before returning."
+    },
+    {
+      "path": "src/input_packs/verifier.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Offline input pack verifier.",
+      "symbols_or_entrypoints": ["verify_pack", "RowSchema"],
+      "observations": "Checks required files/dirs, schemas, hashes, duplicate paths, P0 content, input_pack_sha256, runtime_activation false, provenance completeness."
+    },
+    {
+      "path": "src/input_packs/manifest.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Input pack aggregate hash and manifest construction.",
+      "symbols_or_entrypoints": ["build_manifest", "compute_input_pack_sha256", "write_manifest"],
+      "observations": "Forces runtime_activation=false while filling component hashes and input_pack_sha256."
+    },
+    {
+      "path": "services/quant_engine/src/investintell_quant_engine/cli.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Quant-engine CLI entrypoints.",
+      "symbols_or_entrypoints": ["build_parser", "main", "dry-run-input-pack", "run-parity"],
+      "observations": "dry-run-input-pack invokes run_input_pack_dry_run with offline=True and output manifest options."
+    },
+    {
+      "path": "services/quant_engine/src/investintell_quant_engine/runners/input_pack.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Certified input pack dry-run runner.",
+      "symbols_or_entrypoints": ["run_input_pack_dry_run", "current_contract_bundle_sha256"],
+      "observations": "Verifies pack with no DB/network, validates expected hashes, returns runtime_activation=false, freeze_ready=false, A5 blocked."
+    },
+    {
+      "path": "src/calibration_candidate.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration candidate producer and guards.",
+      "symbols_or_entrypoints": ["run_calibration", "build_baseline_comparison", "build_invariant_report", "output_manifest", "matrix_evidence_ok", "build_parser"],
+      "observations": "Rejects db_access, network != none, writable input-pack mount, and output inside input pack; writes candidate artifacts only."
+    },
+    {
+      "path": "src/shadow_pilot.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Artifact-only shadow pilot producer and validators.",
+      "symbols_or_entrypoints": ["run_shadow_pilot", "build_shadow_job_envelope", "validate_shadow_job_envelope", "build_shadow_result_manifest", "build_acceptance_report", "build_baseline_comparison", "build_invariant_report", "verify_final_pilot_bundle", "build_parser", "EvidenceError"],
+      "observations": "Builds/validates inert envelope and result manifest, writes logs, enforces no runtime activation, DB write, allocator publish, or endpoint activation."
+    },
+    {
+      "path": "contracts/quant-engine/v1/manifest.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Worker-side quant-engine v1 bundle identity.",
+      "symbols_or_entrypoints": [],
+      "observations": "Current bundle_sha256 is sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a."
+    },
+    {
+      "path": "contracts/quant-engine/v1/job-request.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Quant-engine job request contract.",
+      "symbols_or_entrypoints": ["a3_qc_parity_request", "certified_input_pack_dry_run_request"],
+      "observations": "Requires offline=true and engine_image_digest; dry-run request pins input_pack, source snapshot, contract bundle hashes."
+    },
+    {
+      "path": "contracts/quant-engine/v1/job-result.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Quant-engine job result contract.",
+      "symbols_or_entrypoints": ["a3_qc_parity_result", "certified_input_pack_dry_run_result"],
+      "observations": "Pins runtime_activation=false, freeze_ready=false for dry-run, A3 open_macro_v03, A5 blocked."
+    },
+    {
+      "path": "contracts/quant-engine/v1/engine-manifest.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Engine manifest contract.",
+      "symbols_or_entrypoints": [],
+      "observations": "Requires offline=true and runtime_activation=false."
+    },
+    {
+      "path": "schemas/input_packs/input_pack_manifest.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Certified input pack manifest schema.",
+      "symbols_or_entrypoints": [],
+      "observations": "Requires input_pack_version=v1, source_repo=investintell-datalake-workers, runtime_activation=false, and pinned SHA fields."
+    },
+    {
+      "path": "schemas/input_packs/provenance.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Input pack provenance schema.",
+      "symbols_or_entrypoints": [],
+      "observations": "Requires datasets, jobs, runs, sources; source_repo const investintell-datalake-workers."
+    },
+    {
+      "path": "schemas/input_packs/source.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Input pack SOURCE schema.",
+      "symbols_or_entrypoints": [],
+      "observations": "Pins builder/source commit and builder_code_sha256; optional builder_image_digest must be a sha256 digest."
+    },
+    {
+      "path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_manifest.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration manifest and hash anchors.",
+      "symbols_or_entrypoints": [],
+      "observations": "Status candidate; A5 blocked; freeze_ready false; runtime_activation false; pins input_pack_sha256 and artifact hashes."
+    },
+    {
+      "path": "artifacts/calibration/open_macro_v03_calibration_001/baseline_comparison.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration baseline comparison and blockers.",
+      "symbols_or_entrypoints": [],
+      "observations": "Selected baseline_current; blockers are reference_baselines_not_certified_in_pack and institutional_limits_explicitly_unset."
+    },
+    {
+      "path": "artifacts/calibration/open_macro_v03_calibration_001/output_manifest.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration artifact output manifest.",
+      "symbols_or_entrypoints": [],
+      "observations": "Lists calibration output files and SHA-256 values; excludes run_matrix/reproducibility per current output_manifest generation."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_001/shadow_manifest.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow readiness manifest.",
+      "symbols_or_entrypoints": [],
+      "observations": "execution_status not_started; allocator_impact none; feature_flag_default false; no formula/input/calibration/contract changes."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_001/shadow_job_envelope.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow job envelope contract.",
+      "symbols_or_entrypoints": [],
+      "observations": "Pins calibration/input/contract/engine identities and const false side-effect fields."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_001/shadow_result_manifest.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow result manifest contract and rejection classes.",
+      "symbols_or_entrypoints": [],
+      "observations": "Succeeded results require artifact hashes, summaries, runtime_activation=false, official_result=false; side-effect attempts are rejected/non-retryable."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_001/baseline_comparison_policy.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow comparison policy.",
+      "symbols_or_entrypoints": [],
+      "observations": "Hard reject thresholds: zero missing/unexpected/mismatch/NaN/constraint/invariant failures and hard relative delta < 2.0."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_001/output_manifest.schema.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow pilot output manifest schema.",
+      "symbols_or_entrypoints": [],
+      "observations": "Requires succeeded status, artifacts with path/sha256/bytes, logs_required and unexpected_outputs arrays."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_job_envelope.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Committed pilot envelope.",
+      "symbols_or_entrypoints": [],
+      "observations": "Mode shadow; runtime_activation false; allow_db_write false; allow_allocator_publish false; production_endpoint_activation none; run_fingerprint 078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_result_manifest.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Committed pilot result manifest.",
+      "symbols_or_entrypoints": [],
+      "observations": "Status succeeded; all hard counters zero; material_divergence false; official_result false; runtime_activation false."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/acceptance_report.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Pilot acceptance gate output.",
+      "symbols_or_entrypoints": [],
+      "observations": "Automated checks pass but technical_and_quantitative_review_recorded remains pending and blocking."
+    },
+    {
+      "path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/baseline_comparison.json",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Pilot baseline comparison output.",
+      "symbols_or_entrypoints": [],
+      "observations": "Status pass; no forbidden effects; all relative deltas 0.0."
+    },
+    {
+      "path": "docker/railway-ci/Dockerfile",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Railway CI entrypoint and test gate.",
+      "symbols_or_entrypoints": ["python docker/railway-ci/verify_input_pack.py", "python scripts/contract_bundle.py verify", "pytest", "compileall", "python docker/railway-ci/verify_calibration_artifacts.py"],
+      "observations": "Uses pinned python base image and copies calibration/shadow artifacts into CI image."
+    },
+    {
+      "path": "docker/railway-ci/verify_input_pack.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Railway input pack verification gate.",
+      "symbols_or_entrypoints": ["verify_pack"],
+      "observations": "Verifies golden certified input pack and exits nonzero on failed verification/hash mismatch."
+    },
+    {
+      "path": "docker/railway-ci/verify_calibration_artifacts.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Railway calibration artifact verification gate.",
+      "symbols_or_entrypoints": ["output_manifest", "file_sha256"],
+      "observations": "Recomputes calibration artifact hashes and asserts input_pack_sha256, runtime_activation false, A5 blocked, freeze_ready false, green run_matrix/invariant."
+    },
+    {
+      "path": "docker/quant-engine/Dockerfile",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Offline quant-engine image build path.",
+      "symbols_or_entrypoints": ["/app/docker/quant-engine/entrypoint.sh"],
+      "observations": "Pinned base image, non-root user 65532, copies contracts/schemas/src/package code."
+    },
+    {
+      "path": "docker/quant-engine/entrypoint.sh",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Container entrypoint.",
+      "symbols_or_entrypoints": ["python -m investintell_quant_engine.cli"],
+      "observations": "Executes offline quant-engine CLI."
+    },
+    {
+      "path": "compose.quant-engine.yml",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Local hardened container profile.",
+      "symbols_or_entrypoints": [],
+      "observations": "network_mode none, read_only true, non-root, no-new-privileges, cap_drop ALL, explicit read-only input mount."
+    },
+    {
+      "path": "railway.toml",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Production worker Railway entrypoint.",
+      "symbols_or_entrypoints": ["python -m src.run_worker"],
+      "observations": "Normal worker deploy config remains separate from quant-engine artifact-only planning."
+    },
+    {
+      "path": "scripts/ci/run_remote_railway_ci.ps1",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Remote Railway CI script.",
+      "symbols_or_entrypoints": ["Invoke-DockerBuild", "Wait-DockerReady"],
+      "observations": "Archives current commit, builds docker/railway-ci/Dockerfile remotely, reports REMOTE_CI_STATUS=PASS."
+    },
+    {
+      "path": "scripts/repeatability_matrix.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Repeatability and container isolation matrix.",
+      "symbols_or_entrypoints": ["_cli_args", "_run_host", "_run_container", "_container_docker_base", "_container_isolation_probe_script", "main"],
+      "observations": "Container leg uses network none, read-only root, non-root, no-new-privileges, no caps, read-only input mount."
+    },
+    {
+      "path": "scripts/contract_bundle.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Contract bundle CLI wrapper.",
+      "symbols_or_entrypoints": ["main"],
+      "observations": "Exposes build and verify commands for contracts/quant-engine/v1."
+    },
+    {
+      "path": "tests/input_packs/test_builder.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Input pack builder test coverage.",
+      "symbols_or_entrypoints": ["test_build_cli_creates_verified_open_macro_v03_pack", "test_build_is_deterministic_and_path_independent", "test_p0_pack_does_not_use_derived_tables_as_official_inputs"],
+      "observations": "Covers determinism, source inputs, unsupported profile, force safety, and contract bundle matching."
+    },
+    {
+      "path": "tests/input_packs/test_verifier.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Input pack verifier test coverage.",
+      "symbols_or_entrypoints": ["test_golden_pack_verifies_offline", "test_verifier_rejects_runtime_activation", "test_input_pack_code_has_no_db_connector_imports"],
+      "observations": "Covers offline verification, tampering, component schemas, provenance, runtime_activation rejection, and no DB connector imports."
+    },
+    {
+      "path": "tests/quant_engine/test_input_pack_dry_run.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Dry-run runner test coverage.",
+      "symbols_or_entrypoints": ["test_dry_run_consumes_verified_pack_without_runtime_activation", "test_dry_run_cli_outputs_are_canonical_jobs_independent", "test_dry_run_runner_has_no_db_or_network_connector_imports"],
+      "observations": "Covers no runtime activation, contract conformity, hash mismatches, jobs independence, no DB/network imports."
+    },
+    {
+      "path": "tests/test_calibration_candidate.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Calibration candidate test coverage.",
+      "symbols_or_entrypoints": ["test_calibration_candidate_generates_required_artifacts", "test_run_matrix_requires_external_evidence", "test_run_calibration_enforces_runtime_guards_for_direct_calls", "test_output_manifest_excludes_stale_files_and_records_disk_size"],
+      "observations": "Covers artifact generation, external evidence, image/digest guards, runtime guard enforcement, output isolation."
+    },
+    {
+      "path": "tests/test_shadow_readiness.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow readiness test coverage.",
+      "symbols_or_entrypoints": ["test_shadow_manifest_pins_validated_calibration_without_activation", "test_shadow_job_envelope_schema_is_inert", "test_shadow_result_manifest_schema_keeps_result_unofficial", "test_railway_ci_runs_shadow_readiness_gate"],
+      "observations": "Covers inert manifests, no runtime/A5 activation, observability/rollback docs, Railway CI gate."
+    },
+    {
+      "path": "tests/test_shadow_pilot.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Shadow pilot test coverage.",
+      "symbols_or_entrypoints": ["test_shadow_pilot_runner_generates_valid_artifact_bundle", "test_committed_shadow_pilot_artifacts_validate", "test_acceptance_report_blocks_when_invariant_report_is_red", "test_output_manifest_rejects_extra_artifact_paths_and_files"],
+      "observations": "Covers pilot artifact generation/validation, baseline thresholds, reproducibility, output manifests, observability and rollback evidence."
+    },
+    {
+      "path": "tests/test_shadow_pilot_binding.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Trust-boundary and side-effect binding tests.",
+      "symbols_or_entrypoints": ["test_invariant_detects_allocator_publish_attempt_in_log", "test_invariant_detects_runtime_activation_attempt_in_log", "test_invariant_detects_db_write_attempt_in_log", "test_invariant_detects_endpoint_activation_attempt_in_log", "test_result_requires_inert_envelope_pins"],
+      "observations": "Covers stale/self-contradictory evidence, whole-token log attestation, no allocator/DB/runtime/endpoint attempts."
+    },
+    {
+      "path": "tests/test_repeatability_matrix.py",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Repeatability matrix container isolation tests.",
+      "symbols_or_entrypoints": ["test_container_runner_preflights_isolated_mounts"],
+      "observations": "Covers docker base flags and isolation preflight behavior."
+    },
+    {
+      "path": "tests/quant_engine/*",
+      "workspace": "investintell-datalake-workers-main",
+      "reason": "Quant-engine contract/comparator/output-manifest/repeatability suites.",
+      "symbols_or_entrypoints": ["test_contract_bundle.py", "test_contract_bundle_real.py", "test_contract_schemas.py", "test_contract_fixtures.py", "test_outputs_manifest.py", "test_repeatability.py", "test_comparator.py"],
+      "observations": "Directory-level inventory confirms contract and closed manifest coverage."
+    },
+    {
+      "path": "backend/app/contracts/quant_engine_v1.py",
+      "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
+      "reason": "Backend mirrored quant-engine bundle verifier.",
+      "symbols_or_entrypoints": ["verify_bundle", "verify_schema_hashes", "bundle_sha256", "iter_bundle_files", "EXPECTED_BUNDLE_SHA256"],
+      "observations": "Mirror is inert and verifies bundle hash/SOURCE; expected digest is older than current workers main digest and needs future explicit sync before backend claims."
+    },
+    {
+      "path": "backend/contracts/quant-engine/v1/SOURCE.json",
+      "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
+      "reason": "Backend mirror governance source metadata.",
+      "symbols_or_entrypoints": [],
+      "observations": "Says no engine execution, no container invocation, no allocator/builder runtime change; pins A5 blocked and runtime_activation false."
+    },
+    {
+      "path": "backend/tests/test_quant_engine_contracts.py",
+      "workspace": "investintell-light-quant-engine-contracts",
+      "source_commit": "5ffea2fca17a4ae03258dfcccb7cc34a123d9936",
+      "reason": "Backend contract mirror tests.",
+      "symbols_or_entrypoints": ["test_quant_engine_contract_bundle_sha256_matches_manifest", "test_source_metadata_pins_inert_runtime_and_bundle", "test_valid_fixtures_pass_their_schema", "test_invalid_fixtures_are_rejected_by_their_schema"],
+      "observations": "Covers schema hash stability, inert governance constants, bundle drift, fixtures."
+    },
+    {
+      "path": "backend/app/api/routes/builder.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Current allocator endpoint and async optimize job route.",
+      "symbols_or_entrypoints": ["POST /builder/optimize", "GET /builder/optimize/{job_id}", "optimize", "optimize_job_status", "_run_optimize_job"],
+      "observations": "This is allocator optimization, not quant-engine runtime activation."
+    },
+    {
+      "path": "backend/app/services/portfolio_builder.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Current allocator runtime path.",
+      "symbols_or_entrypoints": ["run_optimize", "_preflight_compiled_problem", "_post_verify_compiled_solution", "QUADRANT_MODEL_VERSION", "CompiledRegimeProblem"],
+      "observations": "regime_aware reads quadrant/gate, builds effective policy, solves and post-verifies weights; future runtime integration must avoid mixing with PR 7."
+    },
+    {
+      "path": "backend/app/services/quadrant_reader.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Backend consumable quadrant read model.",
+      "symbols_or_entrypoints": ["QuadrantSnapshotRow", "effective_status", "fetch_quadrant_snapshot"],
+      "observations": "Reads regime_quadrant_snapshot with status/confidence/available_at/stale_after filters."
+    },
+    {
+      "path": "backend/app/services/effective_policy.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Backend policy composition path.",
+      "symbols_or_entrypoints": ["EffectiveRegimePolicy", "EffectivePolicyError", "build_effective_policy"],
+      "observations": "Composes quadrant and gate snapshots; fails loud on missing/non-consumable gate/quadrant."
+    },
+    {
+      "path": "backend/app/services/taa_bands.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Backend regime gate reader and gate staleness risk area.",
+      "symbols_or_entrypoints": ["GateRegimeSnapshot", "fetch_gate_regime"],
+      "observations": "Latest regime_gate_daily row reader; staleness/future-date controls are handled by portfolio_builder regime_aware path, not PR 7."
+    },
+    {
+      "path": "backend/app/services/optimize_jobs.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Existing job state machine.",
+      "symbols_or_entrypoints": ["create_job", "get_job", "mark_running", "mark_succeeded", "mark_failed"],
+      "observations": "Persists builder optimize jobs, not quant-engine jobs."
+    },
+    {
+      "path": "backend/app/models/optimize_job.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Existing optimize_jobs model.",
+      "symbols_or_entrypoints": ["OptimizeJob", "JOB_STATUSES"],
+      "observations": "JSONB request/result/error for builder optimization jobs; not suitable for silent quant-engine execution reuse."
+    },
+    {
+      "path": "backend/app/core/config.py",
+      "workspace": "investintell-light-combo",
+      "source_commit": "a6c6f3e7fae6e2e63a0f3a9214f89c12e0819174",
+      "reason": "Feature flag surface check.",
+      "symbols_or_entrypoints": ["Settings", "get_settings"],
+      "observations": "No quant-engine runtime feature flag in inspected combo worktree."
+    },
+    {
+      "path": "backend/app/api/routes/jobs.py",
+      "workspace": "investintell-light-main-benchmark",
+      "source_commit": "9ef29899864ed683291717872c5f3caef2527df0",
+      "reason": "Legacy/main async job polling route check.",
+      "symbols_or_entrypoints": ["GET /jobs/{job_id}", "get_job_status"],
+      "observations": "Backtest/Monte Carlo job API, not quant-engine activation."
+    },
+    {
+      "path": "backend/app/core/config.py",
+      "workspace": "investintell-light-main-benchmark",
+      "source_commit": "9ef29899864ed683291717872c5f3caef2527df0",
+      "reason": "Legacy/main feature flag surface check.",
+      "symbols_or_entrypoints": ["Settings", "use_async_jobs", "get_settings"],
+      "observations": "use_async_jobs controls backtest/MC async jobs, not quant-engine."
+    }
+  ]
+}
