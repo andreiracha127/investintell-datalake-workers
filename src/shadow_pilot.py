@@ -63,6 +63,7 @@ EXPECTED_REPRODUCIBILITY_LABELS = frozenset(
     for repeat in (0, 1)
 )
 
+MATERIALITY_THRESHOLD_VERSION = "open_macro_v03_shadow_materiality_v1"
 MATERIALITY_NUMERIC_FIELDS = (
     "max_relative_delta_pct",
     "return_metric_delta_pct",
@@ -130,6 +131,17 @@ def require_finite(payload: dict[str, Any], numeric_fields: tuple[str, ...], *, 
 
 def expected_output_artifact_uri() -> str:
     return f"artifact://shadow/{SHADOW_ID}/{SHADOW_PILOT_ID}"
+
+
+def invariant_report_is_green(invariant_report: dict[str, Any]) -> bool:
+    """Recompute the invariant verdict from its checks; never trust a stale ``ok``."""
+    checks = invariant_report.get("checks", {})
+    return (
+        invariant_report.get("ok") is True
+        and isinstance(checks, dict)
+        and bool(checks)
+        and all(bool(value) for value in checks.values())
+    )
 
 
 def repo_root() -> Path:
@@ -275,6 +287,22 @@ def validate_pilot_output_manifest(manifest: dict[str, Any], *, root: Path | Non
     validate_with_schema(manifest, shadow_root(root) / "output_manifest.schema.json")
 
 
+def verify_final_pilot_bundle(output_dir: Path) -> None:
+    """Require every final artifact to be present on disk.
+
+    The output manifest only records the pre-final ``PILOT_RELATIVE_OUTPUTS``; this
+    gate covers the full ``FINAL_PILOT_RELATIVE_OUTPUTS`` set so an audited/rebuilt
+    bundle missing a final artifact (result/acceptance/observability/...) is rejected.
+    """
+    missing = [
+        rel
+        for rel in sorted(FINAL_PILOT_RELATIVE_OUTPUTS)
+        if not ensure_child(output_dir / rel, output_dir).is_file()
+    ]
+    if missing:
+        raise EvidenceError(f"final pilot bundle missing required artifact: {missing[0]}")
+
+
 def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None = None) -> None:
     validate_with_schema(result, shadow_root(root) / "shadow_result_manifest.schema.json")
     started_at = parse_utc_timestamp(result["started_at"])
@@ -373,6 +401,7 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
             "shadow_pilot_id": SHADOW_PILOT_ID,
             "calibration_id": CALIBRATION_ID,
             "policy_id": policy["policy_id"],
+            "hash_comparison": "exact",
         },
         where="baseline_comparison",
     )
@@ -386,6 +415,13 @@ def evaluate_baseline_comparison(comparison: dict[str, Any], policy: dict[str, A
     materiality = comparison["materiality_summary"]
     require_fields(divergence, DIVERGENCE_COUNTERS, where="baseline_comparison.divergence_summary")
     require_fields(materiality, MATERIALITY_NUMERIC_FIELDS, where="baseline_comparison.materiality_summary")
+    require_identity(
+        materiality,
+        {"threshold_version": MATERIALITY_THRESHOLD_VERSION},
+        where="baseline_comparison.materiality_summary",
+    )
+    if comparison.get("numeric_tolerances") != policy["numeric_tolerances"]:
+        raise EvidenceError("baseline_comparison: numeric_tolerances do not match the policy")
     rejection_rules: list[str] = []
     review_rules: list[str] = []
     counter_to_rule = {
@@ -478,7 +514,7 @@ def build_baseline_comparison(policy: dict[str, Any]) -> dict[str, Any]:
             "invariant_failures": 0,
         },
         "materiality_summary": {
-            "threshold_version": "open_macro_v03_shadow_materiality_v1",
+            "threshold_version": MATERIALITY_THRESHOLD_VERSION,
             "material_divergence": False,
             "max_relative_delta_pct": 0.0,
             "return_metric_delta_pct": 0.0,
@@ -631,7 +667,8 @@ def build_invariant_report(
         ),
         "no_db_access": "db_access=false" in executor_text and "db_access=true" not in executor_text,
         "no_allocator_publish": (
-            "allow_allocator_publish=false" in shadow_text and "allow_allocator_publish=true" not in shadow_text
+            "allow_allocator_publish=false" in shadow_text
+            and "allocator_publish=true" not in shadow_text
         ),
     }
     return {
@@ -797,7 +834,7 @@ def build_shadow_result_manifest(
     finished_at: dt.datetime,
     calibration_run_matrix: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if invariant_report["ok"] is not True:
+    if not invariant_report_is_green(invariant_report):
         raise ValueError("cannot emit succeeded result for red invariant report")
     require_identity(
         invariant_report,
@@ -822,8 +859,20 @@ def build_shadow_result_manifest(
             raise EvidenceError(
                 "cannot emit succeeded result: run_fingerprint does not match the calibration matrix"
             )
-    if envelope.get("output_artifact_uri") != expected_output_artifact_uri():
-        raise EvidenceError("cannot emit succeeded result for mis-bound output_artifact_uri")
+    require_identity(
+        envelope,
+        {
+            "shadow_id": SHADOW_ID,
+            "calibration_id": CALIBRATION_ID,
+            "engine_image_digest": RAILWAY_IMAGE_DIGEST,
+            "runtime_activation": False,
+            "allow_db_write": False,
+            "allow_allocator_publish": False,
+            "production_endpoint_activation": "none",
+            "output_artifact_uri": expected_output_artifact_uri(),
+        },
+        where="envelope",
+    )
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     materiality_summary = dict(baseline_comparison["materiality_summary"])
     divergence_summary = dict(baseline_comparison["divergence_summary"])
@@ -907,7 +956,7 @@ def build_acceptance_report(
         "all_constraints_satisfied": baseline_comparison["divergence_summary"]["constraint_violations"] == 0,
         "invariant_failures_zero": (
             baseline_comparison["divergence_summary"]["invariant_failures"] == 0
-            and invariant_report["ok"] is True
+            and invariant_report_is_green(invariant_report)
         ),
         "relative_deltas_below_hard_reject_threshold": relative_deltas_below_hard_reject_threshold(
             baseline_comparison,
@@ -1276,6 +1325,7 @@ def run_shadow_pilot(
             acceptance_report=acceptance_report,
         ),
     )
+    verify_final_pilot_bundle(output_dir)
     return manifest
 
 

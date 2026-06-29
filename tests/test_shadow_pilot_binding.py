@@ -406,3 +406,111 @@ def test_acceptance_recomputes_run_fingerprint_from_matrix() -> None:
             expected_run_fingerprint=bogus,
             calibration_run_matrix=CALIBRATION_RUN_MATRIX,
         )
+
+
+# ---- Review 4588401090 #1: recompute invariant ok from its checks ----
+def test_result_recomputes_invariant_ok_from_checks() -> None:
+    policy = _policy()
+    envelope = _envelope()
+    invariant = _invariant()  # ok stays True (stale)
+    invariant["checks"]["allow_db_write_false"] = False
+    with pytest.raises(ValueError):
+        _result(envelope, _baseline(), _reproducibility(envelope), policy, invariant=invariant)
+
+
+def test_acceptance_recomputes_invariant_ok_from_checks() -> None:
+    policy = _policy()
+    invariant = _invariant()
+    invariant["checks"]["allow_db_write_false"] = False
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=_output_manifest(),
+        invariant_report=invariant,
+        baseline_comparison=_baseline(),
+        reproducibility_report=_reproducibility(),
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+    rule = next(r for r in report["rules"] if r["id"] == "invariant_failures_zero")
+    assert rule["status"] == "fail"
+
+
+# ---- Review 4588401090 #2: final bundle completeness (all FINAL_PILOT_RELATIVE_OUTPUTS) ----
+def test_final_pilot_bundle_requires_all_final_artifacts(tmp_path: Path) -> None:
+    out = tmp_path / sp.SHADOW_PILOT_ID
+    sp.run_shadow_pilot(output_dir=out, allow_external_output_dir=True)
+    sp.verify_final_pilot_bundle(out)  # complete bundle validates
+
+    (out / "shadow_result_manifest.json").unlink()
+    with pytest.raises(ValueError):
+        sp.verify_final_pilot_bundle(out)
+
+
+# ---- Review 4588401090 #3: validate envelope inert pins before success ----
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation", True),
+        ("allow_db_write", True),
+        ("allow_allocator_publish", True),
+        ("production_endpoint_activation", "shadow"),
+        ("engine_image_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_result_requires_inert_envelope_pins(field: str, bad: object) -> None:
+    policy = _policy()
+    envelope = _envelope()
+    repro = _reproducibility(envelope)  # fingerprint captured before mutation
+    envelope[field] = bad
+    with pytest.raises(ValueError):
+        _result(envelope, _baseline(), repro, policy)
+
+
+# ---- Review 4588401090 #4: bind baseline policy metadata before passing ----
+def test_evaluate_baseline_binds_hash_comparison() -> None:
+    policy = _policy()
+    comparison = _baseline()
+    comparison["hash_comparison"] = "loose"
+    with pytest.raises(ValueError):
+        sp.evaluate_baseline_comparison(comparison, policy)
+
+
+def test_evaluate_baseline_binds_threshold_version() -> None:
+    policy = _policy()
+    comparison = _baseline()
+    comparison["materiality_summary"]["threshold_version"] = "other_version"
+    with pytest.raises(ValueError):
+        sp.evaluate_baseline_comparison(comparison, policy)
+
+
+def test_evaluate_baseline_binds_numeric_tolerances() -> None:
+    policy = _policy()
+    comparison = _baseline()
+    comparison["numeric_tolerances"] = {"float_abs_tolerance": 1.0, "float_rel_tolerance": 1.0, "hash_comparison": "exact"}
+    with pytest.raises(ValueError):
+        sp.evaluate_baseline_comparison(comparison, policy)
+
+
+# ---- Review 4588401090 #6: detect actual allocator publish attempts in the log ----
+def test_invariant_detects_allocator_publish_attempt_in_log(tmp_path: Path) -> None:
+    policy = _policy()
+    out = tmp_path / sp.SHADOW_PILOT_ID
+    (out / "logs").mkdir(parents=True)
+    (out / "logs" / "shadow_pilot.log").write_text(
+        "shadow_pilot_id=open_macro_v03_shadow_pilot_001 runtime_activation=false "
+        "allow_db_write=false allow_allocator_publish=false production_endpoint_activation=none "
+        "allocator_publish=true\n",
+        encoding="utf-8",
+    )
+    (out / "logs" / "executor.log").write_text(
+        "isolated_external_executor_no_productive_runtime_docker network=none db_access=false "
+        "input_pack_mount=read_only source_tree_writes=false\n",
+        encoding="utf-8",
+    )
+    report = sp.build_invariant_report(
+        output_dir=out,
+        envelope=_envelope(),
+        baseline_comparison=_baseline(),
+        reproducibility_report=_reproducibility(),
+        policy=policy,
+    )
+    assert report["checks"]["no_allocator_publish"] is False
