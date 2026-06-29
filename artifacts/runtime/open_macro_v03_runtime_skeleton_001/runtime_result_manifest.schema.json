@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/runtime/open_macro_v03_runtime_skeleton_001/runtime_result_manifest.schema.json",
+  "title": "OpenMacroV03RuntimeSkeletonResultManifest001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sideEffectAttemptFailureClass": {
+      "enum": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "docker_execution_from_backend_attempt"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "runtime_skeleton_id",
+    "strategy",
+    "a5_preflight_id",
+    "request_id",
+    "correlation_id",
+    "execution_id",
+    "result_mode",
+    "status",
+    "runtime_activation",
+    "A5",
+    "freeze_ready",
+    "official_result",
+    "allow_db_write",
+    "allow_allocator_publish",
+    "allocator_publish",
+    "db_write_official",
+    "production_endpoint_activation",
+    "feature_flag_name",
+    "feature_flag_default",
+    "docker_execution_from_backend",
+    "artifact_uri",
+    "formula_changes",
+    "input_pack_changes",
+    "calibration_pack_changes",
+    "contract_v1_changes"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "runtime_skeleton_id": {"const": "open_macro_v03_runtime_skeleton_001"},
+    "strategy": {"const": "open_macro_v03"},
+    "a5_preflight_id": {"const": "open_macro_v03_a5_preflight_001"},
+    "request_id": {"type": "string", "minLength": 12},
+    "correlation_id": {"type": "string", "minLength": 12},
+    "execution_id": {"type": "string", "minLength": 12},
+    "result_mode": {"const": "artifact_only_inert_manifest"},
+    "status": {"enum": ["not_executed", "rejected"]},
+    "runtime_activation": {"const": false},
+    "A5": {"const": "blocked"},
+    "freeze_ready": {"const": false},
+    "official_result": {"const": false},
+    "allow_db_write": {"const": false},
+    "allow_allocator_publish": {"const": false},
+    "allocator_publish": {"const": false},
+    "db_write_official": {"const": false},
+    "production_endpoint_activation": {"const": "none"},
+    "feature_flag_name": {"const": "open_macro_v03_runtime_activation"},
+    "feature_flag_default": {"const": false},
+    "docker_execution_from_backend": {"const": false},
+    "artifact_uri": {"type": "string", "pattern": "^artifact://runtime/open_macro_v03_runtime_skeleton_001/[^\\s]+$"},
+    "formula_changes": {"const": "none"},
+    "input_pack_changes": {"const": "none"},
+    "calibration_pack_changes": {"const": "none"},
+    "contract_v1_changes": {"const": "none"},
+    "input_pack_id": {"const": "open_macro_v03_certified_input_pack_001"},
+    "input_pack_sha256": {"const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"},
+    "calibration_id": {"const": "open_macro_v03_calibration_001"},
+    "calibration_config_sha256": {"const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"},
+    "contract_bundle_sha256": {"const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"},
+    "contract_version": {"const": "1.0.0"},
+    "engine_commit": {"const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"},
+    "engine_image_digest": {"const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"},
+    "observed_input_pack_id": {"type": "string", "minLength": 1},
+    "observed_input_pack_sha256": {"$ref": "#/$defs/sha256Hex"},
+    "observed_calibration_id": {"type": "string", "minLength": 1},
+    "observed_calibration_config_sha256": {"$ref": "#/$defs/sha256Hex"},
+    "observed_contract_bundle_sha256": {"$ref": "#/$defs/sha256Hex"},
+    "observed_contract_version": {"type": "string", "minLength": 1},
+    "observed_engine_commit": {"$ref": "#/$defs/commitSha"},
+    "observed_engine_image_digest": {"$ref": "#/$defs/sha256Digest"},
+    "failure_class": {
+      "enum": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "docker_execution_from_backend_attempt",
+        "identity_drift",
+        "contract_drift"
+      ]
+    },
+    "side_effect_attempt_count": {"type": "integer", "minimum": 1},
+    "side_effect_attempt_evidence_sha256": {"$ref": "#/$defs/sha256Hex"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "rejected"}}, "required": ["status"]},
+      "then": {"required": ["failure_class"]}
+    },
+    {
+      "if": {"required": ["failure_class"]},
+      "then": {"properties": {"status": {"const": "rejected"}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "not_executed"}}, "required": ["status"]},
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["side_effect_attempt_count"]},
+            {"required": ["side_effect_attempt_evidence_sha256"]}
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"failure_class": {"$ref": "#/$defs/sideEffectAttemptFailureClass"}},
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "side_effect_attempt_count",
+          "side_effect_attempt_evidence_sha256"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"failure_class": {"const": "identity_drift"}},
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "input_pack_id",
+          "input_pack_sha256",
+          "calibration_id",
+          "calibration_config_sha256",
+          "engine_commit",
+          "engine_image_digest",
+          "observed_input_pack_id",
+          "observed_input_pack_sha256",
+          "observed_calibration_id",
+          "observed_calibration_config_sha256",
+          "observed_engine_commit",
+          "observed_engine_image_digest"
+        ],
+        "anyOf": [
+          {"properties": {"observed_input_pack_id": {"not": {"const": "open_macro_v03_certified_input_pack_001"}}}},
+          {"properties": {"observed_input_pack_sha256": {"not": {"const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"}}}},
+          {"properties": {"observed_calibration_id": {"not": {"const": "open_macro_v03_calibration_001"}}}},
+          {"properties": {"observed_calibration_config_sha256": {"not": {"const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"}}}},
+          {"properties": {"observed_engine_commit": {"not": {"const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"}}}},
+          {"properties": {"observed_engine_image_digest": {"not": {"const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"}}}}
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"failure_class": {"const": "contract_drift"}},
+        "required": ["failure_class"]
+      },
+      "then": {
+        "required": [
+          "contract_bundle_sha256",
+          "contract_version",
+          "engine_commit",
+          "engine_image_digest",
+          "observed_contract_bundle_sha256",
+          "observed_contract_version",
+          "observed_engine_commit",
+          "observed_engine_image_digest"
+        ],
+        "anyOf": [
+          {"properties": {"observed_contract_bundle_sha256": {"not": {"const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"}}}},
+          {"properties": {"observed_contract_version": {"not": {"const": "1.0.0"}}}},
+          {"properties": {"observed_engine_commit": {"not": {"const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"}}}},
+          {"properties": {"observed_engine_image_digest": {"not": {"const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"}}}}
+        ]
+      }
+    }
+  ]
+}

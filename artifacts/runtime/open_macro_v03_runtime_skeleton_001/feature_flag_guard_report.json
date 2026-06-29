@@ -1,0 +1,14 @@
+{
+  "activation_allowed": false,
+  "allowed_environments": [],
+  "blast_radius": 0,
+  "default": false,
+  "feature_flag_default": false,
+  "feature_flag_guard_report_id": "open_macro_v03_runtime_skeleton_feature_flag_guard_001",
+  "feature_flag_name": "open_macro_v03_runtime_activation",
+  "production_default": false,
+  "require_explicit_approval": true,
+  "runtime_activation": false,
+  "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "status": "pass_default_false"
+}
