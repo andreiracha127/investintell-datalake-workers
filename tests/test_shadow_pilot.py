@@ -73,11 +73,7 @@ def _invariant_report(*, ok: bool = True) -> dict:
         "shadow_id": sp.SHADOW_ID,
         "shadow_pilot_id": sp.SHADOW_PILOT_ID,
         "calibration_id": sp.CALIBRATION_ID,
-        "checks": {
-            "runtime_activation_false": True,
-            "allow_db_write_false": True,
-            "allow_allocator_publish_false": True,
-        },
+        "checks": {check: True for check in sp.REQUIRED_INVARIANT_CHECKS},
     }
 
 

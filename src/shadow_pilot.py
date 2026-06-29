@@ -82,6 +82,22 @@ DIVERGENCE_COUNTERS = (
     "constraint_violations",
     "invariant_failures",
 )
+REQUIRED_INVARIANT_CHECKS = frozenset(
+    {
+        "runtime_activation_false",
+        "allow_db_write_false",
+        "allow_allocator_publish_false",
+        "production_endpoint_activation_none",
+        "baseline_comparison_pass",
+        "reproducibility_ok",
+        "logs_present",
+        "output_dir_dedicated",
+        "no_symlinks",
+        "source_tree_not_executor_output",
+        "no_db_access",
+        "no_allocator_publish",
+    }
+)
 
 
 class EvidenceError(ValueError):
@@ -133,14 +149,23 @@ def expected_output_artifact_uri() -> str:
     return f"artifact://shadow/{SHADOW_ID}/{SHADOW_PILOT_ID}"
 
 
+def _log_attests(logs: str, affirmative: str, forbidden: tuple[str, ...]) -> bool:
+    """The affirmative isolation token must be present and no forbidding token may appear."""
+    return affirmative in logs and not any(token in logs for token in forbidden)
+
+
 def invariant_report_is_green(invariant_report: dict[str, Any]) -> bool:
-    """Recompute the invariant verdict from its checks; never trust a stale ``ok``."""
+    """Recompute the invariant verdict from its checks; never trust a stale ``ok``.
+
+    Requires the full ``REQUIRED_INVARIANT_CHECKS`` set to be present and every check
+    value to be a literal ``True`` (a truthy ``1``/``"true"`` does not count).
+    """
     checks = invariant_report.get("checks", {})
     return (
         invariant_report.get("ok") is True
         and isinstance(checks, dict)
-        and bool(checks)
-        and all(bool(value) for value in checks.values())
+        and REQUIRED_INVARIANT_CHECKS.issubset(checks)
+        and all(value is True for value in checks.values())
     )
 
 
@@ -650,25 +675,52 @@ def build_invariant_report(
     log_paths = [shadow_log, executor_log]
     executor_text = executor_log.read_text(encoding="utf-8") if executor_log.is_file() else ""
     shadow_text = shadow_log.read_text(encoding="utf-8") if shadow_log.is_file() else ""
+    # Derive isolation invariants from the executor/shadow log evidence (not just the
+    # envelope), so a stale or hand-edited log recording a forbidden state/attempt
+    # flips the relevant gate red.
+    combined_logs = f"{shadow_text}\n{executor_text}"
     checks = {
-        "runtime_activation_false": envelope["runtime_activation"] is False,
-        "allow_db_write_false": envelope["allow_db_write"] is False,
-        "allow_allocator_publish_false": envelope["allow_allocator_publish"] is False,
-        "production_endpoint_activation_none": envelope["production_endpoint_activation"] == "none",
+        "runtime_activation_false": (
+            envelope["runtime_activation"] is False
+            and _log_attests(
+                combined_logs, "runtime_activation=false", ("runtime_activation=true", "runtime_activation_attempt")
+            )
+        ),
+        "allow_db_write_false": (
+            envelope["allow_db_write"] is False
+            and _log_attests(
+                combined_logs, "allow_db_write=false", ("allow_db_write=true", "official_db_write_attempt")
+            )
+        ),
+        "allow_allocator_publish_false": (
+            envelope["allow_allocator_publish"] is False
+            and _log_attests(
+                combined_logs, "allow_allocator_publish=false", ("allocator_publish=true", "allocator_publish_attempt")
+            )
+        ),
+        "production_endpoint_activation_none": (
+            envelope["production_endpoint_activation"] == "none"
+            and _log_attests(
+                combined_logs,
+                "production_endpoint_activation=none",
+                (
+                    "production_endpoint_activation=shadow",
+                    "production_endpoint_activation=true",
+                    "production_endpoint_activation_attempt",
+                ),
+            )
+        ),
         "baseline_comparison_pass": evaluate_baseline_comparison(baseline_comparison, policy)["status"] == "pass",
         "reproducibility_ok": reproducibility_report["ok"] is True,
         "logs_present": all(path.exists() and path.stat().st_size > 0 for path in log_paths),
         "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
         "no_symlinks": not any(path.is_symlink() for path in output_dir.rglob("*")),
-        # Derive isolation invariants from the executor/shadow evidence instead of
-        # hard-coding them, so a stale or hand-edited log flips the gate red.
-        "source_tree_not_executor_output": (
-            "source_tree_writes=false" in executor_text and "source_tree_writes=true" not in executor_text
+        "source_tree_not_executor_output": _log_attests(
+            combined_logs, "source_tree_writes=false", ("source_tree_writes=true",)
         ),
-        "no_db_access": "db_access=false" in executor_text and "db_access=true" not in executor_text,
-        "no_allocator_publish": (
-            "allow_allocator_publish=false" in shadow_text
-            and "allocator_publish=true" not in shadow_text
+        "no_db_access": _log_attests(combined_logs, "db_access=false", ("db_access=true",)),
+        "no_allocator_publish": _log_attests(
+            combined_logs, "allow_allocator_publish=false", ("allocator_publish=true", "allocator_publish_attempt")
         ),
     }
     return {
@@ -764,7 +816,7 @@ def output_manifest_has_required_outputs(
             return False
         if not is_sha256_hex(artifact.get("sha256")):
             return False
-        if not isinstance(artifact.get("bytes"), int) or artifact["bytes"] < 0:
+        if not _is_number(artifact.get("bytes")) or isinstance(artifact["bytes"], float) or artifact["bytes"] < 0:
             return False
         if output_dir is not None:
             try:
@@ -805,6 +857,10 @@ def output_manifest_has_no_unexpected_outputs(
     output_manifest: dict[str, Any],
     output_dir: Path | None = None,
 ) -> bool:
+    # Require an explicit attestation: the field must be a present list, not an
+    # implicit empty default, even when no output_dir disk scan is available.
+    if not isinstance(output_manifest.get("unexpected_outputs"), list):
+        return False
     return not output_manifest_unexpected_outputs(output_manifest, output_dir)
 
 
@@ -939,8 +995,19 @@ def build_acceptance_report(
     rejection_rules = set(baseline_evaluation["rejection_rules_triggered"])
     baseline_rejected = baseline_evaluation["status"] == "rejected"
 
+    attempt_invariant_checks = {
+        "runtime_activation_attempt": ("runtime_activation_false",),
+        "official_db_write_attempt": ("allow_db_write_false", "no_db_access"),
+        "allocator_publish_attempt": ("allow_allocator_publish_false", "no_allocator_publish"),
+        "production_endpoint_activation_attempt": ("production_endpoint_activation_none",),
+    }
+
     def no_forbidden_attempt(attempt_key: str) -> bool:
-        return forbidden_effects.get(attempt_key) is False and attempt_key not in rejection_rules
+        return (
+            forbidden_effects.get(attempt_key) is False
+            and attempt_key not in rejection_rules
+            and all(checks.get(check) is True for check in attempt_invariant_checks[attempt_key])
+        )
 
     raw_evidence_by_rule = {
         "all_required_outputs_present": (

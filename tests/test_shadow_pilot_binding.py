@@ -58,12 +58,33 @@ def _invariant(*, ok: bool = True) -> dict:
         "shadow_id": sp.SHADOW_ID,
         "shadow_pilot_id": sp.SHADOW_PILOT_ID,
         "calibration_id": sp.CALIBRATION_ID,
-        "checks": {
-            "runtime_activation_false": True,
-            "allow_db_write_false": True,
-            "allow_allocator_publish_false": True,
-        },
+        "checks": {check: True for check in sp.REQUIRED_INVARIANT_CHECKS},
     }
+
+
+# Clean log lines that attest the inert isolation state (mirror the runner output).
+_CLEAN_SHADOW_LOG = (
+    "shadow_pilot_id=open_macro_v03_shadow_pilot_001 runtime_activation=false "
+    "allow_db_write=false allow_allocator_publish=false production_endpoint_activation=none"
+)
+_CLEAN_EXECUTOR_LOG = (
+    "isolated_external_executor_no_productive_runtime_docker network=none db_access=false "
+    "input_pack_mount=read_only source_tree_writes=false"
+)
+
+
+def _build_invariant_with_logs(tmp_path: Path, *, shadow_line: str, executor_line: str) -> dict:
+    out = tmp_path / sp.SHADOW_PILOT_ID
+    (out / "logs").mkdir(parents=True)
+    (out / "logs" / "shadow_pilot.log").write_text(shadow_line + "\n", encoding="utf-8")
+    (out / "logs" / "executor.log").write_text(executor_line + "\n", encoding="utf-8")
+    return sp.build_invariant_report(
+        output_dir=out,
+        envelope=_envelope(),
+        baseline_comparison=_baseline(),
+        reproducibility_report=_reproducibility(),
+        policy=_policy(),
+    )
 
 
 def _output_manifest() -> dict:
@@ -514,3 +535,86 @@ def test_invariant_detects_allocator_publish_attempt_in_log(tmp_path: Path) -> N
         policy=policy,
     )
     assert report["checks"]["no_allocator_publish"] is False
+
+
+# ---- Review 4588438147 #1: invariant checks must be literal booleans ----
+@pytest.mark.parametrize("bad", [1, "true", "false", "1"])
+def test_invariant_green_requires_literal_bool_checks(bad: object) -> None:
+    invariant = _invariant()
+    invariant["checks"]["no_db_access"] = bad  # truthy but not a literal bool
+    assert sp.invariant_report_is_green(invariant) is False
+
+
+# ---- Review 4588438147 #3: invariant must carry the full required check set ----
+def test_invariant_green_requires_full_check_set() -> None:
+    invariant = _invariant()
+    del invariant["checks"]["no_db_access"]
+    assert sp.invariant_report_is_green(invariant) is False
+
+
+# ---- Review 4588438147 #2/#4/#5: derive runtime/db-write/endpoint attempts from logs ----
+def test_invariant_detects_runtime_activation_attempt_in_log(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path,
+        shadow_line=_CLEAN_SHADOW_LOG + " runtime_activation_attempt=true",
+        executor_line=_CLEAN_EXECUTOR_LOG,
+    )
+    assert report["checks"]["runtime_activation_false"] is False
+
+
+def test_invariant_detects_db_write_attempt_in_log(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path,
+        shadow_line=_CLEAN_SHADOW_LOG + " official_db_write_attempt=true",
+        executor_line=_CLEAN_EXECUTOR_LOG,
+    )
+    assert report["checks"]["allow_db_write_false"] is False
+
+
+def test_invariant_detects_endpoint_activation_attempt_in_log(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path,
+        shadow_line=_CLEAN_SHADOW_LOG + " production_endpoint_activation_attempt=true",
+        executor_line=_CLEAN_EXECUTOR_LOG,
+    )
+    assert report["checks"]["production_endpoint_activation_none"] is False
+
+
+def test_invariant_clean_logs_stay_green(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path, shadow_line=_CLEAN_SHADOW_LOG, executor_line=_CLEAN_EXECUTOR_LOG
+    )
+    for check in (
+        "runtime_activation_false",
+        "allow_db_write_false",
+        "allow_allocator_publish_false",
+        "production_endpoint_activation_none",
+        "no_db_access",
+        "no_allocator_publish",
+        "source_tree_not_executor_output",
+    ):
+        assert report["checks"][check] is True, check
+
+
+# ---- Review 4588438147 #6: reject boolean byte counts in output manifests ----
+def test_output_manifest_rejects_boolean_byte_count() -> None:
+    manifest = _output_manifest()
+    manifest["artifacts"][0]["bytes"] = True
+    assert sp.output_manifest_has_required_outputs(manifest) is False
+
+
+# ---- Review 4588438147 #7: require an explicit no-unexpected-output attestation ----
+def test_acceptance_requires_unexpected_outputs_attestation() -> None:
+    policy = _policy()
+    manifest = _output_manifest()
+    del manifest["unexpected_outputs"]
+    report = sp.build_acceptance_report(
+        policy=policy,
+        output_manifest=manifest,
+        invariant_report=_invariant(),
+        baseline_comparison=_baseline(),
+        reproducibility_report=_reproducibility(),
+        expected_run_fingerprint=_envelope()["run_fingerprint"],
+    )
+    rule = next(r for r in report["rules"] if r["id"] == "no_unexpected_outputs")
+    assert rule["status"] == "fail"
