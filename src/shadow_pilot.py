@@ -263,6 +263,18 @@ def validate_shadow_job_envelope(envelope: dict[str, Any], *, root: Path | None 
     validate_with_schema(envelope, shadow_root(root) / "shadow_job_envelope.schema.json")
 
 
+def validate_baseline_comparison(comparison: dict[str, Any], *, root: Path | None = None) -> None:
+    validate_with_schema(comparison, shadow_root(root) / "baseline_comparison.schema.json")
+
+
+def validate_reproducibility_report(report: dict[str, Any], *, root: Path | None = None) -> None:
+    validate_with_schema(report, shadow_root(root) / "reproducibility_report.schema.json")
+
+
+def validate_pilot_output_manifest(manifest: dict[str, Any], *, root: Path | None = None) -> None:
+    validate_with_schema(manifest, shadow_root(root) / "output_manifest.schema.json")
+
+
 def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None = None) -> None:
     validate_with_schema(result, shadow_root(root) / "shadow_result_manifest.schema.json")
     started_at = parse_utc_timestamp(result["started_at"])
@@ -1149,8 +1161,10 @@ def run_shadow_pilot(
     )
 
     baseline_comparison = build_baseline_comparison(policy)
+    validate_baseline_comparison(baseline_comparison, root=root)
     write_json(output_dir / "baseline_comparison.json", baseline_comparison)
     reproducibility_report = build_reproducibility_report(calibration_run_matrix, envelope, calibration_manifest)
+    validate_reproducibility_report(reproducibility_report, root=root)
     write_json(output_dir / "reproducibility_report.json", reproducibility_report)
     invariant_report = build_invariant_report(
         output_dir=output_dir,
@@ -1162,6 +1176,7 @@ def run_shadow_pilot(
     write_json(output_dir / "invariant_report.json", invariant_report)
 
     output_manifest = build_pilot_output_manifest(output_dir)
+    validate_pilot_output_manifest(output_manifest, root=root)
     if not output_manifest_has_required_logs(output_manifest):
         raise ValueError("output manifest must include shadow and executor logs")
     if not output_manifest_has_required_outputs(output_manifest, output_dir):

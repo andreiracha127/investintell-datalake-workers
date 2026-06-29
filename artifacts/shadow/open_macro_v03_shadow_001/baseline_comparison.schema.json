@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/shadow/open_macro_v03_shadow_001/baseline_comparison.schema.json",
+  "title": "OpenMacroV03ShadowPilotBaselineComparison001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "ruleList": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "shadow_id",
+    "shadow_pilot_id",
+    "calibration_id",
+    "policy_id",
+    "divergence_summary",
+    "materiality_summary",
+    "forbidden_effects",
+    "numeric_tolerances",
+    "hash_comparison",
+    "evaluation",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "shadow_id": {
+      "const": "open_macro_v03_shadow_001"
+    },
+    "shadow_pilot_id": {
+      "const": "open_macro_v03_shadow_pilot_001"
+    },
+    "calibration_id": {
+      "const": "open_macro_v03_calibration_001"
+    },
+    "policy_id": {
+      "const": "open_macro_v03_shadow_baseline_comparison_policy_v1"
+    },
+    "hash_comparison": {
+      "const": "exact"
+    },
+    "status": {
+      "enum": ["pass", "review_required", "rejected"]
+    },
+    "divergence_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missing_outputs",
+        "unexpected_outputs",
+        "mismatch_count",
+        "nan_or_inf_count",
+        "constraint_violations",
+        "invariant_failures"
+      ],
+      "properties": {
+        "missing_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unexpected_outputs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mismatch_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nan_or_inf_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "constraint_violations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invariant_failures": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "materiality_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threshold_version",
+        "material_divergence",
+        "max_relative_delta_pct",
+        "return_metric_delta_pct",
+        "risk_metric_delta_pct",
+        "allocation_weight_delta_pct",
+        "classification_rate_delta_pct",
+        "latency_p95_regression_pct",
+        "memory_peak_regression_pct",
+        "retry_rate_delta_pct"
+      ],
+      "properties": {
+        "threshold_version": {
+          "const": "open_macro_v03_shadow_materiality_v1"
+        },
+        "material_divergence": {
+          "type": "boolean"
+        },
+        "max_relative_delta_pct": {
+          "type": "number",
+          "minimum": 0
+        },
+        "return_metric_delta_pct": {
+          "type": "number"
+        },
+        "risk_metric_delta_pct": {
+          "type": "number"
+        },
+        "allocation_weight_delta_pct": {
+          "type": "number"
+        },
+        "classification_rate_delta_pct": {
+          "type": "number"
+        },
+        "latency_p95_regression_pct": {
+          "type": "number"
+        },
+        "memory_peak_regression_pct": {
+          "type": "number"
+        },
+        "retry_rate_delta_pct": {
+          "type": "number"
+        }
+      }
+    },
+    "forbidden_effects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+        "formula_change",
+        "input_pack_change",
+        "calibration_pack_change",
+        "contract_v1_change",
+        "contract_v1_change_without_new_bundle"
+      ],
+      "properties": {
+        "runtime_activation_attempt": {
+          "const": false
+        },
+        "official_db_write_attempt": {
+          "const": false
+        },
+        "allocator_publish_attempt": {
+          "const": false
+        },
+        "production_endpoint_activation_attempt": {
+          "const": false
+        },
+        "formula_change": {
+          "const": "none"
+        },
+        "input_pack_change": {
+          "const": "none"
+        },
+        "calibration_pack_change": {
+          "const": "none"
+        },
+        "contract_v1_change": {
+          "const": "none"
+        },
+        "contract_v1_change_without_new_bundle": {
+          "const": "none"
+        }
+      }
+    },
+    "numeric_tolerances": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "float_abs_tolerance",
+        "float_rel_tolerance",
+        "hash_comparison"
+      ],
+      "properties": {
+        "float_abs_tolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "float_rel_tolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "hash_comparison": {
+          "const": "exact"
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "rejection_rules_triggered",
+        "review_rules_triggered",
+        "material_divergence"
+      ],
+      "properties": {
+        "status": {
+          "enum": ["pass", "review_required", "rejected"]
+        },
+        "rejection_rules_triggered": {
+          "$ref": "#/$defs/ruleList"
+        },
+        "review_rules_triggered": {
+          "$ref": "#/$defs/ruleList"
+        },
+        "material_divergence": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

@@ -240,6 +240,50 @@ def test_build_result_rejects_misbound_envelope_uri() -> None:
         _result(envelope, _baseline(), _reproducibility(envelope), policy)
 
 
+# ---- Missing schemas: data-layer hardening for the unschema'd evidence artifacts ----
+def _committed(name: str) -> dict:
+    return json.loads(
+        (ROOT / "artifacts" / "shadow" / sp.SHADOW_PILOT_ID / name).read_text(encoding="utf-8")
+    )
+
+
+def test_baseline_comparison_schema_validates_committed_and_rejects_drift() -> None:
+    sp.validate_baseline_comparison(_committed("baseline_comparison.json"), root=ROOT)
+
+    foreign = _committed("baseline_comparison.json")
+    foreign["shadow_id"] = "other_shadow"
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_baseline_comparison(foreign, root=ROOT)
+
+    missing = _committed("baseline_comparison.json")
+    del missing["materiality_summary"]["return_metric_delta_pct"]
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_baseline_comparison(missing, root=ROOT)
+
+    numeric_marker = _committed("baseline_comparison.json")
+    numeric_marker["forbidden_effects"]["formula_change"] = 0
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_baseline_comparison(numeric_marker, root=ROOT)
+
+
+def test_reproducibility_report_schema_validates_committed_and_rejects_drift() -> None:
+    sp.validate_reproducibility_report(_committed("reproducibility_report.json"), root=ROOT)
+
+    foreign = _committed("reproducibility_report.json")
+    foreign["shadow_pilot_id"] = "other_pilot"
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_reproducibility_report(foreign, root=ROOT)
+
+
+def test_output_manifest_schema_validates_committed_and_rejects_drift() -> None:
+    sp.validate_pilot_output_manifest(_committed("output_manifest.json"), root=ROOT)
+
+    bad_status = _committed("output_manifest.json")
+    bad_status["status"] = "failed"
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_pilot_output_manifest(bad_status, root=ROOT)
+
+
 # ---- A12 (new finding): invariant report re-evaluates baseline, ignores stale status ----
 def test_invariant_report_reevaluates_stale_baseline_status(tmp_path: Path) -> None:
     policy = _policy()
