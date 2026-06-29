@@ -84,6 +84,10 @@ def _valid_result() -> dict:
         "feature_flag_default": False,
         "docker_execution_from_backend": False,
         "artifact_uri": "artifact://runtime/open_macro_v03_runtime_skeleton_001/result-001",
+        "formula_changes": "none",
+        "input_pack_changes": "none",
+        "calibration_pack_changes": "none",
+        "contract_v1_changes": "none",
     }
 
 
@@ -164,6 +168,10 @@ def test_runtime_job_envelope_schema_rejects_activation_and_identity_drift(field
         ("feature_flag_name", "other_runtime_activation"),
         ("feature_flag_default", True),
         ("docker_execution_from_backend", True),
+        ("formula_changes", "changed"),
+        ("input_pack_changes", "changed"),
+        ("calibration_pack_changes", "changed"),
+        ("contract_v1_changes", "changed"),
     ],
 )
 def test_runtime_result_manifest_schema_rejects_official_results_and_side_effects(field: str, bad: object) -> None:
@@ -175,6 +183,20 @@ def test_runtime_result_manifest_schema_rejects_official_results_and_side_effect
     broken[field] = bad
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(broken, schema)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["formula_changes", "input_pack_changes", "calibration_pack_changes", "contract_v1_changes"],
+)
+def test_runtime_result_manifest_requires_no_change_pins(field: str) -> None:
+    schema = _json("runtime_result_manifest.schema.json")
+    result = _valid_result()
+    jsonschema.validate(result, schema)
+
+    del result[field]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(result, schema)
 
 
 def test_runtime_result_rejected_status_requires_failure_class() -> None:
@@ -224,6 +246,19 @@ def test_runtime_result_side_effect_rejections_require_audit_evidence(failure_cl
             jsonschema.validate(broken, schema)
 
 
+@pytest.mark.parametrize(
+    "evidence_field",
+    ["side_effect_attempt_count", "side_effect_attempt_evidence_sha256"],
+)
+def test_runtime_result_not_executed_rejects_side_effect_evidence(evidence_field: str) -> None:
+    schema = _json("runtime_result_manifest.schema.json")
+    result = _valid_result()
+    result[evidence_field] = 1 if evidence_field == "side_effect_attempt_count" else "a" * 64
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(result, schema)
+
+
 def test_runtime_result_identity_drift_requires_observed_identity_values() -> None:
     schema = _json("runtime_result_manifest.schema.json")
     envelope = _valid_envelope()
@@ -268,6 +303,20 @@ def test_runtime_result_identity_drift_requires_observed_identity_values() -> No
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(broken, schema)
 
+    no_drift = deepcopy(result)
+    no_drift.update(
+        {
+            "observed_input_pack_id": envelope["input_pack_id"],
+            "observed_input_pack_sha256": envelope["input_pack_sha256"],
+            "observed_calibration_id": envelope["calibration_id"],
+            "observed_calibration_config_sha256": envelope["calibration_config_sha256"],
+            "observed_engine_commit": envelope["engine_commit"],
+            "observed_engine_image_digest": envelope["engine_image_digest"],
+        }
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(no_drift, schema)
+
 
 def test_runtime_result_contract_drift_requires_observed_contract_identity_values() -> None:
     schema = _json("runtime_result_manifest.schema.json")
@@ -304,6 +353,18 @@ def test_runtime_result_contract_drift_requires_observed_contract_identity_value
         del broken[required_field]
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(broken, schema)
+
+    no_drift = deepcopy(result)
+    no_drift.update(
+        {
+            "observed_contract_bundle_sha256": envelope["contract_bundle_sha256"],
+            "observed_contract_version": envelope["contract_version"],
+            "observed_engine_commit": envelope["engine_commit"],
+            "observed_engine_image_digest": envelope["engine_image_digest"],
+        }
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(no_drift, schema)
 
 
 def test_feature_flag_guard_defaults_false_and_allows_no_environment() -> None:

@@ -49,7 +49,11 @@
     "feature_flag_name",
     "feature_flag_default",
     "docker_execution_from_backend",
-    "artifact_uri"
+    "artifact_uri",
+    "formula_changes",
+    "input_pack_changes",
+    "calibration_pack_changes",
+    "contract_v1_changes"
   ],
   "properties": {
     "schema_version": {"const": 1},
@@ -74,6 +78,10 @@
     "feature_flag_default": {"const": false},
     "docker_execution_from_backend": {"const": false},
     "artifact_uri": {"type": "string", "pattern": "^artifact://runtime/open_macro_v03_runtime_skeleton_001/[^\\s]+$"},
+    "formula_changes": {"const": "none"},
+    "input_pack_changes": {"const": "none"},
+    "calibration_pack_changes": {"const": "none"},
+    "contract_v1_changes": {"const": "none"},
     "input_pack_id": {"const": "open_macro_v03_certified_input_pack_001"},
     "input_pack_sha256": {"const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"},
     "calibration_id": {"const": "open_macro_v03_calibration_001"},
@@ -114,6 +122,17 @@
       "then": {"properties": {"status": {"const": "rejected"}}}
     },
     {
+      "if": {"properties": {"status": {"const": "not_executed"}}, "required": ["status"]},
+      "then": {
+        "not": {
+          "anyOf": [
+            {"required": ["side_effect_attempt_count"]},
+            {"required": ["side_effect_attempt_evidence_sha256"]}
+          ]
+        }
+      }
+    },
+    {
       "if": {
         "properties": {"failure_class": {"$ref": "#/$defs/sideEffectAttemptFailureClass"}},
         "required": ["failure_class"]
@@ -144,6 +163,14 @@
           "observed_calibration_config_sha256",
           "observed_engine_commit",
           "observed_engine_image_digest"
+        ],
+        "anyOf": [
+          {"properties": {"observed_input_pack_id": {"not": {"const": "open_macro_v03_certified_input_pack_001"}}}},
+          {"properties": {"observed_input_pack_sha256": {"not": {"const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"}}}},
+          {"properties": {"observed_calibration_id": {"not": {"const": "open_macro_v03_calibration_001"}}}},
+          {"properties": {"observed_calibration_config_sha256": {"not": {"const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"}}}},
+          {"properties": {"observed_engine_commit": {"not": {"const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"}}}},
+          {"properties": {"observed_engine_image_digest": {"not": {"const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"}}}}
         ]
       }
     },
@@ -162,6 +189,12 @@
           "observed_contract_version",
           "observed_engine_commit",
           "observed_engine_image_digest"
+        ],
+        "anyOf": [
+          {"properties": {"observed_contract_bundle_sha256": {"not": {"const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"}}}},
+          {"properties": {"observed_contract_version": {"not": {"const": "1.0.0"}}}},
+          {"properties": {"observed_engine_commit": {"not": {"const": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"}}}},
+          {"properties": {"observed_engine_image_digest": {"not": {"const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"}}}}
         ]
       }
     }
