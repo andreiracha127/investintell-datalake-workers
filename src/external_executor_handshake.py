@@ -27,6 +27,7 @@ CONTRACT_BUNDLE_SHA256: Final = "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f0
 ENGINE_COMMIT: Final = "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
 ENGINE_IMAGE_DIGEST: Final = "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
 RUN_FINGERPRINT: Final = "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106"
+ENVELOPE_AS_OF: Final = "2026-06-26"
 
 REQUEST_ID: Final = "req-open-macro-v03-external-executor-handshake-001"
 CORRELATION_ID: Final = "corr-open-macro-v03-external-executor-handshake-001"
@@ -48,6 +49,12 @@ LOGS_REQUIRED: Final[tuple[str, ...]] = (
     "logs/control_plane_validator.log",
     "logs/external_executor.log",
 )
+# shadow_result_manifest.json is intentionally excluded from OUTPUT_ARTIFACT_PATHS.
+# It embeds output_manifest_sha256 to pin the hash of output_manifest.json; including it
+# in output_manifest.json would create a circular hash dependency — each file's hash would
+# depend on the other's finalised content. Its structural integrity is fully validated by
+# validate_shadow_result_manifest(), which checks every pinned field plus the
+# output_manifest_sha256 cross-reference.
 OUTPUT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
     "control_plane_request.json",
     "shadow_job_envelope.json",
@@ -147,6 +154,9 @@ def _logical_text_bytes(path: Path) -> bytes:
 
 
 def file_sha256(path: str | Path) -> str:
+    # JSON: hash over canonical re-serialisation (sorted keys, no whitespace) so the digest
+    # is stable regardless of committed formatting. This intentionally diverges from what
+    # `sha256sum` reports on the raw file; use file_logical_bytes for the on-disk byte count.
     candidate = Path(path)
     if candidate.suffix.lower() == ".json":
         return canonical_json_sha256(load_json(candidate))
@@ -156,10 +166,11 @@ def file_sha256(path: str | Path) -> str:
 
 
 def file_logical_bytes(path: str | Path) -> int:
+    # JSON uses raw CRLF-normalised bytes (not canonical serialisation) intentionally:
+    # file_sha256 uses canonical re-serialisation so the two measures are complementary —
+    # SHA catches content drift, byte count catches format/whitespace drift.
     candidate = Path(path)
-    if candidate.suffix.lower() in {".md", ".log"}:
-        return len(_logical_text_bytes(candidate))
-    if candidate.suffix.lower() == ".json":
+    if candidate.suffix.lower() in {".json", ".md", ".log"}:
         return len(_logical_text_bytes(candidate))
     return candidate.stat().st_size
 
@@ -270,7 +281,7 @@ def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
             "correlation_id": CORRELATION_ID,
             "execution_id": EXECUTION_ID,
             "run_fingerprint": RUN_FINGERPRINT,
-            "as_of": "2026-06-26",
+            "as_of": ENVELOPE_AS_OF,
             "strategy": "open_macro_v03",
             "mode": "shadow",
             "execution_policy": EXECUTION_POLICY,
@@ -579,3 +590,14 @@ def verify_handshake(root: Path | None = None) -> dict[str, Any]:
         "production_impact": "none",
         "validated": True,
     }
+
+
+if __name__ == "__main__":
+    import sys
+
+    try:
+        result = verify_handshake()
+        print(json.dumps(result, indent=2))
+    except HandshakeValidationError as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        sys.exit(1)
