@@ -1,0 +1,44 @@
+{
+  "artifact_type": "shadow_pilot_output_manifest",
+  "artifacts": [
+    {
+      "bytes": 1597,
+      "path": "baseline_comparison.json",
+      "sha256": "18401a2bfc7372158b6cb29b6ec93039ae16ea53beb9e682d307629049706a2c"
+    },
+    {
+      "bytes": 661,
+      "path": "invariant_report.json",
+      "sha256": "c0414f3e22573381b6d786ab63e22bccbf7a10a3c21e753bce00a1ddebb069bd"
+    },
+    {
+      "bytes": 137,
+      "path": "logs/executor.log",
+      "sha256": "07ccfb33dc0d7d4da4078efee9c3316238db2b4f6105a90915641e82b283b8c1"
+    },
+    {
+      "bytes": 160,
+      "path": "logs/shadow_pilot.log",
+      "sha256": "f2ba3cc9fcdccc061505734d7e8f1c63226f910ec19775f08680534ad856047b"
+    },
+    {
+      "bytes": 2592,
+      "path": "reproducibility_report.json",
+      "sha256": "c7c6614df1f245adf1f9be4c438b23ed3b4c548625942acbb36a17d25a591ffa"
+    },
+    {
+      "bytes": 1297,
+      "path": "shadow_job_envelope.json",
+      "sha256": "0c4d62c22e3954f60e3d7ee565154737a3327cb75640aa63abbb81b36098477d"
+    }
+  ],
+  "logs_required": [
+    "logs/shadow_pilot.log",
+    "logs/executor.log"
+  ],
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
+  "status": "succeeded",
+  "unexpected_outputs": []
+}

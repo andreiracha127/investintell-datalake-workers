@@ -1,0 +1,67 @@
+{
+  "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "container_runs": [
+    "container_jobs1_r0",
+    "container_jobs1_r1",
+    "container_jobs4_r0",
+    "container_jobs4_r1"
+  ],
+  "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
+  "db_access": false,
+  "docker_image_digest": null,
+  "docker_image_id": "sha256:e420d7e799305dca1a6b352cb624de3264ab6f9cdf7a2619b3a8d8c242b375f0",
+  "docker_image_provenance_ok": true,
+  "duplicates": 0,
+  "expected_docker_image_digest": null,
+  "expected_docker_image_id": "sha256:e420d7e799305dca1a6b352cb624de3264ab6f9cdf7a2619b3a8d8c242b375f0",
+  "expected_labels": [
+    "container_jobs1_r0",
+    "container_jobs1_r1",
+    "container_jobs4_r0",
+    "container_jobs4_r1",
+    "host_jobs1_r0",
+    "host_jobs1_r1",
+    "host_jobs4_r0",
+    "host_jobs4_r1"
+  ],
+  "expected_run_count": 8,
+  "host_runs": [
+    "host_jobs1_r0",
+    "host_jobs1_r1",
+    "host_jobs4_r0",
+    "host_jobs4_r1"
+  ],
+  "input_pack_mount": "read_only",
+  "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
+  "jobs_matrix": [
+    1,
+    4
+  ],
+  "mismatch_count": 0,
+  "missing": [],
+  "missing_hashes": [],
+  "network": "none",
+  "ok": true,
+  "output_manifest_sha256_by_run": {
+    "container_jobs1_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs1_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs4_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "container_jobs4_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs1_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs1_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs4_r0": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15",
+    "host_jobs4_r1": "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+  },
+  "path_independence": true,
+  "repeat_runs_per_mode": 2,
+  "run_count": 8,
+  "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",
+  "run_hash_mismatches": [],
+  "schema_version": 1,
+  "semantic_run_fingerprint_policy": "execution_id excluded; pinned provenance and calibration hashes included",
+  "shadow_id": "open_macro_v03_shadow_001",
+  "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
+  "unexpected": [],
+  "unexpected_hashes": []
+}

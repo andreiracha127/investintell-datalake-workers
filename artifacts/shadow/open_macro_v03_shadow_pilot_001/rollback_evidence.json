@@ -1,0 +1,20 @@
+{
+  "allocator_received_output": false,
+  "discardable_artifacts": [
+    "artifacts/shadow/open_macro_v03_shadow_pilot_001"
+  ],
+  "feature_flag_default": false,
+  "feature_flag_name": "open_macro_v03_shadow_readiness_enabled",
+  "official_result_published": false,
+  "procedure": [
+    "keep feature flag false",
+    "refuse new envelopes for open_macro_v03_shadow_001",
+    "discard artifact-only pilot bundle if required"
+  ],
+  "production_endpoint_activated": false,
+  "productive_baseline_unchanged": true,
+  "productive_db_received_official_result": false,
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "shadow_pilot_id": "open_macro_v03_shadow_pilot_001"
+}

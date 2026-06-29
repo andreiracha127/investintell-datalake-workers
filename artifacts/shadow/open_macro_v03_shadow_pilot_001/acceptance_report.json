@@ -1,0 +1,120 @@
+{
+  "A5": "blocked",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "freeze_ready": false,
+  "rules": [
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for all_required_outputs_present: True",
+      "id": "all_required_outputs_present",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_unexpected_outputs: True",
+      "id": "no_unexpected_outputs",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for mismatch_count_zero: True",
+      "id": "mismatch_count_zero",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_nan_or_inf: True",
+      "id": "no_nan_or_inf",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for all_constraints_satisfied: True",
+      "id": "all_constraints_satisfied",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for invariant_failures_zero: True",
+      "id": "invariant_failures_zero",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for relative_deltas_below_hard_reject_threshold: True",
+      "id": "relative_deltas_below_hard_reject_threshold",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for run_fingerprint_consistent: True",
+      "id": "run_fingerprint_consistent",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for output_manifest_complete: True",
+      "id": "output_manifest_complete",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for result_reproducible: True",
+      "id": "result_reproducible",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for runtime_activation_false: True",
+      "id": "runtime_activation_false",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for allow_db_write_false: True",
+      "id": "allow_db_write_false",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for allow_allocator_publish_false: True",
+      "id": "allow_allocator_publish_false",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_runtime_activation_attempt: True",
+      "id": "no_runtime_activation_attempt",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_official_db_write_attempt: True",
+      "id": "no_official_db_write_attempt",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_allocator_publish_attempt: True",
+      "id": "no_allocator_publish_attempt",
+      "status": "pass"
+    },
+    {
+      "blocking": false,
+      "evidence": "automated artifact evidence for no_production_endpoint_activation_attempt: True",
+      "id": "no_production_endpoint_activation_attempt",
+      "status": "pass"
+    },
+    {
+      "blocking": true,
+      "evidence": "human technical/quantitative review remains pending for the next gate",
+      "id": "technical_and_quantitative_review_recorded",
+      "status": "pending"
+    }
+  ],
+  "runtime_activation": false,
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
+  "status": "technical_pass_promotion_review_pending"
+}

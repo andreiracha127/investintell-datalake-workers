@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/artifacts/shadow/open_macro_v03_shadow_001/reproducibility_report.schema.json",
+  "title": "OpenMacroV03ShadowPilotReproducibilityReport001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "labelList": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "shadow_id",
+    "shadow_pilot_id",
+    "calibration_id",
+    "input_pack_sha256",
+    "calibration_config_sha256",
+    "contract_bundle_sha256",
+    "run_fingerprint",
+    "expected_run_count",
+    "run_count",
+    "expected_labels",
+    "missing",
+    "unexpected",
+    "missing_hashes",
+    "unexpected_hashes",
+    "run_hash_mismatches",
+    "duplicates",
+    "mismatch_count",
+    "container_runs",
+    "host_runs",
+    "jobs_matrix",
+    "repeat_runs_per_mode",
+    "output_manifest_sha256_by_run",
+    "semantic_run_fingerprint_policy",
+    "network",
+    "db_access",
+    "input_pack_mount",
+    "path_independence",
+    "docker_image_id",
+    "docker_image_digest",
+    "expected_docker_image_id",
+    "expected_docker_image_digest",
+    "docker_image_provenance_ok",
+    "ok"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "shadow_id": {
+      "const": "open_macro_v03_shadow_001"
+    },
+    "shadow_pilot_id": {
+      "const": "open_macro_v03_shadow_pilot_001"
+    },
+    "calibration_id": {
+      "const": "open_macro_v03_calibration_001"
+    },
+    "input_pack_sha256": {
+      "const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
+    },
+    "calibration_config_sha256": {
+      "const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"
+    },
+    "contract_bundle_sha256": {
+      "const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "expected_run_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "run_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expected_labels": {
+      "$ref": "#/$defs/labelList"
+    },
+    "missing": {
+      "$ref": "#/$defs/labelList"
+    },
+    "unexpected": {
+      "$ref": "#/$defs/labelList"
+    },
+    "missing_hashes": {
+      "$ref": "#/$defs/labelList"
+    },
+    "unexpected_hashes": {
+      "$ref": "#/$defs/labelList"
+    },
+    "run_hash_mismatches": {
+      "$ref": "#/$defs/labelList"
+    },
+    "duplicates": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mismatch_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "container_runs": {
+      "$ref": "#/$defs/labelList"
+    },
+    "host_runs": {
+      "$ref": "#/$defs/labelList"
+    },
+    "jobs_matrix": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
+    },
+    "repeat_runs_per_mode": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "output_manifest_sha256_by_run": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sha256Hex"
+      }
+    },
+    "semantic_run_fingerprint_policy": {
+      "type": "string"
+    },
+    "network": {
+      "const": "none"
+    },
+    "db_access": {
+      "const": false
+    },
+    "input_pack_mount": {
+      "const": "read_only"
+    },
+    "path_independence": {
+      "const": true
+    },
+    "docker_image_id": {
+      "$ref": "#/$defs/sha256Digest"
+    },
+    "docker_image_digest": {
+      "type": ["string", "null"]
+    },
+    "expected_docker_image_id": {
+      "$ref": "#/$defs/sha256Digest"
+    },
+    "expected_docker_image_digest": {
+      "type": ["string", "null"]
+    },
+    "docker_image_provenance_ok": {
+      "type": "boolean"
+    },
+    "ok": {
+      "type": "boolean"
+    }
+  }
+}

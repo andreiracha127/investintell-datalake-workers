@@ -5,3 +5,6 @@ schemas/input_packs/**/*.json text eol=lf
 artifacts/calibration/**/*.json text eol=lf
 artifacts/calibration/**/*.md text eol=lf
 artifacts/calibration/**/*.log text eol=lf
+artifacts/shadow/**/*.json text eol=lf
+artifacts/shadow/**/*.md text eol=lf
+artifacts/shadow/**/*.log text eol=lf
