@@ -245,6 +245,34 @@ def test_handshake_manifest_pins_runtime_skeleton_merge_commit() -> None:
         hs.validate_handshake_manifest(spoofed)
 
 
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation_attempt", True),
+        ("backend_runtime_execution", "docker"),
+    ],
+)
+def test_handshake_manifest_rejects_unexpected_fields(field: str, bad: object) -> None:
+    manifest = _artifact("handshake_manifest.json")
+    manifest[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_handshake_manifest(manifest)
+
+
+def test_verify_handshake_rejects_unexpected_handshake_manifest_fields(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    manifest = _json(root / "handshake_manifest.json")
+    manifest["backend_runtime_execution"] = "docker"
+    _write_json(root / "handshake_manifest.json", manifest)
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.verify_handshake(root)
+
+
 def test_executor_acceptance_rejects_provenance_mismatch() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
@@ -528,6 +556,15 @@ def test_shadow_result_manifest_rejects_inconsistent_duration_window() -> None:
         hs.validate_shadow_result_manifest(result)
 
 
+@pytest.mark.parametrize("field", ("started_at", "finished_at"))
+def test_shadow_result_manifest_requires_utc_z_timestamp_form(field: str) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result[field] = "2026-06-29T12:00:00-05:00"
+
+    with pytest.raises(hs.HandshakeValidationError, match="UTC Z"):
+        hs.validate_shadow_result_manifest(result)
+
+
 @pytest.mark.parametrize("field", hs.SHADOW_RESULT_EVIDENCE_HASH_FILES)
 def test_shadow_result_manifest_binds_evidence_hashes(field: str) -> None:
     result = _artifact("shadow_result_manifest.json")
@@ -627,8 +664,12 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
     ("rel", "token"),
     [
         ("logs/control_plane_validator.log", "runtime_activation_attempt=true"),
+        ("logs/control_plane_validator.log", "runtime_activation_attempt=blocked"),
         ("logs/control_plane_validator.log", "allow_db_write=true allow_db_write=false"),
         ("logs/external_executor.log", "allocator_publish_attempt=true"),
+        ("logs/external_executor.log", "allocator_publish_attempt=false"),
+        ("logs/external_executor.log", "official_db_write_attempt=1"),
+        ("logs/external_executor.log", "production_endpoint_activation_attempt=blocked"),
         ("logs/external_executor.log", "production_endpoint_activation=public"),
         ("logs/external_executor.log", "network=none network=bridge"),
         ("logs/external_executor.log", "input_pack_mount=read_only input_pack_mount=read_write"),
@@ -774,6 +815,26 @@ def test_validation_report_requires_green_expected_checks() -> None:
     empty["checks"] = []
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_validation_report(empty)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("freeze_ready", True),
+        ("allow_db_write", True),
+        ("production_endpoint_activation", "public"),
+        ("unexpected_report_property", "value"),
+    ],
+)
+def test_validation_report_rejects_unexpected_governance_fields(
+    field: str,
+    bad: object,
+) -> None:
+    report = _artifact("validation_report.json")
+    report[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_validation_report(report)
 
 
 def test_feature_flag_default_remains_false() -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
@@ -46,6 +47,9 @@ EXPECTED_LABELS: Final[tuple[str, ...]] = tuple(
 EXPECTED_HOST_RUNS: Final[tuple[str, ...]] = tuple(label for label in EXPECTED_LABELS if label.startswith("host_"))
 EXPECTED_CONTAINER_RUNS: Final[tuple[str, ...]] = tuple(
     label for label in EXPECTED_LABELS if label.startswith("container_")
+)
+UTC_Z_TIMESTAMP_RE: Final = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
 LOGS_REQUIRED: Final[tuple[str, ...]] = (
     "logs/control_plane_validator.log",
@@ -140,6 +144,14 @@ LOG_FORBIDDEN_TRUE_KEYS: Final[frozenset[str]] = frozenset(
         "source_tree_writes",
     )
 )
+LOG_FORBIDDEN_PRESENCE_KEYS: Final[frozenset[str]] = frozenset(
+    (
+        "runtime_activation_attempt",
+        "official_db_write_attempt",
+        "allocator_publish_attempt",
+        "production_endpoint_activation_attempt",
+    )
+)
 EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = (
     "runtime_activation",
     "official_result",
@@ -214,6 +226,21 @@ SHADOW_RESULT_EVIDENCE_HASH_FILES: Final[dict[str, str]] = {
     "invariant_report_sha256": "no_side_effects_report.json",
     "baseline_comparison_sha256": "validation_report.json",
 }
+HANDSHAKE_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "handshake_id",
+        "status",
+        "control_plane_contract_merge_commit",
+        "runtime_skeleton_id",
+        "runtime_skeleton_merge_commit",
+        "shadow_id",
+        "calibration_id",
+        "mode",
+        "execution_policy",
+        *SIDE_EFFECT_PINS,
+        *BACKEND_NO_EXEC_PINS,
+    )
+)
 CONTROL_PLANE_REQUEST_FIELDS: Final[frozenset[str]] = frozenset(
     (
         "schema_version",
@@ -232,6 +259,19 @@ CONTROL_PLANE_REQUEST_FIELDS: Final[frozenset[str]] = frozenset(
         *PINNED_PROVENANCE,
         *SIDE_EFFECT_PINS,
         *BACKEND_NO_EXEC_PINS,
+    )
+)
+VALIDATION_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "status",
+        "validated",
+        "control_plane_contract_merge_commit",
+        "runtime_activation",
+        "A5",
+        "official_result",
+        "checks",
     )
 )
 DIVERGENCE_FIELDS: Final[tuple[str, ...]] = (
@@ -411,6 +451,7 @@ def reject_symlinks(root: Path) -> None:
 
 
 def validate_handshake_manifest(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, HANDSHAKE_MANIFEST_FIELDS, where="handshake_manifest")
     _require_pins(
         payload,
         {
@@ -820,6 +861,8 @@ def _validate_result_timing(payload: Mapping[str, Any]) -> None:
 def _parse_utc_timestamp(value: Any, *, where: str) -> dt.datetime:
     if not isinstance(value, str):
         raise HandshakeValidationError(f"{where}: expected UTC timestamp string")
+    if not UTC_Z_TIMESTAMP_RE.fullmatch(value):
+        raise HandshakeValidationError(f"{where}: timestamp must use UTC Z form")
     try:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -899,6 +942,8 @@ def _validate_required_logs(root: Path) -> None:
     values_by_key: dict[str, list[str]] = {}
     for key, value in pairs:
         values_by_key.setdefault(key, []).append(value)
+        if key in LOG_FORBIDDEN_PRESENCE_KEYS:
+            raise HandshakeValidationError(f"required logs contain forbidden side-effect token {key}")
         if key in LOG_FORBIDDEN_TRUE_KEYS and value == "true":
             raise HandshakeValidationError(f"required logs contain forbidden side-effect token {key}=true")
         if key == "production_endpoint_activation" and value != "none":
@@ -1036,6 +1081,7 @@ def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
 
 
 def validate_validation_report(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, VALIDATION_REPORT_FIELDS, where="validation_report")
     _require_pins(
         payload,
         {
