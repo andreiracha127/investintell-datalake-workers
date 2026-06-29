@@ -1,0 +1,31 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "checklist_id": "open_macro_v03_a5_preflight_technical_review_001",
+  "items": [
+    {"id": "input_pack_verified", "status": "pass", "evidence_ids": ["input_pack_certified_manifest_effective"], "notes": "Golden certified input pack manifest is present and runtime_activation=false."},
+    {"id": "calibration_verified", "status": "pass", "evidence_ids": ["calibration_manifest", "calibration_output_manifest"], "notes": "Calibration manifest and output manifest are hash-pinned."},
+    {"id": "shadow_pilot_validated", "status": "pass", "evidence_ids": ["shadow_pilot_manifest", "shadow_pilot_acceptance_report"], "notes": "Pilot automated rules pass except human technical/quant review remains pending by design."},
+    {"id": "run_fingerprint_stable", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_reproducibility_report"], "notes": "run_fingerprint is stable across the pilot evidence."},
+    {"id": "execution_id_does_not_affect_canonical_outputs", "status": "pass", "evidence_ids": ["shadow_pilot_reproducibility_report"], "notes": "Reproducibility report records execution_id exclusion from semantic artifacts."},
+    {"id": "jobs_1_vs_jobs_4_parity", "status": "pass", "evidence_ids": ["calibration_reproducibility_report", "shadow_pilot_reproducibility_report"], "notes": "jobs=1 and jobs=4 hashes match."},
+    {"id": "host_vs_docker_parity", "status": "pass", "evidence_ids": ["calibration_reproducibility_report", "shadow_pilot_reproducibility_report"], "notes": "Host and container evidence match where required."},
+    {"id": "docker_railway_image_digest_pinned", "status": "pass", "evidence_ids": ["shadow_readiness_manifest", "shadow_pilot_manifest"], "notes": "Railway image digest is sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b."},
+    {"id": "no_network_in_engine", "status": "pass", "evidence_ids": ["calibration_reproducibility_report", "repeatability_matrix_script"], "notes": "Network mode is none in the committed evidence and container runner."},
+    {"id": "no_db_access_in_engine", "status": "pass", "evidence_ids": ["calibration_invariant_report", "shadow_pilot_invariant_report"], "notes": "DB access guards are green."},
+    {"id": "no_allocator_publish", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_invariant_report"], "notes": "allow_allocator_publish=false and no allocator publish attempt is recorded."},
+    {"id": "no_endpoint_activation", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_invariant_report"], "notes": "production_endpoint_activation=none and no endpoint activation attempt is recorded."},
+    {"id": "output_manifests_complete", "status": "pass", "evidence_ids": ["calibration_output_manifest", "shadow_result_manifest"], "notes": "Calibration and shadow outputs are closed manifests."},
+    {"id": "logs_present", "status": "pass", "evidence_ids": ["shadow_pilot_invariant_report"], "notes": "Shadow pilot invariant report confirms logs_present=true."},
+    {"id": "symlink_dangling_safety", "status": "pass", "evidence_ids": ["shadow_pilot_invariant_report"], "notes": "no_symlinks=true."},
+    {"id": "output_mount_isolation", "status": "pass", "evidence_ids": ["shadow_pilot_invariant_report", "repeatability_matrix_script"], "notes": "Dedicated output directory and read-only input mount evidence are present."},
+    {"id": "provenance_complete", "status": "pass", "evidence_ids": ["input_pack_certified_manifest_effective", "contract_bundle_manifest", "shadow_job_envelope"], "notes": "Input pack, contract bundle, engine commit, image digest, and run fingerprint are pinned."},
+    {"id": "contract_bundle_verified", "status": "pass", "evidence_ids": ["contract_bundle_manifest", "contract_bundle_verifier_script"], "notes": "Local validator is part of the gate."},
+    {"id": "ci_railway_check_green", "status": "pending", "evidence_ids": ["post_shadow_planning_doc"], "notes": "PR #7 pre-push Remote Railway CI passed. Current A5 branch remote CI must be captured after this commit/push."},
+    {"id": "rollback_path_documented", "status": "pass", "evidence_ids": ["shadow_rollback_plan"], "notes": "Shadow rollback path exists; A5 rollback runbook is added in this package."},
+    {"id": "observability_documented", "status": "pass", "evidence_ids": ["shadow_observability_plan"], "notes": "Shadow observability plan exists; A5 monitoring SLO policy is added in this package."}
+  ],
+  "overall_status": "readiness_candidate",
+  "runtime_activation": false,
+  "technical_review_recorded": false
+}

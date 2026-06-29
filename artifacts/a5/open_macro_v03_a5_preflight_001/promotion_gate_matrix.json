@@ -1,0 +1,72 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "levels": [
+    {
+      "criteria": [
+        {"id": "critical_artifacts_present", "status": "pass"},
+        {"id": "hashes_verified", "status": "pass"},
+        {"id": "manifests_valid", "status": "pass"},
+        {"id": "missing_optional_documented", "status": "pass"}
+      ],
+      "level": "L0",
+      "name": "Evidence complete",
+      "status": "pass"
+    },
+    {
+      "criteria": [
+        {"id": "determinism", "status": "pass"},
+        {"id": "isolation", "status": "pass"},
+        {"id": "provenance", "status": "pass"},
+        {"id": "ci", "status": "pending_current_branch_remote_ci"},
+        {"id": "rollback", "status": "pass"},
+        {"id": "observability", "status": "pass"}
+      ],
+      "level": "L1",
+      "name": "Technical readiness",
+      "status": "readiness_candidate"
+    },
+    {
+      "criteria": [
+        {"id": "baseline_comparison", "status": "pass"},
+        {"id": "invariants", "status": "pass"},
+        {"id": "thresholds", "status": "pass"},
+        {"id": "material_divergence", "status": "pass"},
+        {"id": "stress_oos", "status": "pass_limited_fixture_window"},
+        {"id": "human_quant_review", "status": "pending"}
+      ],
+      "level": "L2",
+      "name": "Quantitative readiness",
+      "status": "pending_human_review"
+    },
+    {
+      "criteria": [
+        {"id": "railway_digest", "status": "pass"},
+        {"id": "runbook", "status": "pass"},
+        {"id": "monitoring", "status": "pass"},
+        {"id": "feature_flag", "status": "pass_default_false"},
+        {"id": "incident_response", "status": "readiness_candidate"},
+        {"id": "rollback_drill_planned", "status": "pending"}
+      ],
+      "level": "L3",
+      "name": "Operational readiness",
+      "status": "readiness_candidate"
+    },
+    {
+      "activation_allowed": false,
+      "criteria": [
+        {"id": "technical_review_recorded", "status": "pending"},
+        {"id": "quantitative_review_recorded", "status": "pending"},
+        {"id": "risk_review_recorded", "status": "pending"},
+        {"id": "explicit_approval_required", "status": "required"},
+        {"id": "separate_activation_pr_required", "status": "required"}
+      ],
+      "level": "L4",
+      "name": "A5 decision",
+      "status": "blocked"
+    }
+  ],
+  "matrix_id": "open_macro_v03_a5_promotion_gate_matrix_001",
+  "runtime_activation": false,
+  "separate_activation_pr_required": true
+}
