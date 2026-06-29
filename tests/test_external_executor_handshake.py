@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import os
 import shutil
@@ -35,6 +36,13 @@ def _refresh_manifest_entry(root: Path, manifest: dict, rel: str) -> None:
     raise AssertionError(f"missing manifest entry for {rel}")
 
 
+def _manifest_entry(manifest: dict, rel: str) -> dict:
+    for entry in manifest["artifacts"]:
+        if entry["path"] == rel:
+            return entry
+    raise AssertionError(f"missing manifest entry for {rel}")
+
+
 def test_external_executor_handshake_artifacts_verify_offline() -> None:
     result = hs.verify_handshake(HANDSHAKE_ROOT)
 
@@ -51,11 +59,44 @@ def test_external_executor_handshake_artifacts_verify_offline() -> None:
     }
 
 
+def test_output_manifest_sha256_entries_are_raw_file_hashes() -> None:
+    manifest = _artifact("output_manifest.json")
+    rel = "control_plane_request.json"
+    path = HANDSHAKE_ROOT / rel
+    entry = _manifest_entry(manifest, rel)
+
+    assert entry["sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert entry["sha256"] == hs.file_sha256(path)
+
+
 def test_shadow_job_envelope_validates_against_shadow_schema() -> None:
     schema = _json(SHADOW_ROOT / "shadow_job_envelope.schema.json")
     envelope = _artifact("shadow_job_envelope.json")
 
     jsonschema.validate(envelope, schema)
+    hs.validate_shadow_job_envelope(envelope)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("official_result", True),
+        ("runtime_activation_attempt", True),
+        ("unexpected_envelope_property", "value"),
+    ],
+)
+def test_shadow_job_envelope_rejects_unexpected_fields(field: str, bad: object) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    envelope[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_shadow_job_envelope(envelope)
+
+
+def test_shadow_job_envelope_allows_valid_optional_output_manifest_hash() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    envelope["output_manifest_sha256"] = "a" * 64
+
     hs.validate_shadow_job_envelope(envelope)
 
 
@@ -187,6 +228,15 @@ def test_executor_acceptance_rejects_network_flags_after_image() -> None:
     acceptance["docker_run_policy"] = [*policy, "--network", "none"]
 
     with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_rejects_command_args_after_image() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["docker_run_policy"] = [*acceptance["docker_run_policy"], "sh", "-c", "true"]
+
+    with pytest.raises(hs.HandshakeValidationError, match="must not override image command"):
         hs.validate_executor_acceptance(acceptance, envelope)
 
 
@@ -515,6 +565,11 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
         ("logs/control_plane_validator.log", "allow_db_write=true allow_db_write=false"),
         ("logs/external_executor.log", "allocator_publish_attempt=true"),
         ("logs/external_executor.log", "production_endpoint_activation=public"),
+        ("logs/external_executor.log", "network=none network=bridge"),
+        ("logs/external_executor.log", "input_pack_mount=read_only input_pack_mount=read_write"),
+        ("logs/control_plane_validator.log", "runtime_activation=false runtime_activation=true"),
+        ("logs/control_plane_validator.log", "allow_db_write=false allow_db_write=maybe"),
+        ("logs/external_executor.log", "source_tree_writes=false source_tree_writes=true"),
     ],
 )
 def test_output_manifest_scans_required_logs_for_side_effect_attempts(
@@ -531,6 +586,33 @@ def test_output_manifest_scans_required_logs_for_side_effect_attempts(
 
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_output_manifest(root, manifest)
+
+
+def test_load_json_rejects_duplicate_runtime_activation_key(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate.json"
+    path.write_text('{"runtime_activation": true, "runtime_activation": false}\n', encoding="utf-8")
+
+    with pytest.raises(hs.HandshakeValidationError, match="duplicate JSON object key: runtime_activation"):
+        hs.load_json(path)
+
+
+def test_verify_handshake_rejects_duplicate_json_keys_before_validation(tmp_path: Path) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    request = _artifact("control_plane_request.json")
+    request_without_runtime = {
+        key: value for key, value in request.items() if key != "runtime_activation"
+    }
+    request_text = json.dumps(request_without_runtime, sort_keys=True, indent=2)
+    request_text = request_text.replace(
+        "{\n",
+        '{\n  "runtime_activation": true,\n  "runtime_activation": false,\n',
+        1,
+    )
+    (root / "control_plane_request.json").write_text(request_text + "\n", encoding="utf-8")
+
+    with pytest.raises(hs.HandshakeValidationError, match="duplicate JSON object key"):
+        hs.verify_handshake(root)
 
 
 def test_reproducibility_report_requires_green_jobs_matrix() -> None:

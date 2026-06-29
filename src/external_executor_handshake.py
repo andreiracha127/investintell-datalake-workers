@@ -255,6 +255,33 @@ SHADOW_RESULT_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
         "materiality_summary",
     )
 )
+SHADOW_JOB_ENVELOPE_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "shadow_id",
+        "calibration_id",
+        "input_pack_id",
+        "input_pack_sha256",
+        "calibration_config_sha256",
+        "contract_bundle_sha256",
+        "engine_commit",
+        "engine_image_digest",
+        "request_id",
+        "correlation_id",
+        "execution_id",
+        "run_fingerprint",
+        "as_of",
+        "strategy",
+        "mode",
+        "runtime_activation",
+        "allow_db_write",
+        "allow_allocator_publish",
+        "production_endpoint_activation",
+        "execution_policy",
+        "output_artifact_uri",
+        "output_manifest_sha256",
+    )
+)
 
 
 class HandshakeValidationError(ValueError):
@@ -270,8 +297,20 @@ def handshake_root(root: Path | None = None) -> Path:
     return root / "artifacts" / "handshake" / HANDSHAKE_ID
 
 
+def _reject_duplicate_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise HandshakeValidationError(f"duplicate JSON object key: {key}")
+        payload[key] = value
+    return payload
+
+
 def load_json(path: str | Path) -> Any:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_object_pairs,
+    )
 
 
 def canonical_json_bytes(payload: Any) -> bytes:
@@ -293,25 +332,11 @@ def _logical_text_bytes(path: Path) -> bytes:
 
 
 def file_sha256(path: str | Path) -> str:
-    # JSON: hash over canonical re-serialisation (sorted keys, no whitespace) so the digest
-    # is stable regardless of committed formatting. This intentionally diverges from what
-    # `sha256sum` reports on the raw file; use file_logical_bytes for the on-disk byte count.
-    candidate = Path(path)
-    if candidate.suffix.lower() == ".json":
-        return canonical_json_sha256(load_json(candidate))
-    if candidate.suffix.lower() in {".md", ".log"}:
-        return hashlib.sha256(_logical_text_bytes(candidate)).hexdigest()
-    return hashlib.sha256(candidate.read_bytes()).hexdigest()
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def file_logical_bytes(path: str | Path) -> int:
-    # JSON uses raw CRLF-normalised bytes (not canonical serialisation) intentionally:
-    # file_sha256 uses canonical re-serialisation so the two measures are complementary —
-    # SHA catches content drift, byte count catches format/whitespace drift.
-    candidate = Path(path)
-    if candidate.suffix.lower() in {".json", ".md", ".log"}:
-        return len(_logical_text_bytes(candidate))
-    return candidate.stat().st_size
+    return Path(path).stat().st_size
 
 
 def _require_mapping(payload: Any, *, where: str) -> Mapping[str, Any]:
@@ -424,6 +449,7 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
 
 
 def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, SHADOW_JOB_ENVELOPE_FIELDS, where="shadow_job_envelope")
     _require_pins(
         payload,
         {
@@ -445,6 +471,9 @@ def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
         },
         where="shadow_job_envelope",
     )
+    output_manifest_sha256 = payload.get("output_manifest_sha256")
+    if output_manifest_sha256 is not None and not _is_sha256_hex(output_manifest_sha256):
+        raise HandshakeValidationError("shadow_job_envelope: output_manifest_sha256 must be sha256 hex")
     _require_artifact_uri(payload.get("output_artifact_uri"), where="shadow_job_envelope")
 
 
@@ -523,6 +552,8 @@ def _validate_docker_run_policy(policy: Any, *, expected_image_digest: str) -> N
     network_values = _network_values(options)
     if network_values != ["none"]:
         raise HandshakeValidationError("executor_acceptance: docker_run_policy must require --network none")
+    if command_args:
+        raise HandshakeValidationError("executor_acceptance: docker_run_policy must not override image command")
     if any(_is_network_flag(token) for token in command_args):
         raise HandshakeValidationError("executor_acceptance: docker network flags must appear before image")
     if "--read-only" not in options:
@@ -601,6 +632,10 @@ def _network_values(options: Sequence[str]) -> list[str | None]:
         else:
             index += 1
     return values
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(char in "0123456789abcdef" for char in value)
 
 
 def _validate_docker_bind_mounts(options: Sequence[str]) -> None:
@@ -822,7 +857,9 @@ def _validate_required_logs(root: Path) -> None:
     for rel in LOGS_REQUIRED:
         path = _ensure_child(root / rel, root)
         pairs.extend(_parse_log_token_pairs(path.read_text(encoding="utf-8")))
+    values_by_key: dict[str, list[str]] = {}
     for key, value in pairs:
+        values_by_key.setdefault(key, []).append(value)
         if key in LOG_FORBIDDEN_TRUE_KEYS and value == "true":
             raise HandshakeValidationError(f"required logs contain forbidden side-effect token {key}=true")
         if key == "production_endpoint_activation" and value != "none":
@@ -830,8 +867,14 @@ def _validate_required_logs(root: Path) -> None:
                 "required logs contain forbidden production_endpoint_activation token"
             )
     for key, expected in LOG_EXPECTED_TOKENS.items():
-        if (key, expected) not in pairs:
+        values = values_by_key.get(key, [])
+        if not values:
             raise HandshakeValidationError(f"required logs missing attestation {key}={expected}")
+        unexpected = sorted({value for value in values if value != expected})
+        if unexpected:
+            raise HandshakeValidationError(
+                f"required logs contain contradictory attestation {key}={unexpected}"
+            )
 
 
 def _parse_log_token_pairs(text: str) -> list[tuple[str, str]]:

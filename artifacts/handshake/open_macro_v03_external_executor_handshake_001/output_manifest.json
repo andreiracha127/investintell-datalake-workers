@@ -1,16 +1,16 @@
 {
   "artifact_type": "external_executor_handshake_output_manifest",
   "artifacts": [
-    {"bytes": 1703, "path": "control_plane_request.json", "sha256": "cfc8b4429e6c75ee76f2cd77cc0211056b6df81aed046799672d457c073f7427"},
-    {"bytes": 2358, "path": "executor_acceptance.json", "sha256": "f0b58819a4545670ee8614aaefebd20cb6a5088ebc26fbd688d40ec4eb41457a"},
-    {"bytes": 800, "path": "executor_result_reference.json", "sha256": "4a7d14a5a5e411f0e3dfaab3ffcf9c409fe7a19f2531e2cc7e1f3ced2cfd84eb"},
+    {"bytes": 1703, "path": "control_plane_request.json", "sha256": "3943329614b07cb5c79a19af5e955dd51de9494b08677405644aa78e36e0ffba"},
+    {"bytes": 2358, "path": "executor_acceptance.json", "sha256": "49936bd2219599b65521f56499cb757d53cfa464990696a4fd63ddce10773f50"},
+    {"bytes": 800, "path": "executor_result_reference.json", "sha256": "f7fb0a148dc41b2f4942c82de4a4fe946ecda91e88f0c0562fe4ff2c610cdf7b"},
     {"bytes": 1392, "path": "handshake_report.md", "sha256": "fa5249a50274e0ce79c690b866d4fc9b63d38773ebd62ccdeb812c430ec5e00c"},
     {"bytes": 324, "path": "logs/control_plane_validator.log", "sha256": "ceca05bea1782ec22357a044dd8204d97523df59a74ac11b71812e9ce60e4d30"},
     {"bytes": 407, "path": "logs/external_executor.log", "sha256": "b9559821af71a8f52d34177eff6c907da50f167331cde3512d9213e2d725484e"},
-    {"bytes": 1122, "path": "no_side_effects_report.json", "sha256": "da1a9bd26e0cdecbdd755da4bc11d2bfed712fc5a25f9643d2ea44ac081bca58"},
-    {"bytes": 2408, "path": "reproducibility_report.json", "sha256": "e9ab75c9744f1063103c86fa8eb1ec09acd52a7a3fa71d854f42991fa3525c9e"},
-    {"bytes": 1357, "path": "shadow_job_envelope.json", "sha256": "3b875786f3fdf534c7e8d4c107fc55a009f9c0cc9d7ae07dabd4105f7d833388"},
-    {"bytes": 655, "path": "validation_report.json", "sha256": "688c1f4ae1397f4efce007dacdd2bcab7f8ee874c670430af8ceb3c7bb6d663f"}
+    {"bytes": 1122, "path": "no_side_effects_report.json", "sha256": "8ef7e6ea388c2e6d978218031d6f78fb26082f93e72aecd64e9c9674352158ef"},
+    {"bytes": 2408, "path": "reproducibility_report.json", "sha256": "e62005c9adebedea93bb7a21984425b521187700cd10271ed2875a9639d75ce6"},
+    {"bytes": 1357, "path": "shadow_job_envelope.json", "sha256": "be81f69ccb3a17c724c2ce7c397ac234ca63448eb8af62a0faeb001ad337ad04"},
+    {"bytes": 655, "path": "validation_report.json", "sha256": "f9c2bed4eb70784249f95076f4d88609c8391597ec0daabe4fe1d85cfe35da45"}
   ],
   "handshake_id": "open_macro_v03_external_executor_handshake_001",
   "logs_required": [
