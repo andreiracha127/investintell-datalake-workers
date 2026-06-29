@@ -1,4 +1,5 @@
 {
+  "artifact_type": "external_executor_handshake_reproducibility_report",
   "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
   "calibration_id": "open_macro_v03_calibration_001",
   "calibration_mount": "read_only",
@@ -10,6 +11,7 @@
   ],
   "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
   "db_access": false,
+  "docker_image_id": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "docker_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "docker_image_provenance_ok": true,
   "duplicates": 0,
@@ -23,6 +25,8 @@
     "host_jobs4_r0",
     "host_jobs4_r1"
   ],
+  "expected_docker_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
+  "expected_docker_image_id": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
   "expected_run_count": 8,
   "handshake_id": "open_macro_v03_external_executor_handshake_001",
   "host_runs": [
@@ -56,6 +60,7 @@
   "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",
   "run_hash_mismatches": [],
   "schema_version": 1,
+  "semantic_run_fingerprint_policy": "execution_id excluded; pinned provenance and calibration hashes included",
   "shadow_id": "open_macro_v03_shadow_001",
   "unexpected": [],
   "unexpected_hashes": [],

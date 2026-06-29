@@ -735,6 +735,22 @@ def test_output_manifest_requires_logs_and_current_hashes() -> None:
         hs.validate_output_manifest(HANDSHAKE_ROOT, bad_hash)
 
 
+def test_verify_handshake_rejects_unexpected_output_manifest_artifact_fields_after_result_hash_refresh(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    manifest = _json(root / "output_manifest.json")
+    manifest["artifacts"][0]["runtime_activation_attempt"] = True
+    _write_json(root / "output_manifest.json", manifest)
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.verify_handshake(root)
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [
@@ -911,6 +927,42 @@ def test_output_manifest_requires_control_plane_attestations_from_control_plane_
         hs.validate_output_manifest(root, manifest)
 
 
+@pytest.mark.parametrize(
+    ("rel", "old", "new"),
+    [
+        (
+            "logs/control_plane_validator.log",
+            f"handshake_id={hs.HANDSHAKE_ID}",
+            "handshake_id=other_bundle",
+        ),
+        (
+            "logs/external_executor.log",
+            f"handshake_id={hs.HANDSHAKE_ID}",
+            "handshake_id=other_bundle",
+        ),
+        ("logs/control_plane_validator.log", "validator=control_plane", "validator=external"),
+        ("logs/external_executor.log", "executor=external", "executor=control_plane"),
+        ("logs/control_plane_validator.log", "status=pass", "status=failed"),
+        ("logs/external_executor.log", "status=accepted", "status=rejected"),
+    ],
+)
+def test_output_manifest_pins_required_log_identity_and_status(
+    tmp_path: Path,
+    rel: str,
+    old: str,
+    new: str,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    log_path = root / rel
+    log_path.write_text(log_path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, manifest, rel)
+
+    with pytest.raises(hs.HandshakeValidationError, match=rel):
+        hs.validate_output_manifest(root, manifest)
+
+
 def test_load_json_rejects_duplicate_runtime_activation_key(tmp_path: Path) -> None:
     path = tmp_path / "duplicate.json"
     path.write_text('{"runtime_activation": true, "runtime_activation": false}\n', encoding="utf-8")
@@ -964,6 +1016,33 @@ def test_reproducibility_report_requires_green_jobs_matrix() -> None:
         broken[field] = bad
         with pytest.raises(hs.HandshakeValidationError):
             hs.validate_reproducibility_report(broken)
+
+
+def test_reproducibility_report_validates_against_handshake_schema() -> None:
+    schema = _artifact("reproducibility_report.schema.json")
+    report = _artifact("reproducibility_report.json")
+
+    jsonschema.validate(report, schema)
+    hs.validate_reproducibility_report_schema(schema)
+    hs.validate_reproducibility_report(report)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "artifact_type",
+        "semantic_run_fingerprint_policy",
+        "docker_image_id",
+        "expected_docker_image_id",
+        "expected_docker_image_digest",
+    ],
+)
+def test_reproducibility_report_requires_schema_profile_fields(field: str) -> None:
+    report = _artifact("reproducibility_report.json")
+    del report[field]
+
+    with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_reproducibility_report(report)
 
 
 @pytest.mark.parametrize(

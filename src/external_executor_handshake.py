@@ -28,9 +28,15 @@ CALIBRATION_CONFIG_SHA256: Final = "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3
 CONTRACT_BUNDLE_SHA256: Final = "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
 ENGINE_COMMIT: Final = "ee39adbe6cb6541d4fdfa78f1428478ffffaf638"
 ENGINE_IMAGE_DIGEST: Final = "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+ENGINE_IMAGE_ID: Final = "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
 RUN_FINGERPRINT: Final = "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106"
 ENVELOPE_AS_OF: Final = "2026-06-26"
 EXPECTED_RUN_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+REPRODUCIBILITY_REPORT_ARTIFACT_TYPE: Final = "external_executor_handshake_reproducibility_report"
+REPRODUCIBILITY_REPORT_SCHEMA_ID: Final = "external_executor_handshake_reproducibility_report_v1"
+SEMANTIC_RUN_FINGERPRINT_POLICY: Final = (
+    "execution_id excluded; pinned provenance and calibration hashes included"
+)
 
 REQUEST_ID: Final = "req-open-macro-v03-external-executor-handshake-001"
 CORRELATION_ID: Final = "corr-open-macro-v03-external-executor-handshake-001"
@@ -69,6 +75,7 @@ OUTPUT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
     "validation_report.json",
     "no_side_effects_report.json",
     "reproducibility_report.json",
+    "reproducibility_report.schema.json",
     "handshake_report.md",
     *LOGS_REQUIRED,
 )
@@ -83,6 +90,7 @@ ROOT_REQUIRED_FILES: Final[tuple[str, ...]] = (
     "validation_report.json",
     "no_side_effects_report.json",
     "reproducibility_report.json",
+    "reproducibility_report.schema.json",
     "handshake_report.md",
     *LOGS_REQUIRED,
 )
@@ -149,6 +157,18 @@ CONTROL_PLANE_VALIDATOR_EXPECTED_TOKENS: Final[dict[str, str]] = {
     "backend_executes_engine": "false",
     "backend_executes_docker": "false",
     "backend_executes_subprocess": "false",
+}
+REQUIRED_LOG_IDENTITY_TOKENS: Final[dict[str, dict[str, str]]] = {
+    "logs/control_plane_validator.log": {
+        "handshake_id": HANDSHAKE_ID,
+        "validator": "control_plane",
+        "status": "pass",
+    },
+    "logs/external_executor.log": {
+        "handshake_id": HANDSHAKE_ID,
+        "executor": "external",
+        "status": "accepted",
+    },
 }
 LOG_PINNED_TOKENS: Final[dict[str, str]] = {
     "A5": "blocked",
@@ -358,9 +378,11 @@ OUTPUT_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
         "artifacts",
     )
 )
+OUTPUT_MANIFEST_ARTIFACT_FIELDS: Final[frozenset[str]] = frozenset(("path", "sha256", "bytes"))
 REPRODUCIBILITY_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
     (
         "schema_version",
+        "artifact_type",
         "handshake_id",
         "shadow_id",
         "calibration_id",
@@ -376,6 +398,7 @@ REPRODUCIBILITY_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "missing_hashes",
         "unexpected_hashes",
         "output_manifest_sha256_by_run",
+        "semantic_run_fingerprint_policy",
         "run_hash_mismatches",
         "duplicates",
         "mismatch_count",
@@ -390,10 +413,16 @@ REPRODUCIBILITY_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
         "output_mount",
         "writable_mounts",
         "path_independence",
+        "docker_image_id",
         "docker_image_digest",
+        "expected_docker_image_id",
+        "expected_docker_image_digest",
         "docker_image_provenance_ok",
         "ok",
     )
+)
+REPRODUCIBILITY_REPORT_SCHEMA_FIELDS: Final[frozenset[str]] = frozenset(
+    ("$schema", "$id", "title", "type", "additionalProperties", "$defs", "required", "properties")
 )
 NO_SIDE_EFFECTS_REPORT_FIELDS: Final[frozenset[str]] = frozenset(
     (
@@ -1062,6 +1091,11 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
         rel = mapping.get("path")
         if not isinstance(rel, str):
             raise HandshakeValidationError("output_manifest.artifacts[]: path must be a string")
+        _reject_unexpected_fields(
+            mapping,
+            OUTPUT_MANIFEST_ARTIFACT_FIELDS,
+            where=f"output_manifest[{rel}]",
+        )
         if rel in by_path:
             raise HandshakeValidationError(f"output_manifest duplicate artifact path: {rel}")
         by_path[rel] = mapping
@@ -1120,6 +1154,16 @@ def _validate_required_logs(root: Path) -> None:
             raise HandshakeValidationError(
                 f"required logs contain contradictory attestation {key}={unexpected}"
             )
+    for rel, tokens in REQUIRED_LOG_IDENTITY_TOKENS.items():
+        for key, expected in tokens.items():
+            values = values_by_path_key.get((rel, key), [])
+            if not values:
+                raise HandshakeValidationError(f"{rel} missing attestation {key}={expected}")
+            unexpected = sorted({value for value in values if value != expected})
+            if unexpected:
+                raise HandshakeValidationError(
+                    f"{rel} contains contradictory attestation {key}={unexpected}"
+                )
     for key, expected in CONTROL_PLANE_VALIDATOR_EXPECTED_TOKENS.items():
         values = values_by_path_key.get(("logs/control_plane_validator.log", key), [])
         if not values:
@@ -1178,6 +1222,7 @@ def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
         payload,
         {
             "schema_version": 1,
+            "artifact_type": REPRODUCIBILITY_REPORT_ARTIFACT_TYPE,
             "handshake_id": HANDSHAKE_ID,
             "shadow_id": SHADOW_ID,
             "calibration_id": CALIBRATION_ID,
@@ -1195,6 +1240,7 @@ def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
             "output_manifest_sha256_by_run": {
                 label: EXPECTED_RUN_OUTPUT_MANIFEST_SHA256 for label in EXPECTED_LABELS
             },
+            "semantic_run_fingerprint_policy": SEMANTIC_RUN_FINGERPRINT_POLICY,
             "run_hash_mismatches": [],
             "duplicates": 0,
             "mismatch_count": 0,
@@ -1209,12 +1255,61 @@ def validate_reproducibility_report(payload: Mapping[str, Any]) -> None:
             "output_mount": "read_write",
             "writable_mounts": ["output"],
             "path_independence": True,
+            "docker_image_id": ENGINE_IMAGE_ID,
             "docker_image_digest": ENGINE_IMAGE_DIGEST,
+            "expected_docker_image_id": ENGINE_IMAGE_ID,
+            "expected_docker_image_digest": ENGINE_IMAGE_DIGEST,
             "docker_image_provenance_ok": True,
             "ok": True,
         },
         where="reproducibility_report",
     )
+
+
+def validate_reproducibility_report_schema(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(
+        payload,
+        REPRODUCIBILITY_REPORT_SCHEMA_FIELDS,
+        where="reproducibility_report.schema",
+    )
+    _require_pins(
+        payload,
+        {
+            "$id": REPRODUCIBILITY_REPORT_SCHEMA_ID,
+            "type": "object",
+            "additionalProperties": False,
+        },
+        where="reproducibility_report.schema",
+    )
+    required = payload.get("required")
+    if not isinstance(required, list) or set(required) != set(REPRODUCIBILITY_REPORT_FIELDS):
+        raise HandshakeValidationError("reproducibility_report.schema: required fields mismatch")
+    properties = _require_mapping(
+        payload.get("properties"),
+        where="reproducibility_report.schema.properties",
+    )
+    if set(properties) != set(REPRODUCIBILITY_REPORT_FIELDS):
+        raise HandshakeValidationError("reproducibility_report.schema: properties mismatch")
+    pinned_property_consts = {
+        "artifact_type": REPRODUCIBILITY_REPORT_ARTIFACT_TYPE,
+        "handshake_id": HANDSHAKE_ID,
+        "semantic_run_fingerprint_policy": SEMANTIC_RUN_FINGERPRINT_POLICY,
+        "docker_image_id": ENGINE_IMAGE_ID,
+        "docker_image_digest": ENGINE_IMAGE_DIGEST,
+        "expected_docker_image_id": ENGINE_IMAGE_ID,
+        "expected_docker_image_digest": ENGINE_IMAGE_DIGEST,
+    }
+    for key, expected in pinned_property_consts.items():
+        definition = _require_mapping(
+            properties.get(key),
+            where=f"reproducibility_report.schema.properties.{key}",
+        )
+        _require_equal(
+            definition,
+            "const",
+            expected,
+            where=f"reproducibility_report.schema.properties.{key}",
+        )
 
 
 def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
@@ -1324,6 +1419,10 @@ def verify_handshake(root: Path | None = None) -> dict[str, Any]:
         load_json(bundle_root / "reproducibility_report.json"),
         where="reproducibility_report",
     )
+    reproducibility_schema = _require_mapping(
+        load_json(bundle_root / "reproducibility_report.schema.json"),
+        where="reproducibility_report.schema",
+    )
     result = _require_mapping(load_json(bundle_root / "shadow_result_manifest.json"), where="shadow_result_manifest")
 
     validate_handshake_manifest(manifest)
@@ -1333,6 +1432,7 @@ def verify_handshake(root: Path | None = None) -> dict[str, Any]:
     validate_executor_result_reference(reference)
     validate_validation_report(validation_report)
     validate_no_side_effects_report(no_side_effects)
+    validate_reproducibility_report_schema(reproducibility_schema)
     validate_reproducibility_report(reproducibility)
     validate_output_manifest(bundle_root, output_manifest)
     validate_shadow_job_envelope_output_manifest_binding(
