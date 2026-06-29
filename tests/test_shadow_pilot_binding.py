@@ -55,6 +55,9 @@ def _reproducibility(envelope: dict | None = None, *, ok: bool = True) -> dict:
 def _invariant(*, ok: bool = True) -> dict:
     return {
         "ok": ok,
+        "shadow_id": sp.SHADOW_ID,
+        "shadow_pilot_id": sp.SHADOW_PILOT_ID,
+        "calibration_id": sp.CALIBRATION_ID,
         "checks": {
             "runtime_activation_false": True,
             "allow_db_write_false": True,
@@ -77,13 +80,22 @@ def _output_manifest() -> dict:
     }
 
 
-def _result(envelope: dict, baseline: dict, repro: dict, policy: dict) -> dict:
+def _result(
+    envelope: dict,
+    baseline: dict,
+    repro: dict,
+    policy: dict,
+    *,
+    invariant: dict | None = None,
+    calibration_run_matrix: dict | None = None,
+) -> dict:
     return sp.build_shadow_result_manifest(
         envelope=envelope,
-        invariant_report=_invariant(),
+        invariant_report=invariant or _invariant(),
         baseline_comparison=baseline,
         policy=policy,
         reproducibility_report=repro,
+        calibration_run_matrix=calibration_run_matrix or CALIBRATION_RUN_MATRIX,
         output_manifest_hash="a" * 64,
         invariant_hash="b" * 64,
         baseline_hash="c" * 64,
@@ -302,3 +314,95 @@ def test_invariant_report_reevaluates_stale_baseline_status(tmp_path: Path) -> N
         policy=policy,
     )
     assert report["checks"]["baseline_comparison_pass"] is False
+
+
+# ---- Review 4588225478 #1: invariant-report identity must be bound before trusting ok ----
+@pytest.mark.parametrize("field", ["shadow_id", "shadow_pilot_id", "calibration_id"])
+def test_result_requires_invariant_identity(field: str) -> None:
+    policy = _policy()
+    envelope = _envelope()
+    invariant = _invariant()
+    invariant[field] = "foreign_value"
+    with pytest.raises(ValueError):
+        _result(envelope, _baseline(), _reproducibility(envelope), policy, invariant=invariant)
+
+
+@pytest.mark.parametrize("field", ["shadow_id", "shadow_pilot_id", "calibration_id"])
+def test_acceptance_requires_invariant_identity(field: str) -> None:
+    policy = _policy()
+    invariant = _invariant()
+    invariant[field] = "foreign_value"
+    with pytest.raises(ValueError):
+        sp.build_acceptance_report(
+            policy=policy,
+            output_manifest=_output_manifest(),
+            invariant_report=invariant,
+            baseline_comparison=_baseline(),
+            reproducibility_report=_reproducibility(),
+            expected_run_fingerprint=_envelope()["run_fingerprint"],
+        )
+
+
+# ---- Review 4588225478 #2: pin the result engine image digest ----
+def test_validate_result_pins_engine_image_digest() -> None:
+    policy = _policy()
+    envelope = _envelope()
+    result = _result(envelope, _baseline(), _reproducibility(envelope), policy)
+    result["engine_image_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(jsonschema.ValidationError):
+        sp.validate_shadow_result_manifest(result, root=ROOT)
+
+
+# ---- Review 4588225478 #3: derive no-db invariant from executor evidence ----
+def test_invariant_no_db_access_derived_from_executor_log(tmp_path: Path) -> None:
+    policy = _policy()
+    out = tmp_path / sp.SHADOW_PILOT_ID
+    (out / "logs").mkdir(parents=True)
+    (out / "logs" / "shadow_pilot.log").write_text(
+        "shadow_pilot_id=open_macro_v03_shadow_pilot_001 runtime_activation=false "
+        "allow_db_write=false allow_allocator_publish=false production_endpoint_activation=none\n",
+        encoding="utf-8",
+    )
+    # Tampered executor log claiming DB access.
+    (out / "logs" / "executor.log").write_text(
+        "isolated_external_executor_no_productive_runtime_docker network=none db_access=true "
+        "input_pack_mount=read_only source_tree_writes=false\n",
+        encoding="utf-8",
+    )
+    report = sp.build_invariant_report(
+        output_dir=out,
+        envelope=_envelope(),
+        baseline_comparison=_baseline(),
+        reproducibility_report=_reproducibility(),
+        policy=policy,
+    )
+    assert report["checks"]["no_db_access"] is False
+
+
+# ---- Review 4588225478 #4: recompute the expected run fingerprint from the matrix ----
+def test_result_recomputes_run_fingerprint_from_matrix() -> None:
+    policy = _policy()
+    envelope = _envelope()
+    bogus = "0" * 64
+    envelope["run_fingerprint"] = bogus
+    repro = _reproducibility(envelope)  # self-consistent with the bogus fingerprint
+    with pytest.raises(ValueError):
+        _result(envelope, _baseline(), repro, policy)
+
+
+def test_acceptance_recomputes_run_fingerprint_from_matrix() -> None:
+    policy = _policy()
+    bogus = "0" * 64
+    envelope = _envelope()
+    envelope["run_fingerprint"] = bogus
+    repro = _reproducibility(envelope)
+    with pytest.raises(ValueError):
+        sp.build_acceptance_report(
+            policy=policy,
+            output_manifest=_output_manifest(),
+            invariant_report=_invariant(),
+            baseline_comparison=_baseline(),
+            reproducibility_report=repro,
+            expected_run_fingerprint=bogus,
+            calibration_run_matrix=CALIBRATION_RUN_MATRIX,
+        )

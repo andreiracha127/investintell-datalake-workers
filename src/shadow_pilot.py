@@ -300,6 +300,8 @@ def validate_shadow_result_manifest(result: dict[str, Any], *, root: Path | None
         expected_uri = expected_output_artifact_uri()
         if result.get("output_artifact_uri") != expected_uri:
             raise jsonschema.ValidationError(f"output_artifact_uri must equal {expected_uri}")
+        if result.get("engine_image_digest") != RAILWAY_IMAGE_DIGEST:
+            raise jsonschema.ValidationError(f"engine_image_digest must equal {RAILWAY_IMAGE_DIGEST}")
 
 
 def validate_shadow_readiness_manifest_is_inert(readiness: dict[str, Any]) -> None:
@@ -607,7 +609,11 @@ def build_invariant_report(
     reproducibility_report: dict[str, Any],
     policy: dict[str, Any],
 ) -> dict[str, Any]:
-    log_paths = [output_dir / "logs" / "shadow_pilot.log", output_dir / "logs" / "executor.log"]
+    shadow_log = output_dir / "logs" / "shadow_pilot.log"
+    executor_log = output_dir / "logs" / "executor.log"
+    log_paths = [shadow_log, executor_log]
+    executor_text = executor_log.read_text(encoding="utf-8") if executor_log.is_file() else ""
+    shadow_text = shadow_log.read_text(encoding="utf-8") if shadow_log.is_file() else ""
     checks = {
         "runtime_activation_false": envelope["runtime_activation"] is False,
         "allow_db_write_false": envelope["allow_db_write"] is False,
@@ -618,9 +624,15 @@ def build_invariant_report(
         "logs_present": all(path.exists() and path.stat().st_size > 0 for path in log_paths),
         "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
         "no_symlinks": not any(path.is_symlink() for path in output_dir.rglob("*")),
-        "source_tree_not_executor_output": True,
-        "no_db_access": True,
-        "no_allocator_publish": True,
+        # Derive isolation invariants from the executor/shadow evidence instead of
+        # hard-coding them, so a stale or hand-edited log flips the gate red.
+        "source_tree_not_executor_output": (
+            "source_tree_writes=false" in executor_text and "source_tree_writes=true" not in executor_text
+        ),
+        "no_db_access": "db_access=false" in executor_text and "db_access=true" not in executor_text,
+        "no_allocator_publish": (
+            "allow_allocator_publish=false" in shadow_text and "allow_allocator_publish=true" not in shadow_text
+        ),
     }
     return {
         "schema_version": 1,
@@ -783,9 +795,15 @@ def build_shadow_result_manifest(
     reproducibility_hash: str,
     started_at: dt.datetime,
     finished_at: dt.datetime,
+    calibration_run_matrix: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if invariant_report["ok"] is not True:
         raise ValueError("cannot emit succeeded result for red invariant report")
+    require_identity(
+        invariant_report,
+        {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
+        where="invariant_report",
+    )
     baseline_evaluation = evaluate_baseline_comparison(baseline_comparison, policy)
     if baseline_evaluation["status"] != "pass":
         raise ValueError("cannot emit succeeded result for red baseline comparison")
@@ -798,6 +816,12 @@ def build_shadow_result_manifest(
         {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
         where="reproducibility_report",
     )
+    if calibration_run_matrix is not None:
+        expected_fingerprint = run_fingerprint(calibration_run_matrix)
+        if envelope["run_fingerprint"] != expected_fingerprint:
+            raise EvidenceError(
+                "cannot emit succeeded result: run_fingerprint does not match the calibration matrix"
+            )
     if envelope.get("output_artifact_uri") != expected_output_artifact_uri():
         raise EvidenceError("cannot emit succeeded result for mis-bound output_artifact_uri")
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
@@ -846,6 +870,7 @@ def build_acceptance_report(
     baseline_comparison: dict[str, Any],
     reproducibility_report: dict[str, Any],
     expected_run_fingerprint: str,
+    calibration_run_matrix: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     checks = invariant_report["checks"]
     forbidden_effects = baseline_comparison.get("forbidden_effects", {})
@@ -855,6 +880,13 @@ def build_acceptance_report(
         {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
         where="reproducibility_report",
     )
+    require_identity(
+        invariant_report,
+        {"shadow_id": SHADOW_ID, "shadow_pilot_id": SHADOW_PILOT_ID, "calibration_id": CALIBRATION_ID},
+        where="invariant_report",
+    )
+    if calibration_run_matrix is not None and expected_run_fingerprint != run_fingerprint(calibration_run_matrix):
+        raise EvidenceError("expected_run_fingerprint does not match the calibration matrix")
     rejection_rules = set(baseline_evaluation["rejection_rules_triggered"])
     baseline_rejected = baseline_evaluation["status"] == "rejected"
 
@@ -1201,6 +1233,7 @@ def run_shadow_pilot(
         reproducibility_hash=reproducibility_hash,
         started_at=started,
         finished_at=finished,
+        calibration_run_matrix=calibration_run_matrix,
     )
     validate_shadow_result_manifest(result, root=root)
     write_json(output_dir / "shadow_result_manifest.json", result)
@@ -1212,7 +1245,8 @@ def run_shadow_pilot(
         invariant_report=invariant_report,
         baseline_comparison=baseline_comparison,
         reproducibility_report=reproducibility_report,
-        expected_run_fingerprint=envelope["run_fingerprint"],
+        expected_run_fingerprint=run_fingerprint(calibration_run_matrix),
+        calibration_run_matrix=calibration_run_matrix,
     )
     write_json(output_dir / "acceptance_report.json", acceptance_report)
     observability = build_observability_evidence(

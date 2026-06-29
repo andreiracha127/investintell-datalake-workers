@@ -70,6 +70,9 @@ def _output_manifest_with_logs() -> dict:
 def _invariant_report(*, ok: bool = True) -> dict:
     return {
         "ok": ok,
+        "shadow_id": sp.SHADOW_ID,
+        "shadow_pilot_id": sp.SHADOW_PILOT_ID,
+        "calibration_id": sp.CALIBRATION_ID,
         "checks": {
             "runtime_activation_false": True,
             "allow_db_write_false": True,
