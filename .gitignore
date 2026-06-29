@@ -7,6 +7,7 @@ __pycache__/
 
 # IDE / tooling session state
 .idea/
+.kilo/
 .serena/
 .remember/
 .pytest_cache/

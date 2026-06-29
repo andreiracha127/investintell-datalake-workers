@@ -6,7 +6,7 @@ Branch: `feat/open-macro-v03-post-shadow-planning-001`.
 
 Base: `origin/main` at `09a42a0d80513a8ccfab432317eec6949b3c97cd` (`Merge PR #6: execute open_macro_v03 shadow pilot (artifact-only, A5 blocked)`).
 
-This document is a local/read-only technical planning package for the next phase after the Shadow Pilot. It does not implement Shadow Execution, A5, runtime activation, allocator publication, productive DB writes, production endpoints, formulas, input packs, calibration packs, or contract bundle changes.
+This document is a local/read-only technical planning package for the next phase after the Shadow Pilot. It does not implement Shadow Execution, A5, runtime activation, allocator publication, productive DB writes, production endpoints, formulas, input packs, calibration packs, or contract bundle changes. The only non-planning-file exception in this branch is `.gitignore`, updated after validation to ignore local `.kilo/` session/config state and keep remote CI hooks from seeing local tooling files as dirty.
 
 Pinned state for this planning branch:
 
@@ -292,7 +292,7 @@ Branch-level checks before commit:
 | Input pack verifier | `$env:PYTHONPATH='.'; python docker/railway-ci/verify_input_pack.py` | Pass. Local note: direct script invocation without `PYTHONPATH` fails because the Dockerfile normally sets `PYTHONPATH=/app:...`. |
 | Calibration artifact verifier | `$env:PYTHONPATH='.'; python docker/railway-ci/verify_calibration_artifacts.py` | Pass. Local note: direct script invocation without `PYTHONPATH` fails for the same local import-path reason. |
 | Targeted shadow tests | `python -m pytest tests/test_shadow_readiness.py tests/test_shadow_pilot.py tests/test_shadow_pilot_binding.py tests/test_remote_ci_runner.py tests/test_repeatability_matrix.py -q` | Pass: 134 passed. |
-| Prohibited-file check | `git status --short --branch` before staging | Pass. Only `.kilo/` remains unrelated/untracked and `docs/planning/` is new. No runtime, SQL, allocator, endpoint, formula, input pack, calibration pack, shadow artifact, or contract path changed. |
+| Prohibited-file check | `git status --short --branch` before final commit | Pass. Final branch changes are `docs/planning/*` plus `.gitignore` for local `.kilo/` ignore only. No runtime, SQL, allocator, endpoint, formula, input pack, calibration pack, shadow artifact, or contract path changed. |
 
 ## Acceptance For This Planning PR
 
