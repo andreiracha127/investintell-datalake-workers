@@ -142,11 +142,26 @@ def canonical_json_sha256(payload: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
+def _logical_text_bytes(path: Path) -> bytes:
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def file_sha256(path: str | Path) -> str:
     candidate = Path(path)
     if candidate.suffix.lower() == ".json":
         return canonical_json_sha256(load_json(candidate))
+    if candidate.suffix.lower() in {".md", ".log"}:
+        return hashlib.sha256(_logical_text_bytes(candidate)).hexdigest()
     return hashlib.sha256(candidate.read_bytes()).hexdigest()
+
+
+def file_logical_bytes(path: str | Path) -> int:
+    candidate = Path(path)
+    if candidate.suffix.lower() in {".md", ".log"}:
+        return len(_logical_text_bytes(candidate))
+    if candidate.suffix.lower() == ".json":
+        return len(_logical_text_bytes(candidate))
+    return candidate.stat().st_size
 
 
 def _require_mapping(payload: Any, *, where: str) -> Mapping[str, Any]:
@@ -419,7 +434,7 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
         if not path.is_file():
             raise HandshakeValidationError(f"output_manifest artifact missing: {rel}")
         _require_equal(entry, "sha256", file_sha256(path), where=f"output_manifest[{rel}]")
-        _require_equal(entry, "bytes", path.stat().st_size, where=f"output_manifest[{rel}]")
+        _require_equal(entry, "bytes", file_logical_bytes(path), where=f"output_manifest[{rel}]")
     for rel in LOGS_REQUIRED:
         if rel not in by_path:
             raise HandshakeValidationError(f"output_manifest missing required log {rel}")
