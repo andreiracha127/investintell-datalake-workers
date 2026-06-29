@@ -112,6 +112,7 @@ LOG_EXPECTED_TOKENS: Final[dict[str, str]] = {
     "backend_executes_docker": "false",
     "backend_executes_subprocess": "false",
     "db_write": "false",
+    "db_access": "false",
     "allocator_publish": "false",
     "source_tree_writes": "false",
     "network": "none",
@@ -213,6 +214,26 @@ SHADOW_RESULT_EVIDENCE_HASH_FILES: Final[dict[str, str]] = {
     "invariant_report_sha256": "no_side_effects_report.json",
     "baseline_comparison_sha256": "validation_report.json",
 }
+CONTROL_PLANE_REQUEST_FIELDS: Final[frozenset[str]] = frozenset(
+    (
+        "schema_version",
+        "handshake_id",
+        "request_id",
+        "correlation_id",
+        "execution_id",
+        "feature_flag_name",
+        "feature_flag_default",
+        "output_artifact_uri",
+        "control_plane_contract_merge_commit",
+        "runtime_skeleton_id",
+        "runtime_skeleton_merge_commit",
+        "shadow_id",
+        "mode",
+        *PINNED_PROVENANCE,
+        *SIDE_EFFECT_PINS,
+        *BACKEND_NO_EXEC_PINS,
+    )
+)
 DIVERGENCE_FIELDS: Final[tuple[str, ...]] = (
     "missing_outputs",
     "unexpected_outputs",
@@ -410,6 +431,7 @@ def validate_handshake_manifest(payload: Mapping[str, Any]) -> None:
 
 
 def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(payload, CONTROL_PLANE_REQUEST_FIELDS, where="control_plane_request")
     _require_fields(
         payload,
         (
@@ -475,6 +497,19 @@ def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
     if output_manifest_sha256 is not None and not _is_sha256_hex(output_manifest_sha256):
         raise HandshakeValidationError("shadow_job_envelope: output_manifest_sha256 must be sha256 hex")
     _require_artifact_uri(payload.get("output_artifact_uri"), where="shadow_job_envelope")
+
+
+def validate_shadow_job_envelope_output_manifest_binding(
+    envelope: Mapping[str, Any], output_manifest_path: Path
+) -> None:
+    expected = envelope.get("output_manifest_sha256")
+    if expected is None:
+        return
+    actual = file_sha256(output_manifest_path)
+    if expected != actual:
+        raise HandshakeValidationError(
+            "shadow_job_envelope: output_manifest_sha256 does not match output_manifest.json"
+        )
 
 
 def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[str, Any]) -> None:
@@ -853,10 +888,14 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
 
 
 def _validate_required_logs(root: Path) -> None:
+    values_by_path_key: dict[tuple[str, str], list[str]] = {}
     pairs: list[tuple[str, str]] = []
     for rel in LOGS_REQUIRED:
         path = _ensure_child(root / rel, root)
-        pairs.extend(_parse_log_token_pairs(path.read_text(encoding="utf-8")))
+        log_pairs = _parse_log_token_pairs(path.read_text(encoding="utf-8"))
+        pairs.extend(log_pairs)
+        for key, value in log_pairs:
+            values_by_path_key.setdefault((rel, key), []).append(value)
     values_by_key: dict[str, list[str]] = {}
     for key, value in pairs:
         values_by_key.setdefault(key, []).append(value)
@@ -875,6 +914,16 @@ def _validate_required_logs(root: Path) -> None:
             raise HandshakeValidationError(
                 f"required logs contain contradictory attestation {key}={unexpected}"
             )
+    external_db_access = values_by_path_key.get(("logs/external_executor.log", "db_access"), [])
+    if not external_db_access:
+        raise HandshakeValidationError(
+            "logs/external_executor.log missing attestation db_access=false"
+        )
+    unexpected_db_access = sorted({value for value in external_db_access if value != "false"})
+    if unexpected_db_access:
+        raise HandshakeValidationError(
+            f"logs/external_executor.log contains contradictory attestation db_access={unexpected_db_access}"
+        )
 
 
 def _parse_log_token_pairs(text: str) -> list[tuple[str, str]]:
@@ -1055,6 +1104,10 @@ def verify_handshake(root: Path | None = None) -> dict[str, Any]:
     validate_no_side_effects_report(no_side_effects)
     validate_reproducibility_report(reproducibility)
     validate_output_manifest(bundle_root, output_manifest)
+    validate_shadow_job_envelope_output_manifest_binding(
+        envelope,
+        bundle_root / "output_manifest.json",
+    )
     validate_shadow_result_manifest(
         result,
         evidence_hashes={

@@ -27,6 +27,10 @@ def _artifact(name: str) -> dict:
     return _json(HANDSHAKE_ROOT / name)
 
 
+def _write_json(path: Path, payload: dict) -> None:
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+
 def _refresh_manifest_entry(root: Path, manifest: dict, rel: str) -> None:
     for entry in manifest["artifacts"]:
         if entry["path"] == rel:
@@ -100,6 +104,33 @@ def test_shadow_job_envelope_allows_valid_optional_output_manifest_hash() -> Non
     hs.validate_shadow_job_envelope(envelope)
 
 
+def test_shadow_job_envelope_binds_optional_output_manifest_hash() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    envelope["output_manifest_sha256"] = hs.file_sha256(HANDSHAKE_ROOT / "output_manifest.json")
+
+    hs.validate_shadow_job_envelope_output_manifest_binding(
+        envelope,
+        HANDSHAKE_ROOT / "output_manifest.json",
+    )
+
+
+def test_verify_handshake_rejects_stale_envelope_output_manifest_hash(tmp_path: Path) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    envelope = _json(root / "shadow_job_envelope.json")
+    envelope["output_manifest_sha256"] = "0" * 64
+    _write_json(root / "shadow_job_envelope.json", envelope)
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "shadow_job_envelope.json")
+    _write_json(root / "output_manifest.json", output_manifest)
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(hs.HandshakeValidationError, match="output_manifest_sha256"):
+        hs.verify_handshake(root)
+
+
 def test_shadow_result_manifest_validates_against_shadow_schema() -> None:
     schema = _json(SHADOW_ROOT / "shadow_result_manifest.schema.json")
     result = _artifact("shadow_result_manifest.json")
@@ -138,6 +169,40 @@ def test_control_plane_request_rejects_activation_and_provenance_drift(
 
     with pytest.raises(hs.HandshakeValidationError):
         hs.validate_control_plane_request(request)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("runtime_activation_attempt", True),
+        ("unexpected_request_property", "value"),
+    ],
+)
+def test_control_plane_request_rejects_unexpected_fields(field: str, bad: object) -> None:
+    request = _artifact("control_plane_request.json")
+    request[field] = bad
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.validate_control_plane_request(request)
+
+
+def test_verify_handshake_rejects_unexpected_request_fields_after_hash_refresh(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    request = _json(root / "control_plane_request.json")
+    request["runtime_activation_attempt"] = True
+    _write_json(root / "control_plane_request.json", request)
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "control_plane_request.json")
+    _write_json(root / "output_manifest.json", output_manifest)
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(hs.HandshakeValidationError, match="unexpected fields"):
+        hs.verify_handshake(root)
 
 
 @pytest.mark.parametrize(
@@ -567,6 +632,7 @@ def test_output_manifest_rejects_unlisted_files_on_disk(tmp_path: Path) -> None:
         ("logs/external_executor.log", "production_endpoint_activation=public"),
         ("logs/external_executor.log", "network=none network=bridge"),
         ("logs/external_executor.log", "input_pack_mount=read_only input_pack_mount=read_write"),
+        ("logs/external_executor.log", "db_access=false db_access=read_only"),
         ("logs/control_plane_validator.log", "runtime_activation=false runtime_activation=true"),
         ("logs/control_plane_validator.log", "allow_db_write=false allow_db_write=maybe"),
         ("logs/external_executor.log", "source_tree_writes=false source_tree_writes=true"),
@@ -585,6 +651,24 @@ def test_output_manifest_scans_required_logs_for_side_effect_attempts(
     _refresh_manifest_entry(root, manifest, rel)
 
     with pytest.raises(hs.HandshakeValidationError):
+        hs.validate_output_manifest(root, manifest)
+
+
+def test_output_manifest_requires_external_executor_db_access_attestation(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "handshake"
+    shutil.copytree(HANDSHAKE_ROOT, root)
+    rel = "logs/external_executor.log"
+    log_path = root / rel
+    log_path.write_text(
+        log_path.read_text(encoding="utf-8").replace(" db_access=false", ""),
+        encoding="utf-8",
+    )
+    manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, manifest, rel)
+
+    with pytest.raises(hs.HandshakeValidationError, match="db_access=false"):
         hs.validate_output_manifest(root, manifest)
 
 

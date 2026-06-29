@@ -6,7 +6,7 @@
     {"bytes": 800, "path": "executor_result_reference.json", "sha256": "f7fb0a148dc41b2f4942c82de4a4fe946ecda91e88f0c0562fe4ff2c610cdf7b"},
     {"bytes": 1392, "path": "handshake_report.md", "sha256": "fa5249a50274e0ce79c690b866d4fc9b63d38773ebd62ccdeb812c430ec5e00c"},
     {"bytes": 324, "path": "logs/control_plane_validator.log", "sha256": "ceca05bea1782ec22357a044dd8204d97523df59a74ac11b71812e9ce60e4d30"},
-    {"bytes": 407, "path": "logs/external_executor.log", "sha256": "b9559821af71a8f52d34177eff6c907da50f167331cde3512d9213e2d725484e"},
+    {"bytes": 423, "path": "logs/external_executor.log", "sha256": "52511b7293ab375116d609a7139d7ef872a30e4d556b4e46777c2a7cfce37419"},
     {"bytes": 1122, "path": "no_side_effects_report.json", "sha256": "8ef7e6ea388c2e6d978218031d6f78fb26082f93e72aecd64e9c9674352158ef"},
     {"bytes": 2408, "path": "reproducibility_report.json", "sha256": "e62005c9adebedea93bb7a21984425b521187700cd10271ed2875a9639d75ce6"},
     {"bytes": 1357, "path": "shadow_job_envelope.json", "sha256": "be81f69ccb3a17c724c2ce7c397ac234ca63448eb8af62a0faeb001ad337ad04"},
