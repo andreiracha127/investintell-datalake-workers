@@ -618,3 +618,47 @@ def test_acceptance_requires_unexpected_outputs_attestation() -> None:
     )
     rule = next(r for r in report["rules"] if r["id"] == "no_unexpected_outputs")
     assert rule["status"] == "fail"
+
+
+# ---- Review 4588518349 #1: validator binds envelope digest + pilot URI ----
+def test_validate_envelope_binds_engine_digest() -> None:
+    envelope = _envelope()
+    envelope["engine_image_digest"] = "sha256:" + "f" * 64  # schema-valid shape, wrong image
+    with pytest.raises(ValueError):
+        sp.validate_shadow_job_envelope(envelope, root=ROOT)
+
+
+def test_validate_envelope_binds_pilot_uri() -> None:
+    envelope = _envelope()
+    envelope["output_artifact_uri"] = f"artifact://shadow/{sp.SHADOW_ID}/some_other_pilot"
+    with pytest.raises(ValueError):
+        sp.validate_shadow_job_envelope(envelope, root=ROOT)
+
+
+# ---- Review 4588518349 #2: validator recomputes baseline status ----
+def test_validate_baseline_recomputes_self_contradictory_status() -> None:
+    comparison = json.loads(
+        (ROOT / "artifacts" / "shadow" / sp.SHADOW_PILOT_ID / "baseline_comparison.json").read_text(encoding="utf-8")
+    )
+    comparison["divergence_summary"]["mismatch_count"] = 1  # stored status/evaluation stay "pass"
+    with pytest.raises(ValueError):
+        sp.validate_baseline_comparison(comparison, root=ROOT)
+
+
+# ---- Review 4588518349 #3: log attestations match whole whitespace tokens ----
+def test_invariant_log_attestation_requires_whole_token_db_access(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path,
+        shadow_line=_CLEAN_SHADOW_LOG,
+        executor_line=_CLEAN_EXECUTOR_LOG.replace("db_access=false", "not_db_access=false"),
+    )
+    assert report["checks"]["no_db_access"] is False
+
+
+def test_invariant_log_attestation_requires_whole_token_runtime(tmp_path: Path) -> None:
+    report = _build_invariant_with_logs(
+        tmp_path,
+        shadow_line=_CLEAN_SHADOW_LOG.replace("runtime_activation=false", "xruntime_activation=false"),
+        executor_line=_CLEAN_EXECUTOR_LOG,
+    )
+    assert report["checks"]["runtime_activation_false"] is False

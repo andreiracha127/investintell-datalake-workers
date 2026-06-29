@@ -149,9 +149,35 @@ def expected_output_artifact_uri() -> str:
     return f"artifact://shadow/{SHADOW_ID}/{SHADOW_PILOT_ID}"
 
 
-def _log_attests(logs: str, affirmative: str, forbidden: tuple[str, ...]) -> bool:
-    """The affirmative isolation token must be present and no forbidding token may appear."""
-    return affirmative in logs and not any(token in logs for token in forbidden)
+def _parse_log_tokens(logs: str) -> dict[str, str]:
+    """Parse whitespace-delimited ``key=value`` log tokens (bare flags map to "")."""
+    tokens: dict[str, str] = {}
+    for raw in logs.split():
+        key, sep, value = raw.partition("=")
+        tokens[key] = value if sep else ""
+    return tokens
+
+
+def _attests(
+    tokens: dict[str, str],
+    key: str,
+    expected: str,
+    *,
+    forbidden_keys: tuple[str, ...] = (),
+    forbidden_pairs: tuple[tuple[str, str], ...] = (),
+) -> bool:
+    """The key must hold the expected value as a whole token, with no forbidding token.
+
+    Whole-token matching prevents a malformed token like ``not_db_access=false`` from
+    satisfying a ``db_access=false`` attestation via substring presence.
+    """
+    if tokens.get(key) != expected:
+        return False
+    if any(forbidden in tokens for forbidden in forbidden_keys):
+        return False
+    if any(tokens.get(fkey) == fval for fkey, fval in forbidden_pairs):
+        return False
+    return True
 
 
 def invariant_report_is_green(invariant_report: dict[str, Any]) -> bool:
@@ -298,10 +324,39 @@ def build_shadow_job_envelope(calibration_run_matrix: dict[str, Any]) -> dict[st
 
 def validate_shadow_job_envelope(envelope: dict[str, Any], *, root: Path | None = None) -> None:
     validate_with_schema(envelope, shadow_root(root) / "shadow_job_envelope.schema.json")
+    # The schema accepts any sha256 digest and any matching-prefix URI; bind the exact
+    # executor image and pilot artifact URI (and inert pins) for this pilot.
+    require_identity(
+        envelope,
+        {
+            "shadow_id": SHADOW_ID,
+            "calibration_id": CALIBRATION_ID,
+            "engine_image_digest": RAILWAY_IMAGE_DIGEST,
+            "output_artifact_uri": expected_output_artifact_uri(),
+            "runtime_activation": False,
+            "allow_db_write": False,
+            "allow_allocator_publish": False,
+            "production_endpoint_activation": "none",
+        },
+        where="envelope",
+    )
 
 
-def validate_baseline_comparison(comparison: dict[str, Any], *, root: Path | None = None) -> None:
+def validate_baseline_comparison(
+    comparison: dict[str, Any], *, root: Path | None = None, policy: dict[str, Any] | None = None
+) -> None:
     validate_with_schema(comparison, shadow_root(root) / "baseline_comparison.schema.json")
+    # The schema only checks shapes/constants/enums; recompute the verdict so a
+    # self-contradictory baseline (e.g. mismatch_count=1 with a stale status="pass")
+    # cannot be blessed as green.
+    policy = policy or load_policy(root)
+    evaluation = evaluate_baseline_comparison(comparison, policy)
+    if comparison.get("status") != evaluation["status"]:
+        raise EvidenceError(
+            f"baseline_comparison status {comparison.get('status')!r} != recomputed {evaluation['status']!r}"
+        )
+    if comparison.get("evaluation") != evaluation:
+        raise EvidenceError("baseline_comparison.evaluation does not match the recomputed evaluation")
 
 
 def validate_reproducibility_report(report: dict[str, Any], *, root: Path | None = None) -> None:
@@ -678,36 +733,33 @@ def build_invariant_report(
     # Derive isolation invariants from the executor/shadow log evidence (not just the
     # envelope), so a stale or hand-edited log recording a forbidden state/attempt
     # flips the relevant gate red.
-    combined_logs = f"{shadow_text}\n{executor_text}"
+    log_tokens = _parse_log_tokens(f"{shadow_text}\n{executor_text}")
     checks = {
         "runtime_activation_false": (
             envelope["runtime_activation"] is False
-            and _log_attests(
-                combined_logs, "runtime_activation=false", ("runtime_activation=true", "runtime_activation_attempt")
-            )
+            and _attests(log_tokens, "runtime_activation", "false", forbidden_keys=("runtime_activation_attempt",))
         ),
         "allow_db_write_false": (
             envelope["allow_db_write"] is False
-            and _log_attests(
-                combined_logs, "allow_db_write=false", ("allow_db_write=true", "official_db_write_attempt")
-            )
+            and _attests(log_tokens, "allow_db_write", "false", forbidden_keys=("official_db_write_attempt",))
         ),
         "allow_allocator_publish_false": (
             envelope["allow_allocator_publish"] is False
-            and _log_attests(
-                combined_logs, "allow_allocator_publish=false", ("allocator_publish=true", "allocator_publish_attempt")
+            and _attests(
+                log_tokens,
+                "allow_allocator_publish",
+                "false",
+                forbidden_keys=("allocator_publish_attempt",),
+                forbidden_pairs=(("allocator_publish", "true"),),
             )
         ),
         "production_endpoint_activation_none": (
             envelope["production_endpoint_activation"] == "none"
-            and _log_attests(
-                combined_logs,
-                "production_endpoint_activation=none",
-                (
-                    "production_endpoint_activation=shadow",
-                    "production_endpoint_activation=true",
-                    "production_endpoint_activation_attempt",
-                ),
+            and _attests(
+                log_tokens,
+                "production_endpoint_activation",
+                "none",
+                forbidden_keys=("production_endpoint_activation_attempt",),
             )
         ),
         "baseline_comparison_pass": evaluate_baseline_comparison(baseline_comparison, policy)["status"] == "pass",
@@ -715,12 +767,14 @@ def build_invariant_report(
         "logs_present": all(path.exists() and path.stat().st_size > 0 for path in log_paths),
         "output_dir_dedicated": output_dir.name == SHADOW_PILOT_ID,
         "no_symlinks": not any(path.is_symlink() for path in output_dir.rglob("*")),
-        "source_tree_not_executor_output": _log_attests(
-            combined_logs, "source_tree_writes=false", ("source_tree_writes=true",)
-        ),
-        "no_db_access": _log_attests(combined_logs, "db_access=false", ("db_access=true",)),
-        "no_allocator_publish": _log_attests(
-            combined_logs, "allow_allocator_publish=false", ("allocator_publish=true", "allocator_publish_attempt")
+        "source_tree_not_executor_output": _attests(log_tokens, "source_tree_writes", "false"),
+        "no_db_access": _attests(log_tokens, "db_access", "false"),
+        "no_allocator_publish": _attests(
+            log_tokens,
+            "allow_allocator_publish",
+            "false",
+            forbidden_keys=("allocator_publish_attempt",),
+            forbidden_pairs=(("allocator_publish", "true"),),
         ),
     }
     return {
