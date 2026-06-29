@@ -1,0 +1,16 @@
+{
+  "activation_allowed_in_this_pr": false,
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "allowed_environments": [],
+  "blast_radius": 0,
+  "default": false,
+  "feature_flag_policy_id": "open_macro_v03_runtime_activation_flag_policy_001",
+  "flag_name": "open_macro_v03_runtime_activation",
+  "notes": "This branch documents the future flag policy only. It does not implement or enable a productive flag.",
+  "production_default": false,
+  "require_explicit_approval": true,
+  "require_monitoring": true,
+  "require_rollback_plan": true,
+  "require_shadow_review": true,
+  "runtime_activation": false
+}

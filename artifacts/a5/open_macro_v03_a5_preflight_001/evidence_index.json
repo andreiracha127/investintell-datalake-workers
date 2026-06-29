@@ -1,0 +1,282 @@
+{
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "blocking": false,
+  "critical_missing_count": 0,
+  "evidence_index_id": "open_macro_v03_a5_preflight_evidence_index_001",
+  "items": [
+    {
+      "artifact_path": "fixtures/input_packs/golden/certified_input_pack/manifest.json",
+      "evidence_id": "input_pack_certified_manifest_effective",
+      "notes": "Effective certified input pack path. Expected artifacts/input_packs path is absent on this branch; manifest pins input_pack_id open_macro_v03_certified_input_pack_001 and runtime_activation=false.",
+      "sha256": "2718f9dfcbbd44ceb88d2644abab8b8d9af06408d818ea0e9d91c47d31dbb665",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/input_packs/open_macro_v03_certified_input_pack_001/manifest.json",
+      "evidence_id": "input_pack_certified_manifest_expected_artifact_path",
+      "notes": "Expected path from the dispatch is not present. The effective path is fixtures/input_packs/golden/certified_input_pack/manifest.json, so this absence is optional, not blocking.",
+      "sha256": null,
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "missing_optional",
+      "verified": false
+    },
+    {
+      "artifact_path": "artifacts/a5/open_macro_v03_a5_preflight_001/a5_preflight_manifest.json",
+      "evidence_id": "a5_preflight_manifest",
+      "notes": "A5 preflight manifest is inert: A5=blocked, runtime_activation=false, freeze_ready=false, official_result=false, no allocator/db/endpoint impact.",
+      "sha256": "701ca98b9ed9e5fe6df5556614c1edb78880d36d5f679c196a5a4d6e9470ce38",
+      "source_commit": "e202632d90902bc8de40ba0e642965f803dd097f",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "contracts/quant-engine/v1/manifest.json",
+      "evidence_id": "contract_bundle_manifest",
+      "notes": "Contract bundle manifest pins bundle_sha256 sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a.",
+      "sha256": "5d8980fed23f4dcad113ffde7719d59efa428a7bac530a8fc347ec8f235ce508",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_manifest.json",
+      "evidence_id": "calibration_manifest",
+      "notes": "Candidate calibration manifest keeps A5=blocked, runtime_activation=false, freeze_ready=false and pins the input pack and contract bundle hashes.",
+      "sha256": "7817d268693599298f16edf6476f2b57e98a09e58a171b53170ee83f88877eda",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json",
+      "evidence_id": "calibration_config",
+      "notes": "Calibration config records the out_of_sample window and p0_latest_macro_rates stress window while keeping final approval blocked.",
+      "sha256": "5fd6e0a12de3b6ea34aa1fa718e796a7ed4ae51f757d4a0217bdc8267eec56b8",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/output_manifest.json",
+      "evidence_id": "calibration_output_manifest",
+      "notes": "Closed calibration artifact manifest with artifact paths and hashes.",
+      "sha256": "46a025df238c7d227b439cbf6197b4110268ad1b40bfc536eeeb854085494e0c",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/baseline_comparison.json",
+      "evidence_id": "calibration_baseline_comparison",
+      "notes": "Records final approval blockers: reference_baselines_not_certified_in_pack and institutional_limits_explicitly_unset.",
+      "sha256": "ffba92c3b82bbdfd3e7cc703c3e857fa2540aa5f56bc260d2cf470b913de1627",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/invariant_report.json",
+      "evidence_id": "calibration_invariant_report",
+      "notes": "Calibration invariant report is ok but final approval remains blocked by explicitly unset institutional limits.",
+      "sha256": "b862412c72ab04cf0f013e5b01eb2922a5ef651beb22e8e5deb47c03ac4550a1",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/calibration/open_macro_v03_calibration_001/reproducibility_report.json",
+      "evidence_id": "calibration_reproducibility_report",
+      "notes": "Host and container jobs=1/jobs=4 evidence is reproducible with mismatch_count=0.",
+      "sha256": "8fbd5d408a51695b1f0023d0e0cc48a667b4235093d63ba3573e910e85bc8da7",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/shadow/open_macro_v03_shadow_readiness_001.md",
+      "evidence_id": "shadow_readiness_doc",
+      "notes": "Readiness doc states no shadow execution, A5 blocked, runtime_activation=false, freeze_ready=false and no productive effects.",
+      "sha256": "85edf4b938f1f0e05c52bd9eb0e75abda24de38119322768eb7c71d4930bab34",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_001/shadow_manifest.json",
+      "evidence_id": "shadow_readiness_manifest",
+      "notes": "Readiness manifest keeps feature_flag_default=false, A5=blocked, runtime_activation=false, freeze_ready=false, official_result=false.",
+      "sha256": "80dc6f127eace10cf4c1c00e2d5ad181ded656371a57de92278bee87243fc1f2",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_001/baseline_comparison_policy.json",
+      "evidence_id": "shadow_baseline_comparison_policy",
+      "notes": "Policy defines hard zero counters, hard relative delta threshold 2.0, and forbidden productive effects.",
+      "sha256": "7849354f279a627525bd657e3aa6e2c7e6032a35da2a786f4a75905f102168c0",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_001/rollback_plan.md",
+      "evidence_id": "shadow_rollback_plan",
+      "notes": "Readiness rollback plan keeps A5 blocked, runtime_activation=false, freeze_ready=false and audits allocator/db/runtime/endpoint attempts.",
+      "sha256": "ff3eac662ea67287ebc144e2b6784361c0afce350cc6490941ce3509a0f45f46",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_001/observability_plan.md",
+      "evidence_id": "shadow_observability_plan",
+      "notes": "Observability plan includes side-effect attempt alerts and required runtime/DB/allocator/endpoint fields.",
+      "sha256": "63493a1bae372fdc8bf6039d09ac9b3024e972ca8d8168dbac4a00f36cacefab",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_pilot_manifest.json",
+      "evidence_id": "shadow_pilot_manifest",
+      "notes": "Pilot manifest is candidate evidence only and keeps A5 blocked, runtime_activation=false, freeze_ready=false, official_result=false.",
+      "sha256": "35199af6e7032bd954b5e945e4797bf3d274043b109a1aa8801d8870f64ce668",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_pilot_manifest.json",
+      "evidence_id": "railway_image_digest",
+      "notes": "Railway image digest is pinned as sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b in shadow readiness and pilot manifests.",
+      "sha256": "35199af6e7032bd954b5e945e4797bf3d274043b109a1aa8801d8870f64ce668",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/planning/open_macro_v03_post_shadow_planning_001.md",
+      "evidence_id": "remote_ci_status_pr7",
+      "notes": "PR #7 records Pre-push Remote Railway CI status PASS. Current A5 branch remote CI remains to be captured after this package is committed and pushed.",
+      "sha256": "55ddd1b43056e0e511cdc68e57c01838518cf00acd943576c1e0d452ac8542c6",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_job_envelope.json",
+      "evidence_id": "shadow_job_envelope",
+      "notes": "Envelope pins run_fingerprint and forbids runtime activation, DB write, allocator publish, and endpoint activation.",
+      "sha256": "0c4d62c22e3954f60e3d7ee565154737a3327cb75640aa63abbb81b36098477d",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/shadow_result_manifest.json",
+      "evidence_id": "shadow_result_manifest",
+      "notes": "Succeeded result has all hard counters zero, material_divergence=false, official_result=false, runtime_activation=false.",
+      "sha256": "2ea11b505bd7937f53666134997d1c141b65209f892559cd4bb6a206f0e56389",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/baseline_comparison.json",
+      "evidence_id": "shadow_pilot_baseline_comparison",
+      "notes": "Status pass, material_divergence=false, no forbidden-effect attempts, all relative deltas 0.0.",
+      "sha256": "18401a2bfc7372158b6cb29b6ec93039ae16ea53beb9e682d307629049706a2c",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/invariant_report.json",
+      "evidence_id": "shadow_pilot_invariant_report",
+      "notes": "Invariant report ok=true and confirms no DB, allocator, runtime, endpoint, symlink, or output isolation violations.",
+      "sha256": "c0414f3e22573381b6d786ab63e22bccbf7a10a3c21e753bce00a1ddebb069bd",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/reproducibility_report.json",
+      "evidence_id": "shadow_pilot_reproducibility_report",
+      "notes": "Host/container and jobs=1/jobs=4 parity is reproducible; execution_id is excluded from semantic artifacts.",
+      "sha256": "c7c6614df1f245adf1f9be4c438b23ed3b4c548625942acbb36a17d25a591ffa",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_shadow_pilot_001/acceptance_report.json",
+      "evidence_id": "shadow_pilot_acceptance_report",
+      "notes": "Automated rules pass except technical_and_quantitative_review_recorded remains pending and blocking; A5 remains blocked.",
+      "sha256": "45450c9d43f52a8a813c0bbac4ea7bc20899faa0e22b22fcf2ef04af03265c34",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/planning/open_macro_v03_post_shadow_planning_001.md",
+      "evidence_id": "post_shadow_planning_doc",
+      "notes": "Planning doc merged through PR #7 and maps future inert A5 preflight path.",
+      "sha256": "55ddd1b43056e0e511cdc68e57c01838518cf00acd943576c1e0d452ac8542c6",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/planning/open_macro_v03_post_shadow_risk_register.json",
+      "evidence_id": "post_shadow_risk_register",
+      "notes": "Risk register keeps A5 blocked and lists runtime/backend/input/calibration/contract debts out of scope.",
+      "sha256": "736dad25f768fb5819fbcc559fca1362855dd75f87a1b020302e95c59c7f7e7d",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/architecture/quant-engine-governance-rollout.md",
+      "evidence_id": "governance_rollout_doc",
+      "notes": "Governance rollout says A5 unblocks only under change control after recorded readiness review; runtime activation remains out of scope.",
+      "sha256": "2d8a8e33a273fa86ce208a21e4edbeb5a133cfb18ddafe7cbece52420a9b08c6",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "docs/shadow/open_macro_v03_shadow_pilot_001.md",
+      "evidence_id": "shadow_pilot_doc",
+      "notes": "Pilot doc states artifact-only evidence, no A5, no runtime, no allocator, no DB write, no endpoint activation.",
+      "sha256": "97d6c01664c22e2877ead547c21843958eb12d4fe0a73b1dabc7a1b3488e91d2",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "scripts/repeatability_matrix.py",
+      "evidence_id": "repeatability_matrix_script",
+      "notes": "Script defines host/container jobs matrix and hardened container isolation flags.",
+      "sha256": "30493916e1a8ddf8324047cefe2924563c4c65a6935cc7d228f047a9c53af7ad",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "scripts/contract_bundle.py",
+      "evidence_id": "contract_bundle_verifier_script",
+      "notes": "Verifier exposes the contract_bundle.py verify gate used locally and in Railway CI.",
+      "sha256": "f9a53f73b5bc1068c1f01d66510c4a8196383377f7ecd3ce542aa82e2a12b789",
+      "source_commit": "c99aa5814a7051fb652b319ba34adaad23cb14e6",
+      "status": "present",
+      "verified": true
+    }
+  ],
+  "missing_blocking_count": 0,
+  "missing_optional_count": 1,
+  "overall_status": "present_with_missing_optional",
+  "source_commit": "e202632d90902bc8de40ba0e642965f803dd097f"
+}

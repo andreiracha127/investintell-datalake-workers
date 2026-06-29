@@ -1,0 +1,25 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "checklist_id": "open_macro_v03_a5_preflight_quantitative_review_001",
+  "items": [
+    {"id": "baseline_comparison_reviewed", "status": "pending", "evidence_ids": ["shadow_pilot_baseline_comparison", "calibration_baseline_comparison"], "notes": "Automated evidence is present; human quantitative review is not recorded."},
+    {"id": "hard_thresholds_not_breached", "status": "pass", "evidence_ids": ["shadow_pilot_baseline_comparison"], "notes": "Missing, unexpected, mismatch, NaN/inf, constraint, and invariant counters are zero."},
+    {"id": "review_thresholds_clean_or_justified", "status": "pass", "evidence_ids": ["shadow_pilot_baseline_comparison"], "notes": "Review rules triggered array is empty."},
+    {"id": "material_divergence_false", "status": "pass", "evidence_ids": ["shadow_pilot_baseline_comparison", "shadow_result_manifest"], "notes": "material_divergence=false and max_relative_delta_pct=0.0."},
+    {"id": "no_nan", "status": "pass", "evidence_ids": ["calibration_invariant_report", "shadow_pilot_baseline_comparison"], "notes": "No NaN evidence is recorded."},
+    {"id": "no_infinity", "status": "pass", "evidence_ids": ["calibration_invariant_report", "shadow_pilot_baseline_comparison"], "notes": "No infinite output evidence is recorded."},
+    {"id": "constraints_respected", "status": "pass", "evidence_ids": ["calibration_invariant_report", "shadow_pilot_baseline_comparison"], "notes": "Automated constraints are green; institutional limits remain explicitly unset for final approval."},
+    {"id": "weights_exposures_turnover_within_envelope", "status": "pending", "evidence_ids": ["calibration_invariant_report"], "notes": "Institutional exposure, turnover, CVaR, beta, and drawdown limits are explicitly unset; final approval remains blocked."},
+    {"id": "out_of_sample_evidence_present", "status": "pass", "evidence_ids": ["calibration_config"], "notes": "Calibration config contains out-of-sample window evidence for the P0 fixture window."},
+    {"id": "stress_windows_evidence_present", "status": "pass", "evidence_ids": ["calibration_config"], "notes": "Calibration config records p0_latest_macro_rates stress window."},
+    {"id": "rejected_candidates_documented", "status": "pass", "evidence_ids": ["calibration_manifest"], "notes": "Rejected candidates are present and hash-pinned by the manifest."},
+    {"id": "selected_parameters_documented", "status": "pass", "evidence_ids": ["calibration_manifest"], "notes": "Selected parameters are present and hash-pinned by the manifest."},
+    {"id": "no_overfit_flags_unresolved", "status": "pass", "evidence_ids": ["calibration_baseline_comparison"], "notes": "Parameter grid uses a fixed small grid and baseline-preferred conservative candidate."},
+    {"id": "quantitative_reviewer_signoff", "status": "pending", "evidence_ids": ["shadow_pilot_acceptance_report"], "notes": "Quantitative reviewer signoff is pending by default."}
+  ],
+  "overall_status": "pending_human_quantitative_review",
+  "quantitative_reviewer_signoff": "pending",
+  "runtime_activation": false,
+  "technical_and_quantitative_review_recorded": false
+}
