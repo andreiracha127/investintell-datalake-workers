@@ -6,37 +6,32 @@ decision_date: pending
 
 approvers: pending
 
+decision_status: pending
+
+approve_controlled_activation: false
+
+runtime_activation_allowed: false
+
+freeze_ready: false
+
+A5_unblocked: false
+
 ## Technical Evidence Summary
 
-Pending.
+Pending technical review.
 
 ## Quantitative Evidence Summary
 
-Pending.
+Pending quantitative review.
 
 ## Risk Evidence Summary
 
-Pending.
+Pending risk review.
 
-## Known Debts Accepted
+## Operations Evidence Summary
 
-- macro-history-coverage: pending acceptance.
-- macro-vintage-identity: pending acceptance.
-- advisory lock / regime gate debt: pending acceptance.
-- quadrant_macro staleness debt: pending acceptance.
-
-## Rollout Plan
-
-Pending. No rollout is approved by this template.
-
-## Rollback Plan
-
-Pending. Rollback runbook must be reviewed before any activation decision.
+Pending operations review.
 
 ## Explicit Decision
 
-- approve_controlled_activation: false
-- runtime_activation_allowed: false
-- freeze_ready: false
-- A5_unblocked: false
-- decision_status: pending
+No A5 activation is approved by this template.

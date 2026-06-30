@@ -3,23 +3,14 @@
   "a5_preflight_id": "open_macro_v03_a5_preflight_001",
   "checklist_id": "open_macro_v03_a5_preflight_risk_review_001",
   "items": [
-    {"id": "production_impact_none", "status": "pass", "evidence_ids": ["a5_preflight_manifest"], "notes": "production_impact=none."},
-    {"id": "allocator_impact_none", "status": "pass", "evidence_ids": ["shadow_pilot_manifest"], "notes": "allocator_impact=none and allow_allocator_publish=false."},
-    {"id": "official_result_false", "status": "pass", "evidence_ids": ["shadow_result_manifest", "shadow_pilot_manifest"], "notes": "official_result=false."},
-    {"id": "rollback_plan_present", "status": "pass", "evidence_ids": ["shadow_rollback_plan"], "notes": "Shadow rollback plan exists and A5 rollback runbook is added."},
-    {"id": "monitoring_plan_present", "status": "pass", "evidence_ids": ["shadow_observability_plan"], "notes": "Shadow observability plan exists and A5 monitoring SLO policy is added."},
-    {"id": "feature_flag_default_false", "status": "pass", "evidence_ids": ["shadow_readiness_manifest"], "notes": "Feature flag defaults false and future A5 flag policy defaults false."},
-    {"id": "known_debts_listed", "status": "pass", "evidence_ids": ["post_shadow_risk_register", "governance_rollout_doc"], "notes": "Known debts are listed and remain out of scope."},
-    {"id": "macro_history_coverage_debt_accepted", "status": "pass", "evidence_ids": ["post_shadow_risk_register", "governance_rollout_doc"], "notes": "Debt remains accepted/deferred for runtime-worker PR."},
-    {"id": "macro_vintage_identity_debt_accepted", "status": "pass", "evidence_ids": ["post_shadow_risk_register", "governance_rollout_doc"], "notes": "Debt remains accepted/deferred for runtime-worker PR."},
-    {"id": "advisory_lock_regime_gate_debt_accepted", "status": "pass", "evidence_ids": ["post_shadow_risk_register", "governance_rollout_doc"], "notes": "Debt remains accepted/deferred for infra/runtime PR."},
-    {"id": "quadrant_macro_staleness_debt_accepted", "status": "pass", "evidence_ids": ["post_shadow_risk_register", "governance_rollout_doc"], "notes": "Debt remains accepted/deferred for runtime/read-model PR."},
-    {"id": "no_hidden_runtime_activation_path", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_invariant_report"], "notes": "No runtime activation attempt is recorded."},
-    {"id": "no_hidden_db_write_path", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_invariant_report"], "notes": "allow_db_write=false and no DB access is recorded."},
-    {"id": "no_hidden_endpoint_path", "status": "pass", "evidence_ids": ["shadow_job_envelope", "shadow_pilot_invariant_report"], "notes": "production_endpoint_activation=none and no endpoint attempt is recorded."},
-    {"id": "risk_reviewer_signoff", "status": "pending", "evidence_ids": ["post_shadow_risk_register"], "notes": "Risk reviewer signoff is pending by default."}
+    {"id": "production_impact_none", "description": "No production endpoint activation or productive impact.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/a5_preflight_manifest.json", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "production_impact=none."},
+    {"id": "allocator_impact_none", "description": "No allocator publish or allocator impact.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/no_side_effects_report.json", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "allow_allocator_publish=false."},
+    {"id": "official_result_false", "description": "No official result publication.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/no_side_effects_report.json", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "official_result=false."},
+    {"id": "unresolved_risks_classified", "description": "Unresolved risks are classified by severity and owner.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/unresolved_risks_register.json", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "Includes review blockers plus prior post-shadow P1/P2 risks."},
+    {"id": "activation_approval_absent", "description": "Activation approval is absent by design.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/go_no_go_memo.md", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "This package is not an activation PR."},
+    {"id": "risk_review_recorded", "description": "A human risk reviewer records acceptance.", "status": "pending", "evidence_path": "pending://risk-review", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "Explicitly pending."}
   ],
-  "overall_status": "pending_risk_signoff",
+  "overall_status": "pending_review",
   "risk_reviewer_signoff": "pending",
   "runtime_activation": false
 }

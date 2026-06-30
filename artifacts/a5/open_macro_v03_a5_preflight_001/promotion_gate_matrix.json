@@ -1,72 +1,57 @@
 {
   "A5": "blocked",
+  "activation_allowed": false,
   "a5_preflight_id": "open_macro_v03_a5_preflight_001",
-  "levels": [
-    {
-      "criteria": [
-        {"id": "critical_artifacts_present", "status": "pass"},
-        {"id": "hashes_verified", "status": "pass"},
-        {"id": "manifests_valid", "status": "pass"},
-        {"id": "missing_optional_documented", "status": "pass"}
-      ],
-      "level": "L0",
-      "name": "Evidence complete",
-      "status": "pass"
-    },
-    {
-      "criteria": [
-        {"id": "determinism", "status": "pass"},
-        {"id": "isolation", "status": "pass"},
-        {"id": "provenance", "status": "pass"},
-        {"id": "ci", "status": "pending_current_branch_remote_ci"},
-        {"id": "rollback", "status": "pass"},
-        {"id": "observability", "status": "pass"}
-      ],
-      "level": "L1",
-      "name": "Technical readiness",
-      "status": "readiness_candidate"
-    },
-    {
-      "criteria": [
-        {"id": "baseline_comparison", "status": "pass"},
-        {"id": "invariants", "status": "pass"},
-        {"id": "thresholds", "status": "pass"},
-        {"id": "material_divergence", "status": "pass"},
-        {"id": "stress_oos", "status": "pass_limited_fixture_window"},
-        {"id": "human_quant_review", "status": "pending"}
-      ],
-      "level": "L2",
-      "name": "Quantitative readiness",
-      "status": "pending_human_review"
-    },
-    {
-      "criteria": [
-        {"id": "railway_digest", "status": "pass"},
-        {"id": "runbook", "status": "pass"},
-        {"id": "monitoring", "status": "pass"},
-        {"id": "feature_flag", "status": "pass_default_false"},
-        {"id": "incident_response", "status": "readiness_candidate"},
-        {"id": "rollback_drill_planned", "status": "pending"}
-      ],
-      "level": "L3",
-      "name": "Operational readiness",
-      "status": "readiness_candidate"
-    },
-    {
-      "activation_allowed": false,
-      "criteria": [
-        {"id": "technical_review_recorded", "status": "pending"},
-        {"id": "quantitative_review_recorded", "status": "pending"},
-        {"id": "risk_review_recorded", "status": "pending"},
-        {"id": "explicit_approval_required", "status": "required"},
-        {"id": "separate_activation_pr_required", "status": "required"}
-      ],
-      "level": "L4",
-      "name": "A5 decision",
-      "status": "blocked"
-    }
-  ],
+  "freeze_ready": false,
   "matrix_id": "open_macro_v03_a5_promotion_gate_matrix_001",
+  "official_result": false,
+  "operational_gates": [
+    {"id": "feature_flag_default_false", "description": "Feature flag defaults remain off.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/feature_flag_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "No environment is allowed in this PR."},
+    {"id": "monitoring_slo_defined", "description": "Monitoring and SLO policy is documented.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/monitoring_slo_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Includes latency, memory, retry, divergence, stale, missing output, allocator, DB, runtime, and endpoint detectors."},
+    {"id": "alerts_defined", "description": "Alert severity and escalation owner are defined.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/monitoring_slo_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Escalates to quant-engine-governance."},
+    {"id": "rollback_testable", "description": "Rollback runbook is explicit and testable.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/rollback_runbook.md", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Rollback remains preparatory until a separate activation proposal."},
+    {"id": "owner_defined", "description": "Operational owner is defined.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/operations_review_checklist.json", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "Owner is quant-engine-governance."},
+    {"id": "incident_path_defined", "description": "Incident path is documented.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/operations_review_checklist.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Pause, abort, and escalation criteria are listed."},
+    {"id": "audit_trail_complete", "description": "Evidence index links the controlled shadow chain.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/evidence_index.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Human approvals remain pending."}
+  ],
+  "quantitative_gates": [
+    {"id": "baseline_comparison_approved", "description": "Controlled shadow baseline comparison is green.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/baseline_comparison.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Automated evidence only; reviewer signoff is pending."},
+    {"id": "hard_thresholds_no_violation", "description": "Hard thresholds show no violations.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/acceptance_report.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Controlled shadow acceptance report passed."},
+    {"id": "material_divergence_false", "description": "Material divergence is false.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/baseline_comparison.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "No review exception recorded."},
+    {"id": "no_nan_inf", "description": "No NaN or infinity evidence is present.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/baseline_comparison.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "nan_or_inf_count remains zero."},
+    {"id": "constraints_respected", "description": "Constraints and invariants are respected.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/invariant_report.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Invariant report is green."},
+    {"id": "turnover_within_envelope", "description": "Turnover remains within the reviewed envelope.", "status": "pending", "evidence_path": "pending://quantitative-review", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Requires quantitative reviewer signoff."},
+    {"id": "drawdown_vol_risk_within_envelope", "description": "Drawdown, volatility, and risk envelope require review.", "status": "pending", "evidence_path": "pending://quantitative-review", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Requires quantitative reviewer signoff."},
+    {"id": "stress_windows_accepted", "description": "Stress windows require explicit acceptance.", "status": "pending", "evidence_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Fixture evidence is present; acceptance is pending."},
+    {"id": "out_of_sample_accepted", "description": "Out-of-sample window requires explicit acceptance.", "status": "pending", "evidence_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Fixture window is present; acceptance is pending."},
+    {"id": "rejected_candidates_justified", "description": "Rejected candidates are documented.", "status": "pass", "evidence_path": "artifacts/calibration/open_macro_v03_calibration_001/rejected_candidates.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Review still pending."},
+    {"id": "selected_parameters_justified", "description": "Selected parameters are documented.", "status": "pass", "evidence_path": "artifacts/calibration/open_macro_v03_calibration_001/selected_parameters.json", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Review still pending."}
+  ],
+  "risk_governance_gates": [
+    {"id": "technical_review_recorded", "description": "Technical review must be recorded.", "status": "pending", "evidence_path": "pending://technical-review", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "Not approved in this PR."},
+    {"id": "quantitative_review_recorded", "description": "Quantitative review must be recorded.", "status": "pending", "evidence_path": "pending://quantitative-review", "blocking": true, "owner_or_reviewer": "quant_reviewer", "notes": "Not approved in this PR."},
+    {"id": "risk_review_recorded", "description": "Risk review must be recorded.", "status": "pending", "evidence_path": "pending://risk-review", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "Not approved in this PR."},
+    {"id": "operations_review_recorded", "description": "Operations review must be recorded.", "status": "pending", "evidence_path": "pending://operations-review", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Not approved in this PR."},
+    {"id": "unresolved_risks_classified", "description": "Unresolved risks are classified.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/unresolved_risks_register.json", "blocking": true, "owner_or_reviewer": "risk_reviewer", "notes": "Open review risks remain pending and blocking."},
+    {"id": "A5_approval_absent", "description": "Explicit A5 approval is absent in this phase.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/go_no_go_memo.md", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "This is readiness packaging only."},
+    {"id": "activation_allowed_false", "description": "Activation is not allowed.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/a5_preflight_manifest.json", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "activation_allowed=false."},
+    {"id": "freeze_ready_false", "description": "Freeze readiness remains false.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/a5_preflight_manifest.json", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "freeze_ready=false."}
+  ],
   "runtime_activation": false,
-  "separate_activation_pr_required": true
+  "separate_activation_pr_required": true,
+  "technical_gates": [
+    {"id": "input_pack_verified", "description": "Certified input pack verifier passed.", "status": "pass", "evidence_path": "fixtures/input_packs/golden/certified_input_pack/manifest.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "verify_input_pack.py ok."},
+    {"id": "calibration_verified", "description": "Calibration artifact verifier passed.", "status": "pass", "evidence_path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_manifest.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "verify_calibration_artifacts.py ok."},
+    {"id": "controlled_shadow_verified", "description": "Controlled shadow tests passed after merge.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/controlled_shadow_manifest.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "tests/test_controlled_shadow.py: 122 passed."},
+    {"id": "repeatability_mismatch_count_zero", "description": "Repeatability mismatch count is zero.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "run_count=8, host_run_count=4."},
+    {"id": "run_count_expected", "description": "Expected controlled shadow runs are present.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "host and container jobs matrix is complete."},
+    {"id": "no_missing_unexpected_duplicates", "description": "No missing, unexpected, or duplicate outputs.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "missing=[], unexpected=[], duplicates=0."},
+    {"id": "output_manifests_complete", "description": "Output manifests are complete.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/output_manifest.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "Controlled shadow bundle output manifest is present."},
+    {"id": "provenance_complete", "description": "Provenance chain is complete.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/evidence_index.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "Evidence index links input, calibration, shadow, handshake, runtime skeleton, and controlled shadow."},
+    {"id": "railway_image_digest_pinned", "description": "Railway image digest is pinned.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b."},
+    {"id": "no_network_no_engine", "description": "Engine execution evidence records network none.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "network=none."},
+    {"id": "no_db_access_no_engine", "description": "Engine execution evidence records no DB access.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/reproducibility_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "db_access=false."},
+    {"id": "no_backend_docker_subprocess", "description": "Backend does not execute engine, Docker, or subprocess.", "status": "pass", "evidence_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/no_side_effects_report.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "backend execution fields are false."},
+    {"id": "rollback_plan_present", "description": "Rollback plan is present.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/rollback_runbook.md", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "Runbook remains inert."}
+  ]
 }

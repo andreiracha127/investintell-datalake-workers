@@ -1,0 +1,13 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "checklist_id": "open_macro_v03_a5_preflight_production_readiness_001",
+  "items": [
+    {"id": "readiness_package_complete", "description": "A5 readiness package artifacts are present.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/a5_preflight_manifest.json", "blocking": true, "owner_or_reviewer": "technical_reviewer", "notes": "Package is complete for review, not activation."},
+    {"id": "human_reviews_pending", "description": "Human technical, quantitative, risk, and operations reviews remain pending.", "status": "pending", "evidence_path": "pending://cross-functional-review", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "Blocks any future promotion."},
+    {"id": "activation_separate_pr_required", "description": "Controlled activation requires a separate proposal PR.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/go_no_go_memo.md", "blocking": true, "owner_or_reviewer": "quant-engine-governance", "notes": "This PR is readiness-only."},
+    {"id": "runtime_default_inactive", "description": "Runtime remains inactive by default.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/feature_flag_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Feature flag default=false."}
+  ],
+  "overall_status": "pending_review",
+  "runtime_activation": false
+}

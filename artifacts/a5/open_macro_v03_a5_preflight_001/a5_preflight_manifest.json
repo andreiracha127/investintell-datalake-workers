@@ -1,13 +1,17 @@
 {
   "A3": "open_macro_v03",
-  "A4": "a5_preflight_readiness_prepared",
+  "A4": "controlled_shadow_validated",
   "A5": "blocked",
   "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "activation_allowed": false,
+  "activation_requested": false,
   "allocator_impact": "none",
+  "backend_execution": "none",
   "calibration_id": "open_macro_v03_calibration_001",
   "calibration_pack_changes": "none",
   "contract_v1_changes": "none",
-  "controlled_activation": "not_started",
+  "controlled_shadow_001_merge_commit": "6fb22079542d2fae5fd63f2088a41f76b8bde8c9",
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
   "db_write_mode": "none",
   "decision_required_before_A5": true,
   "formula_changes": "none",
@@ -19,9 +23,9 @@
   "production_endpoint_activation": "none",
   "production_impact": "none",
   "runtime_activation": false,
-  "shadow_execution": "not_activated",
   "shadow_id": "open_macro_v03_shadow_001",
   "shadow_pilot_id": "open_macro_v03_shadow_pilot_001",
   "status": "readiness_candidate",
-  "strategy": "open_macro_v03"
+  "strategy": "open_macro_v03",
+  "target_state_after_this_pr": "A5_preflight_readiness_prepared"
 }
