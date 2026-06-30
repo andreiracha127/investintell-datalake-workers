@@ -1,0 +1,26 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "risks": [
+    {"id": "macro-history-coverage", "severity": "medium", "likelihood": "medium", "impact": "Calibration may underrepresent long macro regimes.", "mitigation": "Keep activation blocked until coverage is reviewed against production expectations.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "macro-vintage-identity", "severity": "medium", "likelihood": "medium", "impact": "Vintage identity gaps may affect reproducibility assumptions.", "mitigation": "Require vintage identity review before any activation PR.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "advisory-lock-regime-gate", "severity": "medium", "likelihood": "low", "impact": "Operational contention or regime gate race conditions could affect future runtime.", "mitigation": "Verify advisory lock and regime gate behavior in future activation PR.", "owner": "unassigned", "status": "pending_review", "blocking": true},
+    {"id": "quadrant_macro-staleness-source-availability", "severity": "high", "likelihood": "medium", "impact": "Stale or unavailable macro source data may alter live decisions.", "mitigation": "Enforce stale artifact SLO and source availability checks before runtime activation.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "baseline-global-failures-accepted", "severity": "medium", "likelihood": "medium", "impact": "Previously accepted baseline failures may mask regressions.", "mitigation": "Quant reviewer must explicitly accept or reject baseline global failure relevance.", "owner": "unassigned", "status": "pending_quant_review", "blocking": true},
+    {"id": "data-risk", "severity": "high", "likelihood": "medium", "impact": "Input data drift or missing observations can invalidate candidate output.", "mitigation": "Use hash-pinned certified input pack and missing/stale output alerts.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "model-risk", "severity": "high", "likelihood": "medium", "impact": "Selected parameters may not generalize outside fixture scope.", "mitigation": "Require formal quantitative review and staged shadow observation.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "execution-risk", "severity": "medium", "likelihood": "low", "impact": "Future executor failures may create missing or partial outputs.", "mitigation": "Keep runtime disabled and require missing output SLO before activation.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "operational-risk", "severity": "medium", "likelihood": "medium", "impact": "Owners and escalation paths are not fully assigned.", "mitigation": "Block activation until approval matrix has real owners and sign-offs.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "rollback-risk", "severity": "high", "likelihood": "low", "impact": "Untested rollback may fail under live conditions.", "mitigation": "Require rollback dry run evidence before activation.", "owner": "unassigned", "status": "pending_dry_run", "blocking": true},
+    {"id": "drift-risk", "severity": "high", "likelihood": "medium", "impact": "Live market or macro drift may exceed reviewed envelope.", "mitigation": "Define divergence and stale artifact SLO enforcement before activation.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "divergence-risk", "severity": "high", "likelihood": "low", "impact": "Candidate output could materially diverge from baseline.", "mitigation": "Abort on any hard divergence or reviewer-defined threshold breach.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "stale-artifacts-risk", "severity": "medium", "likelihood": "medium", "impact": "Proposal may cite stale evidence if future activation is delayed.", "mitigation": "Future activation PR must refresh evidence and hashes.", "owner": "unassigned", "status": "open", "blocking": true},
+    {"id": "feature-flag-risk", "severity": "high", "likelihood": "low", "impact": "Unexpected flag enablement could activate runtime prematurely.", "mitigation": "Default false; explicit prohibition in this PR; audit required for changes.", "owner": "unassigned", "status": "mitigated_for_proposal", "blocking": true},
+    {"id": "db-allocator-side-effect-risk", "severity": "critical", "likelihood": "low", "impact": "Productive DB write or allocator publish would create official side effects.", "mitigation": "This proposal permits no DB write and no allocator publish; alerts required for attempts.", "owner": "unassigned", "status": "mitigated_for_proposal", "blocking": true},
+    {"id": "production-risk", "severity": "critical", "likelihood": "low", "impact": "Production endpoint activation could expose candidate runtime.", "mitigation": "production_endpoint_activation remains none and activation requires separate PR.", "owner": "unassigned", "status": "mitigated_for_proposal", "blocking": true}
+  ],
+  "runtime_activation": false,
+  "sign_off_status": "pending",
+  "unresolved_risks": "blocking_items_present"
+}

@@ -1,0 +1,30 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "items": [
+    {"id": "deployment_path", "status": "pending", "blocking": true, "evidence_path": "pending://future-activation-pr", "notes": "Deployment path must be verified in a separate activation PR."},
+    {"id": "railway_image_digest", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/promotion_gate_matrix.json", "notes": "Pinned digest is recorded in preflight evidence."},
+    {"id": "ci_status", "status": "pending", "blocking": true, "evidence_path": "pending://this-pr-ci", "notes": "This proposal PR CI must run after push."},
+    {"id": "feature_flag_default_false", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/feature_flag_activation_policy.json"},
+    {"id": "rollback_operator_steps", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/rollback_execution_plan.md"},
+    {"id": "kill_switch_operator_steps", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/kill_switch_plan.json", "notes": "Defined but not operator-tested."},
+    {"id": "monitoring_defined", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/monitoring_enforcement_policy.json", "notes": "Some SLOs remain pending thresholds."},
+    {"id": "alerting_defined", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/monitoring_enforcement_policy.json"},
+    {"id": "incident_response", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/rollback_execution_plan.md"},
+    {"id": "owner_on_call", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/approval_matrix.json", "notes": "Real owners are unassigned."},
+    {"id": "audit_trail", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/evidence_map.json"},
+    {"id": "log_retention", "status": "pending", "blocking": true, "evidence_path": "pending://operations-review"},
+    {"id": "artifact_retention", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/evidence_map.json"},
+    {"id": "production_safety", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/no_activation_guard_report.json"},
+    {"id": "no_manual_db_edits", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/rollback_execution_plan.md"},
+    {"id": "no_uncontrolled_rollout", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/staged_rollout_plan.json"},
+    {"id": "operations_review_recorded", "status": "pending", "blocking": true, "evidence_path": "pending://human-operations-review"},
+    {"id": "rollback_tested_or_dry_run_documented", "status": "pending", "blocking": true, "evidence_path": "pending://rollback-dry-run"},
+    {"id": "kill_switch_defined", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/kill_switch_plan.json"},
+    {"id": "owner_defined", "status": "pending", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/approval_matrix.json"},
+    {"id": "staged_rollout_defined", "status": "pass", "blocking": true, "evidence_path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/staged_rollout_plan.json"}
+  ],
+  "operations_review_recorded": false,
+  "runtime_activation": false
+}
