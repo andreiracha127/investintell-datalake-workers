@@ -1,0 +1,22 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "a5_activation": "no_go",
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "final_decision": "no_go_pending_review",
+  "freeze_ready": false,
+  "gates": {
+    "a5_activation": "no_go",
+    "monitoring_readiness": "pending",
+    "operations_review": "pending",
+    "production_readiness": "pending",
+    "quantitative_review": "pending",
+    "risk_review": "pending",
+    "rollback_readiness": "pending",
+    "technical_review": "pending"
+  },
+  "notes": "Even if all reviews later become go, this PR remains proposal-only. A5 can only be unblocked in a separate future activation PR after explicit approval.",
+  "official_result": false,
+  "proposal_only": true,
+  "runtime_activation": false
+}

@@ -1,0 +1,21 @@
+{
+  "activation_allowed": false,
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "dashboard_log_source": "pending://operations-review",
+  "escalation_owner": "unassigned",
+  "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/monitoring_slo_policy.json",
+  "runtime_activation": false,
+  "slos": [
+    {"id": "latency_slo", "metric": "controlled_shadow_latency_p95_ms", "threshold": null, "status": "pending", "alert_severity": "high"},
+    {"id": "memory_slo", "metric": "controlled_shadow_memory_peak_bytes", "threshold": null, "status": "pending", "alert_severity": "high"},
+    {"id": "error_rate_slo", "metric": "error_rate", "threshold": null, "status": "pending", "alert_severity": "critical"},
+    {"id": "retry_rate_slo", "metric": "retry_rate", "threshold": null, "status": "pending", "alert_severity": "high"},
+    {"id": "divergence_slo", "metric": "hard_divergence_count", "threshold": 0, "status": "defined", "alert_severity": "critical"},
+    {"id": "missing_output_slo", "metric": "missing_output_count", "threshold": 0, "status": "defined", "alert_severity": "critical"},
+    {"id": "stale_artifact_slo", "metric": "stale_or_hash_drifted_artifact_count", "threshold": 0, "status": "defined", "alert_severity": "high"},
+    {"id": "db_write_attempt_alert", "metric": "productive_db_write_attempt_count", "threshold": 0, "status": "defined", "alert_severity": "critical"},
+    {"id": "allocator_publish_attempt_alert", "metric": "allocator_publish_attempt_count", "threshold": 0, "status": "defined", "alert_severity": "critical"},
+    {"id": "runtime_activation_attempt_alert", "metric": "runtime_activation_attempt_count", "threshold": 0, "status": "defined", "alert_severity": "critical"},
+    {"id": "production_endpoint_activation_attempt_alert", "metric": "production_endpoint_activation_attempt_count", "threshold": 0, "status": "defined", "alert_severity": "critical"}
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "activation_allowed": false,
+  "approvals": [
+    {"role": "technical_owner", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true},
+    {"role": "quant_owner", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true},
+    {"role": "risk_owner", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true},
+    {"role": "operations_owner", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true},
+    {"role": "product_portfolio_owner", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true},
+    {"role": "final_approver", "owner": "unassigned", "approval_status": "pending", "approval_evidence": null, "timestamp": null, "blocking": true}
+  ],
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "owners_real_names_recorded": false,
+  "runtime_activation": false
+}
