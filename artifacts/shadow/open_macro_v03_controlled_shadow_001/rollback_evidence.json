@@ -1,0 +1,21 @@
+{
+  "A5": "blocked",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "external_executor_handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "freeze_ready": false,
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "rollback_owner": "quant-engine-governance",
+  "rollback_steps": [
+    "Keep open_macro_v03 runtime activation flag disabled.",
+    "Reject any controlled-shadow artifact with productive side-effect markers.",
+    "Preserve artifacts for audit without publishing to allocator or DB.",
+    "Continue A5 as blocked until a separate promotion review explicitly changes it."
+  ],
+  "runtime_activation": false,
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "status": "ready_no_runtime_teardown_required"
+}

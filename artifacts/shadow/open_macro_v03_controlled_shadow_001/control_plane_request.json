@@ -1,0 +1,53 @@
+{
+  "A5": "blocked",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "as_of": "2026-06-26",
+  "backend_executes_docker": false,
+  "backend_executes_engine": false,
+  "backend_executes_subprocess": false,
+  "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "calibration_run_matrix_sha256": "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac",
+  "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "correlation_id": "corr-open-macro-v03-controlled-shadow-001",
+  "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
+  "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
+  "execution_id": "exec-open-macro-v03-controlled-shadow-001",
+  "execution_window": {
+    "finished_at": "2026-06-29T18:00:01Z",
+    "started_at": "2026-06-29T18:00:00Z",
+    "timezone": "UTC",
+    "window_id": "open_macro_v03_controlled_shadow_window_001"
+  },
+  "executor_identity": {
+    "executor_id": "external-controlled-shadow-runner-001",
+    "is_external": true,
+    "owner": "quant-engine-governance"
+  },
+  "expected_run_count": 8,
+  "external_executor_handshake_001_merge_commit": "ab081183389dbe62e03d56dd493c443263f334e9",
+  "external_executor_handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "feature_flag_default": false,
+  "feature_flag_name": "open_macro_v03_runtime_activation",
+  "freeze_ready": false,
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
+  "mode": "shadow",
+  "official_result": false,
+  "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_controlled_shadow_001",
+  "population_scope": {
+    "row_selection": "full_pack_p0_fixture_scope",
+    "scope_id": "open_macro_v03_certified_input_pack_001_as_of_2026_06_26",
+    "source": "immutable_certified_input_pack"
+  },
+  "production_endpoint_activation": "none",
+  "request_id": "req-open-macro-v03-controlled-shadow-001",
+  "rollback_owner": "quant-engine-governance",
+  "runtime_activation": false,
+  "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "strategy": "open_macro_v03"
+}

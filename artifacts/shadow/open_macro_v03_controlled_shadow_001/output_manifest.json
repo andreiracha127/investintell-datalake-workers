@@ -1,0 +1,84 @@
+{
+  "artifact_type": "controlled_shadow_output_manifest",
+  "artifacts": [
+    {
+      "bytes": 815,
+      "path": "controlled_shadow_manifest.json",
+      "sha256": "18865f6ac63d7d75aa80ca566b1507aab58a6678dee4bbc843b98d436ca3415e"
+    },
+    {
+      "bytes": 2468,
+      "path": "control_plane_request.json",
+      "sha256": "015af5e0a1e17775aea2c86cdb35509e3f7cb6c4741a2cfed0af2ddd2a68df2f"
+    },
+    {
+      "bytes": 3163,
+      "path": "shadow_job_envelope.json",
+      "sha256": "57e061ce7217f9005c33fd2fcd011db306268493bf280fd9373099400d67b6c1"
+    },
+    {
+      "bytes": 2555,
+      "path": "executor_acceptance.json",
+      "sha256": "0f88d7258effdc9332ef0880ffbe14ba05ed8027a505c4d785a9f1a2d400a943"
+    },
+    {
+      "bytes": 1554,
+      "path": "baseline_comparison.json",
+      "sha256": "743ff99517b3e278017cbb3e509eeb300165c758afb95301a7d69aed0ddc90a6"
+    },
+    {
+      "bytes": 936,
+      "path": "invariant_report.json",
+      "sha256": "af0ff8d2ab2ffa03477e7008b525e5b9fb2ef52e1a1cb1e147fb9d651ba3b052"
+    },
+    {
+      "bytes": 2932,
+      "path": "reproducibility_report.json",
+      "sha256": "c378d422e2bb46a24f6d542020ab90f05f4f5961c5e0b82d59ee459781bd94a1"
+    },
+    {
+      "bytes": 1206,
+      "path": "no_side_effects_report.json",
+      "sha256": "8bb08f88253cdc025fb5a44cc10293bbe61019a9ea599c51b78520fa9891c898"
+    },
+    {
+      "bytes": 3499,
+      "path": "acceptance_report.json",
+      "sha256": "12521d80108fb56206621ff531cd54b416b6e46cc447e58725eeb6e1bd730ceb"
+    },
+    {
+      "bytes": 804,
+      "path": "observability_evidence.json",
+      "sha256": "2cc5a9fd95170e524f8e00405fb1889ce120dceca29ca42cc2f8ae8bf47db795"
+    },
+    {
+      "bytes": 860,
+      "path": "rollback_evidence.json",
+      "sha256": "234c637cdf1182fbf342b510ca1aac58d8c4efae47a2fb8b3f172fb3f76afe72"
+    },
+    {
+      "bytes": 1321,
+      "path": "controlled_shadow_report.md",
+      "sha256": "18c37cddaf5ba2dc0f5f568ec25d795baa65ad08de57d0ab8889e6b074237a0b"
+    },
+    {
+      "bytes": 412,
+      "path": "logs/control_plane_validator.log",
+      "sha256": "9629d08edc2918597960f7303edf4696e5a8477460fb7e9708c7666a790ca761"
+    },
+    {
+      "bytes": 681,
+      "path": "logs/external_executor.log",
+      "sha256": "d3842d747b42fd16b5f82c567452175a11a24a22baaef4f359c9ab2bb6a081f4"
+    }
+  ],
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "logs_required": [
+    "logs/control_plane_validator.log",
+    "logs/external_executor.log"
+  ],
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "status": "succeeded",
+  "unexpected_outputs": []
+}
