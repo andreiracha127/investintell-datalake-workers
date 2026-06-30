@@ -44,6 +44,15 @@ FORBIDDEN_TRUE_FIELDS = {
     "production_default",
 }
 
+FORBIDDEN_AUTOMATIC_ACTIVATION_COMMANDS = (
+    "railway up --detach",
+    "kubectl apply",
+    "open_macro_v03_runtime_activation=true",
+    "set open_macro_v03_runtime_activation true",
+    "activation_allowed=true",
+    "freeze_ready=true",
+)
+
 PLACEHOLDERS = {"", "TODO", "TBD", "placeholder", "<pending>"}
 
 
@@ -101,10 +110,6 @@ def test_proposal_json_loader_rejects_non_finite_constants(constant: str) -> Non
 def test_proposal_json_loader_rejects_float_overflow(number: str) -> None:
     with pytest.raises(ValueError, match="non-finite JSON number"):
         _loads_json(f'{{"value": {number}}}')
-
-
-def _text(name: str) -> str:
-    return (PROPOSAL_ROOT / name).read_text(encoding="utf-8")
 
 
 def _walk_json(value: Any) -> list[Any]:
@@ -271,10 +276,19 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "allow_db_write=true",
             "official_db_write_attempt=true",
             "db_write_mode=productive",
+            "production_endpoint_activation=live",
+            "production_endpoint_activation=enabled",
+            "production_endpoint_activation=public",
+            "production_endpoint_activation: live",
+            "production_endpoint_activation: enabled",
+            "production_endpoint_activation: public",
+            '"production_endpoint_activation": "live"',
+            '"production_endpoint_activation": "enabled"',
+            '"production_endpoint_activation": "public"',
         )
         for snippet in forbidden_snippets:
             if snippet in text:
-                violations.append(f"{path.relative_to(ROOT)} contains {snippet}")
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {snippet}")
         if path.suffix == ".json":
             _load_json(path)
 
@@ -287,6 +301,10 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
         if path.name == "controlled_activation_proposal_manifest.json":
             assert payload["activation_requested"] is True
         for key, value in _iter_json_items(payload):
+            if key == "A5":
+                assert value == "blocked", (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has A5={value!r}; expected blocked"
+                )
             if key in FORBIDDEN_TRUE_FIELDS:
                 assert value is False or value is None, (
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
@@ -308,6 +326,17 @@ def test_json_activation_guard_checks_nested_compact_json_artifacts(tmp_path: Pa
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
+def test_json_activation_guard_rejects_nested_a5_unblocked_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "compact.json").write_text('{"controls":[{"A5":"unblocked"}]}\n', encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=r"nested.*compact\.json.*A5='unblocked'"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
 def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "string_truth.json"
     path.write_text('{"runtime_activation":"true","nested":[{"activation_allowed":"true"}]}\n', encoding="utf-8")
@@ -316,6 +345,20 @@ def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path,
 
     with pytest.raises(AssertionError, match="runtime_activation='true'"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_text_activation_guard_rejects_production_endpoint_activation_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "runbook.md").write_text(
+        "production_endpoint_activation=live\nproduction_endpoint_activation: enabled\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="production_endpoint_activation=live"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
 def _iter_json_items(value: Any) -> list[tuple[str, Any]]:
@@ -334,24 +377,29 @@ def _iter_json_items(value: Any) -> list[tuple[str, Any]]:
 
 
 def test_activation_runbook_and_proposal_do_not_contain_automatic_activation_command() -> None:
-    combined = "\n".join(
-        [
-            _text("controlled_activation_proposal.md"),
-            _text("rollback_execution_plan.md"),
-            (ROOT / "artifacts" / "a5" / "open_macro_v03_a5_preflight_001" / "activation_runbook.md").read_text(encoding="utf-8"),
-        ]
-    )
+    violations: list[str] = []
+    for path in sorted(PROPOSAL_ROOT.rglob("*")):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        for command in FORBIDDEN_AUTOMATIC_ACTIVATION_COMMANDS:
+            if command in text:
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {command}")
 
-    forbidden_commands = (
-        "railway up --detach",
-        "kubectl apply",
-        "open_macro_v03_runtime_activation=true",
-        "set open_macro_v03_runtime_activation true",
-        "activation_allowed=true",
-        "freeze_ready=true",
-    )
-    for command in forbidden_commands:
-        assert command not in combined
+    assert violations == []
+
+
+def test_automatic_activation_command_guard_scans_nested_proposal_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "future_activation.md").write_text("kubectl apply -f prod.yaml\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=r"nested.*future_activation\.md.*kubectl apply"):
+        test_activation_runbook_and_proposal_do_not_contain_automatic_activation_command()
 
 
 def test_staged_rollout_current_stage_is_proposal_only_with_no_productive_side_effects() -> None:
