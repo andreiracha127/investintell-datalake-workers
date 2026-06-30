@@ -201,6 +201,36 @@
       "verified": true
     },
     {
+      "artifact_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/baseline_comparison.json",
+      "blocking": true,
+      "evidence_id": "controlled_shadow_baseline_comparison",
+      "notes": "Controlled shadow baseline comparison supports quantitative promotion gates and records material_divergence=false.",
+      "sha256": "743ff99517b3e278017cbb3e509eeb300165c758afb95301a7d69aed0ddc90a6",
+      "source_commit": "6fb22079542d2fae5fd63f2088a41f76b8bde8c9",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/acceptance_report.json",
+      "blocking": true,
+      "evidence_id": "controlled_shadow_acceptance_report",
+      "notes": "Controlled shadow acceptance report supports hard-threshold promotion gates.",
+      "sha256": "12521d80108fb56206621ff531cd54b416b6e46cc447e58725eeb6e1bd730ceb",
+      "source_commit": "6fb22079542d2fae5fd63f2088a41f76b8bde8c9",
+      "status": "present",
+      "verified": true
+    },
+    {
+      "artifact_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/invariant_report.json",
+      "blocking": true,
+      "evidence_id": "controlled_shadow_invariant_report",
+      "notes": "Controlled shadow invariant report supports constraints and no-side-effect promotion gates.",
+      "sha256": "af0ff8d2ab2ffa03477e7008b525e5b9fb2ef52e1a1cb1e147fb9d651ba3b052",
+      "source_commit": "6fb22079542d2fae5fd63f2088a41f76b8bde8c9",
+      "status": "present",
+      "verified": true
+    },
+    {
       "artifact_path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/output_manifest.json",
       "blocking": true,
       "evidence_id": "controlled_shadow_output_manifest",

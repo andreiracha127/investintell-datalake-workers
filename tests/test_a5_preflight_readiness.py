@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 A5_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_a5_preflight_001"
 DOC = ROOT / "docs" / "a5" / "open_macro_v03_a5_preflight_001.md"
 GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+A5_PREFLIGHT_BASE_COMMIT = "6fb22079542d2fae5fd63f2088a41f76b8bde8c9"
 
 REQUIRED_A5_ARTIFACTS = {
     "a5_preflight_manifest.json",
@@ -35,6 +36,13 @@ FORBIDDEN_ACTIVATION_STRINGS = (
     "official_result" + "=true",
     "A5=un" + "blocked",
     "A5 un" + "blocked",
+    "approve_controlled_activation" + ": true",
+    "runtime_activation_allowed" + ": true",
+    "activation_allowed" + ": true",
+    "activation_requested" + ": true",
+    "freeze_ready" + ": true",
+    "official_result" + ": true",
+    "A5_un" + "blocked: true",
 )
 
 
@@ -56,6 +64,26 @@ def _git_show_bytes(source_commit: str, artifact_path: str) -> bytes:
     )
     assert result.returncode == 0, f"{artifact_path} is unavailable at {source_commit}"
     return result.stdout
+
+
+def _git_commit_exists(ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def _diff_base_ref() -> str:
+    for ref in ("origin/main", "main", A5_PREFLIGHT_BASE_COMMIT):
+        if _git_commit_exists(ref):
+            return ref
+    raise AssertionError("no usable git baseline found for A5 preflight diff guard")
 
 
 def _walk_values(value: Any) -> list[Any]:
@@ -131,6 +159,9 @@ def test_evidence_index_references_existing_artifacts_without_placeholders() -> 
         "external_executor_handshake_manifest",
         "runtime_skeleton_manifest",
         "controlled_shadow_manifest",
+        "controlled_shadow_baseline_comparison",
+        "controlled_shadow_acceptance_report",
+        "controlled_shadow_invariant_report",
         "controlled_shadow_reproducibility_report",
         "controlled_shadow_no_side_effects_report",
         "contract_bundle_manifest",
@@ -317,10 +348,22 @@ def test_unresolved_risks_are_explicit_and_blocking() -> None:
         "quantitative_review_pending",
         "risk_review_pending",
         "operations_review_pending",
+        "backend_contract_mirror_stale",
+        "calibration_baselines_uncertified",
+        "railway_status_integration_unproven",
+        "backend_allocator_runtime_live_complex",
     ):
         assert risks[risk_id]["status"] == "pending"
         assert risks[risk_id]["blocking"] is True
         assert risks[risk_id]["owner_or_reviewer"]
+    for risk_id in (
+        "macro_history_coverage_deferred",
+        "macro_vintage_identity_deferred",
+        "regime_gate_and_quadrant_debts_deferred",
+    ):
+        assert risks[risk_id]["status"] == "pending"
+        assert risks[risk_id]["blocking"] is False
+        assert risks[risk_id]["source_risk_id"].startswith("P2-")
 
 
 def test_a5_artifacts_do_not_introduce_activation_markers() -> None:
@@ -331,9 +374,20 @@ def test_a5_artifacts_do_not_introduce_activation_markers() -> None:
                 assert forbidden not in text, f"{forbidden} found in {path}"
 
 
+def test_decision_template_does_not_approve_a5_by_default() -> None:
+    template = _text(A5_ROOT / "a5_decision_record_template.md")
+
+    assert "approve_controlled_activation: false" in template
+    assert "runtime_activation_allowed: false" in template
+    assert "freeze_ready: false" in template
+    assert "A5_unblocked: false" in template
+    assert "decision_status: pending" in template
+
+
 def test_no_formula_input_calibration_or_contract_files_changed_in_branch() -> None:
+    base_ref = _diff_base_ref()
     result = subprocess.run(
-        ["git", "diff", "--name-only", "origin/main...HEAD"],
+        ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
         cwd=ROOT,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -348,7 +402,11 @@ def test_no_formula_input_calibration_or_contract_files_changed_in_branch() -> N
         "fixtures/input_packs/",
         "artifacts/input_packs/",
         "artifacts/calibration/open_macro_v03_calibration_001/",
-        "src/workers/",
+        "src/",
+        "services/quant_engine/",
+        "packages/investintell_quant_core/",
+        "qc_a3_core.py",
+        "qc-a3-parity/",
     )
     assert [path for path in changed if path.startswith(forbidden_prefixes)] == []
 
