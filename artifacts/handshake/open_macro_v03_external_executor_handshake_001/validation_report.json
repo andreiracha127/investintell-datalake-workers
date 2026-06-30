@@ -1,0 +1,18 @@
+{
+  "A5": "blocked",
+  "checks": [
+    {"id": "control_plane_request_valid", "status": "pass"},
+    {"id": "shadow_job_envelope_valid", "status": "pass"},
+    {"id": "executor_acceptance_valid", "status": "pass"},
+    {"id": "no_side_effects", "status": "pass"},
+    {"id": "reproducibility_reference_green", "status": "pass"},
+    {"id": "logs_present", "status": "pass"}
+  ],
+  "control_plane_contract_merge_commit": "ba7bc6c2f2f472fdf9e8318de5fd3804efc2cc71",
+  "handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "official_result": false,
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "pass",
+  "validated": true
+}

@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "external_executor_handshake_reproducibility_report_v1",
+  "title": "OpenMacroV03ExternalExecutorHandshakeReproducibilityReport001",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "labelList": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "handshake_id",
+    "shadow_id",
+    "calibration_id",
+    "input_pack_sha256",
+    "calibration_config_sha256",
+    "contract_bundle_sha256",
+    "run_fingerprint",
+    "expected_run_count",
+    "run_count",
+    "expected_labels",
+    "missing",
+    "unexpected",
+    "missing_hashes",
+    "unexpected_hashes",
+    "output_manifest_sha256_by_run",
+    "semantic_run_fingerprint_policy",
+    "run_hash_mismatches",
+    "duplicates",
+    "mismatch_count",
+    "container_runs",
+    "host_runs",
+    "jobs_matrix",
+    "repeat_runs_per_mode",
+    "network",
+    "db_access",
+    "input_pack_mount",
+    "calibration_mount",
+    "output_mount",
+    "writable_mounts",
+    "path_independence",
+    "docker_image_id",
+    "docker_image_digest",
+    "expected_docker_image_id",
+    "expected_docker_image_digest",
+    "docker_image_provenance_ok",
+    "ok"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "artifact_type": {
+      "const": "external_executor_handshake_reproducibility_report"
+    },
+    "handshake_id": {
+      "const": "open_macro_v03_external_executor_handshake_001"
+    },
+    "shadow_id": {
+      "const": "open_macro_v03_shadow_001"
+    },
+    "calibration_id": {
+      "const": "open_macro_v03_calibration_001"
+    },
+    "input_pack_sha256": {
+      "const": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f"
+    },
+    "calibration_config_sha256": {
+      "const": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c"
+    },
+    "contract_bundle_sha256": {
+      "const": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/sha256Hex"
+    },
+    "expected_run_count": {
+      "const": 8
+    },
+    "run_count": {
+      "const": 8
+    },
+    "expected_labels": {
+      "const": [
+        "container_jobs1_r0",
+        "container_jobs1_r1",
+        "container_jobs4_r0",
+        "container_jobs4_r1",
+        "host_jobs1_r0",
+        "host_jobs1_r1",
+        "host_jobs4_r0",
+        "host_jobs4_r1"
+      ]
+    },
+    "missing": {
+      "const": []
+    },
+    "unexpected": {
+      "const": []
+    },
+    "missing_hashes": {
+      "const": []
+    },
+    "unexpected_hashes": {
+      "const": []
+    },
+    "output_manifest_sha256_by_run": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/sha256Hex"
+      }
+    },
+    "semantic_run_fingerprint_policy": {
+      "const": "execution_id excluded; pinned provenance and calibration hashes included"
+    },
+    "run_hash_mismatches": {
+      "const": []
+    },
+    "duplicates": {
+      "const": 0
+    },
+    "mismatch_count": {
+      "const": 0
+    },
+    "container_runs": {
+      "const": [
+        "container_jobs1_r0",
+        "container_jobs1_r1",
+        "container_jobs4_r0",
+        "container_jobs4_r1"
+      ]
+    },
+    "host_runs": {
+      "const": [
+        "host_jobs1_r0",
+        "host_jobs1_r1",
+        "host_jobs4_r0",
+        "host_jobs4_r1"
+      ]
+    },
+    "jobs_matrix": {
+      "const": [1, 4]
+    },
+    "repeat_runs_per_mode": {
+      "const": 2
+    },
+    "network": {
+      "const": "none"
+    },
+    "db_access": {
+      "const": false
+    },
+    "input_pack_mount": {
+      "const": "read_only"
+    },
+    "calibration_mount": {
+      "const": "read_only"
+    },
+    "output_mount": {
+      "const": "read_write"
+    },
+    "writable_mounts": {
+      "const": ["output"]
+    },
+    "path_independence": {
+      "const": true
+    },
+    "docker_image_id": {
+      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+    },
+    "docker_image_digest": {
+      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+    },
+    "expected_docker_image_id": {
+      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+    },
+    "expected_docker_image_digest": {
+      "const": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b"
+    },
+    "docker_image_provenance_ok": {
+      "const": true
+    },
+    "ok": {
+      "const": true
+    }
+  }
+}

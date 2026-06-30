@@ -1,0 +1,19 @@
+{
+  "A5": "blocked",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_external_executor_handshake_001",
+  "backend_executes_docker": false,
+  "backend_executes_engine": false,
+  "backend_executes_subprocess": false,
+  "freeze_ready": false,
+  "handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "official_result": false,
+  "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_external_executor_handshake_001",
+  "output_manifest_path": "output_manifest.json",
+  "production_endpoint_activation": "none",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "shadow_result_manifest_path": "shadow_result_manifest.json",
+  "status": "artifact_reference_only"
+}

@@ -8,3 +8,6 @@ artifacts/calibration/**/*.log text eol=lf
 artifacts/shadow/**/*.json text eol=lf
 artifacts/shadow/**/*.md text eol=lf
 artifacts/shadow/**/*.log text eol=lf
+artifacts/handshake/**/*.json text eol=lf
+artifacts/handshake/**/*.md text eol=lf
+artifacts/handshake/**/*.log text eol=lf
