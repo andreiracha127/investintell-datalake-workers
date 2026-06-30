@@ -1,0 +1,15 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "checklist_id": "open_macro_v03_a5_preflight_operations_review_001",
+  "items": [
+    {"id": "feature_flag_policy_present", "description": "Feature flag policy is present and default-off.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/feature_flag_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "No allowed environments in this PR."},
+    {"id": "monitoring_policy_present", "description": "Monitoring and SLO policy is present.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/monitoring_slo_policy.json", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Detectors are defined for runtime, DB, allocator, endpoints, stale artifacts, and missing outputs."},
+    {"id": "activation_runbook_inert", "description": "Activation runbook exists but does not execute activation.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/activation_runbook.md", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Preparatory only."},
+    {"id": "rollback_runbook_present", "description": "Rollback runbook is present.", "status": "pass", "evidence_path": "artifacts/a5/open_macro_v03_a5_preflight_001/rollback_runbook.md", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Defines how to keep A5 blocked and prevent productive effects."},
+    {"id": "operations_review_recorded", "description": "A human operations reviewer records acceptance.", "status": "pending", "evidence_path": "pending://operations-review", "blocking": true, "owner_or_reviewer": "operations_reviewer", "notes": "Explicitly pending."}
+  ],
+  "operations_review_recorded": false,
+  "overall_status": "pending_review",
+  "runtime_activation": false
+}

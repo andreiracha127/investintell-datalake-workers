@@ -1,20 +1,28 @@
 {
   "a5_preflight_id": "open_macro_v03_a5_preflight_001",
-  "activation_allowed_in_this_pr": false,
+  "alert_severity": {
+    "allocator_publish_attempt_detection": "critical",
+    "db_write_attempt_detection": "critical",
+    "divergence_slo": "critical",
+    "missing_output_detection": "critical",
+    "production_endpoint_activation_detection": "critical",
+    "runtime_activation_attempt_detection": "critical",
+    "stale_artifact_detection": "high"
+  },
+  "escalation_owner": "quant-engine-governance",
   "monitoring_slo_policy_id": "open_macro_v03_a5_monitoring_slo_policy_001",
   "runtime_activation": false,
-  "slis": [
-    {"id": "run_success_rate", "proposed_threshold": ">= 99% after controlled activation approval", "alert": "page on sustained failures"},
-    {"id": "latency_p95", "proposed_threshold": "within reviewed envelope", "alert": "review at >10% regression"},
-    {"id": "memory_peak", "proposed_threshold": "within reviewed envelope", "alert": "review at >10% regression"},
-    {"id": "retry_rate", "proposed_threshold": "<= 1% delta", "alert": "review above threshold"},
-    {"id": "divergence_rate", "proposed_threshold": "0 hard divergences", "alert": "page on any hard divergence"},
-    {"id": "invariant_failure_rate", "proposed_threshold": "0", "alert": "page on any invariant failure"},
-    {"id": "missing_output_rate", "proposed_threshold": "0", "alert": "page on any missing output"},
-    {"id": "allocator_publish_attempts", "proposed_threshold": "0", "alert": "page on any attempt"},
-    {"id": "db_write_attempts", "proposed_threshold": "0", "alert": "page on any official DB write attempt"},
-    {"id": "endpoint_activation_attempts", "proposed_threshold": "0", "alert": "page on any production endpoint activation attempt"},
-    {"id": "rollback_time_objective", "proposed_threshold": "<= 30 minutes after stop decision", "alert": "incident commander escalation"}
-  ],
-  "status": "proposed_inert"
+  "slo_policy_status": "proposed_inert",
+  "slos": [
+    {"id": "latency_slo", "metric": "controlled_shadow_latency_p95_ms", "threshold": "reviewed envelope after separate activation proposal", "status": "pending_review"},
+    {"id": "memory_slo", "metric": "controlled_shadow_memory_peak_bytes", "threshold": "reviewed envelope after separate activation proposal", "status": "pending_review"},
+    {"id": "error_retry_slo", "metric": "error_rate_and_retry_delta", "threshold": "no sustained regression and retry delta within reviewed envelope", "status": "pending_review"},
+    {"id": "divergence_slo", "metric": "hard_divergence_count", "threshold": "0", "status": "pass"},
+    {"id": "stale_artifact_detection", "metric": "artifact_age_and_hash_pin_freshness", "threshold": "alert on stale or hash-drifted artifact", "status": "defined"},
+    {"id": "missing_output_detection", "metric": "missing_output_count", "threshold": "0", "status": "pass"},
+    {"id": "allocator_publish_attempt_detection", "metric": "allocator_publish_attempt_count", "threshold": "0", "status": "pass"},
+    {"id": "db_write_attempt_detection", "metric": "productive_db_write_attempt_count", "threshold": "0", "status": "pass"},
+    {"id": "runtime_activation_attempt_detection", "metric": "runtime_activation_attempt_count", "threshold": "0", "status": "pass"},
+    {"id": "production_endpoint_activation_detection", "metric": "production_endpoint_activation_attempt_count", "threshold": "0", "status": "pass"}
+  ]
 }

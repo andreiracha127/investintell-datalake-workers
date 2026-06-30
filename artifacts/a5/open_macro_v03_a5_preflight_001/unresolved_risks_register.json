@@ -1,0 +1,13 @@
+{
+  "A5": "blocked",
+  "a5_preflight_id": "open_macro_v03_a5_preflight_001",
+  "register_id": "open_macro_v03_a5_preflight_unresolved_risks_001",
+  "risks": [
+    {"id": "technical_review_pending", "classification": "review_blocker", "severity": "high", "status": "pending", "owner_or_reviewer": "technical_reviewer", "blocking": true, "notes": "Technical review must be recorded before any activation proposal."},
+    {"id": "quantitative_review_pending", "classification": "review_blocker", "severity": "high", "status": "pending", "owner_or_reviewer": "quant_reviewer", "blocking": true, "notes": "Quantitative review must accept thresholds, windows, and envelopes."},
+    {"id": "risk_review_pending", "classification": "review_blocker", "severity": "high", "status": "pending", "owner_or_reviewer": "risk_reviewer", "blocking": true, "notes": "Risk review must accept unresolved operational and governance risks."},
+    {"id": "operations_review_pending", "classification": "review_blocker", "severity": "medium", "status": "pending", "owner_or_reviewer": "operations_reviewer", "blocking": true, "notes": "Operations review must accept monitoring, rollback, ownership, and incident path."},
+    {"id": "branch_remote_ci_pending_until_push", "classification": "delivery_gate", "severity": "medium", "status": "pending", "owner_or_reviewer": "ci", "blocking": true, "notes": "The branch CI must pass after this package is pushed."}
+  ],
+  "runtime_activation": false
+}
