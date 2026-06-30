@@ -32,16 +32,37 @@ REQUIRED_ARTIFACTS = {
 
 FORBIDDEN_TRUE_FIELDS = {
     "runtime_activation",
+    "runtime_activation_allowed",
+    "runtime_activation_attempt",
     "freeze_ready",
     "activation_allowed",
+    "approve_controlled_activation",
+    "A5_unblocked",
     "official_result",
     "allow_db_write",
     "official_db_write_attempt",
     "allocator_publish",
+    "allocator_publish_attempt",
     "allow_allocator_publish",
+    "production_endpoint_activation_attempt",
+    "backend_executes_engine",
+    "backend_executes_docker",
+    "backend_executes_subprocess",
+    "backend_executes_engine_attempt",
+    "backend_executes_docker_attempt",
+    "backend_executes_subprocess_attempt",
     "feature_flag_default",
     "default",
     "production_default",
+}
+
+REQUIRED_APPROVAL_ROLES = {
+    "technical_owner",
+    "quant_owner",
+    "risk_owner",
+    "operations_owner",
+    "product_portfolio_owner",
+    "final_approver",
 }
 
 FORBIDDEN_AUTOMATIC_ACTIVATION_COMMANDS = (
@@ -179,10 +200,15 @@ def test_go_no_go_matrix_never_allows_a5_activation_in_this_pr() -> None:
 
 def test_approval_matrix_does_not_accept_invented_owners() -> None:
     approvals = _json("approval_matrix.json")
+    approval_entries = approvals["approvals"]
+    approval_roles = [approval["role"] for approval in approval_entries]
 
     assert approvals["owners_real_names_recorded"] is False
     assert approvals["activation_allowed"] is False
-    for approval in approvals["approvals"]:
+    assert approval_entries
+    assert set(approval_roles) == REQUIRED_APPROVAL_ROLES
+    assert len(approval_roles) == len(REQUIRED_APPROVAL_ROLES)
+    for approval in approval_entries:
         assert approval["owner"] in {None, "unassigned"}
         assert approval["approval_status"] == "pending"
         assert approval["approval_evidence"] is None
@@ -254,6 +280,15 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"official_result": true',
             '"allow_db_write": true',
             '"official_db_write_attempt": true',
+            '"backend_executes_engine": true',
+            '"backend_executes_docker": true',
+            '"backend_executes_subprocess": true',
+            '"runtime_activation_attempt": true',
+            '"allocator_publish_attempt": true',
+            '"production_endpoint_activation_attempt": true',
+            '"backend_executes_engine_attempt": true',
+            '"backend_executes_docker_attempt": true',
+            '"backend_executes_subprocess_attempt": true',
             '"allow_allocator_publish": true',
             '"feature_flag_default": true',
             "runtime_activation: true",
@@ -263,6 +298,15 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "official_result: true",
             "allow_db_write: true",
             "official_db_write_attempt: true",
+            "backend_executes_engine: true",
+            "backend_executes_docker: true",
+            "backend_executes_subprocess: true",
+            "runtime_activation_attempt: true",
+            "allocator_publish_attempt: true",
+            "production_endpoint_activation_attempt: true",
+            "backend_executes_engine_attempt: true",
+            "backend_executes_docker_attempt: true",
+            "backend_executes_subprocess_attempt: true",
             "allocator_publish: true",
             "allow_allocator_publish: true",
             "feature_flag_default: true",
@@ -275,6 +319,15 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "official_result=true",
             "allow_db_write=true",
             "official_db_write_attempt=true",
+            "backend_executes_engine=true",
+            "backend_executes_docker=true",
+            "backend_executes_subprocess=true",
+            "runtime_activation_attempt=true",
+            "allocator_publish_attempt=true",
+            "production_endpoint_activation_attempt=true",
+            "backend_executes_engine_attempt=true",
+            "backend_executes_docker_attempt=true",
+            "backend_executes_subprocess_attempt=true",
             "db_write_mode=productive",
             "production_endpoint_activation=live",
             "production_endpoint_activation=enabled",
@@ -305,6 +358,16 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                 assert value == "blocked", (
                     f"{path.relative_to(PROPOSAL_ROOT)} has A5={value!r}; expected blocked"
                 )
+            if key == "activation_requested":
+                if path.name == "controlled_activation_proposal_manifest.json":
+                    assert value is True, (
+                        f"{path.relative_to(PROPOSAL_ROOT)} has activation_requested={value!r}; expected true"
+                    )
+                else:
+                    assert value is False or value is None, (
+                        f"{path.relative_to(PROPOSAL_ROOT)} has activation_requested={value!r}; "
+                        "only controlled_activation_proposal_manifest.json may request activation"
+                    )
             if key in FORBIDDEN_TRUE_FIELDS:
                 assert value is False or value is None, (
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
@@ -337,6 +400,19 @@ def test_json_activation_guard_rejects_nested_a5_unblocked_values(tmp_path: Path
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
+def test_json_activation_guard_rejects_nested_activation_requested_outside_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "compact.json").write_text('{"controls":[{"activation_requested":true}]}\n', encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=r"nested.*compact\.json.*activation_requested=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
 def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "string_truth.json"
     path.write_text('{"runtime_activation":"true","nested":[{"activation_allowed":"true"}]}\n', encoding="utf-8")
@@ -345,6 +421,45 @@ def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path,
 
     with pytest.raises(AssertionError, match="runtime_activation='true'"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["runtime_activation_allowed", "approve_controlled_activation", "A5_unblocked"],
+)
+def test_json_activation_guard_rejects_compact_json_activation_alias_true_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    path = tmp_path / "aliases.json"
+    path.write_text(json.dumps({"nested": [{field: True}]}) + "\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=rf"{field}=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_activation_guards_reject_backend_execution_and_attempt_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "backend.json").write_text(
+        '{"nested":[{"backend_executes_docker":true}]}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="backend_executes_docker=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+    (tmp_path / "backend.json").unlink()
+    (tmp_path / "backend.md").write_text(
+        "backend_executes_subprocess_attempt=true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="backend_executes_subprocess_attempt=true"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
 def test_text_activation_guard_rejects_production_endpoint_activation_markers(
