@@ -183,6 +183,10 @@ def test_controlled_shadow_gates_reject_forbidden_runtime_state(
     ("section", "field", "bad"),
     [
         ("population_scope", "source", "live_control_plane"),
+        ("population_scope", "row_selection", "filtered_runtime_scope"),
+        ("population_scope", "scope_id", "open_macro_v03_certified_input_pack_999_as_of_2026_06_26"),
+        ("executor_identity", "executor_id", "external-controlled-shadow-runner-999"),
+        ("executor_identity", "owner", "shadow-ops"),
         ("executor_identity", "is_external", False),
         ("executor_identity", "is_external", 1),
     ],
@@ -196,6 +200,30 @@ def test_control_plane_request_rejects_unpinned_scope_and_executor_identity(
     request[section][field] = bad
 
     with pytest.raises(cs.ControlledShadowValidationError, match=field):
+        cs.validate_control_plane_request(request)
+
+
+def test_control_plane_request_rejects_unexpected_executor_identity_fields() -> None:
+    request = _artifact("control_plane_request.json")
+    request["executor_identity"]["service_account"] = "shadow-runner"
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="executor_identity: unexpected fields"):
+        cs.validate_control_plane_request(request)
+
+
+def test_control_plane_request_rejects_unexpected_population_scope_fields() -> None:
+    request = _artifact("control_plane_request.json")
+    request["population_scope"]["runtime_filter"] = "top_10"
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="population_scope: unexpected fields"):
+        cs.validate_control_plane_request(request)
+
+
+def test_control_plane_request_rejects_rollback_owner_drift() -> None:
+    request = _artifact("control_plane_request.json")
+    request["rollback_owner"] = "runtime-operations"
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="rollback_owner"):
         cs.validate_control_plane_request(request)
 
 
@@ -530,6 +558,19 @@ def test_acceptance_report_rejects_unexpected_rule_fields() -> None:
         cs.validate_acceptance_report(report)
 
 
+@pytest.mark.parametrize("evidence", [None, "runtime_activation=true observed"])
+def test_acceptance_report_requires_pinned_rule_evidence(evidence: str | None) -> None:
+    report = _artifact("acceptance_report.json")
+    rule = next(item for item in report["rules"] if item["id"] == "runtime_activation_false")
+    if evidence is None:
+        rule.pop("evidence")
+    else:
+        rule["evidence"] = evidence
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="evidence"):
+        cs.validate_acceptance_report(report)
+
+
 def test_output_manifest_rejects_hash_drift(tmp_path: Path) -> None:
     root = _copy_bundle(tmp_path)
     report = root / "controlled_shadow_report.md"
@@ -638,6 +679,31 @@ def test_logs_reject_forbidden_attempt_markers(tmp_path: Path) -> None:
     _write_json(root / "shadow_result_manifest.json", result)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="allocator_publish_attempt"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
+@pytest.mark.parametrize(
+    ("rel", "token", "marker"),
+    [
+        ("logs/external_executor.log", "audit=db_write=true", "db_write=true"),
+        ("logs/control_plane_validator.log", "audit=runtime_activation_attempt=false", "runtime_activation_attempt="),
+    ],
+)
+def test_logs_reject_embedded_forbidden_markers_in_values(
+    tmp_path: Path,
+    rel: str,
+    token: str,
+    marker: str,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    log = root / rel
+    log.write_text(log.read_text(encoding="utf-8").strip() + f" {token}\n", encoding="utf-8")
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, rel)
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=rf"embedded forbidden log marker {marker}"):
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 

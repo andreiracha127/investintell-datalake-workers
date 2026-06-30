@@ -44,6 +44,7 @@ CORRELATION_ID: Final = "corr-open-macro-v03-controlled-shadow-001"
 EXECUTION_ID: Final = "exec-open-macro-v03-controlled-shadow-001"
 OUTPUT_ARTIFACT_URI: Final = f"artifact://shadow/{hs.SHADOW_ID}/{CONTROLLED_SHADOW_ID}"
 EXECUTION_POLICY: Final = hs.EXECUTION_POLICY
+ROLLBACK_OWNER: Final = "quant-engine-governance"
 
 EXPECTED_CONTROLLED_SHADOW_MANIFEST: Final[dict[str, object]] = {
     "controlled_shadow_id": CONTROLLED_SHADOW_ID,
@@ -89,6 +90,11 @@ PROVENANCE_PINS: Final[dict[str, object]] = {
     "contract_bundle_sha256": hs.CONTRACT_BUNDLE_SHA256,
     "engine_commit": hs.ENGINE_COMMIT,
     "engine_image_digest": hs.ENGINE_IMAGE_DIGEST,
+}
+EXECUTOR_IDENTITY_PINS: Final[dict[str, object]] = {
+    "executor_id": "external-controlled-shadow-runner-001",
+    "owner": "quant-engine-governance",
+    "is_external": True,
 }
 RESULT_PROVENANCE_PINS: Final[dict[str, object]] = {
     "input_pack_sha256": hs.INPUT_PACK_SHA256,
@@ -243,6 +249,31 @@ EXPECTED_ACCEPTANCE_RULE_IDS: Final[tuple[str, ...]] = (
     "no_official_db_write_attempt",
     "no_allocator_publish_attempt",
 )
+EXPECTED_ACCEPTANCE_RULE_EVIDENCE: Final[dict[str, str]] = {
+    "all_required_outputs_present": "all controlled-shadow files are present",
+    "no_unexpected_outputs": "output_manifest.unexpected_outputs is empty",
+    "mismatch_count_zero": "baseline and result divergence_summary.mismatch_count are zero",
+    "no_nan_or_inf": "nan_or_inf_count is zero and materiality values are finite",
+    "all_constraints_satisfied": "constraint_violations is zero",
+    "invariant_failures_zero": "invariant_failures is zero and invariant_report.ok is true",
+    "relative_deltas_below_hard_reject_threshold": "max_relative_delta_pct is 0.0",
+    "run_fingerprint_consistent": "run_fingerprint matches the handshake semantic fingerprint",
+    "output_manifest_complete": "output_manifest pins each non-circular output hash and byte count",
+    "result_reproducible": "reproducibility_report.ok is true with mismatch_count=0",
+    "immutable_input_pack_hashes_match": "certified input pack verifier passes and hash is pinned",
+    "immutable_calibration_hashes_match": "calibration config, run matrix, and output manifest hashes match",
+    "runtime_activation_false": "runtime_activation=false in all gate artifacts",
+    "A5_blocked": "A5 remains blocked",
+    "freeze_ready_false": "freeze_ready=false",
+    "official_result_false": "official_result=false",
+    "allow_db_write_false": "allow_db_write=false and db_write_mode=none",
+    "allow_allocator_publish_false": "allow_allocator_publish=false",
+    "production_endpoint_activation_none": "production_endpoint_activation=none",
+    "backend_no_execution": "backend execution flags for engine, Docker, and subprocess are false",
+    "no_runtime_activation_attempt": "no runtime activation attempt marker in artifacts or logs",
+    "no_official_db_write_attempt": "no official DB write attempt marker in artifacts or logs",
+    "no_allocator_publish_attempt": "no allocator publish attempt marker in artifacts or logs",
+}
 EXPECTED_INVARIANT_CHECK_IDS: Final[tuple[str, ...]] = (
     "runtime_activation_false",
     "A5_blocked",
@@ -265,6 +296,12 @@ EXPECTED_INVARIANT_CHECK_IDS: Final[tuple[str, ...]] = (
 )
 LOG_FORBIDDEN_TRUE_KEYS: Final[frozenset[str]] = hs.LOG_FORBIDDEN_TRUE_KEYS
 LOG_FORBIDDEN_PRESENCE_KEYS: Final[frozenset[str]] = hs.LOG_FORBIDDEN_PRESENCE_KEYS
+LOG_FORBIDDEN_TRUE_MARKERS: Final[frozenset[str]] = frozenset(
+    f"{key}=true" for key in LOG_FORBIDDEN_TRUE_KEYS
+)
+LOG_FORBIDDEN_PRESENCE_MARKERS: Final[frozenset[str]] = frozenset(
+    f"{key}=" for key in LOG_FORBIDDEN_PRESENCE_KEYS
+)
 
 
 class ControlledShadowValidationError(ValueError):
@@ -372,6 +409,16 @@ def _parse_log_tokens(line: str, *, source: str = "log") -> dict[str, str]:
     return tokens
 
 
+def _reject_embedded_forbidden_log_markers(path: Path, tokens: Mapping[str, str]) -> None:
+    for value in tokens.values():
+        for marker in LOG_FORBIDDEN_TRUE_MARKERS:
+            if marker in value:
+                raise ControlledShadowValidationError(f"{path.name}: embedded forbidden log marker {marker}")
+        for marker in LOG_FORBIDDEN_PRESENCE_MARKERS:
+            if marker in value:
+                raise ControlledShadowValidationError(f"{path.name}: embedded forbidden log marker {marker}")
+
+
 def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[str, str]) -> None:
     if not path.is_file():
         raise ControlledShadowValidationError(f"missing controlled shadow log: {path.name}")
@@ -381,6 +428,7 @@ def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[
             raise ControlledShadowValidationError(
                 f"{path.name}: {key} expected {expected_value!r}, got {tokens.get(key)!r}"
             )
+    _reject_embedded_forbidden_log_markers(path, tokens)
     for key in LOG_FORBIDDEN_TRUE_KEYS:
         if tokens.get(key) == "true":
             raise ControlledShadowValidationError(f"{path.name}: forbidden true marker {key}")
@@ -569,6 +617,7 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
             "feature_flag_default": False,
             "output_artifact_uri": OUTPUT_ARTIFACT_URI,
             "expected_run_count": len(EXPECTED_LABELS),
+            "rollback_owner": ROLLBACK_OWNER,
             **PROVENANCE_PINS,
             **SIDE_EFFECT_PINS,
             **BACKEND_NO_EXEC_PINS,
@@ -596,19 +645,31 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
         where="control_plane_request.execution_window",
     )
     population_scope = _require_mapping(payload.get("population_scope"), where="control_plane_request.population_scope")
+    _reject_unexpected_fields(
+        population_scope,
+        frozenset({"source", "row_selection", "scope_id"}),
+        where="control_plane_request.population_scope",
+    )
     _require_pins(
         population_scope,
-        {"source": "immutable_certified_input_pack"},
+        {
+            "source": "immutable_certified_input_pack",
+            "row_selection": "full_pack_p0_fixture_scope",
+            "scope_id": "open_macro_v03_certified_input_pack_001_as_of_2026_06_26",
+        },
         where="control_plane_request.population_scope",
     )
     executor_identity = _require_mapping(payload.get("executor_identity"), where="control_plane_request.executor_identity")
-    _require_pins(
+    _reject_unexpected_fields(
         executor_identity,
-        {"is_external": True},
+        frozenset(EXECUTOR_IDENTITY_PINS),
         where="control_plane_request.executor_identity",
     )
-    if not isinstance(payload.get("rollback_owner"), str) or not payload["rollback_owner"]:
-        raise ControlledShadowValidationError("control_plane_request.rollback_owner must be a non-empty string")
+    _require_pins(
+        executor_identity,
+        EXECUTOR_IDENTITY_PINS,
+        where="control_plane_request.executor_identity",
+    )
 
 
 def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
@@ -1240,9 +1301,19 @@ def validate_acceptance_report(payload: Mapping[str, Any]) -> None:
         rule_id = entry.get("id")
         if not isinstance(rule_id, str):
             raise ControlledShadowValidationError("acceptance_report.rule.id must be a string")
+        if rule_id in seen:
+            raise ControlledShadowValidationError(f"acceptance_report duplicate rule id: {rule_id}")
+        if rule_id not in EXPECTED_ACCEPTANCE_RULE_EVIDENCE:
+            raise ControlledShadowValidationError(f"acceptance_report unknown rule id: {rule_id}")
         seen[rule_id] = entry
         _require_equal(entry, "status", "pass", where=f"acceptance_report.rule[{rule_id}]")
-    if set(seen) != set(EXPECTED_ACCEPTANCE_RULE_IDS):
+        _require_equal(
+            entry,
+            "evidence",
+            EXPECTED_ACCEPTANCE_RULE_EVIDENCE[rule_id],
+            where=f"acceptance_report.rule[{rule_id}]",
+        )
+    if set(seen) != set(EXPECTED_ACCEPTANCE_RULE_EVIDENCE):
         raise ControlledShadowValidationError("acceptance_report.rule ids mismatch")
 
 
@@ -1304,7 +1375,7 @@ def validate_rollback_evidence(payload: Mapping[str, Any]) -> None:
             "external_executor_handshake_id": hs.HANDSHAKE_ID,
             "shadow_id": hs.SHADOW_ID,
             "status": "ready_no_runtime_teardown_required",
-            "rollback_owner": "quant-engine-governance",
+            "rollback_owner": ROLLBACK_OWNER,
             "rollback_steps": list(ROLLBACK_STEPS),
             **SIDE_EFFECT_PINS,
         },
