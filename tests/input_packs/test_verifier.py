@@ -460,6 +460,28 @@ def test_verifier_detects_material_data_tampering(tmp_path: Path) -> None:
     assert result["table_hash_mismatches"][0]["path"] == "data/derived/fund_nav_return_features.json"
 
 
+def test_verifier_rejects_duplicate_keys_in_raw_artifact(tmp_path: Path) -> None:
+    pack = _copy_pack(tmp_path)
+    rel = "data/raw/eod_prices.json"
+    data_path = pack / rel
+    data_path.write_text(
+        data_path.read_text(encoding="utf-8").replace(
+            '    "close": "98.20",',
+            '    "close": "98.20",\n    "close": "98.20",',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    result = verify_pack(pack)
+
+    assert result["ok"] is False
+    assert result["input_pack_sha256_match"] is False
+    assert result["table_hash_mismatches"][0]["path"] == rel
+    assert "duplicate JSON object key 'close'" in result["table_hash_mismatches"][0]["actual"]
+    assert any("duplicate JSON object key 'close'" in error for error in result["expected_content_errors"])
+
+
 def test_verifier_rejects_table_hash_paths_outside_pack(tmp_path: Path) -> None:
     pack = _copy_pack(tmp_path)
     table_hashes_path = pack / "table_hashes.json"

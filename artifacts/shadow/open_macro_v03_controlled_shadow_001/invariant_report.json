@@ -1,0 +1,29 @@
+{
+  "calibration_id": "open_macro_v03_calibration_001",
+  "checks": {
+    "A5_blocked": true,
+    "allow_allocator_publish_false": true,
+    "allow_db_write_false": true,
+    "backend_no_execution": true,
+    "calibration_read_only": true,
+    "contract_bundle_read_only": true,
+    "db_access_false": true,
+    "freeze_ready_false": true,
+    "immutable_calibration_hashes_match": true,
+    "immutable_input_pack_hashes_match": true,
+    "input_pack_read_only": true,
+    "mismatch_count_zero": true,
+    "network_none": true,
+    "official_result_false": true,
+    "output_dir_only_writable_mount": true,
+    "production_endpoint_activation_none": true,
+    "runtime_activation_false": true,
+    "source_tree_not_executor_output": true
+  },
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "failure_classes": [],
+  "ok": true,
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "status": "pass"
+}

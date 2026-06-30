@@ -1,0 +1,20 @@
+{
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "external_executor_handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "external_executor_handshake_001_merge_commit": "ab081183389dbe62e03d56dd493c443263f334e9",
+  "runtime_skeleton_id": "open_macro_v03_runtime_skeleton_001",
+  "shadow_id": "open_macro_v03_shadow_001",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "mode": "shadow",
+  "runtime_activation": false,
+  "A5": "blocked",
+  "freeze_ready": false,
+  "official_result": false,
+  "allow_db_write": false,
+  "allow_allocator_publish": false,
+  "production_endpoint_activation": "none",
+  "backend_executes_engine": false,
+  "backend_executes_docker": false,
+  "backend_executes_subprocess": false
+}

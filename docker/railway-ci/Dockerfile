@@ -27,6 +27,7 @@ COPY artifacts/a5/open_macro_v03_a5_preflight_001 /app/artifacts/a5/open_macro_v
 COPY artifacts/runtime/open_macro_v03_runtime_skeleton_001 /app/artifacts/runtime/open_macro_v03_runtime_skeleton_001
 COPY artifacts/shadow/open_macro_v03_shadow_001 /app/artifacts/shadow/open_macro_v03_shadow_001
 COPY artifacts/shadow/open_macro_v03_shadow_pilot_001 /app/artifacts/shadow/open_macro_v03_shadow_pilot_001
+COPY artifacts/shadow/open_macro_v03_controlled_shadow_001 /app/artifacts/shadow/open_macro_v03_controlled_shadow_001
 COPY artifacts/handshake/open_macro_v03_external_executor_handshake_001 /app/artifacts/handshake/open_macro_v03_external_executor_handshake_001
 COPY .githooks /app/.githooks
 COPY docs/calibration /app/docs/calibration
@@ -54,7 +55,7 @@ RUN python -m pytest tests/input_packs tests/quant_engine tests/quant_core \
     tests/test_catalog_hash_path_independence.py tests/test_repeatability_matrix.py \
     tests/test_shadow_readiness.py tests/test_shadow_pilot.py tests/test_a5_preflight_readiness.py \
     tests/test_runtime_integration_skeleton.py tests/test_external_executor_handshake.py \
-    tests/test_remote_ci_runner.py -q
+    tests/test_controlled_shadow.py tests/test_remote_ci_runner.py -q
 RUN python -m compileall src/calibration_candidate.py src/shadow_pilot.py src/input_packs services/quant_engine packages/investintell_quant_core
 
 RUN python docker/railway-ci/verify_calibration_artifacts.py

@@ -1,0 +1,67 @@
+{
+  "A5": "blocked",
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "as_of": "2026-06-26",
+  "calibration_config_sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
+  "calibration_id": "open_macro_v03_calibration_001",
+  "calibration_run_matrix_sha256": "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac",
+  "contract_bundle_sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "correlation_id": "corr-open-macro-v03-controlled-shadow-001",
+  "engine_commit": "ee39adbe6cb6541d4fdfa78f1428478ffffaf638",
+  "engine_image_digest": "sha256:cdcf05768ad6e44543567cd0b5106ecc2b88a2f49ef5080c25c52a601a91598b",
+  "execution_id": "exec-open-macro-v03-controlled-shadow-001",
+  "execution_policy": "isolated_external_executor_no_productive_runtime_docker",
+  "external_executor_handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "freeze_ready": false,
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
+  "mode": "shadow",
+  "official_result": false,
+  "output_artifact_uri": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_controlled_shadow_001",
+  "production_endpoint_activation": "none",
+  "read_only_inputs": [
+    {
+      "bytes": 49375,
+      "mount": "read_only",
+      "name": "input_pack",
+      "path": "fixtures/input_packs/golden/certified_input_pack",
+      "sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
+      "source_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
+      "stable_id": "open_macro_v03_certified_input_pack_001"
+    },
+    {
+      "bytes": 2447,
+      "mount": "read_only",
+      "name": "calibration_config",
+      "path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json",
+      "sha256": "869e392bd49c8f7e0bf60890d1658ef3cf0483655af3a1c9f105b99cd29c268c",
+      "source_commit": "10a49e1489661070986e241d9e04a8b890b54937",
+      "stable_id": "open_macro_v03_calibration_001:calibration_config"
+    },
+    {
+      "bytes": 12923,
+      "mount": "read_only",
+      "name": "calibration_run_matrix",
+      "path": "artifacts/calibration/open_macro_v03_calibration_001/run_matrix.json",
+      "sha256": "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac",
+      "source_commit": "10a49e1489661070986e241d9e04a8b890b54937",
+      "stable_id": "open_macro_v03_calibration_001:run_matrix"
+    },
+    {
+      "bytes": 2521,
+      "mount": "read_only",
+      "name": "contract_bundle",
+      "path": "contracts/quant-engine/v1/manifest.json",
+      "sha256": "4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a",
+      "source_commit": "ab081183389dbe62e03d56dd493c443263f334e9",
+      "stable_id": "quant-engine-contract-v1"
+    }
+  ],
+  "request_id": "req-open-macro-v03-controlled-shadow-001",
+  "run_fingerprint": "078cef19bdb6ad0de1716dd73a6e6807d45ca4cb6c675838947e2531832c8106",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "strategy": "open_macro_v03"
+}

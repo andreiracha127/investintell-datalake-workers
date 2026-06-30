@@ -1,0 +1,29 @@
+{
+  "artifact_type": "controlled_shadow_observability_evidence",
+  "controlled_shadow_id": "open_macro_v03_controlled_shadow_001",
+  "evidence": [
+    {
+      "id": "logs_present",
+      "paths": [
+        "logs/control_plane_validator.log",
+        "logs/external_executor.log"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "no_productive_runtime_metrics",
+      "status": "pass",
+      "value": true
+    },
+    {
+      "id": "artifact_only_output_uri",
+      "status": "pass",
+      "value": "artifact://shadow/open_macro_v03_shadow_001/open_macro_v03_controlled_shadow_001"
+    }
+  ],
+  "external_executor_handshake_id": "open_macro_v03_external_executor_handshake_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "shadow_id": "open_macro_v03_shadow_001",
+  "status": "pass"
+}

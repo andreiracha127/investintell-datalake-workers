@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SHADOW_ROOT = ROOT / "artifacts" / "shadow" / "open_macro_v03_shadow_001"
 DOC = ROOT / "docs" / "shadow" / "open_macro_v03_shadow_readiness_001.md"
-RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
+GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _json(name: str) -> dict:
@@ -582,12 +582,8 @@ def test_observability_and_rollback_cover_all_side_effects() -> None:
     assert "production_endpoint_activation_attempt" in rollback
 
 
-def test_railway_ci_runs_shadow_readiness_gate() -> None:
-    text = RAILWAY_CI_DOCKERFILE.read_text(encoding="utf-8")
+def test_github_actions_runs_shadow_readiness_gate() -> None:
+    text = GITHUB_ACTIONS_WORKFLOW.read_text(encoding="utf-8")
 
-    assert (
-        "COPY artifacts/shadow/open_macro_v03_shadow_001 "
-        "/app/artifacts/shadow/open_macro_v03_shadow_001"
-    ) in text
-    assert "COPY docs/shadow /app/docs/shadow" in text
+    assert "pull_request:" in text
     assert "tests/test_shadow_readiness.py" in text

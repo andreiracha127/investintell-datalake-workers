@@ -1,16 +1,4 @@
 #!/bin/sh
 set -eu
 
-if [ "${INVESTINTELL_SKIP_REMOTE_CI:-}" = "1" ]; then
-  echo "Skipping remote Railway CI because INVESTINTELL_SKIP_REMOTE_CI=1"
-  exit 0
-fi
-
-if command -v pwsh >/dev/null 2>&1; then
-  pwsh -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File scripts/ci/run_remote_railway_ci.ps1
-elif command -v powershell.exe >/dev/null 2>&1; then
-  powershell.exe -NoLogo -NoProfile -NonInteractive -OutputFormat Text -ExecutionPolicy Bypass -File scripts/ci/run_remote_railway_ci.ps1
-else
-  echo "PowerShell is required to run scripts/ci/run_remote_railway_ci.ps1" >&2
-  exit 1
-fi
+echo "Remote Docker pre-push CI is disabled; GitHub Actions runs required checks after push."
