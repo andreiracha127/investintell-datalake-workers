@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +35,8 @@ FORBIDDEN_TRUE_FIELDS = {
     "freeze_ready",
     "activation_allowed",
     "official_result",
+    "allow_db_write",
+    "official_db_write_attempt",
     "allocator_publish",
     "allow_allocator_publish",
     "feature_flag_default",
@@ -57,11 +60,19 @@ def _reject_non_finite_json_constant(constant: str) -> None:
     raise ValueError(f"non-finite JSON constant {constant!r}")
 
 
+def _reject_non_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number {value!r}")
+    return parsed
+
+
 def _loads_json(text: str) -> Any:
     return json.loads(
         text,
         object_pairs_hook=_reject_duplicate_json_object_keys,
         parse_constant=_reject_non_finite_json_constant,
+        parse_float=_reject_non_finite_json_float,
     )
 
 
@@ -84,6 +95,12 @@ def test_proposal_json_loader_rejects_duplicate_activation_keys() -> None:
 def test_proposal_json_loader_rejects_non_finite_constants(constant: str) -> None:
     with pytest.raises(ValueError, match="non-finite JSON constant"):
         _loads_json(f'{{"value": {constant}}}')
+
+
+@pytest.mark.parametrize("number", ["1e9999", "-1e9999"])
+def test_proposal_json_loader_rejects_float_overflow(number: str) -> None:
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        _loads_json(f'{{"value": {number}}}')
 
 
 def _text(name: str) -> str:
@@ -230,6 +247,8 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"freeze_ready": true',
             '"activation_allowed": true',
             '"official_result": true',
+            '"allow_db_write": true',
+            '"official_db_write_attempt": true',
             '"allow_allocator_publish": true',
             '"feature_flag_default": true',
             "runtime_activation: true",
@@ -237,6 +256,8 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "activation_allowed: true",
             "activation_requested: true",
             "official_result: true",
+            "allow_db_write: true",
+            "official_db_write_attempt: true",
             "allocator_publish: true",
             "allow_allocator_publish: true",
             "feature_flag_default: true",
@@ -247,6 +268,9 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "freeze_ready=true",
             "activation_allowed=true",
             "official_result=true",
+            "allow_db_write=true",
+            "official_db_write_attempt=true",
+            "db_write_mode=productive",
         )
         for snippet in forbidden_snippets:
             if snippet in text:
@@ -258,15 +282,40 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
 
 
 def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> None:
-    for path in PROPOSAL_ROOT.glob("*.json"):
+    for path in PROPOSAL_ROOT.rglob("*.json"):
         payload = _load_json(path)
         if path.name == "controlled_activation_proposal_manifest.json":
             assert payload["activation_requested"] is True
         for key, value in _iter_json_items(payload):
             if key in FORBIDDEN_TRUE_FIELDS:
-                assert value is not True, f"{path.name} has {key}=true"
+                assert value is False or value is None, (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
+                )
+            if key == "db_write_mode":
+                assert value != "productive", f"{path.relative_to(PROPOSAL_ROOT)} has db_write_mode=productive"
             if key == "production_endpoint_activation":
                 assert value == "none"
+
+
+def test_json_activation_guard_checks_nested_compact_json_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "compact.json").write_text('{"runtime_activation":true}\n', encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=r"nested.*compact\.json.*runtime_activation=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "string_truth.json"
+    path.write_text('{"runtime_activation":"true","nested":[{"activation_allowed":"true"}]}\n', encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="runtime_activation='true'"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
 def _iter_json_items(value: Any) -> list[tuple[str, Any]]:
