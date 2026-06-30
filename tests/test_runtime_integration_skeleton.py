@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = ROOT / "artifacts" / "runtime" / "open_macro_v03_runtime_skeleton_001"
 PLAN = ROOT / "docs" / "planning" / "open_macro_v03_runtime_integration_skeleton_plan_001.md"
-RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
+GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _json(name: str) -> dict:
@@ -433,12 +433,8 @@ def test_contract_bundle_identity_is_referenced_without_contract_v1_change() -> 
     )
 
 
-def test_railway_ci_includes_runtime_skeleton_governance_test() -> None:
-    text = _text(RAILWAY_CI_DOCKERFILE)
+def test_github_actions_includes_runtime_skeleton_governance_test() -> None:
+    text = _text(GITHUB_ACTIONS_WORKFLOW)
 
-    assert (
-        "COPY artifacts/runtime/open_macro_v03_runtime_skeleton_001 "
-        "/app/artifacts/runtime/open_macro_v03_runtime_skeleton_001"
-    ) in text
-    assert "COPY docs/planning /app/docs/planning" in text
+    assert "pull_request:" in text
     assert "tests/test_runtime_integration_skeleton.py" in text

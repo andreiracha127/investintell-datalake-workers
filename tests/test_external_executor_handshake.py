@@ -16,7 +16,7 @@ from src import external_executor_handshake as hs
 ROOT = Path(__file__).resolve().parents[1]
 HANDSHAKE_ROOT = ROOT / "artifacts" / "handshake" / hs.HANDSHAKE_ID
 SHADOW_ROOT = ROOT / "artifacts" / "shadow" / hs.SHADOW_ID
-RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
+GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _json(path: Path) -> dict:
@@ -1226,8 +1226,8 @@ def test_handshake_validator_imports_no_runtime_side_effect_paths() -> None:
     assert imports.isdisjoint(forbidden)
 
 
-def test_railway_ci_runs_external_executor_handshake_gate() -> None:
-    text = RAILWAY_CI_DOCKERFILE.read_text(encoding="utf-8")
+def test_github_actions_runs_external_executor_handshake_gate() -> None:
+    text = GITHUB_ACTIONS_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "COPY artifacts/handshake/open_macro_v03_external_executor_handshake_001" in text
+    assert "pull_request:" in text
     assert "tests/test_external_executor_handshake.py" in text

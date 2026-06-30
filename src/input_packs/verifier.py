@@ -193,7 +193,10 @@ def _verify_component_hashes(root: Path, manifest: dict[str, Any]) -> list[dict[
         if not path.exists():
             continue
         expected = manifest.get(field)
-        actual = file_sha256(path)
+        try:
+            actual = file_sha256(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            actual = f"<unreadable: {exc}>"
         if expected != actual:
             mismatches.append(
                 {
@@ -239,7 +242,10 @@ def _verify_table_hashes(root: Path, table_hashes: dict[str, Any]) -> tuple[list
         if not path.exists():
             missing.append(rel)
             continue
-        actual = file_sha256(path)
+        try:
+            actual = file_sha256(path)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            actual = f"<unreadable: {exc}>"
         if expected != actual:
             mismatches.append({"path": rel, "expected": str(expected), "actual": actual})
     return sorted(missing), sorted(mismatches, key=lambda m: m["path"])
@@ -290,7 +296,10 @@ def _verify_component_artifact_hashes(
                     }
                 )
                 continue
-            actual = file_sha256(path)
+            try:
+                actual = file_sha256(path)
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                actual = f"<unreadable: {exc}>"
             if expected != actual:
                 mismatches.append(
                     {
@@ -924,7 +933,10 @@ def verify_pack(
     identity_errors = _identity_errors(manifest, source, provenance) if manifest else []
     expected_content_errors = _verify_expected_p0_content(root, manifest, component_payloads) if manifest else []
 
-    actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
+    try:
+        actual_input_pack_sha256 = compute_input_pack_sha256(root, manifest) if manifest else None
+    except (OSError, json.JSONDecodeError, ValueError):
+        actual_input_pack_sha256 = None
     expected_input_pack_sha256 = manifest.get("input_pack_sha256")
     input_pack_sha256_match = bool(
         expected_input_pack_sha256 and expected_input_pack_sha256 == actual_input_pack_sha256

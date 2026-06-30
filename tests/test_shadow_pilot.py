@@ -941,12 +941,9 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
     assert manifest["official_result"] is False
 
 
-def test_railway_ci_runs_shadow_pilot_gate() -> None:
-    text = (ROOT / "docker" / "railway-ci" / "Dockerfile").read_text(encoding="utf-8")
+def test_github_actions_runs_shadow_pilot_gate() -> None:
+    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
 
-    assert (
-        "COPY artifacts/shadow/open_macro_v03_shadow_pilot_001 "
-        "/app/artifacts/shadow/open_macro_v03_shadow_pilot_001"
-    ) in text
+    assert "pull_request:" in text
     assert "tests/test_shadow_pilot.py" in text
     assert "src/shadow_pilot.py" in text

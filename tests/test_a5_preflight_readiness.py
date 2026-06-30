@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 A5_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_a5_preflight_001"
 DOC = ROOT / "docs" / "a5" / "open_macro_v03_a5_preflight_001.md"
-RAILWAY_CI_DOCKERFILE = ROOT / "docker" / "railway-ci" / "Dockerfile"
+GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def _json(name: str) -> dict:
@@ -204,13 +204,8 @@ def test_docs_report_final_state_and_recommendation() -> None:
     assert "Expected `artifacts/input_packs/open_macro_v03_certified_input_pack_001/manifest.json` is absent" in report
 
 
-def test_railway_ci_includes_a5_preflight_governance_test() -> None:
-    text = _text(RAILWAY_CI_DOCKERFILE)
+def test_github_actions_includes_a5_preflight_governance_test() -> None:
+    text = _text(GITHUB_ACTIONS_WORKFLOW)
 
-    assert (
-        "COPY artifacts/a5/open_macro_v03_a5_preflight_001 "
-        "/app/artifacts/a5/open_macro_v03_a5_preflight_001"
-    ) in text
-    assert "COPY docs/a5 /app/docs/a5" in text
-    assert "COPY docs/planning /app/docs/planning" in text
+    assert "pull_request:" in text
     assert "tests/test_a5_preflight_readiness.py" in text

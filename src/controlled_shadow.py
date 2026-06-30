@@ -25,6 +25,12 @@ CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bc
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
 CALIBRATION_REPRODUCIBILITY_REPORT_SHA256: Final = "1d8ac6b64d2114dcf36f6b8a0dc18425dda9ea12fe62673110c98b752ed753a6"
 CONTRACT_BUNDLE_MANIFEST_SHA256: Final = "59d17208c73b449b8a14087d9510a859d18bc4194e11516525949dd8cb332b9c"
+CONTRACT_MOUNT_EXTRA_FILE_PINS: Final[dict[str, dict[str, object]]] = {
+    "CHANGELOG.md": {
+        "sha256": "0d38d2a9bb0390ec6482a66c1f646436715b9e17ecf5ffa241e360897bb1f7c8",
+        "bytes": 2373,
+    },
+}
 EXECUTION_WINDOW_PINS: Final[dict[str, object]] = {
     "started_at": "2026-06-29T18:00:00Z",
     "finished_at": "2026-06-29T18:00:01Z",
@@ -342,6 +348,18 @@ LOG_FORBIDDEN_TRUE_MARKERS: Final[frozenset[str]] = frozenset(
 LOG_FORBIDDEN_PRESENCE_MARKERS: Final[frozenset[str]] = frozenset(
     f"{key}=" for key in LOG_FORBIDDEN_PRESENCE_KEYS
 )
+EXPECTED_CONTROLLED_SHADOW_REPORT_BOUNDARY_LINES: Final[tuple[str, ...]] = (
+    "- `A5=blocked`",
+    "- `runtime_activation=false`",
+    "- `freeze_ready=false`",
+    "- `official_result=false`",
+    "- `allow_db_write=false`",
+    "- `allow_allocator_publish=false`",
+    "- `production_endpoint_activation=none`",
+    "- `backend_executes_engine=false`",
+    "- `backend_executes_docker=false`",
+    "- `backend_executes_subprocess=false`",
+)
 
 
 class ControlledShadowValidationError(ValueError):
@@ -501,6 +519,24 @@ def _reject_forbidden_text_markers(path: Path) -> None:
             raise ControlledShadowValidationError(f"{path.name}: forbidden text marker {marker}")
 
 
+def _validate_controlled_shadow_report(path: Path) -> None:
+    _reject_forbidden_text_markers(path)
+    lines = path.read_text(encoding="utf-8").replace("\r\n", "\n").split("\n")
+    try:
+        boundary_header_index = lines.index("## Boundary")
+    except ValueError as exc:
+        raise ControlledShadowValidationError(f"{path.name}: missing ## Boundary section") from exc
+
+    boundary_lines: list[str] = []
+    for line in lines[boundary_header_index + 1 :]:
+        if line.startswith("## "):
+            break
+        if line.strip():
+            boundary_lines.append(line)
+    if tuple(boundary_lines) != EXPECTED_CONTROLLED_SHADOW_REPORT_BOUNDARY_LINES:
+        raise ControlledShadowValidationError(f"{path.name}: boundary lines mismatch")
+
+
 def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[str, str]) -> None:
     if not path.is_file():
         raise ControlledShadowValidationError(f"missing controlled shadow log: {path.name}")
@@ -592,6 +628,14 @@ def _file_logical_bytes(path: Path) -> int:
     return len(path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
 
 
+def _read_only_input_logical_bytes(path: Path, *, where: str) -> int:
+    if path.is_file():
+        return _file_logical_bytes(path)
+    if path.is_dir():
+        return sum(_file_logical_bytes(candidate) for candidate in path.rglob("*") if candidate.is_file())
+    raise ControlledShadowValidationError(f"{where}: read-only input path missing: {path}")
+
+
 def _validate_calibration_output_manifest(calibration_dir: Path) -> None:
     manifest = _require_mapping(
         load_json(calibration_dir / "output_manifest.json"),
@@ -657,6 +701,48 @@ def _validate_calibration_output_manifest(calibration_dir: Path) -> None:
             "bytes",
             _file_logical_bytes(path),
             where=f"calibration_output_manifest[{rel}]",
+        )
+
+
+def _validate_contract_mount_inventory(contract_bundle_dir: Path) -> None:
+    manifest = _require_mapping(load_json(contract_bundle_dir / "manifest.json"), where="contract_bundle.manifest")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise ControlledShadowValidationError("contract_bundle.manifest.files must be a list")
+    manifest_paths: set[str] = set()
+    for item in files:
+        entry = _require_mapping(item, where="contract_bundle.manifest.files[]")
+        rel = entry.get("path")
+        if not isinstance(rel, str):
+            raise ControlledShadowValidationError("contract_bundle.manifest.files[].path must be a string")
+        manifest_paths.add(rel)
+
+    expected = {"manifest.json", *manifest_paths, *CONTRACT_MOUNT_EXTRA_FILE_PINS}
+    actual = {
+        path.relative_to(contract_bundle_dir).as_posix()
+        for path in contract_bundle_dir.rglob("*")
+        if path.is_file()
+    }
+    missing = sorted(expected - actual)
+    if missing:
+        raise ControlledShadowValidationError(f"contract bundle mount missing file: {missing[0]}")
+    unexpected = sorted(actual - expected)
+    if unexpected:
+        raise ControlledShadowValidationError(f"contract bundle mount unexpected file: {unexpected[0]}")
+
+    for rel, pins in CONTRACT_MOUNT_EXTRA_FILE_PINS.items():
+        path = _ensure_child(contract_bundle_dir / rel, contract_bundle_dir)
+        _require_equal(
+            {"sha256": canonical_file_sha256(path)},
+            "sha256",
+            pins["sha256"],
+            where=f"contract_bundle.mount[{rel}]",
+        )
+        _require_equal(
+            {"bytes": _file_logical_bytes(path)},
+            "bytes",
+            pins["bytes"],
+            where=f"contract_bundle.mount[{rel}]",
         )
 
 
@@ -1535,7 +1621,7 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
         _require_equal(entry, "sha256", hs.file_sha256(path), where=f"output_manifest[{rel}]")
         _require_equal(entry, "bytes", _file_logical_bytes(path), where=f"output_manifest[{rel}]")
         if rel == "controlled_shadow_report.md":
-            _reject_forbidden_text_markers(path)
+            _validate_controlled_shadow_report(path)
     _validate_logs(root)
 
 
@@ -1653,7 +1739,9 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         rel = expected.get("path")
         if not isinstance(rel, str):
             raise ControlledShadowValidationError(f"read_only_inputs[{name}].path must be a string")
-        _reject_symlinked_read_only_input(root / rel, root, where=f"read_only_inputs[{name}].path")
+        path = root / rel
+        where = f"read_only_inputs[{name}]"
+        _reject_symlinked_read_only_input(path, root, where=f"{where}.path")
 
     input_pack_dir = root / "fixtures" / "input_packs" / "golden" / "certified_input_pack"
     pack_verification = verify_pack(input_pack_dir)
@@ -1712,8 +1800,22 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
     if _canonical_json_file_sha256(calibration_dir / "reproducibility_report.json", where="reproducibility_report") != CALIBRATION_REPRODUCIBILITY_REPORT_SHA256:
         raise ControlledShadowValidationError("reproducibility_report_sha256 mismatch")
     _validate_calibration_output_manifest(calibration_dir)
+    for name, expected in READ_ONLY_INPUT_PINS.items():
+        if name == "contract_bundle" or expected.get("mount") != "read_only":
+            continue
+        rel = expected.get("path")
+        if not isinstance(rel, str):
+            raise ControlledShadowValidationError(f"read_only_inputs[{name}].path must be a string")
+        where = f"read_only_inputs[{name}]"
+        _require_equal(
+            {"bytes": _read_only_input_logical_bytes(root / rel, where=where)},
+            "bytes",
+            expected.get("bytes"),
+            where=where,
+        )
 
     contract_bundle_dir = root / "contracts" / "quant-engine" / "v1"
+    _reject_symlinked_read_only_input(contract_bundle_dir, root, where="contract_bundle")
     contract_verification = verify_bundle(contract_bundle_dir)
     if not contract_verification.get("ok"):
         raise ControlledShadowValidationError("contract bundle verification failed")
@@ -1721,6 +1823,19 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         raise ControlledShadowValidationError("contract bundle_sha256 mismatch")
     if _canonical_json_file_sha256(contract_bundle_dir / "manifest.json", where="contract_bundle.manifest") != CONTRACT_BUNDLE_MANIFEST_SHA256:
         raise ControlledShadowValidationError("contract bundle manifest_sha256 mismatch")
+    _validate_contract_mount_inventory(contract_bundle_dir)
+    expected_contract = READ_ONLY_INPUT_PINS["contract_bundle"]
+    _require_equal(
+        {
+            "bytes": _read_only_input_logical_bytes(
+                contract_bundle_dir / "manifest.json",
+                where="read_only_inputs[contract_bundle]",
+            )
+        },
+        "bytes",
+        expected_contract.get("bytes"),
+        where="read_only_inputs[contract_bundle]",
+    )
     return {
         "input_pack_id": hs.INPUT_PACK_ID,
         "input_pack_sha256": hs.INPUT_PACK_SHA256,

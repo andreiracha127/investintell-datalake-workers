@@ -791,6 +791,22 @@ def test_logs_reject_duplicate_tokens_before_side_effect_checks(
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+def test_controlled_shadow_report_pins_boundary_lines_after_manifest_refresh(tmp_path: Path) -> None:
+    root = _copy_bundle(tmp_path)
+    report = root / "controlled_shadow_report.md"
+    report.write_text(
+        report.read_text(encoding="utf-8").replace("- `A5=blocked`", "- `A5=ready_for_activation`"),
+        encoding="utf-8",
+    )
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "controlled_shadow_report.md")
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="boundary lines mismatch"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 def test_immutable_inputs_validate_real_hashes() -> None:
     result = cs.validate_immutable_inputs(ROOT)
 
@@ -815,6 +831,41 @@ def test_immutable_inputs_reject_input_pack_hash_drift(tmp_path: Path) -> None:
         cs.validate_immutable_inputs(workspace)
 
 
+def test_immutable_inputs_reject_duplicate_json_keys_in_input_pack_artifact(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    data_path = (
+        workspace
+        / "fixtures"
+        / "input_packs"
+        / "golden"
+        / "certified_input_pack"
+        / "data"
+        / "raw"
+        / "eod_prices.json"
+    )
+    data_path.write_text(
+        data_path.read_text(encoding="utf-8").replace(
+            '    "close": "98.20",',
+            '    "close": "98.20",\n    "close": "98.20",',
+            1,
+        ),
+        encoding="utf-8",
+    )
+    pins = {name: dict(pin) for name, pin in cs.READ_ONLY_INPUT_PINS.items()}
+    for name, pin in pins.items():
+        pin["bytes"] = cs._read_only_input_logical_bytes(
+            workspace / str(pin["path"]),
+            where=f"read_only_inputs[{name}]",
+        )
+    monkeypatch.setattr(cs, "READ_ONLY_INPUT_PINS", pins)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="input pack verification failed"):
+        cs.validate_immutable_inputs(workspace)
+
+
 def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     workspace = _copy_immutable_workspace(tmp_path)
     manifest_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "calibration_manifest.json"
@@ -823,6 +874,29 @@ def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     _write_json(manifest_path, manifest)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="run_matrix_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_read_only_input_byte_drift_with_same_canonical_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    input_manifest = _json(
+        workspace / "fixtures" / "input_packs" / "golden" / "certified_input_pack" / "manifest.json"
+    )
+    monkeypatch.setattr(cs.hs, "CONTRACT_BUNDLE_SHA256", input_manifest["contract_bundle_sha256"])
+    run_matrix_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "run_matrix.json"
+    run_matrix = _json(run_matrix_path)
+    run_matrix_path.write_text(
+        json.dumps(run_matrix, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=r"read_only_inputs\[calibration_run_matrix\]: bytes",
+    ):
         cs.validate_immutable_inputs(workspace)
 
 
@@ -941,6 +1015,43 @@ def test_immutable_inputs_reject_contract_bundle_file_hash_drift(tmp_path: Path)
     schema_path.write_text(schema_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
     with pytest.raises(cs.ControlledShadowValidationError, match="contract bundle verification failed"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_unpinned_contract_bundle_file(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    contract_dir = workspace / "contracts" / "quant-engine" / "v1"
+    (contract_dir / "runtime_activation.txt").write_text("true\n", encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="contract bundle mount unexpected file"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_contract_bundle_changelog_drift(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    changelog = workspace / "contracts" / "quant-engine" / "v1" / "CHANGELOG.md"
+    changelog.write_text(changelog.read_text(encoding="utf-8") + "\nruntime_activation=true\n", encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=r"contract_bundle\.mount\[CHANGELOG\.md\]: sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_contract_bundle_schema_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    manifest_path = workspace / "contracts" / "quant-engine" / "v1" / "manifest.json"
+    pins = {name: dict(pin) for name, pin in cs.READ_ONLY_INPUT_PINS.items()}
+    pins["contract_bundle"]["bytes"] = cs._file_logical_bytes(manifest_path)
+    monkeypatch.setattr(cs, "READ_ONLY_INPUT_PINS", pins)
+    schema_path = workspace / "contracts" / "quant-engine" / "v1" / "job-request.schema.json"
+    outside = tmp_path / "outside.schema.json"
+    outside.write_bytes(schema_path.read_bytes())
+    schema_path.unlink()
+    try:
+        schema_path.symlink_to(outside)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="symlinked read-only input path"):
         cs.validate_immutable_inputs(workspace)
 
 

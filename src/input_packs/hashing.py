@@ -32,7 +32,19 @@ def canonical_json_bytes(payload: Any) -> bytes:
 
 
 def load_json(path: str | Path) -> Any:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        object_pairs_hook=_reject_duplicate_json_object_keys,
+    )
+
+
+def _reject_duplicate_json_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        payload[key] = value
+    return payload
 
 
 def canonical_json_sha256(payload: Any) -> str:
