@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import src.external_executor_handshake as hs
+from services.quant_engine.src.investintell_quant_engine.contract_bundle import verify_bundle
 from src.input_packs.hashing import file_sha256 as canonical_file_sha256
 from src.input_packs.verifier import verify_pack
 
@@ -268,11 +269,16 @@ def _reject_duplicate_json_object_keys(pairs: list[tuple[str, Any]]) -> dict[str
     return payload
 
 
+def _reject_non_standard_json_constant(value: str) -> None:
+    raise ControlledShadowValidationError(f"non-standard JSON constant {value!r}")
+
+
 def load_json(path: Path) -> Any:
     try:
         return json.loads(
             path.read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_json_object_keys,
+            parse_constant=_reject_non_standard_json_constant,
         )
     except json.JSONDecodeError as exc:
         raise ControlledShadowValidationError(f"invalid JSON in {path}: {exc}") from exc
@@ -302,7 +308,7 @@ def _json_pin_equal(actual: Any, expected: Any) -> bool:
     if isinstance(actual, bool) or isinstance(expected, bool):
         return isinstance(actual, bool) and isinstance(expected, bool) and actual == expected
     if isinstance(actual, int | float) and isinstance(expected, int | float):
-        return actual == expected
+        return type(actual) is type(expected) and actual == expected
     if isinstance(actual, list) and isinstance(expected, list):
         return len(actual) == len(expected) and all(
             _json_pin_equal(left, right) for left, right in zip(actual, expected)
@@ -495,8 +501,18 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
         where="control_plane_request",
     )
     _require_mapping(payload.get("execution_window"), where="control_plane_request.execution_window")
-    _require_mapping(payload.get("population_scope"), where="control_plane_request.population_scope")
-    _require_mapping(payload.get("executor_identity"), where="control_plane_request.executor_identity")
+    population_scope = _require_mapping(payload.get("population_scope"), where="control_plane_request.population_scope")
+    _require_pins(
+        population_scope,
+        {"source": "immutable_certified_input_pack"},
+        where="control_plane_request.population_scope",
+    )
+    executor_identity = _require_mapping(payload.get("executor_identity"), where="control_plane_request.executor_identity")
+    _require_pins(
+        executor_identity,
+        {"is_external": True},
+        where="control_plane_request.executor_identity",
+    )
     if not isinstance(payload.get("rollback_owner"), str) or not payload["rollback_owner"]:
         raise ControlledShadowValidationError("control_plane_request.rollback_owner must be a non-empty string")
 
@@ -783,6 +799,8 @@ def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[s
         name = entry.get("name")
         mode = entry.get("mode")
         if isinstance(name, str) and isinstance(mode, str):
+            if name in actual_mounts:
+                raise ControlledShadowValidationError(f"executor_acceptance.mounts duplicate name: {name}")
             actual_mounts[name] = mode
     if actual_mounts != expected_mounts:
         raise ControlledShadowValidationError("executor_acceptance.mounts mismatch")
@@ -823,6 +841,11 @@ def validate_baseline_comparison(payload: Mapping[str, Any]) -> None:
             "policy_id": "open_macro_v03_shadow_baseline_comparison_policy_v1",
             "status": "pass",
             "hash_comparison": "exact",
+            "numeric_tolerances": {
+                "float_abs_tolerance": 1e-12,
+                "float_rel_tolerance": 1e-10,
+                "hash_comparison": "exact",
+            },
         },
         where="baseline_comparison",
     )
@@ -834,18 +857,24 @@ def validate_baseline_comparison(payload: Mapping[str, Any]) -> None:
         if field.endswith("_pct") and (not isinstance(value, (int, float)) or not math.isfinite(value)):
             raise ControlledShadowValidationError(f"baseline_comparison.materiality_summary.{field} must be finite")
     forbidden = _require_mapping(payload.get("forbidden_effects"), where="baseline_comparison.forbidden_effects")
+    forbidden_effect_pins = {
+        "runtime_activation_attempt": False,
+        "official_db_write_attempt": False,
+        "allocator_publish_attempt": False,
+        "production_endpoint_activation_attempt": False,
+        "input_pack_change": "none",
+        "calibration_pack_change": "none",
+        "contract_v1_change": "none",
+        "formula_change": "none",
+    }
+    _reject_unexpected_fields(
+        forbidden,
+        frozenset(forbidden_effect_pins),
+        where="baseline_comparison.forbidden_effects",
+    )
     _require_pins(
         forbidden,
-        {
-            "runtime_activation_attempt": False,
-            "official_db_write_attempt": False,
-            "allocator_publish_attempt": False,
-            "production_endpoint_activation_attempt": False,
-            "input_pack_change": "none",
-            "calibration_pack_change": "none",
-            "contract_v1_change": "none",
-            "formula_change": "none",
-        },
+        forbidden_effect_pins,
         where="baseline_comparison.forbidden_effects",
     )
     evaluation = _require_mapping(payload.get("evaluation"), where="baseline_comparison.evaluation")
@@ -1025,6 +1054,11 @@ def validate_no_side_effects_report(payload: Mapping[str, Any]) -> None:
     seen: dict[str, Mapping[str, Any]] = {}
     for item in checks:
         entry = _require_mapping(item, where="no_side_effects_report.check")
+        _reject_unexpected_fields(
+            entry,
+            hs.NO_SIDE_EFFECTS_REPORT_CHECK_FIELDS,
+            where="no_side_effects_report.check",
+        )
         check_id = entry.get("id")
         if not isinstance(check_id, str):
             raise ControlledShadowValidationError("no_side_effects_report.check.id must be a string")
@@ -1329,16 +1363,12 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
     if canonical_file_sha256(calibration_dir / "output_manifest.json") != CALIBRATION_OUTPUT_MANIFEST_SHA256:
         raise ControlledShadowValidationError("calibration output_manifest_sha256 mismatch")
 
-    contract_manifest = _require_mapping(
-        load_json(root / "contracts" / "quant-engine" / "v1" / "manifest.json"),
-        where="contract_manifest",
-    )
-    _require_equal(
-        contract_manifest,
-        "bundle_sha256",
-        f"sha256:{hs.CONTRACT_BUNDLE_SHA256}",
-        where="contract_manifest",
-    )
+    contract_bundle_dir = root / "contracts" / "quant-engine" / "v1"
+    contract_verification = verify_bundle(contract_bundle_dir)
+    if not contract_verification.get("ok"):
+        raise ControlledShadowValidationError("contract bundle verification failed")
+    if contract_verification.get("bundle_sha256") != f"sha256:{hs.CONTRACT_BUNDLE_SHA256}":
+        raise ControlledShadowValidationError("contract bundle_sha256 mismatch")
     return {
         "input_pack_id": hs.INPUT_PACK_ID,
         "input_pack_sha256": hs.INPUT_PACK_SHA256,

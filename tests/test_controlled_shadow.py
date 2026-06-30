@@ -93,6 +93,15 @@ def test_load_json_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
         cs.load_json(path)
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_load_json_rejects_non_standard_json_constants(tmp_path: Path, constant: str) -> None:
+    path = tmp_path / "non_standard_constant.json"
+    path.write_text(f'{{"value": {constant}}}\n', encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="non-standard JSON constant"):
+        cs.load_json(path)
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [
@@ -137,6 +146,14 @@ def test_controlled_shadow_pins_reject_bool_int_coercion(
         validator(payload)
 
 
+def test_reproducibility_report_rejects_float_integer_count_pin() -> None:
+    report = _artifact("reproducibility_report.json")
+    report["mismatch_count"] = 0.0
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="mismatch_count"):
+        cs.validate_reproducibility_report(report)
+
+
 @pytest.mark.parametrize(
     ("artifact", "validator", "field", "bad"),
     [
@@ -160,6 +177,26 @@ def test_controlled_shadow_gates_reject_forbidden_runtime_state(
 
     with pytest.raises(cs.ControlledShadowValidationError):
         validator(payload)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "bad"),
+    [
+        ("population_scope", "source", "live_control_plane"),
+        ("executor_identity", "is_external", False),
+        ("executor_identity", "is_external", 1),
+    ],
+)
+def test_control_plane_request_rejects_unpinned_scope_and_executor_identity(
+    section: str,
+    field: str,
+    bad: object,
+) -> None:
+    request = _artifact("control_plane_request.json")
+    request[section][field] = bad
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=field):
+        cs.validate_control_plane_request(request)
 
 
 @pytest.mark.parametrize(
@@ -192,6 +229,18 @@ def test_executor_acceptance_rejects_backend_execution_attempt() -> None:
     acceptance["backend_executes_subprocess"] = True
 
     with pytest.raises(cs.ControlledShadowValidationError):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_rejects_duplicate_mount_names() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["mounts"] = [
+        {"name": "input_pack", "mode": "read_write"},
+        *acceptance["mounts"],
+    ]
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="duplicate name: input_pack"):
         cs.validate_executor_acceptance(acceptance, envelope)
 
 
@@ -276,6 +325,42 @@ def test_reproducibility_report_rejects_false_mismatch_count() -> None:
 
     with pytest.raises(cs.ControlledShadowValidationError, match="mismatch_count"):
         cs.validate_reproducibility_report(report)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad"),
+    [
+        ("float_abs_tolerance", 1.0),
+        ("float_rel_tolerance", 1.0),
+        ("hash_comparison", "approximate"),
+        ("unexpected_tolerance", 0.0),
+    ],
+)
+def test_baseline_comparison_rejects_unpinned_numeric_tolerances(field: str, bad: object) -> None:
+    baseline = _artifact("baseline_comparison.json")
+    baseline["numeric_tolerances"][field] = bad
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="numeric_tolerances"):
+        cs.validate_baseline_comparison(baseline)
+
+
+def test_baseline_comparison_rejects_unexpected_forbidden_effect_markers() -> None:
+    baseline = _artifact("baseline_comparison.json")
+    baseline["forbidden_effects"]["db_write"] = True
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match="baseline_comparison.forbidden_effects: unexpected fields",
+    ):
+        cs.validate_baseline_comparison(baseline)
+
+
+def test_no_side_effects_report_rejects_unexpected_check_fields() -> None:
+    report = _artifact("no_side_effects_report.json")
+    report["checks"][0]["observed"] = True
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="no_side_effects_report.check: unexpected fields"):
+        cs.validate_no_side_effects_report(report)
 
 
 def test_output_manifest_rejects_hash_drift(tmp_path: Path) -> None:
@@ -436,6 +521,15 @@ def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     _write_json(manifest_path, manifest)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="run_matrix_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_contract_bundle_file_hash_drift(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    schema_path = workspace / "contracts" / "quant-engine" / "v1" / "job-request.schema.json"
+    schema_path.write_text(schema_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="contract bundle verification failed"):
         cs.validate_immutable_inputs(workspace)
 
 
