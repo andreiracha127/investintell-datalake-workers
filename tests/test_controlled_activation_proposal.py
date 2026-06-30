@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 PROPOSAL_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_controlled_activation_proposal_001"
 
@@ -42,8 +44,46 @@ FORBIDDEN_TRUE_FIELDS = {
 PLACEHOLDERS = {"", "TODO", "TBD", "placeholder", "<pending>"}
 
 
+def _reject_duplicate_json_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON object key {key!r}")
+        payload[key] = value
+    return payload
+
+
+def _reject_non_finite_json_constant(constant: str) -> None:
+    raise ValueError(f"non-finite JSON constant {constant!r}")
+
+
+def _loads_json(text: str) -> Any:
+    return json.loads(
+        text,
+        object_pairs_hook=_reject_duplicate_json_object_keys,
+        parse_constant=_reject_non_finite_json_constant,
+    )
+
+
+def _load_json(path: Path) -> Any:
+    return _loads_json(path.read_text(encoding="utf-8"))
+
+
 def _json(name: str) -> dict[str, Any]:
-    return json.loads((PROPOSAL_ROOT / name).read_text(encoding="utf-8"))
+    payload = _load_json(PROPOSAL_ROOT / name)
+    assert isinstance(payload, dict)
+    return payload
+
+
+def test_proposal_json_loader_rejects_duplicate_activation_keys() -> None:
+    with pytest.raises(ValueError, match="duplicate JSON object key 'runtime_activation'"):
+        _loads_json('{"runtime_activation": true, "runtime_activation": false}')
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_proposal_json_loader_rejects_non_finite_constants(constant: str) -> None:
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        _loads_json(f'{{"value": {constant}}}')
 
 
 def _text(name: str) -> str:
@@ -192,6 +232,17 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"official_result": true',
             '"allow_allocator_publish": true',
             '"feature_flag_default": true',
+            "runtime_activation: true",
+            "freeze_ready: true",
+            "activation_allowed: true",
+            "activation_requested: true",
+            "official_result: true",
+            "allocator_publish: true",
+            "allow_allocator_publish: true",
+            "feature_flag_default: true",
+            "approve_controlled_activation: true",
+            "runtime_activation_allowed: true",
+            "A5_unblocked: true",
             "runtime_activation=true",
             "freeze_ready=true",
             "activation_allowed=true",
@@ -201,16 +252,14 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             if snippet in text:
                 violations.append(f"{path.relative_to(ROOT)} contains {snippet}")
         if path.suffix == ".json":
-            payload = json.loads(text)
-            for value in _walk_json(payload):
-                assert value == value
+            _load_json(path)
 
     assert violations == []
 
 
 def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> None:
     for path in PROPOSAL_ROOT.glob("*.json"):
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = _load_json(path)
         if path.name == "controlled_activation_proposal_manifest.json":
             assert payload["activation_requested"] is True
         for key, value in _iter_json_items(payload):
@@ -269,6 +318,8 @@ def test_staged_rollout_current_stage_is_proposal_only_with_no_productive_side_e
 def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> None:
     monitoring = _json("monitoring_enforcement_policy.json")
     kill_switch = _json("kill_switch_plan.json")
+    checklist = _json("production_activation_checklist.json")
+    checks = {check["id"]: check for check in checklist["checks"]}
 
     assert monitoring["runtime_activation"] is False
     assert monitoring["activation_allowed"] is False
@@ -277,3 +328,5 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
     assert kill_switch["activation_allowed"] is False
     assert kill_switch["test_status"] == "pending_operator_dry_run"
     assert kill_switch["owner"] == "unassigned"
+    assert checks["kill_switch_dry_run"]["status"] == "pending"
+    assert checks["kill_switch_dry_run"]["blocking"] is True
