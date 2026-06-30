@@ -200,6 +200,60 @@ def test_control_plane_request_rejects_unpinned_scope_and_executor_identity(
 
 
 @pytest.mark.parametrize(
+    ("execution_window", "match"),
+    [
+        ({}, "missing fields"),
+        (
+            {
+                "started_at": "2026-06-29T18:00:00Z",
+                "finished_at": "2026-06-29T17:59:59Z",
+                "timezone": "UTC",
+                "window_id": "open_macro_v03_controlled_shadow_window_001",
+            },
+            "finished_at",
+        ),
+        (
+            {
+                "started_at": "2026-06-29T18:00:00-03:00",
+                "finished_at": "2026-06-29T18:00:01Z",
+                "timezone": "UTC",
+                "window_id": "open_macro_v03_controlled_shadow_window_001",
+            },
+            "UTC Z",
+        ),
+        (
+            {
+                "started_at": "2026-06-29T18:00:00Z",
+                "finished_at": "2026-06-29T18:00:01Z",
+                "timezone": "America/Sao_Paulo",
+                "window_id": "open_macro_v03_controlled_shadow_window_001",
+            },
+            "timezone",
+        ),
+        (
+            {
+                "started_at": "2026-06-29T18:00:00Z",
+                "finished_at": "2026-06-29T18:00:01Z",
+                "timezone": "UTC",
+                "window_id": "open_macro_v03_controlled_shadow_window_001",
+                "runtime_activation": True,
+            },
+            "unexpected fields",
+        ),
+    ],
+)
+def test_control_plane_request_rejects_invalid_execution_window(
+    execution_window: dict,
+    match: str,
+) -> None:
+    request = _artifact("control_plane_request.json")
+    request["execution_window"] = execution_window
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=match):
+        cs.validate_control_plane_request(request)
+
+
+@pytest.mark.parametrize(
     ("name", "field", "bad"),
     [
         ("input_pack", "path", "fixtures/input_packs/golden/other_pack"),
@@ -244,6 +298,15 @@ def test_executor_acceptance_rejects_duplicate_mount_names() -> None:
         cs.validate_executor_acceptance(acceptance, envelope)
 
 
+def test_executor_acceptance_rejects_unexpected_mount_fields() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["mounts"][0]["writable"] = True
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=r"executor_acceptance.mounts\[\]: unexpected fields"):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
 def test_executor_acceptance_requires_none_as_network_value() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
@@ -272,6 +335,25 @@ def test_executor_acceptance_requires_readonly_input_bind_flags(mount_spec: str)
     acceptance["docker_run_policy"] = policy
 
     with pytest.raises(cs.ControlledShadowValidationError, match="bind mounts mismatch"):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "bad_mount",
+    [
+        "type=bind,src=/input_pack,source=/tmp/live,dst=/input_pack,readonly",
+        "type=bind,src=/input_pack,dst=/input_pack,destination=/tmp/live,readonly",
+        "type=bind,src=/input_pack,dst=/input_pack,target=/tmp/live,readonly",
+    ],
+)
+def test_executor_acceptance_rejects_conflicting_docker_mount_aliases(bad_mount: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    policy[policy.index("type=bind,src=/input_pack,dst=/input_pack,readonly")] = bad_mount
+    acceptance["docker_run_policy"] = policy
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="conflicting mount"):
         cs.validate_executor_acceptance(acceptance, envelope)
 
 
@@ -355,12 +437,54 @@ def test_baseline_comparison_rejects_unexpected_forbidden_effect_markers() -> No
         cs.validate_baseline_comparison(baseline)
 
 
+@pytest.mark.parametrize("summary", ["divergence_summary", "materiality_summary"])
+def test_baseline_comparison_rejects_unexpected_summary_fields(summary: str) -> None:
+    baseline = _artifact("baseline_comparison.json")
+    baseline[summary]["unexpected_output_paths"] = ["artifact://shadow/unexpected.json"]
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=f"baseline_comparison.{summary}: unexpected fields",
+    ):
+        cs.validate_baseline_comparison(baseline)
+
+
+@pytest.mark.parametrize("summary", ["divergence_summary", "materiality_summary"])
+def test_shadow_result_rejects_unexpected_summary_fields(summary: str) -> None:
+    result = _artifact("shadow_result_manifest.json")
+    result[summary]["unexpected_output_paths"] = ["artifact://shadow/unexpected.json"]
+    evidence_hashes = {
+        field: result[field]
+        for field in (
+            "output_manifest_sha256",
+            "baseline_comparison_sha256",
+            "invariant_report_sha256",
+            "reproducibility_report_sha256",
+            "no_side_effects_report_sha256",
+        )
+    }
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=f"shadow_result_manifest.{summary}: unexpected fields",
+    ):
+        cs.validate_shadow_result_manifest(result, evidence_hashes=evidence_hashes)
+
+
 def test_no_side_effects_report_rejects_unexpected_check_fields() -> None:
     report = _artifact("no_side_effects_report.json")
     report["checks"][0]["observed"] = True
 
     with pytest.raises(cs.ControlledShadowValidationError, match="no_side_effects_report.check: unexpected fields"):
         cs.validate_no_side_effects_report(report)
+
+
+def test_acceptance_report_rejects_unexpected_rule_fields() -> None:
+    report = _artifact("acceptance_report.json")
+    report["rules"][0]["runtime_activation"] = True
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="acceptance_report.rule: unexpected fields"):
+        cs.validate_acceptance_report(report)
 
 
 def test_output_manifest_rejects_hash_drift(tmp_path: Path) -> None:
@@ -521,6 +645,21 @@ def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     _write_json(manifest_path, manifest)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="run_matrix_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_calibration_output_manifest_artifact_hash_drift(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    calibration_dir = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID
+    metrics_path = calibration_dir / "metrics_manifest.json"
+    metrics = _json(metrics_path)
+    metrics["tampered"] = True
+    _write_json(metrics_path, metrics)
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=r"calibration_output_manifest\[metrics_manifest\.json\]: sha256",
+    ):
         cs.validate_immutable_inputs(workspace)
 
 

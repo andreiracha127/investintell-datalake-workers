@@ -54,7 +54,7 @@ RUN python -m pytest tests/input_packs tests/quant_engine tests/quant_core \
     tests/test_catalog_hash_path_independence.py tests/test_repeatability_matrix.py \
     tests/test_shadow_readiness.py tests/test_shadow_pilot.py tests/test_a5_preflight_readiness.py \
     tests/test_runtime_integration_skeleton.py tests/test_external_executor_handshake.py \
-    tests/test_remote_ci_runner.py -q
+    tests/test_controlled_shadow.py tests/test_remote_ci_runner.py -q
 RUN python -m compileall src/calibration_candidate.py src/shadow_pilot.py src/input_packs services/quant_engine packages/investintell_quant_core
 
 RUN python docker/railway-ci/verify_calibration_artifacts.py

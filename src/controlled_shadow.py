@@ -22,6 +22,17 @@ CONTROLLED_SHADOW_ID: Final = "open_macro_v03_controlled_shadow_001"
 EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT: Final = "ab081183389dbe62e03d56dd493c443263f334e9"
 CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+CALIBRATION_OUTPUT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
+    "baseline_comparison.json",
+    "calibration_config.json",
+    "calibration_report.md",
+    "invariant_report.json",
+    "logs/calibration.log",
+    "metrics_manifest.json",
+    "parameter_grid.json",
+    "rejected_candidates.json",
+    "selected_parameters.json",
+)
 REQUEST_ID: Final = "req-open-macro-v03-controlled-shadow-001"
 CORRELATION_ID: Final = "corr-open-macro-v03-controlled-shadow-001"
 EXECUTION_ID: Final = "exec-open-macro-v03-controlled-shadow-001"
@@ -198,6 +209,8 @@ DOCKER_OPTIONS_WITH_VALUE: Final[frozenset[str]] = frozenset({"--network", "--ne
 ALLOWED_DOCKER_OPTIONS: Final[frozenset[str]] = frozenset({"--rm", "--read-only", "--network", "--net", "--mount"})
 ALLOWED_BIND_ATTRS: Final[frozenset[str]] = frozenset({"type", "src", "source", "dst", "destination", "target", "readonly", "ro"})
 ALLOWED_BIND_FLAGS: Final[frozenset[str]] = frozenset({"readonly", "ro"})
+EXECUTOR_ACCEPTANCE_MOUNT_FIELDS: Final[frozenset[str]] = frozenset(("name", "mode"))
+ACCEPTANCE_REPORT_RULE_FIELDS: Final[frozenset[str]] = frozenset(("id", "status", "evidence"))
 EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = hs.EXPECTED_NO_SIDE_EFFECT_CHECK_IDS
 EXPECTED_ACCEPTANCE_RULE_IDS: Final[tuple[str, ...]] = (
     "all_required_outputs_present",
@@ -437,6 +450,62 @@ def _file_logical_bytes(path: Path) -> int:
     return len(path.read_text(encoding="utf-8").replace("\r\n", "\n").encode("utf-8"))
 
 
+def _validate_calibration_output_manifest(calibration_dir: Path) -> None:
+    manifest = _require_mapping(
+        load_json(calibration_dir / "output_manifest.json"),
+        where="calibration_output_manifest",
+    )
+    _reject_unexpected_fields(
+        manifest,
+        frozenset({"schema_version", "artifact_type", "calibration_id", "artifacts"}),
+        where="calibration_output_manifest",
+    )
+    _require_pins(
+        manifest,
+        {
+            "schema_version": 1,
+            "artifact_type": "calibration_output_manifest",
+            "calibration_id": hs.CALIBRATION_ID,
+        },
+        where="calibration_output_manifest",
+    )
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise ControlledShadowValidationError("calibration_output_manifest.artifacts must be a list")
+    by_path: dict[str, Mapping[str, Any]] = {}
+    for item in artifacts:
+        entry = _require_mapping(item, where="calibration_output_manifest.artifacts[]")
+        _reject_unexpected_fields(
+            entry,
+            frozenset({"path", "sha256", "bytes"}),
+            where="calibration_output_manifest.artifacts[]",
+        )
+        rel = entry.get("path")
+        if not isinstance(rel, str):
+            raise ControlledShadowValidationError("calibration_output_manifest.artifacts[].path must be a string")
+        if rel in by_path:
+            raise ControlledShadowValidationError(f"calibration_output_manifest duplicate artifact path: {rel}")
+        by_path[rel] = entry
+    if set(by_path) != set(CALIBRATION_OUTPUT_ARTIFACT_PATHS):
+        raise ControlledShadowValidationError("calibration_output_manifest artifact set mismatch")
+    for rel in CALIBRATION_OUTPUT_ARTIFACT_PATHS:
+        path = _ensure_child(calibration_dir / rel, calibration_dir)
+        if not path.is_file():
+            raise ControlledShadowValidationError(f"calibration_output_manifest artifact missing: {rel}")
+        _require_equal(
+            by_path[rel],
+            "sha256",
+            canonical_file_sha256(path),
+            where=f"calibration_output_manifest[{rel}]",
+        )
+        _require_equal(
+            by_path[rel],
+            "bytes",
+            _file_logical_bytes(path),
+            where=f"calibration_output_manifest[{rel}]",
+        )
+
+
 def validate_controlled_shadow_manifest(payload: Mapping[str, Any]) -> None:
     _reject_unexpected_fields(
         payload,
@@ -500,7 +569,29 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
         },
         where="control_plane_request",
     )
-    _require_mapping(payload.get("execution_window"), where="control_plane_request.execution_window")
+    execution_window = _require_mapping(payload.get("execution_window"), where="control_plane_request.execution_window")
+    _reject_unexpected_fields(
+        execution_window,
+        frozenset({"started_at", "finished_at", "timezone", "window_id"}),
+        where="control_plane_request.execution_window",
+    )
+    _require_fields(
+        execution_window,
+        ("started_at", "finished_at", "timezone", "window_id"),
+        where="control_plane_request.execution_window",
+    )
+    _require_pins(
+        execution_window,
+        {
+            "timezone": "UTC",
+            "window_id": "open_macro_v03_controlled_shadow_window_001",
+        },
+        where="control_plane_request.execution_window",
+    )
+    started = _parse_timestamp(str(execution_window.get("started_at")), where="control_plane_request.execution_window.started_at")
+    finished = _parse_timestamp(str(execution_window.get("finished_at")), where="control_plane_request.execution_window.finished_at")
+    if finished <= started:
+        raise ControlledShadowValidationError("control_plane_request.execution_window.finished_at must be after started_at")
     population_scope = _require_mapping(payload.get("population_scope"), where="control_plane_request.population_scope")
     _require_pins(
         population_scope,
@@ -669,6 +760,15 @@ def _parse_mount_spec(spec: str) -> tuple[dict[str, str], set[str]]:
     return attrs, flags
 
 
+def _mount_alias_value(attrs: Mapping[str, str], aliases: tuple[str, ...], *, label: str) -> str | None:
+    values = {attrs[key] for key in aliases if key in attrs}
+    if len(values) > 1:
+        raise ControlledShadowValidationError(
+            f"executor_acceptance.docker_run_policy conflicting mount {label} aliases"
+        )
+    return next(iter(values), None)
+
+
 def _validate_docker_mount_tokens(options: list[str]) -> None:
     mounts: list[tuple[str, str, str]] = []
 
@@ -683,8 +783,8 @@ def _validate_docker_mount_tokens(options: list[str]) -> None:
         if attrs.get("type") != "bind":
             raise ControlledShadowValidationError("executor_acceptance.docker_run_policy mounts must be bind mounts")
 
-        source = attrs.get("src") or attrs.get("source")
-        target = attrs.get("dst") or attrs.get("destination") or attrs.get("target")
+        source = _mount_alias_value(attrs, ("src", "source"), label="source")
+        target = _mount_alias_value(attrs, ("dst", "destination", "target"), label="destination")
         if not source or not target:
             raise ControlledShadowValidationError(
                 "executor_acceptance.docker_run_policy bind mounts must include source and destination"
@@ -796,6 +896,11 @@ def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[s
     actual_mounts: dict[str, str] = {}
     for item in mounts:
         entry = _require_mapping(item, where="executor_acceptance.mounts[]")
+        _reject_unexpected_fields(
+            entry,
+            EXECUTOR_ACCEPTANCE_MOUNT_FIELDS,
+            where="executor_acceptance.mounts[]",
+        )
         name = entry.get("name")
         mode = entry.get("mode")
         if isinstance(name, str) and isinstance(mode, str):
@@ -850,8 +955,18 @@ def validate_baseline_comparison(payload: Mapping[str, Any]) -> None:
         where="baseline_comparison",
     )
     divergence = _require_mapping(payload.get("divergence_summary"), where="baseline_comparison.divergence_summary")
+    _reject_unexpected_fields(
+        divergence,
+        frozenset(DIVERGENCE_ZERO_PINS),
+        where="baseline_comparison.divergence_summary",
+    )
     _require_pins(divergence, DIVERGENCE_ZERO_PINS, where="baseline_comparison.divergence_summary")
     materiality = _require_mapping(payload.get("materiality_summary"), where="baseline_comparison.materiality_summary")
+    _reject_unexpected_fields(
+        materiality,
+        frozenset(MATERIALITY_PINS),
+        where="baseline_comparison.materiality_summary",
+    )
     _require_pins(materiality, MATERIALITY_PINS, where="baseline_comparison.materiality_summary")
     for field, value in materiality.items():
         if field.endswith("_pct") and (not isinstance(value, (int, float)) or not math.isfinite(value)):
@@ -1109,6 +1224,11 @@ def validate_acceptance_report(payload: Mapping[str, Any]) -> None:
     seen: dict[str, Mapping[str, Any]] = {}
     for item in rules:
         entry = _require_mapping(item, where="acceptance_report.rule")
+        _reject_unexpected_fields(
+            entry,
+            ACCEPTANCE_REPORT_RULE_FIELDS,
+            where="acceptance_report.rule",
+        )
         rule_id = entry.get("id")
         if not isinstance(rule_id, str):
             raise ControlledShadowValidationError("acceptance_report.rule.id must be a string")
@@ -1302,8 +1422,18 @@ def validate_shadow_result_manifest(payload: Mapping[str, Any], *, evidence_hash
         if not isinstance(value, int) or value < 0:
             raise ControlledShadowValidationError(f"shadow_result_manifest.{field} must be a non-negative integer")
     divergence = _require_mapping(payload.get("divergence_summary"), where="shadow_result_manifest.divergence_summary")
+    _reject_unexpected_fields(
+        divergence,
+        frozenset(DIVERGENCE_ZERO_PINS),
+        where="shadow_result_manifest.divergence_summary",
+    )
     _require_pins(divergence, DIVERGENCE_ZERO_PINS, where="shadow_result_manifest.divergence_summary")
     materiality = _require_mapping(payload.get("materiality_summary"), where="shadow_result_manifest.materiality_summary")
+    _reject_unexpected_fields(
+        materiality,
+        frozenset(MATERIALITY_PINS),
+        where="shadow_result_manifest.materiality_summary",
+    )
     _require_pins(materiality, MATERIALITY_PINS, where="shadow_result_manifest.materiality_summary")
 
 
@@ -1362,6 +1492,7 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         raise ControlledShadowValidationError("run_matrix_sha256 mismatch")
     if canonical_file_sha256(calibration_dir / "output_manifest.json") != CALIBRATION_OUTPUT_MANIFEST_SHA256:
         raise ControlledShadowValidationError("calibration output_manifest_sha256 mismatch")
+    _validate_calibration_output_manifest(calibration_dir)
 
     contract_bundle_dir = root / "contracts" / "quant-engine" / "v1"
     contract_verification = verify_bundle(contract_bundle_dir)
