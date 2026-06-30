@@ -228,12 +228,17 @@ PR must explicitly record:
 - Executor identity and owner.
 - Execution window start and finish timestamps.
 - Population or fixture scope.
+- For every read-only fixture input, the fixture path, stable fixture identity,
+  content SHA-256, byte count, and source commit.
 - Expected run count.
 - Expected output artifact URI.
 - Rollback owner.
 
 No ambient production DB state should be treated as an input. Any input must be
-from immutable certified artifacts or explicitly documented read-only fixtures.
+from immutable certified artifacts or hash-pinned read-only fixtures. A future
+controlled-shadow run must reject mutable or unpinned fixtures, and review must
+compare the recorded fixture hashes against the files actually mounted by the
+executor.
 
 ## Acceptance Gates For Future Execution PR
 
@@ -280,6 +285,9 @@ Stop before execution or merge if any of these occur:
 - A production endpoint is introduced.
 - Backend executes engine, Docker, or subprocess.
 - Formula, input pack, calibration pack, or contract v1 hashes drift.
+- Any read-only fixture input lacks a recorded path, stable identity, content
+  SHA-256, byte count, or source commit, or its mounted content hash drifts from
+  the recorded value.
 - Remote CI or repeatability evidence is unavailable and not explicitly documented.
 - Human review requests activation or production impact in the controlled-shadow PR.
 
