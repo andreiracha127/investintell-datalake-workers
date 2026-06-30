@@ -27,6 +27,7 @@ COPY artifacts/a5/open_macro_v03_a5_preflight_001 /app/artifacts/a5/open_macro_v
 COPY artifacts/runtime/open_macro_v03_runtime_skeleton_001 /app/artifacts/runtime/open_macro_v03_runtime_skeleton_001
 COPY artifacts/shadow/open_macro_v03_shadow_001 /app/artifacts/shadow/open_macro_v03_shadow_001
 COPY artifacts/shadow/open_macro_v03_shadow_pilot_001 /app/artifacts/shadow/open_macro_v03_shadow_pilot_001
+COPY artifacts/shadow/open_macro_v03_controlled_shadow_001 /app/artifacts/shadow/open_macro_v03_controlled_shadow_001
 COPY artifacts/handshake/open_macro_v03_external_executor_handshake_001 /app/artifacts/handshake/open_macro_v03_external_executor_handshake_001
 COPY .githooks /app/.githooks
 COPY docs/calibration /app/docs/calibration
