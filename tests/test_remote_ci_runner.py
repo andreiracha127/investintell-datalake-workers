@@ -19,6 +19,7 @@ def test_github_actions_workflow_runs_on_prs_and_pushes() -> None:
     assert "pull_request:" in text
     assert "push:" in text
     assert "runs-on: ubuntu-latest" in text
+    assert "fetch-depth: 0" in text
     assert 'python-version: "3.13"' in text
     assert "PYTHONPATH: .:packages/investintell_quant_core/src:services/quant_engine/src" in text
 
