@@ -8,39 +8,49 @@ Status: preparatory and not executed.
 - Keep `A5=blocked`.
 - Keep `freeze_ready=false`.
 - Keep `runtime_activation=false`.
+- Keep `activation_allowed=false`.
 
-## Disable Candidate Paths
+## Keep Feature Flag Off
 
-1. Keep the future runtime feature flag false.
-2. Disable any shadow or pilot envelope intake if unexpected activity appears.
-3. Invalidate pending envelopes by `shadow_id`, `shadow_pilot_id`, `execution_id`, and artifact URI.
-4. Preserve current official baseline and ignore candidate artifacts for productive decisions.
+1. Confirm the feature flag default is false.
+2. Confirm no allowed environment is listed for this readiness PR.
+3. Reject any proposal that changes the default outside a separate activation PR.
 
-## Prevent Productive Effects
+## Disable Runtime If A Future Activation Is Approved
 
-- Prevent allocator publish.
-- Prevent official DB writes.
-- Prevent production endpoint activation.
-- Confirm no formula, input pack, calibration pack, or contract v1 mutation occurred.
+1. Return the feature flag to off.
+2. Stop accepting candidate runtime envelopes.
+3. Preserve the last accepted artifact bundle for audit.
+4. Confirm A5 remains blocked until a new governance decision is recorded.
 
-## Candidate Artifact Handling
+## Prevent Allocator Publish
 
-- Preserve candidate artifacts for audit by default.
-- Remove or quarantine candidate artifacts only if they are unsafe or misleading.
-- Record any removal with path, hash, reason, and approver.
+1. Block allocator publication from any candidate artifact.
+2. Preserve allocator publish attempt logs.
+3. Confirm allocator impact remains none.
 
-## Audit Side Effects
+## Invalidate Artifacts
 
-- Search logs for `runtime_activation=true`.
-- Search logs for `allow_db_write=true`.
-- Search logs for `allow_allocator_publish=true`.
-- Search logs for `production_endpoint_activation` values other than `none`.
-- Search DB audit logs for official writes tied to open_macro_v03 candidate artifacts.
-- Search allocator logs for candidate publish attempts.
+1. Mark any suspect candidate bundle as invalid in the future decision record.
+2. Preserve the rejected bundle hash and reason.
+3. Re-run contract, input pack, calibration, and controlled shadow verifiers before reconsideration.
 
-## Confirmation
+## Return To Baseline
 
-- Confirm A5 remains blocked.
-- Confirm runtime activation remains false.
-- Confirm freeze readiness remains false.
-- Confirm official result remains false.
+1. Use the existing baseline decision path.
+2. Ignore candidate artifacts for productive decisions.
+3. Keep official result publication disabled.
+
+## Audit DB And Results
+
+1. Verify no productive DB write occurred.
+2. Verify no official result was published.
+3. Verify no allocator publication occurred.
+4. Verify no production endpoint was exposed.
+
+## Block A5 Again
+
+1. Confirm A5 remains blocked.
+2. Confirm runtime activation remains false.
+3. Confirm freeze readiness remains false.
+4. Record rollback evidence in a follow-up governance artifact.
