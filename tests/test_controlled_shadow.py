@@ -344,6 +344,22 @@ def test_executor_acceptance_rejects_unexpected_mount_fields() -> None:
         cs.validate_executor_acceptance(acceptance, envelope)
 
 
+@pytest.mark.parametrize(("field", "bad"), [("name", False), ("mode", False)])
+def test_executor_acceptance_rejects_non_string_mount_fields(field: str, bad: object) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["mounts"] = [
+        {**acceptance["mounts"][0], field: bad},
+        *acceptance["mounts"],
+    ]
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=rf"executor_acceptance.mounts\[\]: {field} must be a string",
+    ):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
 def test_executor_acceptance_requires_none_as_network_value() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
@@ -580,6 +596,30 @@ def test_output_manifest_rejects_hash_drift(tmp_path: Path) -> None:
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+@pytest.mark.parametrize(
+    ("marker", "match"),
+    [
+        ("runtime_activation=true", "runtime_activation=true"),
+        ("allocator_publish_attempt=false", "allocator_publish_attempt="),
+    ],
+)
+def test_controlled_shadow_report_rejects_forbidden_markers_with_refreshed_hashes(
+    tmp_path: Path,
+    marker: str,
+    match: str,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    report = root / "controlled_shadow_report.md"
+    report.write_text(report.read_text(encoding="utf-8") + f"\n{marker}\n", encoding="utf-8")
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "controlled_shadow_report.md")
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=match):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 def test_output_manifest_rejects_unexpected_artifact_entry_fields_with_refreshed_hash(
     tmp_path: Path,
 ) -> None:
@@ -759,6 +799,7 @@ def test_immutable_inputs_validate_real_hashes() -> None:
     assert result["calibration_run_matrix_sha256"] == cs.CALIBRATION_RUN_MATRIX_SHA256
     assert result["calibration_reproducibility_report_sha256"] == cs.CALIBRATION_REPRODUCIBILITY_REPORT_SHA256
     assert result["contract_bundle_sha256"] == hs.CONTRACT_BUNDLE_SHA256
+    assert result["contract_bundle_manifest_sha256"] == cs.CONTRACT_BUNDLE_MANIFEST_SHA256
     assert result["verified"] is True
 
 
@@ -825,12 +866,32 @@ def test_immutable_inputs_reject_calibration_output_manifest_artifact_hash_drift
         cs.validate_immutable_inputs(workspace)
 
 
+def test_immutable_inputs_reject_unpinned_calibration_file(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    calibration_dir = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID
+    (calibration_dir / "extra_unpinned.json").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="unexpected calibration files on disk"):
+        cs.validate_immutable_inputs(workspace)
+
+
 def test_immutable_inputs_reject_contract_bundle_file_hash_drift(tmp_path: Path) -> None:
     workspace = _copy_immutable_workspace(tmp_path)
     schema_path = workspace / "contracts" / "quant-engine" / "v1" / "job-request.schema.json"
     schema_path.write_text(schema_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
 
     with pytest.raises(cs.ControlledShadowValidationError, match="contract bundle verification failed"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_contract_bundle_manifest_hash_drift(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    manifest_path = workspace / "contracts" / "quant-engine" / "v1" / "manifest.json"
+    manifest = _json(manifest_path)
+    manifest["contract_version"] = "1.0.1"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="contract bundle manifest_sha256 mismatch"):
         cs.validate_immutable_inputs(workspace)
 
 

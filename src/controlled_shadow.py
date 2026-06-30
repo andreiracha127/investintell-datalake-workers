@@ -23,6 +23,7 @@ EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT: Final = "ab081183389dbe62e03d56dd493c4
 CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
 CALIBRATION_REPRODUCIBILITY_REPORT_SHA256: Final = "1d8ac6b64d2114dcf36f6b8a0dc18425dda9ea12fe62673110c98b752ed753a6"
+CONTRACT_BUNDLE_MANIFEST_SHA256: Final = "59d17208c73b449b8a14087d9510a859d18bc4194e11516525949dd8cb332b9c"
 EXECUTION_WINDOW_PINS: Final[dict[str, object]] = {
     "started_at": "2026-06-29T18:00:00Z",
     "finished_at": "2026-06-29T18:00:01Z",
@@ -420,6 +421,13 @@ def _reject_embedded_forbidden_log_markers(path: Path, tokens: Mapping[str, str]
                 raise ControlledShadowValidationError(f"{path.name}: embedded forbidden log marker {marker}")
 
 
+def _reject_forbidden_text_markers(path: Path) -> None:
+    text = path.read_text(encoding="utf-8")
+    for marker in sorted(LOG_FORBIDDEN_TRUE_MARKERS | LOG_FORBIDDEN_PRESENCE_MARKERS):
+        if marker in text:
+            raise ControlledShadowValidationError(f"{path.name}: forbidden text marker {marker}")
+
+
 def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[str, str]) -> None:
     if not path.is_file():
         raise ControlledShadowValidationError(f"missing controlled shadow log: {path.name}")
@@ -498,8 +506,8 @@ def _validate_logs(root: Path) -> None:
     )
 
 
-def _unexpected_files(root: Path) -> list[str]:
-    expected = set(FINAL_REQUIRED_FILES)
+def _unexpected_files(root: Path, expected_files: tuple[str, ...] = FINAL_REQUIRED_FILES) -> list[str]:
+    expected = set(expected_files)
     actual: list[str] = []
     for path in root.rglob("*"):
         if path.is_file():
@@ -549,6 +557,18 @@ def _validate_calibration_output_manifest(calibration_dir: Path) -> None:
         by_path[rel] = entry
     if set(by_path) != set(CALIBRATION_OUTPUT_ARTIFACT_PATHS):
         raise ControlledShadowValidationError("calibration_output_manifest artifact set mismatch")
+    unexpected = _unexpected_files(
+        calibration_dir,
+        (
+            "calibration_manifest.json",
+            "output_manifest.json",
+            "reproducibility_report.json",
+            "run_matrix.json",
+            *CALIBRATION_OUTPUT_ARTIFACT_PATHS,
+        ),
+    )
+    if unexpected:
+        raise ControlledShadowValidationError(f"unexpected calibration files on disk: {unexpected}")
     for rel in CALIBRATION_OUTPUT_ARTIFACT_PATHS:
         path = _ensure_child(calibration_dir / rel, calibration_dir)
         if not path.is_file():
@@ -974,10 +994,13 @@ def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[s
         )
         name = entry.get("name")
         mode = entry.get("mode")
-        if isinstance(name, str) and isinstance(mode, str):
-            if name in actual_mounts:
-                raise ControlledShadowValidationError(f"executor_acceptance.mounts duplicate name: {name}")
-            actual_mounts[name] = mode
+        if not isinstance(name, str):
+            raise ControlledShadowValidationError("executor_acceptance.mounts[]: name must be a string")
+        if not isinstance(mode, str):
+            raise ControlledShadowValidationError("executor_acceptance.mounts[]: mode must be a string")
+        if name in actual_mounts:
+            raise ControlledShadowValidationError(f"executor_acceptance.mounts duplicate name: {name}")
+        actual_mounts[name] = mode
     if actual_mounts != expected_mounts:
         raise ControlledShadowValidationError("executor_acceptance.mounts mismatch")
     engine_image_digest = payload.get("engine_image_digest")
@@ -1438,6 +1461,8 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
             raise ControlledShadowValidationError(f"output_manifest artifact missing: {rel}")
         _require_equal(entry, "sha256", hs.file_sha256(path), where=f"output_manifest[{rel}]")
         _require_equal(entry, "bytes", _file_logical_bytes(path), where=f"output_manifest[{rel}]")
+        if rel == "controlled_shadow_report.md":
+            _reject_forbidden_text_markers(path)
     _validate_logs(root)
 
 
@@ -1606,6 +1631,8 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         raise ControlledShadowValidationError("contract bundle verification failed")
     if contract_verification.get("bundle_sha256") != f"sha256:{hs.CONTRACT_BUNDLE_SHA256}":
         raise ControlledShadowValidationError("contract bundle_sha256 mismatch")
+    if canonical_file_sha256(contract_bundle_dir / "manifest.json") != CONTRACT_BUNDLE_MANIFEST_SHA256:
+        raise ControlledShadowValidationError("contract bundle manifest_sha256 mismatch")
     return {
         "input_pack_id": hs.INPUT_PACK_ID,
         "input_pack_sha256": hs.INPUT_PACK_SHA256,
@@ -1614,6 +1641,7 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         "calibration_run_matrix_sha256": CALIBRATION_RUN_MATRIX_SHA256,
         "calibration_reproducibility_report_sha256": CALIBRATION_REPRODUCIBILITY_REPORT_SHA256,
         "contract_bundle_sha256": hs.CONTRACT_BUNDLE_SHA256,
+        "contract_bundle_manifest_sha256": CONTRACT_BUNDLE_MANIFEST_SHA256,
         "verified": True,
     }
 
