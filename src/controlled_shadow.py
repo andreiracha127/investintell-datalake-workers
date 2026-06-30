@@ -22,6 +22,7 @@ CONTROLLED_SHADOW_ID: Final = "open_macro_v03_controlled_shadow_001"
 EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT: Final = "ab081183389dbe62e03d56dd493c443263f334e9"
 CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+CALIBRATION_REPRODUCIBILITY_REPORT_SHA256: Final = "1d8ac6b64d2114dcf36f6b8a0dc18425dda9ea12fe62673110c98b752ed753a6"
 EXECUTION_WINDOW_PINS: Final[dict[str, object]] = {
     "started_at": "2026-06-29T18:00:00Z",
     "finished_at": "2026-06-29T18:00:01Z",
@@ -423,7 +424,8 @@ def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[
     if not path.is_file():
         raise ControlledShadowValidationError(f"missing controlled shadow log: {path.name}")
     tokens = _parse_log_tokens(path.read_text(encoding="utf-8"), source=path.name)
-    for key, expected_value in {**identity, **expected}.items():
+    allowed_tokens = {**identity, **expected}
+    for key, expected_value in allowed_tokens.items():
         if tokens.get(key) != expected_value:
             raise ControlledShadowValidationError(
                 f"{path.name}: {key} expected {expected_value!r}, got {tokens.get(key)!r}"
@@ -435,6 +437,11 @@ def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[
     for key in LOG_FORBIDDEN_PRESENCE_KEYS:
         if key in tokens:
             raise ControlledShadowValidationError(f"{path.name}: forbidden marker present {key}")
+    unexpected_tokens = sorted(set(tokens) - set(allowed_tokens))
+    if unexpected_tokens:
+        raise ControlledShadowValidationError(
+            f"{path.name}: unexpected log token {unexpected_tokens[0]}"
+        )
 
 
 def _validate_logs(root: Path) -> None:
@@ -1574,6 +1581,7 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
             "calibration_config_sha256": hs.CALIBRATION_CONFIG_SHA256,
             "run_matrix_sha256": CALIBRATION_RUN_MATRIX_SHA256,
             "output_manifest_sha256": CALIBRATION_OUTPUT_MANIFEST_SHA256,
+            "reproducibility_report_sha256": CALIBRATION_REPRODUCIBILITY_REPORT_SHA256,
             "runtime_activation": False,
             "A5": "blocked",
             "freeze_ready": False,
@@ -1588,6 +1596,8 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         raise ControlledShadowValidationError("run_matrix_sha256 mismatch")
     if canonical_file_sha256(calibration_dir / "output_manifest.json") != CALIBRATION_OUTPUT_MANIFEST_SHA256:
         raise ControlledShadowValidationError("calibration output_manifest_sha256 mismatch")
+    if canonical_file_sha256(calibration_dir / "reproducibility_report.json") != CALIBRATION_REPRODUCIBILITY_REPORT_SHA256:
+        raise ControlledShadowValidationError("reproducibility_report_sha256 mismatch")
     _validate_calibration_output_manifest(calibration_dir)
 
     contract_bundle_dir = root / "contracts" / "quant-engine" / "v1"
@@ -1602,6 +1612,7 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         "calibration_id": hs.CALIBRATION_ID,
         "calibration_config_sha256": hs.CALIBRATION_CONFIG_SHA256,
         "calibration_run_matrix_sha256": CALIBRATION_RUN_MATRIX_SHA256,
+        "calibration_reproducibility_report_sha256": CALIBRATION_REPRODUCIBILITY_REPORT_SHA256,
         "contract_bundle_sha256": hs.CONTRACT_BUNDLE_SHA256,
         "verified": True,
     }

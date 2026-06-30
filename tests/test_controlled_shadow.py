@@ -707,6 +707,19 @@ def test_logs_reject_embedded_forbidden_markers_in_values(
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+def test_logs_reject_unexpected_tokens(tmp_path: Path) -> None:
+    root = _copy_bundle(tmp_path)
+    log = root / "logs" / "external_executor.log"
+    log.write_text(log.read_text(encoding="utf-8").strip() + " db_write_mode=productive\n", encoding="utf-8")
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "logs/external_executor.log")
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="unexpected log token db_write_mode"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 @pytest.mark.parametrize(
     ("rel", "old", "new", "duplicate"),
     [
@@ -744,6 +757,7 @@ def test_immutable_inputs_validate_real_hashes() -> None:
     assert result["input_pack_sha256"] == hs.INPUT_PACK_SHA256
     assert result["calibration_config_sha256"] == hs.CALIBRATION_CONFIG_SHA256
     assert result["calibration_run_matrix_sha256"] == cs.CALIBRATION_RUN_MATRIX_SHA256
+    assert result["calibration_reproducibility_report_sha256"] == cs.CALIBRATION_REPRODUCIBILITY_REPORT_SHA256
     assert result["contract_bundle_sha256"] == hs.CONTRACT_BUNDLE_SHA256
     assert result["verified"] is True
 
@@ -767,6 +781,32 @@ def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     _write_json(manifest_path, manifest)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="run_matrix_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_calibration_reproducibility_report_manifest_hash_drift(
+    tmp_path: Path,
+) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    manifest_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "calibration_manifest.json"
+    manifest = _json(manifest_path)
+    manifest["reproducibility_report_sha256"] = "0" * 64
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="reproducibility_report_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_calibration_reproducibility_report_file_hash_drift(
+    tmp_path: Path,
+) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    report_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "reproducibility_report.json"
+    report = _json(report_path)
+    report["tampered"] = True
+    _write_json(report_path, report)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="reproducibility_report_sha256"):
         cs.validate_immutable_inputs(workspace)
 
 
