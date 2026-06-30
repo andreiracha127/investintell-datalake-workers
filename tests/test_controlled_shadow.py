@@ -240,6 +240,15 @@ def test_control_plane_request_rejects_unpinned_scope_and_executor_identity(
             },
             "unexpected fields",
         ),
+        (
+            {
+                "started_at": "2030-01-01T00:00:00Z",
+                "finished_at": "2030-01-01T00:00:01Z",
+                "timezone": "UTC",
+                "window_id": "open_macro_v03_controlled_shadow_window_001",
+            },
+            "started_at",
+        ),
     ],
 )
 def test_control_plane_request_rejects_invalid_execution_window(
@@ -393,6 +402,29 @@ def test_shadow_result_rejects_false_mismatch_count(tmp_path: Path) -> None:
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+@pytest.mark.parametrize("field", ("memory_peak_bytes", "cpu_time_ms"))
+def test_shadow_result_rejects_boolean_resource_counters(tmp_path: Path, field: str) -> None:
+    root = _copy_bundle(tmp_path)
+    result = _json(root / "shadow_result_manifest.json")
+    result[field] = False
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=field):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
+def test_controlled_shadow_rejects_request_result_execution_window_mismatch(tmp_path: Path) -> None:
+    root = _copy_bundle(tmp_path)
+    result = _json(root / "shadow_result_manifest.json")
+    result["started_at"] = "2030-01-01T00:00:00Z"
+    result["finished_at"] = "2030-01-01T00:00:01Z"
+    result["duration_ms"] = 1000
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="execution_window.started_at"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 def test_reproducibility_report_requires_mismatch_count_zero() -> None:
     report = _artifact("reproducibility_report.json")
     report["mismatch_count"] = 1
@@ -449,6 +481,17 @@ def test_baseline_comparison_rejects_unexpected_summary_fields(summary: str) -> 
         cs.validate_baseline_comparison(baseline)
 
 
+def test_baseline_comparison_rejects_unexpected_evaluation_fields() -> None:
+    baseline = _artifact("baseline_comparison.json")
+    baseline["evaluation"]["runtime_activation_attempt"] = True
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match="baseline_comparison.evaluation: unexpected fields",
+    ):
+        cs.validate_baseline_comparison(baseline)
+
+
 @pytest.mark.parametrize("summary", ["divergence_summary", "materiality_summary"])
 def test_shadow_result_rejects_unexpected_summary_fields(summary: str) -> None:
     result = _artifact("shadow_result_manifest.json")
@@ -493,6 +536,19 @@ def test_output_manifest_rejects_hash_drift(tmp_path: Path) -> None:
     report.write_text(report.read_text(encoding="utf-8") + "\nHash drift sentinel.\n", encoding="utf-8")
 
     with pytest.raises(cs.ControlledShadowValidationError, match="sha256"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
+def test_output_manifest_rejects_unexpected_artifact_entry_fields_with_refreshed_hash(
+    tmp_path: Path,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    output_manifest = _json(root / "output_manifest.json")
+    output_manifest["artifacts"][0]["runtime_activation"] = True
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=r"output_manifest\[.*\]: unexpected fields"):
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 

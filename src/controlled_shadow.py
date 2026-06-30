@@ -22,6 +22,12 @@ CONTROLLED_SHADOW_ID: Final = "open_macro_v03_controlled_shadow_001"
 EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT: Final = "ab081183389dbe62e03d56dd493c443263f334e9"
 CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
+EXECUTION_WINDOW_PINS: Final[dict[str, object]] = {
+    "started_at": "2026-06-29T18:00:00Z",
+    "finished_at": "2026-06-29T18:00:01Z",
+    "timezone": "UTC",
+    "window_id": "open_macro_v03_controlled_shadow_window_001",
+}
 CALIBRATION_OUTPUT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
     "baseline_comparison.json",
     "calibration_config.json",
@@ -580,18 +586,15 @@ def validate_control_plane_request(payload: Mapping[str, Any]) -> None:
         ("started_at", "finished_at", "timezone", "window_id"),
         where="control_plane_request.execution_window",
     )
-    _require_pins(
-        execution_window,
-        {
-            "timezone": "UTC",
-            "window_id": "open_macro_v03_controlled_shadow_window_001",
-        },
-        where="control_plane_request.execution_window",
-    )
     started = _parse_timestamp(str(execution_window.get("started_at")), where="control_plane_request.execution_window.started_at")
     finished = _parse_timestamp(str(execution_window.get("finished_at")), where="control_plane_request.execution_window.finished_at")
     if finished <= started:
         raise ControlledShadowValidationError("control_plane_request.execution_window.finished_at must be after started_at")
+    _require_pins(
+        execution_window,
+        EXECUTION_WINDOW_PINS,
+        where="control_plane_request.execution_window",
+    )
     population_scope = _require_mapping(payload.get("population_scope"), where="control_plane_request.population_scope")
     _require_pins(
         population_scope,
@@ -993,6 +996,11 @@ def validate_baseline_comparison(payload: Mapping[str, Any]) -> None:
         where="baseline_comparison.forbidden_effects",
     )
     evaluation = _require_mapping(payload.get("evaluation"), where="baseline_comparison.evaluation")
+    _reject_unexpected_fields(
+        evaluation,
+        frozenset({"status", "material_divergence", "rejection_rules_triggered", "review_rules_triggered"}),
+        where="baseline_comparison.evaluation",
+    )
     _require_pins(
         evaluation,
         {
@@ -1332,6 +1340,11 @@ def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
         rel = entry.get("path")
         if not isinstance(rel, str):
             raise ControlledShadowValidationError("output_manifest.artifacts[].path must be a string")
+        _reject_unexpected_fields(
+            entry,
+            frozenset({"path", "sha256", "bytes"}),
+            where=f"output_manifest[{rel}]",
+        )
         if rel in by_path:
             raise ControlledShadowValidationError(f"output_manifest duplicate artifact path: {rel}")
         by_path[rel] = entry
@@ -1419,7 +1432,7 @@ def validate_shadow_result_manifest(payload: Mapping[str, Any], *, evidence_hash
         raise ControlledShadowValidationError("shadow_result_manifest.duration_ms does not match timestamps")
     for field in ("memory_peak_bytes", "cpu_time_ms"):
         value = payload.get(field)
-        if not isinstance(value, int) or value < 0:
+        if type(value) is not int or value < 0:
             raise ControlledShadowValidationError(f"shadow_result_manifest.{field} must be a non-negative integer")
     divergence = _require_mapping(payload.get("divergence_summary"), where="shadow_result_manifest.divergence_summary")
     _reject_unexpected_fields(
@@ -1444,6 +1457,18 @@ def _parse_timestamp(value: str, *, where: str) -> dt.datetime:
         return dt.datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
     except ValueError as exc:
         raise ControlledShadowValidationError(f"{where} must be calendar-valid") from exc
+
+
+def _validate_execution_window_matches_result(request: Mapping[str, Any], result: Mapping[str, Any]) -> None:
+    execution_window = _require_mapping(
+        request.get("execution_window"),
+        where="control_plane_request.execution_window",
+    )
+    for field in ("started_at", "finished_at"):
+        if execution_window.get(field) != result.get(field):
+            raise ControlledShadowValidationError(
+                f"control_plane_request.execution_window.{field} must match shadow_result_manifest.{field}"
+            )
 
 
 def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, Any]:
@@ -1558,6 +1583,7 @@ def verify_controlled_shadow(
             "no_side_effects_report_sha256": hs.file_sha256(bundle_root / "no_side_effects_report.json"),
         },
     )
+    _validate_execution_window_matches_result(request, result)
     immutable = validate_immutable_inputs(workspace_root)
 
     return {
