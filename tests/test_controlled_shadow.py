@@ -795,6 +795,7 @@ def test_immutable_inputs_validate_real_hashes() -> None:
     result = cs.validate_immutable_inputs(ROOT)
 
     assert result["input_pack_sha256"] == hs.INPUT_PACK_SHA256
+    assert result["calibration_manifest_sha256"] == cs.CALIBRATION_MANIFEST_SHA256
     assert result["calibration_config_sha256"] == hs.CALIBRATION_CONFIG_SHA256
     assert result["calibration_run_matrix_sha256"] == cs.CALIBRATION_RUN_MATRIX_SHA256
     assert result["calibration_reproducibility_report_sha256"] == cs.CALIBRATION_REPRODUCIBILITY_REPORT_SHA256
@@ -822,6 +823,65 @@ def test_immutable_inputs_reject_calibration_hash_drift(tmp_path: Path) -> None:
     _write_json(manifest_path, manifest)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="run_matrix_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_calibration_manifest_unexpected_fields(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    manifest_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "calibration_manifest.json"
+    manifest = _json(manifest_path)
+    manifest["runtime_activation_attempt"] = True
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="calibration_manifest: unexpected fields"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_calibration_manifest_hash_drift_on_unpinned_field(
+    tmp_path: Path,
+) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    manifest_path = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "calibration_manifest.json"
+    manifest = _json(manifest_path)
+    manifest["status"] = "candidate-refreshed"
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="calibration_manifest_sha256"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_duplicate_keys_in_calibration_run_matrix(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    run_matrix = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID / "run_matrix.json"
+    run_matrix.write_text(
+        run_matrix.read_text(encoding="utf-8").replace(
+            '"ok": true',
+            '"ok": false,\n        "ok": true',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="duplicate JSON object key 'ok'"):
+        cs.validate_immutable_inputs(workspace)
+
+
+def test_immutable_inputs_reject_symlinked_calibration_run_matrix(tmp_path: Path) -> None:
+    workspace = _copy_immutable_workspace(tmp_path)
+    calibration_dir = workspace / "artifacts" / "calibration" / hs.CALIBRATION_ID
+    run_matrix = calibration_dir / "run_matrix.json"
+    outside = tmp_path / "outside_run_matrix.json"
+    outside.write_bytes(run_matrix.read_bytes())
+    run_matrix.unlink()
+    try:
+        run_matrix.symlink_to(outside)
+    except (NotImplementedError, OSError) as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(
+        cs.ControlledShadowValidationError,
+        match=r"read_only_inputs\[calibration_run_matrix\].*symlinked read-only input path",
+    ):
         cs.validate_immutable_inputs(workspace)
 
 

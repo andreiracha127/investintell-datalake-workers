@@ -15,11 +15,12 @@ from typing import Any, Final
 
 import src.external_executor_handshake as hs
 from services.quant_engine.src.investintell_quant_engine.contract_bundle import verify_bundle
-from src.input_packs.hashing import file_sha256 as canonical_file_sha256
+from src.input_packs.hashing import canonical_json_sha256, file_sha256 as canonical_file_sha256
 from src.input_packs.verifier import verify_pack
 
 CONTROLLED_SHADOW_ID: Final = "open_macro_v03_controlled_shadow_001"
 EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT: Final = "ab081183389dbe62e03d56dd493c443263f334e9"
+CALIBRATION_MANIFEST_SHA256: Final = "64cf28e114321722f3c890984f1b7ba992b138b3ae9576855b15d1434c0e8370"
 CALIBRATION_RUN_MATRIX_SHA256: Final = "58b056ba7af0b419427de8ef6f9fbb718afca9bcd576224bf557d16401ab38ac"
 CALIBRATION_OUTPUT_MANIFEST_SHA256: Final = "b49a36c99646a71f923b29a8275d21dd934e1e6f1c78bf803a476e4c96e72e15"
 CALIBRATION_REPRODUCIBILITY_REPORT_SHA256: Final = "1d8ac6b64d2114dcf36f6b8a0dc18425dda9ea12fe62673110c98b752ed753a6"
@@ -40,6 +41,43 @@ CALIBRATION_OUTPUT_ARTIFACT_PATHS: Final[tuple[str, ...]] = (
     "parameter_grid.json",
     "rejected_candidates.json",
     "selected_parameters.json",
+)
+CALIBRATION_MANIFEST_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "A3",
+        "A4",
+        "A5",
+        "as_of",
+        "baseline_comparison_sha256",
+        "builder_code_sha256",
+        "builder_commit",
+        "calibration_branch_base_commit",
+        "calibration_config_sha256",
+        "calibration_id",
+        "contract_bundle_sha256",
+        "docker_context_sha256",
+        "dockerfile_sha256",
+        "engine_commit",
+        "engine_image_digest",
+        "engine_image_id",
+        "freeze_ready",
+        "input_pack_id",
+        "input_pack_p0_merge_commit",
+        "input_pack_sha256",
+        "invariant_report_sha256",
+        "metrics_manifest_sha256",
+        "output_manifest_sha256",
+        "parameter_grid_sha256",
+        "rebuilt_from_main",
+        "rejected_candidates_sha256",
+        "reproducibility_report_sha256",
+        "run_matrix_sha256",
+        "runtime_activation",
+        "schema_version",
+        "selected_parameters_sha256",
+        "source_snapshot_sha256",
+        "status",
+    }
 )
 REQUEST_ID: Final = "req-open-macro-v03-controlled-shadow-001"
 CORRELATION_ID: Final = "corr-open-macro-v03-controlled-shadow-001"
@@ -399,6 +437,41 @@ def _ensure_child(path: Path, root: Path) -> Path:
     return resolved
 
 
+def _reject_symlinked_read_only_input(path: Path, root: Path, *, where: str) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise ControlledShadowValidationError(f"{where}: path is not under workspace root: {path}") from exc
+
+    candidate = root
+    if candidate.is_symlink():
+        raise ControlledShadowValidationError(f"{where}: symlinked read-only input path: {candidate}")
+    for part in relative.parts:
+        candidate = candidate / part
+        if candidate.is_symlink():
+            raise ControlledShadowValidationError(f"{where}: symlinked read-only input path: {candidate}")
+    _ensure_child(path, root)
+
+    if path.is_dir():
+        for candidate in path.rglob("*"):
+            if candidate.is_symlink():
+                raise ControlledShadowValidationError(f"{where}: symlinked read-only input path: {candidate}")
+
+
+def _canonical_json_file_sha256(path: Path, *, where: str) -> str:
+    payload = load_json(path)
+    try:
+        return canonical_json_sha256(payload)
+    except ValueError as exc:
+        raise ControlledShadowValidationError(f"{where}: invalid canonical JSON") from exc
+
+
+def _artifact_file_sha256(path: Path, *, where: str) -> str:
+    if path.suffix.lower() == ".json":
+        return _canonical_json_file_sha256(path, where=where)
+    return canonical_file_sha256(path)
+
+
 def _parse_log_tokens(line: str, *, source: str = "log") -> dict[str, str]:
     tokens: dict[str, str] = {}
     for raw in line.strip().split():
@@ -576,7 +649,7 @@ def _validate_calibration_output_manifest(calibration_dir: Path) -> None:
         _require_equal(
             by_path[rel],
             "sha256",
-            canonical_file_sha256(path),
+            _artifact_file_sha256(path, where=f"calibration_output_manifest[{rel}]"),
             where=f"calibration_output_manifest[{rel}]",
         )
         _require_equal(
@@ -1576,6 +1649,12 @@ def _validate_execution_window_matches_result(request: Mapping[str, Any], result
 
 def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, Any]:
     root = workspace_root or repo_root()
+    for name, expected in READ_ONLY_INPUT_PINS.items():
+        rel = expected.get("path")
+        if not isinstance(rel, str):
+            raise ControlledShadowValidationError(f"read_only_inputs[{name}].path must be a string")
+        _reject_symlinked_read_only_input(root / rel, root, where=f"read_only_inputs[{name}].path")
+
     input_pack_dir = root / "fixtures" / "input_packs" / "golden" / "certified_input_pack"
     pack_verification = verify_pack(input_pack_dir)
     if not pack_verification.get("ok"):
@@ -1593,8 +1672,15 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
     )
 
     calibration_dir = root / "artifacts" / "calibration" / hs.CALIBRATION_ID
+    _reject_symlinked_read_only_input(calibration_dir, root, where="calibration_workspace")
+    calibration_manifest_path = calibration_dir / "calibration_manifest.json"
     calibration_manifest = _require_mapping(
-        load_json(calibration_dir / "calibration_manifest.json"),
+        load_json(calibration_manifest_path),
+        where="calibration_manifest",
+    )
+    _reject_unexpected_fields(
+        calibration_manifest,
+        CALIBRATION_MANIFEST_FIELDS,
         where="calibration_manifest",
     )
     _require_pins(
@@ -1615,13 +1701,15 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         },
         where="calibration_manifest",
     )
-    if canonical_file_sha256(calibration_dir / "calibration_config.json") != hs.CALIBRATION_CONFIG_SHA256:
+    if _canonical_json_file_sha256(calibration_manifest_path, where="calibration_manifest") != CALIBRATION_MANIFEST_SHA256:
+        raise ControlledShadowValidationError("calibration_manifest_sha256 mismatch")
+    if _canonical_json_file_sha256(calibration_dir / "calibration_config.json", where="calibration_config") != hs.CALIBRATION_CONFIG_SHA256:
         raise ControlledShadowValidationError("calibration_config_sha256 mismatch")
-    if canonical_file_sha256(calibration_dir / "run_matrix.json") != CALIBRATION_RUN_MATRIX_SHA256:
+    if _canonical_json_file_sha256(calibration_dir / "run_matrix.json", where="run_matrix") != CALIBRATION_RUN_MATRIX_SHA256:
         raise ControlledShadowValidationError("run_matrix_sha256 mismatch")
-    if canonical_file_sha256(calibration_dir / "output_manifest.json") != CALIBRATION_OUTPUT_MANIFEST_SHA256:
+    if _canonical_json_file_sha256(calibration_dir / "output_manifest.json", where="calibration_output_manifest") != CALIBRATION_OUTPUT_MANIFEST_SHA256:
         raise ControlledShadowValidationError("calibration output_manifest_sha256 mismatch")
-    if canonical_file_sha256(calibration_dir / "reproducibility_report.json") != CALIBRATION_REPRODUCIBILITY_REPORT_SHA256:
+    if _canonical_json_file_sha256(calibration_dir / "reproducibility_report.json", where="reproducibility_report") != CALIBRATION_REPRODUCIBILITY_REPORT_SHA256:
         raise ControlledShadowValidationError("reproducibility_report_sha256 mismatch")
     _validate_calibration_output_manifest(calibration_dir)
 
@@ -1631,12 +1719,13 @@ def validate_immutable_inputs(workspace_root: Path | None = None) -> dict[str, A
         raise ControlledShadowValidationError("contract bundle verification failed")
     if contract_verification.get("bundle_sha256") != f"sha256:{hs.CONTRACT_BUNDLE_SHA256}":
         raise ControlledShadowValidationError("contract bundle_sha256 mismatch")
-    if canonical_file_sha256(contract_bundle_dir / "manifest.json") != CONTRACT_BUNDLE_MANIFEST_SHA256:
+    if _canonical_json_file_sha256(contract_bundle_dir / "manifest.json", where="contract_bundle.manifest") != CONTRACT_BUNDLE_MANIFEST_SHA256:
         raise ControlledShadowValidationError("contract bundle manifest_sha256 mismatch")
     return {
         "input_pack_id": hs.INPUT_PACK_ID,
         "input_pack_sha256": hs.INPUT_PACK_SHA256,
         "calibration_id": hs.CALIBRATION_ID,
+        "calibration_manifest_sha256": CALIBRATION_MANIFEST_SHA256,
         "calibration_config_sha256": hs.CALIBRATION_CONFIG_SHA256,
         "calibration_run_matrix_sha256": CALIBRATION_RUN_MATRIX_SHA256,
         "calibration_reproducibility_report_sha256": CALIBRATION_REPRODUCIBILITY_REPORT_SHA256,
