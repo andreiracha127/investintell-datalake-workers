@@ -34,6 +34,12 @@ def _refresh_manifest_entry(root: Path, manifest: dict, rel: str) -> None:
     raise AssertionError(f"missing manifest entry for {rel}")
 
 
+def _refresh_shadow_result_output_manifest_hash(root: Path) -> None:
+    result = _json(root / "shadow_result_manifest.json")
+    result["output_manifest_sha256"] = hs.file_sha256(root / "output_manifest.json")
+    _write_json(root / "shadow_result_manifest.json", result)
+
+
 def _copy_bundle(tmp_path: Path) -> Path:
     root = tmp_path / cs.CONTROLLED_SHADOW_ID
     shutil.copytree(BUNDLE_ROOT, root)
@@ -79,6 +85,14 @@ def test_controlled_shadow_manifest_matches_required_schema() -> None:
     assert _artifact("controlled_shadow_manifest.json") == cs.EXPECTED_CONTROLLED_SHADOW_MANIFEST
 
 
+def test_load_json_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    path = tmp_path / "duplicate.json"
+    path.write_text('{"runtime_activation": true, "runtime_activation": false}\n', encoding="utf-8")
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="duplicate JSON object key 'runtime_activation'"):
+        cs.load_json(path)
+
+
 @pytest.mark.parametrize(
     ("field", "bad"),
     [
@@ -100,6 +114,27 @@ def test_controlled_shadow_manifest_rejects_activation_or_side_effects(field: st
 
     with pytest.raises(cs.ControlledShadowValidationError):
         cs.validate_controlled_shadow_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    ("artifact", "validator", "field", "bad"),
+    [
+        ("control_plane_request.json", cs.validate_control_plane_request, "runtime_activation", 0),
+        ("no_side_effects_report.json", cs.validate_no_side_effects_report, "runtime_activation", 0),
+        ("acceptance_report.json", cs.validate_acceptance_report, "runtime_activation", 0),
+    ],
+)
+def test_controlled_shadow_pins_reject_bool_int_coercion(
+    artifact: str,
+    validator,
+    field: str,
+    bad: object,
+) -> None:
+    payload = _artifact(artifact)
+    payload[field] = bad
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=field):
+        validator(payload)
 
 
 @pytest.mark.parametrize(
@@ -127,12 +162,83 @@ def test_controlled_shadow_gates_reject_forbidden_runtime_state(
         validator(payload)
 
 
+@pytest.mark.parametrize(
+    ("name", "field", "bad"),
+    [
+        ("input_pack", "path", "fixtures/input_packs/golden/other_pack"),
+        ("input_pack", "sha256", "0" * 64),
+        ("input_pack", "stable_id", "open_macro_v03_certified_input_pack_999"),
+        ("calibration_config", "path", "artifacts/calibration/open_macro_v03_calibration_001/other.json"),
+        ("calibration_run_matrix", "bytes", 12924),
+        ("contract_bundle", "source_commit", "0" * 40),
+    ],
+)
+def test_shadow_job_envelope_rejects_unpinned_read_only_inputs(
+    name: str,
+    field: str,
+    bad: object,
+) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    entry = next(item for item in envelope["read_only_inputs"] if item["name"] == name)
+    entry[field] = bad
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=rf"read_only_inputs\[{name}\].*{field}"):
+        cs.validate_shadow_job_envelope(envelope)
+
+
 def test_executor_acceptance_rejects_backend_execution_attempt() -> None:
     envelope = _artifact("shadow_job_envelope.json")
     acceptance = _artifact("executor_acceptance.json")
     acceptance["backend_executes_subprocess"] = True
 
     with pytest.raises(cs.ControlledShadowValidationError):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
+def test_executor_acceptance_requires_none_as_network_value() -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    network_index = policy.index("--network")
+    policy[network_index + 1] = "bridge"
+    acceptance["docker_run_policy"] = [*policy[: network_index + 2], "none", *policy[network_index + 2 :]]
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="docker_run_policy must require --network none"):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "mount_spec",
+    [
+        "type=bind,src=/input_pack,dst=/input_pack",
+        "type=bind,src=/calibration,dst=/calibration",
+        "type=bind,src=/contracts,dst=/contracts",
+    ],
+)
+def test_executor_acceptance_requires_readonly_input_bind_flags(mount_spec: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    policy = list(acceptance["docker_run_policy"])
+    policy[policy.index(f"{mount_spec},readonly")] = mount_spec
+    acceptance["docker_run_policy"] = policy
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="bind mounts mismatch"):
+        cs.validate_executor_acceptance(acceptance, envelope)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "investintell/quant-engine:latest",
+        "investintell/quant-engine@sha256:" + "f" * 64,
+    ],
+)
+def test_executor_acceptance_requires_pinned_matching_image(image: str) -> None:
+    envelope = _artifact("shadow_job_envelope.json")
+    acceptance = _artifact("executor_acceptance.json")
+    acceptance["docker_run_policy"] = [*acceptance["docker_run_policy"][:-1], image]
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="image"):
         cs.validate_executor_acceptance(acceptance, envelope)
 
 
@@ -146,9 +252,27 @@ def test_shadow_result_rejects_non_zero_mismatch_count(tmp_path: Path) -> None:
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+def test_shadow_result_rejects_false_mismatch_count(tmp_path: Path) -> None:
+    root = _copy_bundle(tmp_path)
+    result = _json(root / "shadow_result_manifest.json")
+    result["divergence_summary"]["mismatch_count"] = False
+    _write_json(root / "shadow_result_manifest.json", result)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="mismatch_count"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 def test_reproducibility_report_requires_mismatch_count_zero() -> None:
     report = _artifact("reproducibility_report.json")
     report["mismatch_count"] = 1
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="mismatch_count"):
+        cs.validate_reproducibility_report(report)
+
+
+def test_reproducibility_report_rejects_false_mismatch_count() -> None:
+    report = _artifact("reproducibility_report.json")
+    report["mismatch_count"] = False
 
     with pytest.raises(cs.ControlledShadowValidationError, match="mismatch_count"):
         cs.validate_reproducibility_report(report)
@@ -192,6 +316,51 @@ def test_output_manifest_rejects_missing_output(tmp_path: Path) -> None:
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 
+@pytest.mark.parametrize(
+    ("artifact", "field", "bad", "match"),
+    [
+        ("observability_evidence.json", "status", "fail", "observability_evidence"),
+        ("observability_evidence.json", "runtime_activation", True, "runtime_activation"),
+        ("rollback_evidence.json", "status", "fail", "rollback_evidence"),
+        ("rollback_evidence.json", "runtime_activation", True, "runtime_activation"),
+    ],
+)
+def test_controlled_shadow_rejects_invalid_evidence_with_refreshed_hashes(
+    tmp_path: Path,
+    artifact: str,
+    field: str,
+    bad: object,
+    match: str,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    payload = _json(root / artifact)
+    payload[field] = bad
+    _write_json(root / artifact, payload)
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, artifact)
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=match):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
+def test_controlled_shadow_rejects_failed_nested_observability_evidence_with_refreshed_hashes(
+    tmp_path: Path,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    payload = _json(root / "observability_evidence.json")
+    payload["evidence"][0]["status"] = "fail"
+    _write_json(root / "observability_evidence.json", payload)
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, "observability_evidence.json")
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match="observability_evidence"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
 def test_logs_reject_forbidden_attempt_markers(tmp_path: Path) -> None:
     root = _copy_bundle(tmp_path)
     log = root / "logs" / "external_executor.log"
@@ -204,6 +373,37 @@ def test_logs_reject_forbidden_attempt_markers(tmp_path: Path) -> None:
     _write_json(root / "shadow_result_manifest.json", result)
 
     with pytest.raises(cs.ControlledShadowValidationError, match="allocator_publish_attempt"):
+        cs.verify_controlled_shadow(root, workspace_root=ROOT)
+
+
+@pytest.mark.parametrize(
+    ("rel", "old", "new", "duplicate"),
+    [
+        ("logs/external_executor.log", " db_write=false", " db_write=true db_write=false", "db_write"),
+        (
+            "logs/control_plane_validator.log",
+            " runtime_activation=false",
+            " runtime_activation=true runtime_activation=false",
+            "runtime_activation",
+        ),
+    ],
+)
+def test_logs_reject_duplicate_tokens_before_side_effect_checks(
+    tmp_path: Path,
+    rel: str,
+    old: str,
+    new: str,
+    duplicate: str,
+) -> None:
+    root = _copy_bundle(tmp_path)
+    log = root / rel
+    log.write_text(log.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    output_manifest = _json(root / "output_manifest.json")
+    _refresh_manifest_entry(root, output_manifest, rel)
+    _write_json(root / "output_manifest.json", output_manifest)
+    _refresh_shadow_result_output_manifest_hash(root)
+
+    with pytest.raises(cs.ControlledShadowValidationError, match=rf"duplicate log token {duplicate}"):
         cs.verify_controlled_shadow(root, workspace_root=ROOT)
 
 

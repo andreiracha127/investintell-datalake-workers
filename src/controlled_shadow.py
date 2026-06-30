@@ -124,6 +124,79 @@ FINAL_REQUIRED_FILES: Final[tuple[str, ...]] = (
     "output_manifest.json",
     "shadow_result_manifest.json",
 )
+READ_ONLY_INPUT_PINS: Final[dict[str, dict[str, object]]] = {
+    "input_pack": {
+        "name": "input_pack",
+        "path": "fixtures/input_packs/golden/certified_input_pack",
+        "stable_id": hs.INPUT_PACK_ID,
+        "sha256": hs.INPUT_PACK_SHA256,
+        "bytes": 49375,
+        "source_commit": "de5ab84bfa99aa240aa65bbe7f09ba90da2b2862",
+        "mount": "read_only",
+    },
+    "calibration_config": {
+        "name": "calibration_config",
+        "path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json",
+        "stable_id": "open_macro_v03_calibration_001:calibration_config",
+        "sha256": hs.CALIBRATION_CONFIG_SHA256,
+        "bytes": 2447,
+        "source_commit": "10a49e1489661070986e241d9e04a8b890b54937",
+        "mount": "read_only",
+    },
+    "calibration_run_matrix": {
+        "name": "calibration_run_matrix",
+        "path": "artifacts/calibration/open_macro_v03_calibration_001/run_matrix.json",
+        "stable_id": "open_macro_v03_calibration_001:run_matrix",
+        "sha256": CALIBRATION_RUN_MATRIX_SHA256,
+        "bytes": 12923,
+        "source_commit": "10a49e1489661070986e241d9e04a8b890b54937",
+        "mount": "read_only",
+    },
+    "contract_bundle": {
+        "name": "contract_bundle",
+        "path": "contracts/quant-engine/v1/manifest.json",
+        "stable_id": "quant-engine-contract-v1",
+        "sha256": hs.CONTRACT_BUNDLE_SHA256,
+        "bytes": 2521,
+        "source_commit": EXTERNAL_EXECUTOR_HANDSHAKE_MERGE_COMMIT,
+        "mount": "read_only",
+    },
+}
+EXPECTED_OBSERVABILITY_EVIDENCE: Final[tuple[dict[str, object], ...]] = (
+    {
+        "id": "logs_present",
+        "paths": list(LOGS_REQUIRED),
+        "status": "pass",
+    },
+    {
+        "id": "no_productive_runtime_metrics",
+        "status": "pass",
+        "value": True,
+    },
+    {
+        "id": "artifact_only_output_uri",
+        "status": "pass",
+        "value": OUTPUT_ARTIFACT_URI,
+    },
+)
+ROLLBACK_STEPS: Final[tuple[str, ...]] = (
+    "Keep open_macro_v03 runtime activation flag disabled.",
+    "Reject any controlled-shadow artifact with productive side-effect markers.",
+    "Preserve artifacts for audit without publishing to allocator or DB.",
+    "Continue A5 as blocked until a separate promotion review explicitly changes it.",
+)
+EXPECTED_DOCKER_BIND_MOUNTS: Final[frozenset[tuple[str, str, str]]] = frozenset(
+    {
+        ("/input_pack", "/input_pack", "read_only"),
+        ("/calibration", "/calibration", "read_only"),
+        ("/contracts", "/contracts", "read_only"),
+        ("/outputs", "/outputs", "read_write"),
+    }
+)
+DOCKER_OPTIONS_WITH_VALUE: Final[frozenset[str]] = frozenset({"--network", "--net", "--mount"})
+ALLOWED_DOCKER_OPTIONS: Final[frozenset[str]] = frozenset({"--rm", "--read-only", "--network", "--net", "--mount"})
+ALLOWED_BIND_ATTRS: Final[frozenset[str]] = frozenset({"type", "src", "source", "dst", "destination", "target", "readonly", "ro"})
+ALLOWED_BIND_FLAGS: Final[frozenset[str]] = frozenset({"readonly", "ro"})
 EXPECTED_NO_SIDE_EFFECT_CHECK_IDS: Final[tuple[str, ...]] = hs.EXPECTED_NO_SIDE_EFFECT_CHECK_IDS
 EXPECTED_ACCEPTANCE_RULE_IDS: Final[tuple[str, ...]] = (
     "all_required_outputs_present",
@@ -186,10 +259,24 @@ def controlled_shadow_root(root: Path | None = None) -> Path:
     return root or repo_root() / "artifacts" / "shadow" / CONTROLLED_SHADOW_ID
 
 
+def _reject_duplicate_json_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ControlledShadowValidationError(f"duplicate JSON object key {key!r}")
+        payload[key] = value
+    return payload
+
+
 def load_json(path: Path) -> Any:
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(
+            path.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_object_keys,
+        )
     except json.JSONDecodeError as exc:
+        raise ControlledShadowValidationError(f"invalid JSON in {path}: {exc}") from exc
+    except ControlledShadowValidationError as exc:
         raise ControlledShadowValidationError(f"invalid JSON in {path}: {exc}") from exc
 
 
@@ -211,10 +298,27 @@ def _require_fields(payload: Mapping[str, Any], fields: tuple[str, ...], *, wher
         raise ControlledShadowValidationError(f"{where}: missing fields {missing}")
 
 
+def _json_pin_equal(actual: Any, expected: Any) -> bool:
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        return isinstance(actual, bool) and isinstance(expected, bool) and actual == expected
+    if isinstance(actual, int | float) and isinstance(expected, int | float):
+        return actual == expected
+    if isinstance(actual, list) and isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _json_pin_equal(left, right) for left, right in zip(actual, expected)
+        )
+    if isinstance(actual, Mapping) and isinstance(expected, Mapping):
+        return set(actual) == set(expected) and all(
+            _json_pin_equal(actual[key], expected[key]) for key in expected
+        )
+    return type(actual) is type(expected) and actual == expected
+
+
 def _require_equal(payload: Mapping[str, Any], field: str, expected: Any, *, where: str) -> None:
-    if payload.get(field) != expected:
+    actual = payload.get(field)
+    if not _json_pin_equal(actual, expected):
         raise ControlledShadowValidationError(
-            f"{where}: {field} expected {expected!r}, got {payload.get(field)!r}"
+            f"{where}: {field} expected {expected!r}, got {actual!r}"
         )
 
 
@@ -231,12 +335,14 @@ def _ensure_child(path: Path, root: Path) -> Path:
     return resolved
 
 
-def _parse_log_tokens(line: str) -> dict[str, str]:
+def _parse_log_tokens(line: str, *, source: str = "log") -> dict[str, str]:
     tokens: dict[str, str] = {}
     for raw in line.strip().split():
         if "=" not in raw:
             continue
         key, value = raw.split("=", 1)
+        if key in tokens:
+            raise ControlledShadowValidationError(f"{source}: duplicate log token {key}")
         tokens[key] = value
     return tokens
 
@@ -244,7 +350,7 @@ def _parse_log_tokens(line: str) -> dict[str, str]:
 def _validate_log(path: Path, *, identity: Mapping[str, str], expected: Mapping[str, str]) -> None:
     if not path.is_file():
         raise ControlledShadowValidationError(f"missing controlled shadow log: {path.name}")
-    tokens = _parse_log_tokens(path.read_text(encoding="utf-8"))
+    tokens = _parse_log_tokens(path.read_text(encoding="utf-8"), source=path.name)
     for key, expected_value in {**identity, **expected}.items():
         if tokens.get(key) != expected_value:
             raise ControlledShadowValidationError(
@@ -442,14 +548,165 @@ def validate_shadow_job_envelope(payload: Mapping[str, Any]) -> None:
     by_name: dict[str, Mapping[str, Any]] = {}
     for item in read_only_inputs:
         entry = _require_mapping(item, where="shadow_job_envelope.read_only_inputs[]")
+        _reject_unexpected_fields(
+            entry,
+            frozenset(next(iter(READ_ONLY_INPUT_PINS.values()))),
+            where="shadow_job_envelope.read_only_inputs[]",
+        )
         name = entry.get("name")
         if not isinstance(name, str):
             raise ControlledShadowValidationError("read_only_inputs[].name must be a string")
+        if name in by_name:
+            raise ControlledShadowValidationError(f"shadow_job_envelope.read_only_inputs duplicate name: {name}")
         by_name[name] = entry
-        _require_equal(entry, "mount", "read_only", where=f"read_only_inputs[{name}]")
-        _require_fields(entry, ("path", "stable_id", "sha256", "bytes", "source_commit"), where=f"read_only_inputs[{name}]")
-    if set(by_name) != {"input_pack", "calibration_config", "calibration_run_matrix", "contract_bundle"}:
+    if set(by_name) != set(READ_ONLY_INPUT_PINS):
         raise ControlledShadowValidationError("shadow_job_envelope.read_only_inputs identity mismatch")
+    for name, expected in READ_ONLY_INPUT_PINS.items():
+        _require_pins(by_name[name], expected, where=f"read_only_inputs[{name}]")
+
+
+def _split_docker_run_policy(policy: list[str]) -> tuple[list[str], str, list[str]]:
+    if policy[:2] != ["docker", "run"]:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must start with docker run")
+
+    options: list[str] = []
+    index = 2
+    while index < len(policy):
+        token = policy[index]
+        if not token.startswith("-"):
+            break
+
+        option_name = token.split("=", 1)[0]
+        if option_name not in ALLOWED_DOCKER_OPTIONS:
+            raise ControlledShadowValidationError(
+                f"executor_acceptance.docker_run_policy forbidden option {option_name}"
+            )
+
+        options.append(token)
+        if "=" in token:
+            index += 1
+        elif option_name in DOCKER_OPTIONS_WITH_VALUE:
+            if index + 1 >= len(policy):
+                raise ControlledShadowValidationError(
+                    f"executor_acceptance.docker_run_policy option {token} requires a value"
+                )
+            options.append(policy[index + 1])
+            index += 2
+        else:
+            index += 1
+
+    if index >= len(policy):
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must include pinned image")
+    return options, policy[index], policy[index + 1 :]
+
+
+def _docker_network_values(options: list[str]) -> list[str | None]:
+    values: list[str | None] = []
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token in {"--network", "--net"}:
+            values.append(options[index + 1] if index + 1 < len(options) else None)
+            index += 2
+        elif token.startswith("--network=") or token.startswith("--net="):
+            values.append(token.split("=", 1)[1])
+            index += 1
+        else:
+            index += 1
+    return values
+
+
+def _docker_mount_specs(options: list[str]) -> list[str]:
+    specs: list[str] = []
+    index = 0
+    while index < len(options):
+        token = options[index]
+        if token == "--mount":
+            if index + 1 >= len(options):
+                raise ControlledShadowValidationError("executor_acceptance.docker_run_policy --mount requires a value")
+            specs.append(options[index + 1])
+            index += 2
+        elif token.startswith("--mount="):
+            specs.append(token.split("=", 1)[1])
+            index += 1
+        else:
+            index += 1
+    return specs
+
+
+def _parse_mount_spec(spec: str) -> tuple[dict[str, str], set[str]]:
+    attrs: dict[str, str] = {}
+    flags: set[str] = set()
+    for raw_part in spec.split(","):
+        part = raw_part.strip()
+        if not part:
+            continue
+        key, sep, value = part.partition("=")
+        if sep:
+            if key in attrs:
+                raise ControlledShadowValidationError(
+                    f"executor_acceptance.docker_run_policy duplicate mount attribute {key}"
+                )
+            attrs[key] = value
+        else:
+            flags.add(part)
+    return attrs, flags
+
+
+def _validate_docker_mount_tokens(options: list[str]) -> None:
+    mounts: list[tuple[str, str, str]] = []
+
+    for spec in _docker_mount_specs(options):
+        attrs, flags = _parse_mount_spec(spec)
+        unexpected_attrs = sorted(set(attrs) - ALLOWED_BIND_ATTRS)
+        unexpected_flags = sorted(flags - ALLOWED_BIND_FLAGS)
+        if unexpected_attrs or unexpected_flags:
+            raise ControlledShadowValidationError(
+                "executor_acceptance.docker_run_policy bind mounts include unsupported options"
+            )
+        if attrs.get("type") != "bind":
+            raise ControlledShadowValidationError("executor_acceptance.docker_run_policy mounts must be bind mounts")
+
+        source = attrs.get("src") or attrs.get("source")
+        target = attrs.get("dst") or attrs.get("destination") or attrs.get("target")
+        if not source or not target:
+            raise ControlledShadowValidationError(
+                "executor_acceptance.docker_run_policy bind mounts must include source and destination"
+            )
+
+        readonly = (
+            "readonly" in flags
+            or "ro" in flags
+            or attrs.get("readonly") in {"true", "1"}
+            or attrs.get("ro") in {"true", "1"}
+        )
+        mounts.append((source, target, "read_only" if readonly else "read_write"))
+
+    if len(mounts) != len(set(mounts)):
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy duplicate bind mounts")
+    if set(mounts) != EXPECTED_DOCKER_BIND_MOUNTS:
+        raise ControlledShadowValidationError(
+            f"executor_acceptance.docker_run_policy bind mounts mismatch: {sorted(mounts)}"
+        )
+
+
+def _validate_docker_run_policy(policy: Any, *, expected_image_digest: str) -> None:
+    if not isinstance(policy, list) or any(not isinstance(token, str) for token in policy):
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must be a token list")
+
+    options, image, command_args = _split_docker_run_policy(policy)
+    if _docker_network_values(options) != ["none"]:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must require --network none")
+    if "--read-only" not in options:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must require --read-only")
+    if command_args:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must not override image command")
+    if "@" not in image:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy image must be pinned by digest")
+    image_digest = image.rsplit("@", 1)[1]
+    if image_digest != expected_image_digest:
+        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy image digest mismatch")
+    _validate_docker_mount_tokens(options)
 
 
 def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[str, Any]) -> None:
@@ -529,9 +786,10 @@ def validate_executor_acceptance(payload: Mapping[str, Any], envelope: Mapping[s
             actual_mounts[name] = mode
     if actual_mounts != expected_mounts:
         raise ControlledShadowValidationError("executor_acceptance.mounts mismatch")
-    docker_run_policy = payload.get("docker_run_policy")
-    if not isinstance(docker_run_policy, list) or "--network" not in docker_run_policy or "none" not in docker_run_policy:
-        raise ControlledShadowValidationError("executor_acceptance.docker_run_policy must require --network none")
+    engine_image_digest = payload.get("engine_image_digest")
+    if not isinstance(engine_image_digest, str):
+        raise ControlledShadowValidationError("executor_acceptance.engine_image_digest must be a string")
+    _validate_docker_run_policy(payload.get("docker_run_policy"), expected_image_digest=engine_image_digest)
 
 
 def validate_baseline_comparison(payload: Mapping[str, Any]) -> None:
@@ -826,6 +1084,72 @@ def validate_acceptance_report(payload: Mapping[str, Any]) -> None:
         raise ControlledShadowValidationError("acceptance_report.rule ids mismatch")
 
 
+def validate_observability_evidence(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(
+        payload,
+        frozenset(
+            {
+                "schema_version",
+                "artifact_type",
+                "controlled_shadow_id",
+                "external_executor_handshake_id",
+                "shadow_id",
+                "status",
+                "runtime_activation",
+                "evidence",
+            }
+        ),
+        where="observability_evidence",
+    )
+    _require_pins(
+        payload,
+        {
+            "schema_version": 1,
+            "artifact_type": "controlled_shadow_observability_evidence",
+            "controlled_shadow_id": CONTROLLED_SHADOW_ID,
+            "external_executor_handshake_id": hs.HANDSHAKE_ID,
+            "shadow_id": hs.SHADOW_ID,
+            "status": "pass",
+            "runtime_activation": False,
+            "evidence": list(EXPECTED_OBSERVABILITY_EVIDENCE),
+        },
+        where="observability_evidence",
+    )
+
+
+def validate_rollback_evidence(payload: Mapping[str, Any]) -> None:
+    _reject_unexpected_fields(
+        payload,
+        frozenset(
+            {
+                "schema_version",
+                "controlled_shadow_id",
+                "external_executor_handshake_id",
+                "shadow_id",
+                "status",
+                "rollback_owner",
+                "rollback_steps",
+                *SIDE_EFFECT_PINS,
+            }
+        ),
+        where="rollback_evidence",
+    )
+    _require_pins(
+        payload,
+        {
+            "schema_version": 1,
+            "controlled_shadow_id": CONTROLLED_SHADOW_ID,
+            "external_executor_handshake_id": hs.HANDSHAKE_ID,
+            "shadow_id": hs.SHADOW_ID,
+            "status": "ready_no_runtime_teardown_required",
+            "rollback_owner": "quant-engine-governance",
+            "rollback_steps": list(ROLLBACK_STEPS),
+            **SIDE_EFFECT_PINS,
+        },
+        where="rollback_evidence",
+    )
+
+
 def validate_output_manifest(root: Path, payload: Mapping[str, Any]) -> None:
     _reject_unexpected_fields(
         payload,
@@ -1046,6 +1370,8 @@ def verify_controlled_shadow(
     reproducibility = _require_mapping(load_json(bundle_root / "reproducibility_report.json"), where="reproducibility_report")
     no_side_effects = _require_mapping(load_json(bundle_root / "no_side_effects_report.json"), where="no_side_effects_report")
     acceptance_report = _require_mapping(load_json(bundle_root / "acceptance_report.json"), where="acceptance_report")
+    observability = _require_mapping(load_json(bundle_root / "observability_evidence.json"), where="observability_evidence")
+    rollback = _require_mapping(load_json(bundle_root / "rollback_evidence.json"), where="rollback_evidence")
     output_manifest = _require_mapping(load_json(bundle_root / "output_manifest.json"), where="output_manifest")
     result = _require_mapping(load_json(bundle_root / "shadow_result_manifest.json"), where="shadow_result_manifest")
 
@@ -1058,6 +1384,8 @@ def verify_controlled_shadow(
     validate_reproducibility_report(reproducibility)
     validate_no_side_effects_report(no_side_effects)
     validate_acceptance_report(acceptance_report)
+    validate_observability_evidence(observability)
+    validate_rollback_evidence(rollback)
     validate_output_manifest(bundle_root, output_manifest)
     validate_shadow_result_manifest(
         result,
