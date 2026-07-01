@@ -37,6 +37,7 @@ FORBIDDEN_TRUE_FIELDS = {
     "runtime_activation_attempt",
     "freeze_ready",
     "activation_allowed",
+    "activation_allowed_in_this_pr",
     "activation_requested",
     "approve_controlled_activation",
     "A5_unblocked",
@@ -309,6 +310,18 @@ def test_evidence_map_has_no_empty_placeholders_and_records_required_reads() -> 
 
 def test_no_activation_guard_report_blocks_runtime_freeze_activation_and_official_result() -> None:
     report = _json("no_activation_guard_report.json")
+    required_check_ids = {
+        "runtime_activation_true_absent",
+        "freeze_ready_true_absent",
+        "activation_allowed_true_absent",
+        "official_result_true_absent",
+        "allow_allocator_publish_true_absent",
+        "production_endpoint_activation_non_none_absent",
+        "feature_flag_default_true_absent",
+        "automatic_activation_script_absent",
+        "productive_endpoint_absent",
+        "runtime_productive_change_absent",
+    }
 
     assert report["status"] == "pass_no_activation_effect"
     assert report["runtime_activation"] is False
@@ -316,6 +329,7 @@ def test_no_activation_guard_report_blocks_runtime_freeze_activation_and_officia
     assert report["activation_allowed"] is False
     assert report["official_result"] is False
     assert report["production_endpoint_activation"] == "none"
+    assert {check["id"] for check in report["checks"]} == required_check_ids
     assert {check["status"] for check in report["checks"]} == {"pass"}
 
 
@@ -425,6 +439,8 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {snippet}")
         for field in FORBIDDEN_TEXT_JSON_TRUE_FIELDS:
             if re.search(rf'"{re.escape(field)}"\s*:\s*true\b', text):
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}\s*[:=]\s*true\b", text):
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
         for field in A5_BLOCKED_STATUS_FIELDS:
             for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
@@ -544,7 +560,10 @@ def test_json_activation_guard_rejects_nested_activation_requested_outside_manif
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
-@pytest.mark.parametrize("field", ["runtime_activation", "db_write_official", "official_result_published"])
+@pytest.mark.parametrize(
+    "field",
+    ["runtime_activation", "activation_allowed_in_this_pr", "db_write_official", "official_result_published"],
+)
 def test_text_activation_guard_rejects_compact_json_activation_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
@@ -552,6 +571,28 @@ def test_text_activation_guard_rejects_compact_json_activation_markers(
         f'embedded compact snippet {{"{field}":true}}\n',
         encoding="utf-8",
     )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=rf"{field}=true"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+
+@pytest.mark.parametrize(
+    ("field", "snippet"),
+    [
+        ("default", "default: true"),
+        ("default", "default=true"),
+        ("production_default", "production_default: true"),
+        ("production_default", "production_default=true"),
+        ("activation_allowed_in_this_pr", "activation_allowed_in_this_pr: true"),
+        ("activation_allowed_in_this_pr", "activation_allowed_in_this_pr=true"),
+    ],
+)
+def test_text_activation_guard_rejects_forbidden_plain_text_true_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, snippet: str
+) -> None:
+    (tmp_path / "runbook.md").write_text(f"{snippet}\n", encoding="utf-8")
 
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
@@ -573,6 +614,7 @@ def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path,
     "field",
     [
         "runtime_activation_allowed",
+        "activation_allowed_in_this_pr",
         "approve_controlled_activation",
         "A5_unblocked",
         "db_write_official",
@@ -829,6 +871,22 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
         detector = monitoring_slos_by_id[detector_id]
         assert detector["threshold"] == 0
         assert detector["alert_severity"] == "critical"
+
+    pending_threshold_slos = {
+        "latency_slo": "controlled_shadow_latency_p95_ms",
+        "memory_slo": "controlled_shadow_memory_peak_bytes",
+        "error_rate_slo": "error_rate",
+        "retry_rate_slo": "retry_rate",
+    }
+    assert pending_threshold_slos.keys() <= monitoring_slos_by_id.keys()
+    for slo_id, metric in pending_threshold_slos.items():
+        slo = monitoring_slos_by_id[slo_id]
+        assert slo["metric"] == metric
+        assert slo["threshold"] is None
+        assert slo["status"] == "pending"
+
+    assert checks["monitoring_thresholds_complete"]["status"] == "pending"
+    assert checks["monitoring_thresholds_complete"]["blocking"] is True
 
     assert kill_switch["runtime_activation"] is False
     assert kill_switch["activation_allowed"] is False
