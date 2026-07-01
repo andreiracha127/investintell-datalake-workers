@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,7 @@ FORBIDDEN_TRUE_FIELDS = {
     "runtime_activation_attempt",
     "freeze_ready",
     "activation_allowed",
+    "activation_requested",
     "approve_controlled_activation",
     "A5_unblocked",
     "official_result",
@@ -48,13 +50,17 @@ FORBIDDEN_TRUE_FIELDS = {
     "backend_executes_engine",
     "backend_executes_docker",
     "backend_executes_subprocess",
+    "docker_execution_from_backend",
     "backend_executes_engine_attempt",
     "backend_executes_docker_attempt",
     "backend_executes_subprocess_attempt",
+    "docker_execution_from_backend_attempt",
     "feature_flag_default",
     "default",
     "production_default",
 }
+
+FORBIDDEN_TEXT_JSON_TRUE_FIELDS = tuple(sorted(FORBIDDEN_TRUE_FIELDS - {"activation_requested"}))
 
 REQUIRED_APPROVAL_ROLES = {
     "technical_owner",
@@ -283,12 +289,14 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"backend_executes_engine": true',
             '"backend_executes_docker": true',
             '"backend_executes_subprocess": true',
+            '"docker_execution_from_backend": true',
             '"runtime_activation_attempt": true',
             '"allocator_publish_attempt": true',
             '"production_endpoint_activation_attempt": true',
             '"backend_executes_engine_attempt": true',
             '"backend_executes_docker_attempt": true',
             '"backend_executes_subprocess_attempt": true',
+            '"docker_execution_from_backend_attempt": true',
             '"allow_allocator_publish": true',
             '"feature_flag_default": true',
             "runtime_activation: true",
@@ -301,12 +309,14 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "backend_executes_engine: true",
             "backend_executes_docker: true",
             "backend_executes_subprocess: true",
+            "docker_execution_from_backend: true",
             "runtime_activation_attempt: true",
             "allocator_publish_attempt: true",
             "production_endpoint_activation_attempt: true",
             "backend_executes_engine_attempt: true",
             "backend_executes_docker_attempt: true",
             "backend_executes_subprocess_attempt: true",
+            "docker_execution_from_backend_attempt: true",
             "allocator_publish: true",
             "allow_allocator_publish: true",
             "feature_flag_default: true",
@@ -322,12 +332,14 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "backend_executes_engine=true",
             "backend_executes_docker=true",
             "backend_executes_subprocess=true",
+            "docker_execution_from_backend=true",
             "runtime_activation_attempt=true",
             "allocator_publish_attempt=true",
             "production_endpoint_activation_attempt=true",
             "backend_executes_engine_attempt=true",
             "backend_executes_docker_attempt=true",
             "backend_executes_subprocess_attempt=true",
+            "docker_execution_from_backend_attempt=true",
             "db_write_mode=productive",
             "production_endpoint_activation=live",
             "production_endpoint_activation=enabled",
@@ -342,6 +354,9 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
         for snippet in forbidden_snippets:
             if snippet in text:
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {snippet}")
+        for field in FORBIDDEN_TEXT_JSON_TRUE_FIELDS:
+            if re.search(rf'"{re.escape(field)}"\s*:\s*true\b', text):
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
         if path.suffix == ".json":
             _load_json(path)
 
@@ -363,6 +378,7 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                     assert value is True, (
                         f"{path.relative_to(PROPOSAL_ROOT)} has activation_requested={value!r}; expected true"
                     )
+                    continue
                 else:
                     assert value is False or value is None, (
                         f"{path.relative_to(PROPOSAL_ROOT)} has activation_requested={value!r}; "
@@ -373,7 +389,9 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
                 )
             if key == "db_write_mode":
-                assert value != "productive", f"{path.relative_to(PROPOSAL_ROOT)} has db_write_mode=productive"
+                assert value == "none", (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has db_write_mode={value!r}; expected none"
+                )
             if key == "production_endpoint_activation":
                 assert value == "none"
 
@@ -411,6 +429,20 @@ def test_json_activation_guard_rejects_nested_activation_requested_outside_manif
 
     with pytest.raises(AssertionError, match=r"nested.*compact\.json.*activation_requested=True"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_text_activation_guard_rejects_compact_json_activation_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "proposal.md").write_text(
+        'embedded compact snippet {"runtime_activation":true}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="runtime_activation=true"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
 def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -452,6 +484,14 @@ def test_activation_guards_reject_backend_execution_and_attempt_markers(
     with pytest.raises(AssertionError, match="backend_executes_docker=True"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
+    (tmp_path / "backend.json").write_text(
+        '{"nested":[{"docker_execution_from_backend":true}]}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="docker_execution_from_backend=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
     (tmp_path / "backend.json").unlink()
     (tmp_path / "backend.md").write_text(
         "backend_executes_subprocess_attempt=true\n",
@@ -460,6 +500,27 @@ def test_activation_guards_reject_backend_execution_and_attempt_markers(
 
     with pytest.raises(AssertionError, match="backend_executes_subprocess_attempt=true"):
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+    (tmp_path / "backend.md").write_text(
+        "docker_execution_from_backend_attempt=true\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(AssertionError, match="docker_execution_from_backend_attempt=true"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+
+@pytest.mark.parametrize("db_write_mode", ["official", "read_write", "none_or_artifact_only", None])
+def test_json_activation_guard_requires_db_write_mode_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_write_mode: object
+) -> None:
+    path = tmp_path / "db_write_mode.json"
+    path.write_text(json.dumps({"nested": [{"db_write_mode": db_write_mode}]}) + "\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=rf"db_write_mode={db_write_mode!r}"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
 def test_text_activation_guard_rejects_production_endpoint_activation_markers(
