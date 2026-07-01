@@ -68,7 +68,10 @@ FORBIDDEN_TRUE_FIELDS = {
 
 A5_BLOCKED_STATUS_FIELDS = {"A5", "a5_status"}
 
+REQUIRED_TRUE_FIELDS = {"proposal_only"}
+
 REQUIRED_NONE_FIELDS = {
+    "activation_effect_in_this_pr",
     "allocator_impact",
     "backend_execution",
     "db_write_mode",
@@ -88,6 +91,19 @@ SIDE_EFFECT_ATTEMPT_FAILURE_CLASSES = {
     "backend_executes_docker_attempt",
     "backend_executes_subprocess_attempt",
     "docker_execution_from_backend_attempt",
+}
+
+FORBIDDEN_ALLOWED_CHECK_IDS = {
+    "runtime_activation",
+    "official_result",
+    "db_write",
+    "official_db_write",
+    "allocator_publish",
+    "production_endpoint_activation",
+    "backend_engine_execution",
+    "backend_docker_execution",
+    "backend_subprocess_execution",
+    "docker_execution_from_backend",
 }
 
 FORBIDDEN_TEXT_JSON_TRUE_FIELDS = tuple(sorted(FORBIDDEN_TRUE_FIELDS - {"activation_requested"}))
@@ -446,6 +462,12 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
                 if match.group(1) != "blocked":
                     violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}={match.group(1)}")
+        for field in REQUIRED_TRUE_FIELDS:
+            for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
+                if match.group(1) != "true":
+                    violations.append(
+                        f"{path.relative_to(PROPOSAL_ROOT)} contains {field}={match.group(1)!r}; expected true"
+                    )
         for field in REQUIRED_NONE_FIELDS:
             for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
                 if match.group(1) != "none":
@@ -474,15 +496,20 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
 def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> None:
     for path in PROPOSAL_ROOT.rglob("*.json"):
         payload = _load_json(path)
+        _assert_no_forbidden_allowed_check_rows(path, payload)
         if path.name == "controlled_activation_proposal_manifest.json":
             assert payload["activation_requested"] is True
-        for key, value in _iter_json_items(payload):
+        for item_path, key, value in _iter_json_items(payload):
             if key in A5_BLOCKED_STATUS_FIELDS:
                 assert value == "blocked", (
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected blocked"
                 )
             if key == "activation_requested":
-                if path.name == "controlled_activation_proposal_manifest.json":
+                is_top_level_manifest_activation_request = (
+                    path.name == "controlled_activation_proposal_manifest.json"
+                    and item_path == ("activation_requested",)
+                )
+                if is_top_level_manifest_activation_request:
                     assert value is True, (
                         f"{path.relative_to(PROPOSAL_ROOT)} has activation_requested={value!r}; expected true"
                     )
@@ -495,6 +522,10 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
             if key in FORBIDDEN_TRUE_FIELDS:
                 assert value is False or value is None, (
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
+                )
+            if key in REQUIRED_TRUE_FIELDS:
+                assert value is True, (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected true"
                 )
             if key in REQUIRED_NONE_FIELDS:
                 assert value == "none", (
@@ -514,6 +545,21 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                     f"{path.relative_to(PROPOSAL_ROOT)} has side_effect_attempt_evidence_sha256={value!r}; "
                     "expected absent or null"
                 )
+
+
+def _assert_no_forbidden_allowed_check_rows(path: Path, value: Any) -> None:
+    if isinstance(value, dict):
+        check_id = value.get("id")
+        if check_id in FORBIDDEN_ALLOWED_CHECK_IDS and value.get("allowed") is True:
+            raise AssertionError(
+                f"{path.relative_to(PROPOSAL_ROOT)} has check id={check_id!r} allowed=True; "
+                "expected false or absent"
+            )
+        for item in value.values():
+            _assert_no_forbidden_allowed_check_rows(path, item)
+    elif isinstance(value, list):
+        for item in value:
+            _assert_no_forbidden_allowed_check_rows(path, item)
 
 
 def test_json_activation_guard_checks_nested_compact_json_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -557,6 +603,23 @@ def test_json_activation_guard_rejects_nested_activation_requested_outside_manif
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
     with pytest.raises(AssertionError, match=r"nested.*compact\.json.*activation_requested=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_json_activation_guard_rejects_nested_activation_requested_inside_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "controlled_activation_proposal_manifest.json").write_text(
+        '{"activation_requested":true,"controls":[{"activation_requested":true}]}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(
+        AssertionError,
+        match=r"controlled_activation_proposal_manifest\.json.*activation_requested=True",
+    ):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
@@ -739,6 +802,34 @@ def test_json_activation_guard_requires_side_effect_pins_none(
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
+@pytest.mark.parametrize("check_id", sorted(FORBIDDEN_ALLOWED_CHECK_IDS))
+def test_json_activation_guard_rejects_forbidden_allowed_check_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, check_id: str
+) -> None:
+    path = tmp_path / "no_side_effects_report.json"
+    path.write_text(
+        json.dumps({"checks": [{"id": check_id, "allowed": True, "status": "pass"}]}) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=rf"id={check_id!r} allowed=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_json_activation_guard_requires_proposal_only_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "proposal_only.json"
+    path.write_text(json.dumps({"nested": [{"proposal_only": False}]}) + "\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=r"proposal_only=False.*expected true"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
 @pytest.mark.parametrize(
     "field",
     ["formula_changes", "input_pack_changes", "calibration_pack_changes", "contract_v1_changes"],
@@ -785,6 +876,8 @@ def test_text_activation_guard_rejects_production_endpoint_activation_markers(
         ("contract_v1_changes=changed", "contract_v1_changes='changed'"),
         ("allocator_impact=publish", "allocator_impact='publish'"),
         ("backend_execution=docker", "backend_execution='docker'"),
+        ("proposal_only=false", "proposal_only='false'"),
+        ("activation_effect_in_this_pr=runtime", "activation_effect_in_this_pr='runtime'"),
     ],
 )
 def test_text_activation_guard_rejects_side_effect_and_scope_alias_markers(
@@ -798,17 +891,20 @@ def test_text_activation_guard_rejects_side_effect_and_scope_alias_markers(
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
-def _iter_json_items(value: Any) -> list[tuple[str, Any]]:
+def _iter_json_items(
+    value: Any, prefix: tuple[str | int, ...] = ()
+) -> list[tuple[tuple[str | int, ...], str, Any]]:
     if isinstance(value, dict):
-        items: list[tuple[str, Any]] = []
+        items: list[tuple[tuple[str | int, ...], str, Any]] = []
         for key, item in value.items():
-            items.append((key, item))
-            items.extend(_iter_json_items(item))
+            item_path = (*prefix, key)
+            items.append((item_path, key, item))
+            items.extend(_iter_json_items(item, item_path))
         return items
     if isinstance(value, list):
         items = []
-        for item in value:
-            items.extend(_iter_json_items(item))
+        for index, item in enumerate(value):
+            items.extend(_iter_json_items(item, (*prefix, index)))
         return items
     return []
 
