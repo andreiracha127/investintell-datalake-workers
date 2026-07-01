@@ -55,6 +55,7 @@ jobs:
           tests/test_runtime_integration_skeleton.py
           tests/test_external_executor_handshake.py
           tests/test_controlled_shadow.py
+          tests/test_controlled_activation_proposal.py
           tests/test_remote_ci_runner.py
           -q
 

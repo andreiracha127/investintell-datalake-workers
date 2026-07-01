@@ -1,0 +1,16 @@
+{
+  "activation_allowed": false,
+  "allowed_environments": [],
+  "approval_required": true,
+  "audit_requirements": ["Record requester", "Record approver", "Record timestamp", "Record rollout percentage", "Record rollback validation"],
+  "automatic_rollback_triggers": ["hard divergence", "missing output", "DB write attempt", "allocator publish attempt", "runtime activation attempt outside approved stage", "production endpoint activation attempt"],
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "default": false,
+  "explicit_prohibition": "This PR must not enable the flag or add automatic activation scripts.",
+  "flag_name": "open_macro_v03_runtime_activation",
+  "manual_rollback_procedure": "Set or keep flag false, confirm propagation, verify no official result, no allocator publish, no productive DB write, and no production endpoint.",
+  "max_rollout_percentage": 0,
+  "runtime_activation": false,
+  "staged_rollout_sequence": ["stage_0_proposal_only", "stage_1_dark_launch", "stage_2_shadow_observe", "stage_3_candidate_result", "stage_4_controlled_A5_activation"],
+  "who_can_change": []
+}

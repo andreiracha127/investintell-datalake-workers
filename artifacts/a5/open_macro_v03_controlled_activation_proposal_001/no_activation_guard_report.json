@@ -1,0 +1,22 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "checks": [
+    {"id": "runtime_activation_true_absent", "status": "pass"},
+    {"id": "freeze_ready_true_absent", "status": "pass"},
+    {"id": "activation_allowed_true_absent", "status": "pass"},
+    {"id": "official_result_true_absent", "status": "pass"},
+    {"id": "allow_allocator_publish_true_absent", "status": "pass"},
+    {"id": "production_endpoint_activation_non_none_absent", "status": "pass"},
+    {"id": "feature_flag_default_true_absent", "status": "pass"},
+    {"id": "automatic_activation_script_absent", "status": "pass"},
+    {"id": "productive_endpoint_absent", "status": "pass"},
+    {"id": "runtime_productive_change_absent", "status": "pass"}
+  ],
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "freeze_ready": false,
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false,
+  "status": "pass_no_activation_effect"
+}

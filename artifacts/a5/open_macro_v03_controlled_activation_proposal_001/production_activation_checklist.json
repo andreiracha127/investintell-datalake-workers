@@ -1,0 +1,20 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "checks": [
+    {"id": "technical_review_recorded", "status": "pending", "blocking": true},
+    {"id": "quantitative_review_recorded", "status": "pending", "blocking": true},
+    {"id": "risk_review_recorded", "status": "pending", "blocking": true},
+    {"id": "operations_review_recorded", "status": "pending", "blocking": true},
+    {"id": "approval_matrix_complete", "status": "pending", "blocking": true},
+    {"id": "rollback_dry_run", "status": "pending", "blocking": true},
+    {"id": "kill_switch_dry_run", "status": "pending", "blocking": true},
+    {"id": "monitoring_thresholds_complete", "status": "pending", "blocking": true},
+    {"id": "feature_flag_default_false", "status": "pass", "blocking": true},
+    {"id": "separate_activation_pr_required", "status": "pass", "blocking": true}
+  ],
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "freeze_ready": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false
+}

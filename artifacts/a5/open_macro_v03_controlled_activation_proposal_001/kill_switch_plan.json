@@ -1,0 +1,13 @@
+{
+  "activation_allowed": false,
+  "audit_event": "open_macro_v03_runtime_activation_kill_switch_invoked",
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "expected_propagation_time": "pending_operations_review",
+  "how_to_disable": ["Keep feature flag open_macro_v03_runtime_activation=false.", "Reject candidate runtime envelopes.", "Block official_result and allocator_publish paths.", "Confirm production_endpoint_activation remains none."],
+  "kill_switch_name": "open_macro_v03_runtime_activation_disable",
+  "owner": "unassigned",
+  "rollback_dependency": "rollback_execution_plan.md",
+  "runtime_activation": false,
+  "test_status": "pending_operator_dry_run",
+  "validation_steps": ["Read feature flag state and confirm false.", "Verify runtime_activation=false in governance artifact.", "Verify official_result=false.", "Verify allocator_publish=false.", "Confirm production_endpoint_activation remains none.", "Verify no productive DB write occurred."]
+}

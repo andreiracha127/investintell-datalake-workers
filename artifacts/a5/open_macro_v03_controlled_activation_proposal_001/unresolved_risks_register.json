@@ -1,0 +1,21 @@
+{
+  "activation_allowed": false,
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "items": [
+    "macro-history-coverage",
+    "macro-vintage-identity",
+    "advisory-lock-regime-gate",
+    "quadrant_macro-staleness-source-availability",
+    "baseline-global-failures-accepted",
+    "human-technical-review-missing",
+    "human-quantitative-review-missing",
+    "human-risk-review-missing",
+    "human-operations-review-missing",
+    "owners-unassigned",
+    "rollback-dry-run-missing",
+    "kill-switch-test-missing",
+    "monitoring-thresholds-pending"
+  ],
+  "runtime_activation": false,
+  "status": "blocking_risks_open"
+}
