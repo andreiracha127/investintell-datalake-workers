@@ -35,10 +35,9 @@
     "scripts/contract_bundle.py"
   ],
   "gaps": ["Human technical, quantitative, risk, and operations reviews are not recorded.", "Real owners and final approver are unassigned.", "Rollback dry run and kill-switch dry run are pending.", "Latency, memory, error, and retry SLO thresholds remain pending.", "Expected input pack artifact path under artifacts/input_packs is absent but documented as missing_optional; effective fixture path is present."],
-  "items_blocking": ["technical_review_recorded", "quantitative_review_recorded", "risk_review_recorded", "operations_review_recorded", "approval_matrix_complete", "rollback_dry_run", "kill_switch_test", "monitoring_thresholds"],
+  "items_blocking": ["technical_review_recorded", "quantitative_review_recorded", "risk_review_recorded", "operations_review_recorded", "approval_matrix_complete", "rollback_dry_run", "kill_switch_dry_run", "monitoring_thresholds_complete"],
   "items_out_of_scope": ["A5 activation", "freeze_ready true", "runtime activation", "official result publication", "allocator publish", "productive DB write", "production endpoint activation", "formula changes", "input pack changes", "calibration pack changes", "contract v1 changes"],
   "items_pending": ["formal reviewer decisions", "owner assignment", "future activation PR", "remote CI for this proposal PR"],
-  "lacunas": ["Aprovadores humanos nao registrados", "Dry run operacional pendente"],
   "risks": ["stale evidence if future activation is delayed", "unassigned owners", "unreviewed quantitative risk envelope"],
   "runtime_activation": false
 }

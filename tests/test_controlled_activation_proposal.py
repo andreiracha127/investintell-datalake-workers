@@ -68,6 +68,8 @@ FORBIDDEN_TRUE_FIELDS = {
 A5_BLOCKED_STATUS_FIELDS = {"A5", "a5_status"}
 
 REQUIRED_NONE_FIELDS = {
+    "allocator_impact",
+    "backend_execution",
     "db_write_mode",
     "production_endpoint_activation",
     "formula_changes",
@@ -227,7 +229,15 @@ def test_go_no_go_matrix_never_allows_a5_activation_in_this_pr() -> None:
     assert matrix["freeze_ready"] is False
     assert matrix["activation_allowed"] is False
     assert matrix["official_result"] is False
-    for gate in ("technical_review", "quantitative_review", "risk_review", "operations_review"):
+    for gate in (
+        "technical_review",
+        "quantitative_review",
+        "risk_review",
+        "operations_review",
+        "production_readiness",
+        "rollback_readiness",
+        "monitoring_readiness",
+    ):
         assert matrix["gates"][gate] == "pending"
 
 
@@ -280,7 +290,16 @@ def test_evidence_map_has_no_empty_placeholders_and_records_required_reads() -> 
     assert "tests/test_a5_preflight_readiness.py" in evidence["files_read"]
     assert "scripts/contract_bundle.py" in evidence["files_read"]
     assert evidence["items_blocking"]
+    assert "lacunas" not in evidence
     assert evidence["gaps"]
+
+    checklist = _json("production_activation_checklist.json")
+    checklist_ids = {check["id"] for check in checklist["checks"]}
+    assert set(evidence["items_blocking"]) <= checklist_ids
+    assert "kill_switch_dry_run" in evidence["items_blocking"]
+    assert "monitoring_thresholds_complete" in evidence["items_blocking"]
+    assert "kill_switch_test" not in evidence["items_blocking"]
+    assert "monitoring_thresholds" not in evidence["items_blocking"]
 
     for value in _walk_json(evidence):
         if isinstance(value, str):
@@ -298,6 +317,14 @@ def test_no_activation_guard_report_blocks_runtime_freeze_activation_and_officia
     assert report["official_result"] is False
     assert report["production_endpoint_activation"] == "none"
     assert {check["status"] for check in report["checks"]} == {"pass"}
+
+
+def test_feature_flag_activation_policy_pins_rollout_envelope_closed() -> None:
+    policy = _json("feature_flag_activation_policy.json")
+
+    assert policy["allowed_environments"] == []
+    assert policy["max_rollout_percentage"] == 0
+    assert policy["who_can_change"] == []
 
 
 def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values() -> None:
@@ -647,16 +674,26 @@ def test_activation_guards_reject_backend_execution_and_attempt_markers(
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
-@pytest.mark.parametrize("db_write_mode", ["official", "read_write", "none_or_artifact_only", None])
-def test_json_activation_guard_requires_db_write_mode_none(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db_write_mode: object
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("db_write_mode", "official"),
+        ("db_write_mode", "read_write"),
+        ("db_write_mode", "none_or_artifact_only"),
+        ("db_write_mode", None),
+        ("allocator_impact", "publish"),
+        ("backend_execution", "docker"),
+    ],
+)
+def test_json_activation_guard_requires_side_effect_pins_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, bad_value: object
 ) -> None:
-    path = tmp_path / "db_write_mode.json"
-    path.write_text(json.dumps({"nested": [{"db_write_mode": db_write_mode}]}) + "\n", encoding="utf-8")
+    path = tmp_path / "side_effect_pin.json"
+    path.write_text(json.dumps({"nested": [{field: bad_value}]}) + "\n", encoding="utf-8")
 
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
-    with pytest.raises(AssertionError, match=rf"db_write_mode={db_write_mode!r}"):
+    with pytest.raises(AssertionError, match=rf"{field}={bad_value!r}"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
@@ -704,6 +741,8 @@ def test_text_activation_guard_rejects_production_endpoint_activation_markers(
         ("side_effect_attempt_count=1", "side_effect_attempt_count=1"),
         (f"side_effect_attempt_evidence_sha256={'a' * 64}", "side_effect_attempt_evidence_sha256"),
         ("contract_v1_changes=changed", "contract_v1_changes='changed'"),
+        ("allocator_impact=publish", "allocator_impact='publish'"),
+        ("backend_execution=docker", "backend_execution='docker'"),
     ],
 )
 def test_text_activation_guard_rejects_side_effect_and_scope_alias_markers(
@@ -777,9 +816,24 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
     assert monitoring["runtime_activation"] is False
     assert monitoring["activation_allowed"] is False
     assert any(slo["status"] == "pending" for slo in monitoring["slos"])
+    critical_detector_ids = {
+        "db_write_attempt_alert",
+        "allocator_publish_attempt_alert",
+        "runtime_activation_attempt_alert",
+        "production_endpoint_activation_attempt_alert",
+    }
+    monitoring_slos_by_id = {slo["id"]: slo for slo in monitoring["slos"]}
+
+    assert critical_detector_ids.issubset(monitoring_slos_by_id)
+    for detector_id in critical_detector_ids:
+        detector = monitoring_slos_by_id[detector_id]
+        assert detector["threshold"] == 0
+        assert detector["alert_severity"] == "critical"
+
     assert kill_switch["runtime_activation"] is False
     assert kill_switch["activation_allowed"] is False
     assert kill_switch["test_status"] == "pending_operator_dry_run"
     assert kill_switch["owner"] == "unassigned"
+    assert "Confirm production_endpoint_activation remains none." in kill_switch["validation_steps"]
     assert checks["kill_switch_dry_run"]["status"] == "pending"
     assert checks["kill_switch_dry_run"]["blocking"] is True

@@ -9,5 +9,5 @@
   "rollback_dependency": "rollback_execution_plan.md",
   "runtime_activation": false,
   "test_status": "pending_operator_dry_run",
-  "validation_steps": ["Read feature flag state and confirm false.", "Verify runtime_activation=false in governance artifact.", "Verify official_result=false.", "Verify allocator_publish=false.", "Verify no productive DB write occurred."]
+  "validation_steps": ["Read feature flag state and confirm false.", "Verify runtime_activation=false in governance artifact.", "Verify official_result=false.", "Verify allocator_publish=false.", "Confirm production_endpoint_activation remains none.", "Verify no productive DB write occurred."]
 }
