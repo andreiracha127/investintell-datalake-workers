@@ -1,0 +1,18 @@
+{
+  "activation_allowed": false,
+  "activation_approvals_recorded": false,
+  "assignments": [
+    {"role": "technical_owner", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"},
+    {"role": "quant_owner", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"},
+    {"role": "risk_owner", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"},
+    {"role": "operations_owner", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"},
+    {"role": "product_portfolio_owner", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"},
+    {"role": "final_approver", "owner": "Andrei Rachadel", "assigned_date": "2026-07-01"}
+  ],
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "dark_launch_id": "open_macro_v03_dark_launch_001",
+  "note": "All six roles are held by a single owner; four-eyes separation is not available in this governance setup and reviews/approvals are single-operator decisions.",
+  "owners_real_names_recorded": true,
+  "runtime_activation": false,
+  "schema_version": 1
+}

@@ -34,6 +34,28 @@ def test_required_dark_launch_artifacts_exist() -> None:
     assert missing == []
 
 
+REQUIRED_OWNER_ROLES = {
+    "technical_owner",
+    "quant_owner",
+    "risk_owner",
+    "operations_owner",
+    "product_portfolio_owner",
+    "final_approver",
+}
+
+
+def test_owners_assignment_names_every_role() -> None:
+    owners = _json("owners_assignment_record.json")
+    assignments = {entry["role"]: entry for entry in owners["assignments"]}
+
+    assert set(assignments) == REQUIRED_OWNER_ROLES
+    for entry in assignments.values():
+        assert entry["owner"] not in PLACEHOLDERS
+        assert entry["assigned_date"] not in PLACEHOLDERS
+    assert owners["owners_real_names_recorded"] is True
+    assert owners["activation_approvals_recorded"] is False
+
+
 def test_dark_launch_manifest_keeps_activation_blocked() -> None:
     manifest = _json("dark_launch_manifest.json")
 
