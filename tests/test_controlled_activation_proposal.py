@@ -41,12 +41,17 @@ FORBIDDEN_TRUE_FIELDS = {
     "approve_controlled_activation",
     "A5_unblocked",
     "official_result",
+    "official_result_published",
     "allow_db_write",
+    "db_write_official",
     "official_db_write_attempt",
+    "productive_db_received_official_result",
     "allocator_publish",
     "allocator_publish_attempt",
+    "allocator_received_output",
     "allow_allocator_publish",
     "production_endpoint_activation_attempt",
+    "production_endpoint_activated",
     "backend_executes_engine",
     "backend_executes_docker",
     "backend_executes_subprocess",
@@ -58,6 +63,28 @@ FORBIDDEN_TRUE_FIELDS = {
     "feature_flag_default",
     "default",
     "production_default",
+}
+
+A5_BLOCKED_STATUS_FIELDS = {"A5", "a5_status"}
+
+REQUIRED_NONE_FIELDS = {
+    "db_write_mode",
+    "production_endpoint_activation",
+    "formula_changes",
+    "input_pack_changes",
+    "calibration_pack_changes",
+    "contract_v1_changes",
+}
+
+SIDE_EFFECT_ATTEMPT_FAILURE_CLASSES = {
+    "runtime_activation_attempt",
+    "official_db_write_attempt",
+    "allocator_publish_attempt",
+    "production_endpoint_activation_attempt",
+    "backend_executes_engine_attempt",
+    "backend_executes_docker_attempt",
+    "backend_executes_subprocess_attempt",
+    "docker_execution_from_backend_attempt",
 }
 
 FORBIDDEN_TEXT_JSON_TRUE_FIELDS = tuple(sorted(FORBIDDEN_TRUE_FIELDS - {"activation_requested"}))
@@ -284,8 +311,12 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"freeze_ready": true',
             '"activation_allowed": true',
             '"official_result": true',
+            '"official_result_published": true',
             '"allow_db_write": true',
+            '"db_write_official": true',
             '"official_db_write_attempt": true',
+            '"productive_db_received_official_result": true',
+            '"allocator_received_output": true',
             '"backend_executes_engine": true',
             '"backend_executes_docker": true',
             '"backend_executes_subprocess": true',
@@ -298,14 +329,18 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"backend_executes_subprocess_attempt": true',
             '"docker_execution_from_backend_attempt": true',
             '"allow_allocator_publish": true',
+            '"production_endpoint_activated": true',
             '"feature_flag_default": true',
             "runtime_activation: true",
             "freeze_ready: true",
             "activation_allowed: true",
             "activation_requested: true",
             "official_result: true",
+            "official_result_published: true",
             "allow_db_write: true",
+            "db_write_official: true",
             "official_db_write_attempt: true",
+            "productive_db_received_official_result: true",
             "backend_executes_engine: true",
             "backend_executes_docker: true",
             "backend_executes_subprocess: true",
@@ -318,7 +353,9 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "backend_executes_subprocess_attempt: true",
             "docker_execution_from_backend_attempt: true",
             "allocator_publish: true",
+            "allocator_received_output: true",
             "allow_allocator_publish: true",
+            "production_endpoint_activated: true",
             "feature_flag_default: true",
             "approve_controlled_activation: true",
             "runtime_activation_allowed: true",
@@ -327,8 +364,11 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "freeze_ready=true",
             "activation_allowed=true",
             "official_result=true",
+            "official_result_published=true",
             "allow_db_write=true",
+            "db_write_official=true",
             "official_db_write_attempt=true",
+            "productive_db_received_official_result=true",
             "backend_executes_engine=true",
             "backend_executes_docker=true",
             "backend_executes_subprocess=true",
@@ -340,6 +380,8 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             "backend_executes_docker_attempt=true",
             "backend_executes_subprocess_attempt=true",
             "docker_execution_from_backend_attempt=true",
+            "allocator_received_output=true",
+            "production_endpoint_activated=true",
             "db_write_mode=productive",
             "production_endpoint_activation=live",
             "production_endpoint_activation=enabled",
@@ -352,11 +394,34 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
             '"production_endpoint_activation": "public"',
         )
         for snippet in forbidden_snippets:
-            if snippet in text:
+            if re.search(rf"(?<![A-Za-z0-9_]){re.escape(snippet)}(?![A-Za-z0-9_])", text):
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {snippet}")
         for field in FORBIDDEN_TEXT_JSON_TRUE_FIELDS:
             if re.search(rf'"{re.escape(field)}"\s*:\s*true\b', text):
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
+        for field in A5_BLOCKED_STATUS_FIELDS:
+            for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
+                if match.group(1) != "blocked":
+                    violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}={match.group(1)}")
+        for field in REQUIRED_NONE_FIELDS:
+            for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
+                if match.group(1) != "none":
+                    violations.append(
+                        f"{path.relative_to(PROPOSAL_ROOT)} contains {field}={match.group(1)!r}; expected none"
+                    )
+        for match in re.finditer(r'"?failure_class"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
+            if match.group(1) in SIDE_EFFECT_ATTEMPT_FAILURE_CLASSES:
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains failure_class={match.group(1)!r}")
+        for match in re.finditer(r'"?side_effect_attempt_count"?\s*[:=]\s*"?([0-9]+)"?', text):
+            if int(match.group(1)) != 0:
+                violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains side_effect_attempt_count={match.group(1)}")
+        for match in re.finditer(
+            r'"?side_effect_attempt_evidence_sha256"?\s*[:=]\s*"?([^"\s,}]+)"?', text
+        ):
+            if match.group(1) not in {"null", "none", "None"}:
+                violations.append(
+                    f"{path.relative_to(PROPOSAL_ROOT)} contains side_effect_attempt_evidence_sha256"
+                )
         if path.suffix == ".json":
             _load_json(path)
 
@@ -369,9 +434,9 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
         if path.name == "controlled_activation_proposal_manifest.json":
             assert payload["activation_requested"] is True
         for key, value in _iter_json_items(payload):
-            if key == "A5":
+            if key in A5_BLOCKED_STATUS_FIELDS:
                 assert value == "blocked", (
-                    f"{path.relative_to(PROPOSAL_ROOT)} has A5={value!r}; expected blocked"
+                    f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected blocked"
                 )
             if key == "activation_requested":
                 if path.name == "controlled_activation_proposal_manifest.json":
@@ -388,12 +453,24 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                 assert value is False or value is None, (
                     f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected false or null"
                 )
-            if key == "db_write_mode":
+            if key in REQUIRED_NONE_FIELDS:
                 assert value == "none", (
-                    f"{path.relative_to(PROPOSAL_ROOT)} has db_write_mode={value!r}; expected none"
+                    f"{path.relative_to(PROPOSAL_ROOT)} has {key}={value!r}; expected none"
                 )
-            if key == "production_endpoint_activation":
-                assert value == "none"
+            if key == "failure_class":
+                assert value not in SIDE_EFFECT_ATTEMPT_FAILURE_CLASSES, (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has failure_class={value!r}"
+                )
+            if key == "side_effect_attempt_count":
+                assert value is None or (type(value) is int and value == 0), (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has side_effect_attempt_count={value!r}; "
+                    "expected absent, null, or 0"
+                )
+            if key == "side_effect_attempt_evidence_sha256":
+                assert value is None, (
+                    f"{path.relative_to(PROPOSAL_ROOT)} has side_effect_attempt_evidence_sha256={value!r}; "
+                    "expected absent or null"
+                )
 
 
 def test_json_activation_guard_checks_nested_compact_json_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -407,14 +484,23 @@ def test_json_activation_guard_checks_nested_compact_json_artifacts(tmp_path: Pa
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
-def test_json_activation_guard_rejects_nested_a5_unblocked_values(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [("A5", "unblocked"), ("a5_status", "unblocked"), ("a5_status", "cleared")],
+)
+def test_json_activation_guard_rejects_nested_a5_non_blocked_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, bad_value: str
+) -> None:
     nested = tmp_path / "nested"
     nested.mkdir()
-    (nested / "compact.json").write_text('{"controls":[{"A5":"unblocked"}]}\n', encoding="utf-8")
+    (nested / "compact.json").write_text(
+        json.dumps({"controls": [{field: bad_value}]}) + "\n",
+        encoding="utf-8",
+    )
 
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
-    with pytest.raises(AssertionError, match=r"nested.*compact\.json.*A5='unblocked'"):
+    with pytest.raises(AssertionError, match=rf"nested.*compact\.json.*{field}={bad_value!r}"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
@@ -431,17 +517,18 @@ def test_json_activation_guard_rejects_nested_activation_requested_outside_manif
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
+@pytest.mark.parametrize("field", ["runtime_activation", "db_write_official", "official_result_published"])
 def test_text_activation_guard_rejects_compact_json_activation_markers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
 ) -> None:
     (tmp_path / "proposal.md").write_text(
-        'embedded compact snippet {"runtime_activation":true}\n',
+        f'embedded compact snippet {{"{field}":true}}\n',
         encoding="utf-8",
     )
 
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
-    with pytest.raises(AssertionError, match="runtime_activation=true"):
+    with pytest.raises(AssertionError, match=rf"{field}=true"):
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
@@ -457,7 +544,16 @@ def test_json_activation_field_guard_rejects_string_truth_values(tmp_path: Path,
 
 @pytest.mark.parametrize(
     "field",
-    ["runtime_activation_allowed", "approve_controlled_activation", "A5_unblocked"],
+    [
+        "runtime_activation_allowed",
+        "approve_controlled_activation",
+        "A5_unblocked",
+        "db_write_official",
+        "official_result_published",
+        "allocator_received_output",
+        "productive_db_received_official_result",
+        "production_endpoint_activated",
+    ],
 )
 def test_json_activation_guard_rejects_compact_json_activation_alias_true_values(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
@@ -469,6 +565,47 @@ def test_json_activation_guard_rejects_compact_json_activation_alias_true_values
 
     with pytest.raises(AssertionError, match=rf"{field}=True"):
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+@pytest.mark.parametrize(
+    ("payload", "match"),
+    [
+        ({"failure_class": "runtime_activation_attempt"}, "failure_class='runtime_activation_attempt'"),
+        ({"side_effect_attempt_count": 1}, "side_effect_attempt_count=1"),
+        ({"side_effect_attempt_count": False}, "side_effect_attempt_count=False"),
+        ({"side_effect_attempt_evidence_sha256": "a" * 64}, "side_effect_attempt_evidence_sha256"),
+    ],
+)
+def test_json_activation_guard_rejects_side_effect_attempt_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any], match: str
+) -> None:
+    path = tmp_path / "side_effect_attempt.json"
+    path.write_text(json.dumps({"nested": [payload]}) + "\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=match):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_json_activation_guard_allows_zero_or_null_side_effect_attempt_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "side_effect_attempt_zero.json"
+    path.write_text(
+        json.dumps(
+            {
+                "side_effect_attempt_count": 0,
+                "side_effect_attempt_evidence_sha256": None,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
 def test_activation_guards_reject_backend_execution_and_attempt_markers(
@@ -523,6 +660,22 @@ def test_json_activation_guard_requires_db_write_mode_none(
         test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["formula_changes", "input_pack_changes", "calibration_pack_changes", "contract_v1_changes"],
+)
+def test_json_activation_guard_requires_proposal_change_fields_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    path = tmp_path / "change_field.json"
+    path.write_text(json.dumps({"nested": [{field: "changed"}]}) + "\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=rf"{field}='changed'.*expected none"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
 def test_text_activation_guard_rejects_production_endpoint_activation_markers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -534,6 +687,33 @@ def test_text_activation_guard_rejects_production_endpoint_activation_markers(
     monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
 
     with pytest.raises(AssertionError, match="production_endpoint_activation=live"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+
+@pytest.mark.parametrize(
+    ("marker", "match"),
+    [
+        ("a5_status=cleared", "a5_status=cleared"),
+        ('"a5_status": "unblocked"', "a5_status=unblocked"),
+        ("db_write_official=true", "db_write_official=true"),
+        ("official_result_published=true", "official_result_published=true"),
+        ("allocator_received_output=true", "allocator_received_output=true"),
+        ("productive_db_received_official_result=true", "productive_db_received_official_result=true"),
+        ("production_endpoint_activated=true", "production_endpoint_activated=true"),
+        ("failure_class=runtime_activation_attempt", "failure_class='runtime_activation_attempt'"),
+        ("side_effect_attempt_count=1", "side_effect_attempt_count=1"),
+        (f"side_effect_attempt_evidence_sha256={'a' * 64}", "side_effect_attempt_evidence_sha256"),
+        ("contract_v1_changes=changed", "contract_v1_changes='changed'"),
+    ],
+)
+def test_text_activation_guard_rejects_side_effect_and_scope_alias_markers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker: str, match: str
+) -> None:
+    (tmp_path / "proposal.md").write_text(f"{marker}\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match=re.escape(match)):
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
 
 
