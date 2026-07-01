@@ -304,6 +304,56 @@ def test_formal_reviews_are_required_for_future_activation() -> None:
     assert operations_items["operations_review_recorded"]["blocking"] is True
 
 
+def test_quantitative_review_record_pins_automated_evidence() -> None:
+    quantitative = _json("quantitative_review_record.json")
+
+    shadow_results = quantitative["controlled_shadow_results"]
+    assert shadow_results["controlled_shadow_id"] == "open_macro_v03_controlled_shadow_001"
+    assert shadow_results["mismatch_count"] == 0
+    assert shadow_results["run_count"] == 8
+    assert shadow_results["status"] == "pass"
+    assert quantitative["hard_threshold_status"]["status"] == "pass"
+    assert quantitative["material_divergence_status"]["material_divergence"] is False
+    assert quantitative["material_divergence_status"]["status"] == "pass"
+    assert quantitative["nan_inf_status"]["nan_count"] == 0
+    assert quantitative["nan_inf_status"]["infinite_count"] == 0
+    assert quantitative["nan_inf_status"]["status"] == "pass"
+    assert quantitative["baseline_comparison_summary"]["status"] == "pass"
+    assert quantitative["constraints_status"]["status"] == "pass"
+    for pending_gate in (
+        "drawdown_vol_risk_status",
+        "out_of_sample_status",
+        "performance_regression_summary",
+        "stress_windows_status",
+        "turnover_status",
+    ):
+        assert quantitative[pending_gate]["status"] == "pending"
+        assert quantitative[pending_gate]["blocking"] is True
+
+
+def test_unresolved_risks_register_pins_open_blocking_risks() -> None:
+    register = _json("unresolved_risks_register.json")
+
+    assert register["status"] == "blocking_risks_open"
+    assert register["runtime_activation"] is False
+    assert register["activation_allowed"] is False
+    assert register["items"] == [
+        "macro-history-coverage",
+        "macro-vintage-identity",
+        "advisory-lock-regime-gate",
+        "quadrant_macro-staleness-source-availability",
+        "baseline-global-failures-accepted",
+        "human-technical-review-missing",
+        "human-quantitative-review-missing",
+        "human-risk-review-missing",
+        "human-operations-review-missing",
+        "owners-unassigned",
+        "rollback-dry-run-missing",
+        "kill-switch-test-missing",
+        "monitoring-thresholds-pending",
+    ]
+
+
 def test_evidence_map_has_no_empty_placeholders_and_records_required_reads() -> None:
     evidence = _json("evidence_map.json")
 
@@ -466,6 +516,11 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
             if re.search(rf"(?<![A-Za-z0-9_]){re.escape(field)}\s*[:=]\s*true\b", text):
                 violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains {field}=true")
+        is_top_level_manifest = path == PROPOSAL_ROOT / "controlled_activation_proposal_manifest.json"
+        if not is_top_level_manifest and re.search(r'"activation_requested"\s*:\s*true\b', text):
+            violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains activation_requested=true")
+        if re.search(r"(?<![A-Za-z0-9_])activation_requested\s*[:=]\s*true\b", text):
+            violations.append(f"{path.relative_to(PROPOSAL_ROOT)} contains activation_requested=true")
         for field in A5_BLOCKED_STATUS_FIELDS:
             for match in re.finditer(rf'"?{re.escape(field)}"?\s*[:=]\s*"?([A-Za-z0-9_-]+)"?', text):
                 if match.group(1) != "blocked":
@@ -502,10 +557,11 @@ def test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values(
 
 
 def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> None:
+    manifest_path = PROPOSAL_ROOT / "controlled_activation_proposal_manifest.json"
     for path in PROPOSAL_ROOT.rglob("*.json"):
         payload = _load_json(path)
         _assert_no_forbidden_allowed_check_rows(path, payload)
-        if path.name == "controlled_activation_proposal_manifest.json":
+        if path == manifest_path:
             assert payload["activation_requested"] is True
         for item_path, key, value in _iter_json_items(payload):
             if key in A5_BLOCKED_STATUS_FIELDS:
@@ -514,8 +570,7 @@ def test_json_activation_fields_remain_false_or_none_for_proposal_package() -> N
                 )
             if key == "activation_requested":
                 is_top_level_manifest_activation_request = (
-                    path.name == "controlled_activation_proposal_manifest.json"
-                    and item_path == ("activation_requested",)
+                    path == manifest_path and item_path == ("activation_requested",)
                 )
                 if is_top_level_manifest_activation_request:
                     assert value is True, (
@@ -647,6 +702,57 @@ def test_text_activation_guard_rejects_compact_json_activation_markers(
 
     with pytest.raises(AssertionError, match=rf"{field}=true"):
         test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "activation_requested=true",
+        "activation_requested: true",
+        'embedded compact snippet {"activation_requested":true}',
+        '"activation_requested": true',
+    ],
+)
+def test_text_activation_guard_rejects_activation_requested_outside_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, snippet: str
+) -> None:
+    (tmp_path / "runbook.md").write_text(f"{snippet}\n", encoding="utf-8")
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="activation_requested"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+
+def test_text_activation_guard_rejects_nested_directory_manifest_activation_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "controlled_activation_proposal_manifest.json").write_text(
+        '{"activation_requested": true}\n', encoding="utf-8"
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    with pytest.raises(AssertionError, match="activation_requested=true"):
+        test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+
+    with pytest.raises(AssertionError, match="activation_requested=True"):
+        test_json_activation_fields_remain_false_or_none_for_proposal_package()
+
+
+def test_text_activation_guard_allows_top_level_manifest_activation_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "controlled_activation_proposal_manifest.json").write_text(
+        '{\n  "activation_requested": true\n}\n', encoding="utf-8"
+    )
+
+    monkeypatch.setitem(globals(), "PROPOSAL_ROOT", tmp_path)
+
+    test_new_proposal_artifacts_do_not_contain_forbidden_activation_true_values()
+    test_json_activation_fields_remain_false_or_none_for_proposal_package()
 
 
 @pytest.mark.parametrize(
@@ -920,6 +1026,37 @@ def _iter_json_items(
     return []
 
 
+def test_rollback_execution_plan_pins_required_rollback_steps() -> None:
+    text = (PROPOSAL_ROOT / "rollback_execution_plan.md").read_text(encoding="utf-8")
+
+    required_sections = (
+        "## Keep Feature Flag Off",
+        "## Invalidate Proposal",
+        "## Prevent Official Result",
+        "## Prevent Allocator Publish",
+        "## Confirm No Productive DB Write",
+        "## Revert To Baseline",
+        "## Audit Artifacts",
+        "## Communicate Incident",
+        "## Restore A5 Blocked",
+    )
+    required_markers = (
+        "Status: proposal-only. This plan is not executed in this PR.",
+        "`open_macro_v03_runtime_activation=false`",
+        "`official_result=false`",
+        "`allocator_publish=false`",
+        "`db_write_mode=none`",
+        "`A5=blocked`",
+        "`freeze_ready=false`",
+        "`runtime_activation=false`",
+        "`activation_allowed=false`",
+        "`production_endpoint_activation=none`",
+    )
+
+    missing = [needle for needle in (*required_sections, *required_markers) if needle not in text]
+    assert missing == []
+
+
 def test_activation_runbook_and_proposal_do_not_contain_automatic_activation_command() -> None:
     violations: list[str] = []
     for path in sorted(PROPOSAL_ROOT.rglob("*")):
@@ -954,6 +1091,51 @@ def test_staged_rollout_current_stage_is_proposal_only_with_no_productive_side_e
     assert plan["activation_allowed"] is False
     stage_zero = {stage["id"]: stage for stage in plan["stages"]}["stage_0_proposal_only"]
     assert stage_zero["allowed_side_effects"] == ["documentation artifacts", "governance tests"]
+
+
+def test_staged_rollout_plan_pins_future_stage_guardrails() -> None:
+    plan = _json("staged_rollout_plan.json")
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+
+    assert [stage["id"] for stage in plan["stages"]] == [
+        "stage_0_proposal_only",
+        "stage_1_dark_launch",
+        "stage_2_shadow_observe",
+        "stage_3_candidate_result",
+        "stage_4_controlled_A5_activation",
+    ]
+    for stage in plan["stages"]:
+        assert stage["owner"] == "unassigned"
+
+    stage_one = stages["stage_1_dark_launch"]
+    assert "Separate future PR" in stage_one["entry_criteria"]
+    assert "feature flag remains off" in stage_one["entry_criteria"]
+    assert stage_one["allowed_side_effects"] == ["none"]
+
+    stage_two = stages["stage_2_shadow_observe"]
+    assert "DB write attempt" in stage_two["abort_criteria"]
+    assert stage_two["allowed_side_effects"] == ["artifact-only shadow output"]
+
+    stage_three = stages["stage_3_candidate_result"]
+    assert "Allocator publish attempt" in stage_three["abort_criteria"]
+    assert "official result attempt" in stage_three["abort_criteria"]
+    assert stage_three["allowed_side_effects"] == ["non-official candidate artifact"]
+
+    stage_four = stages["stage_4_controlled_A5_activation"]
+    assert stage_four["entry_criteria"] == [
+        "Separate activation PR",
+        "all reviews go",
+        "explicit approvals recorded",
+    ]
+    assert "approval missing" in stage_four["abort_criteria"]
+    assert stage_four["rollback_criteria"] == [
+        "Disable feature flag",
+        "restore A5 blocked",
+        "block official result and allocator publish",
+    ]
+    assert stage_four["allowed_side_effects"] == [
+        "only those explicitly approved in future activation PR"
+    ]
 
 
 def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> None:
