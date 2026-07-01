@@ -68,7 +68,14 @@ FORBIDDEN_TRUE_FIELDS = {
 
 A5_BLOCKED_STATUS_FIELDS = {"A5", "a5_status"}
 
-REQUIRED_TRUE_FIELDS = {"proposal_only"}
+REQUIRED_TRUE_FIELDS = {
+    "proposal_only",
+    "runtime_activation_false",
+    "A5_blocked",
+    "freeze_ready_false",
+    "official_result_false",
+    "allow_db_write_false",
+}
 
 REQUIRED_NONE_FIELDS = {
     "activation_effect_in_this_pr",
@@ -76,6 +83,7 @@ REQUIRED_NONE_FIELDS = {
     "backend_execution",
     "db_write_mode",
     "production_endpoint_activation",
+    "production_impact",
     "formula_changes",
     "input_pack_changes",
     "calibration_pack_changes",
@@ -788,6 +796,7 @@ def test_activation_guards_reject_backend_execution_and_attempt_markers(
         ("db_write_mode", None),
         ("allocator_impact", "publish"),
         ("backend_execution", "docker"),
+        ("production_impact", "live"),
     ],
 )
 def test_json_activation_guard_requires_side_effect_pins_none(
@@ -876,6 +885,8 @@ def test_text_activation_guard_rejects_production_endpoint_activation_markers(
         ("contract_v1_changes=changed", "contract_v1_changes='changed'"),
         ("allocator_impact=publish", "allocator_impact='publish'"),
         ("backend_execution=docker", "backend_execution='docker'"),
+        ("production_impact: live", "production_impact='live'"),
+        ('{"production_impact":"enabled"}', "production_impact='enabled'"),
         ("proposal_only=false", "proposal_only='false'"),
         ("activation_effect_in_this_pr=runtime", "activation_effect_in_this_pr='runtime'"),
     ],
@@ -950,6 +961,21 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
     kill_switch = _json("kill_switch_plan.json")
     checklist = _json("production_activation_checklist.json")
     checks = {check["id"]: check for check in checklist["checks"]}
+    required_blocking_check_ids = {
+        "technical_review_recorded",
+        "quantitative_review_recorded",
+        "risk_review_recorded",
+        "operations_review_recorded",
+        "approval_matrix_complete",
+        "rollback_dry_run",
+        "kill_switch_dry_run",
+        "monitoring_thresholds_complete",
+    }
+
+    assert required_blocking_check_ids <= checks.keys()
+    for check_id in required_blocking_check_ids:
+        assert checks[check_id]["status"] == "pending"
+        assert checks[check_id]["blocking"] is True
 
     assert monitoring["runtime_activation"] is False
     assert monitoring["activation_allowed"] is False
@@ -966,6 +992,7 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
     for detector_id in critical_detector_ids:
         detector = monitoring_slos_by_id[detector_id]
         assert detector["threshold"] == 0
+        assert detector["status"] == "defined"
         assert detector["alert_severity"] == "critical"
 
     pending_threshold_slos = {
@@ -981,13 +1008,8 @@ def test_monitoring_and_kill_switch_keep_activation_blocked_when_pending() -> No
         assert slo["threshold"] is None
         assert slo["status"] == "pending"
 
-    assert checks["monitoring_thresholds_complete"]["status"] == "pending"
-    assert checks["monitoring_thresholds_complete"]["blocking"] is True
-
     assert kill_switch["runtime_activation"] is False
     assert kill_switch["activation_allowed"] is False
     assert kill_switch["test_status"] == "pending_operator_dry_run"
     assert kill_switch["owner"] == "unassigned"
     assert "Confirm production_endpoint_activation remains none." in kill_switch["validation_steps"]
-    assert checks["kill_switch_dry_run"]["status"] == "pending"
-    assert checks["kill_switch_dry_run"]["blocking"] is True
