@@ -199,49 +199,188 @@ git add tests/test_dark_launch_readiness.py artifacts/a5/open_macro_v03_dark_lau
 git commit -m "feat(a5): scaffold dark launch readiness manifest and guards"
 ```
 
-### Task 2: Review closure record
+### Task 2: Human review closure record with domain-level go/no_go evidence
 
-- [ ] **Step 1: Write the failing test** (append to `tests/test_dark_launch_readiness.py`)
+**Intent:** close the four Phase 0 human review gates with auditable, domain-specific evidence. This is the positive path for the Dark Launch Readiness PR: every domain decision AND every blocking quantitative sub-gate must be `go`. If any domain review or quantitative sub-gate is `no_go`, Phase 1 must not start; the activation path stops in Phase 0 and the proposal is invalidated per `rollback_execution_plan.md`. The artifact's very existence is the "all reviews go" claim — so the tests are positive-path only.
+
+**Required review domains:** `technical`, `quantitative`, `risk`, `operations`. **Required per-domain fields:** `review`, `decision`, `reviewer`, `date`, `evidence_note`, `evidence_refs`. **Required pending quantitative sub-gates:** `turnover`, `drawdown`, `volatility`, `stress_windows`, `out_of_sample` (exactly the pending+blocking gates in `artifacts/a5/open_macro_v03_controlled_activation_proposal_001/quantitative_review_record.json`).
+
+**Anti-vacuous-green hardening (enforces the plan's no-placeholder rule at the test layer):** `_assert_not_template_token` rejects `REAL_*` / `PATH_TO_*` template prefixes that would otherwise slip past a length/`<...>` check; turnover/drawdown/volatility require `max_allowed_* > 0` and `observed_* <= max_allowed_*` so an all-zero template document fails. Without this, a template artifact passes exactly the way the PR #14 findings warned about.
+
+- [ ] **Step 1: Write the failing tests** (append to `tests/test_dark_launch_readiness.py`)
 
 ```python
-def test_review_closure_records_all_four_human_reviews() -> None:
+from datetime import date
+import re
+
+DECISIONS = {"go", "no_go"}
+REQUIRED_REVIEW_DOMAINS = {"technical", "quantitative", "risk", "operations"}
+REQUIRED_QUANT_GATES = {"turnover", "drawdown", "volatility", "stress_windows", "out_of_sample"}
+REQUIRED_TECHNICAL_GATES = {
+    "artifact_immutability_reviewed",
+    "no_formula_input_calibration_contract_changes",
+    "no_pre_stage4_activation_surface",
+    "guard_tests_reviewed",
+}
+REQUIRED_OPERATIONS_GATES = {
+    "rollback_procedure_reviewed",
+    "kill_switch_procedure_reviewed",
+    "monitoring_thresholds_reviewed",
+    "no_productive_side_effects_reviewed",
+}
+_TEMPLATE_PREFIXES = ("REAL_", "PATH_TO_")
+
+
+def _assert_not_template_token(value: str, *, field: str) -> None:
+    # Precise prefix match, not a broad all-caps rule, so legit ids like "GFC_2008" survive.
+    assert not value.startswith(_TEMPLATE_PREFIXES), f"{field} is a template placeholder: {value!r}"
+
+
+def _assert_iso_date(value: str, *, field: str) -> None:
+    assert isinstance(value, str), field
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}", value), field
+    date.fromisoformat(value)
+
+
+def _assert_non_placeholder_text(value: object, *, field: str, min_len: int = 8) -> None:
+    assert isinstance(value, str), field
+    assert value not in PLACEHOLDERS, field
+    assert not value.startswith("<") and not value.endswith(">"), field
+    _assert_not_template_token(value, field=field)
+    assert len(value.strip()) >= min_len, field
+
+
+def _assert_evidence_refs(refs: object, *, field: str) -> None:
+    assert isinstance(refs, list) and refs, field
+    for ref in refs:
+        assert isinstance(ref, dict), field
+        _assert_non_placeholder_text(ref.get("path"), field=f"{field}.path", min_len=10)
+        _assert_non_placeholder_text(ref.get("note"), field=f"{field}.note", min_len=12)
+        sha256 = ref.get("sha256")
+        if sha256 is not None:
+            assert isinstance(sha256, str) and re.fullmatch(r"[0-9a-f]{64}", sha256), field
+
+
+def _assert_domain_review(review: dict[str, Any], *, expected_review: str) -> None:
+    assert review["review"] == expected_review
+    assert review["decision"] in DECISIONS
+    assert review["decision"] == "go"  # positive path only; no_go stops before Phase 1
+    _assert_non_placeholder_text(review["reviewer"], field=f"{expected_review}.reviewer")
+    _assert_iso_date(review["date"], field=f"{expected_review}.date")
+    _assert_non_placeholder_text(review["evidence_note"], field=f"{expected_review}.evidence_note", min_len=30)
+    _assert_evidence_refs(review["evidence_refs"], field=f"{expected_review}.evidence_refs")
+
+
+def _assert_gate_decision(gate: dict[str, Any], *, field: str) -> None:
+    assert gate["decision"] in DECISIONS
+    assert gate["decision"] == "go"  # positive path only
+    _assert_iso_date(gate["date"], field=f"{field}.date")
+    _assert_non_placeholder_text(gate["evidence_note"], field=f"{field}.evidence_note", min_len=30)
+    _assert_evidence_refs(gate["evidence_refs"], field=f"{field}.evidence_refs")
+
+
+def _assert_bounded_metric(measurements: dict[str, Any], observed_key: str, max_key: str, *, gate: str) -> None:
+    observed, max_allowed = measurements[observed_key], measurements[max_key]
+    assert isinstance(observed, (int, float)) and isinstance(max_allowed, (int, float)), gate
+    assert max_allowed > 0, f"{gate}.{max_key} must be a real positive threshold, not a template 0.0"
+    assert observed <= max_allowed, f"{gate}: observed {observed} exceeds max_allowed {max_allowed}"
+
+
+def test_review_closure_records_go_no_go_date_and_evidence_for_all_domains() -> None:
     closure = _json("review_closure_record.json")
     reviews = {review["review"]: review for review in closure["reviews"]}
 
-    assert set(reviews) == {"technical", "quantitative", "risk", "operations"}
-    for review in reviews.values():
-        assert review["decision"] == "go"
-        assert review["reviewer"] not in PLACEHOLDERS
-        assert review["date"] not in PLACEHOLDERS
-        assert review["evidence"] not in PLACEHOLDERS
+    assert set(reviews) == REQUIRED_REVIEW_DOMAINS
+    for review_id in sorted(REQUIRED_REVIEW_DOMAINS):
+        _assert_domain_review(reviews[review_id], expected_review=review_id)
+
     assert closure["all_reviews_recorded"] is True
+    assert closure["all_reviews_go"] is True
+    assert closure["final_decision"] == "go"
+    assert closure["activation_path_status"] == "eligible_for_dark_launch_pr"
     assert closure["activation_allowed"] is False
+    assert closure["runtime_activation"] is False
+
+
+def test_quantitative_review_closes_all_pending_quant_gates() -> None:
+    closure = _json("review_closure_record.json")
+    reviews = {review["review"]: review for review in closure["reviews"]}
+    gates = {gate["gate"]: gate for gate in reviews["quantitative"]["quantitative_gates"]}
+
+    assert set(gates) == REQUIRED_QUANT_GATES
+    for gate_id in sorted(REQUIRED_QUANT_GATES):
+        gate = gates[gate_id]
+        _assert_gate_decision(gate, field=f"quantitative.{gate_id}")
+        _assert_non_placeholder_text(
+            gate["acceptance_criteria"], field=f"quantitative.{gate_id}.acceptance_criteria", min_len=20
+        )
+        assert isinstance(gate["measurements"], dict) and gate["measurements"], gate_id
+
+    _assert_bounded_metric(
+        gates["turnover"]["measurements"], "observed_turnover", "max_allowed_turnover", gate="turnover"
+    )
+    _assert_bounded_metric(
+        gates["drawdown"]["measurements"], "observed_max_drawdown", "max_allowed_drawdown", gate="drawdown"
+    )
+    _assert_bounded_metric(
+        gates["volatility"]["measurements"], "observed_volatility", "max_allowed_volatility", gate="volatility"
+    )
+
+    stress_windows = gates["stress_windows"]["measurements"].get("windows")
+    assert isinstance(stress_windows, list) and stress_windows
+    for window in stress_windows:
+        _assert_non_placeholder_text(window.get("window_id"), field="stress_windows.window_id", min_len=3)
+        _assert_iso_date(window["start_date"], field="stress_windows.start_date")
+        _assert_iso_date(window["end_date"], field="stress_windows.end_date")
+        assert window["decision"] == "go"
+
+    oos = gates["out_of_sample"]["measurements"]
+    _assert_iso_date(oos["start_date"], field="out_of_sample.start_date")
+    _assert_iso_date(oos["end_date"], field="out_of_sample.end_date")
+    assert isinstance(oos.get("metrics"), dict) and oos["metrics"]
+
+
+def test_technical_risk_and_operations_reviews_have_domain_gate_detail() -> None:
+    closure = _json("review_closure_record.json")
+    reviews = {review["review"]: review for review in closure["reviews"]}
+
+    technical_gates = {gate["gate"]: gate for gate in reviews["technical"]["domain_gates"]}
+    assert REQUIRED_TECHNICAL_GATES.issubset(set(technical_gates))
+    for gate_id, gate in technical_gates.items():
+        _assert_gate_decision(gate, field=f"technical.{gate_id}")
+
+    risk = reviews["risk"]
+    assert risk["risk_items_total"] == 13
+    assert risk["risk_items_open"] == 0
+    assert risk["risk_items_status_counts"]["unresolved"] == 0
+    assert risk["risk_items_status_counts"]["activation_blocking"] == 0
+    _assert_evidence_refs(risk["risk_register_refs"], field="risk.risk_register_refs")
+
+    operations_gates = {gate["gate"]: gate for gate in reviews["operations"]["domain_gates"]}
+    assert REQUIRED_OPERATIONS_GATES.issubset(set(operations_gates))
+    for gate_id, gate in operations_gates.items():
+        _assert_gate_decision(gate, field=f"operations.{gate_id}")
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `python -m pytest tests/test_dark_launch_readiness.py::test_review_closure_records_all_four_human_reviews -q -p no:cacheprovider` → FAIL
+- [ ] **Step 2: Run to verify they fail**
 
-- [ ] **Step 3: Create `review_closure_record.json`** with the real Phase 0 decisions:
-
-```json
-{
-  "activation_allowed": false,
-  "all_reviews_recorded": true,
-  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
-  "dark_launch_id": "open_macro_v03_dark_launch_001",
-  "reviews": [
-    {"review": "technical", "decision": "go", "reviewer": "<REAL_NAME>", "date": "<YYYY-MM-DD>", "evidence": "<summary + evidence path>"},
-    {"review": "quantitative", "decision": "go", "reviewer": "<REAL_NAME>", "date": "<YYYY-MM-DD>", "evidence": "<summary + evidence path>"},
-    {"review": "risk", "decision": "go", "reviewer": "<REAL_NAME>", "date": "<YYYY-MM-DD>", "evidence": "<summary + evidence path>"},
-    {"review": "operations", "decision": "go", "reviewer": "<REAL_NAME>", "date": "<YYYY-MM-DD>", "evidence": "<summary + evidence path>"}
-  ],
-  "runtime_activation": false
-}
+```bash
+python -m pytest tests/test_dark_launch_readiness.py -k "review_closure or quantitative_review_closes or domain_gate_detail" -q -p no:cacheprovider
 ```
+Expected: FAIL until `review_closure_record.json` exists with real Phase 0 review evidence.
 
-(The `<...>` values are Phase 0 outputs, not placeholders to commit — the placeholder guard test will reject literal `<...>` strings left behind.)
+- [ ] **Step 3: Create `review_closure_record.json` from real Phase 0 decisions**
 
-- [ ] **Step 4: Run to verify it passes** → PASS
-- [ ] **Step 5: Commit** — `git commit -m "feat(a5): record human review closure for dark launch"`
+Use the schema below. Every `REAL_*`, `PATH_TO_*`, `YYYY-MM-DD`, and `0.0` shown is a schema slot, NOT a value to commit — the Step 1 guards reject `REAL_`/`PATH_TO_` prefixes, non-ISO dates, and `max_allowed_* == 0`. Each domain review carries `review`, `decision`, `reviewer`, `date`, `evidence_note`, `evidence_refs`. The `quantitative` review additionally carries `quantitative_gates` (all five, each with `decision`, `date`, `acceptance_criteria`, `measurements`, `evidence_note`, `evidence_refs`); turnover/drawdown/volatility measurements need real `observed_*`/`max_allowed_*` (with `max_allowed_* > 0`), stress_windows a non-empty `windows` list (each `window_id`, ISO `start_date`/`end_date`, `decision: "go"`), and out_of_sample real `start_date`/`end_date`/`metrics`. The `technical` and `operations` reviews carry `domain_gates` covering `REQUIRED_TECHNICAL_GATES` / `REQUIRED_OPERATIONS_GATES`; the `risk` review carries `risk_items_total: 13`, `risk_items_open: 0`, `risk_items_status_counts` (with `unresolved: 0`, `activation_blocking: 0`), and `risk_register_refs`. Top-level: `all_reviews_recorded: true`, `all_reviews_go: true`, `final_decision: "go"`, `activation_path_status: "eligible_for_dark_launch_pr"`, `activation_allowed: false`, `runtime_activation: false`. Full field-by-field template is in the source revision at `docs/planning/` history; replicate its structure exactly.
+
+- [ ] **Step 4: Run to verify they pass**
+
+```bash
+python -m pytest tests/test_dark_launch_readiness.py -k "review_closure or quantitative_review_closes or domain_gate_detail" -q -p no:cacheprovider
+```
+Expected: PASS only if all four domain reviews are `go`, all five quant sub-gates are `go` with real bounded measurements, every date is ISO, and every review/gate has a concrete evidence note plus at least one non-template evidence ref.
+
+- [ ] **Step 5: Commit** — `git commit -m "feat(a5): record domain review closure for dark launch"`
 
 ### Task 3: Owners assignment record
 
@@ -439,7 +578,7 @@ PR body must state: proposal-only for runtime purposes; A5 stays blocked; flag s
 
 ## Self-Review
 
-- Spec coverage: all five stages of `staged_rollout_plan.json` are mapped to phases; every pending blocking check in `production_activation_checklist.json` is consumed by Phase 0/Phase 1 tasks (four reviews → Task 2; approval matrix owners → Task 3; monitoring thresholds → Task 4; rollback + kill switch dry runs → Task 5; `feature_flag_default_false` and `separate_activation_pr_required` remain structurally enforced).
+- Spec coverage: all five stages of `staged_rollout_plan.json` are mapped to phases; every pending blocking check in `production_activation_checklist.json` is consumed by Phase 0/Phase 1 tasks (four domain reviews + five quantitative sub-gates → Task 2; approval matrix owners → Task 3; monitoring thresholds → Task 4; rollback + kill switch dry runs → Task 5; `feature_flag_default_false` and `separate_activation_pr_required` remain structurally enforced). The five quantitative sub-gates (`turnover`, `drawdown`, `volatility`, `stress_windows`, `out_of_sample`) mirror the pending+blocking gates in `quantitative_review_record.json` and are individually blocking, so an aggregate "go" cannot mask a specific quantitative failure.
 - Placeholder scan: `<...>` tokens appear only as Phase 0 human-input markers with explicit instructions that guard tests reject them if committed.
 - Type consistency: `dark_launch_id`, artifact names, and role names match between tasks and the proposal artifacts they extend.
 - Known dependency: Phase 1 Task 4 requires the Phase 0 refreshed measured run because current shadow evidence has unmeasured metrics (`memory_peak_bytes=0`).
