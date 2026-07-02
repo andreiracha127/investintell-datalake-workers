@@ -1,6 +1,9 @@
 contracts/quant-engine/v1/**/*.json text eol=lf
 docker/quant-engine/entrypoint.sh text eol=lf
 fixtures/input_packs/**/*.json text eol=lf
+fixtures/p1_packs/**/*.json text eol=lf
+harness/**/*.json text eol=lf
+harness/**/*.py text eol=lf
 schemas/input_packs/**/*.json text eol=lf
 artifacts/calibration/**/*.json text eol=lf
 artifacts/calibration/**/*.md text eol=lf
