@@ -3,7 +3,9 @@
 This module holds the NON-artifact logic for the gate-amendment package so both the
 deterministic artifact generator and the test suite share one implementation:
 
-  * ``EVIDENCE_001_SHA256`` — immutability pins for the frozen measured evidence.
+  * ``EVIDENCE_001_SHA256`` — immutability pins for the frozen measured evidence:
+    sha256 of each file's GIT BLOB bytes (``git cat-file blob HEAD:<path>``),
+    checkout-independent — EOL smudging (core.autocrlf) can never break them.
   * carry-semantics stress measurement over the real decision chain (DECISION 1),
   * compressed-sleeve alternative measurement + baseline turnover grid (DECISION 2),
   * OOS re-measurement with fold-turnover seeding excluded (DECISION 3),
@@ -26,28 +28,28 @@ from . import decision, metrics, runner, sleeve
 # --------------------------------------------------------------------------- #
 
 EVIDENCE_001_SHA256: dict[str, str] = {
-    "cells/baseline_current__0bps.json": "7ba3e1229b29cc588665a2b5d9328e44ec6da995c5ca2031285ca43f56b3b837",
-    "cells/baseline_current__10bps.json": "194eb2d086170540e1533d4ee03fa1b3b0c6efd56cc226efdaebe3e9d3d71c77",
-    "cells/baseline_current__25bps.json": "b91ec968319d7e7ee896d8bbb09a3fcfe0553130b27a5f4ee26818a9fdd8d361",
-    "cells/baseline_current__5bps.json": "0c74564780b79d0927fbbd40857776d9394488f08e99306a1a169d581b7ae0de",
-    "cells/growth_plus_2pp__0bps.json": "e361f770a2e7de648f2dd9e68bcdc3c7af14cdf1029b49e27f0005820886df98",
-    "cells/growth_plus_2pp__10bps.json": "892be4416bf0997c67bdcfc07f6b3d00fefb7fa9d9eec439bb332e9a28a57136",
-    "cells/growth_plus_2pp__25bps.json": "18e58f00d45c011bbbcbdf1e4d74c1b4c392d328b01f025f7d56d4becd46df7e",
-    "cells/growth_plus_2pp__5bps.json": "571bbe0c3af4b3b71a35b2d6d10daad6dfac750f8fd8b23cee00def19103be9d",
-    "cells/inflation_plus_2pp__0bps.json": "1dcb5030deb628a8ef46039490755a7071ccb912a7d30ba7b637097da32ed68f",
-    "cells/inflation_plus_2pp__10bps.json": "3e9f73150d0de9dc98228010b6216bbcbd586e6e1c472b3e4d4d778b3ffd7bff",
-    "cells/inflation_plus_2pp__25bps.json": "a164529c09554bcb1004aaae8385f3d1fe789fa21ef0b007611069248accab44",
-    "cells/inflation_plus_2pp__5bps.json": "1dc72f824c9257a358d4c65638108ab9672293348156a48d760c3b0f8eb5ac7d",
-    "cells/risk_tilt_minus_1pp__0bps.json": "189a56e8efb2db9458984ead0534e87d144ecd5422dca9b9cb2d08db82122377",
-    "cells/risk_tilt_minus_1pp__10bps.json": "4445bdfdbd440f43bcaf1bb105900b8e07da122bfb8e11162e826aed8193d1f0",
-    "cells/risk_tilt_minus_1pp__25bps.json": "4d6917949845177351dc5a1c6522f5dea50218a125e46b674b53abf509c74b6c",
-    "cells/risk_tilt_minus_1pp__5bps.json": "aea8708ea2a48c4ee6fd9f1a1f425b49fc4726e6829a7af32496585543584eee",
-    "cells/risk_tilt_plus_1pp__0bps.json": "8af62d47bd7a211d835cbdcd8d2bcae9b0fbdbb3d5d71a5b1bacd499936defb5",
-    "cells/risk_tilt_plus_1pp__10bps.json": "577951ae925f549b1f40e2bebe9eb59dc2b9feeafc1e23aeb16da012bb274789",
-    "cells/risk_tilt_plus_1pp__25bps.json": "4299475ac937557f5493d33c627eb162a0347b88f16a356da0534437effcb8e3",
-    "cells/risk_tilt_plus_1pp__5bps.json": "9b9509238b07ebc48d784a9e49a19a82b157b7edf1ec84a5afa3eb21e5d2ebb9",
-    "metric_backtest_result.json": "6691a5a399f495340a80d87d4b0473afa8e60581393fba63ec8a9a06106a85b7",
-    "quantitative_gate_report.measured.json": "3ad4c1477b1559e672a8528f1b082a11290176d1adc91c467fc95f313793bab1",
+    "cells/baseline_current__0bps.json": "d8c1fd085d42debd1b81b3f38d5904ca952eb253beec5b02f7d0a2cc4a556ea5",
+    "cells/baseline_current__10bps.json": "c7cdd167e8abfb66632b7364bffa2a0293f338134714423a0bb100302b041d53",
+    "cells/baseline_current__25bps.json": "fe6fbad4719ea29189cf1cc5603cd1b84cd64b02496b6b2b895506f64d7676ba",
+    "cells/baseline_current__5bps.json": "3692df48a9d6bd010c766119d1767aff353ffcac78d827acfa71876780226a43",
+    "cells/growth_plus_2pp__0bps.json": "2aaa6d75763da2677924bef43f14c42d829f08bed143806d1e639b7aa7ac6227",
+    "cells/growth_plus_2pp__10bps.json": "6f32b25ed654106092750001dc494da3d9d1f8860367d911aaa437f52d72e115",
+    "cells/growth_plus_2pp__25bps.json": "85550a4abfe44a2293196ea7c139e1d11a0a24baf97aa487fcc873d78872035e",
+    "cells/growth_plus_2pp__5bps.json": "1aa135fa1bb092066e5f45908f00329d2e7de07baadb460bd7fe182a7dc186d6",
+    "cells/inflation_plus_2pp__0bps.json": "dbb5457badc6f9796b14cb0b49c4c75c01e4d120c36402c3885279ee91e26af7",
+    "cells/inflation_plus_2pp__10bps.json": "f967b1646b0b06702cd6a1701b456202b3c152796b676698968e0e4e8641bdcc",
+    "cells/inflation_plus_2pp__25bps.json": "5f4d4e7aed4b2fa75be3f35c155d1faa009d75d8f87e85555e02a4ab1a847e36",
+    "cells/inflation_plus_2pp__5bps.json": "3eeb5fcbeecdac74a15eefd6a1b33de7b84e445355be66c04a634ac98521d38d",
+    "cells/risk_tilt_minus_1pp__0bps.json": "64a727759a0ec84e456b874069911986255b4f23b14416aeba08fbf750dd4179",
+    "cells/risk_tilt_minus_1pp__10bps.json": "2cf2137ce311365519f674879c4dcc072de6005eeca04c78c31bee4ec7b7419d",
+    "cells/risk_tilt_minus_1pp__25bps.json": "cce87cc1179f6ad75028579692b3238a8585da44d6e62c5d6ea01ae8e137d6ad",
+    "cells/risk_tilt_minus_1pp__5bps.json": "766f6216434060e7a4d37ff28ec743c6b0cec5ab2c47720a8cca9990b80a0cab",
+    "cells/risk_tilt_plus_1pp__0bps.json": "ae844471778f1d3c5bfc5e0326bd22c14009bc2acb01be60cda63d5e6f05d2a2",
+    "cells/risk_tilt_plus_1pp__10bps.json": "42871ffa3d0ade105e919c6e5d98160ed6887a8562053c1c7990a62b93c85432",
+    "cells/risk_tilt_plus_1pp__25bps.json": "634f4837fd80420ba7cf03b9c12a8b6e475f84454819ba6d2aeed04827d19503",
+    "cells/risk_tilt_plus_1pp__5bps.json": "9df8975dead793c1d65f343b860053072cd3f1448636150785bb33024ca55cba",
+    "metric_backtest_result.json": "c339e2512dab0e468dcca40251267ef552de517e2105fe82f087ebf09fda7275",
+    "quantitative_gate_report.measured.json": "6d9ac34031aa3569a51f4e0ccc4009b87101f87215a775695c6bccbe6b8fb9e1",
 }
 
 MEASURED_TURNOVER_BASELINE = 1.610346885365  # evidence_001 baseline_current turnover
@@ -183,6 +185,12 @@ def measure_oos_remeasured(
             "one_way_turnover_annualized": excl["max_trailing_252_excl_seed"],
         }
         econ_metric_list.append(econ)
+        # seeding provenance (PR#21 P1): a fold is carried_pre_fold_position only
+        # when the seeding decision precedes the fold test start; otherwise the fold
+        # started with no consumable position (unseeded) and the first in-fold valid
+        # decision performed the acquisition — never report a "future seed".
+        seed_as_of = res.seed_decision_as_of
+        carried = seed_as_of is not None and seed_as_of < fold["test_start"]
         fold_rows.append({
             "fold_index": fold["fold_index"],
             "test_start": fold["test_start"].isoformat(),
@@ -191,6 +199,9 @@ def measure_oos_remeasured(
             "sigma_annual": sigma,
             "MDD": mdd,
             "n_rebalances": len(res.rebalance_dates),
+            "seeding": ("carried_pre_fold_position" if carried
+                        else "unseeded_no_prior_valid_position"),
+            "seed_decision_date": seed_as_of.isoformat() if carried else None,
             "seed_rebalance_date": (res.seed_rebalance_date.isoformat()
                                     if res.seed_rebalance_date else None),
             "seed_one_way_turnover": excl["seed_one_way"],

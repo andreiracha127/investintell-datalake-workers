@@ -99,6 +99,10 @@ class SleeveResult:
     # The first rebalance is the initial empty->position acquisition (the "seed");
     # phase0q_003 DECISION 3 excludes it from fold ECONOMIC turnover.
     seed_rebalance_date: _dt.date | None = None
+    # as_of of the decision that produced the seed position: the last VALID decision
+    # BEFORE window start when carried (PR#21 P1), or the first in-window valid
+    # decision when no prior valid latched position exists (unseeded start).
+    seed_decision_as_of: _dt.date | None = None
 
     def nav_by_date(self) -> dict[_dt.date, float]:
         return dict(zip(self.dates, self.nav))
@@ -353,6 +357,7 @@ def simulate(
     rebalance_dates: list[_dt.date] = []
     turnover_by_date: dict[_dt.date, float] = {}
     reduced_dates: list[_dt.date] = []
+    seed_decision_as_of: _dt.date | None = None
 
     prev_date: _dt.date | None = None
     for date in trading_dates:
@@ -378,6 +383,10 @@ def simulate(
                     weights = dict(desired)
                     active_target = dict(desired)
                     active_quadrant = new_quadrant
+                    if not rebalance_dates:
+                        # initial empty->position acquisition: record which decision
+                        # seeded the window (pre-window carry or first in-window valid).
+                        seed_decision_as_of = decision_row.as_of
                     rebalance_dates.append(date)
                     turnover_by_date[date] = one_way
 
@@ -391,6 +400,7 @@ def simulate(
         reduced_sleeve_dates=sorted(set(reduced_dates)),
         data_quality_flags=prices.data_quality_flags(start, end),
         seed_rebalance_date=rebalance_dates[0] if rebalance_dates else None,
+        seed_decision_as_of=seed_decision_as_of,
     )
 
 
@@ -406,12 +416,22 @@ def _schedule_decisions(
         idx = bisect.bisect_left(trade_set, row.as_of)
         if idx < len(trade_set):
             landing = trade_set[idx]
-            # keep the LATEST decision (by as_of) that lands on a given trade date.
-            # Pre-window lookback decisions all bisect to the first in-window trade
-            # date; the window must be seeded with the most recent latched position
-            # (production semantics), not the earliest lookback quadrant.
+            # Among the decisions landing on a given trade date, keep the LATEST
+            # VALID one (production carry semantics, PR#21 P1): pre-window lookback
+            # decisions all bisect to the first in-window trade date, and the window
+            # must be seeded with the most recent CONSUMABLE latched position — an
+            # abstaining (invalid) latest row must not displace the last valid
+            # position. Only when NO valid decision lands does the latest invalid
+            # row remain (it carries; no trade fires from it at an unseeded start).
             existing = out.get(landing)
-            if existing is None or row.as_of >= existing.as_of:
+            if existing is None:
+                out[landing] = row
+                continue
+            row_valid = row.has_valid_quadrant()
+            existing_valid = existing.has_valid_quadrant()
+            if row_valid and not existing_valid:
+                out[landing] = row
+            elif row_valid == existing_valid and row.as_of >= existing.as_of:
                 out[landing] = row
     return out
 

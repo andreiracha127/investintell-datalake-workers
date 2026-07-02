@@ -24,6 +24,8 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -198,6 +200,64 @@ def test_fold_turnover_single_seed_only_yields_zero_economic_turnover():
     assert out["max_trailing_252_excl_seed"] == pytest.approx(0.0)
 
 
+def test_window_seeds_from_last_valid_pre_window_decision_when_latest_abstains():
+    """PR#21 P1: the fold/window must start with the last VALID position available
+    BEFORE window start even when the LATEST pre-window decision abstains. The old
+    keep-latest-row logic dropped the carry and left the sleeve uninvested."""
+    start = dt.date(2020, 1, 1)
+    prices = sleeve.PriceFrame(_flat_prices(
+        sleeve.SLEEVE_TICKERS, start, 70, {t: 0.0 for t in sleeve.SLEEVE_TICKERS}))
+    decisions = [
+        _D(dt.date(2019, 10, 31), "contraction"),                 # last VALID pre-window
+        _D(dt.date(2019, 11, 30), None, valid=False, reason="deadband"),
+        _D(dt.date(2019, 12, 31), None, valid=False, reason="hold_low_confidence"),
+        _D(dt.date(2020, 2, 29), "expansion"),                    # first in-window valid
+    ]
+    res = sleeve.simulate(prices, decisions, _sp(), start=start,
+                          end=dt.date(2020, 3, 10), cost_bps=0)
+    # seed trade on the FIRST trading date (carry of 2019-10-31 contraction), then a
+    # quadrant change on 2020-02-29 -> two rebalances, not one late seed.
+    assert res.seed_rebalance_date == start
+    assert res.seed_decision_as_of == dt.date(2019, 10, 31)
+    assert len(res.rebalance_dates) == 2
+
+
+def test_window_with_no_prior_valid_decision_stays_unseeded_until_first_valid():
+    """No-consumable-position rule: with NO valid decision before or at window start
+    the sleeve stays uninvested (no artificial re-warmup); the first in-window valid
+    decision performs the initial acquisition, and its as_of is the seed decision."""
+    start = dt.date(2020, 1, 1)
+    prices = sleeve.PriceFrame(_flat_prices(
+        sleeve.SLEEVE_TICKERS, start, 70, {t: 0.0 for t in sleeve.SLEEVE_TICKERS}))
+    decisions = [
+        _D(dt.date(2019, 11, 30), None, valid=False, reason="deadband"),
+        _D(dt.date(2019, 12, 31), None, valid=False, reason="deadband"),
+        _D(dt.date(2020, 2, 29), "expansion"),
+    ]
+    res = sleeve.simulate(prices, decisions, _sp(), start=start,
+                          end=dt.date(2020, 3, 10), cost_bps=0)
+    assert len(res.rebalance_dates) == 1
+    assert res.seed_rebalance_date == dt.date(2020, 2, 29)
+    assert res.seed_decision_as_of == dt.date(2020, 2, 29)
+
+
+def test_oos_remeasured_every_fold_seed_decision_precedes_fold_start():
+    """PR#21 P1 regression on the COMMITTED artifact: every OOS fold's seeding
+    decision date must be strictly BEFORE the fold test start (carry of the last
+    valid pre-fold position); a fold with no prior valid decision must be reported
+    unseeded_no_prior_valid_position, never given an in-fold 'seed'."""
+    oos = _json(EVIDENCE_002 / "oos_remeasured.json")
+    assert oos["folds"], "expected re-measured folds"
+    for fold in oos["folds"]:
+        seed_decision = fold["seed_decision_date"]
+        if seed_decision is None:
+            assert fold["seeding"] == "unseeded_no_prior_valid_position"
+            continue
+        assert fold["seeding"] == "carried_pre_fold_position"
+        assert dt.date.fromisoformat(seed_decision) < dt.date.fromisoformat(fold["test_start"]), (
+            f"fold {fold['fold_index']} seed {seed_decision} not before {fold['test_start']}")
+
+
 def test_simulate_reports_seed_rebalance_date():
     """The sleeve simulation must expose which rebalance is the initial acquisition
     (the seed), so fold turnover can exclude it deterministically."""
@@ -321,22 +381,40 @@ def test_turnover_amendment_shows_cost_sensitivity_and_compressed_alternative():
 # evidence_001 IMMUTABILITY (sha256 pins of all 22 files)                     #
 # --------------------------------------------------------------------------- #
 
-# sha256 pins captured from the immutable measured evidence at branch base.
+# sha256 pins of the GIT BLOB bytes of the immutable measured evidence (PR#21 P1:
+# blob hashing is checkout-independent, so core.autocrlf EOL smudging on any
+# platform can never break the immutability guard).
 EVIDENCE_001_SHA256 = amendments.EVIDENCE_001_SHA256
+EVIDENCE_001_GIT_PREFIX = "artifacts/quant/open_macro_v03_metric_evidence_001"
+
+
+def _git(*args: str) -> bytes:
+    result = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, check=True)
+    return result.stdout
 
 
 def test_evidence_001_is_immutable_all_files_hash_pinned():
-    """Every file under evidence_001 must match its pinned sha256: the measured
-    evidence is IMMUTABLE and this package must never edit it."""
-    files = sorted(p for p in EVIDENCE_001.rglob("*") if p.is_file())
-    rel = {p.relative_to(EVIDENCE_001).as_posix() for p in files}
+    """Every file under evidence_001 must match its pinned sha256, computed over the
+    committed GIT BLOB bytes (git cat-file blob HEAD:<path>), never the on-disk
+    bytes: the measured evidence is IMMUTABLE and this package must never edit it,
+    and the guard must be immune to working-copy EOL smudging."""
+    tracked = _git("ls-tree", "-r", "--name-only", "HEAD",
+                   EVIDENCE_001_GIT_PREFIX).decode("utf-8").split()
+    rel = {t.replace(EVIDENCE_001_GIT_PREFIX + "/", "", 1) for t in tracked}
     assert rel == set(EVIDENCE_001_SHA256), (
-        "evidence_001 file set changed vs the immutability pin")
+        "evidence_001 committed file set changed vs the immutability pin")
     assert len(EVIDENCE_001_SHA256) >= 22
-    for p in files:
-        digest = hashlib.sha256(p.read_bytes()).hexdigest()
-        key = p.relative_to(EVIDENCE_001).as_posix()
+    for key in sorted(EVIDENCE_001_SHA256):
+        blob = _git("cat-file", "blob", f"HEAD:{EVIDENCE_001_GIT_PREFIX}/{key}")
+        digest = hashlib.sha256(blob).hexdigest()
         assert digest == EVIDENCE_001_SHA256[key], f"evidence_001 mutated: {key}"
+    # the on-disk working copy must also still parse to the same JSON content as
+    # the committed blobs (guards accidental local edits without EOL sensitivity).
+    for key in sorted(EVIDENCE_001_SHA256):
+        blob = _git("cat-file", "blob", f"HEAD:{EVIDENCE_001_GIT_PREFIX}/{key}")
+        disk = (EVIDENCE_001 / key).read_text(encoding="utf-8")
+        assert json.loads(disk) == json.loads(blob.decode("utf-8")), (
+            f"evidence_001 working copy diverges from committed blob: {key}")
 
 
 # --------------------------------------------------------------------------- #
@@ -450,22 +528,94 @@ def test_all_new_artifacts_keep_a5_blocked_and_activation_false():
         assert gov.get("db_write_mode", payload.get("db_write_mode")) == "none", path.name
 
 
+# whitespace-tolerant activation/approval markers (PR#21 P2: the committed
+# artifacts are MINIFIED json — '"approved":true' has no space after the colon, so
+# plain substring checks with a space would never match; \s* covers both forms).
+FORBIDDEN_MARKER_PATTERNS = (
+    r'"runtime_activation"\s*:\s*true',
+    r'"activation_allowed"\s*:\s*true',
+    r'"allocator_publish"\s*:\s*true',
+    r'"official_result"\s*:\s*true',
+    r'"freeze_ready"\s*:\s*true',
+    r'"approved"\s*:\s*true',
+    r'"A5"\s*:\s*"unblocked"',
+    r'"db_write_mode"\s*:\s*"write',
+    r"A5=unblocked",
+)
+
+# governance fields whose value must never be True / "unblocked" / "write" anywhere
+# in a parsed artifact (recursive; catches forms no substring scan would).
+_FORBIDDEN_TRUE_FIELDS = frozenset({
+    "runtime_activation", "activation_allowed", "allocator_publish",
+    "official_result", "freeze_ready", "approved", "institutional_approval",
+})
+
+
+def _walk_forbidden(node, path=""):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            where = f"{path}.{key}" if path else key
+            if key in _FORBIDDEN_TRUE_FIELDS:
+                assert value is not True, f"{where} is true"
+            if key == "A5":
+                assert value == "blocked", f"{where} = {value!r}"
+            if key == "db_write_mode":
+                assert value == "none", f"{where} = {value!r}"
+            _walk_forbidden(value, where)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            _walk_forbidden(value, f"{path}[{i}]")
+
+
+def test_forbidden_marker_patterns_catch_minified_and_pretty_forms():
+    """Self-check: the regex patterns match both minified and pretty-printed
+    serializations of an activation flag (the P2 gap this fix closes)."""
+    pattern = FORBIDDEN_MARKER_PATTERNS[0]
+    assert re.search(pattern, '{"runtime_activation":true}')
+    assert re.search(pattern, '{"runtime_activation": true}')
+    assert re.search(pattern, '{"runtime_activation" : true}')
+    assert not re.search(pattern, '{"runtime_activation":false}')
+
+
 def test_new_artifacts_contain_no_activation_or_approval_markers():
-    """No new artifact may contain an activation/approval marker (mirrors the
-    phase0q immutability guard)."""
-    forbidden = (
-        '"runtime_activation": true', '"activation_allowed": true',
-        '"allocator_publish": true', '"official_result": true',
-        '"freeze_ready": true', '"approved": true', "A5=unblocked",
-        '"A5": "unblocked"', '"db_write_mode": "write"',
-    )
+    """No new artifact may contain an activation/approval marker, in EITHER
+    minified or pretty JSON form; additionally every committed artifact file in
+    both new dirs must parse as JSON and pass a recursive field-value check."""
+    scanned = 0
     for root in (PHASE0Q_003, EVIDENCE_002):
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
             text = path.read_text(encoding="utf-8")
-            for marker in forbidden:
-                assert marker not in text, f"{path.name} contains {marker}"
+            for pattern in FORBIDDEN_MARKER_PATTERNS:
+                assert not re.search(pattern, text), f"{path.name} matches {pattern}"
+            payload = json.loads(text)  # every artifact must be valid JSON
+            _walk_forbidden(payload)
+            scanned += 1
+    # the scan must actually cover the committed artifact set (4 deliverables +
+    # 4 evidence_002 files), never vacuously pass on an empty directory.
+    assert scanned >= 8, f"expected >= 8 artifact files scanned, got {scanned}"
+
+
+def test_evidence_002_provenance_pins_a_real_harness_commit():
+    """PR#21 P2: evidence_002 provenance must identify the actual harness code
+    commit that produced the numbers — a real SHA (not a placeholder string) that is
+    an ancestor of HEAD (two-step regeneration, precedent: SNAPSHOT_SOURCE_COMMIT)."""
+    seen = 0
+    for path in sorted(EVIDENCE_002.rglob("*.json")):
+        payload = _json(path)
+        prov = payload.get("provenance")
+        if prov is None:
+            continue
+        seen += 1
+        sha = prov["harness_commit"]
+        assert re.fullmatch(r"[0-9a-f]{7,40}", sha), (
+            f"{path.name}: harness_commit {sha!r} is not a commit SHA")
+        full = _git("rev-parse", "--verify", f"{sha}^{{commit}}").decode().strip()
+        # ancestor-of-HEAD check: the pinned harness code is part of this history.
+        subprocess.run(["git", "merge-base", "--is-ancestor", full, "HEAD"],
+                       cwd=ROOT, check=True)
+    assert seen >= 4, "every evidence_002 payload must carry provenance"
 
 
 def test_no_forbidden_records_created():
