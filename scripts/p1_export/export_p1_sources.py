@@ -34,7 +34,20 @@ from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
 
 EXPORT_ID = "open_macro_v03_p1_sources_001"
-DB_SOURCE = "tiger_t83f4np6x4"
+PINNED_DB_SERVICE_ID = "t83f4np6x4"
+DB_SOURCE = f"tiger_{PINNED_DB_SERVICE_ID}"
+
+
+def assert_pinned_db_source(dsn: str) -> str:
+    """Refuse to stamp prod provenance unless the DSN references the pinned
+    Tiger service. A staging/local export must never be indistinguishable
+    from a prod export in SOURCE.json."""
+    if PINNED_DB_SERVICE_ID not in dsn:
+        raise SystemExit(
+            "refusing export: DSN does not reference pinned Tiger service "
+            f"{PINNED_DB_SERVICE_ID}; SOURCE.json provenance would be false"
+        )
+    return DB_SOURCE
 SCHEMA_VERSION = 1
 
 # Reference sleeve tickers pinned by
@@ -227,7 +240,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from src import db
 
-    conn = db.connect(db.resolve_dsn())
+    dsn = db.resolve_dsn()
+    assert_pinned_db_source(dsn)
+    conn = db.connect(dsn)
     try:
         source = export_p1_sources(conn, Path(args.out), as_of=as_of, now=now)
     finally:

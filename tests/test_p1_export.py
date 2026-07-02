@@ -275,3 +275,39 @@ def test_eod_sql_selects_only_real_schema_columns():
         column = token.strip().split(" AS ")[0].strip()
         assert column in real_columns, f"column {column!r} does not exist in eod_prices"
     assert "adj_close AS adjusted_close" in EOD_PRICES_SQL
+
+
+def test_assert_pinned_db_source_accepts_tiger_service_dsn():
+    """SOURCE.json provenance must only ever be stamped after verifying the DSN
+    actually references the pinned Tiger service (regression: db_source was an
+    unconditional constant, so a staging/local export would carry prod provenance)."""
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = "postgresql://user:secret@t83f4np6x4.abc123.tsdb.cloud.timescale.com:32648/tsdb"
+    assert assert_pinned_db_source(dsn) == "tiger_t83f4np6x4"
+
+
+def test_assert_pinned_db_source_rejects_foreign_dsn():
+    import pytest as _pytest
+
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    with _pytest.raises(SystemExit, match="t83f4np6x4"):
+        assert_pinned_db_source("postgresql://user:secret@localhost:5434/investintell_alloc")
+
+
+def test_cli_refuses_to_connect_when_dsn_is_not_pinned(monkeypatch, tmp_path):
+    import pytest as _pytest
+
+    from scripts.p1_export import export_p1_sources as mod
+    from src import db
+
+    monkeypatch.setattr(db, "resolve_dsn", lambda: "postgresql://u:p@staging-host:5432/other")
+
+    def _must_not_connect(dsn):  # pragma: no cover - reaching this is the failure
+        raise AssertionError("connect() must not be called for a non-pinned DSN")
+
+    monkeypatch.setattr(db, "connect", _must_not_connect)
+
+    with _pytest.raises(SystemExit, match="t83f4np6x4"):
+        mod.main(["--out", str(tmp_path)])

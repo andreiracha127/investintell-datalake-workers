@@ -56,6 +56,10 @@ jobs:
           tests/test_external_executor_handshake.py
           tests/test_controlled_shadow.py
           tests/test_controlled_activation_proposal.py
+          tests/test_phase0q_quant_evidence.py
+          tests/test_phase0q_supplement.py
+          tests/test_p1_export.py
+          tests/test_macro_ingestion.py
           tests/test_remote_ci_runner.py
           -q
 
