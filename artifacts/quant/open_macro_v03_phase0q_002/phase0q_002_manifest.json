@@ -23,7 +23,20 @@
   "execution_model_decision": {
     "chosen": "qc_research_notebook_plus_object_store_cloud_leg AND pure_python_local_leg",
     "rationale": "the proven qc-a3-parity pattern (Research notebook + immutable Object Store prefix + drift refusal) replaces the LEAN-CLI-backtest model from lean_harness_spec.md; the harness compute is pure Python, so the local reproducibility leg runs the same module directly without LEAN docker",
-    "supersedes": "lean_harness_spec.md section 4 execution model",
-    "status": "orchestrator_recommendation_pending_quant_owner_ratification"
+    "supersedes": "lean_harness_spec.md section 4 execution model - recorded here as an explicit architectural decision, not a silent deviation",
+    "reproducibility_matrix": {
+      "legs": ["local_python_pure", "qc_research_object_store"],
+      "requirements": [
+        "canonical deterministic writers",
+        "stable_hash canonical-JSON hashing",
+        "float canonicalization to 12 decimals",
+        "no RNG anywhere in the compute path",
+        "object-store drift refusal (sha mismatch aborts)",
+        "results emitted in contract v1 job-result format via a runner equivalent to runners/parity.py"
+      ]
+    },
+    "status": "ratified_by_quant_owner",
+    "ratified_by": "Andrei Rachadel",
+    "ratified_date": "2026-07-02"
   }
 }

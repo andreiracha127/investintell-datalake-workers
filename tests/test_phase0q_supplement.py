@@ -11,7 +11,9 @@ SUPP_ROOT = ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_002"
 REQUIRED_ARTIFACTS = {
     "phase0q_002_manifest.json",
     "reference_sleeve_proposal.json",
+    "reference_sleeve_candidate.md",
     "harness_window_policy.json",
+    "data_discovery_amendment.json",
 }
 
 SLEEVE_TICKERS = {"SPY", "TLT", "TIP", "GLD", "DBC", "SHY"}
@@ -53,7 +55,7 @@ def test_reference_sleeve_weights_are_complete_and_constraint_consistent() -> No
     assert sleeve["approval_required_from"] == "quant_owner"
     assert sleeve["status"] == "candidate_not_approved"
     assert {inst["ticker"] for inst in sleeve["instruments"]} == SLEEVE_TICKERS
-    assert sleeve["cost_model"]["one_way_cost_bps"] > 0
+    assert sleeve["cost_model"]["one_way_cost_bps_base"] > 0
 
     constraints = sleeve["constraint_baselines"]
     risk_assets = set(constraints["risk_assets_definition"])
@@ -107,6 +109,57 @@ def test_window_policy_pins_pit_authority_and_measured_windows() -> None:
     assert oos["expected_folds_in_primary_window"] == 9
     assert "supersedes" not in policy or policy.get("status") == "candidate_not_approved"
     assert "correction_note" in policy and len(policy["correction_note"]) > 100
+
+
+def test_sleeve_has_cost_sensitivity_fallback_and_data_quality_sections() -> None:
+    sleeve = _json("reference_sleeve_proposal.json")
+
+    cost = sleeve["cost_model"]
+    assert cost["one_way_cost_bps_base"] == 5
+    assert cost["sensitivity_grid_bps"] == [0, 5, 10, 25]
+    assert cost["status"] == "candidate"
+
+    fallback = sleeve["fallback_proxy_policy"]
+    assert "renormalize" in fallback["pre_inception_rule"]
+    assert "quant_owner" in fallback["substitute_rule"]
+    assert set(fallback["substitute_candidates"]) <= SLEEVE_TICKERS
+
+    quality = sleeve["survivorship_and_data_quality"]
+    assert "acknowledged" in quality["survivorship_note"]
+    assert len(quality["checks"]) >= 5
+    assert "NOT a productive allocation" in sleeve["purpose"]
+
+
+def test_execution_model_is_ratified_with_dual_leg_matrix() -> None:
+    manifest = _json("phase0q_002_manifest.json")
+    decision = manifest["execution_model_decision"]
+
+    assert decision["status"] == "ratified_by_quant_owner"
+    assert decision["ratified_by"] == "Andrei Rachadel"
+    matrix = decision["reproducibility_matrix"]
+    assert matrix["legs"] == ["local_python_pure", "qc_research_object_store"]
+    assert any("12 decimals" in req for req in matrix["requirements"])
+    assert any("no RNG" in req for req in matrix["requirements"])
+    assert any("drift refusal" in req for req in matrix["requirements"])
+    assert any("contract v1 job-result" in req for req in matrix["requirements"])
+
+
+def test_data_discovery_amendment_pins_pit_authority_and_series_policies() -> None:
+    amendment = _json("data_discovery_amendment.json")
+
+    assert amendment["amends"].endswith("phase0q_001/data_discovery_report.json")
+    authority = amendment["decision_path_authority"]
+    assert authority["table"] == "macro_observation_vintage"
+    assert set(authority["series_growth"]) == GROWTH_SERIES
+    assert set(authority["series_inflation"]) == INFLATION_SERIES
+
+    assert amendment["windows"]["primary_full_basket"]["start"] == "2014-03-01"
+
+    statuses = {entry["series_id"]: entry for entry in amendment["series_status_updates"]}
+    assert statuses["T10YIE"]["status"] == "non_blocking_for_this_harness"
+    assert statuses["MICH"]["status"] == "expected_vintage_lag"
+    assert "available_at <= decision time" in statuses["MICH"]["policy"]
+    assert "90 days" in statuses["MICH"]["policy"]
 
 
 def test_phase0q_supplement_contains_no_activation_or_approval_markers() -> None:

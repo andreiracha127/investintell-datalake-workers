@@ -6,9 +6,26 @@
   "artifact_type": "phase0q_reference_sleeve_proposal",
   "as_of": "2026-07-02",
   "cost_model": {
-    "one_way_cost_bps": 5,
-    "rationale": "conservative all-in estimate (spread + impact) for the most liquid US ETFs; subject to quant_owner confirmation",
+    "one_way_cost_bps_base": 5,
+    "sensitivity_grid_bps": [0, 5, 10, 25],
+    "rationale": "5 bps is the initial candidate (conservative all-in spread + impact for the most liquid US ETFs), explicitly NOT final approval; every scenario-grid cell runs at all four sensitivity levels so threshold conformance can be judged across the cost envelope",
     "status": "candidate"
+  },
+  "fallback_proxy_policy": {
+    "pre_inception_rule": "before an instrument's first price date (DBC 2006-02-06 is the binding case), drop it from the quadrant row and renormalize the remaining weights proportionally - mirrors the axis_score reduced-coverage renormalization; runs using a renormalized sleeve are labeled reduced_sleeve",
+    "missing_day_rule": "a missing adj_close on a scheduled trade date defers the trade to the next session with data; no interpolation, no synthetic prices",
+    "substitute_candidates": {"DBC": "GSG", "GLD": "IAU", "TLT": "IEF_or_AGG", "SHY": "BIL"},
+    "substitute_rule": "substitutes are listed for transparency only; actually switching any instrument requires a new sleeve proposal revision and quant_owner sign-off"
+  },
+  "survivorship_and_data_quality": {
+    "survivorship_note": "the sleeve consists of currently-listed ETFs chosen ex-post; this is acceptable ONLY because the sleeve measures the decision path's regime-switching behavior, not instrument selection skill - the bias is acknowledged and does not transfer to any production allocation claim",
+    "checks": [
+      "no negative or zero adj_close",
+      "no gap of more than 3 consecutive trading days per instrument inside its coverage window (flag, do not interpolate)",
+      "adjusted-vs-raw close consistency across split/dividend dates (adj series monotone-consistent with split_factor/div_cash)",
+      "zero-volume runs longer than 5 sessions flagged for review",
+      "every backtest run must emit a data_quality section listing triggered flags; any triggered flag marks the affected cells reduced_quality"
+    ]
   },
   "instruments": [
     {"ticker": "SPY", "role": "equities_growth_risk", "eod_prices_coverage": {"min": "1993-01-29", "max": "2026-07-01"}},
@@ -37,7 +54,7 @@
     "trade_trigger": "quadrant change OR any weight drift > 0.05 from target",
     "note": "matches scenario_grid.json monthly cadence assumption; drift band limits turnover between quadrant flips"
   },
-  "purpose": "reference portfolio for MEASURING turnover/drawdown/volatility/stress/OOS of the quadrant decision path. This is a measurement instrument, not the production allocation: the official open_macro_v03 output is the quadrant/tilt signal consumed by the allocator (separate repo, out of scope).",
+  "purpose": "reference portfolio for MEASURING turnover/drawdown/volatility/stress/OOS of the quadrant decision path. This sleeve is ONLY the harness measurement instrument: it is NOT a productive allocation, NOT the official allocator, and its existence grants no allocation authority - the official open_macro_v03 output is the quadrant/tilt signal consumed by the allocator (separate repo, out of scope, allocator_publish=false).",
   "phase0q_id": "open_macro_v03_phase0q_001",
   "phase0q_supplement_id": "open_macro_v03_phase0q_002",
   "runtime_activation": false,
