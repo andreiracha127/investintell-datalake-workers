@@ -14,3 +14,4 @@ artifacts/shadow/**/*.log text eol=lf
 artifacts/handshake/**/*.json text eol=lf
 artifacts/handshake/**/*.md text eol=lf
 artifacts/handshake/**/*.log text eol=lf
+contracts/quant-engine/** text eol=lf
