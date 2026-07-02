@@ -256,3 +256,22 @@ def test_output_files_match_p0_style(tmp_path):
         assert b"\r" not in raw, "output must use LF newlines (byte determinism)"
         payload = json.loads(text)
         assert text == json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+
+
+def test_eod_sql_selects_only_real_schema_columns():
+    """eod_prices in prod (Tiger t83f4np6x4) has adj_close, NOT adjusted_close.
+    The canonical output keeps the field name adjusted_close via an SQL alias.
+    Regression: the fake connection echoed the assumed schema, so a bare
+    adjusted_close reference passed tests but would fail against the real DB."""
+    from scripts.p1_export.export_p1_sources import EOD_PRICES_SQL
+
+    real_columns = {
+        "ticker", "date", "open", "high", "low", "close", "volume",
+        "adj_open", "adj_high", "adj_low", "adj_close", "adj_volume",
+        "div_cash", "split_factor",
+    }
+    select_clause = EOD_PRICES_SQL.split("FROM")[0]
+    for token in select_clause.replace("SELECT", "").replace("\n", " ").split(","):
+        column = token.strip().split(" AS ")[0].strip()
+        assert column in real_columns, f"column {column!r} does not exist in eod_prices"
+    assert "adj_close AS adjusted_close" in EOD_PRICES_SQL

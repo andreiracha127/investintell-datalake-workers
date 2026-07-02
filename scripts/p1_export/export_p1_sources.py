@@ -60,7 +60,7 @@ MACRO_VINTAGE_SQL = (
 )
 
 EOD_PRICES_SQL = (
-    "SELECT ticker, date, close, adjusted_close, volume\n"
+    "SELECT ticker, date, close, adj_close AS adjusted_close, volume\n"
     "FROM eod_prices\n"
     "WHERE ticker = ANY(%(tickers)s)\n"
     "  AND date >= %(min_date)s\n"
