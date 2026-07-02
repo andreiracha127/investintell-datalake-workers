@@ -1,0 +1,23 @@
+{
+  "a3_status": "open_macro_v03",
+  "a4_status": "input_pack_certified_for_calibration",
+  "a5_status": "blocked",
+  "classification": "input_pack_verified",
+  "contract_bundle_sha256": "a0770412040a582aebd3cc8e37de532739916cb239833e07fe23ba9cca683277",
+  "errors": [],
+  "execution_id": "input-pack-dry-run-84bdfa8012a73186",
+  "freeze_ready": false,
+  "input_pack_id": "open_macro_v03_certified_input_pack_001",
+  "input_pack_sha256": "45e8ad3e7fcf518b3a8c04890441932b76bae2904943fcda8507cb0d40e8232e",
+  "job_id": "input-pack-dry-run-84bdfa8012a73186",
+  "job_type": "certified_input_pack_dry_run",
+  "output_logical_hashes": {
+    "input_pack_sha256": "45e8ad3e7fcf518b3a8c04890441932b76bae2904943fcda8507cb0d40e8232e",
+    "source_snapshot_sha256": "8947bf94003403de8ffaece43ea423afe635410b0b3ccbd92bf80443a7497234"
+  },
+  "run_fingerprint": "84bdfa8012a73186f9def3d38ef081d27f76feb3deb490ed89d05832f31a37c4",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "source_snapshot_sha256": "8947bf94003403de8ffaece43ea423afe635410b0b3ccbd92bf80443a7497234",
+  "status": "succeeded"
+}

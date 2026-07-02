@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "job_type": "a3_qc_parity",
+  "job_id": "dde58767-3c86-464d-8b40-78f304c27725",
+  "execution_id": "b3339b5b-cb15-4634-a852-25dedf5fe883",
+  "run_fingerprint": "d1c8e0da1dd896fb8df109e5dd3a4dfed1ffe5d5aabc8f5735e92e6f43342fd8",
+  "status": "succeeded",
+  "classification": "passed",
+  "jobs": 4,
+  "artifact_prefix": "s3://investintell-outputs/g0/job-1/bundle",
+  "output_logical_hashes": {
+    "runtime_replay_logical_hash": "de46dfb7acaf40bf368cfa9a06192a655b9f938e9000edc01d8a34fddf4a3024",
+    "counterfactual_replay_logical_hash": "0238d3b5583e06381c3ae2914a80b64f58bc04c50fac455d7e6285228922b021",
+    "metrics_canonical_logical_hash": "70014a0a04fa26faf8aec88227f0f1fea381091acb6ac307fae30b77172300d3",
+    "metrics_raw_sha256": "a8966bda995a50426ec3244b5b83dd8fe72746b3cdb46c03cd771eced25ae497",
+    "model_evaluation_hash": "10198d7603036c3327ac9e67"
+  },
+  "errors": [],
+  "runtime_activation": true,
+  "a3_status": "open_macro_v03",
+  "a4_status": "harness_ready_provisional_A3",
+  "a5_status": "blocked"
+}

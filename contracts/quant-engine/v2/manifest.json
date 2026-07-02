@@ -1,0 +1,74 @@
+{
+  "bundle_sha256": "sha256:db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
+  "contract_version": "2.0.0",
+  "files": [
+    {
+      "path": "engine-manifest.schema.json",
+      "sha256": "3a622babb010f8aa73a9b79736b764d9065cb530c4e1e4b5e035573db7139cb9"
+    },
+    {
+      "path": "fixtures/invalid/engine-manifest.runtime-activation-true.json",
+      "sha256": "222040edf17972b85171fff08843425352dd4e43ba64963b1b91f9d6791f0a75"
+    },
+    {
+      "path": "fixtures/invalid/job-request.additional-property.json",
+      "sha256": "d4e83805e00ba3dc8149f2b71f1ae94546c68f9b140c680ff26a7950c713cc5e"
+    },
+    {
+      "path": "fixtures/invalid/job-request.missing-engine-image-digest.json",
+      "sha256": "97cb0331703018bb27d759c6322ebdcbac71b1181dc9d66ab268f899ce271bc4"
+    },
+    {
+      "path": "fixtures/invalid/job-request.mutable-image-tag.json",
+      "sha256": "bf5abbdf3e367133a56952cc815de66e330b5f192e7642ff7968dd8b11242941"
+    },
+    {
+      "path": "fixtures/invalid/job-request.offline-false.json",
+      "sha256": "39483a8c3ee2bcc1826dc6d2059d8acc1fabee86cfc22354fca7f0da3ce105e8"
+    },
+    {
+      "path": "fixtures/invalid/job-result.a5-not-blocked.json",
+      "sha256": "e2924c54355e5b64bbc75829bc00aa747294938a71c0743b17ac8842ef5c4c7c"
+    },
+    {
+      "path": "fixtures/invalid/job-result.runtime-activation-true.json",
+      "sha256": "8ed6e481498e3d3b02d36bbcb6c1159e574c4602882236c14ceb04a30a58afda"
+    },
+    {
+      "path": "fixtures/valid/engine-manifest.offline.json",
+      "sha256": "7378bbae98f3341c646df79d3fd89d7c932bd00009e4d140283cc8ee3c408702"
+    },
+    {
+      "path": "fixtures/valid/job-request.input-pack-dry-run.json",
+      "sha256": "0aa0f294f3f35170d1732d5b0a4b86f8d1deb0aa88d6d9685091fa09632cc1ec"
+    },
+    {
+      "path": "fixtures/valid/job-request.metric-backtest.json",
+      "sha256": "49b8ec65537302de6aae352731338f803d2a9cf368081561e4a0fe92b0b54a11"
+    },
+    {
+      "path": "fixtures/valid/job-request.minimal.json",
+      "sha256": "decb2500353d4b44e916da343e00444f5bc14eae872059633ddf35ac1e82eaf9"
+    },
+    {
+      "path": "fixtures/valid/job-result.input-pack-dry-run.json",
+      "sha256": "860f44575106a02a0924993ce7e1b69624dd94000b7d3ff4b3878385db2737ed"
+    },
+    {
+      "path": "fixtures/valid/job-result.metric-backtest.json",
+      "sha256": "f7dc1bb39518f52c9d10092838730f0fb4dcbbd55ce88cc59213612dbcc963d7"
+    },
+    {
+      "path": "fixtures/valid/job-result.passed.json",
+      "sha256": "c797e5cb02755f55a1d85a7c1be8d4da83156c726f536b33466ea8c5a770140e"
+    },
+    {
+      "path": "job-request.schema.json",
+      "sha256": "17a05b7111731b3ef7540b145c8e8235480ba4fcbb90de73a881007a1a0c7e3b"
+    },
+    {
+      "path": "job-result.schema.json",
+      "sha256": "6b41a51977afa9e76769466a0cd7e833747ed26c9a51ce145dae85fbe1281a3a"
+    }
+  ]
+}
