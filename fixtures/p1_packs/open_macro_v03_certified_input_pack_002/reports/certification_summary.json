@@ -1,0 +1,21 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "as_of": "2026-06-30",
+  "classification": "metric_evidence_only",
+  "db_write_mode": "none",
+  "engine_network_required": false,
+  "has_derived_layer": false,
+  "input_pack_id": "open_macro_v03_certified_input_pack_002",
+  "official_result": false,
+  "official_source_tables": [
+    "macro_observation_vintage",
+    "eod_prices"
+  ],
+  "profile": "open_macro_v03",
+  "raw_equals_canonical": true,
+  "runtime_activation": false,
+  "schema_version": "v2",
+  "status": "candidate_not_approved"
+}
