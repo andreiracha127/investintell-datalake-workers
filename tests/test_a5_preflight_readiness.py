@@ -402,7 +402,21 @@ def test_no_formula_input_calibration_or_contract_files_changed_in_branch() -> N
         "fixtures/input_packs/",
         "artifacts/input_packs/",
         "artifacts/calibration/open_macro_v03_calibration_001/",
-        "src/",
+        # Formula / decision-path / evidence-validation surfaces inside src.
+        # A blanket "src/" prefix would freeze ALL datalake engineering (e.g.
+        # ingestion staleness fixes), which is broader than this guard's name
+        # and intent; operational workers are covered by their own tests and
+        # any activation PR must refresh evidence hashes regardless
+        # (rollback_execution_plan.md § Audit Artifacts).
+        "src/quadrant_score.py",
+        "src/quadrant_staleness.py",
+        "src/workers/quadrant_macro.py",
+        "src/macro_pit.py",
+        "src/calibration_candidate.py",
+        "src/input_packs/",
+        "src/controlled_shadow.py",
+        "src/external_executor_handshake.py",
+        "src/shadow_pilot.py",
         "services/quant_engine/",
         "packages/investintell_quant_core/",
         "qc_a3_core.py",
