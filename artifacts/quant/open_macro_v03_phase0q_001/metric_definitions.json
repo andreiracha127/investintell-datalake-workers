@@ -1,0 +1,47 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_metric_definitions",
+  "conventions": {
+    "nav_basis": "daily strategy NAV series produced by the harness backtest, net of modeled transaction costs",
+    "return_definition": "daily log returns r_t = ln(NAV_t / NAV_{t-1})",
+    "trading_days_per_year": 252
+  },
+  "metrics": {
+    "annualized_volatility": {
+      "definition": "sigma_annual = stdev(r_t over evaluation window, sample) * sqrt(252)",
+      "unit": "annualized_ratio",
+      "window_rule": "computed per evaluation window (full period, each walk-forward fold, each stress window)"
+    },
+    "max_drawdown": {
+      "definition": "MDD = max over t of (peak_t - NAV_t) / peak_t, where peak_t = max(NAV_s for s <= t)",
+      "unit": "ratio",
+      "window_rule": "computed per evaluation window; stress windows use window-local peak"
+    },
+    "out_of_sample_stability": {
+      "definition": "walk-forward folds per stress_oos_policy.json; per fold report {return_annualized, sigma_annual, MDD, one_way_turnover_annualized}; stability metric = max absolute deviation of each fold metric from the cross-fold median",
+      "unit": "per_fold_metrics_plus_stability",
+      "window_rule": "folds defined in stress_oos_policy.json; no fold may breach the profile thresholds"
+    },
+    "stress_window_behavior": {
+      "definition": "per named stress window report {window_return, window_MDD, worst_5d_return, decision_coverage}; decision_coverage = fraction of scheduled decision dates with a valid quadrant decision (no NaN, no missing inputs beyond coverage policy)",
+      "unit": "per_window_metrics",
+      "window_rule": "windows enumerated in stress_oos_policy.json"
+    },
+    "turnover": {
+      "definition": "one_way_turnover_rebalance = 0.5 * sum_i |w_i,t_post - w_i,t_pre|; one_way_turnover_annualized = sum of one_way_turnover_rebalance over trailing 252 trading days",
+      "explicit_prohibition": "turnover_proxy (baseline_distance from calibration metrics_manifest.json) is NOT turnover and MUST NOT be used as turnover evidence",
+      "unit": "annualized_one_way_ratio",
+      "window_rule": "computed per evaluation window"
+    }
+  },
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved",
+  "strategy_design_bounds": {
+    "note": "Design-level upper bounds derived from the calibration parameter grid (growth/inflation weight probes of +/-2pp and risk_tilt of +/-1pp around the 50/50 baseline); used to sanity-check thresholds, not as evidence",
+    "max_one_way_weight_change_per_rebalance": 0.05,
+    "rebalance_frequency_assumption": "monthly decision cadence with quadrant-flip-driven reallocations"
+  }
+}

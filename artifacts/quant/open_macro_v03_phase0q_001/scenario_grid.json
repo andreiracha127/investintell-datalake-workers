@@ -1,0 +1,27 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_scenario_grid",
+  "dimensions": {
+    "evaluation_windows": [
+      "full_primary_window_2016_09_07_to_2026_06_30",
+      "walk_forward_folds_per_stress_oos_policy",
+      "stress_windows_per_stress_oos_policy"
+    ],
+    "parameter_candidates": [
+      {"candidate_id": "baseline_current", "growth_weight": 0.5, "inflation_weight": 0.5, "risk_tilt": 0.0, "defensive_floor_delta_pp": 0, "risk_cap_delta_pp": 0},
+      {"candidate_id": "growth_plus_2pp", "growth_weight": 0.52, "inflation_weight": 0.48, "risk_tilt": 0.0, "defensive_floor_delta_pp": 0, "risk_cap_delta_pp": 0},
+      {"candidate_id": "inflation_plus_2pp", "growth_weight": 0.48, "inflation_weight": 0.52, "risk_tilt": 0.0, "defensive_floor_delta_pp": 0, "risk_cap_delta_pp": 0},
+      {"candidate_id": "risk_tilt_plus_1pp", "growth_weight": 0.5, "inflation_weight": 0.5, "risk_tilt": 0.01, "defensive_floor_delta_pp": 0, "risk_cap_delta_pp": 0},
+      {"candidate_id": "risk_tilt_minus_1pp", "growth_weight": 0.5, "inflation_weight": 0.5, "risk_tilt": -0.01, "defensive_floor_delta_pp": 0, "risk_cap_delta_pp": 0}
+    ],
+    "profiles": ["conservative", "base", "aggressive"],
+    "reproducibility_matrix": {"environments": ["lean_cli_local_docker", "quantconnect_cloud"], "runs_per_environment": 2, "determinism_requirement": "identical decision series and metric outputs across all runs (bitwise on decision series, 1e-12 tolerance on float metrics)"}
+  },
+  "grid_note": "parameter candidates replicate the calibration parameter_grid.json exactly so harness results are directly comparable with calibration evidence; no new parameters are introduced in Phase 0Q",
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "seed_policy": {"random_seed": 20260626, "note": "same seed as calibration_config.json; the strategy is deterministic given inputs, the seed pins any tie-breaking"},
+  "status": "candidate_not_approved"
+}

@@ -1,0 +1,51 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "approved": false,
+  "approval_required_from": "quant_owner",
+  "artifact_type": "phase0q_threshold_candidate_report",
+  "derivation_basis": {
+    "design_bounds": "calibration parameter grid limits tilts to +/-2pp weights and +/-1pp risk_tilt around the 50/50 baseline, bounding one-way turnover per rebalance at ~0.05; monthly cadence bounds the design-maximum annualized one-way turnover at ~0.60",
+    "empirical_status": "NOT empirically validated - no harness run exists yet; every threshold below is a design-and-domain-reasoned candidate that MUST be confronted with measured harness output before quant sign-off",
+    "market_anchors": "balanced multi-asset reference drawdowns (COVID_2020 ~20%, INFLATION_SHOCK_2022 ~20-25%, GFC_2008 ~30-35%) and typical tactical-allocation-overlay volatility of 6-12% annualized",
+    "profile_semantics": "conservative = strategy must behave strictly better than a balanced benchmark; base = strategy may match balanced-benchmark risk; aggressive = outer tolerance beyond which behavior is outside design intent regardless of preference"
+  },
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "profiles": [
+    {
+      "profile": "conservative",
+      "max_one_way_turnover_annualized": 0.30,
+      "max_drawdown": 0.15,
+      "max_annualized_volatility": 0.08,
+      "min_worst_5d_return": -0.06,
+      "max_fold_volatility_deviation": 0.03,
+      "max_fold_mdd_deviation": 0.05,
+      "derivation": "turnover at half the design ceiling assuming 2-4 quadrant transitions/year; drawdown/volatility set below balanced-benchmark stress outcomes so the overlay must demonstrably dampen risk"
+    },
+    {
+      "profile": "base",
+      "max_one_way_turnover_annualized": 0.60,
+      "max_drawdown": 0.25,
+      "max_annualized_volatility": 0.12,
+      "min_worst_5d_return": -0.10,
+      "max_fold_volatility_deviation": 0.05,
+      "max_fold_mdd_deviation": 0.08,
+      "derivation": "turnover equals the design ceiling (12 rebalances x 0.05 one-way) - exceeding it means the model is behaving outside its parameter-grid design; drawdown/volatility match balanced-benchmark historical stress outcomes"
+    },
+    {
+      "profile": "aggressive",
+      "max_one_way_turnover_annualized": 1.00,
+      "max_drawdown": 0.35,
+      "max_annualized_volatility": 0.18,
+      "min_worst_5d_return": -0.15,
+      "max_fold_volatility_deviation": 0.08,
+      "max_fold_mdd_deviation": 0.12,
+      "derivation": "outer tolerance anchored to GFC-class balanced-benchmark drawdown; any breach here is unconditionally disqualifying because it exceeds worst-case design intent"
+    }
+  ],
+  "recommended_profile_for_first_activation": "base",
+  "recommendation_note": "base profile is recommended for the first controlled activation: conservative risks rejecting a sound strategy on benchmark-level stress alone, aggressive tolerates behavior the parameter grid was never designed to produce. Final choice is the quant_owner's decision at review time, informed by harness measurements.",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved"
+}

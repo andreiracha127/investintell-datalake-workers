@@ -1,0 +1,51 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "approved": false,
+  "artifact_type": "phase0q_quantitative_gate_report_candidate",
+  "as_of": "2026-07-02",
+  "gates": [
+    {
+      "gate": "turnover",
+      "status": "no_go_pending_metric_harness",
+      "exists": "turnover_proxy in calibration metrics_manifest.json (values 0.0-0.04) - explicitly disqualified as evidence because it is baseline_distance, not measured turnover",
+      "missing": ["measured one_way_turnover_annualized from harness backtest", "quant_owner-approved threshold (candidates proposed in threshold_candidate_report.json)"],
+      "evidence_refs": [{"path": "artifacts/calibration/open_macro_v03_calibration_001/metrics_manifest.json", "note": "proxy source, disqualified"}, {"path": "src/calibration_candidate.py", "note": "turnover_proxy = round(baseline_distance, 12) at line 504"}]
+    },
+    {
+      "gate": "drawdown",
+      "status": "no_go_pending_metric_harness",
+      "exists": "nothing - no drawdown value appears in any open_macro_v03 artifact",
+      "missing": ["measured max_drawdown per full window, folds, and stress windows", "quant_owner-approved threshold"],
+      "evidence_refs": [{"path": "artifacts/calibration/open_macro_v03_calibration_001/invariant_report.json", "note": "max_drawdown listed as explicitly_unset"}]
+    },
+    {
+      "gate": "volatility",
+      "status": "no_go_pending_metric_harness",
+      "exists": "nothing - volatility appears in no open_macro_v03 artifact",
+      "missing": ["measured annualized volatility per window", "quant_owner-approved threshold"],
+      "evidence_refs": [{"path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json", "note": "institutional_limits explicitly_unset"}]
+    },
+    {
+      "gate": "stress_windows",
+      "status": "no_go_pending_metric_harness",
+      "exists": "one 3-day fixture window (p0_latest_macro_rates) defined but never evaluated with metrics",
+      "missing": ["evaluated stress windows per stress_oos_policy.json (4 full_series + 2 reduced_coverage)", "per-window MDD, worst_5d_return, decision_coverage"],
+      "evidence_refs": [{"path": "artifacts/quant/open_macro_v03_phase0q_001/stress_oos_policy.json", "note": "candidate window set with real dates"}]
+    },
+    {
+      "gate": "out_of_sample",
+      "status": "no_go_pending_metric_harness",
+      "exists": "degenerate 1-day OOS window (start=end=2026-06-26) in calibration config; walk_forward.supported=false on the P0 fixture",
+      "missing": ["rolling walk-forward folds over the primary window 2016-09-07..2026-06-30 (expected 6 folds)", "per-fold metrics and stability measure"],
+      "evidence_refs": [{"path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_config.json", "note": "windows.walk_forward.supported=false, three-day deterministic evidence window only"}]
+    }
+  ],
+  "overall_recommendation": "no_go_pending_metric_harness",
+  "overall_recommendation_rationale": "Historical data is sufficient in the Cloud DB (eod_prices since 1962, macro_data since 1959, nav_timeseries since 1970; full-series coverage from 2016-09-07), so the blocker is NOT data availability. The blockers are: (1) no historical certified input pack - the builder only reads 3-day P0 fixtures; (2) no metric harness - no code computes turnover, drawdown, volatility, stress or OOS metrics for open_macro_v03. Both are specified for build in lean_harness_spec.md.",
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved",
+  "task2_gate_effect": "Task 2 of the dark launch plan remains BLOCKED; review_closure_record.json must not be created until a non-candidate quantitative_gate_report.json exists with measured values and all five gates go"
+}

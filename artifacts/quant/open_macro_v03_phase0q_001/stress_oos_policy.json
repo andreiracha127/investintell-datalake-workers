@@ -1,0 +1,35 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_stress_oos_policy",
+  "coverage_policy": {
+    "full_series_start": "2016-09-07",
+    "pre_full_series_windows": "windows starting before full_series_start require the reduced-coverage axis policy already modeled by quadrant_macro coverage/u_floor mechanics; such runs are labeled reduced_coverage and are supplementary, never primary evidence",
+    "primary_evidence_window": {"start": "2016-09-07", "end": "2026-06-30"}
+  },
+  "out_of_sample": {
+    "method": "rolling_walk_forward",
+    "train_months": 36,
+    "test_months": 12,
+    "step_months": 12,
+    "expected_folds_in_primary_window": 6,
+    "fold_rule": "train and test windows are contiguous and non-overlapping within a fold; parameters frozen at train end; no lookahead into test",
+    "acceptance": "every fold must satisfy the selected profile thresholds in threshold_candidate_report.json; stability metric (max deviation from cross-fold median) must not exceed the profile stability bound"
+  },
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved",
+  "stress_windows": [
+    {"window_id": "COVID_2020", "start_date": "2020-02-15", "end_date": "2020-04-30", "coverage": "full_series", "rationale": "fastest equity drawdown on record; tests quadrant flip latency and defensive floor"},
+    {"window_id": "INFLATION_SHOCK_2022", "start_date": "2022-01-01", "end_date": "2022-10-31", "coverage": "full_series", "rationale": "simultaneous equity and duration drawdown; the core failure mode a growth/inflation quadrant model must navigate"},
+    {"window_id": "SVB_2023", "start_date": "2023-03-01", "end_date": "2023-05-31", "coverage": "full_series", "rationale": "credit stress with rates whipsaw; tests credit-sensitive axis inputs (BAML OAS series)"},
+    {"window_id": "Q4_2018", "start_date": "2018-10-01", "end_date": "2018-12-31", "coverage": "full_series", "rationale": "late-cycle tightening drawdown with fast recovery; tests whipsaw turnover"},
+    {"window_id": "GFC_2008", "start_date": "2007-10-01", "end_date": "2009-03-31", "coverage": "reduced_coverage", "rationale": "deepest modern drawdown; supplementary evidence under reduced-coverage axis policy"},
+    {"window_id": "TAPER_2013", "start_date": "2013-05-01", "end_date": "2013-09-30", "coverage": "reduced_coverage", "rationale": "duration shock without growth shock; supplementary quadrant-classification test"}
+  ],
+  "stress_acceptance": {
+    "decision_coverage_min": 1.0,
+    "note": "decision_coverage below 1.0 in a full_series window is an automatic no_go for that window; window MDD and worst_5d_return are judged against the selected profile in threshold_candidate_report.json"
+  }
+}
