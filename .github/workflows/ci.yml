@@ -66,6 +66,7 @@ jobs:
           tests/test_contract_metric_backtest.py
           tests/test_p1_pack.py
           tests/test_remote_ci_runner.py
+          tests/test_phase0q_harness.py
           -q
 
       - name: Compile Python modules
