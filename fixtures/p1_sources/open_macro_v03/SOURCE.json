@@ -1,0 +1,52 @@
+{
+  "A5": "blocked",
+  "as_of": "2026-06-30",
+  "db_source": "tiger_t83f4np6x4",
+  "export_id": "open_macro_v03_p1_sources_001",
+  "exported_at": "2026-07-02T15:10:53.749086+00:00",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "tables": [
+    {
+      "max_date": "2026-05-01",
+      "min_date": "1919-01-01",
+      "params": {
+        "as_of_end": "2026-06-30T23:59:59.999999+00:00",
+        "series_ids": [
+          "ACOGNO",
+          "AHETPI",
+          "CPILFESL",
+          "INDPRO",
+          "MICH",
+          "PAYEMS",
+          "PCEC96",
+          "PPIFIS"
+        ]
+      },
+      "row_count": 70747,
+      "sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
+      "sql": "SELECT series_id, observation_period, vintage_date, value, available_at,\n       revision_number, source, source_spec_version\nFROM macro_observation_vintage\nWHERE series_id = ANY(%(series_ids)s)\n  AND available_at <= %(as_of_end)s\nORDER BY series_id, observation_period, vintage_date",
+      "table": "macro_observation_vintage"
+    },
+    {
+      "max_date": "2026-06-30",
+      "min_date": "1998-01-02",
+      "params": {
+        "as_of": "2026-06-30",
+        "min_date": "1998-01-01",
+        "tickers": [
+          "SPY",
+          "TLT",
+          "TIP",
+          "GLD",
+          "DBC",
+          "SHY"
+        ]
+      },
+      "row_count": 35449,
+      "sha256": "2ddd58be82164a156e125a26535cf3361c7ea8efa7adba317497142c1a1f2407",
+      "sql": "SELECT ticker, date, close, adj_close AS adjusted_close, volume\nFROM eod_prices\nWHERE ticker = ANY(%(tickers)s)\n  AND date >= %(min_date)s\n  AND date <= %(as_of)s\nORDER BY ticker, date",
+      "table": "eod_prices"
+    }
+  ]
+}
