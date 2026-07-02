@@ -39,6 +39,9 @@ jobs:
       - name: Verify contract bundle
         run: python scripts/contract_bundle.py verify
 
+      - name: Verify contract bundle v2
+        run: python scripts/contract_bundle.py verify --bundle-dir contracts/quant-engine/v2
+
       - name: Run governance and quant-engine tests
         run: >-
           python -m pytest
@@ -60,6 +63,7 @@ jobs:
           tests/test_phase0q_supplement.py
           tests/test_p1_export.py
           tests/test_macro_ingestion.py
+          tests/test_contract_metric_backtest.py
           tests/test_remote_ci_runner.py
           -q
 
