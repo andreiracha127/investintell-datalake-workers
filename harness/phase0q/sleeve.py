@@ -225,9 +225,33 @@ def _compressed_book_50() -> dict[str, dict[str, float]]:
 _COMPRESSED_BOOK_50: dict[str, dict[str, float]] | None = None
 
 
+def variant_book(compression_factor: float) -> dict[str, dict[str, float]]:
+    """Per-quadrant weight book for a compression-grid variant (compression_grid_001).
+
+    ``compression_factor`` is the FRACTION of the original inter-quadrant distance
+    each quadrant weight vector is moved TOWARD the four-quadrant mean:
+
+      * factor 0.0  -> the untouched ``PER_QUADRANT_BASELINE_WEIGHTS`` (``baseline_100``,
+        i.e. 100% of the original inter-quadrant distance RETAINED);
+      * factor 0.5  -> ``sleeve_compressed_50`` (== :func:`compressed_quadrant_weights`
+        (0.5); 50% of the distance retained);
+      * factor 0.75 -> ``compressed_25`` (only 25% of the distance retained, most
+        compressed of the grid).
+
+    Naming convention (quant_owner, Andrei Rachadel, 2026-07-02): ``compressed_N``
+    means N% of the original inter-quadrant distance is RETAINED, so
+    ``compression_factor = 1 - N/100``. ``baseline_100`` returns the baseline book
+    unchanged (identity), which is exactly what ``compressed=False`` uses.
+    """
+    if compression_factor == 0.0:
+        return {k: dict(v) for k, v in PER_QUADRANT_BASELINE_WEIGHTS.items()}
+    return compressed_quadrant_weights(compression_factor)
+
+
 def target_weights(
     quadrant: str, params: SleeveParams, available: Sequence[str],
     *, compressed: bool = False,
+    book: Mapping[str, Mapping[str, float]] | None = None,
 ) -> dict[str, float]:
     """Constrained target weights for a quadrant given scenario params and the
     price-available instrument subset (pre-inception renormalization).
@@ -236,11 +260,18 @@ def target_weights(
     enforce risk_cap / defensive_floor -> final renormalize to sum 1.
 
     ``compressed`` selects the ``sleeve_compressed_50`` baseline book (DECISION 2
-    alternative measurement) instead of the standard per-quadrant baseline.
+    alternative measurement) instead of the standard per-quadrant baseline. ``book``
+    (compression_grid_001) supplies an explicit per-quadrant weight book (e.g. from
+    :func:`variant_book`) and takes precedence over ``compressed`` when given.
     """
     key = QUADRANT_TO_KEY[quadrant]
-    book = _compressed_book_50() if compressed else PER_QUADRANT_BASELINE_WEIGHTS
-    weights = dict(book[key])
+    if book is not None:
+        source = book
+    elif compressed:
+        source = _compressed_book_50()
+    else:
+        source = PER_QUADRANT_BASELINE_WEIGHTS
+    weights = dict(source[key])
 
     # risk_tilt: shift between SPY (risk) and SHY (defensive), clamped non-negative.
     tilt = params.risk_tilt
@@ -329,6 +360,7 @@ def simulate(
     end: _dt.date,
     cost_bps: float,
     compressed: bool = False,
+    book: Mapping[str, Mapping[str, float]] | None = None,
 ) -> SleeveResult:
     """Run the daily cost-net NAV simulation over ``[start, end]``.
 
@@ -337,7 +369,8 @@ def simulate(
     >5pp drift. One-way ``cost_bps`` is charged on 0.5*sum|dw| at each trade.
 
     ``compressed`` selects the ``sleeve_compressed_50`` baseline book (phase0q_003
-    DECISION 2 alternative measurement).
+    DECISION 2 alternative measurement). ``book`` (compression_grid_001) supplies an
+    explicit per-quadrant weight book and takes precedence over ``compressed``.
     """
     trading_dates = prices.dates_in(start, end)
     if not trading_dates:
@@ -374,7 +407,8 @@ def simulate(
                 reduced_dates.append(date)
             new_quadrant = decision_row.quadrant if decision_row.has_valid_quadrant() else active_quadrant
             if new_quadrant is not None:
-                desired = target_weights(new_quadrant, params, available, compressed=compressed)
+                desired = target_weights(new_quadrant, params, available,
+                                         compressed=compressed, book=book)
                 quadrant_changed = new_quadrant != active_quadrant
                 drift_breached = _max_drift(weights, desired) > DRIFT_BAND if weights else True
                 if quadrant_changed or drift_breached or not weights:

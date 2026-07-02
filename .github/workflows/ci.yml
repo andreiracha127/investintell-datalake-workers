@@ -68,6 +68,7 @@ jobs:
           tests/test_remote_ci_runner.py
           tests/test_phase0q_harness.py
           tests/test_phase0q_gate_amendments.py
+          tests/test_compression_grid.py
           -q
 
       - name: Compile Python modules
