@@ -1,0 +1,51 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_harness_window_policy",
+  "as_of": "2026-07-02",
+  "correction_note": "phase0q_001 stress_oos_policy.json derived its coverage from DAILY market series (BAML OAS family, full-series start 2016-09-07). That was the wrong consumer: those series feed the regional snapshot (macro_ingestion), while the open_macro_v03 decision path reads PIT vintages of the SEED_SOURCES basket via macro_observation_vintage (src/workers/quadrant_macro.py never reads latest-revision macro_data). This policy supersedes the 001 coverage_policy section; 001 artifacts remain frozen as the historical record.",
+  "decision_input_authority": {
+    "table": "macro_observation_vintage",
+    "series_growth": ["INDPRO", "PCEC96", "PAYEMS", "ACOGNO"],
+    "series_inflation": ["CPILFESL", "PPIFIS", "AHETPI", "MICH"],
+    "source_of_truth": "src/macro_sources.py SEED_SOURCES; PIT selection semantics of src/macro_pit.py latest_vintage_as_of"
+  },
+  "measured_vintage_coverage": {
+    "measured_at": "2026-07-02",
+    "db_service_id": "t83f4np6x4",
+    "access_mode": "read_only_select",
+    "per_series_first_vintage": {
+      "INDPRO": "1927-01-26", "PAYEMS": "1955-05-06", "PCEC96": "1979-11-19", "ACOGNO": "2011-06-24",
+      "CPILFESL": "1996-12-12", "AHETPI": "1999-08-06", "MICH": "1999-02-26", "PPIFIS": "2014-02-19"
+    },
+    "max_available_at": "2026-06-15 (INDPRO); MICH lags at 2026-04-24 - flagged for monitoring",
+    "constraining_series_full_basket": "PPIFIS (vintages from 2014-02-19)"
+  },
+  "windows": {
+    "primary_full_basket": {"start": "2014-03-01", "end": "2026-06-30", "basket": "8/8 series", "approx_years": 12.3},
+    "extended_7of8": {"start": "2011-07-01", "end": "2014-02-28", "basket": "7/8 (no PPIFIS)"},
+    "reduced_6to7of8": {"start": "1999-09-01", "end": "2011-06-30", "basket": "6-7/8 (no ACOGNO, no PPIFIS)", "note": "axis_score renormalizes weights over the available subset; quadrant coverage/u_floor mechanics already model reduced baskets"}
+  },
+  "sleeve_price_coverage": {
+    "full_sleeve_start": "2006-02-06 (DBC inception)",
+    "note": "GFC_2008 window is fully covered on the price side; vintage side is reduced-coverage there"
+  },
+  "stress_window_classification": {
+    "full_basket": ["COVID_2020", "INFLATION_SHOCK_2022", "SVB_2023", "Q4_2018"],
+    "reduced_coverage": ["GFC_2008", "TAPER_2013"],
+    "window_definitions": "unchanged from phase0q_001 stress_oos_policy.json"
+  },
+  "out_of_sample": {
+    "method": "rolling_walk_forward",
+    "train_months": 36,
+    "test_months": 12,
+    "step_months": 12,
+    "expected_folds_in_primary_window": 9,
+    "note": "primary window grew from ~9.8y (001 estimate) to ~12.3y, raising expected folds from 6 to 9"
+  },
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "phase0q_supplement_id": "open_macro_v03_phase0q_002",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved"
+}

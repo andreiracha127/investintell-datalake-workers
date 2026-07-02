@@ -1,0 +1,36 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "amends": "artifacts/quant/open_macro_v03_phase0q_001/data_discovery_report.json",
+  "amendment_basis": "qc-a3-parity infrastructure mapping plus measured macro_observation_vintage coverage (read-only, Tiger t83f4np6x4, 2026-07-02). The 001 report profiled daily market series (BAML OAS, VIXCLS, DGS10, T10YIE...) as the axis inputs; those series feed the REGIONAL snapshot (macro_ingestion consumer). The open_macro_v03 decision path reads PIT vintages of the SEED_SOURCES basket via macro_observation_vintage and never reads latest-revision macro_data (look-ahead prohibition in src/workers/quadrant_macro.py).",
+  "artifact_type": "phase0q_data_discovery_amendment",
+  "as_of": "2026-07-02",
+  "decision_path_authority": {
+    "table": "macro_observation_vintage",
+    "series_growth": ["INDPRO", "PCEC96", "PAYEMS", "ACOGNO"],
+    "series_inflation": ["CPILFESL", "PPIFIS", "AHETPI", "MICH"],
+    "pit_rule": "latest vintage with available_at <= decision time (src/macro_pit.py latest_vintage_as_of semantics)"
+  },
+  "windows": {
+    "primary_full_basket": {"start": "2014-03-01", "end": "2026-06-30", "basket": "8/8"},
+    "extended": {"start": "2011-07-01", "end": "2014-02-28", "basket": "7/8 (no PPIFIS)"},
+    "reduced_supplementary": {"start": "1999-09-01", "end": "2011-06-30", "basket": "6-7/8 (no ACOGNO, no PPIFIS)"}
+  },
+  "series_status_updates": [
+    {
+      "series_id": "T10YIE",
+      "status": "non_blocking_for_this_harness",
+      "note": "T10YIE does not participate in the open_macro_v03 decision path (it feeds risk_metrics FI inflation-beta). Its staleness was fixed by the FRED window-truncation fix (PR #16, backfilled to 2026-07-01) but it is recorded here as non-blocking for the metric harness."
+    },
+    {
+      "series_id": "MICH",
+      "status": "expected_vintage_lag",
+      "policy": "MICH vintages lag (~2 months; max available_at 2026-04-24 at measurement). The PIT rule handles this correctly by construction: the harness uses the latest vintage with available_at <= decision time, exactly as production does - no lookahead correction, no interpolation. Staleness is absorbed by the quadrant coverage/staleness mechanics. Monitoring rule: if MICH vintage lag exceeds 90 days at a decision date, the harness flags that decision as stale_input in data_quality (still valid, flagged)."
+    }
+  ],
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "phase0q_supplement_id": "open_macro_v03_phase0q_002",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved"
+}

@@ -1,0 +1,63 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "approved": false,
+  "approval_required_from": "quant_owner",
+  "artifact_type": "phase0q_reference_sleeve_proposal",
+  "as_of": "2026-07-02",
+  "cost_model": {
+    "one_way_cost_bps_base": 5,
+    "sensitivity_grid_bps": [0, 5, 10, 25],
+    "rationale": "5 bps is the initial candidate (conservative all-in spread + impact for the most liquid US ETFs), explicitly NOT final approval; every scenario-grid cell runs at all four sensitivity levels so threshold conformance can be judged across the cost envelope",
+    "status": "candidate"
+  },
+  "fallback_proxy_policy": {
+    "pre_inception_rule": "before an instrument's first price date (DBC 2006-02-06 is the binding case), drop it from the quadrant row and renormalize the remaining weights proportionally - mirrors the axis_score reduced-coverage renormalization; runs using a renormalized sleeve are labeled reduced_sleeve",
+    "missing_day_rule": "a missing adj_close on a scheduled trade date defers the trade to the next session with data; no interpolation, no synthetic prices",
+    "substitute_candidates": {"DBC": "GSG", "GLD": "IAU", "TLT": "IEF_or_AGG", "SHY": "BIL"},
+    "substitute_rule": "substitutes are listed for transparency only; actually switching any instrument requires a new sleeve proposal revision and quant_owner sign-off"
+  },
+  "survivorship_and_data_quality": {
+    "survivorship_note": "the sleeve consists of currently-listed ETFs chosen ex-post; this is acceptable ONLY because the sleeve measures the decision path's regime-switching behavior, not instrument selection skill - the bias is acknowledged and does not transfer to any production allocation claim",
+    "checks": [
+      "no negative or zero adj_close",
+      "no gap of more than 3 consecutive trading days per instrument inside its coverage window (flag, do not interpolate)",
+      "adjusted-vs-raw close consistency across split/dividend dates (adj series monotone-consistent with split_factor/div_cash)",
+      "zero-volume runs longer than 5 sessions flagged for review",
+      "every backtest run must emit a data_quality section listing triggered flags; any triggered flag marks the affected cells reduced_quality"
+    ]
+  },
+  "instruments": [
+    {"ticker": "SPY", "role": "equities_growth_risk", "eod_prices_coverage": {"min": "1993-01-29", "max": "2026-07-01"}},
+    {"ticker": "TLT", "role": "nominal_duration", "eod_prices_coverage": {"min": "2002-07-26", "max": "2026-07-01"}, "note": "IEF is absent from eod_prices; TLT expresses the deflation-bust duration exposure and has full history"},
+    {"ticker": "TIP", "role": "inflation_linked_duration", "eod_prices_coverage": {"min": "2003-12-05", "max": "2026-07-01"}},
+    {"ticker": "GLD", "role": "gold_inflation_hedge", "eod_prices_coverage": {"min": "2004-11-18", "max": "2026-07-01"}},
+    {"ticker": "DBC", "role": "broad_commodities", "eod_prices_coverage": {"min": "2006-02-06", "max": "2026-07-01"}},
+    {"ticker": "SHY", "role": "cash_defensive", "eod_prices_coverage": {"min": "2002-07-26", "max": "2026-07-01"}}
+  ],
+  "full_sleeve_price_coverage_start": "2006-02-06",
+  "per_quadrant_baseline_weights": {
+    "Q1_growth_up_inflation_down": {"SPY": 0.60, "TLT": 0.20, "TIP": 0.05, "GLD": 0.05, "DBC": 0.00, "SHY": 0.10},
+    "Q2_growth_up_inflation_up": {"SPY": 0.45, "TLT": 0.05, "TIP": 0.15, "GLD": 0.10, "DBC": 0.15, "SHY": 0.10},
+    "Q3_growth_down_inflation_up": {"SPY": 0.15, "TLT": 0.05, "TIP": 0.25, "GLD": 0.20, "DBC": 0.15, "SHY": 0.20},
+    "Q4_growth_down_inflation_down": {"SPY": 0.15, "TLT": 0.40, "TIP": 0.10, "GLD": 0.10, "DBC": 0.00, "SHY": 0.25}
+  },
+  "constraint_baselines": {
+    "risk_assets_definition": ["SPY", "DBC"],
+    "risk_cap_baseline": 0.65,
+    "defensive_assets_definition": ["TLT", "SHY", "TIP"],
+    "defensive_floor_baseline": 0.20,
+    "note": "calibration parameter_grid defines only *_delta_pp offsets (risk_cap_delta_pp, defensive_floor_delta_pp); these are the missing numeric baselines those deltas apply to. Every quadrant row above satisfies both constraints (risk assets max 0.60, defensive min 0.30)."
+  },
+  "rebalance_policy": {
+    "cadence": "monthly, month-end decision date, latest PIT quadrant",
+    "trade_trigger": "quadrant change OR any weight drift > 0.05 from target",
+    "note": "matches scenario_grid.json monthly cadence assumption; drift band limits turnover between quadrant flips"
+  },
+  "purpose": "reference portfolio for MEASURING turnover/drawdown/volatility/stress/OOS of the quadrant decision path. This sleeve is ONLY the harness measurement instrument: it is NOT a productive allocation, NOT the official allocator, and its existence grants no allocation authority - the official open_macro_v03 output is the quadrant/tilt signal consumed by the allocator (separate repo, out of scope, allocator_publish=false).",
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "phase0q_supplement_id": "open_macro_v03_phase0q_002",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved"
+}
