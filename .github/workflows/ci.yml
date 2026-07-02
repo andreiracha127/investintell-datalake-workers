@@ -69,6 +69,7 @@ jobs:
           tests/test_phase0q_harness.py
           tests/test_phase0q_gate_amendments.py
           tests/test_compression_grid.py
+          tests/test_phase0q_cloud_leg.py
           -q
 
       - name: Compile Python modules

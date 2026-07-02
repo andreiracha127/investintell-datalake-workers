@@ -1,0 +1,90 @@
+{
+  "artifact_type": "phase0q_cloud_consolidated_reproducibility_report",
+  "cloud_leg_id": "open_macro_v03_cloud_leg_001",
+  "committed_evidence_001_anchor": {
+    "local_python_pure_logical_hash": "ae7094c76c36d02c2f269e1cdc7868c78a7c8835939f79a1bb0d4c5c925bc993",
+    "output_logical_hashes_agreement": {
+      "annualized_volatility": {
+        "code_stable": true,
+        "committed_evidence_001": "67d95b48bacc6da5b0ac8a67752cfb31668b48601e29d367fa8e631540405834",
+        "live": "67d95b48bacc6da5b0ac8a67752cfb31668b48601e29d367fa8e631540405834"
+      },
+      "max_drawdown": {
+        "code_stable": true,
+        "committed_evidence_001": "d0c797a4e2234122db813200206812ddc0c1e28554b77c605f70b11af062b5d1",
+        "live": "d0c797a4e2234122db813200206812ddc0c1e28554b77c605f70b11af062b5d1"
+      },
+      "metrics_canonical_logical_hash": {
+        "code_stable": false,
+        "committed_evidence_001": "6c6f5df1c02afbf59ee97f5583ede95e2b29a8ed60da0e6e1dd0e999f1fa1b30",
+        "live": "e3054d26680268f95f7822efc8e34103ffc58c76b0ded61e1bbbec6fe1427ef9"
+      },
+      "out_of_sample_stability": {
+        "code_stable": false,
+        "committed_evidence_001": "044d6cf48902acc4e01408d8920439ca514a75bd06a4e718ac70dd39966c3d01",
+        "live": "0eae10401281b292b23b6b3095f9187b0ccee8e8fb5b411a415562f3d2622d7b"
+      },
+      "stress_window_behavior": {
+        "code_stable": true,
+        "committed_evidence_001": "a2920595920cdce83f100f080f127ed758623a3d4db8cd841fcb11e835a10758",
+        "live": "a2920595920cdce83f100f080f127ed758623a3d4db8cd841fcb11e835a10758"
+      },
+      "turnover": {
+        "code_stable": true,
+        "committed_evidence_001": "e586755c119823d24f5fa20e68f26b4b0ed2dfa1a8b9b10de30a530d23bb5d16",
+        "live": "e586755c119823d24f5fa20e68f26b4b0ed2dfa1a8b9b10de30a530d23bb5d16"
+      }
+    },
+    "run_fingerprint": "cf6bf13eba90fdeac349a1a099d79c5435a47b3b48585c809928d60b65e1920a"
+  },
+  "comparison": null,
+  "contract_bundle_sha256": "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
+  "governance": {
+    "A3": "open_macro_v03",
+    "A5": "blocked",
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "approved": false,
+    "classification": "metric_evidence_only",
+    "db_write_mode": "none",
+    "freeze_ready": false,
+    "official_result": false,
+    "production_endpoint_activation": "none",
+    "runtime_activation": false,
+    "status": "candidate_not_approved"
+  },
+  "harness_commit": "68b07e810bc28665fedd85c6acd3ea5770b4b099",
+  "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+  "notes": "SKELETON — cloud side null/pending. Local hashes are filled from the committed immutable evidence + the live HEAD harness. The cloud side is completed by harness.phase0q_cloud.fetch_results after the orchestrator fetches the QC verdict JSON. Reproducibility evidence only; grants no activation or approval.",
+  "qc_project_id": 33679769,
+  "reproduced": null,
+  "reproducibility_matrix": {
+    "legs": [
+      "local_python_pure",
+      "qc_research_object_store"
+    ],
+    "local_python_pure": {
+      "logical_hash": "83e6733e9f849c68cd12082b47d72c67a2f2c7242341618dbbe2f0ea76870b60",
+      "output_logical_hashes": {
+        "annualized_volatility": "67d95b48bacc6da5b0ac8a67752cfb31668b48601e29d367fa8e631540405834",
+        "max_drawdown": "d0c797a4e2234122db813200206812ddc0c1e28554b77c605f70b11af062b5d1",
+        "metrics_canonical_logical_hash": "e3054d26680268f95f7822efc8e34103ffc58c76b0ded61e1bbbec6fe1427ef9",
+        "out_of_sample_stability": "0eae10401281b292b23b6b3095f9187b0ccee8e8fb5b411a415562f3d2622d7b",
+        "stress_window_behavior": "a2920595920cdce83f100f080f127ed758623a3d4db8cd841fcb11e835a10758",
+        "turnover": "e586755c119823d24f5fa20e68f26b4b0ed2dfa1a8b9b10de30a530d23bb5d16"
+      },
+      "source": "artifacts/quant/open_macro_v03_metric_evidence_001",
+      "status": "complete"
+    },
+    "qc_research_object_store": {
+      "logical_hash": null,
+      "output_logical_hashes": null,
+      "source": "qc_research_notebook_verdict (pending)",
+      "status": "pending"
+    }
+  },
+  "run_fingerprint": "6850a1e361ded96fcf84a74a0f78b5a8db962be79320f388e83c2778eafec671",
+  "schema_version": 1,
+  "status": "pending_cloud_leg",
+  "verdict": "pending"
+}

@@ -26,3 +26,7 @@ _tmp_*
 _val*
 _validate_*
 _smoke_*
+
+# phase0q cloud-leg LOCAL bundle output (never committed)
+build/
+_phase0q_cloud_bundle/

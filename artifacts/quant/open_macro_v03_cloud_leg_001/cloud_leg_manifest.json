@@ -1,0 +1,324 @@
+{
+  "artifact_type": "phase0q_cloud_leg_manifest",
+  "build": {
+    "builder": "harness.phase0q_cloud.bundle",
+    "bundle_dir": "build/phase0q_cloud_bundle (LOCAL, not committed)",
+    "deterministic_byte_identical_rebuild": true,
+    "drift_refusal": "bundle build fails if any shipped source differs from git HEAD blob",
+    "lean_invocations": 0,
+    "network_calls": 0
+  },
+  "bundle_size_bytes": 49595135,
+  "cloud_leg_id": "open_macro_v03_cloud_leg_001",
+  "contract_bundle_sha256": "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
+  "file_count": 50,
+  "governance": {
+    "A3": "open_macro_v03",
+    "A5": "blocked",
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "approved": false,
+    "classification": "metric_evidence_only",
+    "db_write_mode": "none",
+    "freeze_ready": false,
+    "official_result": false,
+    "production_endpoint_activation": "none",
+    "runtime_activation": false,
+    "status": "candidate_not_approved"
+  },
+  "harness_commit": "68b07e810bc28665fedd85c6acd3ea5770b4b099",
+  "input_pack_id": "open_macro_v03_certified_input_pack_002",
+  "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+  "notes": "PREPARED, PENDING UPLOAD. Build-only: zero network calls, zero uploads, zero lean invocations were performed. The orchestrator runs the reviewed bundle build, upload (manifest last), lean cloud push, and post-run fetch/verify in the main session. No verdict grants activation: A5 stays blocked; runtime_activation / activation_allowed / allocator_publish / official_result are false; db_write_mode is none; status is candidate_not_approved; approved is false.",
+  "object_key_sha_table": {
+    "code/harness/__init__.py.gz": {
+      "content_sha256": "5bdd2321860a425989651396509a7ded7ae90ea70b05d084dd32ec50a34014a2",
+      "file_size_bytes": 220,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/__init__.py.gz"
+    },
+    "code/harness/p1_pack/__init__.py.gz": {
+      "content_sha256": "dc035b4b423f948fc9aabd769dee3a0acf41574db50c4d4c03df63d9c2d0e1c7",
+      "file_size_bytes": 619,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/p1_pack/__init__.py.gz"
+    },
+    "code/harness/p1_pack/contract.py.gz": {
+      "content_sha256": "c3a529ea123645ee3c2718940f9d61801302a489610cccc12cd34251e1919358",
+      "file_size_bytes": 890,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/p1_pack/contract.py.gz"
+    },
+    "code/harness/p1_pack/verifier.py.gz": {
+      "content_sha256": "090829e0e631e6376f116d81aea827a054c2debf1158c3068f1f02be5fcf02fd",
+      "file_size_bytes": 5226,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/p1_pack/verifier.py.gz"
+    },
+    "code/harness/phase0q/__init__.py.gz": {
+      "content_sha256": "f8cdbfbfc283ca6bc0e9d72757ffc6ae92d0d315e49b748f7bb11c71ddf944ff",
+      "file_size_bytes": 468,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/__init__.py.gz"
+    },
+    "code/harness/phase0q/amendments.py.gz": {
+      "content_sha256": "834981fdf5cec18be5f10dc365d8ae86f648316764f06f6989391540fadf2443",
+      "file_size_bytes": 8127,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/amendments.py.gz"
+    },
+    "code/harness/phase0q/decision.py.gz": {
+      "content_sha256": "fa91e10e2ca6598546cb9151db8efd71a23e249e462bfa3de1c17b81ce510a8c",
+      "file_size_bytes": 4290,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/decision.py.gz"
+    },
+    "code/harness/phase0q/grid.py.gz": {
+      "content_sha256": "179daab9529c6da5977220c79822aab6bad446cf63e866fb131387da450790b3",
+      "file_size_bytes": 7278,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/grid.py.gz"
+    },
+    "code/harness/phase0q/metrics.py.gz": {
+      "content_sha256": "95ab41a3476f8414b4d6f802b9462fd8df0b9acd71d8468a94c9d8a60010bee1",
+      "file_size_bytes": 4040,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/metrics.py.gz"
+    },
+    "code/harness/phase0q/pit.py.gz": {
+      "content_sha256": "1cd0cd88ed4ff70cb268d219d6d1f7e82b2e818f3a204a4b58f9c15a66dcade7",
+      "file_size_bytes": 2501,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/pit.py.gz"
+    },
+    "code/harness/phase0q/runner.py.gz": {
+      "content_sha256": "ecd29c36b8cf1b0b8c4bbfe421487262df0919152760c1a07e5ecda7a7fbcfc9",
+      "file_size_bytes": 7406,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/runner.py.gz"
+    },
+    "code/harness/phase0q/sleeve.py.gz": {
+      "content_sha256": "25fcc4a3e0910f3a2bcac89b5ba160e8b8a483a52af5271e20c93f9826fd2499",
+      "file_size_bytes": 7064,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/sleeve.py.gz"
+    },
+    "code/investintell_quant_core/__init__.py.gz": {
+      "content_sha256": "fa8744b6c0177ca18c7fb4608741640f7727acaeed5636d0d8106e55d47e1a6c",
+      "file_size_bytes": 105,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/investintell_quant_core/__init__.py.gz"
+    },
+    "code/investintell_quant_core/hashing/__init__.py.gz": {
+      "content_sha256": "f18ee81cdb1f196e61b26daddebcf5b1211faa5c7966807c5d6b5e466528c14c",
+      "file_size_bytes": 128,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/investintell_quant_core/hashing/__init__.py.gz"
+    },
+    "code/investintell_quant_core/hashing/canonical.py.gz": {
+      "content_sha256": "a3c528005eebce69945e7f048ef4d4a96f486bca9e7057803828ba1c0df20918",
+      "file_size_bytes": 765,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/investintell_quant_core/hashing/canonical.py.gz"
+    },
+    "code/investintell_quant_core/version.py.gz": {
+      "content_sha256": "40e3fddd4bea5b87898e613ff83b8046f349eb13f99cca0e479b0b65cb44082a",
+      "file_size_bytes": 60,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/investintell_quant_core/version.py.gz"
+    },
+    "code/src/__init__.py.gz": {
+      "content_sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "file_size_bytes": 20,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/__init__.py.gz"
+    },
+    "code/src/db.py.gz": {
+      "content_sha256": "f8e1df555b83e60d6829c6e23d08d34f9e08550dfa5035c36cc6cb786d7220fe",
+      "file_size_bytes": 334,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/db.py.gz"
+    },
+    "code/src/input_packs/__init__.py.gz": {
+      "content_sha256": "fdae2df94830e9b20b420d8950c10ed63adb1bcd612d9c859d96c3ba76965462",
+      "file_size_bytes": 322,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/__init__.py.gz"
+    },
+    "code/src/input_packs/hashing.py.gz": {
+      "content_sha256": "1705106d9ce734f74749b5ed5c86a94aeb626447eaf08cec32f7c96ae2c6e096",
+      "file_size_bytes": 879,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/hashing.py.gz"
+    },
+    "code/src/input_packs/manifest.py.gz": {
+      "content_sha256": "9ac4fdff27757ae17fbb789c7a3f9542f36233c91b92996479a8b505be33b95c",
+      "file_size_bytes": 1129,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/manifest.py.gz"
+    },
+    "code/src/input_packs/p0_contract.py.gz": {
+      "content_sha256": "f060cb3aaf30bc8942d4dd1eb383b8301771fef61a13cb59c399a3b02966ab7a",
+      "file_size_bytes": 1502,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/p0_contract.py.gz"
+    },
+    "code/src/input_packs/p0_derived.py.gz": {
+      "content_sha256": "d2dad3ed1da4ca8bd6a23d5f67233103e9968541c4a9a1375cb8f4512e6e4a31",
+      "file_size_bytes": 1955,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/p0_derived.py.gz"
+    },
+    "code/src/input_packs/verifier.py.gz": {
+      "content_sha256": "bb755d18dc9dd2b1c1aa7b84205202544f3960f7829af45aa2c49af5c831f139",
+      "file_size_bytes": 7332,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/input_packs/verifier.py.gz"
+    },
+    "code/src/macro_sources.py.gz": {
+      "content_sha256": "c20f9177410e6d4750d1ffccd83c1c54b3ef10312c8794a5792f9063a09eb0c7",
+      "file_size_bytes": 1404,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/macro_sources.py.gz"
+    },
+    "code/src/macro_transforms.py.gz": {
+      "content_sha256": "bdf70eeeaa06249c0310c9510a240e0dc8e7c69143a258a3bb88825db2344a97",
+      "file_size_bytes": 1905,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/macro_transforms.py.gz"
+    },
+    "code/src/quadrant_assemble.py.gz": {
+      "content_sha256": "952c6d1c3ea0c107d42526ea7bd6eeb78bcce558c2de1e32bb21be9b549791af",
+      "file_size_bytes": 4149,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_assemble.py.gz"
+    },
+    "code/src/quadrant_confidence.py.gz": {
+      "content_sha256": "7aa1103d7c17b029f6fa6acea7beb0a5d7d010e7e9fba8c91ed758e7614a3bf4",
+      "file_size_bytes": 2576,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_confidence.py.gz"
+    },
+    "code/src/quadrant_hysteresis.py.gz": {
+      "content_sha256": "9dc5c44a41dacef9e3ed8adc45f6e7e9fab4d5e715f8c8b1db0fba504720c720",
+      "file_size_bytes": 1025,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_hysteresis.py.gz"
+    },
+    "code/src/quadrant_score.py.gz": {
+      "content_sha256": "77dfe711fafc05c30283482f649dc03001c5a077bd3931085f10e498852b0353",
+      "file_size_bytes": 1324,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_score.py.gz"
+    },
+    "code/src/quadrant_snapshot.py.gz": {
+      "content_sha256": "77f1e25e6d2bf367a503b62bd674aa198db2acb8fe2e4e89668b519693865daa",
+      "file_size_bytes": 1563,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_snapshot.py.gz"
+    },
+    "code/src/quadrant_staleness.py.gz": {
+      "content_sha256": "9ecd0ce845c24eaf774110cf3ff654133dc51407ad5bdb5a1baae107c5ced629",
+      "file_size_bytes": 1166,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_staleness.py.gz"
+    },
+    "expected_results_manifest.json": {
+      "content_sha256": "018d4d6f2774c2ec3b9c328aa05074f4badf00b6db0dfeb2278e26a4ccd642fd",
+      "file_size_bytes": 4452,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/expected_results_manifest.json"
+    },
+    "pack/SOURCE.json": {
+      "content_sha256": "a538a36ec473b6158b5ab1d7bb2666dba43b138bb78410882a2acb5bff65474e",
+      "file_size_bytes": 2155,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/SOURCE.json"
+    },
+    "pack/canonical_snapshot_manifest.json": {
+      "content_sha256": "b8174887459a320779a3c865ac4e2f5b470b0dbd42ccd0d823466696df557bb7",
+      "file_size_bytes": 900,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/canonical_snapshot_manifest.json"
+    },
+    "pack/data/canonical/eod_prices.json": {
+      "content_sha256": "2ddd58be82164a156e125a26535cf3361c7ea8efa7adba317497142c1a1f2407",
+      "file_size_bytes": 4777001,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/data/canonical/eod_prices.json"
+    },
+    "pack/data/canonical/macro_observation_vintage.json": {
+      "content_sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
+      "file_size_bytes": 19969683,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/data/canonical/macro_observation_vintage.json"
+    },
+    "pack/data/raw/eod_prices.json": {
+      "content_sha256": "2ddd58be82164a156e125a26535cf3361c7ea8efa7adba317497142c1a1f2407",
+      "file_size_bytes": 4777001,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/data/raw/eod_prices.json"
+    },
+    "pack/data/raw/macro_observation_vintage.json": {
+      "content_sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
+      "file_size_bytes": 19969683,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/data/raw/macro_observation_vintage.json"
+    },
+    "pack/manifest.json": {
+      "content_sha256": "60e0f375ec4ee620416bad2bdba1c4d736cbc52b108dd5eceb38aaf75cada1cd",
+      "file_size_bytes": 1708,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/manifest.json"
+    },
+    "pack/provenance.json": {
+      "content_sha256": "48fc28b778d860d5b8a6286e5cd1956ae296518603e58cc651e44550349daa25",
+      "file_size_bytes": 907,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/provenance.json"
+    },
+    "pack/raw_snapshot_manifest.json": {
+      "content_sha256": "cc739f50450db5a820a000c7a1cc2d7c1b668a7ce2c15e39372a692f1e419152",
+      "file_size_bytes": 870,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/raw_snapshot_manifest.json"
+    },
+    "pack/reports/certification_summary.json": {
+      "content_sha256": "76652b97356a31b6caf9ebcd8e4222f3fb85b866a34b5b943a3c3a6d7a222cbb",
+      "file_size_bytes": 578,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/reports/certification_summary.json"
+    },
+    "pack/schemas/input_pack_manifest.schema.json": {
+      "content_sha256": "8ba7c0f30ea3d572cbd3c08b528f5acad067665e5e6e26f755714fa4b1fd6cde",
+      "file_size_bytes": 1949,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/schemas/input_pack_manifest.schema.json"
+    },
+    "pack/schemas/provenance.schema.json": {
+      "content_sha256": "aa6a31f6466ca1186ccba5722be4f5f74db0e7a2da27a652b499aafefcef9234",
+      "file_size_bytes": 1958,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/schemas/provenance.schema.json"
+    },
+    "pack/schemas/snapshot_manifest.schema.json": {
+      "content_sha256": "de648a596b67b141b6b7504d3d8dd647bbfeb9a3c429f6aa396a334de9903646",
+      "file_size_bytes": 1020,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/schemas/snapshot_manifest.schema.json"
+    },
+    "pack/schemas/source.schema.json": {
+      "content_sha256": "38336d9fc871c792a608d933febf3e6012d6d3482be52ab725b81f3e2b974bc2",
+      "file_size_bytes": 851,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/schemas/source.schema.json"
+    },
+    "pack/schemas/table_hashes.schema.json": {
+      "content_sha256": "b5ea96f7a0389c820d355ee1fcb2b6bbd2987720a0a58735ac2920f29cabab1c",
+      "file_size_bytes": 754,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/schemas/table_hashes.schema.json"
+    },
+    "pack/table_hashes.json": {
+      "content_sha256": "73f6438d6bdc42c67103fbe4650850aae772008086344e792139eb4a8d6ab2f9",
+      "file_size_bytes": 2149,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/pack/table_hashes.json"
+    },
+    "scenario_config.json": {
+      "content_sha256": "e181483f925e2ccc92b57f0892e498fa7b05af04392538d9b2d5bbc47cc76ef7",
+      "file_size_bytes": 3744,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/scenario_config.json"
+    }
+  },
+  "object_store_base_prefix": "investintell/open_macro_v03/phase0q",
+  "object_store_manifest_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/object_store_manifest.json",
+  "object_store_prefix_immutable": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+  "qc_project_id": 33679769,
+  "qc_project_name": "open_macro_v03_phase0q_harness",
+  "qc_project_workspace": "harness/phase0q_cloud/qc_project",
+  "ratified_requirements": {
+    "canonical_deterministic_writers": true,
+    "contract_v2_shaped_results": true,
+    "float_decimals": 12,
+    "object_store_drift_refusal": "content_sha256 mismatch aborts",
+    "rng": "none",
+    "stable_hash_canonical_json": "investintell_quant_core.hashing.canonical.stable_hash"
+  },
+  "reproducibility_matrix": {
+    "legs": [
+      "local_python_pure",
+      "qc_research_object_store"
+    ],
+    "local_python_pure": {
+      "logical_hash": "83e6733e9f849c68cd12082b47d72c67a2f2c7242341618dbbe2f0ea76870b60",
+      "run_fingerprint": "6850a1e361ded96fcf84a74a0f78b5a8db962be79320f388e83c2778eafec671",
+      "source": "artifacts/quant/open_macro_v03_metric_evidence_001",
+      "status": "complete"
+    },
+    "qc_research_object_store": {
+      "logical_hash": null,
+      "status": "pending_upload"
+    }
+  },
+  "schema_version": 1,
+  "status": "prepared_pending_upload",
+  "upload_plan_reference": {
+    "emitter": "harness.phase0q_cloud.upload_plan",
+    "json": "build/phase0q_cloud_bundle/upload_plan.json",
+    "manifest_uploaded_last": true,
+    "script": "build/phase0q_cloud_bundle/upload_plan.sh"
+  },
+  "verdict_key_template": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/results/phase0q_cloud_verdict.json"
+}
