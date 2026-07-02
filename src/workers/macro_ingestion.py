@@ -50,11 +50,16 @@ UPSERT_CHUNK = 2000
 _MISSING_VALUES = frozenset((".", "#N/A", "", "NaN", "nan", "null", "None"))
 
 # Limit per frequency for 10yr lookback (observations requested from FRED).
+# Sized so a full LOOKBACK_YEARS window round-trips even at maximum publication
+# density (7-day daily series like DFF ≈ 3660 rows/10y; weekly ≈ 522). The old
+# values (daily 2520 / weekly 520) silently truncated dense series, and with
+# sort_order=asc FRED kept the OLDEST rows — freezing the newest observations
+# out of macro_data entirely (T10YIE stuck at 2026-02-27, DFF at 2023-05-28).
 FREQUENCY_LIMITS: dict[str, int] = {
-    "daily": 2520,
-    "weekly": 520,
-    "monthly": 120,
-    "quarterly": 40,
+    "daily": 4000,
+    "weekly": 600,
+    "monthly": 150,
+    "quarterly": 50,
 }
 
 MIN_HISTORY_OBS = 60
@@ -281,12 +286,16 @@ def parse_observations(payload: dict[str, Any]) -> list[Obs]:
 
 def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str,
                   bucket: TokenBucket) -> list[Obs]:
+    limit = FREQUENCY_LIMITS.get(spec.frequency, 120)
     params = {
         "series_id": spec.series_id,
         "api_key": api_key,
         "file_type": "json",
-        "sort_order": "asc",
-        "limit": FREQUENCY_LIMITS.get(spec.frequency, 120),
+        # desc: FRED applies `limit` AFTER sorting, so newest-first guarantees the
+        # most recent observations survive even if a window ever exceeds the limit
+        # (with asc, truncation silently froze the newest months out of macro_data).
+        "sort_order": "desc",
+        "limit": limit,
         "observation_start": observation_start,
     }
     if spec.units and spec.units != "lin":
@@ -300,7 +309,18 @@ def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str
         if resp.status_code == 400:  # bad/discontinued series: skip, don't fail run
             return []
         resp.raise_for_status()
-        return parse_observations(resp.json())
+        payload = resp.json()
+        count = payload.get("count")
+        if isinstance(count, int) and count > limit:
+            print(
+                f"WARN macro_ingestion fred_window_truncated series={spec.series_id} "
+                f"count={count} limit={limit} (oldest rows dropped, newest kept)",
+                flush=True,
+            )
+        obs = parse_observations(payload)
+        # Downstream (derived series, snapshot percentile scoring) assumes ascending.
+        obs.sort(key=lambda o: o.date)
+        return obs
     return []
 
 
