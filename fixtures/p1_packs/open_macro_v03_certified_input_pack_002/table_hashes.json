@@ -1,0 +1,65 @@
+{
+  "schema_version": "v2",
+  "tables": [
+    {
+      "name": "canonical_eod_prices",
+      "path": "data/canonical/eod_prices.json",
+      "rows": 35449,
+      "sha256": "bff53c8447895d2f67956464ef3dc6ed3fa3fec708b6c0f3671c12f5628ad5f2"
+    },
+    {
+      "name": "canonical_macro_observation_vintage",
+      "path": "data/canonical/macro_observation_vintage.json",
+      "rows": 70747,
+      "sha256": "65574563f72edd0a98c52f94b7ffc47b23f7473ee72b58b8d50bbe91ac9434fa"
+    },
+    {
+      "name": "raw_eod_prices",
+      "path": "data/raw/eod_prices.json",
+      "rows": 35449,
+      "sha256": "bff53c8447895d2f67956464ef3dc6ed3fa3fec708b6c0f3671c12f5628ad5f2"
+    },
+    {
+      "name": "raw_macro_observation_vintage",
+      "path": "data/raw/macro_observation_vintage.json",
+      "rows": 70747,
+      "sha256": "65574563f72edd0a98c52f94b7ffc47b23f7473ee72b58b8d50bbe91ac9434fa"
+    },
+    {
+      "name": "report:certification_summary",
+      "path": "reports/certification_summary.json",
+      "rows": 1,
+      "sha256": "91ffe0a8458e168cd8b7018e7cb2ce4e9419bd9194bafcbd01cc4ebcb2de3fd1"
+    },
+    {
+      "name": "schema:input_pack_manifest.schema",
+      "path": "schemas/input_pack_manifest.schema.json",
+      "rows": 0,
+      "sha256": "ffcbdb8c50f6c70b30683aeab0b1038d4d98a5b3a67a98ea71e82980eb526323"
+    },
+    {
+      "name": "schema:provenance.schema",
+      "path": "schemas/provenance.schema.json",
+      "rows": 0,
+      "sha256": "2ed4ba2bfa285105090d6adf341229535783f6f1ad4d313eedecd3b38d08b00c"
+    },
+    {
+      "name": "schema:snapshot_manifest.schema",
+      "path": "schemas/snapshot_manifest.schema.json",
+      "rows": 0,
+      "sha256": "c329e7175af3a81b130c2d7edbe29ad1bdc384d9e302141eba1644a49a08116a"
+    },
+    {
+      "name": "schema:source.schema",
+      "path": "schemas/source.schema.json",
+      "rows": 0,
+      "sha256": "6c0ba0e6b4bb1041502e2225bc86b6c0f03a885cc6529ce92522400dbd1f5ccb"
+    },
+    {
+      "name": "schema:table_hashes.schema",
+      "path": "schemas/table_hashes.schema.json",
+      "rows": 0,
+      "sha256": "388bb4f2edaeb21c7a921ea68df6ce9521536ca9f12deb9f9439724bbb943e13"
+    }
+  ]
+}
