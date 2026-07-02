@@ -243,15 +243,21 @@ def compute_cell(
     params: sleeve.SleeveParams,
     cost_bps: int,
     folds: Sequence[Mapping[str, Any]],
+    primary_window: tuple[_dt.date, _dt.date] = PRIMARY_WINDOW,
+    stress_windows: Sequence[Mapping[str, Any]] = STRESS_WINDOWS,
 ) -> dict[str, Any]:
-    """All metrics for one (candidate, cost) cell: primary + stress + OOS folds."""
+    """All metrics for one (candidate, cost) cell: primary + stress + OOS folds.
+
+    ``primary_window`` and ``stress_windows`` are the CONFIGURED evaluation windows
+    (default to the module-level pins); each cell must simulate exactly the windows
+    the caller requested, not the module defaults."""
     primary_res = _run_window(prices, decisions, params,
-                              PRIMARY_WINDOW[0], PRIMARY_WINDOW[1], cost_bps)
+                              primary_window[0], primary_window[1], cost_bps)
     primary = _primary_metrics(primary_res)
     primary["data_quality_flags"] = primary_res.data_quality_flags
 
     stress: dict[str, Any] = {}
-    for win in STRESS_WINDOWS:
+    for win in stress_windows:
         res = _run_window(prices, decisions, params, win["start"], win["end"], cost_bps)
         scheduled = [r.as_of for r in _decisions_in(decisions, win["start"], win["end"])]
         stress[win["window_id"]] = {
@@ -261,6 +267,10 @@ def compute_cell(
             "coverage_class": win["coverage"],
             "n_trading_days": len(res.dates),
         }
+
+    # data-quality policy: any triggered flag marks the cell reduced_quality.
+    primary["data_quality_status"] = (
+        "reduced_quality" if primary_res.data_quality_flags else "ok")
 
     fold_results: list[dict[str, Any]] = []
     fold_metric_list: list[dict[str, float]] = []
@@ -290,7 +300,16 @@ def compute_cell(
         "primary_window": primary,
         "stress_windows": stress,
         "out_of_sample": {"folds": fold_results, "stability": stability},
+        # policy: any triggered data-quality flag marks the whole cell reduced_quality
+        # (surfaced here on the cell file and in the gate report; not silently ignored).
+        "data_quality_status": primary["data_quality_status"],
     }
+
+
+def cell_quality_status(cell: Mapping[str, Any]) -> str:
+    """reduced_quality if the cell has any triggered data-quality flag, else ok."""
+    flags = cell.get("primary_window", {}).get("data_quality_flags", [])
+    return "reduced_quality" if flags else "ok"
 
 
 # ------------------------------------------------------------------------- #
@@ -421,7 +440,8 @@ def run_harness(pack_dir: str | Path, config: RunConfig) -> dict[str, Any]:
     cells: list[dict[str, Any]] = []
     for params in config.candidates:
         for cost_bps in config.cost_grid:
-            cell = compute_cell(prices, decisions, params, cost_bps, folds)
+            cell = compute_cell(prices, decisions, params, cost_bps, folds,
+                                config.primary_window, config.stress_windows)
             cell["provenance"] = _cell_provenance(pack, config, params, cost_bps)
             cells.append(cell)
 
@@ -466,6 +486,14 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
         per_cost[str(cost_bps)] = {"per_gate": per_gate}
 
     base_cells = [c for c in cells if c["cost_bps"] == BASE_COST_BPS]
+    if not base_cells:
+        # No base-cost (5bps) cell was measured. Judging the overall gates from an
+        # empty base_judgements set would make all([]) vacuously True and mark every
+        # gate go -> a misleading green. Fail loudly instead.
+        raise ValueError(
+            f"base cost cell absent: cost_grid {tuple(config.cost_grid)} does not "
+            f"include BASE_COST_BPS={BASE_COST_BPS}; overall base-cost gates are "
+            "not_measured and cannot be judged")
     base_judgements = {c["candidate_id"]: judge_gates_for_cell(c) for c in base_cells}
     overall = {}
     for gate in ("turnover", "drawdown", "volatility", "stress_windows", "out_of_sample"):
@@ -474,6 +502,21 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
                 base_judgements[cid][gate]["go"] for cid in base_judgements) else "no_go",
             "base_cost_bps": BASE_COST_BPS,
         }
+
+    # surface per-cell data-quality status so a reduced_quality cell (triggered flag)
+    # can never be reported as cleanly passing the quantitative gates.
+    dq_cells = [
+        {"candidate_id": c["candidate_id"], "cost_bps": c["cost_bps"],
+         "data_quality_status": cell_quality_status(c),
+         "data_quality_flags": c["primary_window"].get("data_quality_flags", [])}
+        for c in cells
+    ]
+    data_quality = {
+        "policy": "any_triggered_flag_marks_cell_reduced_quality",
+        "any_reduced_quality": any(
+            e["data_quality_status"] == "reduced_quality" for e in dq_cells),
+        "cells": dq_cells,
+    }
 
     return {
         "artifact_type": "phase0q_quantitative_gate_report_measured",
@@ -490,6 +533,7 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
         "n_oos_folds": len(folds),
         "gates_overall_base_cost": overall,
         "per_cost_level": per_cost,
+        "data_quality": data_quality,
         "execution_legs": {"local_python_pure": "complete", "qc_research_object_store": "pending"},
         "governance": GOVERNANCE_PINS,
         "provenance": {

@@ -110,6 +110,7 @@ class PriceFrame:
 
     def __init__(self, eod_rows: Sequence[Mapping[str, Any]]):
         by_ticker: dict[str, dict[_dt.date, float]] = {t: {} for t in SLEEVE_TICKERS}
+        volume_by_ticker: dict[str, dict[_dt.date, float]] = {t: {} for t in SLEEVE_TICKERS}
         all_dates: set[_dt.date] = set()
         for row in eod_rows:
             ticker = row["ticker"]
@@ -118,8 +119,11 @@ class PriceFrame:
             date = _dt.date.fromisoformat(row["date"][:10])
             ac = row.get("adjusted_close")
             by_ticker[ticker][date] = float(ac) if ac is not None else float("nan")
+            vol = row.get("volume")
+            volume_by_ticker[ticker][date] = float(vol) if vol is not None else float("nan")
             all_dates.add(date)
         self._by_ticker = by_ticker
+        self._volume_by_ticker = volume_by_ticker
         self.dates = sorted(all_dates)
 
     def price(self, ticker: str, date: _dt.date) -> float | None:
@@ -154,6 +158,26 @@ class PriceFrame:
                     flags.append({"ticker": ticker, "flag": "gap_gt_3_sessions",
                                   "from": window[a].isoformat(), "to": window[b].isoformat(),
                                   "sessions": b - a - 1})
+            # zero-volume runs longer than 5 sessions (survivorship_and_data_quality):
+            # scan the ticker's covered sessions in order; a maximal run of >5
+            # consecutive zero-volume sessions is flagged (do not interpolate).
+            vseries = self._volume_by_ticker[ticker]
+            run: list[_dt.date] = []
+            for d in covered:
+                v = vseries.get(d)
+                is_zero = v is not None and v == v and v == 0.0
+                if is_zero:
+                    run.append(d)
+                else:
+                    if len(run) > 5:
+                        flags.append({"ticker": ticker, "flag": "zero_volume_run_gt_5_sessions",
+                                      "from": run[0].isoformat(), "to": run[-1].isoformat(),
+                                      "sessions": len(run)})
+                    run = []
+            if len(run) > 5:
+                flags.append({"ticker": ticker, "flag": "zero_volume_run_gt_5_sessions",
+                              "from": run[0].isoformat(), "to": run[-1].isoformat(),
+                              "sessions": len(run)})
         return sorted(flags, key=lambda f: (f["ticker"], f["flag"], f.get("date", ""),
                                             f.get("from", "")))
 
@@ -337,8 +361,13 @@ def _schedule_decisions(
         idx = bisect.bisect_left(trade_set, row.as_of)
         if idx < len(trade_set):
             landing = trade_set[idx]
-            # only keep the first decision that lands on a given trade date.
-            out.setdefault(landing, row)
+            # keep the LATEST decision (by as_of) that lands on a given trade date.
+            # Pre-window lookback decisions all bisect to the first in-window trade
+            # date; the window must be seeded with the most recent latched position
+            # (production semantics), not the earliest lookback quadrant.
+            existing = out.get(landing)
+            if existing is None or row.as_of >= existing.as_of:
+                out[landing] = row
     return out
 
 

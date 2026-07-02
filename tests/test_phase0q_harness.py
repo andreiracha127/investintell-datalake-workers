@@ -411,6 +411,70 @@ def test_sleeve_trades_on_quadrant_change():
     assert len(res.rebalance_dates) == 2
 
 
+def test_sleeve_seeds_window_with_latest_pre_window_decision():
+    """Multiple pre-window (lookback) decisions all land on the first in-window
+    trading date; the sleeve must enter the window holding the MOST RECENT latched
+    position, not the earliest lookback quadrant (fold/window seeding, P1)."""
+    start = dt.date(2020, 1, 1)
+    prices = sleeve.PriceFrame(_flat_prices(
+        sleeve.SLEEVE_TICKERS, start, 40, {t: 0.0 for t in sleeve.SLEEVE_TICKERS}))
+    # Three pre-window decisions (all before window start); the latest is contraction.
+    decisions = [
+        _FakeDecision(dt.date(2019, 3, 31), "expansion"),
+        _FakeDecision(dt.date(2019, 6, 30), "recovery"),
+        _FakeDecision(dt.date(2019, 12, 31), "contraction"),
+    ]
+    res = sleeve.simulate(prices, decisions, _params(), start=start,
+                          end=dt.date(2020, 2, 9), cost_bps=0)
+    # Exactly one trade (the seed) on the first trading date, into the LATEST quadrant.
+    assert len(res.rebalance_dates) == 1
+    seed_date = res.rebalance_dates[0]
+    seeded = sleeve.target_weights("contraction", _params(), sleeve.SLEEVE_TICKERS)
+    # NAV is flat (zero returns), so the held weights equal the seeded target; verify
+    # the seed came from contraction (SPY 0.15) not expansion (SPY 0.45).
+    expansion = sleeve.target_weights("expansion", _params(), sleeve.SLEEVE_TICKERS)
+    assert seeded["SPY"] != pytest.approx(expansion["SPY"])
+    # The scheduled decision landing on the seed date must be the latest (contraction).
+    sched = sleeve._schedule_decisions(prices, decisions, prices.dates_in(start, dt.date(2020, 2, 9)))
+    assert sched[seed_date].quadrant == "contraction"
+
+
+def test_priceframe_flags_zero_volume_run_longer_than_five_sessions():
+    """Phase 0Q sleeve policy: zero-volume runs longer than five sessions must be
+    flagged. PriceFrame must carry volume through and emit the trigger."""
+    start = dt.date(2020, 1, 1)
+    rows = []
+    p = 100.0
+    d = start
+    for i in range(12):
+        # sessions 3..9 (7 consecutive) carry zero volume -> a run of 7 > 5.
+        vol = 0 if 3 <= i <= 9 else 1000
+        rows.append({"ticker": "SPY", "date": d.isoformat(), "close": p,
+                     "adjusted_close": p, "volume": vol})
+        d = d + dt.timedelta(days=1)
+    frame = sleeve.PriceFrame(rows)
+    flags = frame.data_quality_flags(start, start + dt.timedelta(days=11))
+    zvr = [f for f in flags if f["flag"] == "zero_volume_run_gt_5_sessions"]
+    assert zvr, "expected a zero-volume-run flag for a 7-session zero-volume stretch"
+    assert zvr[0]["ticker"] == "SPY"
+    assert zvr[0]["sessions"] >= 6
+
+
+def test_priceframe_does_not_flag_short_zero_volume_run():
+    """A zero-volume stretch of <=5 sessions is within tolerance (not flagged)."""
+    start = dt.date(2020, 1, 1)
+    rows = []
+    d = start
+    for i in range(12):
+        vol = 0 if 3 <= i <= 7 else 1000  # 5 consecutive zero-volume sessions
+        rows.append({"ticker": "SPY", "date": d.isoformat(), "close": 100.0,
+                     "adjusted_close": 100.0, "volume": vol})
+        d = d + dt.timedelta(days=1)
+    frame = sleeve.PriceFrame(rows)
+    flags = frame.data_quality_flags(start, start + dt.timedelta(days=11))
+    assert not [f for f in flags if f["flag"] == "zero_volume_run_gt_5_sessions"]
+
+
 # --------------------------------------------------------------------------- #
 # Metric formula unit tests (hand-computed mini-fixtures)                     #
 # --------------------------------------------------------------------------- #
@@ -520,6 +584,48 @@ def test_runner_is_deterministic_byte_identical(fast_run):
         assert runner.canonical_json(c1) == runner.canonical_json(c2)
 
 
+def test_runner_honors_configured_primary_window(fast_run):
+    """Each cell must simulate the config's primary_window, not the module-level
+    default. The fast config uses 2019-06-01..2020-12-31 (~19 months), which is far
+    fewer trading days than the 2014-03..2026-06 default (~3100)."""
+    default_days = len(sleeve.PriceFrame(
+        runner.load_and_verify_pack(PACK_DIR).eod_rows).dates_in(
+            *runner.PRIMARY_WINDOW))
+    for cell in fast_run["cells"]:
+        n = cell["primary_window"]["n_trading_days"]
+        assert n < default_days
+        # the configured window has < 450 trading days; the default has > 3000.
+        assert n < 450
+
+
+def test_runner_honors_configured_stress_windows(fast_run):
+    """Each cell's stress windows must be exactly the configured set (one COVID
+    window in the fast config), not the six module-level defaults."""
+    for cell in fast_run["cells"]:
+        assert set(cell["stress_windows"]) == {"COVID_2020"}
+
+
+def test_gate_report_fails_loudly_when_base_cost_cell_absent():
+    """A cost grid that omits the fixed BASE_COST_BPS (5) has no base-cost cell to
+    judge; the report must NOT vacuously mark every gate go via all([]). It must
+    fail loudly (raise or explicit not_measured status)."""
+    config = runner.RunConfig(
+        run_id="phase0q-harness-test-nobase",
+        started_at="2026-07-02T00:00:00+00:00",
+        finished_at="2026-07-02T00:00:01+00:00",
+        harness_commit="0" * 40,
+        candidates=(runner.SCENARIO_CANDIDATES[0],),
+        cost_grid=(0, 10),  # deliberately omits the base 5bps
+        primary_window=(dt.date(2019, 6, 1), dt.date(2020, 12, 31)),
+        stress_windows=(
+            {"window_id": "COVID_2020", "start": dt.date(2020, 2, 15),
+             "end": dt.date(2020, 4, 30), "coverage": "full_basket"},
+        ),
+    )
+    with pytest.raises(ValueError, match="base.*cost|BASE_COST_BPS|not_measured"):
+        runner.run_harness(PACK_DIR, config)
+
+
 def test_runner_refuses_on_pack_mismatch(tmp_path):
     # copy the pack but corrupt the manifest sha -> verify_pack fails -> refuse.
     import shutil
@@ -561,6 +667,45 @@ def test_gate_report_integrity_measured_matches_cells(fast_run):
             runner.judge_gates_for_cell(cells_by_key[(cid, runner.BASE_COST_BPS)])[gate]["go"]
             for cid in {c["candidate_id"] for c in fast_run["cells"]})
         assert overall_go == all_pass
+
+
+def test_cell_with_triggered_flags_is_marked_reduced_quality():
+    """Policy: any triggered data-quality flag marks the affected cell
+    reduced_quality (a clean cell is 'ok'). The status must live on the cell."""
+    clean_cell = {"primary_window": {"data_quality_flags": []}}
+    flagged_cell = {"primary_window": {"data_quality_flags": [
+        {"ticker": "SPY", "flag": "zero_volume_run_gt_5_sessions",
+         "from": "2020-01-04", "to": "2020-01-10", "sessions": 7}]}}
+    assert runner.cell_quality_status(clean_cell) == "ok"
+    assert runner.cell_quality_status(flagged_cell) == "reduced_quality"
+
+
+def test_compute_cell_carries_data_quality_status(fast_run):
+    """Every computed cell carries an explicit data_quality_status; on the clean
+    committed pack it is 'ok' and consistent with an empty flag list."""
+    for cell in fast_run["cells"]:
+        status = cell["data_quality_status"]
+        flags = cell["primary_window"]["data_quality_flags"]
+        assert status in {"ok", "reduced_quality"}
+        assert status == ("reduced_quality" if flags else "ok")
+
+
+def test_gate_report_surfaces_reduced_quality_cells(fast_run):
+    """The gate report must surface each cell's data_quality_status; the gate logic
+    must not silently ignore triggered flags. A reduced_quality cell is recorded so a
+    known-bad cell cannot be reported as cleanly passing."""
+    report = fast_run["gate_report"]
+    dq = report["data_quality"]
+    assert "cells" in dq
+    # every (candidate, cost) cell has a surfaced status.
+    keys = {(c["candidate_id"], c["cost_bps"]) for c in fast_run["cells"]}
+    surfaced = {(e["candidate_id"], e["cost_bps"]) for e in dq["cells"]}
+    assert surfaced == keys
+    for e in dq["cells"]:
+        assert e["data_quality_status"] in {"ok", "reduced_quality"}
+    # any_reduced_quality flag mirrors whether any cell is reduced_quality.
+    any_reduced = any(e["data_quality_status"] == "reduced_quality" for e in dq["cells"])
+    assert dq["any_reduced_quality"] == any_reduced
 
 
 def test_gate_report_governance_pins_never_activate(fast_run):
