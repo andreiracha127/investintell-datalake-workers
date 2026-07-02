@@ -1,0 +1,23 @@
+{
+  "A3": "open_macro_v03",
+  "A4": "controlled_activation_proposal_prepared",
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "artifact_type": "phase0q_manifest",
+  "as_of": "2026-07-02",
+  "controlled_activation_proposal_001_merge_commit": "f1b5b6969bc256413033e2c193ff5cc011ba2952",
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "db_write_mode": "none",
+  "feature_flag_default": false,
+  "freeze_ready": false,
+  "official_result": false,
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "production_endpoint_activation": "none",
+  "purpose": "quantitative evidence generation and threshold recommendation preparation - candidate package only, nothing approved, no review closure produced",
+  "recommendation": "no_go_pending_metric_harness",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved",
+  "task2_effect": "dark launch Task 2 stays blocked until a measured non-candidate quantitative_gate_report.json exists and quant_owner signs thresholds"
+}

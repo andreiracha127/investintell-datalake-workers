@@ -1,0 +1,63 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_data_discovery_report",
+  "as_of": "2026-07-02",
+  "conclusion": {
+    "db_history_sufficient_for_quant_gates": true,
+    "full_series_backtest_window": {"start": "2016-09-07", "end": "2026-06-30", "approx_years": 9.8, "constraining_series": ["BAMLH0A0HYM2", "BAMLHE00EHYIEY", "BAMLEMRACRPIASIAOAS", "BAMLEMCBPIOAS"]},
+    "historical_certified_input_pack_exists": false,
+    "metric_harness_exists": false,
+    "pre_2016_windows_require_reduced_coverage_policy": true,
+    "repo_pack_sufficient_for_quant_gates": false
+  },
+  "db_findings": {
+    "access_mode": "read_only_select",
+    "provider": "tiger_cloud_timescaledb",
+    "queried_at": "2026-07-02",
+    "region": "us-west-2",
+    "service_id": "t83f4np6x4",
+    "service_name": "Investintell-Prod",
+    "staleness_flags": [
+      {"series_id": "T10YIE", "last_obs": "2026-02-27", "note": "Inflation breakeven series stale ~4 months at discovery date; refresh required before harness runs."}
+    ],
+    "tables": [
+      {"table": "eod_prices", "min_date": "1962-01-02", "max_date": "2026-06-30", "rows": 15169240, "distinct_dates": 16341},
+      {"table": "macro_data", "min_date": "1959-01-01", "max_date": "2026-06-29", "rows": 195365, "distinct_dates": 24648},
+      {"table": "nav_timeseries", "min_date": "1970-01-30", "max_date": "2026-06-30", "rows": 35635901, "distinct_dates": 14168}
+    ],
+    "macro_series_coverage": [
+      {"series_id": "DFF", "min_date": "1959-01-01", "max_date": "2026-06-08", "n": 24631},
+      {"series_id": "DGS10", "min_date": "1962-01-02", "max_date": "2026-06-08", "n": 16093},
+      {"series_id": "DGS2", "min_date": "1976-06-01", "max_date": "2026-06-08", "n": 12501},
+      {"series_id": "YIELD_CURVE_10Y2Y", "min_date": "1976-06-01", "max_date": "2026-06-08", "n": 12501},
+      {"series_id": "ICSA", "min_date": "1967-01-07", "max_date": "2026-06-20", "n": 3103},
+      {"series_id": "NFCI", "min_date": "1971-01-08", "max_date": "2026-06-19", "n": 2894},
+      {"series_id": "VIXCLS", "min_date": "1990-01-02", "max_date": "2026-06-08", "n": 9203},
+      {"series_id": "T10YIE", "min_date": "2016-06-20", "max_date": "2026-02-27", "n": 2422},
+      {"series_id": "BAMLH0A0HYM2", "min_date": "2016-09-07", "max_date": "2026-06-29", "n": 2564},
+      {"series_id": "SOFR", "min_date": "2018-04-03", "max_date": "2026-06-29", "n": 2057}
+    ]
+  },
+  "harness_findings": {
+    "calibration_thresholds": "explicitly_unset (src/calibration_candidate.py:360-361)",
+    "existing_metric_code_for_open_macro_v03": "none",
+    "turnover_proxy_definition": "round(baseline_distance, 12) at src/calibration_candidate.py:504 - NOT measured turnover and MUST NOT be used as turnover evidence"
+  },
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "repo_findings": {
+    "builder": "src/input_packs/build.py reads only fixtures/input_packs/p0_sources/open_macro_v03 static JSON snapshots; no DB export path exists",
+    "certified_pack": {
+      "as_of": "2026-06-26",
+      "date_span": {"min": "2026-04-30", "max": "2026-06-26"},
+      "distinct_dates_in_data_files": 6,
+      "input_pack_id": "open_macro_v03_certified_input_pack_001",
+      "input_pack_sha256": "ae8b76e5959cb5e9c10ced7b33fc13a01a3484865deeead56c5b83b1c440e08f",
+      "walk_forward_supported": false
+    },
+    "other_packs": "none (fixtures/input_packs contains only golden/certified_input_pack, invalid, p0_sources)"
+  },
+  "runtime_activation": false,
+  "schema_version": 1,
+  "status": "candidate_not_approved"
+}
