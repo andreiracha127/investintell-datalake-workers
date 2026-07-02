@@ -241,6 +241,27 @@ def test_window_with_no_prior_valid_decision_stays_unseeded_until_first_valid():
     assert res.seed_decision_as_of == dt.date(2020, 2, 29)
 
 
+def test_oos_measure_uses_global_chain_not_truncated_lookback():
+    """The fold seed must come from the GLOBAL latched chain: a valid decision
+    older than the runner's 1-year window lookback still seeds the fold (no
+    artificial truncation / re-warmup)."""
+    start = dt.date(2020, 1, 1)
+    prices = sleeve.PriceFrame(_flat_prices(
+        sleeve.SLEEVE_TICKERS, start, 365 * 4 + 2, {t: 0.0 for t in sleeve.SLEEVE_TICKERS}))
+    decisions = [
+        _D(dt.date(2020, 6, 30), "expansion"),                     # ONLY valid, 2.5y pre-fold
+        _D(dt.date(2022, 12, 31), None, valid=False, reason="deadband"),
+    ]
+    out = amendments.measure_oos_remeasured(
+        prices, decisions, _sp(), cost_bps=5,
+        primary_window=(dt.date(2020, 1, 1), dt.date(2023, 12, 31)))
+    assert out["n_folds"] == 1
+    fold = out["folds"][0]
+    assert fold["seeding"] == "carried_pre_fold_position"
+    assert fold["seed_decision_date"] == "2020-06-30"
+    assert dt.date.fromisoformat(fold["seed_decision_date"]) < dt.date.fromisoformat(fold["test_start"])
+
+
 def test_oos_remeasured_every_fold_seed_decision_precedes_fold_start():
     """PR#21 P1 regression on the COMMITTED artifact: every OOS fold's seeding
     decision date must be strictly BEFORE the fold test start (carry of the last

@@ -79,6 +79,31 @@ FULL_BASKET_STRESS_IDS = ("COVID_2020", "INFLATION_SHOCK_2022", "SVB_2023", "Q4_
 
 
 # --------------------------------------------------------------------------- #
+# Full-chain simulation (no lookback truncation)                              #
+# --------------------------------------------------------------------------- #
+
+def _simulate_full_chain(
+    prices: sleeve.PriceFrame,
+    decisions: Sequence[Any],
+    params: sleeve.SleeveParams,
+    start: _dt.date,
+    end: _dt.date,
+    cost_bps: int,
+    *,
+    compressed: bool = False,
+) -> sleeve.SleeveResult:
+    """Simulate a window seeded from the WHOLE latched decision chain (every
+    decision with as_of <= end), unlike ``runner._run_window`` which truncates the
+    pre-window lookback at ``start.year - 1``. The amendment semantics require the
+    last valid position of the GLOBAL chain to carry into the window — a valid
+    decision older than the truncated lookback must still seed it (PR#21 P1)."""
+    window_decisions = [r for r in decisions if r.as_of <= end]
+    return sleeve.simulate(prices, window_decisions, params,
+                           start=start, end=end, cost_bps=cost_bps,
+                           compressed=compressed)
+
+
+# --------------------------------------------------------------------------- #
 # DECISION 1 - carry-semantics stress measurement                             #
 # --------------------------------------------------------------------------- #
 
@@ -100,8 +125,8 @@ def measure_stress_carry(
         scheduled = [r.as_of for r in decisions if win["start"] <= r.as_of <= win["end"]]
         coverage = metrics.consumable_position_coverage(decisions, scheduled)
         diagnostics = metrics.carry_diagnostics(decisions, scheduled)
-        res = runner._run_window(prices, decisions, params,
-                                 win["start"], win["end"], cost_bps)
+        res = _simulate_full_chain(prices, decisions, params,
+                                   win["start"], win["end"], cost_bps)
         worst5d = metrics.worst_5d_return(res.nav)
         window_mdd = metrics.max_drawdown(res.nav)
         vol = metrics.annualized_volatility(res.nav)
@@ -170,8 +195,8 @@ def measure_oos_remeasured(
     fold_rows: list[dict[str, Any]] = []
     econ_metric_list: list[dict[str, float]] = []
     for fold in folds:
-        res = runner._run_window(prices, decisions, params,
-                                 fold["test_start"], fold["test_end"], cost_bps)
+        res = _simulate_full_chain(prices, decisions, params,
+                                   fold["test_start"], fold["test_end"], cost_bps)
         turn = metrics.one_way_turnover_annualized(res.dates, res.one_way_turnover_by_date)
         excl = metrics.fold_turnover_excluding_seed(
             res.dates, res.one_way_turnover_by_date, res.seed_rebalance_date)
@@ -248,11 +273,9 @@ def measure_turnover_grid(
     compressed sleeve (DECISION 2 cost-sensitivity + alternative measurement)."""
     cells: dict[str, Any] = {}
     for cost_bps in cost_grid:
-        window_decisions = runner._decisions_in(
-            decisions, _dt.date(primary_window[0].year - 1, 1, 1), primary_window[1])
-        res = sleeve.simulate(prices, window_decisions, params,
-                              start=primary_window[0], end=primary_window[1],
-                              cost_bps=cost_bps, compressed=compressed)
+        res = _simulate_full_chain(prices, decisions, params,
+                                   primary_window[0], primary_window[1], cost_bps,
+                                   compressed=compressed)
         turn = metrics.one_way_turnover_annualized(res.dates, res.one_way_turnover_by_date)
         cells[str(cost_bps)] = {
             "annualized_turnover": turn["max_trailing_252"],
