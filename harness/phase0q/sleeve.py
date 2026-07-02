@@ -96,6 +96,13 @@ class SleeveResult:
     one_way_turnover_by_date: dict[_dt.date, float]  # 0.5*sum|dw| at each trade
     reduced_sleeve_dates: list[_dt.date] = field(default_factory=list)
     data_quality_flags: list[dict[str, Any]] = field(default_factory=list)
+    # The first rebalance is the initial empty->position acquisition (the "seed");
+    # phase0q_003 DECISION 3 excludes it from fold ECONOMIC turnover.
+    seed_rebalance_date: _dt.date | None = None
+    # as_of of the decision that produced the seed position: the last VALID decision
+    # BEFORE window start when carried (PR#21 P1), or the first in-window valid
+    # decision when no prior valid latched position exists (unseeded start).
+    seed_decision_as_of: _dt.date | None = None
 
     def nav_by_date(self) -> dict[_dt.date, float]:
         return dict(zip(self.dates, self.nav))
@@ -186,17 +193,54 @@ class PriceFrame:
 # Target-weight construction                                                   #
 # --------------------------------------------------------------------------- #
 
+def compressed_quadrant_weights(fraction: float = 0.5) -> dict[str, dict[str, float]]:
+    """``sleeve_compressed_50`` (phase0q_003 DECISION 2, alternative measurement).
+
+    Each quadrant's weight vector is moved ``fraction`` of the way toward the MEAN of
+    the four quadrant vectors, then renormalized to sum 1. This is a controlled
+    turnover/risk/return trade-off probe (NOT a replacement sleeve): it does not
+    blindly reduce weights, it compresses the four quadrants toward their common
+    centroid so quadrant flips move fewer units.
+    """
+    keys = list(PER_QUADRANT_BASELINE_WEIGHTS)
+    mean = {t: sum(PER_QUADRANT_BASELINE_WEIGHTS[k].get(t, 0.0) for k in keys) / len(keys)
+            for t in SLEEVE_TICKERS}
+    out: dict[str, dict[str, float]] = {}
+    for k in keys:
+        base = PER_QUADRANT_BASELINE_WEIGHTS[k]
+        moved = {t: base.get(t, 0.0) + fraction * (mean[t] - base.get(t, 0.0))
+                 for t in SLEEVE_TICKERS}
+        out[k] = _renormalize({t: w for t, w in moved.items() if w > 0.0})
+    return out
+
+
+def _compressed_book_50() -> dict[str, dict[str, float]]:
+    """Cached ``sleeve_compressed_50`` baseline book (computed once, deterministic)."""
+    global _COMPRESSED_BOOK_50
+    if _COMPRESSED_BOOK_50 is None:
+        _COMPRESSED_BOOK_50 = compressed_quadrant_weights(0.5)
+    return _COMPRESSED_BOOK_50
+
+
+_COMPRESSED_BOOK_50: dict[str, dict[str, float]] | None = None
+
+
 def target_weights(
     quadrant: str, params: SleeveParams, available: Sequence[str],
+    *, compressed: bool = False,
 ) -> dict[str, float]:
     """Constrained target weights for a quadrant given scenario params and the
     price-available instrument subset (pre-inception renormalization).
 
     Order: baseline -> risk_tilt (SPY vs SHY) -> drop unavailable + renormalize ->
     enforce risk_cap / defensive_floor -> final renormalize to sum 1.
+
+    ``compressed`` selects the ``sleeve_compressed_50`` baseline book (DECISION 2
+    alternative measurement) instead of the standard per-quadrant baseline.
     """
     key = QUADRANT_TO_KEY[quadrant]
-    weights = dict(PER_QUADRANT_BASELINE_WEIGHTS[key])
+    book = _compressed_book_50() if compressed else PER_QUADRANT_BASELINE_WEIGHTS
+    weights = dict(book[key])
 
     # risk_tilt: shift between SPY (risk) and SHY (defensive), clamped non-negative.
     tilt = params.risk_tilt
@@ -284,12 +328,16 @@ def simulate(
     start: _dt.date,
     end: _dt.date,
     cost_bps: float,
+    compressed: bool = False,
 ) -> SleeveResult:
     """Run the daily cost-net NAV simulation over ``[start, end]``.
 
     ``decisions`` is the monthly latched decision series; each month-end that has a
     valid quadrant sets the active target. A trade fires on a quadrant change or a
     >5pp drift. One-way ``cost_bps`` is charged on 0.5*sum|dw| at each trade.
+
+    ``compressed`` selects the ``sleeve_compressed_50`` baseline book (phase0q_003
+    DECISION 2 alternative measurement).
     """
     trading_dates = prices.dates_in(start, end)
     if not trading_dates:
@@ -309,6 +357,7 @@ def simulate(
     rebalance_dates: list[_dt.date] = []
     turnover_by_date: dict[_dt.date, float] = {}
     reduced_dates: list[_dt.date] = []
+    seed_decision_as_of: _dt.date | None = None
 
     prev_date: _dt.date | None = None
     for date in trading_dates:
@@ -325,7 +374,7 @@ def simulate(
                 reduced_dates.append(date)
             new_quadrant = decision_row.quadrant if decision_row.has_valid_quadrant() else active_quadrant
             if new_quadrant is not None:
-                desired = target_weights(new_quadrant, params, available)
+                desired = target_weights(new_quadrant, params, available, compressed=compressed)
                 quadrant_changed = new_quadrant != active_quadrant
                 drift_breached = _max_drift(weights, desired) > DRIFT_BAND if weights else True
                 if quadrant_changed or drift_breached or not weights:
@@ -334,6 +383,10 @@ def simulate(
                     weights = dict(desired)
                     active_target = dict(desired)
                     active_quadrant = new_quadrant
+                    if not rebalance_dates:
+                        # initial empty->position acquisition: record which decision
+                        # seeded the window (pre-window carry or first in-window valid).
+                        seed_decision_as_of = decision_row.as_of
                     rebalance_dates.append(date)
                     turnover_by_date[date] = one_way
 
@@ -346,6 +399,8 @@ def simulate(
         one_way_turnover_by_date=turnover_by_date,
         reduced_sleeve_dates=sorted(set(reduced_dates)),
         data_quality_flags=prices.data_quality_flags(start, end),
+        seed_rebalance_date=rebalance_dates[0] if rebalance_dates else None,
+        seed_decision_as_of=seed_decision_as_of,
     )
 
 
@@ -361,12 +416,22 @@ def _schedule_decisions(
         idx = bisect.bisect_left(trade_set, row.as_of)
         if idx < len(trade_set):
             landing = trade_set[idx]
-            # keep the LATEST decision (by as_of) that lands on a given trade date.
-            # Pre-window lookback decisions all bisect to the first in-window trade
-            # date; the window must be seeded with the most recent latched position
-            # (production semantics), not the earliest lookback quadrant.
+            # Among the decisions landing on a given trade date, keep the LATEST
+            # VALID one (production carry semantics, PR#21 P1): pre-window lookback
+            # decisions all bisect to the first in-window trade date, and the window
+            # must be seeded with the most recent CONSUMABLE latched position — an
+            # abstaining (invalid) latest row must not displace the last valid
+            # position. Only when NO valid decision lands does the latest invalid
+            # row remain (it carries; no trade fires from it at an unseeded start).
             existing = out.get(landing)
-            if existing is None or row.as_of >= existing.as_of:
+            if existing is None:
+                out[landing] = row
+                continue
+            row_valid = row.has_valid_quadrant()
+            existing_valid = existing.has_valid_quadrant()
+            if row_valid and not existing_valid:
+                out[landing] = row
+            elif row_valid == existing_valid and row.as_of >= existing.as_of:
                 out[landing] = row
     return out
 

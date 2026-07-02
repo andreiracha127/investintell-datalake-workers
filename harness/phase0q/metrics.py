@@ -194,6 +194,140 @@ def stress_window_metrics(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Carry semantics (phase0q_003 DECISION 1)                                     #
+# --------------------------------------------------------------------------- #
+
+def consumable_position_coverage(
+    global_chain: Sequence[Any],
+    scheduled: Sequence[_dt.date],
+) -> dict[str, Any]:
+    """``consumable_position_coverage`` for a window (phase0q_003 DECISION 1).
+
+    Fraction of ``scheduled`` dates where a *consumable* position exists for the
+    sleeve: a FRESH valid decision on that date, OR carry-forward of the LAST VALID
+    decision of the GLOBAL latched ``global_chain`` strictly on/before that date.
+
+    Carry is only valid if a prior valid decision exists in the global chain; there
+    is NO artificial per-window re-warmup. A scheduled date with no fresh valid
+    decision and no prior valid latched position has an ABSENT consumable position
+    (counts against coverage). Each carried date records its provenance (which
+    decision date/quadrant is carried).
+
+    ``global_chain`` must be the whole latched decision chain (not a window slice) so
+    the carry seed is visible; passing only the window slice correctly reports the
+    absence of a pre-window latched position.
+    """
+    valid = sorted(
+        (d for d in global_chain if d.has_valid_quadrant()),
+        key=lambda d: d.as_of,
+    )
+    fresh_dates = {d.as_of for d in valid}
+
+    def last_valid_on_or_before(as_of: _dt.date):
+        prior = None
+        for d in valid:
+            if d.as_of <= as_of:
+                prior = d
+            else:
+                break
+        return prior
+
+    per_date: list[dict[str, Any]] = []
+    fresh_count = 0
+    carry_count = 0
+    absent_count = 0
+    for as_of in scheduled:
+        if as_of in fresh_dates:
+            fresh_count += 1
+            per_date.append({"date": as_of.isoformat(), "source": "fresh",
+                             "carried_from": None, "carried_quadrant": None})
+            continue
+        seed = last_valid_on_or_before(as_of)
+        if seed is not None:
+            carry_count += 1
+            per_date.append({"date": as_of.isoformat(), "source": "carry",
+                             "carried_from": seed.as_of.isoformat(),
+                             "carried_quadrant": seed.quadrant})
+        else:
+            absent_count += 1
+            per_date.append({"date": as_of.isoformat(), "source": "absent",
+                             "carried_from": None, "carried_quadrant": None})
+
+    n = len(scheduled)
+    coverage = (fresh_count + carry_count) / n if n else 0.0
+    return {
+        "consumable_position_coverage": coverage,
+        "fresh_count": fresh_count,
+        "carry_count": carry_count,
+        "absent_count": absent_count,
+        "scheduled_count": n,
+        "per_date": per_date,
+    }
+
+
+def carry_diagnostics(
+    global_chain: Sequence[Any],
+    scheduled: Sequence[_dt.date],
+) -> dict[str, Any]:
+    """Per-window DIAGNOSTICS (phase0q_003 DECISION 1): fresh_decision_rate,
+    abstention_rate, deadband_count and hold_low_confidence_count. These are
+    REPORTED, not gating. The deadband / hold_low_confidence counts come from the
+    decision rows' ``transition_reason`` audit tags on the scheduled dates."""
+    fresh_dates = {d.as_of for d in global_chain if d.has_valid_quadrant()}
+    scheduled_set = set(scheduled)
+    n = len(scheduled)
+    fresh_count = sum(1 for d in scheduled if d in fresh_dates)
+    abstain_count = n - fresh_count
+    deadband_count = 0
+    hold_low_confidence_count = 0
+    for row in global_chain:
+        if row.as_of not in scheduled_set:
+            continue
+        reason = getattr(row, "transition_reason", None) or ""
+        tags = {bit.strip() for bit in reason.split(",") if bit.strip()}
+        if "deadband" in tags:
+            deadband_count += 1
+        if "hold_low_confidence" in tags:
+            hold_low_confidence_count += 1
+    return {
+        "scheduled_count": n,
+        "fresh_count": fresh_count,
+        "abstention_count": abstain_count,
+        "fresh_decision_rate": (fresh_count / n) if n else 0.0,
+        "abstention_rate": (abstain_count / n) if n else 0.0,
+        "deadband_count": deadband_count,
+        "hold_low_confidence_count": hold_low_confidence_count,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Fold turnover excluding the initial acquisition (phase0q_003 DECISION 3)     #
+# --------------------------------------------------------------------------- #
+
+def fold_turnover_excluding_seed(
+    dates: Sequence[_dt.date],
+    turnover_by_date: Mapping[_dt.date, float],
+    seed_date: _dt.date | None,
+) -> dict[str, float]:
+    """Fold economic turnover with the initial empty->position acquisition trade
+    (the ``seed_date`` rebalance) EXCLUDED (phase0q_003 DECISION 3).
+
+    Returns the seed one-way turnover, the total/annualized figures over the
+    remaining (economic) trades, and the worst trailing-252 rolling sum computed on
+    the seed-excluded per-day turnover series."""
+    excl = {d: t for d, t in turnover_by_date.items() if d != seed_date}
+    ann = one_way_turnover_annualized(dates, excl)
+    seed_one_way = turnover_by_date.get(seed_date, 0.0) if seed_date is not None else 0.0
+    return {
+        "seed_one_way": seed_one_way,
+        "seed_date": seed_date.isoformat() if seed_date is not None else None,
+        "total_one_way_excl_seed": ann["total_one_way"],
+        "max_trailing_252_excl_seed": ann["max_trailing_252"],
+        "window_average_annualized_excl_seed": ann["window_average_annualized"],
+    }
+
+
 def stability_from_folds(fold_metrics: Sequence[Mapping[str, float]]) -> dict[str, float]:
     """Cross-fold stability = max abs deviation of each metric from the cross-fold
     median (metric_definitions.json out_of_sample_stability)."""
