@@ -19,6 +19,7 @@ Data is NOT the blocker: the Cloud DB holds deep history (eod_prices since 1962-
 | `threshold_candidate_report.json` | Candidate institutional thresholds in conservative/base/aggressive profiles with explicit derivations; base recommended; approved=false |
 | `quantitative_gate_report.candidate.json` | Consolidated per-gate status: all five gates no_go_pending_metric_harness, with what exists vs what is missing |
 | `lean_harness_spec.md` | Reproducible harness spec: DB export → certified pack v2 → parity module → LEAN backtest → metric extractor |
+| `threshold_profile_selection_record.json` | Quant owner selected the base profile as the empirical test envelope (2026-07-02) — explicitly NOT final institutional approval |
 
 ## What must happen next (in order)
 

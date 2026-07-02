@@ -1,0 +1,26 @@
+{
+  "A5": "blocked",
+  "activation_allowed": false,
+  "artifact_type": "phase0q_threshold_profile_selection_record",
+  "date": "2026-07-02",
+  "decision_scope": "empirical_test_envelope_only",
+  "decision_scope_note": "The base profile is accepted ONLY as the test envelope the metric harness must evaluate against. This is NOT final institutional approval of thresholds; after measured results exist the quant_owner will approve, adjust, or reject the final profile.",
+  "institutional_approval": false,
+  "phase0q_id": "open_macro_v03_phase0q_001",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "selected_by": "Andrei Rachadel",
+  "selected_by_role": "quant_owner",
+  "selected_profile": "base",
+  "selected_envelope": {
+    "max_one_way_turnover_annualized": 0.60,
+    "max_drawdown": 0.25,
+    "max_annualized_volatility": 0.12,
+    "min_worst_5d_return": -0.10,
+    "max_fold_volatility_deviation": 0.05,
+    "max_fold_mdd_deviation": 0.08
+  },
+  "source_report": "artifacts/quant/open_macro_v03_phase0q_001/threshold_candidate_report.json",
+  "status": "candidate_not_approved",
+  "task2_effect": "Task 2 stays BLOCKED; review_closure_record.json must not be created; no gate becomes go by this selection"
+}

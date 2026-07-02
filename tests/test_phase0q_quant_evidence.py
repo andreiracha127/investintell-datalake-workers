@@ -14,6 +14,7 @@ REQUIRED_ARTIFACTS = {
     "stress_oos_policy.json",
     "scenario_grid.json",
     "threshold_candidate_report.json",
+    "threshold_profile_selection_record.json",
     "quantitative_gate_report.candidate.json",
     "lean_harness_spec.md",
     "phase0q_report.md",
@@ -100,6 +101,23 @@ def test_threshold_candidates_are_unapproved_positive_and_profile_monotonic() ->
         >= profiles["base"]["min_worst_5d_return"]
         >= profiles["aggressive"]["min_worst_5d_return"]
     )
+
+
+def test_threshold_profile_selection_is_empirical_envelope_only() -> None:
+    selection = _json("threshold_profile_selection_record.json")
+    candidates = _json("threshold_candidate_report.json")
+    profiles = {entry["profile"]: entry for entry in candidates["profiles"]}
+
+    assert selection["selected_profile"] == "base"
+    assert selection["selected_by"] == "Andrei Rachadel"
+    assert selection["selected_by_role"] == "quant_owner"
+    assert selection["institutional_approval"] is False
+    assert selection["decision_scope"] == "empirical_test_envelope_only"
+    assert selection["status"] == "candidate_not_approved"
+    assert "BLOCKED" in selection["task2_effect"]
+    base = profiles["base"]
+    for key, value in selection["selected_envelope"].items():
+        assert base[key] == value, f"selected envelope diverges from candidate report on {key}"
 
 
 def test_data_discovery_pins_real_findings() -> None:
