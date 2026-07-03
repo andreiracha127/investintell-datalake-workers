@@ -35,6 +35,7 @@ content verbatim as the cloud project's ``main.py``.
 
 from __future__ import annotations
 
+import builtins
 import gzip
 import hashlib
 import json
@@ -67,7 +68,7 @@ def resolve_manifest_key_default(object_store) -> str:
         return MANIFEST_KEY_INJECTED
     try:
         return object_store.read("phase0q_cloud/object_store_manifest_key.txt").strip()
-    except Exception:
+    except builtins.Exception:  # builtins.: cloud wildcard shadows Exception (System.Exception)
         return ""
 
 
@@ -491,9 +492,12 @@ def persist_full_verdict_best_effort(object_store, manifest: dict,
     """
     try:
         key = save_full_verdict(object_store, manifest, verdict_bytes)
-    except Exception as exc:  # noqa: BLE001 - adapter-level I/O/quota exceptions
+    except builtins.Exception as exc:  # noqa: BLE001 - adapter-level I/O/quota exceptions
         # must degrade to saved=False exactly like a returned False; a thrown
         # write failure must never kill a complete reproducibility proof.
+        # ``builtins.`` is load-bearing: on QC cloud ``from AlgorithmImports
+        # import *`` rebinds the module-global ``Exception`` to System.Exception,
+        # which Python exceptions do NOT subclass (proven by backtest 814c68ef).
         return False, None, str(exc)
     return True, key, None
 
