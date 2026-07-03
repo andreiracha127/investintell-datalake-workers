@@ -350,6 +350,10 @@ def reconstruct_verdict(stats: dict[str, str], expected: dict[str, Any],
     # would misrepresent the mismatch. Detail then lives only in the full ObjectStore
     # verdict.
     derive = leg_match and stats["phase0q_verdict"] == "reproduced"
+    # Honest archival: "false" means the cloud store refused the full-verdict save
+    # (e.g. quota) — the key is then NOT advertised; the sha pins the bytes carried
+    # by the backtest's chunked log fallback (web UI).
+    full_saved = stats.get("phase0q_fullverdict_saved", "true") == "true"
     return {
         "artifact_type": "phase0q_cloud_leg_verdict",
         "schema_version": 1,
@@ -369,15 +373,21 @@ def reconstruct_verdict(stats: dict[str, str], expected: dict[str, Any],
         "reproduced": stats["phase0q_verdict"] == "reproduced",
         "verdict": ("reproduced" if stats["phase0q_verdict"] == "reproduced"
                     else "not_reproduced"),
-        "full_verdict_object_store_key": verdict_key,
+        "full_verdict_object_store_key": verdict_key if full_saved else None,
         "full_verdict_sha256": stats["phase0q_verdict_sha256"],
         "notes": (
             "Reconstructed from the backtest runtimeStatistics essentials. The cloud leg "
             "hash is the stable hash over all output logical hashes, so a single equality "
             "proves the full per-hash set; the per-hash table above is derived from the "
-            "local expected manifest on a leg-hash match. The FULL verdict JSON emitted "
-            f"in the cloud is stored in the QC Object Store at {verdict_key} "
-            f"(sha256 {stats['phase0q_verdict_sha256']})."
+            "local expected manifest on a leg-hash match. "
+            + (
+                f"The FULL verdict JSON emitted in the cloud is stored in the QC Object "
+                f"Store at {verdict_key} (sha256 {stats['phase0q_verdict_sha256']})."
+                if full_saved else
+                f"The FULL verdict JSON was not archived (the Object Store refused the "
+                f"save, e.g. quota); it is carried by the backtest's chunked log "
+                f"fallback (web UI), pinned by sha256 {stats['phase0q_verdict_sha256']}."
+            )
         ),
     }
 
