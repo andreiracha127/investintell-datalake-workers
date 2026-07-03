@@ -50,8 +50,16 @@ EXPECTED_FILE_SHA256 = {
     "phase0q_cloud_verdict.json":
         "c98f2e870c304d24f5666b7bc75877c453ed5ce635df34b2390e779ac530310a",
     "provenance.json":
-        "d5b31ef4de6e5c18ea076453cb8c32c9ebdbcaeea6cf84deffc93ff5a274a1b4",
+        "bc698ed10d4362335534f5dd36a4d6da6c4891cd1a44ea5e4493e8a3acaf1f35",
 }
+
+# Two DISTINCT manifests, both pinned: the expected-results manifest is the comparison
+# target (pinned identically in the cloud_leg_manifest object table); the object-store
+# manifest is the per-object root of trust baked into the uploaded main.py.
+EXPECTED_RESULTS_MANIFEST_SHA256 = (
+    "018d4d6f2774c2ec3b9c328aa05074f4badf00b6db0dfeb2278e26a4ccd642fd")
+OBJECT_STORE_MANIFEST_SHA256 = (
+    "74a27d7596255c5d0e18c0abe82d839894a0238b3eac1a69fdafde41ad43156c")
 
 
 def _json(name: str) -> dict[str, Any]:
@@ -144,6 +152,16 @@ def test_provenance_pins_the_successful_run_and_the_exact_file_bytes() -> None:
     assert pins["harness_commit"] == EXPECTED_HARNESS_COMMIT
     assert pins["input_pack_sha256"] == EXPECTED_INPUT_PACK_SHA256
     assert pins["contract_bundle_sha256"] == EXPECTED_CONTRACT_BUNDLE_SHA256
+    assert pins["expected_results_manifest_sha256"] == EXPECTED_RESULTS_MANIFEST_SHA256
+    assert pins["object_store_manifest_sha256"] == OBJECT_STORE_MANIFEST_SHA256
+
+    # cross-artifact consistency: the expected-results pin must equal the committed
+    # cloud-leg bundle's object-table pin — the trail an auditor follows.
+    cloud_leg = json.loads(
+        (ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001" /
+         "cloud_leg_manifest.json").read_text(encoding="utf-8"))
+    bundle_pin = cloud_leg["object_key_sha_table"]["expected_results_manifest.json"]["content_sha256"]
+    assert bundle_pin == EXPECTED_RESULTS_MANIFEST_SHA256
 
     # immutability: every file in the package (provenance included) must match the
     # CONSTANT pins above — a coordinated edit of the evidence files plus
@@ -163,8 +181,7 @@ def test_provenance_states_the_local_leg_derivation_honestly() -> None:
     derivation = _json("provenance.json")["local_leg_derivation"]
 
     assert derivation["local_leg_hash"] == EXPECTED_LEG_HASH
-    assert derivation["expected_manifest_sha256"] == (
-        "74a27d7596255c5d0e18c0abe82d839894a0238b3eac1a69fdafde41ad43156c")
+    assert derivation["expected_manifest_sha256"] == EXPECTED_RESULTS_MANIFEST_SHA256
     assert EXPECTED_HARNESS_COMMIT in derivation["computed_from"]
     # the record must name the historically committed leg it does NOT reproduce, so the
     # closed matrix can never be read as reproducing evidence_001's committed bytes.
