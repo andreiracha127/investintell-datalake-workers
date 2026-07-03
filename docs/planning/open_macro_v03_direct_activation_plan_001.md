@@ -54,7 +54,12 @@ The baseline-independent half of the eliminated shadow, as a hard gate:
   before the Stage B governance flip. If Stage B would land after that window,
   Stage A is re-run (fresh snapshot + N=8 host/N=8 container reproducibility + SLO
   gate) and re-pinned first — the first official production write never fires on a
-  validation that has aged past the bound.
+  validation that has aged past the bound. The bound is not purely time-based: even
+  INSIDE the 5-day window, if a scheduled month-end decision date falls between the
+  `validation_date` and the activation as-of date, Stage A is re-run (or the artifact
+  rejected) first — otherwise the first official write would be a FRESH scheduled
+  decision the live-validation artifact never recomputed, Stage A having covered only
+  the earlier carried/fresh state.
 
 ## Stage B — Activation PR (the governance flip + the real runtime + the product)
 
@@ -65,7 +70,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 
 - **B1. Runtime worker (new production code):** a daily job that (i) reads the PIT
   vintages AND the sleeve `eod_prices` (`adj_close`, with the certified path's
-  data-quality flags) as-of the run date, (ii) computes the latched decision chain + the
+  data-quality flags) as-of the run date on the SAME input basis Stage A validated —
+  the certified pack v2 prefix plus a pinned delta since the pack-v2 cut, NOT the raw
+  live tables for the full history; the pre-cut prefix read from production is
+  hash-compared to pack v2 and the run FAILS LOUD on any mismatch, so a backfill or
+  correction of a pre-cut PIT vintage or sleeve-price row can never silently shift the
+  input basis away from the one the evidence chain and Stage A certified,
+  (ii) computes the latched decision chain + the
   `compressed_50` consumable position via the SAME pure modules the evidence chain
   used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction;
   and "the SAME modules" is ENFORCED, not asserted: Stage B pins the sha256 of each
@@ -80,8 +91,17 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   judgment/threshold refs, code commit) AND the allocation row to
   `open_macro_v03_allocations` (as_of, per-ETF weights of the consumable
   compressed_50 position, cost/risk-cap parameters, provenance) — the allocation
-  is the product output — and (iv) refuses to write when inputs breach the
-  staleness SLO. Both tables are NEW; the old model's tables are never written.
+  is the product output — and (iv) refuses to write the decision/allocation when
+  inputs breach the staleness SLO, instead writing a durable row to the
+  `open_macro_v03_staleness_blocks` ledger (`as_of` + input hashes + reason) so a
+  block is a POSITIVE, replayable record rather than an absence. The run follows the
+  inherited worker pattern (`src/db.py::connect()` + a DEDICATED `advisory_lock()`
+  lock id, like `src/workers/macro_ingestion.py`, registered in `src/run_worker.py`),
+  so a Railway retry or an overlapping cron cannot start two `open_macro_v03` runs for
+  the same business day and race the decision/allocation publish, the staleness-block
+  ledger write, or the invalidation path — at most one run holds the lock and the rest
+  exit without side effects. Both tables are NEW; the old model's tables are never
+  written.
   Because the backend consumes both tables from day one, the two rows are
   published **atomically**: a single transaction commits decision + allocation
   together (or, where the store cannot span both, each row carries a
@@ -101,11 +121,15 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   instead of leaving it readable as current official output — recording a
   staleness-block thereby expires the last rows rather than freezing them `valid`.
 - **B1b. Schema migration with evidence (inherited Phase 4 requirement):** the DDL
-  for both new tables is committed, applied through a reviewed migration path, and
-  verified against the production DB with a committed
-  `schema_migration_record.json` (tables exist, columns/types/constraints match
-  the committed DDL, write permissions scoped to the worker role, idempotent
-  upsert semantics documented and tested).
+  for both new output tables AND a durable `open_macro_v03_staleness_blocks` ledger
+  (one row per blocked day: `as_of`, input hashes, reason, worker commit) is
+  committed, applied through a reviewed migration path, and verified against the
+  production DB with a committed `schema_migration_record.json` (tables exist,
+  columns/types/constraints match the committed DDL, write permissions scoped to the
+  worker role, idempotent upsert semantics documented and tested). The ledger is what
+  makes a "recorded staleness-block" durable: the Stage C verifier and the
+  `missing_output_slo` read it to tell an INTENTIONAL block (a ledger row for that
+  `as_of`) apart from a silent worker exit (no output rows AND no ledger row ⇒ abort).
 - **B2. Feature flag:** `open_macro_v03_runtime_activation` created on the worker's
   service only, read at job start; kill switch = set false (procedure already
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
@@ -116,22 +140,25 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   incumbent's output is worthless, so protecting its reader protects nothing; the
   first reliable model must be consumed from day one. The live reader is in the
   separate `investintell-light-combo` backend, which this datalake-workers PR
-  cannot modify or review, so the switch-over is a COORDINATED cross-repo change:
-  Stage B carries `backend_cutover_record.json` pinning the merged backend PR
-  (repo, PR/merge sha, the NAMED sanctioned read route now served from
-  `open_macro_v03_decisions`/`open_macro_v03_allocations`, and the confirmation
-  that it no longer reads `regime_quadrant_snapshot`), and the incumbent producer
-  is NOT decommissioned until that backend-cutover evidence is present — the two
-  merges land together so the backend is never changed out of band and never left
-  reading the old snapshot after switch-off. Because a committed record in THIS repo
-  cannot enforce a foreign-repo merge order, the ordering is made gate-enforceable
-  rather than asserted: the backend read route is itself FLAG-GATED and stays inert
-  until the new tables exist and carry a first verified row, and
-  `backend_cutover_record.json` attests that precondition (tables present + first
-  sanctioned row verified) held before the route went live. Merging the backend PR
-  early can therefore never point a live reader at absent or empty tables — the "two
-  merges land together" property is enforced by the gate + attested precondition, not
-  merely by narrative. `old_model_decommission_record.json`
+  cannot modify or review, so the switch-over is a COORDINATED cross-repo change.
+  Because a committed record in THIS repo cannot enforce a foreign-repo merge order —
+  and cannot truthfully attest a first verified row that only exists AFTER this very
+  PR creates the worker/tables and fires the first sanctioned write — the cutover
+  evidence is SPLIT across the merge boundary into two records:
+  (a) PRE-MERGE, committed in the Stage B PR: `backend_flag_inert_record.json` pins
+  the merged (or approved) backend PR with its new read route FLAG-GATED and INERT —
+  deployed but not yet serving from the new tables, still safe on the old snapshot —
+  so backend-merge ORDER is irrelevant and an early backend merge exposes no live
+  reader to absent or empty tables; and
+  (b) POST-MERGE, created only after Stage B lands and the worker has written AND
+  verified the first sanctioned row: `backend_cutover_record.json` records flipping
+  the backend flag to serve the NAMED route from
+  `open_macro_v03_decisions`/`open_macro_v03_allocations` and the confirmation it no
+  longer reads `regime_quadrant_snapshot`.
+  The incumbent producer is NOT decommissioned until that POST-MERGE cutover record
+  exists — so the backend is never changed out of band, never left reading the old
+  snapshot after switch-off, and never pointed at tables before their first verified
+  row. `old_model_decommission_record.json`
   documents what was stopped, where, when, by whom, and the emergency re-enable
   procedure; the incumbent's historical tables remain readable and untouched.
 - **B4. Governance flip via the documented promotion gates:** new
@@ -206,8 +233,10 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   bypass, any SLO breach, any write outside the two new tables, AND any **missing
   or partial daily output** — every business day of the window must carry BOTH
-  rows (decision + allocation) or a recorded staleness-block; a silent worker
-  exit or a one-of-two partial write is an abort (the inherited
+  rows (decision + allocation) or a recorded staleness-block (a durable
+  `open_macro_v03_staleness_blocks` ledger row for that `as_of`, with input hashes);
+  a silent worker exit or a one-of-two partial write — no rows AND no ledger row — is
+  an abort (the inherited
   `missing_output_slo`), because a verifier that only checks published rows would
   otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
   activation is invalidated traceably. **Reader-enforceable invalidation:** an
