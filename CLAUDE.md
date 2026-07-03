@@ -10,13 +10,11 @@ High-stakes decisions: task Opus + Codex on the same problem in parallel, synthe
 
 ## Default context workflow
 
-- Start coding tasks by activating the workspace with Serena and following the Serena instructions required by the environment.
-- For broad discovery tasks, run one Auggie remote code search after Serena activation to gather repository context before deeper local exploration.
-- Use Auggie when the task asks where logic lives, how a subsystem is wired, or touches unfamiliar architecture, ingestion, backfill, worker orchestration, data flow, auth, or UI paths.
-- Prefer `mcp__auggie.augment_code_search` against `andreiracha127/investintell-datalake-workers`; use the current git branch when it is indexed, otherwise fall back to `main`.
-- Do not use the local `auggie-context` MCP in this workspace; it was disabled because the MCP process failed to spawn the Auggie CLI (`spawn auggie ENOENT`).
+- Start coding tasks by activating the workspace with Serena (`activate_project` → `investintell-datalake-workers-main`) and following the Serena instructions required by the environment. Use `mcp__serena__*` for exact-symbol navigation, references, and refactors, and for any work affected by uncommitted local changes.
+- For discovery by CONCEITO or INTENÇÃO (where logic lives, how a subsystem is wired, unfamiliar ingestion/backfill/worker-orchestration/data-flow/auth paths), call `mcp__auggie-context__query_codebase` before sweeping with Grep/Glob/Task.
+- Pass `workspace_root` = the absolute path of this worktree, `e:/investintell-datalake-workers-main` — that is the path indexed and connected by the local `auggie-context` server. Do not pass a hardcoded base path.
+- Do **not** use the remote `mcp__auggie__*` (Augment HTTP API at `api.augmentcode.com`): it needs auth and is not wired for this worktree. The local `auggie-context` tool above is the working path.
 - Treat Auggie as a scout for relevant files and snippets. Verify everything against the local worktree with Serena, `rg`, and direct reads before editing.
-- Use Serena, `rg`, local tests, and type/lint gates for symbol navigation, references, refactors, and any work affected by uncommitted local changes.
 
 ## Operational MCP and deploy defaults
 
