@@ -350,7 +350,8 @@ def test_build_runtime_statistics_essentials(session_verdict):
     stats = bt.build_runtime_statistics(session_verdict, verdict_bytes)
     assert set(stats) == {
         "phase0q_verdict", "phase0q_cloud_leg_hash", "phase0q_expected_leg_hash",
-        "phase0q_mismatch_count", "phase0q_verdict_sha256"}
+        "phase0q_mismatch_count", "phase0q_verdict_sha256", "phase0q_fullverdict_saved"}
+    assert stats["phase0q_fullverdict_saved"] == "true"
     assert stats["phase0q_verdict"] == "reproduced"
     assert stats["phase0q_cloud_leg_hash"] == stats["phase0q_expected_leg_hash"]
     assert stats["phase0q_mismatch_count"] == "0"
@@ -377,13 +378,15 @@ def _synthetic_expected():
     }
 
 
-def _stats(verdict="reproduced", cloud="LEG", exp="LEG", count="0", sha="s" * 64):
+def _stats(verdict="reproduced", cloud="LEG", exp="LEG", count="0", sha="s" * 64,
+           saved="true"):
     return {
         "phase0q_verdict": verdict,
         "phase0q_cloud_leg_hash": cloud,
         "phase0q_expected_leg_hash": exp,
         "phase0q_mismatch_count": count,
         "phase0q_verdict_sha256": sha,
+        "phase0q_fullverdict_saved": saved,
     }
 
 
@@ -851,3 +854,120 @@ def test_object_store_save_bytes_raises_when_store_reports_failure():
             return True
 
     _object_store_save_bytes(_AcceptingStore(), "k", b"data")
+
+
+def test_persist_full_verdict_best_effort_reports_refusal_without_raising():
+    """QUOTA REALITY (first real cloud run): the org store was over quota and
+    SaveBytes refused — failing the whole run destroyed a complete reproducibility
+    proof. The save is best-effort: refusal reports saved=False (never advertised
+    as stored), the essentials still prove the leg via runtime statistics."""
+    from harness.phase0q_cloud.backtest_main import persist_full_verdict_best_effort
+
+    class _RefusingStore:
+        def save_bytes(self, key, data):
+            return False
+
+    manifest = {"verdict_key_template": "p/results/phase0q_cloud_verdict.json"}
+    saved, key, reason = persist_full_verdict_best_effort(_RefusingStore(), manifest, b"{}")
+    assert saved is False
+    assert key is None
+    assert "refused" in reason
+
+    class _AcceptingStore:
+        def save_bytes(self, key, data):
+            return True
+
+    saved, key, reason = persist_full_verdict_best_effort(_AcceptingStore(), manifest, b"{}")
+    assert saved is True
+    assert key == "p/results/phase0q_cloud_verdict.json"
+    assert reason is None
+
+
+def test_runtime_statistics_carry_fullverdict_saved_flag():
+    from harness.phase0q_cloud.backtest_main import build_runtime_statistics
+
+    verdict = {
+        "reproduced": True,
+        "execution_legs": {"qc_research_object_store": {"logical_hash": "a" * 64}},
+        "comparison": {
+            "execution_leg_logical_hash": {"expected_local_python_pure": "a" * 64},
+            "mismatch_count": 0,
+        },
+    }
+    stats_saved = build_runtime_statistics(verdict, b"{}", full_verdict_saved=True)
+    stats_unsaved = build_runtime_statistics(verdict, b"{}", full_verdict_saved=False)
+    assert stats_saved["phase0q_fullverdict_saved"] == "true"
+    assert stats_unsaved["phase0q_fullverdict_saved"] == "false"
+
+
+def test_reconstruct_verdict_unsaved_full_verdict_is_not_advertised():
+    from harness.phase0q_cloud.run_cloud_backtest import reconstruct_verdict
+
+    expected = {
+        "run_fingerprint": "f" * 64,
+        "output_logical_hashes": {"turnover": "a" * 64},
+        "execution_legs": {"local_python_pure": {"logical_hash": "b" * 64}},
+    }
+    stats = {
+        "phase0q_verdict": "reproduced",
+        "phase0q_cloud_leg_hash": "b" * 64,
+        "phase0q_expected_leg_hash": "b" * 64,
+        "phase0q_mismatch_count": "0",
+        "phase0q_verdict_sha256": "c" * 64,
+        "phase0q_fullverdict_saved": "false",
+    }
+    verdict = reconstruct_verdict(stats, expected, "p/results/phase0q_cloud_verdict.json")
+    assert verdict["reproduced"] is True
+    assert verdict["full_verdict_object_store_key"] is None
+    assert "not archived" in verdict["notes"]
+    assert verdict["full_verdict_sha256"] == "c" * 64
+
+
+def test_extract_runtime_statistics_propagates_fullverdict_saved_flag():
+    """P1 regression: the extraction filter omitted the new flag, so the driver
+    defaulted to true and would advertise an unstored key — the exact false
+    advertising the flag exists to prevent. The flag is REQUIRED and the
+    reconstruct default is fail-safe (false)."""
+    from harness.phase0q_cloud.run_cloud_backtest import (
+        RUNTIME_STAT_KEYS, extract_runtime_statistics, reconstruct_verdict,
+    )
+
+    assert "phase0q_fullverdict_saved" in RUNTIME_STAT_KEYS
+
+    backtest = {"runtimeStatistics": {
+        "phase0q_verdict": "reproduced",
+        "phase0q_cloud_leg_hash": "b" * 64,
+        "phase0q_expected_leg_hash": "b" * 64,
+        "phase0q_mismatch_count": "0",
+        "phase0q_verdict_sha256": "c" * 64,
+        "phase0q_fullverdict_saved": "false",
+    }}
+    stats = extract_runtime_statistics(backtest)
+    assert stats["phase0q_fullverdict_saved"] == "false"
+
+    expected = {
+        "run_fingerprint": "f" * 64,
+        "output_logical_hashes": {"turnover": "a" * 64},
+        "execution_legs": {"local_python_pure": {"logical_hash": "b" * 64}},
+    }
+    verdict = reconstruct_verdict(stats, expected, "p/results/x.json")
+    assert verdict["full_verdict_object_store_key"] is None
+
+    # fail-safe: an absent flag must never be treated as saved
+    stats_absent = {k: v for k, v in stats.items() if k != "phase0q_fullverdict_saved"}
+    verdict2 = reconstruct_verdict(stats_absent, expected, "p/results/x.json")
+    assert verdict2["full_verdict_object_store_key"] is None
+
+
+def test_persist_best_effort_treats_thrown_write_failures_as_unsaved():
+    """Adapter-level exceptions (I/O, quota bridge errors) must degrade to
+    saved=False like a returned False — never kill a complete proof."""
+    from harness.phase0q_cloud.backtest_main import persist_full_verdict_best_effort
+
+    class _ThrowingStore:
+        def save_bytes(self, key, data):
+            raise ValueError("bridge exploded")
+
+    manifest = {"verdict_key_template": "p/results/v.json"}
+    saved, key, reason = persist_full_verdict_best_effort(_ThrowingStore(), manifest, b"{}")
+    assert saved is False and key is None and "bridge exploded" in reason

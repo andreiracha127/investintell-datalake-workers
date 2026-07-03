@@ -395,7 +395,8 @@ def canonical_verdict_bytes(verdict: dict) -> bytes:
     return (json.dumps(verdict, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def build_runtime_statistics(verdict: dict, verdict_bytes: bytes) -> dict:
+def build_runtime_statistics(verdict: dict, verdict_bytes: bytes, *,
+                             full_verdict_saved: bool = True) -> dict:
     """The verdict ESSENTIALS emitted via ``self.set_runtime_statistic`` (all strings).
 
     ``backtests/read`` returns ``runtimeStatistics`` — the supported headless retrieval
@@ -412,6 +413,9 @@ def build_runtime_statistics(verdict: dict, verdict_bytes: bytes) -> dict:
             verdict["comparison"]["execution_leg_logical_hash"]["expected_local_python_pure"]),
         "phase0q_mismatch_count": str(verdict["comparison"]["mismatch_count"]),
         "phase0q_verdict_sha256": sha256_hex(verdict_bytes),
+        # Honest archival flag: "false" means the ObjectStore refused the full-verdict
+        # save (e.g. quota) — the sha then pins the bytes carried by the log chunks.
+        "phase0q_fullverdict_saved": "true" if full_verdict_saved else "false",
     }
 
 
@@ -463,7 +467,7 @@ def save_full_verdict(object_store, manifest: dict, verdict_bytes: bytes) -> str
     """Save the FULL verdict under the manifest's immutable results key.
 
     Raises on ANY failure (missing ``verdict_key_template``, refused/failed save) —
-    the run must FAIL rather than advertise a results key/sha that was never stored.
+    the results key/sha must never be advertised as STORED unless the save succeeded.
     Returns the verdict key on success.
     """
     verdict_key = manifest.get("verdict_key_template")
@@ -472,6 +476,26 @@ def save_full_verdict(object_store, manifest: dict, verdict_bytes: bytes) -> str
             "manifest has no verdict_key_template; cannot save the full verdict")
     _object_store_save_bytes(object_store, verdict_key, verdict_bytes)
     return verdict_key
+
+
+def persist_full_verdict_best_effort(object_store, manifest: dict,
+                                     verdict_bytes: bytes):
+    """Best-effort archive of the full verdict: ``(saved, key_or_None, reason_or_None)``.
+
+    Quota reality (first real cloud run): the org store can be over quota and
+    ``SaveBytes`` refuses. Failing the whole run would destroy a COMPLETE
+    reproducibility proof over an archival detail — the proof is the leg-hash
+    equality carried by the runtime statistics, and the full verdict still
+    reaches humans via the chunked log fallback. A refused save is therefore
+    reported honestly (``saved=False``, key never advertised) instead of fatal.
+    """
+    try:
+        key = save_full_verdict(object_store, manifest, verdict_bytes)
+    except Exception as exc:  # noqa: BLE001 - adapter-level I/O/quota exceptions
+        # must degrade to saved=False exactly like a returned False; a thrown
+        # write failure must never kill a complete reproducibility proof.
+        return False, None, str(exc)
+    return True, key, None
 
 
 def load_bundle_from_object_store(object_store, manifest: dict) -> dict:
@@ -635,16 +659,23 @@ try:  # pragma: no cover - QC cloud runtime only
                 expected_manifest_sha256=self._manifest_sha256)
             verdict_bytes = canonical_verdict_bytes(verdict)
 
-            # (a) save the FULL verdict back to the Object Store under the immutable
-            # prefix. A refused/failed save FAILS the run — the results key/sha are
-            # advertised (runtime statistics) only after the save succeeded.
+            # (a) archive the FULL verdict back to the Object Store (best effort):
+            # a refused save (e.g. quota) is reported honestly via the
+            # phase0q_fullverdict_saved statistic instead of destroying the proof —
+            # the key is never advertised as stored unless the save succeeded, and
+            # the chunked log fallback still carries the full verdict.
             manifest = read_verified_manifest(
                 self.object_store, self._manifest_key, self._manifest_sha256)
-            save_full_verdict(self.object_store, manifest, verdict_bytes)
+            saved, _key, reason = persist_full_verdict_best_effort(
+                self.object_store, manifest, verdict_bytes)
+            if not saved:
+                self.log(f"phase0q_cloud full-verdict save refused: {reason}")
 
             # (b) emit the verdict ESSENTIALS as runtime statistics — the headless
             # retrieval path (they come back on backtests/read).
-            for name, value in build_runtime_statistics(verdict, verdict_bytes).items():
+            stats = build_runtime_statistics(
+                verdict, verdict_bytes, full_verdict_saved=saved)
+            for name, value in stats.items():
                 self.set_runtime_statistic(name, value)
 
             # (c) log the verdict in chunks as a human-readable fallback (web UI);
