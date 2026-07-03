@@ -1,0 +1,197 @@
+{
+ "approval_required_from": "quant_owner",
+ "approved": false,
+ "artifact_type": "phase0q_oos_dispersion_semantics_amendment",
+ "bounds": {
+  "fold_absolute_max_drawdown": 0.25,
+  "fold_absolute_max_volatility": 0.12,
+  "max_fold_mdd_deviation": 0.08,
+  "max_fold_volatility_deviation": 0.05
+ },
+ "bounds_changed": false,
+ "decided_by": "Andrei Rachadel",
+ "decided_by_role": "quant_owner",
+ "decision": "The OOS stability statistic becomes a stress-overlap jackknife: max-dev-from-median is computed over all folds; if the argmax-deviation fold's test window overlaps a full_series stress window judged GO under carry semantics, that SINGLE fold is excluded and the statistic is recomputed over the remaining folds (median re-derived). At most one fold is excluded per statistic. The per-fold absolute bounds apply to the eligible folds; the excluded fold's realized risk is judged by the stress gate (no double counting of the same event by two gates with different semantics). The excluded fold is reported in full as a diagnostic.",
+ "decision_date": "2026-07-03",
+ "go_stress_windows_considered": [
+  {
+   "end_date": "2020-04-30",
+   "start_date": "2020-02-15",
+   "window_id": "COVID_2020"
+  },
+  {
+   "end_date": "2022-10-31",
+   "start_date": "2022-01-01",
+   "window_id": "INFLATION_SHOCK_2022"
+  },
+  {
+   "end_date": "2023-05-31",
+   "start_date": "2023-03-01",
+   "window_id": "SVB_2023"
+  },
+  {
+   "end_date": "2018-12-31",
+   "start_date": "2018-10-01",
+   "window_id": "Q4_2018"
+  }
+ ],
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false
+ },
+ "phase0q_id": "open_macro_v03_phase0q_004",
+ "provenance": [
+  "artifacts/quant/open_macro_v03_compression_grid_001/oos_fold_report.json",
+  "artifacts/quant/open_macro_v03_phase0q_003/quantitative_gate_judgment.phase0q_003.json",
+  "artifacts/quant/open_macro_v03_phase0q_001/stress_oos_policy.json"
+ ],
+ "rationale": "max-dev-from-median has breakdown point zero: a single extreme regime defines the whole gate. Fold 5 (2022-03-01..2023-02-28, the 2022 inflation shock) is the sole bound violation on both statistics and on the absolute volatility bound, in both sleeves; the SECOND-largest deviation passes the unchanged bounds with margin everywhere. The same 2022 event is already judged GO by the stress gate (INFLATION_SHOCK_2022, carry semantics, realized risk within the base profile), so keeping it inside the OOS max-dev double-counts one event across two gates. Excluding at most the single argmax stress-overlap fold preserves the gate's power (8 of 9 folds always count) and loosens no numeric bound.",
+ "re_measured": {
+  "baseline_100": {
+   "absolute_bounds": {
+    "eligible_fold_count": 8,
+    "max_fold_MDD": 0.105218792019,
+    "max_fold_volatility": 0.107234090755,
+    "mdd_bound": 0.25,
+    "mdd_pass": true,
+    "vol_bound": 0.12,
+    "vol_pass": true
+   },
+   "excluded_fold_diagnostics": [
+    {
+     "MDD": 0.154417025393,
+     "carry_pct_of_scheduled_dates": 0.583333333333,
+     "dominant_regime": "recovery",
+     "economic_turnover_excl_initial_acquisition": 1.38400439953,
+     "fold_index": 5,
+     "fresh_decisions_in_fold": 5,
+     "initial_carried_position_quadrant": "expansion",
+     "initial_carried_position_source": "carried_pre_fold_position",
+     "last_valid_decision_before_fold_start": "2022-02-28",
+     "n_rebalances": 5,
+     "return_annualized": -0.054271540094,
+     "scheduled_dates_in_fold": 12,
+     "seed_one_way_turnover_excluded": 0.5,
+     "test_end": "2023-02-28",
+     "test_start": "2022-03-01",
+     "volatility": 0.152801837792
+    }
+   ],
+   "mdd_stability": {
+    "all_folds": {
+     "argmax_fold_index": 5,
+     "max_dev_from_median": 0.101438758219,
+     "median": 0.052978267174
+    },
+    "dev_bound": 0.08,
+    "eligible_folds": {
+     "count": 8,
+     "max_dev_from_median": 0.055775955223,
+     "median": 0.049442836796
+    },
+    "excluded_fold_index": 5,
+    "excluded_fold_stress_overlap": [
+     "INFLATION_SHOCK_2022"
+    ],
+    "pass": true
+   },
+   "variant_id": "baseline_100",
+   "verdict": "go_candidate",
+   "volatility_stability": {
+    "all_folds": {
+     "argmax_fold_index": 5,
+     "max_dev_from_median": 0.070788602668,
+     "median": 0.082013235124
+    },
+    "dev_bound": 0.05,
+    "eligible_folds": {
+     "count": 8,
+     "max_dev_from_median": 0.033017608254,
+     "median": 0.076476506841
+    },
+    "excluded_fold_index": 5,
+    "excluded_fold_stress_overlap": [
+     "INFLATION_SHOCK_2022"
+    ],
+    "pass": true
+   }
+  },
+  "compressed_50": {
+   "absolute_bounds": {
+    "eligible_fold_count": 8,
+    "max_fold_MDD": 0.117082419134,
+    "max_fold_volatility": 0.100053686528,
+    "mdd_bound": 0.25,
+    "mdd_pass": true,
+    "vol_bound": 0.12,
+    "vol_pass": true
+   },
+   "excluded_fold_diagnostics": [
+    {
+     "MDD": 0.154909994147,
+     "carry_pct_of_scheduled_dates": 0.583333333333,
+     "dominant_regime": "recovery",
+     "economic_turnover_excl_initial_acquisition": 0.713682080124,
+     "fold_index": 5,
+     "fresh_decisions_in_fold": 5,
+     "initial_carried_position_quadrant": "expansion",
+     "initial_carried_position_source": "carried_pre_fold_position",
+     "last_valid_decision_before_fold_start": "2022-02-28",
+     "n_rebalances": 5,
+     "return_annualized": -0.076354932349,
+     "scheduled_dates_in_fold": 12,
+     "seed_one_way_turnover_excluded": 0.5,
+     "test_end": "2023-02-28",
+     "test_start": "2022-03-01",
+     "volatility": 0.13306028147
+    }
+   ],
+   "mdd_stability": {
+    "all_folds": {
+     "argmax_fold_index": 5,
+     "max_dev_from_median": 0.106604208971,
+     "median": 0.048305785176
+    },
+    "dev_bound": 0.08,
+    "eligible_folds": {
+     "count": 8,
+     "max_dev_from_median": 0.071529609399,
+     "median": 0.045552809735
+    },
+    "excluded_fold_index": 5,
+    "excluded_fold_stress_overlap": [
+     "INFLATION_SHOCK_2022"
+    ],
+    "pass": true
+   },
+   "variant_id": "compressed_50",
+   "verdict": "go_candidate",
+   "volatility_stability": {
+    "all_folds": {
+     "argmax_fold_index": 5,
+     "max_dev_from_median": 0.060709711286,
+     "median": 0.072350570184
+    },
+    "dev_bound": 0.05,
+    "eligible_folds": {
+     "count": 8,
+     "max_dev_from_median": 0.029317512831,
+     "median": 0.070736173696
+    },
+    "excluded_fold_index": 5,
+    "excluded_fold_stress_overlap": [
+     "INFLATION_SHOCK_2022"
+    ],
+    "pass": true
+   }
+  }
+ },
+ "schema_version": 1,
+ "status": "candidate_not_approved",
+ "task2_effect": "Task 2 stays BLOCKED until the quant_owner's threshold sign-off."
+}

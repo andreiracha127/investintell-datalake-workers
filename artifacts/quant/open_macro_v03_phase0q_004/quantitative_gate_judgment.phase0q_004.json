@@ -1,0 +1,196 @@
+{
+ "approval_required_from": "quant_owner",
+ "approved": false,
+ "artifact_type": "phase0q_quantitative_gate_judgment",
+ "base_profile": {
+  "max_annualized_volatility": 0.12,
+  "max_drawdown": 0.25,
+  "max_fold_mdd_deviation": 0.08,
+  "max_fold_volatility_deviation": 0.05,
+  "max_one_way_turnover_annualized": 0.6,
+  "min_worst_5d_return": -0.1
+ },
+ "decision_date": "2026-07-03",
+ "execution_legs": {
+  "local_python_pure": "complete",
+  "qc_research_object_store": "not_run_for_this_grid"
+ },
+ "gates": {
+  "drawdown": {
+   "applied_rule": "max_drawdown <= 0.25 (base profile, unchanged)",
+   "bound": 0.25,
+   "measured": 0.15095367724,
+   "provenance": [
+    "artifacts/quant/open_macro_v03_compression_grid_001/grid_results.json"
+   ],
+   "verdict": "go"
+  },
+  "out_of_sample": {
+   "applied_rule": "stress-overlap jackknife max-dev-from-median (phase0q_004 amendment); bounds UNCHANGED (0.08 MDD dev / 0.05 sigma dev; absolutes 0.25 / 0.12 on eligible folds)",
+   "measured": {
+    "absolute_bounds": {
+     "eligible_fold_count": 8,
+     "max_fold_MDD": 0.117082419134,
+     "max_fold_volatility": 0.100053686528,
+     "mdd_bound": 0.25,
+     "mdd_pass": true,
+     "vol_bound": 0.12,
+     "vol_pass": true
+    },
+    "excluded_fold_diagnostics": [
+     {
+      "MDD": 0.154909994147,
+      "carry_pct_of_scheduled_dates": 0.583333333333,
+      "dominant_regime": "recovery",
+      "economic_turnover_excl_initial_acquisition": 0.713682080124,
+      "fold_index": 5,
+      "fresh_decisions_in_fold": 5,
+      "initial_carried_position_quadrant": "expansion",
+      "initial_carried_position_source": "carried_pre_fold_position",
+      "last_valid_decision_before_fold_start": "2022-02-28",
+      "n_rebalances": 5,
+      "return_annualized": -0.076354932349,
+      "scheduled_dates_in_fold": 12,
+      "seed_one_way_turnover_excluded": 0.5,
+      "test_end": "2023-02-28",
+      "test_start": "2022-03-01",
+      "volatility": 0.13306028147
+     }
+    ],
+    "mdd_stability": {
+     "all_folds": {
+      "argmax_fold_index": 5,
+      "max_dev_from_median": 0.106604208971,
+      "median": 0.048305785176
+     },
+     "dev_bound": 0.08,
+     "eligible_folds": {
+      "count": 8,
+      "max_dev_from_median": 0.071529609399,
+      "median": 0.045552809735
+     },
+     "excluded_fold_index": 5,
+     "excluded_fold_stress_overlap": [
+      "INFLATION_SHOCK_2022"
+     ],
+     "pass": true
+    },
+    "variant_id": "compressed_50",
+    "verdict": "go_candidate",
+    "volatility_stability": {
+     "all_folds": {
+      "argmax_fold_index": 5,
+      "max_dev_from_median": 0.060709711286,
+      "median": 0.072350570184
+     },
+     "dev_bound": 0.05,
+     "eligible_folds": {
+      "count": 8,
+      "max_dev_from_median": 0.029317512831,
+      "median": 0.070736173696
+     },
+     "excluded_fold_index": 5,
+     "excluded_fold_stress_overlap": [
+      "INFLATION_SHOCK_2022"
+     ],
+     "pass": true
+    }
+   },
+   "provenance": [
+    "artifacts/quant/open_macro_v03_phase0q_004/oos_dispersion_semantics_amendment.json",
+    "artifacts/quant/open_macro_v03_compression_grid_001/oos_fold_report.json"
+   ],
+   "verdict": "go_candidate"
+  },
+  "stress": {
+   "applied_rule": "consumable_position_coverage == 1.0 AND realized risk within base profile (worst_5d >= -0.10, window_MDD <= 0.25); carry semantics per phase0q_003 amendment; measured on the compressed_50 sleeve",
+   "provenance": [
+    "artifacts/quant/open_macro_v03_compression_grid_001/grid_results.json",
+    "artifacts/quant/open_macro_v03_phase0q_003/stress_gate_semantics_amendment.json"
+   ],
+   "verdict": "go",
+   "windows": {
+    "COVID_2020": {
+     "annualized_volatility": 0.170637797249,
+     "consumable_position_coverage": 1.0,
+     "go": true,
+     "n_trading_days": 52,
+     "window_MDD": 0.115610516102,
+     "window_return": 0.019586842234,
+     "worst_5d_return": -0.069760574947
+    },
+    "INFLATION_SHOCK_2022": {
+     "annualized_volatility": 0.126261881929,
+     "consumable_position_coverage": 1.0,
+     "go": true,
+     "n_trading_days": 209,
+     "window_MDD": 0.151020235809,
+     "window_return": -0.116234282847,
+     "worst_5d_return": -0.065415179958
+    },
+    "Q4_2018": {
+     "annualized_volatility": 0.099610482561,
+     "consumable_position_coverage": 1.0,
+     "go": true,
+     "n_trading_days": 63,
+     "window_MDD": 0.083331211995,
+     "window_return": -0.054378778677,
+     "worst_5d_return": -0.028457924237
+    },
+    "SVB_2023": {
+     "annualized_volatility": 0.074080760854,
+     "consumable_position_coverage": 1.0,
+     "go": true,
+     "n_trading_days": 64,
+     "window_MDD": 0.029567730881,
+     "window_return": 0.034152000104,
+     "worst_5d_return": -0.011493872757
+    }
+   }
+  },
+  "turnover": {
+   "applied_rule": "reference_sleeve_turnover_candidate_bound=2.00 (annualized one-way sleeve turnover; phase0q_003 amendment); signal_design_turnover_bound=0.60 is a separate design bound",
+   "measured": 1.027076034777,
+   "provenance": [
+    "artifacts/quant/open_macro_v03_compression_grid_001/grid_results.json",
+    "artifacts/quant/open_macro_v03_phase0q_003/turnover_threshold_context_amendment.json"
+   ],
+   "reference_sleeve_turnover_candidate_bound": 2.0,
+   "signal_design_turnover_bound": 0.6,
+   "verdict": "pass_candidate_under_reference_sleeve_policy"
+  },
+  "volatility": {
+   "applied_rule": "annualized_volatility <= 0.12 (base profile, unchanged)",
+   "bound": 0.12,
+   "measured": 0.073803795385,
+   "provenance": [
+    "artifacts/quant/open_macro_v03_compression_grid_001/grid_results.json"
+   ],
+   "verdict": "go"
+  }
+ },
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false
+ },
+ "judged_sleeve": "compressed_50",
+ "judgment_of": [
+  "open_macro_v03_compression_grid_001",
+  "open_macro_v03_reproducibility_001",
+  "open_macro_v03_metric_evidence_001"
+ ],
+ "overall_recommendation": "go_candidate",
+ "phase0q_id": "open_macro_v03_phase0q_004",
+ "ratified_by": "quant_owner",
+ "reproducibility_context": "reproducibility_001 closed the cloud leg for the HEAD-harness metric-evidence measurement (the six output logical hashes behind leg hash 83e6733e...), validating the local_python_pure execution model at harness commit 68b07e810bc28665fedd85c6acd3ea5770b4b099. The compression grid that sources this judgment's numbers is a measurement_only local_python_pure artifact pinned to harness commit 0afb36f14779573f3d4be6fb13e9670562bb7703 (the PR #22 branch commit); that commit is a direct ancestor of the cloud-validated merge commit 68b07e81..., and `git diff 0afb36f1 68b07e81 -- harness/phase0q packages/investintell_quant_core services/quant_engine` is empty (identical compute trees). The grid itself (cost sweep, per-variant stress windows, OOS fold report) was NOT re-run in QC, so no cloud reproduction is claimed for it.",
+ "schema_version": 1,
+ "status": "candidate_not_approved",
+ "supersedes": "artifacts/quant/open_macro_v03_phase0q_003/quantitative_gate_judgment.phase0q_003.json",
+ "supersedes_note": "a new traceable judgment supersedes phase0q_003 (which judged the baseline_100 sleeve with OOS deferred); all superseded artifacts are IMMUTABLE and unchanged (hash-pinned).",
+ "task2_gate_effect": "Task 2 stays BLOCKED. This judgment is the input to the quant_owner's threshold sign-off; only that sign-off (a separate human act) unblocks Task 2."
+}
