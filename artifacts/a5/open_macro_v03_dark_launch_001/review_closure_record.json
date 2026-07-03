@@ -35,7 +35,7 @@
      "evidence_refs": [
       {
        "note": "additive v2 bundle the certified pack v2 pins",
-       "path": "contracts/quant-engine/v2/contract_bundle_manifest.json"
+       "path": "contracts/quant-engine/v2/manifest.json"
       },
       {
        "note": "live v1 bundle sha pins that would fail on any v1 edit",

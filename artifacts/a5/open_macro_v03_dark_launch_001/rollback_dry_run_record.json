@@ -12,7 +12,7 @@
  "status": "completed",
  "steps_executed": [
   {
-   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; no runtime environment defines the flag (it was never created)",
+   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; live flag read: open_macro_v03_runtime_activation not set in the execution environment and not defined in any committed deploy-configuration surface (railway/compose/docker/env) - the flag was never created",
    "outcome": "pass",
    "step": "Keep Feature Flag Off"
   },
@@ -42,7 +42,7 @@
    "step": "Revert To Baseline"
   },
   {
-   "note": "evidence digests re-verified against the committed evidence_map (calibration_manifest_sha256, a5_preflight_001_merge_commit, controlled_shadow_001_merge_commit); phase0q chain pins (metric_evidence_001, reproducibility_001, phase0q_004) are enforced by the CI pin suites",
+   "note": "every evidence_map digest re-verified (calibration_manifest_sha256, input_pack_effective_manifest_sha256, a5_preflight_001_merge_commit, controlled_shadow_001_merge_commit, railway_image_digest (cross-checked vs shadow manifest)); merge commits proven present in-repo; phase0q chain pins (metric_evidence_001, reproducibility_001, phase0q_004) are enforced by the CI pin suites",
    "outcome": "pass",
    "step": "Audit Artifacts"
   },

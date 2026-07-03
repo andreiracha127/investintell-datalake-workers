@@ -8,18 +8,18 @@
  "schema_version": 1,
  "slos": [
   {
-   "derivation": "ceil(1.5 x measured p95 32565.715 ms) per the stage plan Task 4 rule; worst leg of the host+container matrix",
+   "derivation": "ceil(1.5 x measured p95 29593.182 ms) per the stage plan Task 4 rule; worst leg of the host+container matrix",
    "id": "latency_slo",
    "metric": "candidate_compute_latency_p95_ms",
    "status": "defined",
-   "threshold": 48849
+   "threshold": 44390
   },
   {
-   "derivation": "ceil(1.5 x measured peak 1364709376 bytes) per the stage plan Task 4 rule; worst leg of the host+container matrix",
+   "derivation": "ceil(1.5 x measured peak 1364529152 bytes) per the stage plan Task 4 rule; worst leg of the host+container matrix",
    "id": "memory_slo",
    "metric": "candidate_compute_memory_peak_bytes",
    "status": "defined",
-   "threshold": 2047064064
+   "threshold": 2046793728
   },
   {
    "derivation": "operations_owner zero-tolerance decision: any job error alerts and blocks; measured error_rate over the round was 0.0",

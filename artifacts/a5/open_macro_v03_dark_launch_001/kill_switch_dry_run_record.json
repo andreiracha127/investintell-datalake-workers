@@ -13,7 +13,7 @@
  "status": "completed",
  "steps_executed": [
   {
-   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; no runtime environment defines the flag (it was never created)",
+   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; live flag read: open_macro_v03_runtime_activation not set in the execution environment and not defined in any committed deploy-configuration surface (railway/compose/docker/env) - the flag was never created",
    "outcome": "pass",
    "step": "Read feature flag state and confirm false."
   },

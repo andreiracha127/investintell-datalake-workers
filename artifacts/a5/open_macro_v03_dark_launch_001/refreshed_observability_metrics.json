@@ -8,69 +8,69 @@
  ],
  "error_rate": 0.0,
  "harness": "harness/dark_launch/measure_observability.py + measure_child.py (in-process wall clock + OS peak memory of the computing process)",
- "latency_p95_ms": 32565.715,
+ "latency_p95_ms": 29593.182,
  "measured": true,
  "measured_compute": {
   "case": "G0 (V03-G0-CONTROL, scripts/repeatability_matrix.py pins)",
   "job_type": "a3_qc_parity",
   "jobs": 1,
-  "worker_commit": "d1756d007d277ec3c6b759d07bd28b406395adc6"
+  "worker_commit": "8dddc69917d1b3e5025278f15299d4dccda38d9a"
  },
  "measurement_date": "2026-07-03",
- "memory_peak_bytes": 1364709376,
+ "memory_peak_bytes": 1364529152,
  "per_leg": {
   "container": {
    "failed_runs": 0,
-   "latency_p95_ms": 22959.724,
-   "memory_peak_bytes": 1364709376,
+   "latency_p95_ms": 29593.182,
+   "memory_peak_bytes": 1364529152,
    "memory_peak_bytes_all_runs": [
-    1363648512,
-    1364709376,
-    1364709376,
-    1364074496,
-    1363918848,
-    1363136512,
-    1364414464,
-    1364381696
+    1362268160,
+    1364529152,
+    1364426752,
+    1364004864,
+    1364103168,
+    1364148224,
+    1364455424,
+    1363722240
    ],
    "platform": "linux",
    "runs": 8,
    "wall_ms_all_runs": [
-    22700.326,
-    22425.761,
-    21590.655,
-    22959.724,
-    22873.037,
-    21835.664,
-    21888.793,
-    22106.4
+    29593.182,
+    27399.652,
+    24913.634,
+    24218.098,
+    23420.007,
+    23070.021,
+    23172.966,
+    23879.23
    ]
   },
   "host": {
    "failed_runs": 0,
-   "latency_p95_ms": 32565.715,
-   "memory_peak_bytes": 1111134208,
+   "latency_p95_ms": 27689.572,
+   "memory_peak_bytes": 1110568960,
    "memory_peak_bytes_all_runs": [
-    1109409792,
-    1109676032,
-    1110597632,
-    1110450176,
-    1109757952,
-    1110110208,
-    1111134208,
-    1110093824
+    1110118400,
+    1110388736,
+    1110114304,
+    1110159360,
+    1110134784,
+    1110532096,
+    1109762048,
+    1110568960
    ],
    "platform": "win32",
    "runs": 8,
    "wall_ms_all_runs": [
-    32555.532,
-    32559.955,
-    32315.631,
-    30645.887,
-    30005.123,
-    31452.69,
-    32565.715,
-    30089.937
+    27689.572,
+    26610.143,
+    26883.255,
+    26877.28,
+    26299.246,
+    26590.311,
+    22754.198,
+    27511.897
    ]
   }
  },
