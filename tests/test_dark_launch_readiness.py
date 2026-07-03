@@ -82,6 +82,61 @@ def test_dry_run_records_equal_regeneration_by_the_committed_executor() -> None:
     assert _json("kill_switch_dry_run_record.json") == executor.build_kill_switch_record()
 
 
+def test_monitoring_thresholds_are_measured_and_complete() -> None:
+    metrics = _json("refreshed_observability_metrics.json")
+    thresholds = _json("monitoring_thresholds_record.json")
+
+    assert metrics["measured"] is True
+    assert metrics["latency_p95_ms"] > 0
+    assert metrics["memory_peak_bytes"] > 0
+    assert metrics["error_rate"] >= 0
+    assert metrics["retry_rate"] >= 0
+
+    slos = {slo["id"]: slo for slo in thresholds["slos"]}
+    assert set(slos) == {"latency_slo", "memory_slo", "error_rate_slo", "retry_rate_slo"}
+    for slo in slos.values():
+        assert isinstance(slo["threshold"], (int, float))
+        assert slo["status"] == "defined"
+        assert slo["derivation"] not in PLACEHOLDERS
+    assert slos["latency_slo"]["threshold"] >= metrics["latency_p95_ms"]
+    assert slos["memory_slo"]["threshold"] >= metrics["memory_peak_bytes"]
+
+
+def test_observability_round_really_measured_the_matrix() -> None:
+    """The refreshed metrics must come from a real 8+8 host+container round: both legs
+    present, every run sample recorded, aggregates equal to the recomputed per-leg
+    worst case, and the SLOs equal to the plan's ceil(1.5 x measured) rule."""
+    import math
+
+    metrics = _json("refreshed_observability_metrics.json")
+    thresholds = _json("monitoring_thresholds_record.json")
+
+    assert metrics["environment_matrix"] == ["container", "host"]
+    per_leg = metrics["per_leg"]
+    for leg in ("host", "container"):
+        assert per_leg[leg]["runs"] == 8
+        assert len(per_leg[leg]["wall_ms_all_runs"]) == 8
+        assert len(per_leg[leg]["memory_peak_bytes_all_runs"]) == 8
+        assert per_leg[leg]["failed_runs"] == 0
+        assert per_leg[leg]["memory_peak_bytes"] == max(
+            per_leg[leg]["memory_peak_bytes_all_runs"])
+        walls = sorted(per_leg[leg]["wall_ms_all_runs"])
+        assert per_leg[leg]["latency_p95_ms"] == walls[
+            max(0, math.ceil(0.95 * len(walls)) - 1)]
+    assert metrics["latency_p95_ms"] == max(
+        per_leg[leg]["latency_p95_ms"] for leg in per_leg)
+    assert metrics["memory_peak_bytes"] == max(
+        per_leg[leg]["memory_peak_bytes"] for leg in per_leg)
+    assert metrics["runs_total"] == 16
+    assert metrics["error_rate"] == 0.0
+
+    slos = {slo["id"]: slo for slo in thresholds["slos"]}
+    assert slos["latency_slo"]["threshold"] == math.ceil(1.5 * metrics["latency_p95_ms"])
+    assert slos["memory_slo"]["threshold"] == math.ceil(1.5 * metrics["memory_peak_bytes"])
+    assert slos["error_rate_slo"]["threshold"] == 0.0
+    assert slos["retry_rate_slo"]["threshold"] == 0.0
+
+
 def test_dark_launch_manifest_keeps_activation_blocked() -> None:
     manifest = _json("dark_launch_manifest.json")
 
