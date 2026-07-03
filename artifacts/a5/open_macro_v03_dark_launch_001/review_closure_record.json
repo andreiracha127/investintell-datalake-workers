@@ -1,0 +1,339 @@
+{
+ "activation_allowed": false,
+ "activation_path_status": "eligible_for_dark_launch_pr",
+ "all_reviews_go": true,
+ "all_reviews_recorded": true,
+ "artifact_type": "dark_launch_review_closure_record",
+ "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "final_decision": "go",
+ "reviews": [
+  {
+   "date": "2026-07-03",
+   "decision": "go",
+   "domain_gates": [
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "every evidence package byte-pinned (sha256 constants + git-blob pins) with CI pin suites that fail on any edit",
+     "evidence_refs": [
+      {
+       "note": "constant byte pins over the closed-matrix package",
+       "path": "tests/test_phase0q_reproducibility_evidence.py"
+      },
+      {
+       "note": "sha256 pins of the driver-written evidence bytes",
+       "path": "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json"
+      }
+     ],
+     "gate": "artifact_immutability_reviewed"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "contract evolution was strictly additive: v2 directory added, v1 bundle byte-frozen and still guarded by live-tree pins",
+     "evidence_refs": [
+      {
+       "note": "additive v2 bundle the certified pack v2 pins",
+       "path": "contracts/quant-engine/v2/contract_bundle_manifest.json"
+      },
+      {
+       "note": "live v1 bundle sha pins that would fail on any v1 edit",
+       "path": "src/controlled_shadow.py"
+      }
+     ],
+     "gate": "no_formula_input_calibration_contract_changes"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "no activation surface exists before stage 4: guard reports pass on the proposal and on this dark launch package",
+     "evidence_refs": [
+      {
+       "note": "proposal-level guard, all checks pass",
+       "path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/no_activation_guard_report.json"
+      },
+      {
+       "note": "dark-launch-level guard re-executed over this package",
+       "path": "artifacts/a5/open_macro_v03_dark_launch_001/no_activation_guard_report.json"
+      }
+     ],
+     "gate": "no_pre_stage4_activation_surface"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "guard suites run in CI selection: preflight diff guard, dark launch readiness, proposal markers, evidence pins",
+     "evidence_refs": [
+      {
+       "note": "frozen-surface diff guard for the activation path",
+       "path": "tests/test_a5_preflight_readiness.py"
+      },
+      {
+       "note": "CI test selection including every guard suite",
+       "path": ".github/workflows/ci.yml"
+      }
+     ],
+     "gate": "guard_tests_reviewed"
+    }
+   ],
+   "evidence_note": "immutability, additive-only contracts, zero activation surface and guard coverage verified across the evidence chain",
+   "evidence_refs": [
+    {
+     "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+     "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+     "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+    }
+   ],
+   "review": "technical",
+   "reviewer": "Andrei Rachadel"
+  },
+  {
+   "date": "2026-07-03",
+   "decision": "go",
+   "evidence_note": "all five gates measured go on the signed compressed_50 envelope; thresholds signed off 2026-07-03",
+   "evidence_refs": [
+    {
+     "note": "quant_owner threshold sign-off freezing this exact envelope",
+     "path": "artifacts/quant/open_macro_v03_threshold_signoff_001/threshold_signoff_record.json",
+     "sha256": "381ce31601dcfdfc55926b10ef9f3e31f7a93b433744ee1e956bd3e0b73dc8a0"
+    },
+    {
+     "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+     "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+     "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+    }
+   ],
+   "quantitative_gates": [
+    {
+     "acceptance_criteria": "annualized one-way sleeve turnover <= 2.00 (reference-sleeve candidate bound, phase0q_003 split)",
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "measured on the signed compressed_50 sleeve at base 5bps over the committed compression grid",
+     "evidence_refs": [
+      {
+       "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+       "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+      },
+      {
+       "note": "quant_owner threshold sign-off freezing this exact envelope",
+       "path": "artifacts/quant/open_macro_v03_threshold_signoff_001/threshold_signoff_record.json",
+       "sha256": "381ce31601dcfdfc55926b10ef9f3e31f7a93b433744ee1e956bd3e0b73dc8a0"
+      }
+     ],
+     "gate": "turnover",
+     "measurements": {
+      "max_allowed_turnover": 2.0,
+      "observed_turnover": 1.027076034777
+     }
+    },
+    {
+     "acceptance_criteria": "max drawdown <= 0.25 (base profile, unchanged)",
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "primary-window max drawdown of the candidate sleeve, measured evidence chain hash-pinned end to end",
+     "evidence_refs": [
+      {
+       "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+       "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+      }
+     ],
+     "gate": "drawdown",
+     "measurements": {
+      "max_allowed_drawdown": 0.25,
+      "observed_max_drawdown": 0.15095367724
+     }
+    },
+    {
+     "acceptance_criteria": "annualized volatility <= 0.12 (base profile, unchanged)",
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "primary-window annualized volatility of the candidate sleeve from the committed grid measurement",
+     "evidence_refs": [
+      {
+       "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+       "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+      }
+     ],
+     "gate": "volatility",
+     "measurements": {
+      "max_allowed_volatility": 0.12,
+      "observed_volatility": 0.073803795385
+     }
+    },
+    {
+     "acceptance_criteria": "consumable position coverage 1.0 and realized risk within the base profile in every full_series window",
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "all four full_series windows measured GO on the candidate sleeve under the ratified carry semantics",
+     "evidence_refs": [
+      {
+       "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+       "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+      }
+     ],
+     "gate": "stress_windows",
+     "measurements": {
+      "windows": [
+       {
+        "decision": "go",
+        "end_date": "2020-04-30",
+        "start_date": "2020-02-15",
+        "window_id": "COVID_2020"
+       },
+       {
+        "decision": "go",
+        "end_date": "2022-10-31",
+        "start_date": "2022-01-01",
+        "window_id": "INFLATION_SHOCK_2022"
+       },
+       {
+        "decision": "go",
+        "end_date": "2018-12-31",
+        "start_date": "2018-10-01",
+        "window_id": "Q4_2018"
+       },
+       {
+        "decision": "go",
+        "end_date": "2023-05-31",
+        "start_date": "2023-03-01",
+        "window_id": "SVB_2023"
+       }
+      ]
+     }
+    },
+    {
+     "acceptance_criteria": "stress-overlap jackknife max-dev within 0.08 (MDD) and 0.05 (sigma); fold absolutes 0.25/0.12",
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "nine walk-forward folds; the single 2022 stress-overlap fold excluded per the signed amendment and judged by the stress gate instead",
+     "evidence_refs": [
+      {
+       "note": "signed OOS jackknife semantics with full re-measurement",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/oos_dispersion_semantics_amendment.json"
+      },
+      {
+       "note": "go_candidate judgment on the compressed_50 candidate sleeve",
+       "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+       "sha256": "2e9b3e2d618673dfccc082342aecf0c3d5104e9ea60d2c24db36f8ecbc77a2b7"
+      }
+     ],
+     "gate": "out_of_sample",
+     "measurements": {
+      "end_date": "2026-02-28",
+      "metrics": {
+       "excluded_fold_index": 5,
+       "excluded_fold_overlap": "INFLATION_SHOCK_2022",
+       "mdd_max_dev_eligible": 0.071529609399,
+       "volatility_max_dev_eligible": 0.029317512831
+      },
+      "start_date": "2017-03-01"
+     }
+    }
+   ],
+   "review": "quantitative",
+   "reviewer": "Andrei Rachadel"
+  },
+  {
+   "date": "2026-07-03",
+   "decision": "go",
+   "evidence_note": "all thirteen register items resolved with committed evidence or by this closure; none remain open or activation-blocking",
+   "evidence_refs": [
+    {
+     "note": "item-by-item resolution with evidence",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/risk_register_resolution_record.json"
+    }
+   ],
+   "review": "risk",
+   "reviewer": "Andrei Rachadel",
+   "risk_items_open": 0,
+   "risk_items_status_counts": {
+    "activation_blocking": 0,
+    "resolved_by_review_closure": 4,
+    "resolved_with_evidence": 9,
+    "unresolved": 0
+   },
+   "risk_items_total": 13,
+   "risk_register_refs": [
+    {
+     "note": "the immutable 13-item register this closure resolves",
+     "path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/unresolved_risks_register.json"
+    },
+    {
+     "note": "traceable resolution record for every item",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/risk_register_resolution_record.json"
+    }
+   ]
+  },
+  {
+   "date": "2026-07-03",
+   "decision": "go",
+   "domain_gates": [
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "nine-section rollback plan dry-run executed read-only by the committed fail-loud executor, all steps pass",
+     "evidence_refs": [
+      {
+       "note": "executed rollback dry run with per-step notes",
+       "path": "artifacts/a5/open_macro_v03_dark_launch_001/rollback_dry_run_record.json"
+      }
+     ],
+     "gate": "rollback_procedure_reviewed"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "kill switch validation steps executed in the plan's exact order (order equality enforced), all steps pass",
+     "evidence_refs": [
+      {
+       "note": "executed kill-switch dry run",
+       "path": "artifacts/a5/open_macro_v03_dark_launch_001/kill_switch_dry_run_record.json"
+      }
+     ],
+     "gate": "kill_switch_procedure_reviewed"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "SLOs derived from the first real measured observability round (16/16 runs, host+container), zero-tolerance error/retry",
+     "evidence_refs": [
+      {
+       "note": "four defined SLOs with derivations",
+       "path": "artifacts/a5/open_macro_v03_dark_launch_001/monitoring_thresholds_record.json"
+      }
+     ],
+     "gate": "monitoring_thresholds_reviewed"
+    },
+    {
+     "date": "2026-07-03",
+     "decision": "go",
+     "evidence_note": "allowed_side_effects=[] and db_write_mode=none everywhere; dry runs re-verified the whole flag surface recursively",
+     "evidence_refs": [
+      {
+       "note": "no-productive-DB-write step with recursive flag walk",
+       "path": "artifacts/a5/open_macro_v03_dark_launch_001/kill_switch_dry_run_record.json"
+      }
+     ],
+     "gate": "no_productive_side_effects_reviewed"
+    }
+   ],
+   "evidence_note": "rollback and kill-switch dry runs executed, SLO thresholds measured and defined, side-effect surface verified empty",
+   "evidence_refs": [
+    {
+     "note": "measured observability round backing operations readiness",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/refreshed_observability_metrics.json"
+    }
+   ],
+   "review": "operations",
+   "reviewer": "Andrei Rachadel"
+  }
+ ],
+ "runtime_activation": false,
+ "schema_version": 1,
+ "signature_note": "The reviewer holds all six governance roles by his recorded decision; each domain decision was given in the activation thread and is ratified by his merge of the readiness PR."
+}

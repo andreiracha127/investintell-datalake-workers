@@ -1,0 +1,239 @@
+{
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_risk_register_resolution_record",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "items": [
+  {
+   "evidence_note": "Deep-history coverage measured and pinned: eod_prices from 1962-01-02, macro from 1959-01-01, full vintage basket from 2014-02; the measured evidence window 2014-03..2026-06 (~12.3y) is documented and reduced-coverage stress windows are explicitly classified in the stress/OOS policy.",
+   "evidence_refs": [
+    {
+     "note": "measured DB/vintage coverage with per-table min dates",
+     "path": "artifacts/quant/open_macro_v03_phase0q_001/data_discovery_report.json"
+    },
+    {
+     "note": "full_series vs reduced_coverage window classification",
+     "path": "artifacts/quant/open_macro_v03_phase0q_001/stress_oos_policy.json"
+    }
+   ],
+   "original_severity": "medium",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "macro-history-coverage"
+  },
+  {
+   "evidence_note": "PIT vintage identity is the pack's root of trust: certified input pack v2 ships 70,747 macro_observation_vintage rows hash-pinned, and the local x cloud reproducibility matrix closed with 0 mismatches over the vintage-driven compute (leg hash equality), proving vintage identity holds across execution models.",
+   "evidence_refs": [
+    {
+     "note": "closed matrix provenance (backtest efd8c9cc..., PR #27)",
+     "path": "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json"
+    },
+    {
+     "note": "0 mismatches across all six output logical hashes",
+     "path": "artifacts/quant/open_macro_v03_reproducibility_001/consolidated_reproducibility_report.json"
+    }
+   ],
+   "original_severity": "medium",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "macro-vintage-identity"
+  },
+  {
+   "evidence_note": "No runtime contention surface exists in this stage: db_write_mode=none and allowed_side_effects=[] everywhere, and the harness db stub hard-refuses connect() while pinning LOCK_REGIME_QUADRANT=900208 so the advisory-lock contract is guarded in CI; full lock/gate behavior re-verification remains a Phase 2+ activation-PR obligation as the mitigation prescribes.",
+   "evidence_refs": [
+    {
+     "note": "no-productive-DB-write verification executed in the dry run",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/kill_switch_dry_run_record.json"
+    },
+    {
+     "note": "db stub guard suite (refuses connect, lock id pinned)",
+     "path": "tests/test_cloud_backtest_runner.py"
+    }
+   ],
+   "original_severity": "medium",
+   "original_status": "pending_review",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "advisory-lock-regime-gate"
+  },
+  {
+   "evidence_note": "Root cause of the production staleness found and fixed (FRED asc+limit window truncation, PR #16: desc + client re-sort + resized limits + truncation warning); controlled backfill executed and verified 2026-07-02 (T10YIE 2026-02-27 -> 2026-07-01, stale cluster refreshed); staleness SLO enforcement before runtime activation stays pinned by the monitoring enforcement policy.",
+   "evidence_refs": [
+    {
+     "note": "zero-threshold attempt detectors + staleness SLO enforcement home",
+     "path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/monitoring_enforcement_policy.json"
+    },
+    {
+     "note": "fixed FRED window fetch (desc + re-sort + truncation warning)",
+     "path": "src/workers/macro_ingestion.py"
+    }
+   ],
+   "original_severity": "high",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "quadrant_macro-staleness-source-availability"
+  },
+  {
+   "evidence_note": "The quant review explicitly re-judged the candidate on measured evidence instead of inheriting baseline acceptances: the phase0q_004 judgment is go_candidate on all five gates with the 2022 stress fold explicitly carved out under the stress-overlap jackknife (reported in full as a diagnostic, judged by the stress gate) - no baseline failure is silently accepted anywhere in the chain.",
+   "evidence_refs": [
+    {
+     "note": "go_candidate judgment across all five gates",
+     "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json"
+    },
+    {
+     "note": "explicit treatment of the single worst regime fold",
+     "path": "artifacts/quant/open_macro_v03_phase0q_004/oos_dispersion_semantics_amendment.json"
+    }
+   ],
+   "original_severity": "medium",
+   "original_status": "pending_quant_review",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "baseline-global-failures-accepted"
+  },
+  {
+   "evidence_note": "Closed by the technical domain review in review_closure_record.json (this package).",
+   "evidence_refs": [
+    {
+     "note": "technical domain review with domain gates",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/review_closure_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_by_review_closure",
+   "risk_id": "human-technical-review-missing"
+  },
+  {
+   "evidence_note": "Closed by the quantitative domain review in review_closure_record.json (this package), backed by the signed threshold envelope.",
+   "evidence_refs": [
+    {
+     "note": "quantitative domain review with five measured sub-gates",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/review_closure_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_by_review_closure",
+   "risk_id": "human-quantitative-review-missing"
+  },
+  {
+   "evidence_note": "Closed by the risk domain review in review_closure_record.json (this package), which consumes this resolution record.",
+   "evidence_refs": [
+    {
+     "note": "risk domain review over the 13-item register",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/review_closure_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_by_review_closure",
+   "risk_id": "human-risk-review-missing"
+  },
+  {
+   "evidence_note": "Closed by the operations domain review in review_closure_record.json (this package), backed by the executed dry runs and measured SLOs.",
+   "evidence_refs": [
+    {
+     "note": "operations domain review with domain gates",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/review_closure_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_by_review_closure",
+   "risk_id": "human-operations-review-missing"
+  },
+  {
+   "evidence_note": "All six governance roles carry a named owner with assignment dates (Andrei Rachadel holds all six by his explicit decision; no four-eyes requirement was imposed by the owner).",
+   "evidence_refs": [
+    {
+     "note": "six named role assignments with dates",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/owners_assignment_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "owners-unassigned"
+  },
+  {
+   "evidence_note": "Rollback dry run executed 2026-07-03: all nine plan sections verified read-only by the committed fail-loud executor, every step pass.",
+   "evidence_refs": [
+    {
+     "note": "nine verified rollback sections, all pass",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/rollback_dry_run_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "rollback-dry-run-missing"
+  },
+  {
+   "evidence_note": "Kill switch dry run executed 2026-07-03: all six validation steps verified in the plan's exact order (order equality enforced by the executor), every step pass.",
+   "evidence_refs": [
+    {
+     "note": "six verified kill-switch validation steps, all pass",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/kill_switch_dry_run_record.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "kill-switch-test-missing"
+  },
+  {
+   "evidence_note": "SLO thresholds derived from the first REAL measured observability round (16/16 runs succeeded on the host+container matrix): latency and memory per the ceil(1.5 x measured) rule, error/retry at zero tolerance.",
+   "evidence_refs": [
+    {
+     "note": "four defined SLOs with derivations",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/monitoring_thresholds_record.json"
+    },
+    {
+     "note": "measured 8+8 run round backing the thresholds",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/refreshed_observability_metrics.json"
+    }
+   ],
+   "original_severity": "process_gap_item",
+   "original_status": "open",
+   "owner": "Andrei Rachadel (risk_owner)",
+   "resolution_date": "2026-07-03",
+   "resolution_status": "resolved_with_evidence",
+   "risk_id": "monitoring-thresholds-pending"
+  }
+ ],
+ "note": "The proposal's register is immutable; this record supersedes its OPEN statuses traceably. Every resolution cites committed evidence; the four human-review items are closed by the review_closure_record in this same package.",
+ "ongoing_risk_categories_note": "The proposal's risk_review_record additionally tracks eleven always-on risk categories (data/model/execution/operational/rollback/drift/divergence/stale-artifacts/feature-flag/db-allocator-side-effect/production). Their mitigations are structural and in force for this stage (hash-pinned pack, defined SLOs, dry-run evidence, zero-threshold detectors, guards), and the activation-conditioned parts (e.g. staged production shadow observation) belong to Phases 2+ of the stage plan - the dark launch activates nothing, so none of them blocks A4=dark_launch_ready.",
+ "resolves_register": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/unresolved_risks_register.json",
+ "risk_items_open": 0,
+ "risk_items_status_counts": {
+  "activation_blocking": 0,
+  "resolved_by_review_closure": 4,
+  "resolved_with_evidence": 9,
+  "unresolved": 0
+ },
+ "risk_items_total": 13,
+ "runtime_activation": false,
+ "schema_version": 1
+}

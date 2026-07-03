@@ -1,0 +1,44 @@
+{
+ "A5": "blocked",
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_no_activation_guard_report",
+ "checks": [
+  {
+   "id": "runtime_activation_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "freeze_ready_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "activation_allowed_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "official_result_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "allow_allocator_publish_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "allocator_publish_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "production_endpoint_activation_non_none_absent",
+   "status": "pass"
+  },
+  {
+   "id": "db_write_mode_non_none_absent",
+   "status": "pass"
+  }
+ ],
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "runtime_activation": false,
+ "scanned_files": 9,
+ "schema_version": 1,
+ "status": "pass_no_activation_effect"
+}
