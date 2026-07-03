@@ -124,10 +124,13 @@ def test_judgment_is_go_candidate_on_compressed_50_and_supersedes_003() -> None:
     assert judgment["status"] == "candidate_not_approved"
     assert "phase0q_003" in judgment["supersedes"]
     assert "BLOCKED" in judgment["task2_gate_effect"]
+    # no cloud reproduction is claimed for the grid-sourced numbers: the closed matrix
+    # covers the metric-evidence measurement, not the compression grid itself.
     assert judgment["execution_legs"] == {
         "local_python_pure": "complete",
-        "qc_research_object_store": "reproduced",
+        "qc_research_object_store": "not_run_for_this_grid",
     }
+    assert "NOT re-run in QC" in judgment["reproducibility_context"]
 
     gates = judgment["gates"]
     assert gates["turnover"]["verdict"] == "pass_candidate_under_reference_sleeve_policy"

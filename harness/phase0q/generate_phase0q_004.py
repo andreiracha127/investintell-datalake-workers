@@ -361,8 +361,17 @@ def build_judgment(grid: dict[str, Any], amendment: dict[str, Any]) -> dict[str,
         ],
         "execution_legs": {
             "local_python_pure": "complete",
-            "qc_research_object_store": "reproduced",
+            "qc_research_object_store": "not_run_for_this_grid",
         },
+        "reproducibility_context": (
+            "reproducibility_001 closed the cloud leg for the HEAD-harness metric-evidence "
+            "measurement (the six output logical hashes behind leg hash 83e6733e...), "
+            "validating the local_python_pure execution model at harness commit 68b07e81. "
+            "The compression grid that sources this judgment's numbers is a "
+            "measurement_only local_python_pure artifact computed by that SAME harness "
+            "commit; the grid itself (cost sweep, per-variant stress windows, OOS fold "
+            "report) was NOT re-run in QC, so no cloud reproduction is claimed for it."
+        ),
         "base_profile": {
             "max_annualized_volatility": 0.12,
             "max_drawdown": 0.25,
