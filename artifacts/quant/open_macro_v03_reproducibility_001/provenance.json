@@ -1,0 +1,52 @@
+{
+  "artifact_type": "phase0q_cloud_leg_execution_provenance",
+  "schema_version": 1,
+  "classification": "metric_evidence_only",
+  "governance": {
+    "A5": "blocked",
+    "runtime_activation": false,
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "official_result": false,
+    "db_write_mode": "none",
+    "status": "candidate_not_approved"
+  },
+  "qc_project_id": 33679769,
+  "successful_run": {
+    "backtest_id": "efd8c9cc19855e2d75344979c9f068d0",
+    "backtest_name": "phase0q_cloud_leg_1783077894",
+    "compile_id": "f3ab78fd0b0bbc1fff8c48a6f6be231a-a07517cd231ed4caeba6a5e77de4092f",
+    "executed_by": "Andrei Rachadel (own terminal; driver run_cloud_backtest)",
+    "executed_on_utc_date": "2026-07-03",
+    "driver_tree_commit": "d4939ab (main, post PR #26 merge)",
+    "verdict": "reproduced",
+    "mismatch_count": 0,
+    "full_verdict_archived": false,
+    "full_verdict_archival_refusal": "org Object Store over quota; full verdict carried by the backtest's chunked web-UI logs, pinned by sha256 below",
+    "full_verdict_sha256": "7ff8b16c58213f53a31ade980a83a9e16eb4b25208d514866df580d379f43f2b"
+  },
+  "failed_attempts": [
+    {
+      "backtest_id": "814c68ef4837d44bfb573588c0865cc2",
+      "cause": "quota-refused save escaped a shadowed `except Exception` (AlgorithmImports rebinds Exception to System.Exception); fixed in PR #26",
+      "compute_status": "verification + compute completed; died at archival only"
+    },
+    {
+      "backtest_id": "a636157a83a7d9df5d2f2ff09eeb1e89",
+      "cause": "re-run launched from a pre-PR-#26 working tree (same shadowing)",
+      "compute_status": "verification + compute completed; died at archival only"
+    }
+  ],
+  "pins": {
+    "harness_commit": "68b07e810bc28665fedd85c6acd3ea5770b4b099",
+    "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+    "contract_bundle_sha256": "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
+    "cloud_leg_manifest": "artifacts/quant/open_macro_v03_cloud_leg_001/cloud_leg_manifest.json",
+    "expected_manifest_sha256": "74a27d7596255c5d0e18c0abe82d839894a0238b3eac1a69fdafde41ad43156c"
+  },
+  "file_sha256": {
+    "consolidated_reproducibility_report.json": "7e4a49ec39bab36a62bfe1065b0a55599ded04724b221db19d653d29e633b871",
+    "phase0q_cloud_verdict.json": "c98f2e870c304d24f5666b7bc75877c453ed5ce635df34b2390e779ac530310a"
+  },
+  "notes": "Files in this directory are committed with the exact JSON content run_cloud_backtest wrote on the successful run; the ONLY transformation applied is CRLF-to-LF line-ending normalization (the driver ran on Windows; the repo pins artifacts/quant/**/*.json to eol=lf), so the sha256 pins above are over the committed LF bytes. Reproducibility evidence only: a matching cloud leg confirms local_python_pure is reproducible under qc_research_object_store; it grants NO activation and NO approval."
+}
