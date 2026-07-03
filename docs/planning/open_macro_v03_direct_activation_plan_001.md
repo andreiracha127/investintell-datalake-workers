@@ -1,8 +1,10 @@
 # open_macro_v03 — Direct Activation Plan 001
 
-Status: plan. Supersedes Phases 2–3 of
+Status: plan. Supersedes Phases 2–5 of
 `open_macro_v03_production_activation_stage_plan_001.md` per the owner's recorded
-decision (`artifacts/a5/open_macro_v03_direct_activation_001/shadow_elimination_decision_record.json`):
+decision — Stage B of this plan INHERITS Phase 4's role as the ONLY PR that may
+flip governance state, including its promotion-gate requirements; Phase 5's
+consumer-cutover obligations move to Stage C exit (`artifacts/a5/open_macro_v03_direct_activation_001/shadow_elimination_decision_record.json`):
 there is no reliable production baseline to shadow against, so the candidate goes to
 production directly, with the shadow's baseline-independent protections relocated —
 live-data validation BEFORE activation, behavioral observation AFTER activation with
@@ -17,10 +19,15 @@ go_candidate judgment on all five gates, closed local×cloud reproducibility mat
 
 The baseline-independent half of the eliminated shadow, as a hard gate:
 
-- **A1. Live input snapshot (read-only):** committed executor exports the CURRENT
-  PIT vintages (SEED_SOURCES basket) + sleeve prices as-of the validation date from
-  production (read-only), hash-pinned, with the Phase 1 staleness criteria as a
-  fail-loud gate at export time.
+- **A1. Live input snapshot (read-only):** committed executor exports the DELTA of
+  PIT vintages (SEED_SOURCES basket) + sleeve prices since the certified pack v2
+  cut, as-of the validation date, from production (read-only), hash-pinned, with
+  the Phase 1 staleness criteria as a fail-loud gate at export time. The decision
+  is computed over **committed pack v2 + pinned delta**, reconstituting the ENTIRE
+  latched global chain — so on a non-month-end date the carried position's seed
+  (the last valid decision in the chain) is fully pinned with provenance, exactly
+  as the ratified carry semantics require. A validation run whose carry seed
+  cannot be reconstructed from pinned inputs FAILS.
 - **A2. Candidate decision on live data:** the signed candidate (decision chain +
   `compressed_50` sleeve) computes today's consumable position on the snapshot,
   N=8 host + N=8 container under the Phase 1 measurement machinery (enforced
@@ -64,9 +71,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   `activation_record.json` carrying the final_approver's explicit verbatim act;
   A5 blocked→active for the TWO new tables only; `db_write_mode:
   open_macro_v03_new_tables_only`; `allocator_publish` flips to true FOR THE NEW
-  ALLOCATIONS TABLE in as-if mode; `official_result` stays **false until Stage C
-  closes** — during the window the pipeline runs exactly as production (single
-  model, full output) without the official stamp. Every historical artifact stays
+  ALLOCATIONS TABLE in as-if mode — **write-only: during the window ZERO consumers
+  read the new tables** (no backend route, no allocator consumer, no UI). The
+  consumer cutover is a separate coordinated backend PR at Stage C exit,
+  preserving the original stage plan's requirement that allocator consumption
+  lands only with its backend counterpart. `official_result` stays **false until
+  Stage C closes** — during the window the pipeline runs exactly as production
+  (single model, full output) without the official stamp. Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
   package defined, never weakened silently.
@@ -85,9 +96,17 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   bypass, any SLO breach, any write outside the two new tables ⇒ kill switch +
   rollback per the dry-run plan; activation is invalidated traceably.
+- **Abort fallback posture (explicit):** because zero consumers read the new
+  tables during the window, an abort returns the system EXACTLY to the
+  pre-activation status quo — no consumer regression is possible. The kill switch
+  stopping "the only model" stops an as-if publication nobody consumes yet. The
+  old model's emergency re-enable procedure stays documented in the decommission
+  record as an OWNER OPTION, never an automatic fallback (the owner disqualified
+  it as unreliable — auto-reviving it would reintroduce a model deemed unfit).
 - **Exit:** window report with zero aborts → `official_result: true` for BOTH
   published series (decisions and allocations become the official product),
-  `A4=production_active_official`, and consumer cutover to the new tables.
+  `A4=production_active_official`, and the coordinated consumer-cutover backend
+  PR (the Phase 5 obligation, relocated here).
 
 ## Owner decisions at plan GO (RESOLVED 2026-07-03, `plan_go_decision_record.json`)
 
