@@ -269,6 +269,7 @@ RUNTIME_STAT_KEYS = (
     "phase0q_expected_leg_hash",
     "phase0q_mismatch_count",
     "phase0q_verdict_sha256",
+    "phase0q_fullverdict_saved",
 )
 
 
@@ -352,8 +353,9 @@ def reconstruct_verdict(stats: dict[str, str], expected: dict[str, Any],
     derive = leg_match and stats["phase0q_verdict"] == "reproduced"
     # Honest archival: "false" means the cloud store refused the full-verdict save
     # (e.g. quota) — the key is then NOT advertised; the sha pins the bytes carried
-    # by the backtest's chunked log fallback (web UI).
-    full_saved = stats.get("phase0q_fullverdict_saved", "true") == "true"
+    # by the backtest's chunked log fallback (web UI). FAIL-SAFE default: an absent
+    # flag is treated as NOT saved (never advertise what we cannot confirm).
+    full_saved = stats.get("phase0q_fullverdict_saved", "false") == "true"
     return {
         "artifact_type": "phase0q_cloud_leg_verdict",
         "schema_version": 1,

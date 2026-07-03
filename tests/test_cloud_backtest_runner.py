@@ -378,13 +378,15 @@ def _synthetic_expected():
     }
 
 
-def _stats(verdict="reproduced", cloud="LEG", exp="LEG", count="0", sha="s" * 64):
+def _stats(verdict="reproduced", cloud="LEG", exp="LEG", count="0", sha="s" * 64,
+           saved="true"):
     return {
         "phase0q_verdict": verdict,
         "phase0q_cloud_leg_hash": cloud,
         "phase0q_expected_leg_hash": exp,
         "phase0q_mismatch_count": count,
         "phase0q_verdict_sha256": sha,
+        "phase0q_fullverdict_saved": saved,
     }
 
 
@@ -919,3 +921,39 @@ def test_reconstruct_verdict_unsaved_full_verdict_is_not_advertised():
     assert verdict["full_verdict_object_store_key"] is None
     assert "not archived" in verdict["notes"]
     assert verdict["full_verdict_sha256"] == "c" * 64
+
+
+def test_extract_runtime_statistics_propagates_fullverdict_saved_flag():
+    """P1 regression: the extraction filter omitted the new flag, so the driver
+    defaulted to true and would advertise an unstored key — the exact false
+    advertising the flag exists to prevent. The flag is REQUIRED and the
+    reconstruct default is fail-safe (false)."""
+    from harness.phase0q_cloud.run_cloud_backtest import (
+        RUNTIME_STAT_KEYS, extract_runtime_statistics, reconstruct_verdict,
+    )
+
+    assert "phase0q_fullverdict_saved" in RUNTIME_STAT_KEYS
+
+    backtest = {"runtimeStatistics": {
+        "phase0q_verdict": "reproduced",
+        "phase0q_cloud_leg_hash": "b" * 64,
+        "phase0q_expected_leg_hash": "b" * 64,
+        "phase0q_mismatch_count": "0",
+        "phase0q_verdict_sha256": "c" * 64,
+        "phase0q_fullverdict_saved": "false",
+    }}
+    stats = extract_runtime_statistics(backtest)
+    assert stats["phase0q_fullverdict_saved"] == "false"
+
+    expected = {
+        "run_fingerprint": "f" * 64,
+        "output_logical_hashes": {"turnover": "a" * 64},
+        "execution_legs": {"local_python_pure": {"logical_hash": "b" * 64}},
+    }
+    verdict = reconstruct_verdict(stats, expected, "p/results/x.json")
+    assert verdict["full_verdict_object_store_key"] is None
+
+    # fail-safe: an absent flag must never be treated as saved
+    stats_absent = {k: v for k, v in stats.items() if k != "phase0q_fullverdict_saved"}
+    verdict2 = reconstruct_verdict(stats_absent, expected, "p/results/x.json")
+    assert verdict2["full_verdict_object_store_key"] is None
