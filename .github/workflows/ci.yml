@@ -70,6 +70,7 @@ jobs:
           tests/test_phase0q_gate_amendments.py
           tests/test_compression_grid.py
           tests/test_phase0q_cloud_leg.py
+          tests/test_cloud_backtest_runner.py
           -q
 
       - name: Compile Python modules
@@ -80,6 +81,8 @@ jobs:
           src/input_packs
           services/quant_engine
           packages/investintell_quant_core
+          harness/phase0q_cloud/backtest_main.py
+          harness/phase0q_cloud/run_cloud_backtest.py
 
       - name: Verify calibration artifacts
         run: python docker/railway-ci/verify_calibration_artifacts.py
