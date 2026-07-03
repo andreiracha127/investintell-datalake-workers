@@ -1,0 +1,90 @@
+{
+ "approval_required_from": "quant_owner",
+ "approved": false,
+ "artifact_type": "phase0q_sleeve_selection_record",
+ "candidate_stress_windows": {
+  "COVID_2020": {
+   "annualized_volatility": 0.170637797249,
+   "consumable_position_coverage": 1.0,
+   "n_trading_days": 52,
+   "window_MDD": 0.115610516102,
+   "window_return": 0.019586842234,
+   "worst_5d_return": -0.069760574947
+  },
+  "INFLATION_SHOCK_2022": {
+   "annualized_volatility": 0.126261881929,
+   "consumable_position_coverage": 1.0,
+   "n_trading_days": 209,
+   "window_MDD": 0.151020235809,
+   "window_return": -0.116234282847,
+   "worst_5d_return": -0.065415179958
+  },
+  "Q4_2018": {
+   "annualized_volatility": 0.099610482561,
+   "consumable_position_coverage": 1.0,
+   "n_trading_days": 63,
+   "window_MDD": 0.083331211995,
+   "window_return": -0.054378778677,
+   "worst_5d_return": -0.028457924237
+  },
+  "SVB_2023": {
+   "annualized_volatility": 0.074080760854,
+   "consumable_position_coverage": 1.0,
+   "n_trading_days": 64,
+   "window_MDD": 0.029567730881,
+   "window_return": 0.034152000104,
+   "worst_5d_return": -0.011493872757
+  }
+ },
+ "comparison_at_base_cost": {
+  "baseline_100": {
+   "annualized_turnover": 1.610346885365,
+   "annualized_turnover_window_average": 0.742607431604,
+   "annualized_volatility": 0.082061235115,
+   "max_drawdown": 0.149674278601,
+   "n_rebalances": 27,
+   "n_trading_days": 3101,
+   "total_one_way_turnover": 9.138197005571,
+   "window_return": 1.034802311684,
+   "worst_5d_return": -0.075867581366
+  },
+  "compressed_50": {
+   "annualized_turnover": 1.027076034777,
+   "annualized_turnover_window_average": 0.397402296017,
+   "annualized_volatility": 0.073803795385,
+   "max_drawdown": 0.15095367724,
+   "n_rebalances": 27,
+   "n_trading_days": 3101,
+   "total_one_way_turnover": 4.890256031544,
+   "window_return": 1.147333385601,
+   "worst_5d_return": -0.070781155051
+  },
+  "cost_bps": 5
+ },
+ "decided_by": "Andrei Rachadel",
+ "decided_by_role": "quant_owner",
+ "decision_date": "2026-07-03",
+ "decision_scope": "candidate sleeve for the phase0q_004 judgment; NOT final institutional approval",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false
+ },
+ "phase0q_id": "open_macro_v03_phase0q_004",
+ "precondition_satisfied": "the quant_owner conditioned the sleeve decision on the closed cloud leg; the reproducibility matrix closed on 2026-07-03 (backtest efd8c9cc..., artifacts/quant/open_macro_v03_reproducibility_001, PR #27).",
+ "provenance": [
+  "artifacts/quant/open_macro_v03_compression_grid_001/grid_results.json",
+  "artifacts/quant/open_macro_v03_compression_grid_001/oos_fold_report.json",
+  "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json"
+ ],
+ "rationale": "compressed_50 nearly dominates baseline_100 on the measured grid: annualized one-way turnover 1.03 vs 1.61 (-36%), total volatility 7.38% vs 8.21%, window return +114.7% vs +103.5%, max drawdown ~equal (15.10% vs 14.97%); across OOS folds it is more stable (lower vol MAD) and its 2022 stress-window volatility is materially lower (13.31% vs 15.28%). Its only inferior number (MDD max-dev 0.107 vs 0.101) is immaterial under the amended OOS semantics, where both sleeves pass.",
+ "reference_sleeve_retained": "baseline_100",
+ "schema_version": 1,
+ "selected_sleeve": "compressed_50",
+ "status": "candidate_not_approved",
+ "task2_effect": "Task 2 stays BLOCKED until the quant_owner's threshold sign-off."
+}

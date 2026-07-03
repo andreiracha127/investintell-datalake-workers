@@ -72,6 +72,7 @@ jobs:
           tests/test_phase0q_cloud_leg.py
           tests/test_cloud_backtest_runner.py
           tests/test_phase0q_reproducibility_evidence.py
+          tests/test_phase0q_004_amendments.py
           -q
 
       - name: Compile Python modules
