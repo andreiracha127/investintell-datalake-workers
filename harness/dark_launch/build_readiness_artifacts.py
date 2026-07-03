@@ -467,8 +467,10 @@ def build_review_closure() -> dict[str, Any]:
         "activation_allowed": False,
         "runtime_activation": False,
         "signature_note": "The reviewer holds all six governance roles by his recorded "
-                          "decision; each domain decision was given in the activation "
-                          "thread and is ratified by his merge of the readiness PR.",
+                          "decision. Signature act, verbatim (activation thread, "
+                          "2026-07-03): 'Eu, Andrei Rachadel, assino as 4 reviews' - "
+                          "given over the completed evidence package; additionally "
+                          "ratified by his merge of the readiness PR.",
     }
 
 
