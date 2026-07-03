@@ -971,3 +971,45 @@ def test_persist_best_effort_treats_thrown_write_failures_as_unsaved():
     manifest = {"verdict_key_template": "p/results/v.json"}
     saved, key, reason = persist_full_verdict_best_effort(_ThrowingStore(), manifest, b"{}")
     assert saved is False and key is None and "bridge exploded" in reason
+
+
+class _FakeClrException(BaseException):
+    """Stand-in for System.Exception: NOT a subclass of builtins.Exception.
+
+    On QC cloud ``from AlgorithmImports import *`` (which pulls in
+    ``from System import *``) rebinds the module-global ``Exception`` to
+    System.Exception, so a bare ``except Exception`` stops catching Python
+    exceptions entirely. Proven by backtest 814c68ef: the uploaded main.py
+    carried the broad catch byte-identical to the repo copy, yet the
+    RuntimeError from a quota-refused save escaped and killed the run.
+    """
+
+
+def test_persist_best_effort_survives_clr_exception_shadowing(monkeypatch):
+    """The broad catch must keep catching Python exceptions even when the
+    module-global ``Exception`` is shadowed by System.Exception (QC cloud)."""
+    from harness.phase0q_cloud import backtest_main
+
+    monkeypatch.setattr(backtest_main, "Exception", _FakeClrException, raising=False)
+
+    class _RefusingStore:
+        def save_bytes(self, key, data):
+            return False
+
+    manifest = {"verdict_key_template": "p/results/v.json"}
+    saved, key, reason = backtest_main.persist_full_verdict_best_effort(
+        _RefusingStore(), manifest, b"{}")
+    assert saved is False and key is None and "refused" in reason
+
+
+def test_resolve_manifest_key_default_survives_clr_exception_shadowing(monkeypatch):
+    """The key-file fallback's catch must survive the same cloud shadowing."""
+    from harness.phase0q_cloud import backtest_main
+
+    monkeypatch.setattr(backtest_main, "Exception", _FakeClrException, raising=False)
+
+    class _MissingKeyStore:
+        def read(self, key):
+            raise KeyError(key)
+
+    assert backtest_main.resolve_manifest_key_default(_MissingKeyStore()) == ""
