@@ -957,3 +957,17 @@ def test_extract_runtime_statistics_propagates_fullverdict_saved_flag():
     stats_absent = {k: v for k, v in stats.items() if k != "phase0q_fullverdict_saved"}
     verdict2 = reconstruct_verdict(stats_absent, expected, "p/results/x.json")
     assert verdict2["full_verdict_object_store_key"] is None
+
+
+def test_persist_best_effort_treats_thrown_write_failures_as_unsaved():
+    """Adapter-level exceptions (I/O, quota bridge errors) must degrade to
+    saved=False like a returned False — never kill a complete proof."""
+    from harness.phase0q_cloud.backtest_main import persist_full_verdict_best_effort
+
+    class _ThrowingStore:
+        def save_bytes(self, key, data):
+            raise ValueError("bridge exploded")
+
+    manifest = {"verdict_key_template": "p/results/v.json"}
+    saved, key, reason = persist_full_verdict_best_effort(_ThrowingStore(), manifest, b"{}")
+    assert saved is False and key is None and "bridge exploded" in reason

@@ -485,7 +485,11 @@ def run(args: argparse.Namespace, *, opener=urllib_request.urlopen,
     verdict_out.write_text(
         json.dumps(verdict, sort_keys=True, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"[f] wrote reconstructed verdict -> {verdict_out}")
-    print(f"    full verdict in Object Store: {verdict_key}")
+    if verdict["full_verdict_object_store_key"]:
+        print(f"    full verdict in Object Store: {verdict['full_verdict_object_store_key']}")
+    else:
+        print("    full verdict NOT archived (store refused the save, e.g. quota); "
+              "it is carried by the backtest's chunked logs (web UI)")
     print(f"    full verdict sha256:          {stats['phase0q_verdict_sha256']}")
 
     completed = validate_and_complete(verdict, Path(args.expected_manifest), Path(args.report_out))

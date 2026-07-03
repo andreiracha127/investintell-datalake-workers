@@ -491,7 +491,9 @@ def persist_full_verdict_best_effort(object_store, manifest: dict,
     """
     try:
         key = save_full_verdict(object_store, manifest, verdict_bytes)
-    except RuntimeError as exc:
+    except Exception as exc:  # noqa: BLE001 - adapter-level I/O/quota exceptions
+        # must degrade to saved=False exactly like a returned False; a thrown
+        # write failure must never kill a complete reproducibility proof.
         return False, None, str(exc)
     return True, key, None
 
