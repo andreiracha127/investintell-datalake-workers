@@ -83,16 +83,27 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **B4. Governance flip via the documented promotion gates:** new
   `activation_record.json` carrying the final_approver's explicit verbatim act;
   A5 blocked→active for the TWO new tables only; `db_write_mode:
-  open_macro_v03_new_tables_only`; `allocator_publish` flips to true for the new
-  allocations table WITH REAL CONSUMPTION from day one (the backend cutover ships
-  in this same PR — the owner eliminated the as-if mode); `official_result` is
-  **true from activation**: the published decision and allocation ARE the
-  system's official output (there is no other model). Every historical artifact stays
+  open_macro_v03_new_tables_only`; `activation_allowed` flips to true with the
+  NAMED allowed environment (exactly the production worker service — the
+  inherited feature-flag envelope requires named environments, never a blanket
+  true); `allocator_publish` flips to true for the new allocations table WITH
+  REAL CONSUMPTION from day one (the backend cutover ships in this same PR — the
+  owner eliminated the as-if mode); `production_endpoint_activation` flips from
+  `none` to the NAMED read path the backend now serves from the new tables
+  (scoped, never a blanket value); `official_result` is **true from
+  activation**: the published decision and allocation ARE the system's official
+  output (there is no other model). Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
   package defined, never weakened silently.
-- **B5. Active monitoring:** the four measured SLOs + the zero-threshold attempt
-  detectors become live alerts, RE-SCOPED for the activated state: the DB-write
+- **B5. Deploy evidence + monitoring BEFORE first write (ordering is binding):**
+  the worker is registered and deployed on its production service with committed
+  deploy evidence (`deploy_record.json`: service, image/commit, schedule, env,
+  flag state), and the monitoring below is LIVE AND VERIFIED **before** the B4
+  governance flip enables the first sanctioned write — the first production row
+  must land under full alerting, never before it. The four measured SLOs + the
+  zero-threshold attempt detectors become live alerts, RE-SCOPED for the
+  activated state: the DB-write
   detector's allowlist becomes exactly the two new tables, and the
   `allocator_publish_attempt_alert` re-scopes to fire on any allocation publish
   OUTSIDE `open_macro_v03_allocations` (publishing to the sanctioned table is the
@@ -108,8 +119,9 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **10 business days** (owner-approved) of intensive supervision over the REAL,
   CONSUMED, OFFICIAL output (the owner eliminated the as-if staging): a committed
   verifier re-computes each published decision AND allocation independently
-  (host, from the same PIT inputs) and asserts byte-equality of the logical
-  outputs; SLO and staleness alerts on; kill switch armed.
+  (host, from the same PIT vintages AND the same sleeve `eod_prices`/quality
+  flags the worker read) and asserts byte-equality of the logical outputs; SLO
+  and staleness alerts on; kill switch armed.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   bypass, any SLO breach, any write outside the two new tables, AND any **missing
   or partial daily output** — every business day of the window must carry BOTH
