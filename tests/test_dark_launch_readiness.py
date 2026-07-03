@@ -73,10 +73,23 @@ def test_rollback_and_kill_switch_dry_runs_are_recorded() -> None:
         assert record["activation_allowed"] is False
 
 
+def _load_harness_module(name: str):
+    """Load a harness/dark_launch module by FILE PATH: the cloud-runner suite purges
+    and rebinds ``sys.modules['harness']`` to its bundle copy (which has no
+    dark_launch), so a plain package import breaks when the full suite runs."""
+    import importlib.util
+
+    path = ROOT / "harness" / "dark_launch" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"dark_launch_test_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_dry_run_records_equal_regeneration_by_the_committed_executor() -> None:
     """The committed records must be exactly what the fail-loud executor verifies and
     writes today — a hand-edited record that no verification produced cannot survive."""
-    from harness.dark_launch import execute_dry_runs as executor
+    executor = _load_harness_module("execute_dry_runs")
 
     assert _json("rollback_dry_run_record.json") == executor.build_rollback_record()
     assert _json("kill_switch_dry_run_record.json") == executor.build_kill_switch_record()
@@ -328,7 +341,7 @@ def test_dark_launch_artifacts_contain_no_activation_markers() -> None:
 def test_readiness_artifacts_equal_regeneration_by_the_committed_builder() -> None:
     """Signature-bearing artifacts must be exactly what the committed builder derives
     from committed evidence — a hand-edited closure or resolution cannot survive."""
-    from harness.dark_launch import build_readiness_artifacts as builder
+    builder = _load_harness_module("build_readiness_artifacts")
 
     assert _json("risk_register_resolution_record.json") == builder.build_risk_resolution()
     assert _json("review_closure_record.json") == builder.build_review_closure()

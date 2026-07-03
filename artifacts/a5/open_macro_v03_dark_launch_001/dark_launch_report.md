@@ -27,8 +27,8 @@ were dry-run as read-only verifications by a committed fail-loud executor on
 ## Monitoring thresholds set
 
 From the first REAL measured observability round (16/16 runs succeeded,
-host+container matrix, in-process measurement): latency_slo 44390 ms,
-memory_slo 2046793728 bytes (both ceil(1.5 x measured)), error and retry
+host+container matrix, in-process measurement): latency_slo 37826 ms,
+memory_slo 2047279104 bytes (both ceil(1.5 x measured)), error and retry
 SLOs at zero tolerance. Zero-threshold attempt detectors stay defined in the
 proposal's monitoring enforcement policy.
 

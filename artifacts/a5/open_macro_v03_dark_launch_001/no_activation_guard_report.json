@@ -28,6 +28,14 @@
    "status": "pass"
   },
   {
+   "id": "feature_flag_default_true_absent",
+   "status": "pass"
+  },
+  {
+   "id": "allow_db_write_true_absent",
+   "status": "pass"
+  },
+  {
    "id": "production_endpoint_activation_non_none_absent",
    "status": "pass"
   },
@@ -38,7 +46,7 @@
  ],
  "dark_launch_id": "open_macro_v03_dark_launch_001",
  "runtime_activation": false,
- "scanned_files": 9,
+ "scanned_files": 10,
  "schema_version": 1,
  "status": "pass_no_activation_effect"
 }

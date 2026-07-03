@@ -61,8 +61,12 @@
    "risk_id": "advisory-lock-regime-gate"
   },
   {
-   "evidence_note": "Root cause of the production staleness found and fixed (FRED asc+limit window truncation, PR #16: desc + client re-sort + resized limits + truncation warning); controlled backfill executed and verified 2026-07-02 (T10YIE 2026-02-27 -> 2026-07-01, stale cluster refreshed); staleness SLO enforcement before runtime activation stays pinned by the monitoring enforcement policy.",
+   "evidence_note": "Root cause of the production staleness found and fixed (FRED asc+limit window truncation, PR #16: desc + client re-sort + resized limits + truncation warning); production data VERIFIED fresh by a live read-only query on 2026-07-03 (committed verification record: T10YIE at 2026-07-02 after being frozen at 2026-02-27, the whole previously frozen cluster within normal cadence); staleness SLO enforcement before runtime activation stays pinned by the monitoring enforcement policy.",
    "evidence_refs": [
+    {
+     "note": "live production query results, per-series freshness verdicts",
+     "path": "artifacts/a5/open_macro_v03_dark_launch_001/staleness_verification_record.json"
+    },
     {
      "note": "zero-threshold attempt detectors + staleness SLO enforcement home",
      "path": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/monitoring_enforcement_policy.json"
