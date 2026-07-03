@@ -131,6 +131,22 @@ def test_judgment_is_go_candidate_on_compressed_50_and_supersedes_003() -> None:
         "qc_research_object_store": "not_run_for_this_grid",
     }
     assert "NOT re-run in QC" in judgment["reproducibility_context"]
+    # the grid's ACTUAL harness commit is cited, and its stated relation to the
+    # cloud-validated merge commit is machine-verified here.
+    grid_commit = "0afb36f14779573f3d4be6fb13e9670562bb7703"
+    merge_commit = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
+    assert grid_commit in judgment["reproducibility_context"]
+    grid = gen._load(gen.GRID_DIR / "grid_results.json")
+    assert grid["provenance"]["harness_commit"] == grid_commit
+    import subprocess
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", grid_commit, merge_commit],
+        cwd=ROOT).returncode == 0
+    diff = subprocess.run(
+        ["git", "diff", "--stat", grid_commit, merge_commit, "--",
+         "harness/phase0q", "packages/investintell_quant_core", "services/quant_engine"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert diff.returncode == 0 and diff.stdout.strip() == ""
 
     gates = judgment["gates"]
     assert gates["turnover"]["verdict"] == "pass_candidate_under_reference_sleeve_policy"

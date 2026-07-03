@@ -366,11 +366,15 @@ def build_judgment(grid: dict[str, Any], amendment: dict[str, Any]) -> dict[str,
         "reproducibility_context": (
             "reproducibility_001 closed the cloud leg for the HEAD-harness metric-evidence "
             "measurement (the six output logical hashes behind leg hash 83e6733e...), "
-            "validating the local_python_pure execution model at harness commit 68b07e81. "
-            "The compression grid that sources this judgment's numbers is a "
-            "measurement_only local_python_pure artifact computed by that SAME harness "
-            "commit; the grid itself (cost sweep, per-variant stress windows, OOS fold "
-            "report) was NOT re-run in QC, so no cloud reproduction is claimed for it."
+            "validating the local_python_pure execution model at harness commit "
+            "68b07e810bc28665fedd85c6acd3ea5770b4b099. The compression grid that sources "
+            "this judgment's numbers is a measurement_only local_python_pure artifact "
+            "pinned to harness commit 0afb36f14779573f3d4be6fb13e9670562bb7703 (the PR #22 "
+            "branch commit); that commit is a direct ancestor of the cloud-validated merge "
+            "commit 68b07e81..., and `git diff 0afb36f1 68b07e81 -- harness/phase0q "
+            "packages/investintell_quant_core services/quant_engine` is empty (identical "
+            "compute trees). The grid itself (cost sweep, per-variant stress windows, OOS "
+            "fold report) was NOT re-run in QC, so no cloud reproduction is claimed for it."
         ),
         "base_profile": {
             "max_annualized_volatility": 0.12,
