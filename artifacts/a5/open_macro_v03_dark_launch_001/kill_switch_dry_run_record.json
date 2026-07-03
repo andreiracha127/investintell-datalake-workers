@@ -1,0 +1,46 @@
+{
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_kill_switch_dry_run_record",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "date": "2026-07-03",
+ "execution_mode": "read_only_dry_run",
+ "kill_switch_name": "open_macro_v03_runtime_activation_disable",
+ "notes": "The kill switch's validation steps are state confirmations; the dry run executes each against the committed governance artifacts, in the exact order the plan declares (order equality is enforced).",
+ "operator": "Claude (orchestrator agent) - read-only dry-run verification executed on behalf of operations_owner Andrei Rachadel; ratified by his PR merge",
+ "plan_reference": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/kill_switch_plan.json",
+ "runtime_activation": false,
+ "schema_version": 1,
+ "status": "completed",
+ "steps_executed": [
+  {
+   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; no runtime environment defines the flag (it was never created)",
+   "outcome": "pass",
+   "step": "Read feature flag state and confirm false."
+  },
+  {
+   "note": "runtime_activation is false/absent across 4 governance artifacts",
+   "outcome": "pass",
+   "step": "Verify runtime_activation=false in governance artifact."
+  },
+  {
+   "note": "official_result is false/absent across 4 governance artifacts",
+   "outcome": "pass",
+   "step": "Verify official_result=false."
+  },
+  {
+   "note": "allocator_publish/allow_allocator_publish never true across the whole proposal package (recursive walk of every JSON)",
+   "outcome": "pass",
+   "step": "Verify allocator_publish=false."
+  },
+  {
+   "note": "runtime_activation is false/absent across 4 governance artifacts; activation_allowed is false/absent across 4 governance artifacts; freeze_ready is false/absent across 4 governance artifacts; official_result is false/absent across 4 governance artifacts; allocator_publish is false/absent across 4 governance artifacts; A5=blocked and production_endpoint_activation=none wherever declared",
+   "outcome": "pass",
+   "step": "Confirm production_endpoint_activation remains none."
+  },
+  {
+   "note": "db_write_mode=none / allow_db_write=false wherever declared; allowed_side_effects=[]; the harness db stub refuses connect() (LOCK_REGIME_QUADRANT=900208 guard, enforced by the phase0q test suite)",
+   "outcome": "pass",
+   "step": "Verify no productive DB write occurred."
+  }
+ ]
+}

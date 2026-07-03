@@ -1,0 +1,60 @@
+{
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_rollback_dry_run_record",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "date": "2026-07-03",
+ "execution_mode": "read_only_dry_run",
+ "notes": "Every rollback section is a keep-off/confirm-false control; the dry run executes each as a real verification against the committed governance artifacts. The executor is fail-loud: a failing verification aborts the run and no record is produced.",
+ "operator": "Claude (orchestrator agent) - read-only dry-run verification executed on behalf of operations_owner Andrei Rachadel; ratified by his PR merge",
+ "plan_reference": "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/rollback_execution_plan.md",
+ "runtime_activation": false,
+ "schema_version": 1,
+ "status": "completed",
+ "steps_executed": [
+  {
+   "note": "feature_flag_default=false (dark manifest); activation policy: activation_allowed=false, allowed_environments=[], approval_required=true; no runtime environment defines the flag (it was never created)",
+   "outcome": "pass",
+   "step": "Keep Feature Flag Off"
+  },
+  {
+   "note": "invalidation path documented (follow-up governance artifact or PR close); proposal is never reinterpreted as approval",
+   "outcome": "pass",
+   "step": "Invalidate Proposal"
+  },
+  {
+   "note": "official_result is false/absent across 4 governance artifacts",
+   "outcome": "pass",
+   "step": "Prevent Official Result"
+  },
+  {
+   "note": "allocator_publish/allow_allocator_publish never true across the whole proposal package (recursive walk of every JSON)",
+   "outcome": "pass",
+   "step": "Prevent Allocator Publish"
+  },
+  {
+   "note": "db_write_mode=none / allow_db_write=false wherever declared; allowed_side_effects=[]; the harness db stub refuses connect() (LOCK_REGIME_QUADRANT=900208 guard, enforced by the phase0q test suite)",
+   "outcome": "pass",
+   "step": "Confirm No Productive DB Write"
+  },
+  {
+   "note": "production consumers remain on the approved baseline: no activation surface exists (no_activation_guard_report: all checks pass; candidate artifacts are evidence-only)",
+   "outcome": "pass",
+   "step": "Revert To Baseline"
+  },
+  {
+   "note": "evidence digests re-verified against the committed evidence_map (calibration_manifest_sha256, a5_preflight_001_merge_commit, controlled_shadow_001_merge_commit); phase0q chain pins (metric_evidence_001, reproducibility_001, phase0q_004) are enforced by the CI pin suites",
+   "outcome": "pass",
+   "step": "Audit Artifacts"
+  },
+  {
+   "note": "all six escalation roles have named owners (owners_assignment_record); incident communication path exists",
+   "outcome": "pass",
+   "step": "Communicate Incident"
+  },
+  {
+   "note": "runtime_activation is false/absent across 4 governance artifacts; activation_allowed is false/absent across 4 governance artifacts; freeze_ready is false/absent across 4 governance artifacts; official_result is false/absent across 4 governance artifacts; allocator_publish is false/absent across 4 governance artifacts; A5=blocked and production_endpoint_activation=none wherever declared",
+   "outcome": "pass",
+   "step": "Restore A5 Blocked"
+  }
+ ]
+}

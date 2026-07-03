@@ -56,6 +56,32 @@ def test_owners_assignment_names_every_role() -> None:
     assert owners["activation_approvals_recorded"] is False
 
 
+def test_rollback_and_kill_switch_dry_runs_are_recorded() -> None:
+    for name, plan_ref in (
+        ("rollback_dry_run_record.json", "rollback_execution_plan.md"),
+        ("kill_switch_dry_run_record.json", "kill_switch_plan.json"),
+    ):
+        record = _json(name)
+        assert record["status"] == "completed"
+        assert record["operator"] not in PLACEHOLDERS
+        assert record["date"] not in PLACEHOLDERS
+        assert record["plan_reference"].endswith(plan_ref)
+        assert record["steps_executed"]
+        for step in record["steps_executed"]:
+            assert step["outcome"] == "pass"
+        assert record["runtime_activation"] is False
+        assert record["activation_allowed"] is False
+
+
+def test_dry_run_records_equal_regeneration_by_the_committed_executor() -> None:
+    """The committed records must be exactly what the fail-loud executor verifies and
+    writes today — a hand-edited record that no verification produced cannot survive."""
+    from harness.dark_launch import execute_dry_runs as executor
+
+    assert _json("rollback_dry_run_record.json") == executor.build_rollback_record()
+    assert _json("kill_switch_dry_run_record.json") == executor.build_kill_switch_record()
+
+
 def test_dark_launch_manifest_keeps_activation_blocked() -> None:
     manifest = _json("dark_launch_manifest.json")
 
