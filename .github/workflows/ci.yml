@@ -73,6 +73,7 @@ jobs:
           tests/test_cloud_backtest_runner.py
           tests/test_phase0q_reproducibility_evidence.py
           tests/test_phase0q_004_amendments.py
+          tests/test_threshold_signoff.py
           -q
 
       - name: Compile Python modules

@@ -1,0 +1,80 @@
+{
+  "artifact_type": "phase0q_threshold_signoff_record",
+  "schema_version": 1,
+  "signoff_id": "open_macro_v03_threshold_signoff_001",
+  "signed_off_by": "Andrei Rachadel",
+  "signed_off_by_role": "quant_owner",
+  "signoff_date": "2026-07-03",
+  "signoff_act": "Verbatim reply 'aprovado' to the orchestrator's threshold report (the exact envelope tabled below), given after PR #28 was merged into main at 438051cc2367fe8161bbf12c339b2493e77ba225.",
+  "scope": "Freezes the base-profile threshold envelope (as amended by phase0q_003 carry/turnover semantics and phase0q_004 OOS jackknife semantics) as the OFFICIAL candidate thresholds for the open_macro_v03 dark launch path. This sign-off approves THRESHOLDS ONLY.",
+  "threshold_envelope_approved": true,
+  "activation_approved": false,
+  "institutional_activation_approval": false,
+  "judged_sleeve": "compressed_50",
+  "envelope": {
+    "absolute": {
+      "max_drawdown": 0.25,
+      "max_annualized_volatility": 0.12,
+      "reference_sleeve_turnover_candidate_bound": 2.0,
+      "signal_design_turnover_bound": 0.6,
+      "min_worst_5d_return": -0.1
+    },
+    "stress_carry_semantics": {
+      "consumable_position_coverage_min": 1.0,
+      "worst_5d_return_min": -0.1,
+      "window_MDD_max": 0.25
+    },
+    "oos_jackknife_semantics": {
+      "max_fold_mdd_deviation": 0.08,
+      "max_fold_volatility_deviation": 0.05,
+      "fold_absolute_max_drawdown": 0.25,
+      "fold_absolute_max_volatility": 0.12,
+      "exclusion_rule": "at most ONE fold (the argmax deviation) per statistic, and only when its test window overlaps a full_series stress window judged GO under carry semantics"
+    }
+  },
+  "measured_at_signoff": {
+    "turnover": 1.027076034777,
+    "max_drawdown": 0.15095367724,
+    "annualized_volatility": 0.073803795385,
+    "stress_windows_go": 4,
+    "oos_mdd_max_dev_eligible": 0.071529609399,
+    "oos_volatility_max_dev_eligible": 0.029317512831,
+    "overall_recommendation": "go_candidate"
+  },
+  "evidence_refs": [
+    {
+      "path": "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+      "git_blob_sha": "900d0754c7ae99fb91a1e2f85c1b7f26b43de7b0",
+      "note": "the consolidated go_candidate judgment this sign-off freezes"
+    },
+    {
+      "path": "artifacts/quant/open_macro_v03_phase0q_004/oos_dispersion_semantics_amendment.json",
+      "git_blob_sha": "2ad5f835787eed45d48e09e54458f3711915f976",
+      "note": "OOS jackknife semantics (quant_owner decision, 2026-07-03)"
+    },
+    {
+      "path": "artifacts/quant/open_macro_v03_phase0q_004/sleeve_selection_record.json",
+      "git_blob_sha": "54600ed240e1f6bc6a507f94000c216f24518f26",
+      "note": "compressed_50 candidate sleeve selection (quant_owner decision, 2026-07-03)"
+    },
+    {
+      "path": "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json",
+      "note": "closed local x cloud reproducibility matrix (backtest efd8c9cc..., PR #27)"
+    },
+    {
+      "path": "artifacts/quant/open_macro_v03_phase0q_001/threshold_profile_selection_record.json",
+      "note": "the base profile empirical-envelope selection this sign-off elevates to official candidate thresholds"
+    }
+  ],
+  "effect": "Resolves the quantitative-threshold precondition of dark launch Task 2. It does NOT close the review_closure_record: the four domain reviews and the 13-item risk register still require their own evidence (rollback/kill-switch dry runs, monitoring thresholds record, measured observability round). A5 stays blocked until Phase 4 of the stage plan.",
+  "governance": {
+    "A5": "blocked",
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "db_write_mode": "none",
+    "freeze_ready": false,
+    "official_result": false,
+    "runtime_activation": false,
+    "status": "thresholds_signed_off_activation_blocked"
+  }
+}
