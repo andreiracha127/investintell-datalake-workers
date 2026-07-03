@@ -51,6 +51,28 @@ DEFAULT_BACKTEST_MAIN = Path(__file__).with_name("backtest_main.py")
 DEFAULT_VERDICT_OUT = Path("phase0q_cloud_verdict.json")
 DEFAULT_REPORT_OUT = Path("build") / "consolidated_reproducibility_report.completed.json"
 
+CLOUD_LEG_MANIFEST_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001" / "cloud_leg_manifest.json"
+)
+_MANIFEST_KEY_SENTINEL = 'MANIFEST_KEY_INJECTED = ""'
+
+
+def default_manifest_key() -> str:
+    """The immutable manifest key pinned by the committed cloud-leg manifest."""
+    manifest = json.loads(CLOUD_LEG_MANIFEST_PATH.read_text(encoding="utf-8"))
+    return manifest["object_store_manifest_key"]
+
+
+def inject_manifest_key(source: str, key: str) -> str:
+    """Bake the manifest key into the uploaded main.py: API-created backtests
+    have no project parameters and the key-file fallback is not part of the
+    uploaded bundle, so the baked-in constant is the reliable path."""
+    if _MANIFEST_KEY_SENTINEL not in source:
+        raise ValueError("backtest main source lacks the MANIFEST_KEY_INJECTED sentinel")
+    return source.replace(_MANIFEST_KEY_SENTINEL, f'MANIFEST_KEY_INJECTED = "{key}"', 1)
+
+
 COMPILE_POLL_SECONDS = 5.0
 COMPILE_TIMEOUT_SECONDS = 300.0
 BACKTEST_POLL_SECONDS = 10.0
@@ -283,8 +305,11 @@ def run(args: argparse.Namespace, *, opener=urllib_request.urlopen,
     creds = creds or read_credentials(Path(args.credentials))
     project_id = args.project_id
     main_source = Path(args.main).read_text(encoding="utf-8")
+    manifest_key = getattr(args, "manifest_key", None) or default_manifest_key()
+    main_source = inject_manifest_key(main_source, manifest_key)
 
     print(f"[a] pushing {args.main} -> project {project_id} main.py")
+    print(f"    manifest key baked in: {manifest_key}")
     push_main(creds, project_id, main_source, opener=opener)
 
     print("[b] compiling project ...")
@@ -335,6 +360,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help=f"QC project id (default: {QC_PROJECT_ID}).")
     parser.add_argument("--main", default=str(DEFAULT_BACKTEST_MAIN),
                         help="Path to the backtest algorithm source pushed as main.py.")
+    parser.add_argument("--manifest-key", dest="manifest_key", default=None,
+                        help="immutable object-store manifest key (default: from the committed cloud_leg_manifest.json)")
     parser.add_argument("--name", default=None,
                         help="Backtest name (default: phase0q_cloud_leg_<timestamp>).")
     parser.add_argument("--credentials", default=str(CREDENTIALS_PATH),

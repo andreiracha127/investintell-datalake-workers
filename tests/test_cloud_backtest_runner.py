@@ -421,3 +421,38 @@ def test_no_network_imports_in_backtest_main():
     src = (CLOUD_PKG / "backtest_main.py").read_text(encoding="utf-8")
     for banned in ("import requests", "import socket", "urllib.request", "http.client"):
         assert banned not in src, f"backtest_main must not use {banned}"
+
+
+def test_driver_injects_manifest_key_into_uploaded_main():
+    """The uploaded main.py must carry the manifest key baked in: the key file
+    fallback is NOT among the uploaded objects and API-created backtests have
+    no project parameters set, so without injection the first cloud run fails."""
+    from pathlib import Path
+
+    from harness.phase0q_cloud import backtest_main as bm
+    from harness.phase0q_cloud.run_cloud_backtest import inject_manifest_key
+
+    src = Path(bm.__file__).read_text(encoding="utf-8")
+    key = "investintell/x/y/object_store_manifest.json"
+    injected = inject_manifest_key(src, key)
+    assert f'MANIFEST_KEY_INJECTED = "{key}"' in injected
+    assert 'MANIFEST_KEY_INJECTED = ""' not in injected
+
+
+def test_default_manifest_key_reads_committed_cloud_leg_manifest():
+    from harness.phase0q_cloud.run_cloud_backtest import default_manifest_key
+
+    key = default_manifest_key()
+    assert key.startswith("investintell/open_macro_v03/phase0q/")
+    assert key.endswith("/object_store_manifest.json")
+
+
+def test_resolve_manifest_key_default_prefers_injected(monkeypatch):
+    from harness.phase0q_cloud import backtest_main as bm
+
+    class _Store:
+        def read(self, key):
+            raise AssertionError("must not read the key file when injected")
+
+    monkeypatch.setattr(bm, "MANIFEST_KEY_INJECTED", "some/prefix/object_store_manifest.json")
+    assert bm.resolve_manifest_key_default(_Store()) == "some/prefix/object_store_manifest.json"

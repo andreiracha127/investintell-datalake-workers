@@ -53,6 +53,22 @@ VERDICT_CHUNK_SIZE = 160
 # The env/config key the driver may set to point the algorithm at the manifest.
 MANIFEST_KEY_PARAMETER = "PHASE0Q_CLOUD_MANIFEST_KEY"
 
+# Injected by run_cloud_backtest.inject_manifest_key before upload; empty in
+# the repo copy. API-created backtests have no project parameters and the
+# key-file fallback is not part of the uploaded bundle, so the baked-in key
+# is the reliable path.
+MANIFEST_KEY_INJECTED = ""
+
+
+def resolve_manifest_key_default(object_store) -> str:
+    """Injected constant first; the committed key file as fallback."""
+    if MANIFEST_KEY_INJECTED:
+        return MANIFEST_KEY_INJECTED
+    try:
+        return object_store.read("phase0q_cloud/object_store_manifest_key.txt").strip()
+    except Exception:
+        return ""
+
 # The sleeves the cloud leg MUST measure at the base 5bps minimum (mirrors the notebook).
 REQUIRED_SLEEVES = ("baseline_100", "compressed_50")
 
@@ -449,11 +465,8 @@ try:  # pragma: no cover - QC cloud runtime only
             self._manifest_key = self.get_parameter(MANIFEST_KEY_PARAMETER) or self._manifest_key_default()
 
         def _manifest_key_default(self) -> str:
-            # The immutable manifest key committed alongside the project.
-            try:
-                return self.object_store.read("phase0q_cloud/object_store_manifest_key.txt").strip()
-            except Exception:
-                return ""
+            # Injected constant first; the committed key file as fallback.
+            return resolve_manifest_key_default(self.object_store)
 
         def on_data(self, data):  # noqa: D401 - no trading; determinism.
             pass
