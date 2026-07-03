@@ -36,10 +36,13 @@ The baseline-independent half of the eliminated shadow, as a hard gate:
   NaN/Inf; weights within risk_cap/defensive_floor), reproducibility
   host==container (`mismatch_count=0`), SLO conformance vs the Phase 1 thresholds
   (breach = STOP and investigate, never recalibrate).
-- **Deliverable:** `artifacts/a5/open_macro_v03_direct_activation_001/`
+- **Deliverable:** a NEW stage-scoped artifact root
+  `artifacts/a5/open_macro_v03_direct_activation_stage_a_001/` with
   `live_validation_record.json` + snapshot manifest + tests (Phase 1 guard
   semantics: regeneration pins, recursive governance walk, duplicate-key rejection,
-  string-truthy).
+  string-truthy). Each stage (A/B/C) creates its OWN artifact directory;
+  `open_macro_v03_direct_activation_001/` holds only the two decision records of
+  this plan PR and stays immutable.
 
 ## Stage B — Activation PR (the governance flip + the real runtime + the product)
 
@@ -49,7 +52,8 @@ is its input), it ships in this activation mandatorily, and the old model is
 decommissioned at activation — open_macro_v03 becomes the ONLY model.
 
 - **B1. Runtime worker (new production code):** a daily job that (i) reads the PIT
-  vintages as-of the run date, (ii) computes the latched decision chain + the
+  vintages AND the sleeve `eod_prices` (`adj_close`, with the certified path's
+  data-quality flags) as-of the run date, (ii) computes the latched decision chain + the
   `compressed_50` consumable position via the SAME pure modules the evidence chain
   used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction),
   (iii) writes the decision row to `open_macro_v03_decisions` (as_of, quadrant,
@@ -81,9 +85,17 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
   package defined, never weakened silently.
-- **B5. Active monitoring:** the four measured SLOs + the four zero-threshold
-  attempt detectors become live alerts (the DB-write detector's allowlist becomes
-  exactly the two new tables); staleness SLO enforcement blocks publication.
+- **B5. Active monitoring:** the four measured SLOs + the zero-threshold attempt
+  detectors become live alerts, RE-SCOPED for the activated state: the DB-write
+  detector's allowlist becomes exactly the two new tables, and the
+  `allocator_publish_attempt_alert` re-scopes to fire on any allocation publish
+  OUTSIDE `open_macro_v03_allocations` (publishing to the sanctioned table is the
+  product, not an attempt); `runtime_activation_attempt_alert` and
+  `production_endpoint_activation_attempt_alert` re-scope analogously to their
+  sanctioned surfaces. The `missing_output_slo` of the inherited monitoring policy
+  goes live: every business day must produce BOTH rows (decision + allocation) or
+  a recorded staleness-block — anything else alerts. Staleness SLO enforcement
+  blocks publication.
 
 ## Stage C — Post-activation observation window (as-if production, single model)
 
@@ -94,8 +106,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   same PIT inputs) and asserts byte-equality of the logical outputs; SLO and
   staleness alerts on; kill switch armed.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
-  bypass, any SLO breach, any write outside the two new tables ⇒ kill switch +
-  rollback per the dry-run plan; activation is invalidated traceably.
+  bypass, any SLO breach, any write outside the two new tables, AND any **missing
+  or partial daily output** — every business day of the window must carry BOTH
+  rows (decision + allocation) or a recorded staleness-block; a silent worker
+  exit or a one-of-two partial write is an abort (the inherited
+  `missing_output_slo`), because a verifier that only checks published rows would
+  otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
+  activation is invalidated traceably.
 - **Abort fallback posture (explicit):** because zero consumers read the new
   tables during the window, an abort returns the system EXACTLY to the
   pre-activation status quo — no consumer regression is possible. The kill switch
