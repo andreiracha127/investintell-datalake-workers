@@ -1,0 +1,25 @@
+{
+ "artifact_type": "dark_launch_staleness_verification_record",
+ "schema_version": 1,
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "verification_date": "2026-07-03",
+ "method": "live read-only query against the production macro_data table (Tiger service t83f4np6x4): SELECT series_id, MAX(obs_date), COUNT(*), MAX(updated_at) grouped by series for the previously stale cluster",
+ "operator": "Claude (orchestrator agent) - read-only production verification on behalf of operations_owner Andrei Rachadel; ratified by his PR merge",
+ "root_cause_reference": "FRED asc+limit window truncation, fixed in PR #16 (sort desc + client re-sort + resized frequency limits + fred_window_truncated warning); controlled backfill executed 2026-07-02",
+ "measured": [
+  {"series_id": "T10YIE", "last_obs": "2026-07-02", "n_obs": 2509, "was_frozen_at": "2026-02-27", "fresh": true},
+  {"series_id": "DFF", "last_obs": "2026-07-01", "n_obs": 24654, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "DGS10", "last_obs": "2026-07-01", "n_obs": 16109, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "DGS2", "last_obs": "2026-07-01", "n_obs": 12517, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "YIELD_CURVE_10Y2Y", "last_obs": "2026-07-01", "n_obs": 12517, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "VIXCLS", "last_obs": "2026-07-01", "n_obs": 9220, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "BAA10Y", "last_obs": "2026-07-01", "n_obs": 10124, "was_frozen_at": "2026-06-08", "fresh": true},
+  {"series_id": "BAMLH0A0HYM2", "last_obs": "2026-07-01", "n_obs": 2566, "was_frozen_at": null, "fresh": true},
+  {"series_id": "DCOILWTICO", "last_obs": "2026-06-29", "n_obs": 10191, "was_frozen_at": "2026-06-01", "fresh": true, "note": "WTI publishes with a known multi-day source lag"},
+  {"series_id": "NFCI", "last_obs": "2026-06-26", "n_obs": 2895, "was_frozen_at": null, "fresh": true, "note": "weekly series; within its normal cadence"}
+ ],
+ "criteria": "daily series within 2 business days of the verification date; weekly within their cadence; every previously frozen series shows post-backfill observations and the daily cron keeps advancing them (all updated_at = 2026-07-03)",
+ "verdict": "no_stale_series",
+ "runtime_activation": false,
+ "activation_allowed": false
+}

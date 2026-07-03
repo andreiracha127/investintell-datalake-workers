@@ -1,0 +1,104 @@
+{
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_refreshed_observability_metrics",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "environment_matrix": [
+  "container",
+  "host"
+ ],
+ "error_rate": 0.0,
+ "harness": "harness/dark_launch/measure_observability.py + measure_child.py (in-process wall clock + OS peak memory of the computing process)",
+ "latency_p95_ms": 25217.177,
+ "measured": true,
+ "measured_compute": {
+  "case": "G0 (V03-G0-CONTROL, scripts/repeatability_matrix.py pins)",
+  "combo_root": "E:/investintell-datalake-workers-combo",
+  "compute_tree_hashes": {
+   "harness": "4abf81243462326be387c6690a8c4e0e20ab20d9",
+   "packages": "42f413ed6b1bc854184d3d302c003a8d90ab99f0",
+   "qc_a3_core.py": "5bfa9cfb343ac4111ed607402c23b48afe104f3f",
+   "scripts": "fcb039dc53550c61418b5fc80746e6cc9b3877ce",
+   "services": "5533b947b77b591c90f8966d85c8a6abfcc390f3",
+   "src": "8ed66376e2da55753ef582ca2cd99e7c29498896"
+  },
+  "determinism_note": "every run of every leg produced the identical run_fingerprint and output logical hashes (enforced fail-loud by the harness), so the thresholds certify exactly one input bundle and one compute",
+  "engine_image_id": "sha256:f496a920c7d5b8b345eb50c09dd50c88f311ff06c318784a5cf30623758f6f54",
+  "job_identity": {
+   "output_logical_hashes": {
+    "counterfactual_replay_logical_hash": "0238d3b5583e06381c3ae2914a80b64f58bc04c50fac455d7e6285228922b021",
+    "metrics_canonical_logical_hash": "70014a0a04fa26faf8aec88227f0f1fea381091acb6ac307fae30b77172300d3",
+    "metrics_raw_sha256": "a8966bda995a50426ec3244b5b83dd8fe72746b3cdb46c03cd771eced25ae497",
+    "model_evaluation_hash": "10198d7603036c3327ac9e67",
+    "runtime_replay_logical_hash": "de46dfb7acaf40bf368cfa9a06192a655b9f938e9000edc01d8a34fddf4a3024"
+   },
+   "run_fingerprint": "d1c8e0da1dd896fb8df109e5dd3a4dfed1ffe5d5aabc8f5735e92e6f43342fd8"
+  },
+  "job_type": "a3_qc_parity",
+  "jobs": 1,
+  "worker_commit": "56b2424caa77b1439f4abf3f70ef7c136494d263"
+ },
+ "measurement_date": "2026-07-03",
+ "memory_peak_bytes": 1364852736,
+ "per_leg": {
+  "container": {
+   "failed_runs": 0,
+   "latency_p95_ms": 25217.177,
+   "memory_peak_bytes": 1364852736,
+   "memory_peak_bytes_all_runs": [
+    1362931712,
+    1364226048,
+    1364545536,
+    1364795392,
+    1364144128,
+    1364221952,
+    1364123648,
+    1364852736
+   ],
+   "platform": "linux",
+   "runs": 8,
+   "wall_ms_all_runs": [
+    23557.39,
+    23839.122,
+    25217.177,
+    24040.796,
+    23828.499,
+    24454.493,
+    23627.465,
+    23675.093
+   ]
+  },
+  "host": {
+   "failed_runs": 0,
+   "latency_p95_ms": 19711.785,
+   "memory_peak_bytes": 1111101440,
+   "memory_peak_bytes_all_runs": [
+    1110740992,
+    1111101440,
+    1109639168,
+    1109237760,
+    1110196224,
+    1109610496,
+    1109991424,
+    1110347776
+   ],
+   "platform": "win32",
+   "runs": 8,
+   "wall_ms_all_runs": [
+    19540.026,
+    19711.785,
+    19217.185,
+    18900.654,
+    18878.18,
+    19605.386,
+    19228.755,
+    18812.968
+   ]
+  }
+ },
+ "prior_evidence_note": "no prior measurement existed: the controlled_shadow_001 / handshake manifests carry fixed pins (duration_ms=1000, memory_peak_bytes=0) from artifact-only validators",
+ "retry_rate": 0.0,
+ "retry_rate_note": "the harness performs no retries; every run is a first attempt and all succeeded (a failed run aborts the round, fail-loud)",
+ "runs_total": 16,
+ "runtime_activation": false,
+ "schema_version": 1
+}

@@ -1,0 +1,20 @@
+{
+  "A3": "open_macro_v03",
+  "A4": "controlled_activation_proposal_prepared",
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "allowed_side_effects": [],
+  "controlled_activation_proposal_001_merge_commit": "f1b5b6969bc256413033e2c193ff5cc011ba2952",
+  "controlled_activation_proposal_id": "open_macro_v03_controlled_activation_proposal_001",
+  "current_stage": "stage_1_dark_launch",
+  "dark_launch_id": "open_macro_v03_dark_launch_001",
+  "db_write_mode": "none",
+  "feature_flag_default": false,
+  "freeze_ready": false,
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false,
+  "schema_version": 1,
+  "target_state_after_this_pr": "dark_launch_ready"
+}

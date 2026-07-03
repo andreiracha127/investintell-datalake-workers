@@ -1,0 +1,39 @@
+{
+ "a5_preflight_001_merge_commit": "10602998fda56d0d265e69314ee333a307923e51",
+ "activation_allowed": false,
+ "artifact_type": "dark_launch_evidence_refresh_manifest",
+ "controlled_activation_proposal_001_merge_commit": "f1b5b6969bc256413033e2c193ff5cc011ba2952",
+ "dark_launch_id": "open_macro_v03_dark_launch_001",
+ "hashes_reverified": true,
+ "refresh_date": "2026-07-03",
+ "runtime_activation": false,
+ "schema_version": 1,
+ "stale_artifacts_found": 0,
+ "verified_bundles": [
+  {
+   "bundle_id": "certified_input_pack_p0",
+   "path": "fixtures/input_packs/golden/certified_input_pack/manifest.json",
+   "sha256": "2718f9dfcbbd44ceb88d2644abab8b8d9af06408d818ea0e9d91c47d31dbb665"
+  },
+  {
+   "bundle_id": "calibration_001",
+   "path": "artifacts/calibration/open_macro_v03_calibration_001/calibration_manifest.json",
+   "sha256": "7817d268693599298f16edf6476f2b57e98a09e58a171b53170ee83f88877eda"
+  },
+  {
+   "bundle_id": "controlled_shadow_001",
+   "path": "artifacts/shadow/open_macro_v03_controlled_shadow_001/shadow_result_manifest.json",
+   "sha256": "30ef385fcfa4de25c2485c3a121e86c3a72d7b2c69625b693753f90b510e9a53"
+  },
+  {
+   "bundle_id": "external_executor_handshake_001",
+   "path": "artifacts/handshake/open_macro_v03_external_executor_handshake_001/shadow_result_manifest.json",
+   "sha256": "8741ba4d1861f55a8eaef3e249e10413aa25959d520a37b560813bd18b2c4c81"
+  },
+  {
+   "bundle_id": "runtime_skeleton_001",
+   "path": "artifacts/runtime/open_macro_v03_runtime_skeleton_001/runtime_skeleton_manifest.json",
+   "sha256": "9479516f319d8975813548d5aca75a3fc77e1faa12f125da9f5e92be488a2f66"
+  }
+ ]
+}
