@@ -1,0 +1,27 @@
+{
+ "artifact_type": "direct_activation_plan_go_decision_record",
+ "schema_version": 1,
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "decision_date": "2026-07-03",
+ "decided_by": "Andrei Rachadel",
+ "decided_by_roles": ["quant_owner", "risk_owner", "operations_owner", "product_portfolio_owner", "final_approver"],
+ "decisions_verbatim": "1) tabela nova, 2) desativar ja, pois este modelo e inexistente do ponto de vista pratico, 3) ok com proposto, 4) janela de observacao de 10 dias uteis ok, desde que seja o unico modelo (ele nao sera levado para producao real antes, mas deve produzir resultados como se fosse), 5) deve constar nesta ativacao mandatoriamente, pois este e o produto em si. As fases iniciais sao insumos para termos o Allocator.",
+ "decisions": {
+  "publication_target": "NEW dedicated tables (the old model's tables are never written)",
+  "old_model": "DECOMMISSIONED AT ACTIVATION (Stage B): the incumbent is practically nonexistent; open_macro_v03 becomes the ONLY model from activation day",
+  "cadence": "daily publication of the consumable position (fresh on scheduled month-end decisions, carried otherwise, per the ratified carry semantics)",
+  "observation_window": "10 business days, as the ONLY running model, producing the FULL pipeline output as-if production; not official until the window closes clean",
+  "allocator": "IN SCOPE, MANDATORY: the allocator output (the compressed_50 sleeve allocation weights) IS the product; the regime decision is its input. The activation publishes decision AND allocation; both become official together at window close"
+ },
+ "plan_effect": "Stage B adds the allocation publication (open_macro_v03_allocations) and the old-model decommission as first-class tasks; allocator_publish flips at Stage B for the NEW tables in as-if mode, official at Stage C close; external/consumer cutover to the new tables is part of Stage C exit",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false,
+  "note": "this record documents the plan GO; every flag flips exclusively inside the Stage B activation PR via the promotion gates"
+ }
+}

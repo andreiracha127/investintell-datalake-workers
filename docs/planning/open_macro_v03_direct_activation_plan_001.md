@@ -34,56 +34,71 @@ The baseline-independent half of the eliminated shadow, as a hard gate:
   semantics: regeneration pins, recursive governance walk, duplicate-key rejection,
   string-truthy).
 
-## Stage B — Activation PR (the governance flip + the real runtime)
+## Stage B — Activation PR (the governance flip + the real runtime + the product)
+
+Per the owner's plan-GO decisions
+(`plan_go_decision_record.json`): the allocator IS the product (the regime decision
+is its input), it ships in this activation mandatorily, and the old model is
+decommissioned at activation — open_macro_v03 becomes the ONLY model.
 
 - **B1. Runtime worker (new production code):** a daily job that (i) reads the PIT
   vintages as-of the run date, (ii) computes the latched decision chain + the
   `compressed_50` consumable position via the SAME pure modules the evidence chain
   used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction),
-  (iii) writes ONE row to a NEW dedicated table (proposed:
-  `open_macro_v03_decisions`: as_of, quadrant, decision_validity fresh|carried,
-  carry_provenance, sleeve weights, input hashes, judgment/threshold refs, code
-  commit) and (iv) refuses to write when inputs breach the staleness SLO. The old
-  model's tables are NOT touched.
+  (iii) writes the decision row to `open_macro_v03_decisions` (as_of, quadrant,
+  decision_validity fresh|carried, carry_provenance, input hashes,
+  judgment/threshold refs, code commit) AND the allocation row to
+  `open_macro_v03_allocations` (as_of, per-ETF weights of the consumable
+  compressed_50 position, cost/risk-cap parameters, provenance) — the allocation
+  is the product output — and (iv) refuses to write when inputs breach the
+  staleness SLO. Both tables are NEW; the old model's tables are never written.
 - **B2. Feature flag:** `open_macro_v03_runtime_activation` created on the worker's
   service only, read at job start; kill switch = set false (procedure already
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
-- **B3. Governance flip via the documented promotion gates:** new
+- **B3. Old model decommission:** the incumbent model's scheduled execution is
+  switched off at activation (owner decision: practically nonexistent), recorded in
+  a `old_model_decommission_record.json` (what was stopped, where, when, by whom,
+  how to re-enable in an emergency). Its historical tables remain readable and
+  untouched.
+- **B4. Governance flip via the documented promotion gates:** new
   `activation_record.json` carrying the final_approver's explicit verbatim act;
-  A5 blocked→active FOR THE DECISION TABLE ONLY; `db_write_mode:
-  open_macro_v03_decisions_only`; `official_result` stays **false until Stage C
-  closes**; `allocator_publish` stays **false** (allocator consumption is a future,
-  separate decision — deliberately out of scope to cap the blast radius).
-  Every historical artifact stays byte-frozen with its blocked-state pins; the
-  activation state lives in NEW artifacts; guard tests are updated through the
-  promotion-gate path the preflight package defined, never weakened silently.
-- **B4. Active monitoring:** the four measured SLOs + the four zero-threshold
-  attempt detectors become live alerts; staleness SLO enforcement blocks publication.
+  A5 blocked→active for the TWO new tables only; `db_write_mode:
+  open_macro_v03_new_tables_only`; `allocator_publish` flips to true FOR THE NEW
+  ALLOCATIONS TABLE in as-if mode; `official_result` stays **false until Stage C
+  closes** — during the window the pipeline runs exactly as production (single
+  model, full output) without the official stamp. Every historical artifact stays
+  byte-frozen with its blocked-state pins; the activation state lives in NEW
+  artifacts; guard tests are updated through the promotion-gate path the preflight
+  package defined, never weakened silently.
+- **B5. Active monitoring:** the four measured SLOs + the four zero-threshold
+  attempt detectors become live alerts (the DB-write detector's allowlist becomes
+  exactly the two new tables); staleness SLO enforcement blocks publication.
 
-## Stage C — Post-activation observation window (replaces the shadow)
+## Stage C — Post-activation observation window (as-if production, single model)
 
-- Proposed **10 business days**: the worker publishes daily; a committed verifier
-  re-computes each published decision independently (host, from the same PIT
-  inputs) and asserts byte-equality of the logical decision; SLO and staleness
-  alerts on; kill switch armed.
+- **10 business days** (owner-approved), with open_macro_v03 as the ONLY model
+  running: the worker publishes the full pipeline daily (decision + allocation)
+  exactly as production, without the official stamp; a committed verifier
+  re-computes each published decision AND allocation independently (host, from the
+  same PIT inputs) and asserts byte-equality of the logical outputs; SLO and
+  staleness alerts on; kill switch armed.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
-  bypass, any SLO breach, any write outside the decision table ⇒ kill switch +
+  bypass, any SLO breach, any write outside the two new tables ⇒ kill switch +
   rollback per the dry-run plan; activation is invalidated traceably.
-- **Exit:** window report with zero aborts → `official_result: true` for the
-  published series, `A4=production_active_observed`. Allocator consumption remains
-  a separate future proposal.
+- **Exit:** window report with zero aborts → `official_result: true` for BOTH
+  published series (decisions and allocations become the official product),
+  `A4=production_active_official`, and consumer cutover to the new tables.
 
-## Owner decisions needed at plan GO (defaults proposed)
+## Owner decisions at plan GO (RESOLVED 2026-07-03, `plan_go_decision_record.json`)
 
-1. **Publication target:** new dedicated table `open_macro_v03_decisions`
-   (proposed) — or replace the old model's tables outright.
-2. **Old model:** keep running untouched during Stage C, decommission after
-   (proposed) — or switch off at activation.
-3. **Cadence:** daily publication of the consumable position (fresh on scheduled
-   month-end decisions, carried otherwise — the candidate's ratified carry
-   semantics) (proposed).
-4. **Observation window:** 10 business days (proposed).
-5. **Allocator:** out of scope for this activation (proposed).
+1. **Publication target:** NEW dedicated tables. ✔
+2. **Old model:** decommissioned AT activation — practically nonexistent;
+   open_macro_v03 is the only model from activation day. ✔
+3. **Cadence:** daily consumable position (fresh month-end, carried otherwise). ✔
+4. **Observation window:** 10 business days, single model, full as-if-production
+   output; official only at clean close. ✔
+5. **Allocator:** IN SCOPE, MANDATORY — the allocation IS the product; the regime
+   decision is its input. Ships in Stage B, official at Stage C close. ✔
 
 ## What never changes in this plan
 
