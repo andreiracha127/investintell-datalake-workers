@@ -12,9 +12,17 @@ Steps:
   (b) ``compile/create`` + poll ``compile/read`` until ``BuildSuccess``;
   (c) ``backtests/create`` (name ``phase0q_cloud_leg_<timestamp>``);
   (d) poll ``backtests/read`` until completed;
-  (e) fetch logs via ``backtests/read/log`` and reassemble the verdict JSON from the
-      ``VERDICT_JSON_BEGIN`` / ``VERDICT_JSON_CHUNK`` / ``VERDICT_JSON_END`` markers;
-  (f) write ``phase0q_cloud_verdict.json`` locally;
+  (e) read the verdict ESSENTIALS from the backtest's ``runtimeStatistics`` (the algorithm
+      emits them via ``set_runtime_statistic``; ``backtests/read`` is the supported
+      retrieval channel — there is no backtest log read endpoint in the lean api client)
+      and validate them: leg-hash equality vs the local expected manifest, integer
+      mismatch count, verdict value, internal consistency — failing loudly (echoing the
+      backtest's error/stacktrace) if the keys are absent;
+  (f) reconstruct and write ``phase0q_cloud_verdict.json`` locally (essentials + the
+      per-hash table derived from the local expected manifest — the cloud leg hash is the
+      stable hash over ALL output logical hashes, so a single equality proves the full
+      per-hash set — plus a note pointing at the FULL verdict's Object Store key and its
+      sha256);
   (g) validate hashes with :mod:`fetch_results` semantics and write the COMPLETED report to
       ``build/consolidated_reproducibility_report.completed.json`` (a NEW output path — this
       driver never completes the COMMITTED artifact; the orchestrator handles the artifact /
@@ -41,7 +49,6 @@ from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
 from . import QC_PROJECT_ID
-from .backtest_main import decode_verdict_log_chunks
 from .fetch_results import build_consolidated_report, compare_leg_hashes
 
 API_BASE_URL = "https://www.quantconnect.com/api/v2/"
@@ -227,26 +234,120 @@ def poll_backtest(creds, project_id: int, backtest_id: str, *, opener=urllib_req
         sleep(poll_seconds)
 
 
-def fetch_backtest_logs(creds, project_id: int, backtest_id: str,
-                        *, opener=urllib_request.urlopen) -> list[str]:
-    """(e) Fetch the backtest log lines via ``backtests/read/log``.
+# ---------------------------------------------------------------------------- #
+# Verdict retrieval via runtimeStatistics (the supported headless channel).    #
+# ---------------------------------------------------------------------------- #
 
-    The response's ``logs`` may be a list of lines or a single newline-joined string; both
-    are normalized to a list of lines for the chunk reassembler.
+RUNTIME_STAT_KEYS = (
+    "phase0q_verdict",
+    "phase0q_cloud_leg_hash",
+    "phase0q_expected_leg_hash",
+    "phase0q_mismatch_count",
+    "phase0q_verdict_sha256",
+)
+
+
+def extract_runtime_statistics(backtest: dict[str, Any]) -> dict[str, str]:
+    """(e) Pull the verdict essentials out of the completed backtest's runtimeStatistics.
+
+    Fails loudly — echoing the backtest's ``error`` / ``stacktrace`` fields — if any
+    essential key is absent (e.g. the algorithm crashed before emitting them).
     """
-    read = post("backtests/read/log",
-                {"projectId": project_id, "backtestId": backtest_id, "format": "json"},
-                creds, opener=opener)
-    logs = read.get("logs", [])
-    if isinstance(logs, str):
-        return logs.splitlines()
-    return [str(line) for line in logs]
+    stats = backtest.get("runtimeStatistics") or {}
+    missing = [k for k in RUNTIME_STAT_KEYS if k not in stats]
+    if missing:
+        detail = backtest.get("stacktrace") or backtest.get("error") or "<none>"
+        raise QCApiError(
+            "backtest completed without the verdict runtime statistics "
+            f"(missing: {', '.join(missing)}; present: {sorted(stats)}). The algorithm "
+            f"likely crashed before emitting them. error/stacktrace: {detail}")
+    return {k: str(stats[k]) for k in RUNTIME_STAT_KEYS}
 
 
-def reassemble_verdict(log_lines: list[str]) -> dict[str, Any]:
-    """Reassemble + parse the verdict JSON from the chunked backtest log lines."""
-    verdict_bytes = decode_verdict_log_chunks(log_lines)
-    return json.loads(verdict_bytes.decode("utf-8"))
+def validate_runtime_essentials(stats: dict[str, str], expected: dict[str, Any]) -> bool:
+    """Validate the essentials against the LOCAL expected manifest. Returns leg_match.
+
+    Refuses (QCApiError): a non-integer mismatch count; an unknown verdict value; an
+    expected-leg-hash pin that differs from OUR manifest (the cloud ran against a
+    different bundle); internally inconsistent essentials (verdict says reproduced but
+    the hashes differ / count non-zero, or vice versa).
+    """
+    verdict_value = stats["phase0q_verdict"]
+    if verdict_value not in ("reproduced", "mismatch"):
+        raise QCApiError(f"unknown verdict runtime statistic value: {verdict_value!r}")
+    try:
+        mismatch_count = int(stats["phase0q_mismatch_count"])
+    except ValueError as exc:
+        raise QCApiError(
+            f"phase0q_mismatch_count is not an integer: "
+            f"{stats['phase0q_mismatch_count']!r}") from exc
+
+    local_expected_leg = expected["execution_legs"]["local_python_pure"]["logical_hash"]
+    if stats["phase0q_expected_leg_hash"] != local_expected_leg:
+        raise QCApiError(
+            "cloud expected leg hash does not match the local expected manifest "
+            f"({stats['phase0q_expected_leg_hash']} != {local_expected_leg}); the cloud "
+            "leg ran against a DIFFERENT bundle — refusing to reconcile")
+
+    leg_match = stats["phase0q_cloud_leg_hash"] == local_expected_leg
+    consistent = (verdict_value == "reproduced") == (leg_match and mismatch_count == 0)
+    if not consistent:
+        raise QCApiError(
+            "inconsistent verdict essentials: "
+            f"verdict={verdict_value!r} leg_match={leg_match} "
+            f"mismatch_count={mismatch_count}")
+    return leg_match
+
+
+def verdict_key_from_manifest_key(manifest_key: str) -> str:
+    """``<prefix>/object_store_manifest.json`` -> ``<prefix>/results/phase0q_cloud_verdict.json``."""
+    suffix = "object_store_manifest.json"
+    if not manifest_key.endswith(suffix):
+        raise ValueError(f"unexpected manifest key shape: {manifest_key}")
+    return manifest_key[: -len(suffix)] + "results/phase0q_cloud_verdict.json"
+
+
+def reconstruct_verdict(stats: dict[str, str], expected: dict[str, Any],
+                        verdict_key: str) -> dict[str, Any]:
+    """(f) Rebuild a verdict document from the essentials + the local expected manifest.
+
+    The cloud leg hash is the stable hash over ALL output logical hashes, so leg-hash
+    equality proves the full per-hash set: on a match the per-hash table and fingerprint
+    are derived from the local expected manifest; on a mismatch nothing is derived (the
+    comparison then reports every hash as unconfirmed). The FULL verdict JSON lives in
+    the Object Store at ``verdict_key`` with the pinned sha256.
+    """
+    leg_match = stats["phase0q_cloud_leg_hash"] == (
+        expected["execution_legs"]["local_python_pure"]["logical_hash"])
+    return {
+        "artifact_type": "phase0q_cloud_leg_verdict",
+        "schema_version": 1,
+        "reconstructed_from": "backtest_runtime_statistics",
+        "execution_backend": "quantconnect_cloud_backtest",
+        "run_fingerprint": expected["run_fingerprint"] if leg_match else None,
+        "output_logical_hashes": (
+            dict(expected["output_logical_hashes"]) if leg_match else {}),
+        "execution_legs": {
+            "qc_research_object_store": {
+                "logical_hash": stats["phase0q_cloud_leg_hash"],
+                "status": "complete",
+            },
+        },
+        "runtime_statistics": dict(stats),
+        "reproduced": stats["phase0q_verdict"] == "reproduced",
+        "verdict": ("reproduced" if stats["phase0q_verdict"] == "reproduced"
+                    else "not_reproduced"),
+        "full_verdict_object_store_key": verdict_key,
+        "full_verdict_sha256": stats["phase0q_verdict_sha256"],
+        "notes": (
+            "Reconstructed from the backtest runtimeStatistics essentials. The cloud leg "
+            "hash is the stable hash over all output logical hashes, so a single equality "
+            "proves the full per-hash set; the per-hash table above is derived from the "
+            "local expected manifest on a leg-hash match. The FULL verdict JSON emitted "
+            f"in the cloud is stored in the QC Object Store at {verdict_key} "
+            f"(sha256 {stats['phase0q_verdict_sha256']})."
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------- #
@@ -322,17 +423,22 @@ def run(args: argparse.Namespace, *, opener=urllib_request.urlopen,
     print(f"    backtestId={backtest_id}")
 
     print("[d] polling backtest until completed ...")
-    poll_backtest(creds, project_id, backtest_id, opener=opener)
+    backtest = poll_backtest(creds, project_id, backtest_id, opener=opener)
 
-    print("[e] fetching logs + reassembling verdict ...")
-    log_lines = fetch_backtest_logs(creds, project_id, backtest_id, opener=opener)
-    verdict = reassemble_verdict(log_lines)
+    print("[e] reading verdict essentials from runtimeStatistics ...")
+    stats = extract_runtime_statistics(backtest)
+    expected = json.loads(Path(args.expected_manifest).read_text(encoding="utf-8"))
+    validate_runtime_essentials(stats, expected)
 
+    verdict_key = verdict_key_from_manifest_key(manifest_key)
+    verdict = reconstruct_verdict(stats, expected, verdict_key)
     verdict_out = Path(args.verdict_out)
     verdict_out.parent.mkdir(parents=True, exist_ok=True)
     verdict_out.write_text(
         json.dumps(verdict, sort_keys=True, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"[f] wrote verdict -> {verdict_out}")
+    print(f"[f] wrote reconstructed verdict -> {verdict_out}")
+    print(f"    full verdict in Object Store: {verdict_key}")
+    print(f"    full verdict sha256:          {stats['phase0q_verdict_sha256']}")
 
     completed = validate_and_complete(verdict, Path(args.expected_manifest), Path(args.report_out))
     print(f"[g] wrote completed report -> {completed['report_out']}")
@@ -367,7 +473,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--credentials", default=str(CREDENTIALS_PATH),
                         help="Path to ~/.lean/credentials (user-id + api-token).")
     parser.add_argument("--verdict-out", default=str(DEFAULT_VERDICT_OUT),
-                        help="Where to write the reassembled verdict JSON.")
+                        help="Where to write the reconstructed verdict JSON.")
     parser.add_argument("--report-out", default=str(DEFAULT_REPORT_OUT),
                         help="Where to write the COMPLETED consolidated report (NEW path).")
     return parser.parse_args(argv)

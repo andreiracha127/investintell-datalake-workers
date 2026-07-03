@@ -335,13 +335,151 @@ def test_api_error_never_leaks_token():
     assert "tok-secret" not in str(exc.value)
 
 
-def test_fetch_and_reassemble_from_logs(session_verdict):
+# --------------------------------------------------------------------------- #
+# 3b. Verdict retrieval via runtimeStatistics (backtests/read/log is NOT a     #
+#     supported endpoint — the lean api client only uses read/create/delete)   #
+# --------------------------------------------------------------------------- #
+
+def test_build_runtime_statistics_essentials(session_verdict):
     verdict_bytes = bt.canonical_verdict_bytes(session_verdict)
-    log_lines = bt.encode_verdict_log_chunks(verdict_bytes)
-    opener = RecordingOpener({"backtests/read/log": [
-        {"success": True, "logs": log_lines}]})
-    reassembled = driver.fetch_backtest_logs(_creds(), 33679769, "b1", opener=opener)
-    assert driver.reassemble_verdict(reassembled) == json.loads(verdict_bytes)
+    stats = bt.build_runtime_statistics(session_verdict, verdict_bytes)
+    assert set(stats) == {
+        "phase0q_verdict", "phase0q_cloud_leg_hash", "phase0q_expected_leg_hash",
+        "phase0q_mismatch_count", "phase0q_verdict_sha256"}
+    assert stats["phase0q_verdict"] == "reproduced"
+    assert stats["phase0q_cloud_leg_hash"] == stats["phase0q_expected_leg_hash"]
+    assert stats["phase0q_mismatch_count"] == "0"
+    assert stats["phase0q_verdict_sha256"] == bt.sha256_hex(verdict_bytes)
+    # runtimeStatistics values are strings on the QC side.
+    assert all(isinstance(v, str) for v in stats.values())
+
+
+def test_build_runtime_statistics_mismatch_value(session_verdict):
+    doctored = json.loads(json.dumps(session_verdict))
+    doctored["reproduced"] = False
+    doctored["verdict"] = "not_reproduced"
+    doctored["comparison"]["mismatch_count"] = 3
+    stats = bt.build_runtime_statistics(doctored, b"{}")
+    assert stats["phase0q_verdict"] == "mismatch"
+    assert stats["phase0q_mismatch_count"] == "3"
+
+
+def _synthetic_expected():
+    return {
+        "output_logical_hashes": {"h_a": "aaa", "h_b": "bbb"},
+        "run_fingerprint": "fp-1",
+        "execution_legs": {"local_python_pure": {"logical_hash": "LEG"}},
+    }
+
+
+def _stats(verdict="reproduced", cloud="LEG", exp="LEG", count="0", sha="s" * 64):
+    return {
+        "phase0q_verdict": verdict,
+        "phase0q_cloud_leg_hash": cloud,
+        "phase0q_expected_leg_hash": exp,
+        "phase0q_mismatch_count": count,
+        "phase0q_verdict_sha256": sha,
+    }
+
+
+def test_validate_runtime_essentials_ok():
+    assert driver.validate_runtime_essentials(_stats(), _synthetic_expected()) is True
+
+
+def test_validate_runtime_essentials_missing_keys_fail_loud():
+    backtest = {"error": "boom during OnEndOfAlgorithm", "runtimeStatistics": {"Equity": "1"}}
+    with pytest.raises(driver.QCApiError, match="runtime statistics"):
+        driver.extract_runtime_statistics(backtest)
+    # The algorithm's error/stacktrace fields are echoed for diagnosis.
+    with pytest.raises(driver.QCApiError, match="boom during OnEndOfAlgorithm"):
+        driver.extract_runtime_statistics(backtest)
+
+
+def test_validate_runtime_essentials_rejects_bad_values():
+    with pytest.raises(driver.QCApiError, match="mismatch_count"):
+        driver.validate_runtime_essentials(_stats(count="NaN"), _synthetic_expected())
+    with pytest.raises(driver.QCApiError, match="verdict"):
+        driver.validate_runtime_essentials(_stats(verdict="maybe"), _synthetic_expected())
+    # Cloud ran against a DIFFERENT bundle: its expected-leg pin differs from ours.
+    with pytest.raises(driver.QCApiError, match="expected leg hash"):
+        driver.validate_runtime_essentials(_stats(exp="OTHER", cloud="OTHER"),
+                                           _synthetic_expected())
+    # Internally inconsistent essentials must be refused.
+    with pytest.raises(driver.QCApiError, match="inconsistent"):
+        driver.validate_runtime_essentials(_stats(verdict="reproduced", cloud="X", count="1"),
+                                           _synthetic_expected())
+
+
+def test_reconstruct_verdict_leg_match_derives_per_hash_table():
+    expected = _synthetic_expected()
+    key = "investintell/p/q/results/phase0q_cloud_verdict.json"
+    verdict = driver.reconstruct_verdict(_stats(), expected, key)
+    # A single leg-hash equality proves the full per-hash set -> derived table.
+    assert verdict["output_logical_hashes"] == expected["output_logical_hashes"]
+    assert verdict["run_fingerprint"] == expected["run_fingerprint"]
+    assert verdict["execution_legs"]["qc_research_object_store"]["logical_hash"] == "LEG"
+    assert verdict["full_verdict_object_store_key"] == key
+    assert verdict["full_verdict_sha256"] == "s" * 64
+    assert key in verdict["notes"]
+    # fetch_results semantics accept the reconstruction as reproduced.
+    comparison = fr.compare_leg_hashes(expected, verdict)
+    assert comparison["all_hashes_match"] is True
+
+
+def test_reconstruct_verdict_leg_mismatch_does_not_derive():
+    expected = _synthetic_expected()
+    stats = _stats(verdict="mismatch", cloud="DIFFERENT", count="1")
+    verdict = driver.reconstruct_verdict(stats, expected, "k")
+    assert verdict["output_logical_hashes"] == {}
+    assert verdict["run_fingerprint"] is None
+    comparison = fr.compare_leg_hashes(expected, verdict)
+    assert comparison["all_hashes_match"] is False
+
+
+def test_verdict_key_from_manifest_key():
+    key = driver.verdict_key_from_manifest_key("a/b/c/object_store_manifest.json")
+    assert key == "a/b/c/results/phase0q_cloud_verdict.json"
+
+
+def test_run_full_loop_uses_runtime_statistics_and_never_calls_read_log(
+        session_verdict, bundle_manifest, built_bundle, tmp_path):
+    verdict_bytes = bt.canonical_verdict_bytes(session_verdict)
+    stats = bt.build_runtime_statistics(session_verdict, verdict_bytes)
+    opener = RecordingOpener({
+        "files/update": [{"success": True}],
+        "compile/create": [{"success": True, "compileId": "c1"}],
+        "compile/read": [{"success": True, "state": "BuildSuccess", "logs": []}],
+        "backtests/create": [{"success": True, "backtest": {"backtestId": "b1"}}],
+        "backtests/read": [{"success": True, "backtest": {
+            "backtestId": "b1", "completed": True, "runtimeStatistics": stats}}],
+    })
+    args = driver.parse_args([
+        "--expected-manifest", str(built_bundle / "expected_results_manifest.json"),
+        "--manifest-key", bundle_manifest["object_store_manifest_key"],
+        "--verdict-out", str(tmp_path / "verdict.json"),
+        "--report-out", str(tmp_path / "build" / "report.completed.json"),
+        "--name", "phase0q_cloud_leg_test",
+    ])
+    summary = driver.run(args, opener=opener, creds=_creds())
+    endpoints = [c["endpoint"] for c in opener.calls]
+    assert "backtests/read/log" not in endpoints  # unsupported endpoint: NEVER called
+    assert endpoints == ["files/update", "compile/create", "compile/read",
+                         "backtests/create", "backtests/read"]
+    assert summary["reproduced"] is True
+    # The uploaded main.py carries the baked-in manifest key.
+    pushed = opener.calls[0]["payload"]["content"]
+    assert f'MANIFEST_KEY_INJECTED = "{bundle_manifest["object_store_manifest_key"]}"' in pushed
+    # The reconstructed verdict file points at the full verdict in the Object Store.
+    written = json.loads((tmp_path / "verdict.json").read_text(encoding="utf-8"))
+    assert written["full_verdict_sha256"] == bt.sha256_hex(verdict_bytes)
+    assert written["full_verdict_object_store_key"].endswith(
+        "results/phase0q_cloud_verdict.json")
+    assert (tmp_path / "build" / "report.completed.json").is_file()
+
+
+def test_driver_has_no_read_log_endpoint_reference():
+    src = (CLOUD_PKG / "run_cloud_backtest.py").read_text(encoding="utf-8")
+    assert "backtests/read/log" not in src
 
 
 # --------------------------------------------------------------------------- #
@@ -389,6 +527,62 @@ def _walk_flags(obj, key):
         for v in obj:
             found.extend(_walk_flags(v, key))
     return found
+
+
+def _valid_manifest_gov():
+    return {
+        "bridge_scope": "qc_research_phase0q_reproducibility_only",
+        "governance": {
+            "A5": "blocked",
+            "runtime_activation": False,
+            "activation_allowed": False,
+            "allocator_publish": False,
+            "official_result": False,
+            "db_write_mode": "none",
+            "approved": False,
+            "status": "candidate_not_approved",
+        },
+    }
+
+
+def test_manifest_governance_pins_accept():
+    bt.assert_manifest_governance_pins(_valid_manifest_gov())  # must not raise
+
+
+@pytest.mark.parametrize("pin,bad", [
+    ("A5", "unblocked"),
+    ("runtime_activation", True),
+    ("activation_allowed", True),
+    ("allocator_publish", True),
+    ("official_result", True),
+    ("db_write_mode", "readwrite"),
+    ("approved", True),
+    ("status", "approved"),
+])
+def test_manifest_governance_pins_reject_drift(pin, bad):
+    manifest = _valid_manifest_gov()
+    manifest["governance"][pin] = bad
+    with pytest.raises(AssertionError, match=pin):
+        bt.assert_manifest_governance_pins(manifest)
+
+
+def test_manifest_governance_pins_reject_missing_pin():
+    manifest = _valid_manifest_gov()
+    del manifest["governance"]["approved"]
+    with pytest.raises(AssertionError, match="approved"):
+        bt.assert_manifest_governance_pins(manifest)
+
+
+def test_execute_refuses_drifted_manifest_before_any_verdict(
+        built_bundle, bundle_manifest, tmp_path):
+    # A regenerated/overwritten manifest with flipped pins must be refused up front.
+    store = InMemoryObjectStore(built_bundle, bundle_manifest)
+    manifest_key = bundle_manifest["object_store_manifest_key"]
+    drifted = json.loads(store._by_key[manifest_key].decode("utf-8"))
+    drifted["governance"]["approved"] = True
+    store._by_key[manifest_key] = json.dumps(drifted).encode("utf-8")
+    with pytest.raises(AssertionError, match="approved"):
+        bt.execute_reproducibility_check(store, tmp_path / "proj", manifest_key)
 
 
 def test_verdict_governance_pins(session_verdict):

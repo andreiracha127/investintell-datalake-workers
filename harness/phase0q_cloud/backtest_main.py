@@ -18,10 +18,12 @@ The algorithm:
   3. Recomputes the canonical logical hashes, compares them to
      ``expected_results_manifest.json``, and builds the SAME verdict JSON the notebook
      builds (:func:`build_verdict` — shared with the notebook's cell-10 logic).
-  4. Saves the verdict via ``self.ObjectStore.Save`` under
-     ``<prefix>/results/phase0q_cloud_verdict.json`` AND logs it in ~200-char chunks with
-     ``VERDICT_JSON_BEGIN`` / ``VERDICT_JSON_CHUNK i/n`` / ``VERDICT_JSON_END`` markers so
-     the driver can reassemble it headlessly from the backtest log.
+  4. Saves the FULL verdict via ``self.ObjectStore.Save`` under
+     ``<prefix>/results/phase0q_cloud_verdict.json``, emits the verdict ESSENTIALS via
+     ``self.set_runtime_statistic`` (returned by ``backtests/read`` — the headless
+     retrieval path), and ALSO logs the verdict in ~200-char base64 chunks with
+     ``VERDICT_JSON_BEGIN`` / ``VERDICT_JSON_CHUNK i/n`` / ``VERDICT_JSON_END`` markers
+     as a human-readable web-UI fallback (not the retrieval path).
 
 **Governance (non-negotiable):** A5 stays **blocked**; ``runtime_activation``,
 ``activation_allowed``, ``allocator_publish``, ``official_result`` are all **false**;
@@ -346,6 +348,26 @@ def canonical_verdict_bytes(verdict: dict) -> bytes:
     return (json.dumps(verdict, sort_keys=True, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
 
+def build_runtime_statistics(verdict: dict, verdict_bytes: bytes) -> dict:
+    """The verdict ESSENTIALS emitted via ``self.set_runtime_statistic`` (all strings).
+
+    ``backtests/read`` returns ``runtimeStatistics`` — the supported headless retrieval
+    channel (``backtests/read/log`` is NOT a supported endpoint). The cloud leg hash is the
+    stable hash over ALL output logical hashes, so a single equality against the local
+    expected leg hash proves the full per-hash set; the sha256 pins the FULL verdict JSON
+    saved to the Object Store results key.
+    """
+    return {
+        "phase0q_verdict": "reproduced" if verdict["reproduced"] else "mismatch",
+        "phase0q_cloud_leg_hash": str(
+            verdict["execution_legs"]["qc_research_object_store"]["logical_hash"]),
+        "phase0q_expected_leg_hash": str(
+            verdict["comparison"]["execution_leg_logical_hash"]["expected_local_python_pure"]),
+        "phase0q_mismatch_count": str(verdict["comparison"]["mismatch_count"]),
+        "phase0q_verdict_sha256": sha256_hex(verdict_bytes),
+    }
+
+
 def assert_governance(verdict: dict) -> None:
     """Fail loud if any governance pin drifted (mirrors the notebook's final asserts)."""
     gov = verdict["governance"]
@@ -433,17 +455,52 @@ def object_bytes_lookup(object_bytes: dict, manifest: dict, relative_name: str) 
     raise KeyError(f"bundle object not found: {relative_name}")
 
 
-def _assert_manifest_governance(manifest: dict) -> None:
+# The exact governance pins the pulled object-store manifest MUST carry. A regenerated
+# or overwritten manifest with ANY drifted pin is refused BEFORE any compute or verdict
+# emission — a matching verdict must never be built from a tampered root of trust.
+MANIFEST_GOVERNANCE_PINS = {
+    "A5": "blocked",
+    "runtime_activation": False,
+    "activation_allowed": False,
+    "allocator_publish": False,
+    "official_result": False,
+    "db_write_mode": "none",
+    "approved": False,
+    "status": "candidate_not_approved",
+}
+
+_UNSET = object()
+
+
+def assert_manifest_governance_pins(manifest: dict) -> None:
+    """Refuse the pulled manifest unless EVERY governance pin matches exactly.
+
+    Checks (identity for booleans, equality for strings): ``A5 == "blocked"``;
+    ``runtime_activation`` / ``activation_allowed`` / ``allocator_publish`` /
+    ``official_result`` all ``False``; ``db_write_mode == "none"``; ``approved is
+    False``; ``status == "candidate_not_approved"``. A missing pin is drift too.
+    Raises AssertionError naming the drifted pin — no verdict is emitted.
+    """
     if manifest.get("bridge_scope") != "qc_research_phase0q_reproducibility_only":
-        raise AssertionError("unexpected bridge_scope")
-    gov = manifest["governance"]
-    if gov.get("A5") != "blocked":
-        raise AssertionError("A5 must stay blocked")
-    for flag in ("runtime_activation", "activation_allowed", "official_result"):
-        if gov.get(flag) is not False:
-            raise AssertionError(f"{flag} must be false")
-    if gov.get("db_write_mode") != "none":
-        raise AssertionError("db_write_mode must be none")
+        raise AssertionError(
+            "governance drift refusal: unexpected bridge_scope "
+            f"{manifest.get('bridge_scope')!r}; refusing to run")
+    gov = manifest.get("governance")
+    if not isinstance(gov, dict):
+        raise AssertionError("governance drift refusal: manifest has no governance object")
+    for pin, required in MANIFEST_GOVERNANCE_PINS.items():
+        actual = gov.get(pin, _UNSET)
+        ok = (actual is required) if isinstance(required, bool) else (actual == required)
+        if not ok:
+            shown = "<missing>" if actual is _UNSET else repr(actual)
+            raise AssertionError(
+                f"governance drift refusal: manifest pin {pin} must be {required!r} "
+                f"but is {shown}; a regenerated/overwritten manifest is never silently "
+                "accepted — no verdict emitted")
+
+
+def _assert_manifest_governance(manifest: dict) -> None:
+    assert_manifest_governance_pins(manifest)
 
 
 # ---------------------------------------------------------------------------- #
@@ -483,7 +540,7 @@ try:  # pragma: no cover - QC cloud runtime only
                 self.object_store, project_root, self._manifest_key)
             verdict_bytes = canonical_verdict_bytes(verdict)
 
-            # (a) save the verdict back to the Object Store under the immutable prefix.
+            # (a) save the FULL verdict back to the Object Store under the immutable prefix.
             manifest = json.loads(
                 _object_store_read_bytes(self.object_store, self._manifest_key).decode("utf-8"))
             verdict_key = manifest.get("verdict_key_template")
@@ -493,7 +550,13 @@ try:  # pragma: no cover - QC cloud runtime only
                 except Exception as exc:  # pragma: no cover
                     self.log(f"warning: could not save verdict to object store: {exc}")
 
-            # (b) log the verdict in chunks so the driver can reassemble it headlessly.
+            # (b) emit the verdict ESSENTIALS as runtime statistics — the headless
+            # retrieval path (they come back on backtests/read).
+            for name, value in build_runtime_statistics(verdict, verdict_bytes).items():
+                self.set_runtime_statistic(name, value)
+
+            # (c) log the verdict in chunks as a human-readable fallback (web UI);
+            # NOT the retrieval path.
             for line in encode_verdict_log_chunks(verdict_bytes):
                 self.log(line)
 
