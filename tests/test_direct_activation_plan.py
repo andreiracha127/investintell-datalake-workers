@@ -23,6 +23,8 @@ EXPECTED_FILE_SHA256 = {
         "42ced90f336681c4c3d9515866a1a407c4e89b3dba9337911df467ad1f5e2b7e",
     "plan_go_decision_record.json":
         "f78f86a22d22a02dce629ccb534b5b5164e9723b16d3c7292383adfd9f8731d8",
+    "immediate_activation_decision_record.json":
+        "c87a957d49e2acfbfc3781a516d0bd6d35de7a39fc6f06b4e74bf75d348e33d8",
 }
 
 
@@ -69,6 +71,12 @@ def test_decision_records_carry_the_owner_acts() -> None:
     # official_result + the A4 exit — never anywhere else
     assert "Stage B" in go["governance"]["note"]
     assert "Stage C" in go["governance"]["note"]
+
+    immediate = _json("immediate_activation_decision_record.json")
+    assert immediate["decided_by"] == "Andrei Rachadel"
+    assert "ligado imediatamente" in immediate["decision_verbatim"]
+    assert "FULL IMMEDIATE ACTIVATION" in immediate["decision"]
+    assert "kill switch" in immediate["observation_window_effect"]
 
 
 FORBIDDEN_TRUE_KEYS = ("runtime_activation", "activation_allowed", "allocator_publish",

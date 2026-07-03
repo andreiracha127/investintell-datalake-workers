@@ -72,29 +72,22 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **B2. Feature flag:** `open_macro_v03_runtime_activation` created on the worker's
   service only, read at job start; kill switch = set false (procedure already
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
-- **B3. Old model decommission — two-step (PENDING OWNER RATIFICATION):** the repo
-  inventory records a LIVE backend path still reading the incumbent's
-  `regime_quadrant_snapshot`; physically stopping the incumbent at Stage B while
-  consumers only cut over at Stage C exit would leave that live consumer reading a
-  STAGNANT snapshot for the whole window — a silent degradation. Proposed
-  resolution honoring the owner's intent (the incumbent is worthless as a model)
-  without breaking a live reader: Stage B marks the incumbent DEPRECATED in a
-  `old_model_decommission_record.json` (governance state, ownership, emergency
-  procedures — no physical change), and the physical switch-off lands in the SAME
-  coordinated cutover PR at Stage C exit, atomically with consumers moving to the
-  new tables (old producer stops exactly when nothing reads it anymore). Its
-  historical tables remain readable and untouched throughout.
+- **B3. Immediate switch-over (owner decision, `immediate_activation_decision_record.json`):**
+  the incumbent producer is switched OFF and the live backend consumer is switched
+  ON to the new tables IN THIS SAME PR — no stagnant snapshot, no phased cutover.
+  The owner resolved the live-consumer tension explicitly: the incumbent's output
+  is worthless, so protecting its reader protects nothing; the first reliable
+  model must be consumed from day one. `old_model_decommission_record.json`
+  documents what was stopped, where, when, by whom, and the emergency re-enable
+  procedure; the incumbent's historical tables remain readable and untouched.
 - **B4. Governance flip via the documented promotion gates:** new
   `activation_record.json` carrying the final_approver's explicit verbatim act;
   A5 blocked→active for the TWO new tables only; `db_write_mode:
-  open_macro_v03_new_tables_only`; `allocator_publish` flips to true FOR THE NEW
-  ALLOCATIONS TABLE in as-if mode — **write-only: during the window ZERO consumers
-  read the new tables** (no backend route, no allocator consumer, no UI). The
-  consumer cutover is a separate coordinated backend PR at Stage C exit,
-  preserving the original stage plan's requirement that allocator consumption
-  lands only with its backend counterpart. `official_result` stays **false until
-  Stage C closes** — during the window the pipeline runs exactly as production
-  (single model, full output) without the official stamp. Every historical artifact stays
+  open_macro_v03_new_tables_only`; `allocator_publish` flips to true for the new
+  allocations table WITH REAL CONSUMPTION from day one (the backend cutover ships
+  in this same PR — the owner eliminated the as-if mode); `official_result` is
+  **true from activation**: the published decision and allocation ARE the
+  system's official output (there is no other model). Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
   package defined, never weakened silently.
@@ -110,14 +103,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   a recorded staleness-block — anything else alerts. Staleness SLO enforcement
   blocks publication.
 
-## Stage C — Post-activation observation window (as-if production, single model)
+## Stage C — Intensive supervision window over LIVE production
 
-- **10 business days** (owner-approved), with open_macro_v03 as the ONLY model
-  running: the worker publishes the full pipeline daily (decision + allocation)
-  exactly as production, without the official stamp; a committed verifier
-  re-computes each published decision AND allocation independently (host, from the
-  same PIT inputs) and asserts byte-equality of the logical outputs; SLO and
-  staleness alerts on; kill switch armed.
+- **10 business days** (owner-approved) of intensive supervision over the REAL,
+  CONSUMED, OFFICIAL output (the owner eliminated the as-if staging): a committed
+  verifier re-computes each published decision AND allocation independently
+  (host, from the same PIT inputs) and asserts byte-equality of the logical
+  outputs; SLO and staleness alerts on; kill switch armed.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   bypass, any SLO breach, any write outside the two new tables, AND any **missing
   or partial daily output** — every business day of the window must carry BOTH
@@ -126,17 +118,17 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   `missing_output_slo`), because a verifier that only checks published rows would
   otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
   activation is invalidated traceably.
-- **Abort fallback posture (explicit):** because zero consumers read the new
-  tables during the window, an abort returns the system EXACTLY to the
-  pre-activation status quo — no consumer regression is possible. The kill switch
-  stopping "the only model" stops an as-if publication nobody consumes yet. The
-  old model's emergency re-enable procedure stays documented in the decommission
-  record as an OWNER OPTION, never an automatic fallback (the owner disqualified
-  it as unreliable — auto-reviving it would reintroduce a model deemed unfit).
-- **Exit:** window report with zero aborts → `official_result: true` for BOTH
-  published series (decisions and allocations become the official product),
-  `A4=production_active_official`, and the coordinated consumer-cutover backend
-  PR (the Phase 5 obligation, relocated here).
+- **Abort fallback posture (explicit, owner-accepted):** an abort fires the kill
+  switch and stops the only model; the backend then has no fresh feed. The owner
+  accepts this explicitly as a return to the honest status quo — "we have no
+  model today" — which he judges strictly better than consuming unreliable
+  output. The old model's emergency re-enable stays documented as an OWNER
+  OPTION, never an automatic fallback. Every abort invalidates the activation
+  traceably.
+- **Exit:** window report with zero aborts → `A4=production_active_official`
+  (the official stamp was already live from activation; the clean window
+  RATIFIES it and closes the intensive-supervision posture into normal
+  operations with the same alerts).
 
 ## Owner decisions at plan GO (RESOLVED 2026-07-03, `plan_go_decision_record.json`)
 
