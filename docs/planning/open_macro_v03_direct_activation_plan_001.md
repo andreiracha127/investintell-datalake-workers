@@ -72,11 +72,18 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 - **B2. Feature flag:** `open_macro_v03_runtime_activation` created on the worker's
   service only, read at job start; kill switch = set false (procedure already
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
-- **B3. Old model decommission:** the incumbent model's scheduled execution is
-  switched off at activation (owner decision: practically nonexistent), recorded in
-  a `old_model_decommission_record.json` (what was stopped, where, when, by whom,
-  how to re-enable in an emergency). Its historical tables remain readable and
-  untouched.
+- **B3. Old model decommission — two-step (PENDING OWNER RATIFICATION):** the repo
+  inventory records a LIVE backend path still reading the incumbent's
+  `regime_quadrant_snapshot`; physically stopping the incumbent at Stage B while
+  consumers only cut over at Stage C exit would leave that live consumer reading a
+  STAGNANT snapshot for the whole window — a silent degradation. Proposed
+  resolution honoring the owner's intent (the incumbent is worthless as a model)
+  without breaking a live reader: Stage B marks the incumbent DEPRECATED in a
+  `old_model_decommission_record.json` (governance state, ownership, emergency
+  procedures — no physical change), and the physical switch-off lands in the SAME
+  coordinated cutover PR at Stage C exit, atomically with consumers moving to the
+  new tables (old producer stops exactly when nothing reads it anymore). Its
+  historical tables remain readable and untouched throughout.
 - **B4. Governance flip via the documented promotion gates:** new
   `activation_record.json` carrying the final_approver's explicit verbatim act;
   A5 blocked→active for the TWO new tables only; `db_write_mode:
