@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +46,15 @@ def _load(rel: str) -> dict[str, Any]:
 
 
 def _sha256(rel: str) -> str:
-    return hashlib.sha256((ROOT / rel).read_bytes()).hexdigest()
+    """sha256 over the COMMITTED blob bytes (checkout-independent).
+
+    Hashing working-tree bytes ties the manifest to the local checkout's line-ending
+    conversion (paths outside .gitattributes eol pins differ between Windows and the
+    CI's Linux checkout); the index blob is the single canonical byte stream.
+    """
+    blob = subprocess.run(["git", "cat-file", "blob", f":{rel}"],
+                          cwd=ROOT, capture_output=True, check=True)
+    return hashlib.sha256(blob.stdout).hexdigest()
 
 
 def _require(condition: bool, note: str) -> None:
@@ -367,7 +376,7 @@ def build_review_closure() -> dict[str, Any]:
          "evidence_note": "contract evolution was strictly additive: v2 directory added, "
                           "v1 bundle byte-frozen and still guarded by live-tree pins",
          "evidence_refs": [
-             _ref("contracts/quant-engine/v2/contract_bundle_manifest.json",
+             _ref("contracts/quant-engine/v2/manifest.json",
                   "additive v2 bundle the certified pack v2 pins"),
              _ref("src/controlled_shadow.py",
                   "live v1 bundle sha pins that would fail on any v1 edit")]},

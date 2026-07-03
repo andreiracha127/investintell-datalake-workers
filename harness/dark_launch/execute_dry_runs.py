@@ -71,6 +71,13 @@ def check_flag_false_everywhere(flag: str) -> str:
     return f"{flag} is false/absent across {len(GOVERNANCE_ARTIFACTS)} governance artifacts"
 
 
+FLAG_NAME = "open_macro_v03_runtime_activation"
+
+# every committed deploy-configuration surface where the live flag could be defined
+DEPLOY_CONFIG_GLOBS = ("railway*.toml", "compose*.yml", "compose*.yaml",
+                       "docker/**/Dockerfile", "docker/**/*.sh", ".env*")
+
+
 def check_feature_flag_off() -> str:
     manifest = _load("artifacts/a5/open_macro_v03_dark_launch_001/dark_launch_manifest.json")
     _require(manifest["feature_flag_default"] is False, "feature_flag_default not false")
@@ -79,9 +86,25 @@ def check_feature_flag_off() -> str:
     _require(policy["activation_allowed"] is False, "flag policy activation_allowed not false")
     _require(policy["allowed_environments"] == [], "flag policy allows environments")
     _require(policy["approval_required"] is True, "flag policy does not require approval")
+    # READ the live flag state, not just metadata: the execution environment must not
+    # define the flag truthy, and no committed deploy-configuration surface may define
+    # it at all (the flag was never created; any definition is a dry-run failure).
+    import os
+    live = os.environ.get(FLAG_NAME)
+    _require(live is None or live.strip().lower() in ("", "0", "false"),
+             f"live environment defines {FLAG_NAME}={live!r}")
+    defined_in = []
+    for pattern in DEPLOY_CONFIG_GLOBS:
+        for path in ROOT.glob(pattern):
+            if path.is_file() and FLAG_NAME in path.read_text(encoding="utf-8",
+                                                              errors="replace"):
+                defined_in.append(str(path.relative_to(ROOT)))
+    _require(not defined_in, f"deploy configs define {FLAG_NAME}: {defined_in}")
     return ("feature_flag_default=false (dark manifest); activation policy: "
             "activation_allowed=false, allowed_environments=[], approval_required=true; "
-            "no runtime environment defines the flag (it was never created)")
+            f"live flag read: {FLAG_NAME} not set in the execution environment and not "
+            "defined in any committed deploy-configuration surface (railway/compose/"
+            "docker/env) - the flag was never created")
 
 
 def check_invalidation_procedure_documented() -> str:
@@ -128,23 +151,48 @@ def check_baseline_path_untouched() -> str:
             "artifacts are evidence-only)")
 
 
+def _blob_sha256(rel: str) -> str:
+    """sha256 over the committed blob bytes (checkout-independent, see builder note)."""
+    import subprocess
+
+    blob = subprocess.run(["git", "cat-file", "blob", f":{rel}"],
+                          cwd=ROOT, capture_output=True, check=True)
+    return hashlib.sha256(blob.stdout).hexdigest()
+
+
 def check_evidence_hashes() -> str:
+    """Audit step: RE-COMPUTE every recomputable evidence_map digest; commits must
+    exist in this repository; the image digest cross-checks the shadow manifest."""
+    import subprocess
+
     evidence = _load("artifacts/a5/open_macro_v03_controlled_activation_proposal_001/"
                      "evidence_map.json")
     digests = evidence["digests_found"]
     recomputed = []
-    calib = ROOT / "artifacts" / "calibration" / "open_macro_v03_calibration_001" / "calibration_manifest.json"
-    if calib.is_file():
-        actual = hashlib.sha256(calib.read_bytes()).hexdigest()
-        _require(actual == digests["calibration_manifest_sha256"],
-                 f"calibration manifest sha diverged: {actual}")
-        recomputed.append("calibration_manifest_sha256")
+    for key, rel in (
+        ("calibration_manifest_sha256",
+         "artifacts/calibration/open_macro_v03_calibration_001/calibration_manifest.json"),
+        ("input_pack_effective_manifest_sha256",
+         "fixtures/input_packs/golden/certified_input_pack/manifest.json"),
+    ):
+        actual = _blob_sha256(rel)
+        _require(actual == digests[key], f"{key} diverged: recomputed {actual}")
+        recomputed.append(key)
     for commit_key in ("a5_preflight_001_merge_commit", "controlled_shadow_001_merge_commit"):
-        _require(len(digests[commit_key]) == 40, f"{commit_key} malformed")
+        commit = digests[commit_key]
+        _require(len(commit) == 40, f"{commit_key} malformed")
+        exists = subprocess.run(["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+                                cwd=ROOT, capture_output=True)
+        _require(exists.returncode == 0, f"{commit_key} {commit} not in this repository")
         recomputed.append(commit_key)
+    shadow = _load("artifacts/shadow/open_macro_v03_controlled_shadow_001/"
+                   "shadow_result_manifest.json")
+    _require(shadow["engine_image_digest"] == digests["railway_image_digest"],
+             "railway image digest diverged from the shadow manifest pin")
+    recomputed.append("railway_image_digest (cross-checked vs shadow manifest)")
     _require(bool(evidence["files_read"]), "evidence map empty")
-    return (f"evidence digests re-verified against the committed evidence_map "
-            f"({', '.join(recomputed)}); phase0q chain pins (metric_evidence_001, "
+    return (f"every evidence_map digest re-verified ({', '.join(recomputed)}); merge "
+            f"commits proven present in-repo; phase0q chain pins (metric_evidence_001, "
             f"reproducibility_001, phase0q_004) are enforced by the CI pin suites")
 
 

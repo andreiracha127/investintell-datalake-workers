@@ -48,7 +48,21 @@ def _load_repeatability_module():
     return module
 
 
+# the code surfaces whose state determines what the measured compute actually ran
+COMPUTE_TREES = ("harness/", "packages/", "services/", "scripts/", "qc_a3_core.py", "src/")
+
+
 def _worker_commit() -> str:
+    """HEAD, but ONLY from a clean compute tree — a dirty worktree would pin the
+    measurement to a commit that did not contain the code that actually ran."""
+    status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
+                            capture_output=True, text=True, check=True).stdout
+    dirty = [line for line in status.splitlines()
+             if line[3:].replace("\\", "/").startswith(COMPUTE_TREES)]
+    if dirty:
+        raise RuntimeError(
+            "refusing to measure from a dirty compute tree (worker_commit would be "
+            f"unreproducible): {dirty}")
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True,
                           text=True, check=True).stdout.strip()
 
