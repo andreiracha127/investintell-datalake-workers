@@ -57,9 +57,11 @@ def _peak_bytes() -> int:
         return int(counters.PeakWorkingSetSize)
     import resource
 
-    self_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    children_kb = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-    return int(max(self_kb, children_kb)) * 1024
+    self_peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    children_peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    peak = int(max(self_peak, children_peak))
+    # ru_maxrss unit is platform-specific: KiB on Linux, BYTES on macOS/BSD.
+    return peak if sys.platform == "darwin" else peak * 1024
 
 
 def main() -> int:

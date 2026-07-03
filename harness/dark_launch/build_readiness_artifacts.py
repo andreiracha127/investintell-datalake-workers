@@ -541,16 +541,31 @@ def _walk(node):
             yield from _walk(item)
 
 
+def _reject_duplicate_keys(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r} (last-wins masking attack)")
+        seen[key] = value
+    return seen
+
+
+def _is_truthy_flag(value: Any) -> bool:
+    """True boolean OR the string spelling of it — both are activation signals."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
 def build_guard_report() -> dict[str, Any]:
     checks = []
-    payloads = [json.loads(p.read_text(encoding="utf-8"))
+    payloads = [json.loads(p.read_text(encoding="utf-8"),
+                           object_pairs_hook=_reject_duplicate_keys)
                 for p in sorted(DARK.glob("*.json"))
                 if p.name != "no_activation_guard_report.json"]
     for flag in GUARD_FLAGS:
         for payload in payloads:
             for key, value in _walk(payload):
-                _require(not (key == flag and value is True),
-                         f"dark launch package: {flag} is true")
+                _require(not (key == flag and _is_truthy_flag(value)),
+                         f"dark launch package: {flag} is truthy")
         checks.append({"id": f"{flag}_true_absent", "status": "pass"})
     for payload in payloads:
         for key, value in _walk(payload):

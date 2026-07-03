@@ -22,7 +22,7 @@
    "step": "Invalidate Proposal"
   },
   {
-   "note": "official_result is false/absent across 4 governance artifacts",
+   "note": "official_result is false/absent across all 28 governance artifacts",
    "outcome": "pass",
    "step": "Prevent Official Result"
   },
@@ -52,7 +52,7 @@
    "step": "Communicate Incident"
   },
   {
-   "note": "runtime_activation is false/absent across 4 governance artifacts; activation_allowed is false/absent across 4 governance artifacts; freeze_ready is false/absent across 4 governance artifacts; official_result is false/absent across 4 governance artifacts; allocator_publish is false/absent across 4 governance artifacts; A5=blocked and production_endpoint_activation=none wherever declared",
+   "note": "runtime_activation is false/absent across all 28 governance artifacts; activation_allowed is false/absent across all 28 governance artifacts; freeze_ready is false/absent across all 28 governance artifacts; official_result is false/absent across all 28 governance artifacts; allocator_publish is false/absent across all 28 governance artifacts; A5=blocked and production_endpoint_activation=none wherever declared",
    "outcome": "pass",
    "step": "Restore A5 Blocked"
   }

@@ -57,8 +57,14 @@ def _worker_commit() -> str:
     measurement to a commit that did not contain the code that actually ran."""
     status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
                             capture_output=True, text=True, check=True).stdout
-    dirty = [line for line in status.splitlines()
-             if line[3:].replace("\\", "/").startswith(COMPUTE_TREES)]
+    dirty = []
+    for line in status.splitlines():
+        # a rename/copy line carries BOTH paths ("R  old -> new"); a rename INTO a
+        # compute tree must count as dirty, so test every path on the line.
+        paths = line[3:].split(" -> ")
+        if any(p.strip('"').replace("\\", "/").startswith(COMPUTE_TREES)
+               for p in paths):
+            dirty.append(line)
     if dirty:
         raise RuntimeError(
             "refusing to measure from a dirty compute tree (worker_commit would be "

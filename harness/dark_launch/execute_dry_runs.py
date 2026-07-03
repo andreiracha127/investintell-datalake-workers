@@ -31,20 +31,40 @@ EXECUTION_DATE = "2026-07-03"
 OPERATOR = ("Claude (orchestrator agent) - read-only dry-run verification executed on "
             "behalf of operations_owner Andrei Rachadel; ratified by his PR merge")
 
-GOVERNANCE_ARTIFACTS = (
-    "artifacts/a5/open_macro_v03_controlled_activation_proposal_001/controlled_activation_proposal_manifest.json",
-    "artifacts/a5/open_macro_v03_dark_launch_001/dark_launch_manifest.json",
-    "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
-    "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json",
-)
+# EVERY governance JSON, not an allowlist: the whole proposal package, the whole dark
+# launch package, plus the quant judgment/provenance the closure builds on.
+def governance_artifacts() -> tuple[str, ...]:
+    rels = [
+        "artifacts/quant/open_macro_v03_phase0q_004/quantitative_gate_judgment.phase0q_004.json",
+        "artifacts/quant/open_macro_v03_reproducibility_001/provenance.json",
+    ]
+    for directory in (PROPOSAL, DARK):
+        for path in sorted(directory.glob("*.json")):
+            rels.append(str(path.relative_to(ROOT)).replace("\\", "/"))
+    return tuple(rels)
 
 
 class DryRunCheckFailed(AssertionError):
     """A dry-run verification did not hold; no record may be written."""
 
 
+def _reject_duplicate_keys(pairs):
+    seen = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r} (last-wins masking attack)")
+        seen[key] = value
+    return seen
+
+
 def _load(rel: str) -> dict[str, Any]:
-    return json.loads((ROOT / rel).read_text(encoding="utf-8"))
+    return json.loads((ROOT / rel).read_text(encoding="utf-8"),
+                      object_pairs_hook=_reject_duplicate_keys)
+
+
+def _is_truthy_flag(value: Any) -> bool:
+    """True boolean OR the string spelling of it — both are activation signals."""
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
 
 
 def _require(condition: bool, note: str) -> str:
@@ -64,11 +84,14 @@ def _walk(node):
 
 
 def check_flag_false_everywhere(flag: str) -> str:
-    """The flag must never be true in ANY governance artifact (recursive walk)."""
-    for rel in GOVERNANCE_ARTIFACTS:
+    """The flag must never be true(-ish) in ANY governance artifact (recursive walk
+    over the WHOLE proposal + dark launch packages; duplicate JSON keys rejected)."""
+    artifacts = governance_artifacts()
+    for rel in artifacts:
         for key, value in _walk(_load(rel)):
-            _require(not (key == flag and value is True), f"{rel}: {flag} is true")
-    return f"{flag} is false/absent across {len(GOVERNANCE_ARTIFACTS)} governance artifacts"
+            _require(not (key == flag and _is_truthy_flag(value)),
+                     f"{rel}: {flag} is truthy ({value!r})")
+    return f"{flag} is false/absent across all {len(artifacts)} governance artifacts"
 
 
 FLAG_NAME = "open_macro_v03_runtime_activation"
@@ -117,13 +140,13 @@ def check_invalidation_procedure_documented() -> str:
 
 
 def check_db_write_mode_none() -> str:
-    for rel in GOVERNANCE_ARTIFACTS:
+    for rel in governance_artifacts():
         payload = _load(rel)
         for key, value in _walk(payload):
             if key == "db_write_mode":
                 _require(str(value).lower() == "none", f"{rel}: db_write_mode={value}")
             if key == "allow_db_write":
-                _require(value is False, f"{rel}: allow_db_write={value}")
+                _require(not _is_truthy_flag(value), f"{rel}: allow_db_write={value}")
     manifest = _load("artifacts/a5/open_macro_v03_dark_launch_001/dark_launch_manifest.json")
     _require(manifest["allowed_side_effects"] == [], "allowed_side_effects not empty")
     return ("db_write_mode=none / allow_db_write=false wherever declared; "
@@ -215,7 +238,7 @@ def check_blocked_state() -> str:
         check_flag_false_everywhere("official_result"),
         check_flag_false_everywhere("allocator_publish"),
     ]
-    for rel in GOVERNANCE_ARTIFACTS:
+    for rel in governance_artifacts():
         for key, value in _walk(_load(rel)):
             if key == "A5":
                 _require(str(value).lower() == "blocked", f"{rel}: A5={value}")
