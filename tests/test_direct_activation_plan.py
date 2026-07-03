@@ -20,9 +20,9 @@ PLAN_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_001"
 
 EXPECTED_FILE_SHA256 = {
     "shadow_elimination_decision_record.json":
-        "42ced90f336681c4c3d9515866a1a407c4e89b3dba9337911df467ad1f5e2b7e",
+        "8208c4c1bb496f0d18b4814c5df4f41fec893a8f3b35e1a327e0009adc0ea5f5",
     "plan_go_decision_record.json":
-        "f78f86a22d22a02dce629ccb534b5b5164e9723b16d3c7292383adfd9f8731d8",
+        "abd2ca2ba4ed7d925b2b718a700c9100605a73427bdbc8d5828b59214a02209e",
     "immediate_activation_decision_record.json":
         "c87a957d49e2acfbfc3781a516d0bd6d35de7a39fc6f06b4e74bf75d348e33d8",
 }

@@ -2,13 +2,19 @@
 
 Status: plan. Supersedes Phases 2–5 of
 `open_macro_v03_production_activation_stage_plan_001.md` per the owner's recorded
-decision — Stage B of this plan INHERITS Phase 4's role as the ONLY PR that may
-flip governance state, including its promotion-gate requirements; Phase 5's
-consumer-cutover obligations move to Stage C exit (`artifacts/a5/open_macro_v03_direct_activation_001/shadow_elimination_decision_record.json`):
-there is no reliable production baseline to shadow against, so the candidate goes to
-production directly, with the shadow's baseline-independent protections relocated —
-live-data validation BEFORE activation, behavioral observation AFTER activation with
-the kill switch armed.
+decisions — Stage B of this plan INHERITS Phase 4's role as the ONLY PR that may
+flip governance state, including its promotion-gate requirements. The owner then
+ratified FULL IMMEDIATE ACTIVATION
+(`artifacts/a5/open_macro_v03_direct_activation_001/immediate_activation_decision_record.json`),
+which supersedes the earlier as-if/phased-cutover shape of this plan: Phase 5's
+consumer cutover collapses INTO Stage B (the backend consumes the new tables from
+day one) and `official_result` is true from activation, not deferred to Stage C.
+(`shadow_elimination_decision_record.json`): there is no reliable production baseline
+to shadow against, so the candidate goes to production directly, with the shadow's
+baseline-independent protections relocated — live-data validation BEFORE activation,
+behavioral observation AFTER activation with the kill switch armed. Stage C is the
+intensive-supervision window that RATIFIES the already-official output; it does not
+introduce a second governance flip.
 
 **Evidentiary base (unchanged):** the Phase 1 dark launch readiness package
 (`A4=dark_launch_ready`, PR #30): signed thresholds on the `compressed_50` candidate,
@@ -41,8 +47,14 @@ The baseline-independent half of the eliminated shadow, as a hard gate:
   `live_validation_record.json` + snapshot manifest + tests (Phase 1 guard
   semantics: regeneration pins, recursive governance walk, duplicate-key rejection,
   string-truthy). Each stage (A/B/C) creates its OWN artifact directory;
-  `open_macro_v03_direct_activation_001/` holds only the two decision records of
+  `open_macro_v03_direct_activation_001/` holds only the decision records of
   this plan PR and stays immutable.
+- **A4. Bounded freshness (binding on Stage B):** `live_validation_record.json`
+  carries the validation date and is valid for a MAX AGE of **5 business days**
+  before the Stage B governance flip. If Stage B would land after that window,
+  Stage A is re-run (fresh snapshot + N=8 host/N=8 container reproducibility + SLO
+  gate) and re-pinned first — the first official production write never fires on a
+  validation that has aged past the bound.
 
 ## Stage B — Activation PR (the governance flip + the real runtime + the product)
 
@@ -63,6 +75,17 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   compressed_50 position, cost/risk-cap parameters, provenance) — the allocation
   is the product output — and (iv) refuses to write when inputs breach the
   staleness SLO. Both tables are NEW; the old model's tables are never written.
+  Because the backend consumes both tables from day one, the two rows are
+  published **atomically**: a single transaction commits decision + allocation
+  together (or, where the store cannot span both, each row carries a
+  `publish_state` that the backend filter requires to be `published`, and the
+  worker only flips both to `published` after both upserts succeed) — a run that
+  writes the decision and then fails before the allocation NEVER leaves a
+  consumer-visible one-of-two state. Each row also carries a `valid_status`
+  (`valid` | `invalidated`) and a `valid_until` field; the sanctioned backend read
+  path filters on `valid_status = valid`, so a kill-switch abort that stamps the
+  latest rows `invalidated` (below) actually removes aborted output from consumers,
+  not merely stops future writes.
 - **B1b. Schema migration with evidence (inherited Phase 4 requirement):** the DDL
   for both new tables is committed, applied through a reviewed migration path, and
   verified against the production DB with a committed
@@ -74,15 +97,28 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
 - **B3. Immediate switch-over (owner decision, `immediate_activation_decision_record.json`):**
   the incumbent producer is switched OFF and the live backend consumer is switched
-  ON to the new tables IN THIS SAME PR — no stagnant snapshot, no phased cutover.
-  The owner resolved the live-consumer tension explicitly: the incumbent's output
-  is worthless, so protecting its reader protects nothing; the first reliable
-  model must be consumed from day one. `old_model_decommission_record.json`
+  ON to the new tables as ONE coordinated activation — no stagnant snapshot, no
+  phased cutover. The owner resolved the live-consumer tension explicitly: the
+  incumbent's output is worthless, so protecting its reader protects nothing; the
+  first reliable model must be consumed from day one. The live reader is in the
+  separate `investintell-light-combo` backend, which this datalake-workers PR
+  cannot modify or review, so the switch-over is a COORDINATED cross-repo change:
+  Stage B carries `backend_cutover_record.json` pinning the merged backend PR
+  (repo, PR/merge sha, the NAMED sanctioned read route now served from
+  `open_macro_v03_decisions`/`open_macro_v03_allocations`, and the confirmation
+  that it no longer reads `regime_quadrant_snapshot`), and the incumbent producer
+  is NOT decommissioned until that backend-cutover evidence is present — the two
+  merges land together so the backend is never changed out of band and never left
+  reading the old snapshot after switch-off. `old_model_decommission_record.json`
   documents what was stopped, where, when, by whom, and the emergency re-enable
   procedure; the incumbent's historical tables remain readable and untouched.
 - **B4. Governance flip via the documented promotion gates:** new
-  `activation_record.json` carrying the final_approver's explicit verbatim act;
-  A5 blocked→active for the TWO new tables only; `db_write_mode:
+  `activation_record.json` carrying the final_approver's explicit verbatim act AND
+  the FULL inherited Phase 4 approval matrix — explicit sign-off from all six owner
+  roles (quant, risk, operations, product_portfolio, engineering, final_approver)
+  with `approval_matrix_complete: true`, even where one person holds several roles
+  (each role named against its holder); an absent or stale approval matrix blocks
+  the flip. A5 blocked→active for the TWO new tables only; `db_write_mode:
   open_macro_v03_new_tables_only`; `activation_allowed` flips to true with the
   NAMED allowed environment (exactly the production worker service — the
   inherited feature-flag envelope requires named environments, never a blanket
@@ -121,7 +157,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   verifier re-computes each published decision AND allocation independently
   (host, from the same PIT vintages AND the same sleeve `eod_prices`/quality
   flags the worker read) and asserts byte-equality of the logical outputs; SLO
-  and staleness alerts on; kill switch armed.
+  and staleness alerts on; kill switch armed. The 10 days are 10 days of
+  ACTUALLY-VERIFIED output: a business day that records a staleness-block (no
+  decision/allocation rows to replay) does NOT count toward the window and does
+  NOT satisfy the zero-abort exit — it PAUSES and EXTENDS the count until both rows
+  are again published and verified. The window closes only after ten distinct
+  business days each carried both rows and passed the verifier.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   bypass, any SLO breach, any write outside the two new tables, AND any **missing
   or partial daily output** — every business day of the window must carry BOTH
@@ -129,7 +170,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   exit or a one-of-two partial write is an abort (the inherited
   `missing_output_slo`), because a verifier that only checks published rows would
   otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
-  activation is invalidated traceably.
+  activation is invalidated traceably. **Reader-enforceable invalidation:** an
+  abort does not merely stop future writes — it stamps the affected published rows
+  `valid_status = invalidated` (with `valid_until` set), and because the sanctioned
+  backend read path filters on `valid_status = valid` (B1), the aborted output is
+  actually removed from consumers rather than left readable as current. The
+  kill-switch + invalidation stamp is itself part of the dry-run rollback plan.
 - **Abort fallback posture (explicit, owner-accepted):** an abort fires the kill
   switch and stops the only model; the backend then has no fresh feed. The owner
   accepts this explicitly as a return to the honest status quo — "we have no
@@ -148,10 +194,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
 2. **Old model:** decommissioned AT activation — practically nonexistent;
    open_macro_v03 is the only model from activation day. ✔
 3. **Cadence:** daily consumable position (fresh month-end, carried otherwise). ✔
-4. **Observation window:** 10 business days, single model, full as-if-production
-   output; official only at clean close. ✔
+4. **Observation window:** 10 business days, single model, over REAL, CONSUMED,
+   OFFICIAL production output (the immediate-activation decision eliminated the
+   as-if staging — `official_result` is true from activation, and the clean-close
+   RATIFIES it rather than first conferring it). ✔
 5. **Allocator:** IN SCOPE, MANDATORY — the allocation IS the product; the regime
-   decision is its input. Ships in Stage B, official at Stage C close. ✔
+   decision is its input. Ships in Stage B and is official from activation. ✔
 
 ## What never changes in this plan
 

@@ -10,10 +10,11 @@
   "publication_target": "NEW dedicated tables (the old model's tables are never written)",
   "old_model": "DECOMMISSIONED AT ACTIVATION (Stage B): the incumbent is practically nonexistent; open_macro_v03 becomes the ONLY model from activation day",
   "cadence": "daily publication of the consumable position (fresh on scheduled month-end decisions, carried otherwise, per the ratified carry semantics)",
-  "observation_window": "10 business days, as the ONLY running model, producing the FULL pipeline output as-if production; not official until the window closes clean",
-  "allocator": "IN SCOPE, MANDATORY: the allocator output (the compressed_50 sleeve allocation weights) IS the product; the regime decision is its input. The activation publishes decision AND allocation; both become official together at window close"
+  "observation_window": "10 business days, as the ONLY running model, producing the FULL pipeline output; SUPERSEDED by immediate_activation_decision_record.json (the as-if 'not official until window close' shape was dropped: the window is now intensive supervision over REAL, CONSUMED, OFFICIAL output, and official_result is true from activation, ratified - not first conferred - at clean close)",
+  "allocator": "IN SCOPE, MANDATORY: the allocator output (the compressed_50 sleeve allocation weights) IS the product; the regime decision is its input. The activation publishes decision AND allocation. SUPERSEDED by immediate_activation_decision_record.json: both are OFFICIAL from activation, not deferred to window close"
  },
- "plan_effect": "Stage B adds the allocation publication (open_macro_v03_allocations) and the old-model decommission as first-class tasks; allocator_publish flips at Stage B for the NEW tables in as-if mode, official at Stage C close; external/consumer cutover to the new tables is part of Stage C exit",
+ "plan_effect": "Stage B adds the allocation publication (open_macro_v03_allocations) and the old-model decommission as first-class tasks. SUPERSEDED by immediate_activation_decision_record.json: allocator_publish flips at Stage B for the NEW tables WITH REAL CONSUMPTION from day one (the as-if mode is eliminated), official_result is true from activation, and the external/consumer/backend cutover collapses INTO Stage B rather than deferring to Stage C exit; Stage C only RATIFIES the already-official output",
+ "superseded_by": "immediate_activation_decision_record.json (FULL IMMEDIATE ACTIVATION): the derived observation_window/allocator/plan_effect/note fields above described the earlier as-if, official-at-Stage-C, cutover-at-Stage-C-exit shape; the owner's later act eliminated the as-if window and the phased cutover, so those derived fields are historical and the immediate-activation record is the single active promotion path. The decisions_verbatim above is the owner's original plan-GO wording and stays unchanged as the historical act.",
  "governance": {
   "A5": "blocked",
   "activation_allowed": false,
@@ -22,6 +23,6 @@
   "freeze_ready": false,
   "official_result": false,
   "runtime_activation": false,
-  "note": "this record documents the plan GO; activation flags (A5, db_write_mode, runtime_activation, allocator_publish as-if) flip exclusively inside the Stage B activation PR via the promotion gates, and official_result plus the A4 exit state flip exclusively at Stage C close via its own recorded owner act - no flag ever flips outside those two PRs"
+  "note": "this record documents the plan GO; all governance flags stay false here because this record documents a decision and never flips a flag. Per the ACTIVE path (immediate_activation_decision_record.json) the activation flags AND official_result all flip together inside the single Stage B activation PR via the promotion gates; Stage C introduces no second governance flip, it ratifies. No flag ever flips outside the Stage B activation PR."
  }
 }
