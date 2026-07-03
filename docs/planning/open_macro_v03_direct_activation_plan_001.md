@@ -67,7 +67,14 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   vintages AND the sleeve `eod_prices` (`adj_close`, with the certified path's
   data-quality flags) as-of the run date, (ii) computes the latched decision chain + the
   `compressed_50` consumable position via the SAME pure modules the evidence chain
-  used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction),
+  used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction;
+  and "the SAME modules" is ENFORCED, not asserted: Stage B pins the sha256 of each
+  consumed pure module (`src/quadrant_score.py` and the harness sleeve modules) and
+  restates the inherited immutability constraint —
+  `formula_changes`/`input_pack_changes`/`calibration_pack_changes`/`contract_v1_changes`
+  all `none`, matching the runtime envelope — so a Stage B PR cannot silently alter the
+  scoring or sleeve semantics and leave Stage A / dark-launch evidence validating a
+  different candidate than production consumes),
   (iii) writes the decision row to `open_macro_v03_decisions` (as_of, quadrant,
   decision_validity fresh|carried, carry_provenance, input hashes,
   judgment/threshold refs, code commit) AND the allocation row to
@@ -83,9 +90,16 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   writes the decision and then fails before the allocation NEVER leaves a
   consumer-visible one-of-two state. Each row also carries a `valid_status`
   (`valid` | `invalidated`) and a `valid_until` field; the sanctioned backend read
-  path filters on `valid_status = valid`, so a kill-switch abort that stamps the
+  path filters on `valid_status = valid` AND honors as-of freshness — it serves a row
+  only while `valid_until` has not lapsed — so a kill-switch abort that stamps the
   latest rows `invalidated` (below) actually removes aborted output from consumers,
-  not merely stops future writes.
+  not merely stops future writes. Honoring `valid_until` also closes the
+  staleness-block hole: on a fresh business day the daily write renews `valid_until`,
+  but when B1 refuses to write because inputs breach the staleness SLO (B5/Stage C
+  record a staleness-block rather than abort), no new row lands and the previous
+  row's `valid_until` lapses, so the reader stops serving the now-stale allocation
+  instead of leaving it readable as current official output — recording a
+  staleness-block thereby expires the last rows rather than freezing them `valid`.
 - **B1b. Schema migration with evidence (inherited Phase 4 requirement):** the DDL
   for both new tables is committed, applied through a reviewed migration path, and
   verified against the production DB with a committed
@@ -109,26 +123,52 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   that it no longer reads `regime_quadrant_snapshot`), and the incumbent producer
   is NOT decommissioned until that backend-cutover evidence is present — the two
   merges land together so the backend is never changed out of band and never left
-  reading the old snapshot after switch-off. `old_model_decommission_record.json`
+  reading the old snapshot after switch-off. Because a committed record in THIS repo
+  cannot enforce a foreign-repo merge order, the ordering is made gate-enforceable
+  rather than asserted: the backend read route is itself FLAG-GATED and stays inert
+  until the new tables exist and carry a first verified row, and
+  `backend_cutover_record.json` attests that precondition (tables present + first
+  sanctioned row verified) held before the route went live. Merging the backend PR
+  early can therefore never point a live reader at absent or empty tables — the "two
+  merges land together" property is enforced by the gate + attested precondition, not
+  merely by narrative. `old_model_decommission_record.json`
   documents what was stopped, where, when, by whom, and the emergency re-enable
   procedure; the incumbent's historical tables remain readable and untouched.
 - **B4. Governance flip via the documented promotion gates:** new
   `activation_record.json` carrying the final_approver's explicit verbatim act AND
   the FULL inherited Phase 4 approval matrix — explicit sign-off from all six owner
-  roles (quant, risk, operations, product_portfolio, engineering, final_approver)
+  roles by their EXACT pinned ids (`technical_owner`, `quant_owner`, `risk_owner`,
+  `operations_owner`, `product_portfolio_owner`, `final_approver` — the set pinned by
+  `tests/test_dark_launch_readiness.py` / `tests/test_controlled_activation_proposal.py`;
+  the matrix uses `technical_owner`, never `engineering` or any unrecognized role, so
+  `approval_matrix_complete: true` can never be claimed while the technical-owner
+  sign-off is missing)
   with `approval_matrix_complete: true`, even where one person holds several roles
   (each role named against its holder); an absent or stale approval matrix blocks
   the flip. A5 blocked→active for the TWO new tables only; `db_write_mode:
-  open_macro_v03_new_tables_only`; `activation_allowed` flips to true with the
+  open_macro_v03_new_tables_only` — and, because the inherited runtime envelope
+  hard-blocks productive writes on `allow_db_write=false`/`db_write_official=false`
+  independently of `db_write_mode`, those companion gates flip in the SAME activation
+  envelope: `allow_db_write` true scoped to exactly the two new tables and
+  `db_write_official` true (flipping `db_write_mode` alone would leave the worker still
+  forbidden to write); `activation_allowed` flips to true with the
   NAMED allowed environment (exactly the production worker service — the
   inherited feature-flag envelope requires named environments, never a blanket
-  true); `allocator_publish` flips to true for the new allocations table WITH
+  true); `open_macro_v03_runtime_activation` (the B2 job-start feature flag) is set
+  true for that SAME named worker service, sequenced AFTER B5 monitoring is live and
+  BEFORE the first sanctioned write — without this flip the worker exits without side
+  effects while the backend is already switched to official output, so only the
+  `missing_output_slo` would fire; `allocator_publish` flips to true for the new
+  allocations table together with its companion `allow_allocator_publish` gate scoped
+  to `open_macro_v03_allocations` (the envelope hard-blocks publication on
+  `allow_allocator_publish=false` independently of `allocator_publish`), WITH
   REAL CONSUMPTION from day one (the backend cutover ships in this same PR — the
   owner eliminated the as-if mode); `production_endpoint_activation` flips from
   `none` to the NAMED read path the backend now serves from the new tables
   (scoped, never a blanket value); `official_result` is **true from
   activation**: the published decision and allocation ARE the system's official
-  output (there is no other model). Every historical artifact stays
+  output (there is no other model); and A4 advances to `production_active_official`
+  in THIS Stage B flip (official from activation) — Stage C does not re-flip it. Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
   package defined, never weakened silently.
@@ -183,10 +223,14 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   output. The old model's emergency re-enable stays documented as an OWNER
   OPTION, never an automatic fallback. Every abort invalidates the activation
   traceably.
-- **Exit:** window report with zero aborts → `A4=production_active_official`
-  (the official stamp was already live from activation; the clean window
-  RATIFIES it and closes the intensive-supervision posture into normal
-  operations with the same alerts).
+- **Exit:** window report with zero aborts. A4 is ALREADY
+  `production_active_official` — it was set at the Stage B governance flip (official
+  from activation) — so this exit performs NO second governance flip: it RATIFIES the
+  already-official output and closes the intensive-supervision posture into normal
+  operations (same alerts). The clean-window report is an operational close, not a
+  governance-state transition — consistent with the header rule and the pinned
+  `plan_go_decision_record.json` note that no flag ever flips outside the Stage B
+  activation PR.
 
 ## Owner decisions at plan GO (RESOLVED 2026-07-03, `plan_go_decision_record.json`)
 
