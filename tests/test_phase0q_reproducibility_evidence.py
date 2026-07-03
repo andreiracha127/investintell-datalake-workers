@@ -166,7 +166,10 @@ def test_provenance_pins_the_successful_run_and_the_exact_file_bytes() -> None:
     # immutability: every file in the package (provenance included) must match the
     # CONSTANT pins above — a coordinated edit of the evidence files plus
     # provenance.json cannot silently refresh the package.
-    committed = sorted(p.name for p in REPRO_ROOT.iterdir() if p.is_file())
+    # recursive listing: a file smuggled into any subdirectory must break the pin set.
+    committed = sorted(
+        str(p.relative_to(REPRO_ROOT)).replace("\\", "/")
+        for p in REPRO_ROOT.rglob("*") if p.is_file())
     assert committed == sorted(EXPECTED_FILE_SHA256)
     for name, expected_sha in EXPECTED_FILE_SHA256.items():
         actual = hashlib.sha256((REPRO_ROOT / name).read_bytes()).hexdigest()
