@@ -33,7 +33,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DARK = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
-COMBO_ROOT = Path("E:/investintell-datalake-workers-combo")
+DEFAULT_COMBO_ROOT = "E:/investintell-datalake-workers-combo"
 IMAGE = "investintell-quant-engine:local"
 MEASURE_CHILD = ROOT / "harness" / "dark_launch" / "measure_child.py"
 EXECUTION_DATE = "2026-07-03"
@@ -67,10 +67,32 @@ def _worker_commit() -> str:
                           text=True, check=True).stdout.strip()
 
 
-def _run_host(rm, out_dir: Path, worker_commit: str) -> dict[str, Any]:
+def _compute_tree_hashes(commit: str) -> dict[str, str]:
+    """Git tree/blob hashes of the compute surfaces at the measured commit — reachable
+    provenance even if the measuring commit itself later falls out of ancestry."""
+    hashes = {}
+    for tree in COMPUTE_TREES:
+        rel = tree.rstrip("/")
+        obj = subprocess.run(["git", "rev-parse", f"{commit}:{rel}"], cwd=ROOT,
+                             capture_output=True, text=True, check=True).stdout.strip()
+        hashes[rel] = obj
+    return hashes
+
+
+def _image_id() -> str:
+    """Immutable content id of the local engine image the container leg executes."""
+    result = subprocess.run(["docker", "image", "inspect", IMAGE, "--format", "{{.Id}}"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"engine image {IMAGE} not present; build it first "
+                           f"(docker build -f docker/quant-engine/Dockerfile -t {IMAGE} .)")
+    return result.stdout.strip()
+
+
+def _run_host(rm, out_dir: Path, worker_commit: str, combo_root: Path) -> dict[str, Any]:
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = out_dir / "measure_metrics.json"
-    args = rm._cli_args(rm.G0, input_root=str(COMBO_ROOT).replace("\\", "/"),
+    args = rm._cli_args(rm.G0, input_root=str(combo_root).replace("\\", "/"),
                         output_dir=str(out_dir), jobs=1, worker_commit=worker_commit)
     sep = ";" if sys.platform == "win32" else ":"
     env_path = sep.join([str(ROOT),
@@ -83,11 +105,11 @@ def _run_host(rm, out_dir: Path, worker_commit: str) -> dict[str, Any]:
     return json.loads(metrics_path.read_text(encoding="utf-8"))
 
 
-def _run_container(rm, out_dir: Path, worker_commit: str) -> dict[str, Any]:
+def _run_container(rm, out_dir: Path, worker_commit: str, combo_root: Path) -> dict[str, Any]:
     rm._prepare_container_output_dir(out_dir)
     args = rm._cli_args(rm.G0, input_root="/input/combo", output_dir="/outputs",
                         jobs=1, worker_commit=worker_commit)
-    docker_base = rm._container_docker_base(combo_root=COMBO_ROOT, out_dir=out_dir)
+    docker_base = rm._container_docker_base(combo_root=combo_root, out_dir=out_dir)
     harness_dir = (ROOT / "harness" / "dark_launch").resolve()
     subprocess.run(
         ["docker", "run", "--rm", *docker_base,
@@ -98,7 +120,7 @@ def _run_container(rm, out_dir: Path, worker_commit: str) -> dict[str, Any]:
     return json.loads((out_dir / "measure_metrics.json").read_text(encoding="utf-8"))
 
 
-def _verify_job_result(out_dir: Path) -> None:
+def _verify_job_result(out_dir: Path) -> dict[str, Any]:
     result = json.loads((out_dir / "job_result.json").read_text(encoding="utf-8"))
     if result["status"] != "succeeded" or result["classification"] != "passed":
         raise RuntimeError(f"{out_dir}: job did not succeed cleanly: "
@@ -107,12 +129,17 @@ def _verify_job_result(out_dir: Path) -> None:
         raise RuntimeError(f"{out_dir}: job reported errors: {result['errors']}")
     if result.get("a5_status") != "blocked" or result.get("runtime_activation") is not False:
         raise RuntimeError(f"{out_dir}: governance fields unexpected")
+    return {"run_fingerprint": result["run_fingerprint"],
+            "output_logical_hashes": result["output_logical_hashes"]}
 
 
-def measure(runs_per_leg: int, *, skip_container: bool, work_root: Path) -> dict[str, Any]:
+def measure(runs_per_leg: int, *, skip_container: bool, work_root: Path,
+            combo_root: Path) -> dict[str, Any]:
     rm = _load_repeatability_module()
     worker_commit = _worker_commit()
+    image_id = None if skip_container else _image_id()
     legs: dict[str, list[dict[str, Any]]] = {}
+    fingerprints: dict[str, Any] = {}
 
     for leg, runner in (("host", _run_host), ("container", _run_container)):
         if leg == "container" and skip_container:
@@ -120,10 +147,17 @@ def measure(runs_per_leg: int, *, skip_container: bool, work_root: Path) -> dict
         samples = []
         for index in range(runs_per_leg):
             out_dir = work_root / f"{leg}-r{index}"
-            metrics = runner(rm, out_dir, worker_commit)
+            metrics = runner(rm, out_dir, worker_commit, combo_root)
             if metrics["exit_code"] != 0:
                 raise RuntimeError(f"{leg} run {index}: nonzero exit {metrics['exit_code']}")
-            _verify_job_result(out_dir)
+            identity = _verify_job_result(out_dir)
+            # determinism across the whole round: every run of every leg must produce
+            # the IDENTICAL fingerprint/output hashes, or the measurement is void.
+            if not fingerprints:
+                fingerprints = identity
+            elif identity != fingerprints:
+                raise RuntimeError(f"{leg} run {index}: job identity diverged from the "
+                                   f"round's fingerprint - non-deterministic compute")
             samples.append(metrics)
             print(f"{leg} run {index}: {metrics['wall_ms']:.0f} ms, "
                   f"{metrics['memory_peak_bytes'] / 1e6:.0f} MB peak")
@@ -134,6 +168,10 @@ def measure(runs_per_leg: int, *, skip_container: bool, work_root: Path) -> dict
         "case": "G0 (V03-G0-CONTROL, scripts/repeatability_matrix.py pins)",
         "jobs": 1,
         "worker_commit": worker_commit,
+        "compute_tree_hashes": _compute_tree_hashes(worker_commit),
+        "engine_image_id": image_id,
+        "combo_root": str(combo_root).replace("\\", "/"),
+        "job_identity": fingerprints,
         "runs_per_leg": runs_per_leg,
         "legs": legs,
     }
@@ -178,6 +216,14 @@ def build_records(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             "case": raw["case"],
             "jobs": raw["jobs"],
             "worker_commit": raw["worker_commit"],
+            "compute_tree_hashes": raw["compute_tree_hashes"],
+            "engine_image_id": raw["engine_image_id"],
+            "combo_root": raw["combo_root"],
+            "job_identity": raw["job_identity"],
+            "determinism_note": "every run of every leg produced the identical "
+                                "run_fingerprint and output logical hashes (enforced "
+                                "fail-loud by the harness), so the thresholds certify "
+                                "exactly one input bundle and one compute",
         },
         "environment_matrix": sorted(per_leg),
         "runs_total": total_runs,
@@ -240,6 +286,8 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS_PER_LEG)
+    parser.add_argument("--combo-root", default=DEFAULT_COMBO_ROOT,
+                        help="root holding the G0 fixture directories")
     parser.add_argument("--skip-container", action="store_true")
     parser.add_argument("--work-root", default=str(ROOT / "_tmp_observability_round"))
     parser.add_argument("--raw-out", default=str(ROOT / "_tmp_observability_round" / "raw_results.json"))
@@ -251,7 +299,8 @@ def main(argv: list[str] | None = None) -> int:
         raw = json.loads(Path(args.emit_records).read_text(encoding="utf-8"))
     else:
         raw = measure(args.runs, skip_container=args.skip_container,
-                      work_root=Path(args.work_root))
+                      work_root=Path(args.work_root),
+                      combo_root=Path(args.combo_root))
         raw_path = Path(args.raw_out)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
         _write(raw_path, raw)

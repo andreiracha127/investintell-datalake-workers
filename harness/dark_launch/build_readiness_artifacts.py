@@ -112,10 +112,14 @@ RESOLUTIONS = {
         "resolved_with_evidence",
         "Root cause of the production staleness found and fixed (FRED asc+limit window "
         "truncation, PR #16: desc + client re-sort + resized limits + truncation "
-        "warning); controlled backfill executed and verified 2026-07-02 (T10YIE "
-        "2026-02-27 -> 2026-07-01, stale cluster refreshed); staleness SLO enforcement "
-        "before runtime activation stays pinned by the monitoring enforcement policy.",
-        [_ref(f"{PROPOSAL_REL}/monitoring_enforcement_policy.json",
+        "warning); production data VERIFIED fresh by a live read-only query on "
+        "2026-07-03 (committed verification record: T10YIE at 2026-07-02 after being "
+        "frozen at 2026-02-27, the whole previously frozen cluster within normal "
+        "cadence); staleness SLO enforcement before runtime activation stays pinned by "
+        "the monitoring enforcement policy.",
+        [_ref("artifacts/a5/open_macro_v03_dark_launch_001/staleness_verification_record.json",
+              "live production query results, per-series freshness verdicts"),
+         _ref(f"{PROPOSAL_REL}/monitoring_enforcement_policy.json",
               "zero-threshold attempt detectors + staleness SLO enforcement home"),
          _ref("src/workers/macro_ingestion.py",
               "fixed FRED window fetch (desc + re-sort + truncation warning)")],
@@ -523,7 +527,8 @@ def build_evidence_refresh() -> dict[str, Any]:
 
 
 GUARD_FLAGS = ("runtime_activation", "freeze_ready", "activation_allowed",
-               "official_result", "allow_allocator_publish", "allocator_publish")
+               "official_result", "allow_allocator_publish", "allocator_publish",
+               "feature_flag_default", "allow_db_write")
 
 
 def _walk(node):
