@@ -319,14 +319,21 @@ def reconstruct_verdict(stats: dict[str, str], expected: dict[str, Any],
     """
     leg_match = stats["phase0q_cloud_leg_hash"] == (
         expected["execution_legs"]["local_python_pure"]["logical_hash"])
+    # Derivation requires BOTH the reproduced verdict AND leg-hash equality: when the
+    # stats say mismatch (e.g. fingerprint/manifest-field drift while output hashes
+    # coincide), nothing may be advertised as confirmed — the derived all-equal table
+    # would misrepresent the mismatch. Detail then lives only in the full ObjectStore
+    # verdict.
+    derive = leg_match and stats["phase0q_verdict"] == "reproduced"
     return {
         "artifact_type": "phase0q_cloud_leg_verdict",
         "schema_version": 1,
         "reconstructed_from": "backtest_runtime_statistics",
         "execution_backend": "quantconnect_cloud_backtest",
-        "run_fingerprint": expected["run_fingerprint"] if leg_match else None,
+        "derivation": "derived_from_expected_manifest" if derive else "withheld_unconfirmed",
+        "run_fingerprint": expected["run_fingerprint"] if derive else None,
         "output_logical_hashes": (
-            dict(expected["output_logical_hashes"]) if leg_match else {}),
+            dict(expected["output_logical_hashes"]) if derive else {}),
         "execution_legs": {
             "qc_research_object_store": {
                 "logical_hash": stats["phase0q_cloud_leg_hash"],

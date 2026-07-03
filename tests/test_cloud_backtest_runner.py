@@ -650,3 +650,49 @@ def test_resolve_manifest_key_default_prefers_injected(monkeypatch):
 
     monkeypatch.setattr(bm, "MANIFEST_KEY_INJECTED", "some/prefix/object_store_manifest.json")
     assert bm.resolve_manifest_key_default(_Store()) == "some/prefix/object_store_manifest.json"
+
+
+def test_reconstruct_verdict_mismatch_with_matching_leg_hash_derives_nothing():
+    """If the stats say mismatch but the leg hashes coincide (e.g. a fingerprint or
+    manifest-field mismatch while output hashes match), NOTHING may be derived as
+    confirmed — a derived all-equal table would misrepresent the mismatch."""
+    from harness.phase0q_cloud.run_cloud_backtest import reconstruct_verdict
+
+    expected = {
+        "run_fingerprint": "f" * 64,
+        "output_logical_hashes": {"turnover": "a" * 64},
+        "execution_legs": {"local_python_pure": {"logical_hash": "b" * 64}},
+    }
+    stats = {
+        "phase0q_verdict": "mismatch",
+        "phase0q_cloud_leg_hash": "b" * 64,  # coincide com o esperado
+        "phase0q_expected_leg_hash": "b" * 64,
+        "phase0q_mismatch_count": "1",
+        "phase0q_verdict_sha256": "c" * 64,
+    }
+    verdict = reconstruct_verdict(stats, expected, "prefix/results/phase0q_cloud_verdict.json")
+    assert verdict["reproduced"] is False
+    assert verdict["output_logical_hashes"] == {}
+    assert verdict["run_fingerprint"] is None
+    assert verdict["derivation"] == "withheld_unconfirmed"
+
+
+def test_object_store_save_bytes_raises_when_store_reports_failure():
+    """QC's SaveBytes returns a bool; a False (quota/permission/transient failure)
+    must raise instead of silently advertising the results key."""
+    import pytest as _pytest
+
+    from harness.phase0q_cloud.backtest_main import _object_store_save_bytes
+
+    class _RefusingStore:
+        def save_bytes(self, key, data):
+            return False
+
+    with _pytest.raises(RuntimeError, match="refused"):
+        _object_store_save_bytes(_RefusingStore(), "k", b"data")
+
+    class _AcceptingStore:
+        def save_bytes(self, key, data):
+            return True
+
+    _object_store_save_bytes(_AcceptingStore(), "k", b"data")

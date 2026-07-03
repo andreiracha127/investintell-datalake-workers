@@ -400,12 +400,16 @@ def _object_store_read_bytes(object_store, key: str) -> bytes:
 
 
 def _object_store_save_bytes(object_store, key: str, data: bytes) -> None:
+    # QC's SaveBytes returns a bool: a False (quota/permission/transient storage
+    # failure) must fail loudly BEFORE the results key is advertised anywhere.
     if hasattr(object_store, "SaveBytes"):
-        object_store.SaveBytes(key, list(data))
+        result = object_store.SaveBytes(key, list(data))
     elif hasattr(object_store, "save_bytes"):
-        object_store.save_bytes(key, data)
+        result = object_store.save_bytes(key, data)
     else:
         raise RuntimeError("ObjectStore exposes no SaveBytes method")
+    if result is False:
+        raise RuntimeError(f"ObjectStore refused the save of {key}; verdict not advertised")
 
 
 def load_bundle_from_object_store(object_store, manifest: dict) -> dict:
