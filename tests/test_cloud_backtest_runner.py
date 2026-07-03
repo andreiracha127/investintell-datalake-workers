@@ -81,13 +81,18 @@ def object_store(built_bundle, bundle_manifest) -> InMemoryObjectStore:
     return InMemoryObjectStore(built_bundle, bundle_manifest)
 
 
+def _bundle_manifest_sha(built_bundle: Path) -> str:
+    return bt.sha256_hex((built_bundle / "object_store_manifest.json").read_bytes())
+
+
 @pytest.fixture(scope="session")
 def session_verdict(built_bundle, bundle_manifest, tmp_path_factory) -> dict:
     """Run the full ObjectStore-driven compute ONCE per session (the slow part)."""
     store = InMemoryObjectStore(built_bundle, bundle_manifest)
     proj = tmp_path_factory.mktemp("phase0q_bt_proj")
     return bt.execute_reproducibility_check(
-        store, proj, bundle_manifest["object_store_manifest_key"])
+        store, proj, bundle_manifest["object_store_manifest_key"],
+        expected_manifest_sha256=_bundle_manifest_sha(built_bundle))
 
 
 # --------------------------------------------------------------------------- #
@@ -466,9 +471,13 @@ def test_run_full_loop_uses_runtime_statistics_and_never_calls_read_log(
     assert endpoints == ["files/update", "compile/create", "compile/read",
                          "backtests/create", "backtests/read"]
     assert summary["reproduced"] is True
-    # The uploaded main.py carries the baked-in manifest key.
+    # The uploaded main.py carries BOTH baked-in pins: the manifest key AND the
+    # expected sha256 of the manifest bytes at that key.
     pushed = opener.calls[0]["payload"]["content"]
     assert f'MANIFEST_KEY_INJECTED = "{bundle_manifest["object_store_manifest_key"]}"' in pushed
+    expected_sha = bt.sha256_hex((built_bundle / "object_store_manifest.json").read_bytes())
+    assert f'MANIFEST_SHA256_INJECTED = "{expected_sha}"' in pushed
+    assert 'MANIFEST_SHA256_INJECTED = ""' not in pushed
     # The reconstructed verdict file points at the full verdict in the Object Store.
     written = json.loads((tmp_path / "verdict.json").read_text(encoding="utf-8"))
     assert written["full_verdict_sha256"] == bt.sha256_hex(verdict_bytes)
@@ -540,6 +549,7 @@ def _valid_manifest_gov():
             "official_result": False,
             "db_write_mode": "none",
             "approved": False,
+            "freeze_ready": False,
             "status": "candidate_not_approved",
         },
     }
@@ -557,6 +567,7 @@ def test_manifest_governance_pins_accept():
     ("official_result", True),
     ("db_write_mode", "readwrite"),
     ("approved", True),
+    ("freeze_ready", True),
     ("status", "approved"),
 ])
 def test_manifest_governance_pins_reject_drift(pin, bad):
@@ -571,18 +582,162 @@ def test_manifest_governance_pins_reject_missing_pin():
     del manifest["governance"]["approved"]
     with pytest.raises(AssertionError, match="approved"):
         bt.assert_manifest_governance_pins(manifest)
+    manifest = _valid_manifest_gov()
+    del manifest["governance"]["freeze_ready"]
+    with pytest.raises(AssertionError, match="freeze_ready"):
+        bt.assert_manifest_governance_pins(manifest)
 
 
 def test_execute_refuses_drifted_manifest_before_any_verdict(
         built_bundle, bundle_manifest, tmp_path):
-    # A regenerated/overwritten manifest with flipped pins must be refused up front.
+    # A regenerated/overwritten manifest with flipped pins must be refused up front —
+    # even when its sha pin matches (i.e. the sha gate passed), the governance gate
+    # is a second, independent refusal layer.
     store = InMemoryObjectStore(built_bundle, bundle_manifest)
     manifest_key = bundle_manifest["object_store_manifest_key"]
     drifted = json.loads(store._by_key[manifest_key].decode("utf-8"))
     drifted["governance"]["approved"] = True
-    store._by_key[manifest_key] = json.dumps(drifted).encode("utf-8")
+    drifted_bytes = json.dumps(drifted).encode("utf-8")
+    store._by_key[manifest_key] = drifted_bytes
     with pytest.raises(AssertionError, match="approved"):
+        bt.execute_reproducibility_check(
+            store, tmp_path / "proj", manifest_key,
+            expected_manifest_sha256=bt.sha256_hex(drifted_bytes))
+
+
+# --------------------------------------------------------------------------- #
+# 6. Manifest BYTES pin (second injected sentinel)                             #
+# --------------------------------------------------------------------------- #
+
+def test_execute_requires_manifest_sha_pin(built_bundle, bundle_manifest, tmp_path):
+    store = InMemoryObjectStore(built_bundle, bundle_manifest)
+    manifest_key = bundle_manifest["object_store_manifest_key"]
+    with pytest.raises(RuntimeError, match="pin"):
         bt.execute_reproducibility_check(store, tmp_path / "proj", manifest_key)
+    with pytest.raises(RuntimeError, match="pin"):
+        bt.execute_reproducibility_check(store, tmp_path / "proj", manifest_key,
+                                         expected_manifest_sha256="")
+
+
+def test_execute_refuses_manifest_sha_drift(built_bundle, bundle_manifest, tmp_path):
+    # An overwritten manifest (same governance pins, different object table) must be
+    # refused BEFORE it becomes the root of trust for the per-object sha checks.
+    store = InMemoryObjectStore(built_bundle, bundle_manifest)
+    manifest_key = bundle_manifest["object_store_manifest_key"]
+    overwritten = json.loads(store._by_key[manifest_key].decode("utf-8"))
+    overwritten["object_files"] = dict(list(overwritten["object_files"].items())[:1])
+    store._by_key[manifest_key] = json.dumps(overwritten).encode("utf-8")
+    with pytest.raises(RuntimeError, match="drift refusal"):
+        bt.execute_reproducibility_check(
+            store, tmp_path / "proj", manifest_key,
+            expected_manifest_sha256=_bundle_manifest_sha(built_bundle))
+
+
+def test_inject_manifest_sha_sentinel():
+    from harness.phase0q_cloud import backtest_main as bm
+
+    src = Path(bm.__file__).read_text(encoding="utf-8")
+    sha = "a" * 64
+    injected = driver.inject_manifest_sha(src, sha)
+    assert f'MANIFEST_SHA256_INJECTED = "{sha}"' in injected
+    assert 'MANIFEST_SHA256_INJECTED = ""' not in injected
+    with pytest.raises(ValueError, match="sentinel"):
+        driver.inject_manifest_sha(injected, sha)  # sentinel already consumed
+
+
+def test_default_manifest_sha256_hashes_sibling_bundle_manifest(built_bundle):
+    expected_path = built_bundle / "expected_results_manifest.json"
+    assert driver.default_manifest_sha256(expected_path) == _bundle_manifest_sha(built_bundle)
+
+
+def test_default_manifest_sha256_missing_sibling_raises(tmp_path):
+    lone = tmp_path / "expected_results_manifest.json"
+    lone.write_text("{}", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="object_store_manifest.json"):
+        driver.default_manifest_sha256(lone)
+
+
+# --------------------------------------------------------------------------- #
+# 7. Object Store save failures must propagate                                 #
+# --------------------------------------------------------------------------- #
+
+def test_save_full_verdict_propagates_refusal():
+    class _RefusingStore:
+        def save_bytes(self, key, data):
+            return False
+
+    manifest = {"verdict_key_template": "p/results/phase0q_cloud_verdict.json"}
+    with pytest.raises(RuntimeError, match="refused"):
+        bt.save_full_verdict(_RefusingStore(), manifest, b"data")
+
+
+def test_save_full_verdict_returns_key_on_success():
+    saved = {}
+
+    class _AcceptingStore:
+        def save_bytes(self, key, data):
+            saved[key] = bytes(data)
+            return True
+
+    manifest = {"verdict_key_template": "p/results/phase0q_cloud_verdict.json"}
+    key = bt.save_full_verdict(_AcceptingStore(), manifest, b"data")
+    assert key == "p/results/phase0q_cloud_verdict.json"
+    assert saved[key] == b"data"
+
+
+def test_save_full_verdict_requires_key_template():
+    class _Store:
+        def save_bytes(self, key, data):
+            return True
+
+    with pytest.raises(RuntimeError, match="verdict_key_template"):
+        bt.save_full_verdict(_Store(), {}, b"data")
+
+
+def test_algorithm_does_not_swallow_save_failures():
+    # The old handler logged a warning and continued — a refused save must FAIL the
+    # run before any results key/sha is advertised.
+    src = (CLOUD_PKG / "backtest_main.py").read_text(encoding="utf-8")
+    assert "could not save verdict to object store" not in src
+
+
+# --------------------------------------------------------------------------- #
+# 8. Stale cached modules are purged before the materialized import            #
+# --------------------------------------------------------------------------- #
+
+def test_shipped_module_names_cover_closure(bundle_manifest):
+    names = bt.shipped_module_names(bundle_manifest)
+    for expected in ("harness", "harness.phase0q", "harness.phase0q.runner",
+                     "harness.p1_pack.verifier", "src", "src.db",
+                     "investintell_quant_core.hashing.canonical"):
+        assert expected in names, f"missing {expected}"
+    # The phase0q_cloud package itself is NOT shipped and must never be purged.
+    assert not any(n.startswith("harness.phase0q_cloud") for n in names)
+
+
+def test_purged_imports_use_materialized_sources(built_bundle, bundle_manifest, tmp_path):
+    import sys
+
+    import harness.phase0q.runner  # noqa: F401 - pre-import the REPO module
+
+    store = InMemoryObjectStore(built_bundle, bundle_manifest)
+    object_bytes = bt.load_bundle_from_object_store(store, bundle_manifest)
+    proj = tmp_path / "proj"
+    bt.materialize_sources(proj, bundle_manifest, object_bytes)
+    # Modify the MATERIALIZED copy so we can tell which version executes.
+    runner_path = proj / "harness" / "phase0q" / "runner.py"
+    runner_path.write_text(
+        runner_path.read_text(encoding="utf-8") + "\nCLOUD_COPY_MARKER = 'materialized'\n",
+        encoding="utf-8")
+    sys.path.insert(0, str(proj))
+    try:
+        bt.purge_shipped_modules(bundle_manifest)
+        import harness.phase0q.runner as r2
+        assert getattr(r2, "CLOUD_COPY_MARKER", None) == "materialized", (
+            "the cached repo module shadowed the materialized cloud copy")
+    finally:
+        sys.path.remove(str(proj))
+        bt.purge_shipped_modules(bundle_manifest)
 
 
 def test_verdict_governance_pins(session_verdict):

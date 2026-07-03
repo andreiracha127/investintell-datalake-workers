@@ -80,6 +80,31 @@ def inject_manifest_key(source: str, key: str) -> str:
     return source.replace(_MANIFEST_KEY_SENTINEL, f'MANIFEST_KEY_INJECTED = "{key}"', 1)
 
 
+_MANIFEST_SHA_SENTINEL = 'MANIFEST_SHA256_INJECTED = ""'
+
+
+def default_manifest_sha256(expected_manifest_path: Path) -> str:
+    """The expected sha256 of the manifest OBJECT: hash of the local bundle's
+    ``object_store_manifest.json`` (sibling of the expected manifest — the bundle is
+    byte-identical-on-rebuild, so the local file pins the uploaded bytes)."""
+    manifest_path = Path(expected_manifest_path).parent / "object_store_manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError(
+            f"cannot pin the manifest bytes: {manifest_path} not found next to the "
+            "expected manifest (pass --manifest-sha256 explicitly); expected sibling "
+            "object_store_manifest.json")
+    return hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+
+def inject_manifest_sha(source: str, sha: str) -> str:
+    """Bake the expected manifest sha256 into the uploaded main.py so the algorithm
+    verifies the pulled manifest BYTES before trusting them as the root of trust for
+    the per-object sha checks (an overwritten manifest is refused before json.loads)."""
+    if _MANIFEST_SHA_SENTINEL not in source:
+        raise ValueError("backtest main source lacks the MANIFEST_SHA256_INJECTED sentinel")
+    return source.replace(_MANIFEST_SHA_SENTINEL, f'MANIFEST_SHA256_INJECTED = "{sha}"', 1)
+
+
 COMPILE_POLL_SECONDS = 5.0
 COMPILE_TIMEOUT_SECONDS = 300.0
 BACKTEST_POLL_SECONDS = 10.0
@@ -414,10 +439,14 @@ def run(args: argparse.Namespace, *, opener=urllib_request.urlopen,
     project_id = args.project_id
     main_source = Path(args.main).read_text(encoding="utf-8")
     manifest_key = getattr(args, "manifest_key", None) or default_manifest_key()
+    manifest_sha = (getattr(args, "manifest_sha256", None)
+                    or default_manifest_sha256(Path(args.expected_manifest)))
     main_source = inject_manifest_key(main_source, manifest_key)
+    main_source = inject_manifest_sha(main_source, manifest_sha)
 
     print(f"[a] pushing {args.main} -> project {project_id} main.py")
-    print(f"    manifest key baked in: {manifest_key}")
+    print(f"    manifest key baked in:    {manifest_key}")
+    print(f"    manifest sha256 baked in: {manifest_sha}")
     push_main(creds, project_id, main_source, opener=opener)
 
     print("[b] compiling project ...")
@@ -475,6 +504,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="Path to the backtest algorithm source pushed as main.py.")
     parser.add_argument("--manifest-key", dest="manifest_key", default=None,
                         help="immutable object-store manifest key (default: from the committed cloud_leg_manifest.json)")
+    parser.add_argument("--manifest-sha256", dest="manifest_sha256", default=None,
+                        help="expected sha256 of the manifest object (default: hash of the "
+                             "local bundle's object_store_manifest.json next to --expected-manifest)")
     parser.add_argument("--name", default=None,
                         help="Backtest name (default: phase0q_cloud_leg_<timestamp>).")
     parser.add_argument("--credentials", default=str(CREDENTIALS_PATH),

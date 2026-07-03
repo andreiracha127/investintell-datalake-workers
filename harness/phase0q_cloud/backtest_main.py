@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import importlib
 import json
 import sys
 from pathlib import Path
@@ -70,6 +69,17 @@ def resolve_manifest_key_default(object_store) -> str:
         return object_store.read("phase0q_cloud/object_store_manifest_key.txt").strip()
     except Exception:
         return ""
+
+
+# The env/config key the driver may set to pin the manifest BYTES.
+MANIFEST_SHA256_PARAMETER = "PHASE0Q_CLOUD_MANIFEST_SHA256"
+
+# Injected by run_cloud_backtest.inject_manifest_sha before upload; empty in the repo
+# copy. The pulled manifest is the root of trust for every object_files sha, so its
+# OWN bytes must be pinned: without this, an overwritten manifest (same governance
+# pins, different object table) would let tampered objects verify against a tampered
+# manifest under the reviewed prefix.
+MANIFEST_SHA256_INJECTED = ""
 
 # The sleeves the cloud leg MUST measure at the base 5bps minimum (mirrors the notebook).
 REQUIRED_SLEEVES = ("baseline_100", "compressed_50")
@@ -228,10 +238,50 @@ def assert_fail_loud_db_stub(project_root: Path) -> None:
         raise AssertionError("db stub must refuse connect()")
 
 
-def run_compute(project_root: Path, pack_root: Path, scenario: dict) -> dict:
+def shipped_module_names(manifest: dict) -> set[str]:
+    """Module names of the COMPLETE shipped closure, derived from the manifest.
+
+    Each ``harness_sources`` / ``src_sources`` / ``quant_core_sources`` entry's
+    ``target_path`` becomes a module name (``harness/phase0q/runner.py`` ->
+    ``harness.phase0q.runner``; ``__init__.py`` names the package), and every parent
+    package is included. The ``harness.phase0q_cloud`` package is NOT shipped and never
+    appears here.
+    """
+    names: set[str] = set()
+    for section in ("harness_sources", "src_sources", "quant_core_sources"):
+        for entry in manifest.get(section, []):
+            target = entry["target_path"]
+            if target.endswith("/__init__.py"):
+                dotted = target[: -len("/__init__.py")].replace("/", ".")
+            elif target.endswith(".py"):
+                dotted = target[: -len(".py")].replace("/", ".")
+            else:
+                continue
+            parts = dotted.split(".")
+            for i in range(1, len(parts) + 1):
+                names.add(".".join(parts[:i]))
+    return names
+
+
+def purge_shipped_modules(manifest: dict) -> None:
+    """Delete every shipped-closure module from ``sys.modules``.
+
+    A process that pre-imported the repo's ``harness.*`` / ``src.*`` /
+    ``investintell_quant_core.*`` modules would otherwise shadow the just-materialized
+    CLOUD copies (``importlib.reload`` reloads from the cached ``__spec__`` path, not
+    from the materialized tree), so bundle-source regressions would never actually be
+    exercised. Purging forces the next import to resolve via ``sys.path`` — where the
+    materialized project root sits first.
+    """
+    for name in shipped_module_names(manifest):
+        sys.modules.pop(name, None)
+
+
+def run_compute(project_root: Path, pack_root: Path, scenario: dict, manifest: dict) -> dict:
     """Re-run the local-leg computation and return {run, sleeve_hashes} (notebook cell-8).
 
-    Reloads the materialized harness modules, reconstructs the injected ``RunConfig`` from
+    Purges every cached shipped-closure module and imports the MATERIALIZED harness from
+    ``project_root``, reconstructs the injected ``RunConfig`` from
     ``scenario['run_config']``, runs ``run_harness`` over the verified pack, then measures
     ``baseline_100`` / ``compressed_50`` at the base 5bps minimum via ``measure_grid_results``.
     Deterministic (no RNG, no wall-clock beyond the injected run_id/started/finished).
@@ -240,10 +290,7 @@ def run_compute(project_root: Path, pack_root: Path, scenario: dict) -> dict:
 
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    for mod in ("harness.phase0q.runner", "harness.phase0q.grid", "harness.phase0q.sleeve",
-                "harness.phase0q.decision", "harness.phase0q.metrics", "harness.phase0q.pit"):
-        if mod in sys.modules:
-            importlib.reload(sys.modules[mod])
+    purge_shipped_modules(manifest)
 
     from harness.phase0q import runner, sleeve, grid  # noqa: E402
 
@@ -412,6 +459,21 @@ def _object_store_save_bytes(object_store, key: str, data: bytes) -> None:
         raise RuntimeError(f"ObjectStore refused the save of {key}; verdict not advertised")
 
 
+def save_full_verdict(object_store, manifest: dict, verdict_bytes: bytes) -> str:
+    """Save the FULL verdict under the manifest's immutable results key.
+
+    Raises on ANY failure (missing ``verdict_key_template``, refused/failed save) —
+    the run must FAIL rather than advertise a results key/sha that was never stored.
+    Returns the verdict key on success.
+    """
+    verdict_key = manifest.get("verdict_key_template")
+    if not verdict_key:
+        raise RuntimeError(
+            "manifest has no verdict_key_template; cannot save the full verdict")
+    _object_store_save_bytes(object_store, verdict_key, verdict_bytes)
+    return verdict_key
+
+
 def load_bundle_from_object_store(object_store, manifest: dict) -> dict:
     """Read + verify every ``object_files`` entry from the ObjectStore (drift refusal).
 
@@ -426,14 +488,34 @@ def load_bundle_from_object_store(object_store, manifest: dict) -> dict:
     return object_bytes
 
 
-def execute_reproducibility_check(object_store, project_root: Path, manifest_key: str) -> dict:
+def read_verified_manifest(object_store, manifest_key: str,
+                           expected_manifest_sha256: str | None) -> dict:
+    """Read the manifest BYTES, verify them against the injected sha pin, then parse.
+
+    The manifest is the root of trust for every ``object_files`` sha, so it must never be
+    trusted unpinned: a falsy pin refuses outright; a sha mismatch is drift refusal
+    BEFORE ``json.loads`` — an overwritten manifest (same governance pins, different
+    object table) can never become the verification root.
+    """
+    if not expected_manifest_sha256:
+        raise RuntimeError(
+            "expected manifest sha256 pin is required (MANIFEST_SHA256_INJECTED / "
+            f"{MANIFEST_SHA256_PARAMETER}); refusing to trust unpinned manifest bytes")
+    raw = _object_store_read_bytes(object_store, manifest_key)
+    verify_object("object_store_manifest.json", raw, expected_manifest_sha256)
+    return json.loads(raw.decode("utf-8"))
+
+
+def execute_reproducibility_check(object_store, project_root: Path, manifest_key: str,
+                                  expected_manifest_sha256: str | None = None) -> dict:
     """The full compute, ObjectStore-driven, returning the verdict dict.
 
-    Reads the manifest, verifies + materializes every object, asserts the fail-loud db stub,
-    re-runs the compute, builds + governance-checks the verdict. QC-agnostic beyond the
+    Verifies the pulled manifest BYTES against the injected sha pin (required), then
+    verifies + materializes every object, asserts the fail-loud db stub, re-runs the
+    compute, builds + governance-checks the verdict. QC-agnostic beyond the
     ``object_store`` argument (a QCAlgorithm ObjectStore or any object exposing ReadBytes).
     """
-    manifest = json.loads(_object_store_read_bytes(object_store, manifest_key).decode("utf-8"))
+    manifest = read_verified_manifest(object_store, manifest_key, expected_manifest_sha256)
     _assert_manifest_governance(manifest)
 
     object_bytes = load_bundle_from_object_store(object_store, manifest)
@@ -446,7 +528,7 @@ def execute_reproducibility_check(object_store, project_root: Path, manifest_key
     expected = json.loads(
         object_bytes_lookup(object_bytes, manifest, "expected_results_manifest.json"))
 
-    computed = run_compute(project_root, pack_root, scenario)
+    computed = run_compute(project_root, pack_root, scenario, manifest)
     verdict = build_verdict(manifest, expected, computed["run"], computed["sleeve_hashes"])
     assert_governance(verdict)
     return verdict
@@ -470,6 +552,7 @@ MANIFEST_GOVERNANCE_PINS = {
     "official_result": False,
     "db_write_mode": "none",
     "approved": False,
+    "freeze_ready": False,
     "status": "candidate_not_approved",
 }
 
@@ -482,7 +565,8 @@ def assert_manifest_governance_pins(manifest: dict) -> None:
     Checks (identity for booleans, equality for strings): ``A5 == "blocked"``;
     ``runtime_activation`` / ``activation_allowed`` / ``allocator_publish`` /
     ``official_result`` all ``False``; ``db_write_mode == "none"``; ``approved is
-    False``; ``status == "candidate_not_approved"``. A missing pin is drift too.
+    False``; ``freeze_ready is False``; ``status == "candidate_not_approved"``. A
+    missing pin is drift too.
     Raises AssertionError naming the drifted pin — no verdict is emitted.
     """
     if manifest.get("bridge_scope") != "qc_research_phase0q_reproducibility_only":
@@ -524,6 +608,8 @@ try:  # pragma: no cover - QC cloud runtime only
             self.set_cash(100000)
             self.add_equity("SPY")
             self._manifest_key = self.get_parameter(MANIFEST_KEY_PARAMETER) or self._manifest_key_default()
+            self._manifest_sha256 = (
+                self.get_parameter(MANIFEST_SHA256_PARAMETER) or MANIFEST_SHA256_INJECTED)
 
         def _manifest_key_default(self) -> str:
             # Injected constant first; the committed key file as fallback.
@@ -538,21 +624,23 @@ try:  # pragma: no cover - QC cloud runtime only
             if not self._manifest_key:
                 raise RuntimeError(
                     f"set the {MANIFEST_KEY_PARAMETER} parameter to the immutable manifest key")
+            if not self._manifest_sha256:
+                raise RuntimeError(
+                    f"set the {MANIFEST_SHA256_PARAMETER} parameter (or bake "
+                    "MANIFEST_SHA256_INJECTED) to the expected manifest sha256")
 
             project_root = Path(tempfile.mkdtemp(prefix="phase0q_cloud_"))
             verdict = execute_reproducibility_check(
-                self.object_store, project_root, self._manifest_key)
+                self.object_store, project_root, self._manifest_key,
+                expected_manifest_sha256=self._manifest_sha256)
             verdict_bytes = canonical_verdict_bytes(verdict)
 
-            # (a) save the FULL verdict back to the Object Store under the immutable prefix.
-            manifest = json.loads(
-                _object_store_read_bytes(self.object_store, self._manifest_key).decode("utf-8"))
-            verdict_key = manifest.get("verdict_key_template")
-            if verdict_key:
-                try:
-                    _object_store_save_bytes(self.object_store, verdict_key, verdict_bytes)
-                except Exception as exc:  # pragma: no cover
-                    self.log(f"warning: could not save verdict to object store: {exc}")
+            # (a) save the FULL verdict back to the Object Store under the immutable
+            # prefix. A refused/failed save FAILS the run — the results key/sha are
+            # advertised (runtime statistics) only after the save succeeded.
+            manifest = read_verified_manifest(
+                self.object_store, self._manifest_key, self._manifest_sha256)
+            save_full_verdict(self.object_store, manifest, verdict_bytes)
 
             # (b) emit the verdict ESSENTIALS as runtime statistics — the headless
             # retrieval path (they come back on backtests/read).
