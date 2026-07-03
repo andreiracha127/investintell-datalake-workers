@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 REPRO_ROOT = ROOT / "artifacts" / "quant" / "open_macro_v03_reproducibility_001"
 
@@ -33,6 +35,23 @@ EXPECTED_BACKTEST_ID = "efd8c9cc19855e2d75344979c9f068d0"
 EXPECTED_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 EXPECTED_INPUT_PACK_SHA256 = "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
 EXPECTED_CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
+
+# The historically committed local leg (metric_evidence_001) predates the ratified
+# fold-seeding fixes; the live-head harness (68b07e81) recomputes the leg as
+# EXPECTED_LEG_HASH. The provenance record must state that relation explicitly.
+EVIDENCE_001_LEG_HASH = "ae7094c76c36d02c2f269e1cdc7868c78a7c8835939f79a1bb0d4c5c925bc993"
+
+# Independent byte pins over every file in the package, provenance itself included —
+# constants here (not read from the package) so a coordinated edit of report/verdict
+# AND provenance.json cannot silently refresh the evidence.
+EXPECTED_FILE_SHA256 = {
+    "consolidated_reproducibility_report.json":
+        "7e4a49ec39bab36a62bfe1065b0a55599ded04724b221db19d653d29e633b871",
+    "phase0q_cloud_verdict.json":
+        "c98f2e870c304d24f5666b7bc75877c453ed5ce635df34b2390e779ac530310a",
+    "provenance.json":
+        "d5b31ef4de6e5c18ea076453cb8c32c9ebdbcaeea6cf84deffc93ff5a274a1b4",
+}
 
 
 def _json(name: str) -> dict[str, Any]:
@@ -126,30 +145,65 @@ def test_provenance_pins_the_successful_run_and_the_exact_file_bytes() -> None:
     assert pins["input_pack_sha256"] == EXPECTED_INPUT_PACK_SHA256
     assert pins["contract_bundle_sha256"] == EXPECTED_CONTRACT_BUNDLE_SHA256
 
-    # immutability: the committed report/verdict bytes must equal what the driver wrote on
-    # the successful run — any post-commit edit breaks these pins.
-    for name, expected_sha in provenance["file_sha256"].items():
+    # immutability: every file in the package (provenance included) must match the
+    # CONSTANT pins above — a coordinated edit of the evidence files plus
+    # provenance.json cannot silently refresh the package.
+    committed = sorted(p.name for p in REPRO_ROOT.iterdir() if p.is_file())
+    assert committed == sorted(EXPECTED_FILE_SHA256)
+    for name, expected_sha in EXPECTED_FILE_SHA256.items():
         actual = hashlib.sha256((REPRO_ROOT / name).read_bytes()).hexdigest()
-        assert actual == expected_sha, f"{name} bytes diverge from provenance pin"
+        assert actual == expected_sha, f"{name} bytes diverge from the constant pin"
+    # internal consistency: the provenance's own table must agree with the constants
+    # for the two driver-written files it pins.
+    for name, sha in provenance["file_sha256"].items():
+        assert EXPECTED_FILE_SHA256[name] == sha, f"provenance pin for {name} diverges"
+
+
+def test_provenance_states_the_local_leg_derivation_honestly() -> None:
+    derivation = _json("provenance.json")["local_leg_derivation"]
+
+    assert derivation["local_leg_hash"] == EXPECTED_LEG_HASH
+    assert derivation["expected_manifest_sha256"] == (
+        "74a27d7596255c5d0e18c0abe82d839894a0238b3eac1a69fdafde41ad43156c")
+    assert EXPECTED_HARNESS_COMMIT in derivation["computed_from"]
+    # the record must name the historically committed leg it does NOT reproduce, so the
+    # closed matrix can never be read as reproducing evidence_001's committed bytes.
+    assert EVIDENCE_001_LEG_HASH in derivation["relation_to_metric_evidence_001"]
+    assert "source" in derivation["driver_report_source_field_note"]
+
+
+FORBIDDEN_TRUE_KEYS = ("runtime_activation", "activation_allowed", "allocator_publish",
+                       "official_result", "freeze_ready", "approved")
+
+
+def _walk(node):
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key, value
+            yield from _walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+
+
+def _assert_governance(payload) -> None:
+    for key, value in _walk(payload):
+        if key in FORBIDDEN_TRUE_KEYS:
+            assert value is not True, f"{key} must never be true"
+        if key == "A5":
+            assert str(value).strip().lower() == "blocked"
+        if key == "db_write_mode":
+            assert str(value).strip().lower() == "none"
+
+
+def test_governance_walker_catches_minified_markers() -> None:
+    # formatting-independent by construction: a minified true flag must be caught.
+    with pytest.raises(AssertionError):
+        _assert_governance(json.loads('{"nested":[{"approved":true}]}'))
+    with pytest.raises(AssertionError):
+        _assert_governance(json.loads('{"A5":"unblocked"}'))
 
 
 def test_reproducibility_artifacts_contain_no_activation_or_approval_markers() -> None:
-    forbidden = (
-        "runtime_activation=true",
-        "activation_allowed=true",
-        "freeze_ready=true",
-        "official_result=true",
-        '"runtime_activation": true',
-        '"activation_allowed": true',
-        '"freeze_ready": true',
-        '"official_result": true',
-        '"approved": true',
-        "A5=unblocked",
-        '"status": "go"',
-    )
-    for path in sorted(REPRO_ROOT.rglob("*")):
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        for marker in forbidden:
-            assert marker not in text, f"{path.name} contains {marker}"
+    for path in sorted(REPRO_ROOT.rglob("*.json")):
+        _assert_governance(json.loads(path.read_text(encoding="utf-8")))
