@@ -22,6 +22,6 @@
   "freeze_ready": false,
   "official_result": false,
   "runtime_activation": false,
-  "note": "this record documents the plan GO; every flag flips exclusively inside the Stage B activation PR via the promotion gates"
+  "note": "this record documents the plan GO; activation flags (A5, db_write_mode, runtime_activation, allocator_publish as-if) flip exclusively inside the Stage B activation PR via the promotion gates, and official_result plus the A4 exit state flip exclusively at Stage C close via its own recorded owner act - no flag ever flips outside those two PRs"
  }
 }

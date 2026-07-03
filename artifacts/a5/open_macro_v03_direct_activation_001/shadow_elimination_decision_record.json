@@ -19,6 +19,6 @@
   "freeze_ready": false,
   "official_result": false,
   "runtime_activation": false,
-  "note": "this record documents a PLAN change only; every activation flag flips exclusively inside the Stage B activation PR via the promotion gates"
+  "note": "this record documents a PLAN change only; activation flags flip exclusively inside the Stage B activation PR via the promotion gates, and official_result plus the A4 exit state flip exclusively at Stage C close via its own recorded owner act"
  }
 }

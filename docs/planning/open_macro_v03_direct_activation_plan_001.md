@@ -63,6 +63,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   compressed_50 position, cost/risk-cap parameters, provenance) — the allocation
   is the product output — and (iv) refuses to write when inputs breach the
   staleness SLO. Both tables are NEW; the old model's tables are never written.
+- **B1b. Schema migration with evidence (inherited Phase 4 requirement):** the DDL
+  for both new tables is committed, applied through a reviewed migration path, and
+  verified against the production DB with a committed
+  `schema_migration_record.json` (tables exist, columns/types/constraints match
+  the committed DDL, write permissions scoped to the worker role, idempotent
+  upsert semantics documented and tested).
 - **B2. Feature flag:** `open_macro_v03_runtime_activation` created on the worker's
   service only, read at job start; kill switch = set false (procedure already
   dry-run in Phase 1). Absent or false ⇒ the job exits without side effects.
