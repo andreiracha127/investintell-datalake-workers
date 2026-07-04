@@ -81,8 +81,10 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   used (`src/quadrant_score.py` + the full decision-chain module set it composes, and
   the harness sleeve semantics — parity by construction; and "the SAME modules" is
   ENFORCED, not asserted: Stage B pins the sha256 of EACH consumed pure module — the
-  decision chain `src/quadrant_score.py`, `src/macro_sources.py` (SEED axis
-  specs/weights), `src/quadrant_confidence.py`, `src/quadrant_hysteresis.py`,
+  decision chain `src/quadrant_score.py` and its transitive pure dependency
+  `src/macro_transforms.py` (the economic transform + robust-z standardizer, per
+  `src/quadrant_score.py:18-19`), `src/macro_sources.py` (SEED axis specs/weights),
+  `src/quadrant_confidence.py`, `src/quadrant_hysteresis.py`,
   `src/quadrant_assemble.py` (classify/latch/coverage semantics, per
   `harness/phase0q/decision.py`), plus the harness sleeve modules — and restates the
   inherited immutability constraint —
@@ -208,7 +210,10 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   the NAMED read path (scoped, never a blanket value) and re-scoping the
   `production_endpoint_activation_attempt_alert` at that same point; `official_result`
   is **true from activation**: the published decision and allocation ARE the system's
-  official output (there is no other model); and A4 advances to
+  official output (there is no other model); `freeze_ready` STAYS explicitly false in
+  the Stage B envelope and its guard tests — freeze readiness is a SEPARATE
+  post-activation decision inherited from `production_activation_stage_plan_001.md`, so
+  the activation PR neither sets nor omits it; and A4 advances to
   `production_active_official`
   in THIS Stage B flip (official from activation) — Stage C does not re-flip it. Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
@@ -240,8 +245,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   CONSUMED, OFFICIAL output (the owner eliminated the as-if staging): a committed
   verifier re-computes each published decision AND allocation independently
   (host, from the same PIT vintages AND the same sleeve `eod_prices`/quality
-  flags the worker read) and asserts byte-equality of the logical outputs; SLO
-  and staleness alerts on; kill switch armed. The count STARTS only once the
+  flags the worker read) and asserts byte-equality of the logical outputs AND —
+  because the window must prove the REAL, CONSUMED backend path, not just correct
+  table rows — ALSO fetches the sanctioned backend route (read-only) and asserts the
+  consumer-visible payload matches the recomputed output (or, where cross-repo access
+  is unavailable, pins route-level response evidence supplied by the backend), so a
+  route that filters/joins/serializes the rows wrong for users is caught, not passed;
+  SLO and staleness alerts on; kill switch armed. The count STARTS only once the
   POST-MERGE `backend_cutover_record.json` has flipped the backend route live (B3):
   days on which rows are written while the route is still inert are
   verified-but-not-consumed and do NOT count, so Stage C always exercises ten business
@@ -253,7 +263,9 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   are again published and verified. The window closes only after ten distinct
   business days each carried both rows and passed the verifier.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
-  bypass, any SLO breach, any write outside the two new tables, AND any **missing
+  BYPASS (output written despite stale inputs), any SLO breach OTHER than a sanctioned
+  staleness-block, any write outside the THREE sanctioned tables (the two output
+  tables + the `open_macro_v03_staleness_blocks` ledger), AND any **missing
   or partial daily output** — every business day of the window must carry BOTH
   rows (decision + allocation) or a recorded staleness-block (a durable
   `open_macro_v03_staleness_blocks` ledger row for that `as_of`, with input hashes);
@@ -261,7 +273,16 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   an abort (the inherited
   `missing_output_slo`), because a verifier that only checks published rows would
   otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
-  activation is invalidated traceably. **Reader-enforceable invalidation:** an
+  activation is invalidated traceably. **Governance rollback (inherited stage-4
+  `rollback_criteria`):** an abort does not merely stamp rows invalid — it RESTORES the
+  blocked envelope: disable the feature flag, `A5`→`blocked`, `official_result`→false,
+  `allocator_publish`→false, `production_endpoint_activation`→`none`,
+  `runtime_activation`→false (exactly the stage-4 `rollback_criteria` in
+  `staged_rollout_plan.json`: "disable feature flag, restore A5 blocked, block official
+  result and allocator publish"), so readers and allocator publication are no longer
+  sanctioned around an invalidated model. This emergency rollback is the sanctioned
+  exception to the no-second-flip rule, which governs only the normal clean-close
+  path. **Reader-enforceable invalidation:** an
   abort does not merely stop future writes — it stamps the affected published rows
   `valid_status = invalidated` (with `valid_until` set), and because the sanctioned
   backend read path filters on `valid_status = valid` (B1), the aborted output is
