@@ -138,6 +138,24 @@ def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
     delta_vintages = _load_json(SNAPSHOT / "delta_macro_vintages.json")
     delta_prices = _load_json(SNAPSHOT / "delta_eod_prices.json")
 
+    # Bind the consumed delta bytes to snapshot_manifest.json BEFORE deriving anything.
+    # The measurement clean-tree gate only covers compute surfaces (harness/, src/, ...)
+    # and ignores the artifact snapshot dir, so an edited/corrupted delta file would
+    # otherwise be consumed silently; fail loud if a delta's LF-normalized sha256, its
+    # row count, or the pack pin diverges from the manifest the exporter signed.
+    manifest = _load_json(SNAPSHOT / "snapshot_manifest.json")
+    _require(manifest["pack_v2_sha256"] == PACK_SHA256_PIN,
+             "snapshot manifest: pack_v2_sha256 diverged from the signed pin")
+    for name, rows, path in (
+        ("delta_macro_vintages.json", delta_vintages, SNAPSHOT / "delta_macro_vintages.json"),
+        ("delta_eod_prices.json", delta_prices, SNAPSHOT / "delta_eod_prices.json"),
+    ):
+        entry = manifest["files"][name]
+        _require(_sha256_file(path) == entry["sha256"],
+                 f"snapshot manifest: {name} sha256 diverged from the manifest pin")
+        _require(len(rows) == entry["rows"],
+                 f"snapshot manifest: {name} row count diverged from the manifest pin")
+
     vintage_rows = compose_rows(pack_vintages, delta_vintages, _VINTAGE_KEY,
                                 what="vintages")
     price_rows = compose_rows(pack_prices, delta_prices, ("ticker", "date"),

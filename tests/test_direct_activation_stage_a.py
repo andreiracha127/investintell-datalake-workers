@@ -317,6 +317,8 @@ def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
         f"postgresql://u:p@staging.example.com/{svc}",           # ...as dbname
         f"postgresql://u:p@evil.{svc}.example.com/tsdb",         # ...as later label
         f"postgresql://u:p@{svc}evil.tsdb.cloud.timescale.com/tsdb",  # prefix-only
+        f"postgresql://u:p@{svc}.staging.example.com/tsdb",      # right 1st label, wrong domain
+        f"postgresql://u:p@{svc}.tsdb.cloud.timescale.com.evil.com/tsdb",  # suffix not at end
         "postgresql://u:p@localhost/tsdb",                       # plain foreign host
         f"dbname={svc}",                                         # hostless keyword DSN
     ):

@@ -12,8 +12,9 @@ validation date, and writes three files into ``input_snapshot/``:
   (the tail overlaps the pack so that composition re-validates prod has not
   restated recent bars);
 - ``delta_macro_vintages.json`` — SEED-basket PIT vintages whose ``available_at``
-  falls strictly after the pack cut and no later than VALIDATION_AS_OF + 1 day
-  (legitimately EMPTY today: the basket's newest vintage predates the cut);
+  falls strictly after the pack cut and no later than the END of VALIDATION_AS_OF
+  (UTC, inclusive; a vintage stamped at the next midnight is tomorrow's data and is
+  excluded) (legitimately EMPTY today: the basket's newest vintage predates the cut);
 - ``snapshot_manifest.json``    — hash-pinned provenance of the two deltas.
 
 Determinism: every parameter is pinned as a module constant, row content and
@@ -52,6 +53,10 @@ PRICE_OVERLAP_START = _dt.date(2026, 6, 26)
 PACK_CUT = _dt.date(2026, 6, 30)            # pack v2 manifest as_of
 DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
 PINNED_DB_SERVICE_ID = "t83f4np6x4"
+# The pinned prod host is ``<service>.<project>.tsdb.cloud.timescale.com``; requiring
+# this managed-Timescale suffix (not just the first label) stops a hand-crafted DNS
+# alias like ``t83f4np6x4.staging.example.com`` from masquerading as prod provenance.
+PINNED_DB_HOST_SUFFIX = ".tsdb.cloud.timescale.com"
 SLEEVE_TICKERS = _lv.sleeve_mod.SLEEVE_TICKERS  # ("SPY","TLT","TIP","GLD","DBC","SHY")
 
 SNAPSHOT = _lv.SNAPSHOT
@@ -90,11 +95,12 @@ def _require(condition: bool, note: str) -> None:
 
 
 def _vintage_upper_bound_utc() -> str:
-    """``available_at`` upper bound: VALIDATION_AS_OF + 1 day at UTC midnight."""
-    return _dt.datetime.combine(
-        VALIDATION_AS_OF + _dt.timedelta(days=1), _dt.time(0, 0),
-        tzinfo=_dt.timezone.utc,
-    ).isoformat()
+    """``available_at`` upper bound (INCLUSIVE): the last representable instant of
+    VALIDATION_AS_OF in UTC (``...T23:59:59.999999+00:00``). Using the end of the
+    as-of day — the same ``_as_of_end_utc`` convention as the lower bound — keeps the
+    boundary closed on the as-of date without leaking a vintage stamped exactly at the
+    next midnight (which belongs to VALIDATION_AS_OF + 1 day) into the snapshot."""
+    return _as_of_end_utc(VALIDATION_AS_OF)
 
 
 def _delta_bytes(rows: list[dict[str, Any]]) -> bytes:
@@ -199,6 +205,20 @@ def export(conn: Any, out_dir: Path | str | None = None) -> dict[str, Any]:
         pack_prices, price_rows, ("ticker", "date"), what="prices")
     _lv.staleness_gate(composed_vintages, composed_prices)
 
+    # latest-common-date price gate: staleness_gate only checks per-ticker recency, but
+    # live_validation.compute() allocates at max(prices.dates) and requires ALL six
+    # sleeve tickers priced on THAT single date. A ticker missing the latest bar (but
+    # within the 3-business-day staleness window) passes staleness yet would make
+    # live_validation fail; run the same common-date gate HERE so export never writes a
+    # "pass" manifest for a snapshot that cannot validate.
+    prices = _lv.sleeve_mod.PriceFrame(composed_prices)
+    last_price_date = max(prices.dates)
+    for ticker in SLEEVE_TICKERS:
+        price = prices.price(ticker, last_price_date)
+        _require(price == price and price is not None and price > 0,
+                 f"latest-date price gate: {ticker} has no usable price at "
+                 f"{last_price_date.isoformat()}; snapshot would fail live validation")
+
     # all gates held -> write the three files (deltas byte-identical on re-export)
     out.mkdir(parents=True, exist_ok=True)
     price_bytes = _delta_bytes(price_rows)
@@ -220,7 +240,10 @@ def _assert_pinned_db_source(dsn: str) -> None:
     The DSN is PARSED (psycopg conninfo, which accepts both URL and keyword forms),
     never substring-matched — a lookalike user/password/dbname or a query parameter
     containing the service id must not satisfy the pin. The pinned service id must be
-    the FIRST hostname label (``<service>.<project>.tsdb.cloud.timescale.com``)."""
+    the FIRST hostname label AND the host must sit under the managed-Timescale domain
+    suffix (``<service>.<project>.tsdb.cloud.timescale.com``), so a hand-crafted alias
+    that merely starts with the service id (``t83f4np6x4.staging.example.com``) cannot
+    pass either."""
     from psycopg import conninfo
 
     try:
@@ -230,9 +253,12 @@ def _assert_pinned_db_source(dsn: str) -> None:
     host = parsed.get("host")
     _require(bool(host),
              "refusing export: DSN has no host; snapshot provenance would be false")
-    _require(str(host).split(".")[0] == PINNED_DB_SERVICE_ID,
+    host_str = str(host)
+    _require(host_str.split(".")[0] == PINNED_DB_SERVICE_ID
+             and host_str.endswith(PINNED_DB_HOST_SUFFIX),
              f"refusing export: DSN host {host!r} is not the pinned Tiger service "
-             f"{PINNED_DB_SERVICE_ID}; snapshot provenance would be false")
+             f"{PINNED_DB_SERVICE_ID} under {PINNED_DB_HOST_SUFFIX}; snapshot "
+             f"provenance would be false")
 
 
 def main() -> int:

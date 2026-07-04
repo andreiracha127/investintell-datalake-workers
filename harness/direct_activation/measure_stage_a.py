@@ -49,7 +49,7 @@ from typing import Any
 
 from harness.dark_launch import measure_observability as mo
 from harness.direct_activation import build_stage_a_amendment as amendment_builder
-from harness.direct_activation.measure_stage_a_child import SENTINEL
+from harness.direct_activation.measure_stage_a_child import SENTINEL, canonical_hash
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
@@ -61,6 +61,20 @@ CHILD_MODULE = "harness.direct_activation.measure_stage_a_child"
 CHILD_SCRIPT_IN_REPO = "/repo/harness/direct_activation/measure_stage_a_child.py"
 CONTAINER_PYTHONPATH = ("/repo:/repo/packages/investintell_quant_core/src"
                         ":/repo/services/quant_engine/src")
+
+
+def _image_id_for(image: str) -> str:
+    """Immutable content id of the ACTUAL image the container leg will execute.
+
+    ``mo._image_id()`` inspects the hard-coded Phase 1 default image; when the runner is
+    invoked with ``--image <other>`` the container leg runs THAT image, so the provenance
+    must certify the same image being executed, not the default."""
+    result = subprocess.run(["docker", "image", "inspect", image, "--format", "{{.Id}}"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"engine image {image} not present; build it first "
+                           f"(docker build -f docker/quant-engine/Dockerfile -t {image} .)")
+    return result.stdout.strip()
 
 
 def _sha256_file(path: Path) -> str:
@@ -146,7 +160,7 @@ def measure(runs_per_leg: int, *, skip_container: bool, image: str,
         worker_commit = mo._worker_commit()
         clean_tree = True
     tree_hashes = mo._compute_tree_hashes(worker_commit)
-    image_id = None if skip_container else mo._image_id()
+    image_id = None if skip_container else _image_id_for(image)
 
     legs: dict[str, list[dict[str, Any]]] = {}
     for leg in ("host", "container"):
@@ -373,6 +387,22 @@ def main(argv: list[str] | None = None) -> int:
     else:
         out_dir = STAGE_A
 
+    # Guard the COMMITTED evidence path: only a full, official N=8 host + N=8 container
+    # round may write into the committed Stage A dir. A host-only (``--skip-container``)
+    # or under-sampled (``--runs-per-leg != 8``) round still produces mismatch_count=0/
+    # verdict "reproduced" records; writing those to the committed dir would publish
+    # official-looking evidence that never ran the A3 host==container gate or the
+    # required sample size. Such smoke runs must go to ``--dry-run``/``--out-dir``.
+    writes_committed = out_dir.resolve() == STAGE_A.resolve()
+    if writes_committed and args.skip_container:
+        parser.error("--skip-container cannot write to the committed Stage A dir: the "
+                     "A3 host==container gate requires BOTH legs. Use --dry-run or "
+                     "--out-dir for a host-only smoke.")
+    if writes_committed and args.runs_per_leg != 8:
+        parser.error(f"--runs-per-leg={args.runs_per_leg} cannot write to the committed "
+                     "Stage A dir: the official round is N=8 host + N=8 container. Use "
+                     "--dry-run or --out-dir for a non-default run count.")
+
     raw = measure(args.runs_per_leg, skip_container=args.skip_container,
                   image=args.image, repo=ROOT,
                   worker_commit_override=args.worker_commit)
@@ -388,6 +418,23 @@ def main(argv: list[str] | None = None) -> int:
         divergent = sorted({h[:12] for h in all_hashes})
         print(f"REPRODUCIBILITY BREACH: mismatch_count={mismatch_count} over "
               f"{len(all_hashes)} runs; distinct hashes {divergent}", file=sys.stderr)
+        print("STOP and investigate; NO records written.", file=sys.stderr)
+        return 1
+
+    # Bind the measured round to the CITED live-validation record: the child hashes a
+    # fresh compute() result, but build_reproducibility_record stamps
+    # live_validation_record_sha256 from whatever is on disk. If the snapshot/inputs
+    # changed and the committed record was not regenerated first, a reproducible round
+    # (mismatch_count=0) could still bind a stale record whose canonical hash does not
+    # equal the measured modal hash. Recompute the record's canonical hash (same
+    # function the child uses) and STOP unless it equals the modal hash.
+    cited_hash = canonical_hash(
+        json.loads(LIVE_VALIDATION_RECORD.read_text(encoding="utf-8")))
+    if cited_hash != modal_hash:
+        print(f"CITED-RECORD MISMATCH: measured modal hash {modal_hash[:12]} != "
+              f"canonical hash {cited_hash[:12]} of {LIVE_VALIDATION_RECORD.name}; "
+              "regenerate the live-validation record at HEAD before measuring.",
+              file=sys.stderr)
         print("STOP and investigate; NO records written.", file=sys.stderr)
         return 1
 
@@ -442,6 +489,15 @@ def main(argv: list[str] | None = None) -> int:
               f"threshold {amendment_threshold} ms = ceil(1.5 x p95 "
               f"{measured['latency_p95_ms']} ms) pinned to round "
               f"{amendment['measured_round']['reproducibility_record_sha256'][:12]}")
+    else:
+        # No latency breach this round: drop any amendment left by a PRIOR breaching
+        # round in this output dir, so a valid no-amendment round never publishes (or
+        # fails CI against) a stale slo_threshold_amendment_record.json.
+        stale_amendment = out_dir / "slo_threshold_amendment_record.json"
+        if stale_amendment.exists():
+            stale_amendment.unlink()
+            print(f"removed stale amendment {stale_amendment.name} (no latency breach "
+                  "this round)")
 
     slo_record = build_slo_conformance_record(
         measured, thr, amendment_threshold=amendment_threshold,
