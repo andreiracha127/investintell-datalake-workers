@@ -1,0 +1,52 @@
+{
+ "artifact_type": "direct_activation_input_snapshot_manifest",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "files": {
+  "delta_eod_prices.json": {
+   "rows": 30,
+   "sha256": "1e6eafc967090ba6b52d74b4d318960598e0e3294828d72281ee2dae2a72eb3a"
+  },
+  "delta_macro_vintages.json": {
+   "rows": 0,
+   "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
+  }
+ },
+ "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+ "provenance": {
+  "db_service_id": "t83f4np6x4",
+  "source": "production datalake (read-only)",
+  "tables": [
+   "eod_prices",
+   "macro_observation_vintage"
+  ]
+ },
+ "query_parameters": {
+  "pack_cut": "2026-06-30",
+  "price_overlap_start": "2026-06-26",
+  "series_ids": [
+   "ACOGNO",
+   "AHETPI",
+   "CPILFESL",
+   "INDPRO",
+   "MICH",
+   "PAYEMS",
+   "PCEC96",
+   "PPIFIS"
+  ],
+  "tickers": [
+   "SPY",
+   "TLT",
+   "TIP",
+   "GLD",
+   "DBC",
+   "SHY"
+  ],
+  "validation_as_of": "2026-07-03",
+  "vintage_available_at_lower_exclusive": "2026-06-30T23:59:59.999999+00:00",
+  "vintage_available_at_upper_inclusive": "2026-07-04T00:00:00+00:00"
+ },
+ "schema_version": 1,
+ "stage": "A",
+ "staleness_gate_at_export": "pass",
+ "validation_as_of": "2026-07-03"
+}

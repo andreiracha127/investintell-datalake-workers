@@ -117,7 +117,16 @@ def consumable_today(chain: list) -> tuple[Any, str, Any]:
     return last, validity, last.as_of
 
 
-def compute() -> dict[str, Any]:
+def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
+    """Compute today's consumable decision + allocation record.
+
+    ``worker_commit_override`` pins ``provenance.worker_commit`` to a caller-supplied
+    value INSTEAD of shelling out to ``git rev-parse HEAD``. This exists so a
+    measurement child can run inside the hardened quant-engine container (which has
+    no git and no ``.git``) with the commit injected by the host runner, keeping the
+    logical output byte-identical across host and container legs. When ``None`` the
+    behaviour is unchanged: HEAD is read from the ambient clean worktree.
+    """
     pack_manifest = _load_json(PACK / "manifest.json")
     _require(pack_manifest["input_pack_sha256"] == PACK_SHA256_PIN,
              "pack v2 sha diverged from the signed pin")
@@ -158,8 +167,11 @@ def compute() -> dict[str, Any]:
     _require(defensive >= sleeve_mod.DEFENSIVE_FLOOR_BASELINE - 1e-9,
              f"defensive floor breached: {defensive}")
 
-    worker_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                                   capture_output=True, text=True, check=True).stdout.strip()
+    if worker_commit_override is not None:
+        worker_commit = worker_commit_override
+    else:
+        worker_commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                                       capture_output=True, text=True, check=True).stdout.strip()
     valid_chain = [row for row in chain if row.has_valid_quadrant()]
     return {
         "artifact_type": "direct_activation_live_validation_record",
