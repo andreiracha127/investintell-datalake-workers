@@ -321,6 +321,13 @@ def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
         f"postgresql://u:p@{svc}.tsdb.cloud.timescale.com.evil.com/tsdb",  # suffix not at end
         "postgresql://u:p@localhost/tsdb",                       # plain foreign host
         f"dbname={svc}",                                         # hostless keyword DSN
+        # comma-separated host LIST: libpq connects to the FIRST reachable host, so a
+        # staging host smuggled ahead of the pinned one must be refused (the whole list
+        # otherwise passes: first label matches, string ends with the pinned suffix)
+        f"host={svc}.staging.example.com,{svc}.proj1.tsdb.cloud.timescale.com dbname=tsdb",
+        # hostaddr override: libpq connects to that address regardless of the pinned
+        # host (host then only names the server for TLS), so it must be refused
+        f"host={svc}.proj1.tsdb.cloud.timescale.com hostaddr=203.0.113.7 dbname=tsdb",
     ):
         with pytest.raises(es.SnapshotExportError):
             es._assert_pinned_db_source(bad)
@@ -384,8 +391,27 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
 # --- 7. slo_threshold_amendment_record -------------------------------------------
 
 def test_slo_threshold_amendment_record_derives_and_inherits_correctly() -> None:
+    # The amendment record is CONDITIONAL evidence: the runner writes it only when the
+    # round breaches the Phase 1 latency threshold, and its no-breach branch deletes any
+    # leftover amendment. Source-of-truth for "was there an amendment?" is the
+    # conformance record's latency status. If a future official rerun comes in under the
+    # Phase 1 threshold, it publishes a plain `pass` conformance with NO amendment, and
+    # this guard must not fail on the (correctly) absent record — it asserts the absence
+    # instead. When latency is `pass_amended` (this round), the full derive+inherit chain
+    # below runs and additionally binds the conformance -> amendment sha256.
+    conformance = _load_strict(CONFORMANCE_RECORD)
+    latency = conformance["conformance"]["latency_slo"]
+    if latency["status"] != "pass_amended":
+        assert not AMENDMENT_RECORD.exists(), (
+            "conformance latency is plain `pass` but an amendment record is present; "
+            "the runner should have removed it on the no-breach branch")
+        assert "amendment_sha256" not in latency
+        return
+
     amendment = _load_strict(AMENDMENT_RECORD)
     live = _load_strict(LIVE_VALIDATION_RECORD)
+    assert latency["amendment_sha256"] == _sha256_lf(AMENDMENT_RECORD), (
+        "conformance record references a different amendment than the committed one")
     thresholds_doc = _load_strict(THRESHOLDS)
     phase1 = {slo["id"]: slo for slo in thresholds_doc["slos"]}
 

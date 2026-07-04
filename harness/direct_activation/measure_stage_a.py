@@ -402,6 +402,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"--runs-per-leg={args.runs_per_leg} cannot write to the committed "
                      "Stage A dir: the official round is N=8 host + N=8 container. Use "
                      "--dry-run or --out-dir for a non-default run count.")
+    if writes_committed and args.worker_commit is not None:
+        parser.error("--worker-commit cannot write to the committed Stage A dir: it is "
+                     "the smoke escape hatch that BYPASSES the clean-tree gate (records "
+                     "clean_tree=False) and stamps tree_hashes for the override commit "
+                     "rather than the code that actually ran, so a dirty/local smoke "
+                     "could overwrite the official records with the wrong provenance. "
+                     "Use --dry-run or --out-dir for a pinned-commit smoke.")
 
     raw = measure(args.runs_per_leg, skip_container=args.skip_container,
                   image=args.image, repo=ROOT,

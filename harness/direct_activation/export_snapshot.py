@@ -199,6 +199,28 @@ def export(conn: Any, out_dir: Path | str | None = None) -> dict[str, Any]:
         PACK / "data" / "canonical" / "macro_observation_vintage.json")
     pack_prices = _lv._load_json(
         PACK / "data" / "canonical" / "eod_prices.json")
+
+    # overlap-completeness gate: the PRICE_OVERLAP_START..PACK_CUT tail exists so that
+    # composition re-validates prod has NOT restated recent bars — but compose_rows only
+    # fails loud on a same-key VALUE conflict, i.e. it cross-checks bars present in BOTH
+    # pack and delta. A bar the live export MISSED in the overlap is silently kept from
+    # the pack with no re-validation, yet the manifest would still stamp
+    # ``staleness_gate_at_export: pass``. Require the exported delta to cover EVERY pack
+    # price key in the intended overlap, so the byte-for-byte re-check is complete before
+    # any "pass" manifest is written.
+    _sleeve = set(SLEEVE_TICKERS)
+    _overlap_lo, _overlap_hi = PRICE_OVERLAP_START.isoformat(), PACK_CUT.isoformat()
+    _delta_price_keys = {(r["ticker"], r["date"]) for r in price_rows}
+    _missing_overlap = sorted(
+        (row["ticker"], row["date"]) for row in pack_prices
+        if row["ticker"] in _sleeve
+        and _overlap_lo <= row["date"] <= _overlap_hi
+        and (row["ticker"], row["date"]) not in _delta_price_keys)
+    _require(not _missing_overlap,
+             f"overlap-completeness gate: the live export omits {len(_missing_overlap)} "
+             f"pack overlap bar(s) {_missing_overlap[:5]}; the {_overlap_lo}..{_overlap_hi} "
+             f"tail was not fully re-validated byte-for-byte against prod")
+
     composed_vintages = _lv.compose_rows(
         pack_vintages, vintage_rows, _lv._VINTAGE_KEY, what="vintages")
     composed_prices = _lv.compose_rows(
@@ -254,6 +276,24 @@ def _assert_pinned_db_source(dsn: str) -> None:
     _require(bool(host),
              "refusing export: DSN has no host; snapshot provenance would be false")
     host_str = str(host)
+    # libpq accepts a comma-separated host LIST and connects to the FIRST reachable
+    # host; conninfo_to_dict returns the whole list as one string, so a pin that only
+    # inspects the first label + suffix would pass a DSN like
+    # ``t83f4np6x4.staging.example.com,<pinned>`` while libpq talks to staging. Require
+    # a single effective host so exactly one host is validated and connected.
+    _require("," not in host_str,
+             f"refusing export: DSN host {host!r} is a multi-host list; libpq would "
+             f"pick the first reachable host, so exactly one pinned host must be given; "
+             f"snapshot provenance would be false")
+    # libpq uses ``hostaddr`` as the actual network address when present (``host`` then
+    # only names the server for TLS/verification), so a pinned ``host`` with a foreign
+    # ``hostaddr`` would connect off-prod while the manifest still stamps prod
+    # provenance. The pin reasons about ``host`` alone, so refuse any hostaddr override.
+    hostaddr = parsed.get("hostaddr")
+    _require(not hostaddr,
+             f"refusing export: DSN sets hostaddr={hostaddr!r}; libpq would connect to "
+             f"that address regardless of the pinned host, so provenance cannot be "
+             f"trusted; remove hostaddr")
     _require(host_str.split(".")[0] == PINNED_DB_SERVICE_ID
              and host_str.endswith(PINNED_DB_HOST_SUFFIX),
              f"refusing export: DSN host {host!r} is not the pinned Tiger service "
