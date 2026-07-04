@@ -1,10 +1,10 @@
 {
  "amended_slo": {
-  "derivation": "ceil(1.5 x measured p95 151239.576 ms) — the SAME Phase 1 Task 4 rule reapplied to the Stage A workload",
+  "derivation": "ceil(1.5 x measured p95 120942.426 ms) — the SAME Phase 1 Task 4 rule reapplied to the Stage A workload; worst leg of the host+container matrix",
   "id": "latency_slo",
   "metric": "candidate_compute_latency_p95_ms",
   "scope": "stage_a_live_validation + open_macro_v03 runtime worker (B5)",
-  "threshold": 226860
+  "threshold": 181414
  },
  "approval_matrix": {
   "approval_matrix_complete": true,
@@ -71,11 +71,11 @@
   }
  },
  "measured_round": {
-  "p95_ms": 151239.576,
-  "reproducibility_record_sha256": "bcb3cd8c1be53977f98e91ebf370d21976d6b173e4d989c90bb8e75877bb93a3",
+  "p95_ms": 120942.426,
+  "reproducibility_record_sha256": "5c36576ef638ac68ecfbcb48d5fe47934d8cf3239d32531c8837f9fee5f016e0",
   "runs_total": 16
  },
- "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain (~83 s) in live_validation.compute(). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95) — to the correct workload; it is never an ad hoc bump to make a round pass.",
+ "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms per that record's own derivation), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain in live_validation.compute() (measured worst-leg p95 120942.426 ms in the round this amendment pins). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95), worst leg of the host+container matrix — to the correct workload; it is never an ad hoc bump to make a round pass.",
  "schema_version": 1,
  "stage": "A"
 }
