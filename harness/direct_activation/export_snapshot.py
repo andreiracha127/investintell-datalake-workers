@@ -57,6 +57,11 @@ PINNED_DB_SERVICE_ID = "t83f4np6x4"
 # this managed-Timescale suffix (not just the first label) stops a hand-crafted DNS
 # alias like ``t83f4np6x4.staging.example.com`` from masquerading as prod provenance.
 PINNED_DB_HOST_SUFFIX = ".tsdb.cloud.timescale.com"
+# The pinned host is necessary but NOT sufficient: the SAME managed service can host a
+# scratch/staging database. Pin the production database NAME too so a DSN like
+# ``...timescale.com/scratch`` (or ``dbname=scratch``) on the right host cannot certify
+# official-looking Stage A evidence while the manifest stamps ``production datalake``.
+PINNED_DB_NAME = "tsdb"
 SLEEVE_TICKERS = _lv.sleeve_mod.SLEEVE_TICKERS  # ("SPY","TLT","TIP","GLD","DBC","SHY")
 
 SNAPSHOT = _lv.SNAPSHOT
@@ -65,9 +70,14 @@ PACK_SHA256_PIN = _lv.PACK_SHA256_PIN
 
 SCHEMA_VERSION = 1
 
+# Tables are SCHEMA-QUALIFIED to public.* so a role-default or DSN search_path override
+# (e.g. options=-csearch_path=scratch) can never resolve these to a same-host scratch
+# schema while the manifest still stamps ``production datalake``.
+PINNED_DB_SCHEMA = "public"
+
 _EOD_PRICES_SQL = (
     "SELECT ticker, date, close, adj_close AS adjusted_close, volume\n"
-    "FROM eod_prices\n"
+    f"FROM {PINNED_DB_SCHEMA}.eod_prices\n"
     "WHERE ticker = ANY(%(tickers)s)\n"
     "  AND date >= %(overlap_start)s\n"
     "  AND date <= %(as_of)s\n"
@@ -77,7 +87,7 @@ _EOD_PRICES_SQL = (
 _MACRO_VINTAGE_SQL = (
     "SELECT series_id, observation_period, vintage_date, value, available_at,\n"
     "       revision_number, source, source_spec_version\n"
-    "FROM macro_observation_vintage\n"
+    f"FROM {PINNED_DB_SCHEMA}.macro_observation_vintage\n"
     "WHERE series_id = ANY(%(series_ids)s)\n"
     "  AND available_at > %(cut_exclusive)s\n"
     "  AND available_at <= %(as_of_upper)s\n"
@@ -200,26 +210,11 @@ def export(conn: Any, out_dir: Path | str | None = None) -> dict[str, Any]:
     pack_prices = _lv._load_json(
         PACK / "data" / "canonical" / "eod_prices.json")
 
-    # overlap-completeness gate: the PRICE_OVERLAP_START..PACK_CUT tail exists so that
-    # composition re-validates prod has NOT restated recent bars — but compose_rows only
-    # fails loud on a same-key VALUE conflict, i.e. it cross-checks bars present in BOTH
-    # pack and delta. A bar the live export MISSED in the overlap is silently kept from
-    # the pack with no re-validation, yet the manifest would still stamp
-    # ``staleness_gate_at_export: pass``. Require the exported delta to cover EVERY pack
-    # price key in the intended overlap, so the byte-for-byte re-check is complete before
-    # any "pass" manifest is written.
-    _sleeve = set(SLEEVE_TICKERS)
-    _overlap_lo, _overlap_hi = PRICE_OVERLAP_START.isoformat(), PACK_CUT.isoformat()
-    _delta_price_keys = {(r["ticker"], r["date"]) for r in price_rows}
-    _missing_overlap = sorted(
-        (row["ticker"], row["date"]) for row in pack_prices
-        if row["ticker"] in _sleeve
-        and _overlap_lo <= row["date"] <= _overlap_hi
-        and (row["ticker"], row["date"]) not in _delta_price_keys)
-    _require(not _missing_overlap,
-             f"overlap-completeness gate: the live export omits {len(_missing_overlap)} "
-             f"pack overlap bar(s) {_missing_overlap[:5]}; the {_overlap_lo}..{_overlap_hi} "
-             f"tail was not fully re-validated byte-for-byte against prod")
+    # overlap-completeness gate (shared with the consume path): the exported delta must
+    # cover EVERY pack price key in the PRICE_OVERLAP_START..PACK_CUT tail so the
+    # byte-for-byte re-check is complete before any "pass" manifest is written — a bar
+    # the live export missed would otherwise be silently kept from the pack.
+    _lv.overlap_completeness_gate(pack_prices, price_rows)
 
     composed_vintages = _lv.compose_rows(
         pack_vintages, vintage_rows, _lv._VINTAGE_KEY, what="vintages")
@@ -299,6 +294,15 @@ def _assert_pinned_db_source(dsn: str) -> None:
              f"refusing export: DSN host {host!r} is not the pinned Tiger service "
              f"{PINNED_DB_SERVICE_ID} under {PINNED_DB_HOST_SUFFIX}; snapshot "
              f"provenance would be false")
+    # Same host, different database: pin the production dbname so a scratch/staging DB
+    # on the pinned service cannot masquerade as prod. libpq defaults an omitted dbname
+    # to the username, so a DSN without an explicit ``dbname`` is refused rather than
+    # silently connecting to a user-named database.
+    dbname = parsed.get("dbname")
+    _require(dbname == PINNED_DB_NAME,
+             f"refusing export: DSN dbname={dbname!r} is not the pinned production "
+             f"database {PINNED_DB_NAME!r}; a same-host scratch/staging database would "
+             f"stamp false 'production datalake' provenance")
 
 
 def main() -> int:

@@ -36,6 +36,7 @@ SNAPSHOT = STAGE_A / "input_snapshot"
 
 VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
+PRICE_OVERLAP_START = _dt.date(2026, 6, 26)  # delta re-exports the pack price tail from here
 CHAIN_START = _dt.date(2014, 3, 1)
 PACK_SHA256_PIN = "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
@@ -110,6 +111,9 @@ def verify_snapshot_manifest(manifest: dict[str, Any], delta_vintages: list[dict
              "snapshot manifest: query validation_as_of diverged from the pinned as-of")
     _require(qp["pack_cut"] == PACK_CUT.isoformat(),
              "snapshot manifest: pack_cut diverged from the pinned pack cut")
+    _require(qp["price_overlap_start"] == PRICE_OVERLAP_START.isoformat(),
+             "snapshot manifest: price_overlap_start diverged from the pinned "
+             "overlap window used to revalidate recent price bars")
     _require(frozenset(qp["series_ids"]) == frozenset(EXPECTED_SEED_SERIES),
              "snapshot manifest: series_ids diverged from the SEED basket")
     _require(frozenset(qp["tickers"]) == frozenset(sleeve_mod.SLEEVE_TICKERS),
@@ -134,6 +138,29 @@ def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...
                      f"{what}: overlapping key {key} disagrees between pack and delta")
         merged[key] = row
     return list(merged.values())
+
+
+def overlap_completeness_gate(pack_prices: list[dict], delta_prices: list[dict]) -> None:
+    """Every pack sleeve price key in ``PRICE_OVERLAP_START..PACK_CUT`` MUST be present
+    in the delta.
+
+    The overlap tail exists so composition re-validates that prod has not restated
+    recent bars — but ``compose_rows`` only fails on a same-key VALUE conflict, i.e. it
+    cross-checks bars present in BOTH pack and delta. A bar the delta OMITS in the
+    overlap is silently kept from the pack with no re-validation. The exporter runs this
+    check before writing, but the consume path must run it too: a hash-pinned delta that
+    drops overlap bars would otherwise be composed (and certified) without the pack tail
+    ever being re-checked against the pinned snapshot."""
+    sleeve = set(sleeve_mod.SLEEVE_TICKERS)
+    lo, hi = PRICE_OVERLAP_START.isoformat(), PACK_CUT.isoformat()
+    delta_keys = {(r["ticker"], r["date"]) for r in delta_prices}
+    missing = sorted((row["ticker"], row["date"]) for row in pack_prices
+                     if row["ticker"] in sleeve and lo <= row["date"] <= hi
+                     and (row["ticker"], row["date"]) not in delta_keys)
+    _require(not missing,
+             f"overlap-completeness gate: the delta omits {len(missing)} pack overlap "
+             f"bar(s) {missing[:5]}; the {lo}..{hi} tail was not re-validated "
+             f"byte-for-byte against the pinned delta")
 
 
 def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str, Any]:
@@ -213,6 +240,11 @@ def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
     # dir is otherwise unguarded by the measurement clean-tree gate.
     manifest = _load_json(SNAPSHOT / "snapshot_manifest.json")
     verify_snapshot_manifest(manifest, delta_vintages, delta_prices)
+
+    # re-run the exporter's overlap-completeness gate on the pinned delta before
+    # composing, so a delta that dropped overlap bars cannot be silently backfilled
+    # from the pack tail without re-validation.
+    overlap_completeness_gate(pack_prices, delta_prices)
 
     vintage_rows = compose_rows(pack_vintages, delta_vintages, _VINTAGE_KEY,
                                 what="vintages")

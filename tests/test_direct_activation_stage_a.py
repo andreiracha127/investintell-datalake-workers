@@ -386,6 +386,8 @@ def test_verify_snapshot_manifest_rejects_tampered_deterministic_fields() -> Non
          lambda m: m["query_parameters"].__setitem__("validation_as_of", "2026-07-04")),
         ("pack_cut",
          lambda m: m["query_parameters"].__setitem__("pack_cut", "2026-06-29")),
+        ("price_overlap_start",
+         lambda m: m["query_parameters"].__setitem__("price_overlap_start", "2026-06-29")),
         ("series_ids diverged from the SEED basket", _drop_mich),
         ("tickers diverged from the sleeve",
          lambda m: m["query_parameters"].__setitem__(
@@ -419,6 +421,46 @@ def test_delta_prices_cover_exactly_the_sleeve_within_bounds() -> None:
         assert lower <= d <= upper, f"{row['ticker']} {row['date']} outside export bounds"
 
 
+def test_snapshot_table_queries_are_schema_qualified() -> None:
+    """The live snapshot SELECTs must schema-qualify the tables (public.*) so a DSN or
+    role-default search_path override cannot resolve them to a same-host scratch schema
+    while the manifest still stamps production provenance."""
+    from harness.direct_activation import export_snapshot as es
+
+    assert es.PINNED_DB_SCHEMA == "public"
+    assert "FROM public.eod_prices\n" in es._EOD_PRICES_SQL
+    assert "FROM public.macro_observation_vintage\n" in es._MACRO_VINTAGE_SQL
+    # no bare (unqualified) reference to either table survives
+    assert "FROM eod_prices" not in es._EOD_PRICES_SQL
+    assert "FROM macro_observation_vintage" not in es._MACRO_VINTAGE_SQL
+
+
+def test_overlap_completeness_gate_rejects_a_delta_missing_an_overlap_bar() -> None:
+    """The consume path must re-run the overlap-completeness gate: a hash-pinned delta
+    that drops a pack bar in PRICE_OVERLAP_START..PACK_CUT would otherwise be silently
+    backfilled from the pack tail without re-validation. The committed delta passes."""
+    from harness.direct_activation import live_validation as lv
+
+    pack_prices = lv._load_json(lv.PACK / "data" / "canonical" / "eod_prices.json")
+    delta_prices = _load_strict(SNAPSHOT / "delta_eod_prices.json")
+
+    # committed delta covers the whole overlap tail -> passes
+    lv.overlap_completeness_gate(pack_prices, delta_prices)
+
+    # drop one delta bar whose key is a PACK overlap key -> that pack key becomes
+    # uncovered and the gate fails loud
+    lo, hi = lv.PRICE_OVERLAP_START.isoformat(), lv.PACK_CUT.isoformat()
+    sleeve = set(lv.sleeve_mod.SLEEVE_TICKERS)
+    pack_overlap_keys = {(r["ticker"], r["date"]) for r in pack_prices
+                         if r["ticker"] in sleeve and lo <= r["date"] <= hi}
+    assert pack_overlap_keys, "pack has no overlap-tail bars to test coverage against"
+    holed = [r for r in delta_prices
+             if (r["ticker"], r["date"]) != next(iter(pack_overlap_keys))]
+    assert len(holed) < len(delta_prices), "expected to drop a covered overlap bar"
+    with pytest.raises(lv.LiveValidationError, match="overlap-completeness gate"):
+        lv.overlap_completeness_gate(pack_prices, holed)
+
+
 # --- 5b. DSN pin is a parsed-hostname check, not a substring check ----------------
 
 def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
@@ -450,6 +492,12 @@ def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
         # hostaddr override: libpq connects to that address regardless of the pinned
         # host (host then only names the server for TLS), so it must be refused
         f"host={svc}.proj1.tsdb.cloud.timescale.com hostaddr=203.0.113.7 dbname=tsdb",
+        # RIGHT host, WRONG database: a same-host scratch/staging DB must not pass, in
+        # URL form and keyword form...
+        f"postgresql://u:p@{svc}.proj1.tsdb.cloud.timescale.com/scratch",
+        f"host={svc}.proj1.tsdb.cloud.timescale.com dbname=scratch user=u",
+        # ...and an OMITTED dbname (libpq would default it to the username) is refused
+        f"host={svc}.proj1.tsdb.cloud.timescale.com user=u",
     ):
         with pytest.raises(es.SnapshotExportError):
             es._assert_pinned_db_source(bad)
@@ -495,6 +543,7 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
     expected_surfaces = {"harness", "packages", "services", "scripts", "src",
                          "qc_a3_core.py"}
     assert set(job["tree_hashes"]) == expected_surfaces
+    worker_commit = job["worker_commit"]
     for surface, pinned in job["tree_hashes"].items():
         head_object = subprocess.run(
             ["git", "rev-parse", f"HEAD:{surface}"],
@@ -504,6 +553,22 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
             f"tree_hashes[{surface!r}] pins {pinned} but HEAD:{surface} is "
             f"{head_object} — a compute surface changed after the measured round; "
             f"re-run Stage A so the evidence binds to the merged tree")
+        # Tie the pins to the CITED worker_commit, not just HEAD: a record could stamp
+        # an unrelated/nonexistent commit in provenance while leaving tree_hashes at the
+        # measured HEAD. Resolving <worker_commit>:<surface> fails loud on a bogus commit
+        # and proves the cited commit actually contained the measured compute surfaces.
+        commit_object = subprocess.run(
+            ["git", "rev-parse", f"{worker_commit}:{surface}"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        assert commit_object.returncode == 0, (
+            f"job_identity.worker_commit {worker_commit} does not resolve "
+            f"{worker_commit}:{surface} — the record cites a commit that does not "
+            f"contain the measured compute surface {surface!r}")
+        assert pinned == commit_object.stdout.strip(), (
+            f"tree_hashes[{surface!r}] pins {pinned} but {worker_commit}:{surface} is "
+            f"{commit_object.stdout.strip()} — the cited worker_commit did not contain "
+            f"the measured compute surface")
 
     assert repro["live_validation_record_sha256"] == _sha256_lf(LIVE_VALIDATION_RECORD)
     assert repro["governance"] == live["governance"]
