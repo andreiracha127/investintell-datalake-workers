@@ -162,6 +162,34 @@ def _sha256_lf(path: Path) -> str:
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
+def _p95(values: list[float]) -> float:
+    """Nearest-rank p95, byte-for-byte the producer's ``measure_observability._p95``."""
+    ordered = sorted(values)
+    index = max(0, math.ceil(0.95 * len(ordered)) - 1)
+    return ordered[index]
+
+
+def _recompute_slo_from_runs(repro: dict[str, Any]) -> dict[str, Any]:
+    """Independently derive the SLO metrics from the raw 16-run samples in the
+    reproducibility record, replicating ``measure_stage_a.measured_metrics`` exactly:
+    worst-leg p95 latency (max of per-leg p95s), peak memory over all runs, error rate
+    over all runs, retry rate 0 (no retry path). This is the ground truth the signed
+    conformance/amendment records must match — recomputing here means a hand-edited or
+    stale conformance record cannot certify SLO values from a different round."""
+    legs = repro["legs"]
+    per_leg_p95 = {leg: round(_p95([r["wall_ms"] for r in legs[leg]["runs"]]), 3)
+                   for leg in legs}
+    all_runs = [r for leg in legs.values() for r in leg["runs"]]
+    exits = [r["exit_code"] for r in all_runs]
+    return {
+        "latency_p95_ms": max(per_leg_p95.values()),
+        "latency_p95_ms_per_leg": per_leg_p95,
+        "memory_peak_bytes": max(r["memory_peak_bytes"] for r in all_runs),
+        "error_rate": sum(1 for e in exits if e != 0) / len(all_runs),
+        "retry_rate": 0.0,
+    }
+
+
 def _stage_a_json_files() -> list[Path]:
     return sorted(p for p in STAGE_A_ROOT.rglob("*.json") if p.is_file())
 
@@ -255,18 +283,40 @@ def test_staleness_gate_rejects_future_macro_vintage() -> None:
     that already passed the manifest byte gate. A same-day vintage (age 0) is valid."""
     from harness.direct_activation import live_validation as lv
 
-    def _vintage(day: date) -> list[dict]:
-        return [{"series_id": "PAYEMS", "available_at": f"{day.isoformat()}T00:00:00+00:00"}]
+    def _basket(overrides: dict[str, date] | None = None) -> list[dict]:
+        # a full SEED basket (so the seed-present gate is satisfied); ``overrides``
+        # dates a specific series, everything else sits fresh at the as-of.
+        overrides = overrides or {}
+        return [{"series_id": sid,
+                 "available_at": f"{overrides.get(sid, lv.VALIDATION_AS_OF).isoformat()}"
+                                 "T00:00:00+00:00"}
+                for sid in lv.EXPECTED_SEED_SERIES]
 
     # future macro vintage fails loud in the vintage loop (before touching prices)
     with pytest.raises(lv.LiveValidationError, match="future macro vintage"):
-        lv.staleness_gate(_vintage(lv.VALIDATION_AS_OF + timedelta(days=1)), [])
+        lv.staleness_gate(
+            _basket({"PAYEMS": lv.VALIDATION_AS_OF + timedelta(days=1)}), [])
 
     # same-day (age 0) is within bounds -> passes the future-vintage guard
     same_day_prices = [{"ticker": t, "date": lv.VALIDATION_AS_OF.isoformat()}
                        for t in lv.sleeve_mod.SLEEVE_TICKERS]
-    result = lv.staleness_gate(_vintage(lv.VALIDATION_AS_OF), same_day_prices)
+    result = lv.staleness_gate(_basket(), same_day_prices)
     assert result["series"]["PAYEMS"]["age_days"] == 0
+
+
+def test_staleness_gate_requires_every_seed_series() -> None:
+    """A SEED series entirely absent from the composed vintages is never age-checked
+    by the per-series loop, yet the remaining basket would otherwise return
+    ``staleness: pass`` — and the decision coverage gate still consumes it at 0.80.
+    The gate must fail loud when any seed series is missing (here MICH, the 0.20
+    inflation-expectations source) before certifying freshness."""
+    from harness.direct_activation import live_validation as lv
+
+    without_mich = [{"series_id": sid,
+                     "available_at": f"{lv.VALIDATION_AS_OF.isoformat()}T00:00:00+00:00"}
+                    for sid in lv.EXPECTED_SEED_SERIES if sid != "MICH"]
+    with pytest.raises(lv.LiveValidationError, match="SEED series absent.*MICH"):
+        lv.staleness_gate(without_mich, [])
 
 
 # --- 4. snapshot manifest hash + row pins ----------------------------------------
@@ -302,6 +352,54 @@ def test_snapshot_manifest_equals_full_reconstruction() -> None:
     manifest_keys = {key for key, _ in _walk(manifest)}
     assert manifest_keys.isdisjoint(FORBIDDEN_CLOCK_KEYS), (
         f"manifest carries clock keys {manifest_keys & FORBIDDEN_CLOCK_KEYS}")
+
+
+def test_verify_snapshot_manifest_rejects_tampered_deterministic_fields() -> None:
+    """The consume-path manifest gate must reject a manifest regenerated with the SAME
+    delta hashes/row counts but a different as-of, SEED basket, sleeve, or query bound —
+    the metadata that says WHAT was validated. The committed manifest passes; each
+    single-field tamper (with the byte pins left intact) fails loud."""
+    import copy
+
+    from harness.direct_activation import live_validation as lv
+
+    manifest = _load_strict(SNAPSHOT / "snapshot_manifest.json")
+    delta_prices = _load_strict(SNAPSHOT / "delta_eod_prices.json")
+    delta_vintages = _load_strict(SNAPSHOT / "delta_macro_vintages.json")
+
+    # baseline: the committed, consistent manifest passes
+    lv.verify_snapshot_manifest(manifest, delta_vintages, delta_prices)
+
+    def _tampered(mutate) -> dict[str, Any]:
+        clone = copy.deepcopy(manifest)
+        mutate(clone)
+        return clone
+
+    def _drop_mich(m):
+        m["query_parameters"]["series_ids"] = [
+            s for s in m["query_parameters"]["series_ids"] if s != "MICH"]
+
+    cases = [
+        ("validation_as_of",
+         lambda m: m.__setitem__("validation_as_of", "2026-07-04")),
+        ("query validation_as_of",
+         lambda m: m["query_parameters"].__setitem__("validation_as_of", "2026-07-04")),
+        ("pack_cut",
+         lambda m: m["query_parameters"].__setitem__("pack_cut", "2026-06-29")),
+        ("series_ids diverged from the SEED basket", _drop_mich),
+        ("tickers diverged from the sleeve",
+         lambda m: m["query_parameters"].__setitem__(
+             "tickers", m["query_parameters"]["tickers"] + ["QQQ"])),
+        ("vintage upper bound",
+         lambda m: m["query_parameters"].__setitem__(
+             "vintage_available_at_upper_inclusive", "2026-07-04T23:59:59.999999+00:00")),
+        ("vintage lower bound",
+         lambda m: m["query_parameters"].__setitem__(
+             "vintage_available_at_lower_exclusive", "2026-06-29T23:59:59.999999+00:00")),
+    ]
+    for match, mutate in cases:
+        with pytest.raises(lv.LiveValidationError, match=match):
+            lv.verify_snapshot_manifest(_tampered(mutate), delta_vintages, delta_prices)
 
 
 # --- 5. delta composition: ticker set + date bounds ------------------------------
@@ -483,7 +581,22 @@ def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
         assert real.is_file(), entry["path"]
         assert entry["sha256"] == _sha256_lf(real), entry["path"]
 
+    # Ground truth: recompute every SLO metric from the 16 recorded runs so a stale or
+    # hand-edited conformance record cannot certify measured values from a different
+    # round (a run whose actual p95 or peak memory breached) while CI stays green.
+    recomputed = _recompute_slo_from_runs(_load_strict(REPRODUCIBILITY_RECORD))
+    measured = conformance["measured"]
+    assert measured["memory_peak_bytes"] == recomputed["memory_peak_bytes"]
+    assert measured["error_rate"] == recomputed["error_rate"]
+    assert measured["retry_rate"] == recomputed["retry_rate"]
+    assert measured["latency_p95_ms"] == recomputed["latency_p95_ms"]
+    assert measured["latency_p95_ms_per_leg"] == recomputed["latency_p95_ms_per_leg"]
+
     conf = conformance["conformance"]
+    # the per-SLO self-reported `measured` must equal the run-derived ground truth too
+    assert conf["memory_slo"]["measured"] == recomputed["memory_peak_bytes"]
+    assert conf["error_rate_slo"]["measured"] == recomputed["error_rate"]
+    assert conf["retry_rate_slo"]["measured"] == recomputed["retry_rate"]
     for slo_id in ("memory_slo", "error_rate_slo", "retry_rate_slo"):
         row = conf[slo_id]
         assert row["status"] == "pass", slo_id
@@ -494,8 +607,16 @@ def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
     assert latency["status"] in {"pass", "pass_amended"}
     if latency["status"] == "pass_amended":
         assert latency["phase1_threshold"] == 37826
+        # the certified p95 is the one actually measured over the 16 runs, and it must
+        # still sit under the amended ceiling — recompute, don't trust the field alone
+        assert latency["measured_p95_ms"] == recomputed["latency_p95_ms"]
         assert latency["measured_p95_ms"] <= latency["amended_threshold"]
         assert latency["amendment_sha256"] == _sha256_lf(AMENDMENT_RECORD)
+        # the amendment derives its ceiling from the SAME measured p95
+        amendment = _load_strict(AMENDMENT_RECORD)
+        assert amendment["measured_round"]["p95_ms"] == recomputed["latency_p95_ms"]
+    else:
+        assert recomputed["latency_p95_ms"] <= phase1["latency_slo"]
 
     assert conformance["verdict"] == "conform"
     assert conformance["governance"] == live["governance"]

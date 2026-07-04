@@ -27,6 +27,7 @@ from typing import Any
 
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
+from src.macro_sources import SEED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[2]
 PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
@@ -34,9 +35,17 @@ STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_
 SNAPSHOT = STAGE_A / "input_snapshot"
 
 VALIDATION_AS_OF = _dt.date(2026, 7, 3)
+PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
 CHAIN_START = _dt.date(2014, 3, 1)
 PACK_SHA256_PIN = "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
+
+# The SEED macro basket the decision consumes (imported from SEED_SOURCES, the one
+# authoritative definition). Every one of these MUST be present in the composed
+# vintages and declared by the snapshot manifest; a silently-dropped low-weight
+# series (e.g. MICH, 0.20 on the inflation axis) would leave the decision at 0.80
+# coverage while dodging the freshness gate, so absence is a fail-loud error.
+EXPECTED_SEED_SERIES = tuple(sorted(spec.series_id for spec in SEED_SOURCES))
 
 # staleness criteria (Phase 1 staleness_verification_record semantics)
 MONTHLY_MAX_AGE_DAYS = 45
@@ -65,6 +74,52 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
+def _as_of_end_utc(day: _dt.date) -> str:
+    """End-of-day UTC upper bound the exporter stamps for a given as-of date."""
+    return f"{day.isoformat()}T23:59:59.999999+00:00"
+
+
+def verify_snapshot_manifest(manifest: dict[str, Any], delta_vintages: list[dict],
+                             delta_prices: list[dict], *,
+                             snapshot_dir: Path = SNAPSHOT) -> None:
+    """Bind the whole signed manifest BEFORE deriving anything.
+
+    The measurement clean-tree gate only covers compute surfaces (harness/, src/, ...)
+    and ignores the artifact snapshot dir, and no Stage A record pins the manifest
+    hash, so a manifest regenerated with the SAME delta hashes/row counts but a
+    different as-of, query bound, SEED basket, sleeve, or pack cut would otherwise be
+    certified alongside false metadata. Fail loud if any consumed byte OR any
+    deterministic query field diverges from what this executor actually computes over.
+    """
+    _require(manifest["pack_v2_sha256"] == PACK_SHA256_PIN,
+             "snapshot manifest: pack_v2_sha256 diverged from the signed pin")
+    for name, rows in (("delta_macro_vintages.json", delta_vintages),
+                       ("delta_eod_prices.json", delta_prices)):
+        entry = manifest["files"][name]
+        _require(_sha256_file(snapshot_dir / name) == entry["sha256"],
+                 f"snapshot manifest: {name} sha256 diverged from the manifest pin")
+        _require(len(rows) == entry["rows"],
+                 f"snapshot manifest: {name} row count diverged from the manifest pin")
+
+    # Deterministic query fields — the metadata an auditor reads to know WHAT was
+    # validated must match the executor's own pinned parameters, not just the bytes.
+    _require(manifest["validation_as_of"] == VALIDATION_AS_OF.isoformat(),
+             "snapshot manifest: validation_as_of diverged from the pinned as-of")
+    qp = manifest["query_parameters"]
+    _require(qp["validation_as_of"] == VALIDATION_AS_OF.isoformat(),
+             "snapshot manifest: query validation_as_of diverged from the pinned as-of")
+    _require(qp["pack_cut"] == PACK_CUT.isoformat(),
+             "snapshot manifest: pack_cut diverged from the pinned pack cut")
+    _require(frozenset(qp["series_ids"]) == frozenset(EXPECTED_SEED_SERIES),
+             "snapshot manifest: series_ids diverged from the SEED basket")
+    _require(frozenset(qp["tickers"]) == frozenset(sleeve_mod.SLEEVE_TICKERS),
+             "snapshot manifest: tickers diverged from the sleeve")
+    _require(qp["vintage_available_at_lower_exclusive"] == _as_of_end_utc(PACK_CUT),
+             "snapshot manifest: vintage lower bound diverged from the pack cut")
+    _require(qp["vintage_available_at_upper_inclusive"] == _as_of_end_utc(VALIDATION_AS_OF),
+             "snapshot manifest: vintage upper bound diverged from the as-of ceiling")
+
+
 def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...],
                  *, what: str) -> list[dict]:
     """Pack rows + delta rows with deterministic dedup; a same-key VALUE conflict is
@@ -82,6 +137,14 @@ def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...
 
 
 def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str, Any]:
+    # The freshness loop below only visits series PRESENT in the composed vintages;
+    # a SEED series absent altogether would never be age-checked yet the basket would
+    # still return `staleness: pass`. Require the full SEED basket to be present FIRST
+    # so a dropped low-weight critical source (e.g. MICH) cannot slip past the 90-day
+    # gate and be treated as consumable at 0.80 coverage.
+    present = {r["series_id"] for r in vintage_rows}
+    missing = [sid for sid in EXPECTED_SEED_SERIES if sid not in present]
+    _require(not missing, f"staleness: SEED series absent from composed vintages: {missing}")
     per_series = {}
     for sid in sorted({r["series_id"] for r in vintage_rows}):
         last = max(_dt.date.fromisoformat(r["available_at"][:10])
@@ -145,23 +208,11 @@ def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
     delta_vintages = _load_json(SNAPSHOT / "delta_macro_vintages.json")
     delta_prices = _load_json(SNAPSHOT / "delta_eod_prices.json")
 
-    # Bind the consumed delta bytes to snapshot_manifest.json BEFORE deriving anything.
-    # The measurement clean-tree gate only covers compute surfaces (harness/, src/, ...)
-    # and ignores the artifact snapshot dir, so an edited/corrupted delta file would
-    # otherwise be consumed silently; fail loud if a delta's LF-normalized sha256, its
-    # row count, or the pack pin diverges from the manifest the exporter signed.
+    # Bind the whole signed manifest (consumed bytes + deterministic query fields)
+    # BEFORE deriving anything — see verify_snapshot_manifest for why the artifact
+    # dir is otherwise unguarded by the measurement clean-tree gate.
     manifest = _load_json(SNAPSHOT / "snapshot_manifest.json")
-    _require(manifest["pack_v2_sha256"] == PACK_SHA256_PIN,
-             "snapshot manifest: pack_v2_sha256 diverged from the signed pin")
-    for name, rows, path in (
-        ("delta_macro_vintages.json", delta_vintages, SNAPSHOT / "delta_macro_vintages.json"),
-        ("delta_eod_prices.json", delta_prices, SNAPSHOT / "delta_eod_prices.json"),
-    ):
-        entry = manifest["files"][name]
-        _require(_sha256_file(path) == entry["sha256"],
-                 f"snapshot manifest: {name} sha256 diverged from the manifest pin")
-        _require(len(rows) == entry["rows"],
-                 f"snapshot manifest: {name} row count diverged from the manifest pin")
+    verify_snapshot_manifest(manifest, delta_vintages, delta_prices)
 
     vintage_rows = compose_rows(pack_vintages, delta_vintages, _VINTAGE_KEY,
                                 what="vintages")
