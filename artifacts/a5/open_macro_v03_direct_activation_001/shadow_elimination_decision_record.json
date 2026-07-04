@@ -1,0 +1,24 @@
+{
+ "artifact_type": "direct_activation_shadow_elimination_decision_record",
+ "schema_version": 1,
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "decision_date": "2026-07-03",
+ "decided_by": "Andrei Rachadel",
+ "decided_by_roles": ["quant_owner", "risk_owner", "operations_owner", "final_approver"],
+ "decision_verbatim": "Precisamos fazer um ajuste: nao temos nenhum modelo em producao ainda, para tratarmos esse como shadow (o existente pode ser desconsiderado, pois e fraco, pouco confiavel e impreciso). Portanto, preciso acelerar a entrada deste em producao efetiva, eliminando essa fase Shadow.",
+ "decision": "The production shadow observe phase (stage plan 001 Phase 2, and the Phase 3 candidate-result staging that depended on it) is ELIMINATED. There is no reliable production baseline to shadow against: the existing model is weak, unreliable and imprecise, and is to be disregarded as a comparison anchor. The activation path proceeds directly to production activation.",
+ "rationale": "A shadow phase derives its protective value from divergence measurement against a TRUSTED baseline. With the incumbent model explicitly disqualified by the owner, divergence-vs-baseline measures nothing (divergence would be expected and desirable), making the shadow stage pure ceremony. The baseline-INDEPENDENT protections of the shadow are retained and relocated: live-data validation and SLO conformance become the pre-activation gate; behavioral observation happens AFTER activation, inside a defined observation window with the kill switch armed (where observation actually protects production).",
+ "supersedes": "docs/planning/open_macro_v03_production_activation_stage_plan_001.md (Phases 2-5: the shadow and candidate-result phases are eliminated; Stage B of the replacement plan inherits Phase 4's exclusive governance-flip role and promotion gates; Phase 5's consumer cutover collapses INTO Stage B per immediate_activation_decision_record.json - the backend consumes the new tables from day one, not at Stage C exit) and the closed PR #31 plan",
+ "replacement_plan": "docs/planning/open_macro_v03_direct_activation_plan_001.md",
+ "phase1_evidence_unchanged": "the complete dark launch readiness package (A4=dark_launch_ready, PR #30 merge 4ef0691) remains the evidentiary base of the activation",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false,
+  "note": "this record documents a PLAN change only and never flips a flag, so all governance flags stay false here. Per the ACTIVE path (immediate_activation_decision_record.json) the activation flags AND official_result all flip together inside the single Stage B activation PR via the promotion gates; Stage C introduces no second governance flip, it ratifies the already-official output. No flag ever flips outside the Stage B activation PR."
+ }
+}

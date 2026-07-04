@@ -1,0 +1,23 @@
+{
+ "artifact_type": "direct_activation_immediate_activation_decision_record",
+ "schema_version": 1,
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "decision_date": "2026-07-03",
+ "decided_by": "Andrei Rachadel",
+ "decided_by_roles": ["quant_owner", "risk_owner", "operations_owner", "product_portfolio_owner", "final_approver"],
+ "decision_verbatim": "vamos desligar imediatamente, e ligar o backend tambem, sem snapshot estagnado. Sua missao e entregar o modelo de producao ligado imediatamente, sem considerar fases irrealistas de cutover, pois lembrando: nao temos nenhum modelo atualmente, e este sera o primeiro que produz resultados reais e confiaveis, sem isso o sistema todo e imprestavel.",
+ "decision": "FULL IMMEDIATE ACTIVATION. The incumbent producer is switched off immediately; the backend consumer is switched to the new open_macro_v03 tables immediately (no stagnant snapshot, no phased cutover, no as-if window separating publication from consumption). The activation PR delivers: new tables + daily worker + feature flag + governance flip + backend cutover + incumbent switch-off, as ONE coordinated change. The published decision and allocation are REAL, CONSUMED, OFFICIAL output from day one.",
+ "rationale_recorded": "There is no trustworthy model in production today; the phased cutover was designed to protect a consumer of data the owner deems worthless - protecting it protects nothing. The first reliable model IS the product the system exists for; without it the whole system is unusable.",
+ "observation_window_effect": "The 10-business-day window becomes INTENSIVE SUPERVISION OVER LIVE PRODUCTION (daily independent re-compute verifier, live SLO/staleness/missing-output alerts, kill switch armed), not an as-if staging period. official_result is true from activation; a window abort fires the kill switch and invalidates traceably, returning the system to its prior state (no reliable model - explicitly accepted by the owner as the status quo).",
+ "supersedes_in_this_plan": "the two-step decommission proposal and the write-only as-if consumption mode of Stage B/C",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "freeze_ready": false,
+  "official_result": false,
+  "runtime_activation": false,
+  "note": "this record documents the decision; every flag flips exclusively inside the Stage B activation PR via the promotion gates"
+ }
+}
