@@ -78,14 +78,19 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   input basis away from the one the evidence chain and Stage A certified,
   (ii) computes the latched decision chain + the
   `compressed_50` consumable position via the SAME pure modules the evidence chain
-  used (`src/quadrant_score.py`, harness sleeve semantics — parity by construction;
-  and "the SAME modules" is ENFORCED, not asserted: Stage B pins the sha256 of each
-  consumed pure module (`src/quadrant_score.py` and the harness sleeve modules) and
-  restates the inherited immutability constraint —
+  used (`src/quadrant_score.py` + the full decision-chain module set it composes, and
+  the harness sleeve semantics — parity by construction; and "the SAME modules" is
+  ENFORCED, not asserted: Stage B pins the sha256 of EACH consumed pure module — the
+  decision chain `src/quadrant_score.py`, `src/macro_sources.py` (SEED axis
+  specs/weights), `src/quadrant_confidence.py`, `src/quadrant_hysteresis.py`,
+  `src/quadrant_assemble.py` (classify/latch/coverage semantics, per
+  `harness/phase0q/decision.py`), plus the harness sleeve modules — and restates the
+  inherited immutability constraint —
   `formula_changes`/`input_pack_changes`/`calibration_pack_changes`/`contract_v1_changes`
   all `none`, matching the runtime envelope — so a Stage B PR cannot silently alter the
-  scoring or sleeve semantics and leave Stage A / dark-launch evidence validating a
-  different candidate than production consumes),
+  scoring, confidence, hysteresis, source weights, latch semantics, or sleeve behavior
+  and leave Stage A / dark-launch evidence validating a different candidate than
+  production consumes),
   (iii) writes the decision row to `open_macro_v03_decisions` (as_of, quadrant,
   decision_validity fresh|carried, carry_provenance, input hashes,
   judgment/threshold refs, code commit) AND the allocation row to
@@ -176,9 +181,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   open_macro_v03_new_tables_only` — and, because the inherited runtime envelope
   hard-blocks productive writes on `allow_db_write=false`/`db_write_official=false`
   independently of `db_write_mode`, those companion gates flip in the SAME activation
-  envelope: `allow_db_write` true scoped to exactly the two new tables and
-  `db_write_official` true (flipping `db_write_mode` alone would leave the worker still
-  forbidden to write); `activation_allowed` flips to true with the
+  envelope: `allow_db_write` true scoped to exactly the two output tables AND the
+  `open_macro_v03_staleness_blocks` ledger (the worker must write the ledger on a
+  staleness-block day, so it is in the sanctioned write scope — otherwise the block
+  write would be blocked or flagged and the verifier could not tell an intentional
+  block from a silent exit) and `db_write_official` true (flipping `db_write_mode`
+  alone would leave the worker still forbidden to write); `activation_allowed` flips to true with the
   NAMED allowed environment (exactly the production worker service — the
   inherited feature-flag envelope requires named environments, never a blanket
   true); `open_macro_v03_runtime_activation` (the B2 job-start feature flag) is set
@@ -188,13 +196,20 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   `missing_output_slo` would fire; `allocator_publish` flips to true for the new
   allocations table together with its companion `allow_allocator_publish` gate scoped
   to `open_macro_v03_allocations` (the envelope hard-blocks publication on
-  `allow_allocator_publish=false` independently of `allocator_publish`), WITH
-  REAL CONSUMPTION from day one (the backend cutover ships in this same PR — the
-  owner eliminated the as-if mode); `production_endpoint_activation` flips from
-  `none` to the NAMED read path the backend now serves from the new tables
-  (scoped, never a blanket value); `official_result` is **true from
-  activation**: the published decision and allocation ARE the system's official
-  output (there is no other model); and A4 advances to `production_active_official`
+  `allow_allocator_publish=false` independently of `allocator_publish`), with the
+  backend cutover AUTHORIZED and landing with this PR (executed at the post-merge
+  cutover — no as-if mode, no deferral to Stage C); `production_endpoint_activation`
+  STAYS `none` at the Stage B flip, because the B3 split leaves the backend route
+  flag-gated/inert until the POST-MERGE `backend_cutover_record.json` (first verified
+  row) flips it — recording the endpoint active here would certify a false state.
+  Stage B AUTHORIZES the named read path; the post-merge cutover record EXECUTES that
+  authorization (the execution of the Stage B activation, NOT a new governance
+  decision or a Stage C flip), moving `production_endpoint_activation` from `none` to
+  the NAMED read path (scoped, never a blanket value) and re-scoping the
+  `production_endpoint_activation_attempt_alert` at that same point; `official_result`
+  is **true from activation**: the published decision and allocation ARE the system's
+  official output (there is no other model); and A4 advances to
+  `production_active_official`
   in THIS Stage B flip (official from activation) — Stage C does not re-flip it. Every historical artifact stays
   byte-frozen with its blocked-state pins; the activation state lives in NEW
   artifacts; guard tests are updated through the promotion-gate path the preflight
@@ -207,12 +222,14 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   must land under full alerting, never before it. The four measured SLOs + the
   zero-threshold attempt detectors become live alerts, RE-SCOPED for the
   activated state: the DB-write
-  detector's allowlist becomes exactly the two new tables, and the
+  detector's allowlist becomes exactly the two output tables PLUS the
+  `open_macro_v03_staleness_blocks` ledger (the sanctioned staleness-block write), and the
   `allocator_publish_attempt_alert` re-scopes to fire on any allocation publish
   OUTSIDE `open_macro_v03_allocations` (publishing to the sanctioned table is the
-  product, not an attempt); `runtime_activation_attempt_alert` and
-  `production_endpoint_activation_attempt_alert` re-scope analogously to their
-  sanctioned surfaces. The `missing_output_slo` of the inherited monitoring policy
+  product, not an attempt); `runtime_activation_attempt_alert` re-scopes analogously
+  to its sanctioned surface, and `production_endpoint_activation_attempt_alert`
+  re-scopes only when the POST-MERGE cutover record flips the route live — not at the
+  Stage B flip, when the endpoint is deliberately still `none`. The `missing_output_slo` of the inherited monitoring policy
   goes live: every business day must produce BOTH rows (decision + allocation) or
   a recorded staleness-block — anything else alerts. Staleness SLO enforcement
   blocks publication.
@@ -224,7 +241,12 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   verifier re-computes each published decision AND allocation independently
   (host, from the same PIT vintages AND the same sleeve `eod_prices`/quality
   flags the worker read) and asserts byte-equality of the logical outputs; SLO
-  and staleness alerts on; kill switch armed. The 10 days are 10 days of
+  and staleness alerts on; kill switch armed. The count STARTS only once the
+  POST-MERGE `backend_cutover_record.json` has flipped the backend route live (B3):
+  days on which rows are written while the route is still inert are
+  verified-but-not-consumed and do NOT count, so Stage C always exercises ten business
+  days of the REAL, CONSUMED backend path, not merely ten days of published rows. The
+  10 days are 10 days of
   ACTUALLY-VERIFIED output: a business day that records a staleness-block (no
   decision/allocation rows to replay) does NOT count toward the window and does
   NOT satisfy the zero-abort exit — it PAUSES and EXTENDS the count until both rows
