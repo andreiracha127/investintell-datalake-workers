@@ -229,6 +229,26 @@ def test_lock_id_is_unique_in_registry():
 def test_run_worker_help_lists_open_macro_v03():
     text = (ROOT / "src" / "run_worker.py").read_text(encoding="utf-8")
     assert "open_macro_v03" in text
+    assert "open_macro_v03_monitor" in text
+
+
+def test_monitor_worker_is_read_only_by_construction():
+    """The B5 monitor must carry NO write path: no DML/DDL keyword anywhere in its
+    source (SQL keywords are uppercase by repo convention, so an uppercase scan over
+    the module is a faithful read-only proof), and it must not import the main
+    worker's write helpers."""
+    import re
+    text = (ROOT / "src" / "workers" / "open_macro_v03_monitor.py").read_text(
+        encoding="utf-8")
+    forbidden = re.findall(
+        r"\b(INSERT|UPDATE|DELETE|UPSERT|TRUNCATE|ALTER|DROP|CREATE|COPY|GRANT|MERGE)\b",
+        text)
+    assert forbidden == [], f"monitor contains write-capable keywords: {forbidden}"
+    imports = re.findall(r"from src\.workers\.open_macro_v03 import \(([^)]*)\)", text, re.S)
+    assert imports, "monitor must import its helpers from the main worker"
+    for write_helper in ("publish", "record_staleness_block", "invalidate",
+                         "ensure_schema", "_invalidate_both"):
+        assert write_helper not in imports[0], f"monitor imports write helper {write_helper}"
 
 
 def test_ddl_files_exist_and_carry_key_constraints():
