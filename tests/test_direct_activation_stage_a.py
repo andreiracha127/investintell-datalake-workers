@@ -23,6 +23,7 @@ import hashlib
 import json
 import math
 import re
+import subprocess
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -223,18 +224,30 @@ def test_live_validation_record_equals_regeneration() -> None:
 
 # --- 4. snapshot manifest hash + row pins ----------------------------------------
 
-def test_snapshot_manifest_hash_and_row_pins() -> None:
+def test_snapshot_manifest_equals_full_reconstruction() -> None:
+    """The committed manifest must equal, dict == dict, the manifest the committed
+    exporter derives from its pinned constants (VALIDATION_AS_OF, PRICE_OVERLAP_START,
+    PACK_CUT, series/tickers, pack pin, fixed provenance) plus hashes/row counts
+    recomputed from the committed delta files — so NO field escapes the guard: a
+    hand-edited bound, provenance, row count, or an added key all fail, not just the
+    two file pins."""
+    from harness.direct_activation import export_snapshot as es
     from harness.direct_activation import live_validation as lv
 
     manifest = _load_strict(SNAPSHOT / "snapshot_manifest.json")
 
-    for name in ("delta_eod_prices.json", "delta_macro_vintages.json"):
-        path = SNAPSHOT / name
-        rows = _load_strict(path)
-        assert isinstance(rows, list)
-        entry = manifest["files"][name]
-        assert entry["sha256"] == _sha256_lf(path), name
-        assert entry["rows"] == len(rows), name
+    def _lf_bytes(path: Path) -> bytes:
+        return path.read_bytes().replace(b"\r\n", b"\n")
+
+    price_path = SNAPSHOT / "delta_eod_prices.json"
+    vintage_path = SNAPSHOT / "delta_macro_vintages.json"
+    price_rows = _load_strict(price_path)
+    vintage_rows = _load_strict(vintage_path)
+    assert isinstance(price_rows, list) and isinstance(vintage_rows, list)
+
+    expected = es.build_manifest(
+        _lf_bytes(price_path), price_rows, _lf_bytes(vintage_path), vintage_rows)
+    assert manifest == expected
 
     assert manifest["pack_v2_sha256"] == lv.PACK_SHA256_PIN
 
@@ -259,6 +272,33 @@ def test_delta_prices_cover_exactly_the_sleeve_within_bounds() -> None:
     for row in delta_prices:
         d = date.fromisoformat(row["date"])
         assert lower <= d <= upper, f"{row['ticker']} {row['date']} outside export bounds"
+
+
+# --- 5b. DSN pin is a parsed-hostname check, not a substring check ----------------
+
+def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
+    from harness.direct_activation import export_snapshot as es
+
+    svc = es.PINNED_DB_SERVICE_ID
+    # the real prod shape: <service>.<project>.tsdb.cloud.timescale.com
+    es._assert_pinned_db_source(
+        f"postgresql://u:p@{svc}.proj1.tsdb.cloud.timescale.com:32648/tsdb")
+    # keyword-form DSN with the pinned host also passes (psycopg conninfo parse)
+    es._assert_pinned_db_source(
+        f"host={svc}.proj1.tsdb.cloud.timescale.com dbname=tsdb user=u")
+
+    # the service id anywhere EXCEPT the first hostname label must NOT satisfy the pin
+    for bad in (
+        f"postgresql://{svc}:p@staging.example.com/tsdb",        # ...as username
+        f"postgresql://u:{svc}@staging.example.com/tsdb",        # ...as password
+        f"postgresql://u:p@staging.example.com/{svc}",           # ...as dbname
+        f"postgresql://u:p@evil.{svc}.example.com/tsdb",         # ...as later label
+        f"postgresql://u:p@{svc}evil.tsdb.cloud.timescale.com/tsdb",  # prefix-only
+        "postgresql://u:p@localhost/tsdb",                       # plain foreign host
+        f"dbname={svc}",                                         # hostless keyword DSN
+    ):
+        with pytest.raises(es.SnapshotExportError):
+            es._assert_pinned_db_source(bad)
 
 
 # --- 6. reproducibility_record (measured round) ----------------------------------
@@ -291,7 +331,25 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
     job = repro["job_identity"]
     assert job["clean_tree"] is True  # bool, not the string "true"
     assert re.fullmatch(r"[0-9a-f]{40}", job["worker_commit"])
-    assert job["tree_hashes"]
+
+    # HARD evidence-to-branch binding: every pinned compute-surface hash must equal
+    # the git object of that surface at the CURRENT HEAD (the tree being merged).
+    # Any post-measurement commit touching a compute surface (harness/, src/, ...)
+    # changes `git rev-parse HEAD:<surface>` and fails CI, so the measured evidence
+    # can never silently certify a different tree than the one merging. Works for
+    # directory surfaces (tree hash) and file surfaces like qc_a3_core.py (blob hash).
+    expected_surfaces = {"harness", "packages", "services", "scripts", "src",
+                         "qc_a3_core.py"}
+    assert set(job["tree_hashes"]) == expected_surfaces
+    for surface, pinned in job["tree_hashes"].items():
+        head_object = subprocess.run(
+            ["git", "rev-parse", f"HEAD:{surface}"],
+            cwd=ROOT, capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        assert pinned == head_object, (
+            f"tree_hashes[{surface!r}] pins {pinned} but HEAD:{surface} is "
+            f"{head_object} — a compute surface changed after the measured round; "
+            f"re-run Stage A so the evidence binds to the merged tree")
 
     assert repro["live_validation_record_sha256"] == _sha256_lf(LIVE_VALIDATION_RECORD)
     assert repro["governance"] == live["governance"]

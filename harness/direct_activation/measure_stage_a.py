@@ -29,10 +29,10 @@ and exits non-zero. LATENCY is the one SLO with a signed-amendment path (orchest
 decision — workload identity, not a regression): with ``--amend-latency``, a latency
 breach vs the Phase 1 threshold triggers the two-phase flow — the reproducibility
 record is written first, then ``build_stage_a_amendment`` derives the amended
-threshold with the SAME Phase 1 Task 4 rule (``ceil(1.5 x measured p95)``) pinned to
-THAT round's reproducibility sha256, and the conformance record marks latency
-``pass_amended`` referencing the amendment's sha256. Without ``--amend-latency`` a
-latency breach STOPs exactly as before.
+threshold with the SAME Phase 1 Task 4 rule (``ceil(1.5 x measured p95)``, worst leg
+of the host+container matrix) pinned to THAT round's reproducibility sha256, and the
+conformance record marks latency ``pass_amended`` referencing the amendment's sha256.
+Without ``--amend-latency`` a latency breach STOPs exactly as before.
 """
 
 from __future__ import annotations
@@ -229,14 +229,21 @@ def _p95(values: list[float]) -> float:
 
 
 def measured_metrics(raw: dict[str, Any]) -> dict[str, Any]:
-    """Round-level metrics with the Phase 1 formulas (p95 via mo._p95, peak = max)."""
-    walls = [s["wall_ms"] for leg in raw["legs"].values() for s in leg]
+    """Round-level metrics with the Phase 1 formulas: the SLO latency figure is the
+    WORST LEG's p95 (max over per-leg p95s, exactly measure_observability.build_records
+    -> "worst leg of the host+container matrix"), never the pooled p95 — pooling 16
+    samples would dilute a slow leg behind a fast one. peak = max over all runs
+    (identical to the worst leg's max). mismatch_count stays pooled 16/16 (identity is
+    one comparison across the whole round; only the latency STATISTIC is per-leg)."""
+    per_leg_p95 = {leg: round(_p95([s["wall_ms"] for s in samples]), 3)
+                   for leg, samples in raw["legs"].items()}
     peaks = [s["memory_peak_bytes"] for leg in raw["legs"].values() for s in leg]
     exits = [s["exit_code"] for leg in raw["legs"].values() for s in leg]
-    runs_total = len(walls)
+    runs_total = len(exits)
     return {
         "runs_total": runs_total,
-        "latency_p95_ms": round(_p95(walls), 3),
+        "latency_p95_ms": max(per_leg_p95.values()),
+        "latency_p95_ms_per_leg": per_leg_p95,
         "memory_peak_bytes": max(peaks),
         "error_rate": sum(1 for e in exits if e != 0) / runs_total,
         "retry_rate": 0.0,
@@ -314,6 +321,9 @@ def build_slo_conformance_record(measured: dict[str, Any], thr: dict[str, Any], 
         "thresholds_source": thresholds_source,
         "measured": {
             "latency_p95_ms": latency_p95,
+            "latency_p95_ms_per_leg": measured["latency_p95_ms_per_leg"],
+            "latency_p95_note": "worst leg of the host+container matrix (max of "
+                                "per-leg p95s), the Phase 1 Task 4 semantics",
             "memory_peak_bytes": measured["memory_peak_bytes"],
             "error_rate": measured["error_rate"],
             "retry_rate": measured["retry_rate"],

@@ -214,10 +214,24 @@ def export(conn: Any, out_dir: Path | str | None = None) -> dict[str, Any]:
 
 
 def _assert_pinned_db_source(dsn: str) -> None:
-    """Refuse to export unless the DSN references the pinned Tiger service, so a
-    staging/local DB can never masquerade as prod in the snapshot provenance."""
-    _require(PINNED_DB_SERVICE_ID in dsn,
-             f"refusing export: DSN does not reference pinned Tiger service "
+    """Refuse to export unless the DSN's HOSTNAME is the pinned Tiger service, so a
+    staging/local DB can never masquerade as prod in the snapshot provenance.
+
+    The DSN is PARSED (psycopg conninfo, which accepts both URL and keyword forms),
+    never substring-matched — a lookalike user/password/dbname or a query parameter
+    containing the service id must not satisfy the pin. The pinned service id must be
+    the FIRST hostname label (``<service>.<project>.tsdb.cloud.timescale.com``)."""
+    from psycopg import conninfo
+
+    try:
+        parsed = conninfo.conninfo_to_dict(dsn)
+    except Exception as exc:  # psycopg raises ProgrammingError on a malformed DSN
+        raise SnapshotExportError(f"refusing export: DSN cannot be parsed: {exc}") from exc
+    host = parsed.get("host")
+    _require(bool(host),
+             "refusing export: DSN has no host; snapshot provenance would be false")
+    _require(str(host).split(".")[0] == PINNED_DB_SERVICE_ID,
+             f"refusing export: DSN host {host!r} is not the pinned Tiger service "
              f"{PINNED_DB_SERVICE_ID}; snapshot provenance would be false")
 
 
