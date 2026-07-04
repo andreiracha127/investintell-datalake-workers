@@ -1,0 +1,25 @@
+{
+ "artifact_type": "open_macro_v03_stage_b_module_pins",
+ "module_pins_sha256": "ae1192135e79f9a2cb367008944014ace0228c3438770afd6a5d509fc03ebbcc",
+ "modules": {
+  "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
+  "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
+  "scripts/p1_export/export_p1_sources.py": "b9ca2043c3393d9386383010f4963149c8f554499dceb70c6fc7c33705fb91b7",
+  "src/macro_sources.py": "e6c325bd768a36f80293258a333a07e1cd976f252c4bfaa6e9fa1a3904acb11e",
+  "src/macro_transforms.py": "c05bf2dda9fa9b155c0121be6e4db4eb21336a2a1961558b4831adca9ab3d2fd",
+  "src/quadrant_assemble.py": "77da41b08cec1fffdd26e0747dbac63b646ae39ecb7767348144236568fe20a2",
+  "src/quadrant_confidence.py": "5343316ef744ffce0d051e297d7ea4e3b7fdc4212b44459b3b26a440dcf31443",
+  "src/quadrant_hysteresis.py": "c5d4bf12324261a3244138b2ad8d1e20d3c99a1575d1f8e11019916ec8bbe37d",
+  "src/quadrant_score.py": "e0563a33ab98f2b64f5105b7fa29ade3811704a6772bdce8e0d41d25aa6dae15",
+  "src/quadrant_snapshot.py": "fe81a4c4263f2d5af80d0f496cfbe7faaa056f869675fd887c812ec39e155055",
+  "src/quadrant_staleness.py": "7283a06932c551c4a06d2bde776a70cd658b2beb2231c6dadee3100e87077caa"
+ },
+ "pack": {
+  "canonical_snapshot_sha256": "3a4a060c3b88a914569fc797d3656200672f2bdd7f202ad66c9ac36de759467d",
+  "input_pack_id": "open_macro_v03_certified_input_pack_002",
+  "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
+ },
+ "schema_version": 1,
+ "stage": "B",
+ "stage_b_id": "open_macro_v03_direct_activation_stage_b_001"
+}

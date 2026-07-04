@@ -1,0 +1,66 @@
+{
+ "A5": "blocked",
+ "activation_allowed": false,
+ "allocator_publish": false,
+ "allow_allocator_publish": false,
+ "allow_db_write": false,
+ "allowed_tables": [],
+ "approval_matrix": {
+  "final_approver": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  },
+  "operations_owner": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  },
+  "product_portfolio_owner": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  },
+  "quant_owner": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  },
+  "risk_owner": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  },
+  "technical_owner": {
+   "approval_evidence": null,
+   "approval_status": "pending",
+   "blocking": true,
+   "owner": null,
+   "timestamp": null
+  }
+ },
+ "approval_matrix_complete": false,
+ "artifact_type": "open_macro_v03_stage_b_activation_envelope",
+ "db_write_mode": "none",
+ "db_write_official": false,
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "environment": null,
+ "freeze_ready": false,
+ "note": "Stage B envelope committed FULLY BLOCKED. Every activation flip and the six approval-matrix roles flip ONLY in the Stage B PR's final review; a real worker run today returns governance_blocked.",
+ "official_result": false,
+ "production_endpoint_activation": "none",
+ "runtime_activation": false,
+ "schema_version": 1,
+ "stage": "B",
+ "stage_b_id": "open_macro_v03_direct_activation_stage_b_001"
+}
