@@ -84,9 +84,15 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   decision chain `src/quadrant_score.py` and its transitive pure dependency
   `src/macro_transforms.py` (the economic transform + robust-z standardizer, per
   `src/quadrant_score.py:18-19`), `src/macro_sources.py` (SEED axis specs/weights),
-  `src/quadrant_confidence.py`, `src/quadrant_hysteresis.py`,
-  `src/quadrant_assemble.py` (classify/latch/coverage semantics, per
-  `harness/phase0q/decision.py`), plus the harness sleeve modules — and restates the
+  `src/quadrant_confidence.py`, `src/quadrant_hysteresis.py`, `src/quadrant_assemble.py`
+  (classify/latch/coverage semantics, per `harness/phase0q/decision.py`) and the two
+  modules IT composes, `src/quadrant_snapshot.py` (`make_snapshot_id`) and
+  `src/quadrant_staleness.py` (`available_at_snapshot`/`compute_stale_after`) — this is
+  the FULL transitive closure of the decision-chain pure modules (the import graph is
+  closed: these eight are the complete set, since `macro_sources`, `macro_transforms`,
+  `quadrant_confidence`, `quadrant_hysteresis`, `quadrant_snapshot`, and
+  `quadrant_staleness` are leaves with no further `src` dependency) — plus the harness
+  sleeve modules; and restates the
   inherited immutability constraint —
   `formula_changes`/`input_pack_changes`/`calibration_pack_changes`/`contract_v1_changes`
   all `none`, matching the runtime envelope — so a Stage B PR cannot silently alter the
@@ -179,7 +185,10 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   sign-off is missing)
   with `approval_matrix_complete: true`, even where one person holds several roles
   (each role named against its holder); an absent or stale approval matrix blocks
-  the flip. A5 blocked→active for the TWO new tables only; `db_write_mode:
+  the flip. A5 blocked→active scoped to the two output tables AND the
+  `open_macro_v03_staleness_blocks` ledger (the ledger is INSIDE the A5 activation
+  scope as a sanctioned operational surface — B1/B1b require its write on stale-input
+  days — not a third unapproved side effect); `db_write_mode:
   open_macro_v03_new_tables_only` — and, because the inherited runtime envelope
   hard-blocks productive writes on `allow_db_write=false`/`db_write_official=false`
   independently of `db_write_mode`, those companion gates flip in the SAME activation
@@ -260,7 +269,13 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   ACTUALLY-VERIFIED output: a business day that records a staleness-block (no
   decision/allocation rows to replay) does NOT count toward the window and does
   NOT satisfy the zero-abort exit — it PAUSES and EXTENDS the count until both rows
-  are again published and verified. The window closes only after ten distinct
+  are again published and verified — but a staleness-block is HONORED only if
+  JUSTIFIED: the verifier independently recomputes the staleness determination from
+  the pinned inputs and ABORTS if a block was recorded on inputs that were actually
+  fresh (a false block would otherwise silently pause the window and expire the live
+  allocation without tripping the missing-output abort), and B5's staleness alert
+  cross-checks the ledger row's input hashes/reason against the staleness SLO on the
+  same day. The window closes only after ten distinct
   business days each carried both rows and passed the verifier.
 - **Pinned abort criteria:** any verifier mismatch, any NaN/Inf, any staleness
   BYPASS (output written despite stale inputs), any SLO breach OTHER than a sanctioned
