@@ -25,7 +25,7 @@ import math
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -243,6 +243,30 @@ def test_live_validation_record_equals_regeneration() -> None:
     committed = _load_strict(LIVE_VALIDATION_RECORD)
     regenerated = lv.compute(worker_commit_override=committed["provenance"]["worker_commit"])
     assert regenerated == committed
+
+
+# --- 3b. staleness gate rejects future (PIT-impossible) macro data ---------------
+
+def test_staleness_gate_rejects_future_macro_vintage() -> None:
+    """A macro vintage available AFTER VALIDATION_AS_OF is future data: PIT-impossible
+    for honest inputs (the exporter's upper bound rejects it at export). Its negative
+    age would satisfy ``age <= bound`` and be read as ``fresh``; the consume-path gate
+    must fail loud instead, closing the tampered-snapshot / exporter-regression case
+    that already passed the manifest byte gate. A same-day vintage (age 0) is valid."""
+    from harness.direct_activation import live_validation as lv
+
+    def _vintage(day: date) -> list[dict]:
+        return [{"series_id": "PAYEMS", "available_at": f"{day.isoformat()}T00:00:00+00:00"}]
+
+    # future macro vintage fails loud in the vintage loop (before touching prices)
+    with pytest.raises(lv.LiveValidationError, match="future macro vintage"):
+        lv.staleness_gate(_vintage(lv.VALIDATION_AS_OF + timedelta(days=1)), [])
+
+    # same-day (age 0) is within bounds -> passes the future-vintage guard
+    same_day_prices = [{"ticker": t, "date": lv.VALIDATION_AS_OF.isoformat()}
+                       for t in lv.sleeve_mod.SLEEVE_TICKERS]
+    result = lv.staleness_gate(_vintage(lv.VALIDATION_AS_OF), same_day_prices)
+    assert result["series"]["PAYEMS"]["age_days"] == 0
 
 
 # --- 4. snapshot manifest hash + row pins ----------------------------------------
@@ -483,10 +507,18 @@ def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
 def test_stage_a_records_share_identity_and_worker_commit() -> None:
     live = _load_strict(LIVE_VALIDATION_RECORD)
     repro = _load_strict(REPRODUCIBILITY_RECORD)
-    amendment = _load_strict(AMENDMENT_RECORD)
     conformance = _load_strict(CONFORMANCE_RECORD)
 
-    for record in (live, repro, amendment, conformance):
+    records = [live, repro, conformance]
+    # The amendment record exists only when this round breached the Phase 1 latency
+    # threshold (`pass_amended`); a future no-breach official rerun deletes it. Load it
+    # into the shared-identity checks only when the conformance record says it exists,
+    # so a no-amendment rerun does not fail here with FileNotFoundError before checking
+    # the remaining records (mirrors the amendment-aware gate in the amendment test).
+    if conformance["conformance"]["latency_slo"]["status"] == "pass_amended":
+        records.append(_load_strict(AMENDMENT_RECORD))
+
+    for record in records:
         assert record["direct_activation_id"] == DIRECT_ACTIVATION_ID
         assert record["stage"] == "A"
 

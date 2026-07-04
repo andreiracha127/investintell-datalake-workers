@@ -87,6 +87,13 @@ def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str
         last = max(_dt.date.fromisoformat(r["available_at"][:10])
                    for r in vintage_rows if r["series_id"] == sid)
         age = (VALIDATION_AS_OF - last).days
+        # A vintage available AFTER the as-of date is future macro data: PIT-impossible
+        # for honest inputs (the exporter's upper bound rejects it at export time), so
+        # a negative age can only come from a tampered snapshot that passed the manifest
+        # gate or a future exporter regression. `age <= bound` alone would read that as
+        # "fresh"; fail loud here in the consume path before deriving any decision.
+        _require(age >= 0, f"staleness: {sid} last available {last} is after as-of "
+                           f"{VALIDATION_AS_OF} (future macro vintage, age {age}d)")
         bound = MICH_MAX_AGE_DAYS if sid == "MICH" else MONTHLY_MAX_AGE_DAYS
         _require(age <= bound, f"staleness: {sid} last available {last} ({age}d > {bound}d)")
         per_series[sid] = {"last_available_at": last.isoformat(), "age_days": age,
