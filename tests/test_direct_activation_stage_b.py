@@ -283,6 +283,63 @@ def test_ddl_files_exist_and_carry_key_constraints():
     assert "create_hypertable" not in stale
 
 
+def test_schema_migration_record_pins_the_applied_and_verified_catalog():
+    """B1b evidence: the production DDL application + independent catalog
+    verification record exists, loads strictly, pins the exact committed DDL bytes
+    (CRLF->LF), covers exactly the three sanctioned tables with verdict match,
+    documents the idempotent upsert semantics, and flips nothing."""
+    path = STAGE_B / "schema_migration_record.json"
+    assert path.is_file()
+    record = _load_json(path)  # strict: duplicate keys rejected
+
+    assert record["artifact_type"] == "stage_b_schema_migration_record"
+    assert record["schema_version"] == 1
+    assert record["stage"] == "B"
+    assert record["direct_activation_id"] == "open_macro_v03_direct_activation_001"
+
+    # applied: the DDL byte pins match the committed .sql files
+    ddl_files = record["applied"]["ddl_files"]
+    assert set(ddl_files) == {
+        "schemas/open_macro_v03_decisions.sql",
+        "schemas/open_macro_v03_allocations.sql",
+        "schemas/open_macro_v03_staleness_blocks.sql",
+    }
+    for rel, pinned in ddl_files.items():
+        assert _sha256_norm(ROOT / rel) == pinned, rel
+    assert "t83f4np6x4" in record["applied"]["method"]
+    assert "CREATE TABLE IF NOT EXISTS" in record["applied"]["method"]
+
+    # verification: exactly the three sanctioned tables, every verdict "match"
+    import src.workers.open_macro_v03 as w
+    per_table = record["verification"]["per_table"]
+    assert set(per_table) == set(w.ALLOWED_TABLES)
+    for table, entry in per_table.items():
+        assert entry["verdict"] == "match", table
+        assert entry["columns_verified"] is True, table
+        assert entry["row_count"] == 0, table
+        assert entry["constraints_verified"], table
+        assert "tsdbadmin" in entry["grants"], table
+    # the auto-name caveat for the inline carry_seed<=as_of CHECK is recorded
+    assert any("open_macro_v03_decisions_check" in note
+               for note in record["verification"]["notes"])
+    assert ("open_macro_v03_decisions_check (c)" in
+            per_table["open_macro_v03_decisions"]["constraints_verified"])
+
+    # idempotent upsert semantics documented
+    assert "ON CONFLICT (as_of) DO UPDATE" in record["idempotent_upsert_semantics"]
+    assert "DO NOTHING" in record["idempotent_upsert_semantics"]
+    assert "tests/test_open_macro_v03_worker.py" in record["idempotent_upsert_semantics"]
+
+    # governance: the record flips nothing (walk + string-truthy)
+    gov = record["governance"]
+    assert gov["A5"] == "blocked"
+    assert gov["db_write_mode"] == "none"
+    assert gov["production_endpoint_activation"] == "none"
+    for key, value in _walk(record):
+        if key in FORBIDDEN_TRUE_FIELDS:
+            assert not _is_truthy_flag(value), f"{key} truthy in the migration record"
+
+
 def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
     """The worker's EXPECTED_SCHEMA (verify_schema expectations, the B1b evidence
     base) must mirror the committed DDL: the expected tables are exactly the three
