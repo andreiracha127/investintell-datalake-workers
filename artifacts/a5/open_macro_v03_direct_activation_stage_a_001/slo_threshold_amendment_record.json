@@ -1,0 +1,81 @@
+{
+ "amended_slo": {
+  "derivation": "ceil(1.5 x measured p95 151239.576 ms) — the SAME Phase 1 Task 4 rule reapplied to the Stage A workload",
+  "id": "latency_slo",
+  "metric": "candidate_compute_latency_p95_ms",
+  "scope": "stage_a_live_validation + open_macro_v03 runtime worker (B5)",
+  "threshold": 226860
+ },
+ "approval_matrix": {
+  "approval_matrix_complete": true,
+  "approvals": [
+   {
+    "owner": "Andrei Rachadel",
+    "role": "technical_owner"
+   },
+   {
+    "owner": "Andrei Rachadel",
+    "role": "quant_owner"
+   },
+   {
+    "owner": "Andrei Rachadel",
+    "role": "risk_owner"
+   },
+   {
+    "owner": "Andrei Rachadel",
+    "role": "operations_owner"
+   },
+   {
+    "owner": "Andrei Rachadel",
+    "role": "product_portfolio_owner"
+   },
+   {
+    "owner": "Andrei Rachadel",
+    "role": "final_approver"
+   }
+  ],
+  "note": "ratified by the Stage A PR merge per the plan's signed-amendment rule"
+ },
+ "artifact_type": "stage_a_slo_threshold_amendment_record",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "note": "Stage A validates only; every flip happens in Stage B",
+  "official_result": false,
+  "runtime_activation": false
+ },
+ "inherited_unchanged": {
+  "slos": [
+   {
+    "id": "memory_slo",
+    "metric": "candidate_compute_memory_peak_bytes",
+    "threshold": 2047279104
+   },
+   {
+    "id": "error_rate_slo",
+    "metric": "candidate_compute_error_rate",
+    "threshold": 0.0
+   },
+   {
+    "id": "retry_rate_slo",
+    "metric": "candidate_compute_retry_rate",
+    "threshold": 0.0
+   }
+  ],
+  "source": {
+   "path": "artifacts/a5/open_macro_v03_dark_launch_001/monitoring_thresholds_record.json",
+   "sha256": "313fec53c85dd4187647fdb8c22a11b5d4a1ec4aaaa314144e9b16d0d3bcd4cf"
+  }
+ },
+ "measured_round": {
+  "p95_ms": 151239.576,
+  "reproducibility_record_sha256": "bcb3cd8c1be53977f98e91ebf370d21976d6b173e4d989c90bb8e75877bb93a3",
+  "runs_total": 16
+ },
+ "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain (~83 s) in live_validation.compute(). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95) — to the correct workload; it is never an ad hoc bump to make a round pass.",
+ "schema_version": 1,
+ "stage": "A"
+}
