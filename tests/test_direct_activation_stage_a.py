@@ -24,6 +24,7 @@ import json
 import math
 import re
 import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,28 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _real_repo_harness():
+    """The cloud-runner suite purges and rebinds ``sys.modules['harness']`` to its
+    bundle copy (which has no ``direct_activation``), so the in-test package imports
+    here would resolve the WRONG harness when the full CI suite runs (see the same
+    note in tests/test_dark_launch_readiness.py). Swap the real repo harness in for
+    this module's tests and restore whatever was there afterwards."""
+    saved = {k: v for k, v in sys.modules.items()
+             if k == "harness" or k.startswith("harness.")}
+    for key in saved:
+        del sys.modules[key]
+    sys.path.insert(0, str(ROOT))
+    try:
+        yield
+    finally:
+        for key in [k for k in sys.modules
+                    if k == "harness" or k.startswith("harness.")]:
+            del sys.modules[key]
+        sys.modules.update(saved)
+        sys.path.remove(str(ROOT))
 STAGE_A_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
 SNAPSHOT = STAGE_A_ROOT / "input_snapshot"
 DARK_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
