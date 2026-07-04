@@ -210,14 +210,18 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   `allow_allocator_publish=false` independently of `allocator_publish`), with the
   backend cutover AUTHORIZED and landing with this PR (executed at the post-merge
   cutover — no as-if mode, no deferral to Stage C); `production_endpoint_activation`
-  STAYS `none` at the Stage B flip, because the B3 split leaves the backend route
-  flag-gated/inert until the POST-MERGE `backend_cutover_record.json` (first verified
-  row) flips it — recording the endpoint active here would certify a false state.
-  Stage B AUTHORIZES the named read path; the post-merge cutover record EXECUTES that
-  authorization (the execution of the Stage B activation, NOT a new governance
-  decision or a Stage C flip), moving `production_endpoint_activation` from `none` to
-  the NAMED read path (scoped, never a blanket value) and re-scoping the
-  `production_endpoint_activation_attempt_alert` at that same point; `official_result`
+  is RATIFIED in the Stage B activation_record as a single CONDITIONAL state, BOTH
+  values signed off in the approval matrix: `none` until the POST-MERGE
+  `backend_cutover_record.json` attests the first verified row, THEN the NAMED read
+  path (scoped, never a blanket value). It STAYS `none` at the Stage B flip itself —
+  the B3 split leaves the backend route flag-gated/inert and recording it active here
+  would certify a false state — and the post-merge cutover record introduces NO new
+  governance value: it ATTESTS that the Stage-B-ratified condition (first verified
+  row) was met and records the endpoint reaching its already-ratified target,
+  re-scoping the `production_endpoint_activation_attempt_alert` at that same point. So
+  no flag flips outside the Stage B PR's ratification — the final endpoint value is
+  DECIDED and signed off in Stage B; the post-merge record only attests the condition,
+  it does not decide; `official_result`
   is **true from activation**: the published decision and allocation ARE the system's
   official output (there is no other model); `freeze_ready` STAYS explicitly false in
   the Stage B envelope and its guard tests — freeze readiness is a SEPARATE
@@ -288,13 +292,20 @@ decommissioned at activation — open_macro_v03 becomes the ONLY model.
   an abort (the inherited
   `missing_output_slo`), because a verifier that only checks published rows would
   otherwise let absence pass ⇒ kill switch + rollback per the dry-run plan;
-  activation is invalidated traceably. **Governance rollback (inherited stage-4
-  `rollback_criteria`):** an abort does not merely stamp rows invalid — it RESTORES the
-  blocked envelope: disable the feature flag, `A5`→`blocked`, `official_result`→false,
-  `allocator_publish`→false, `production_endpoint_activation`→`none`,
-  `runtime_activation`→false (exactly the stage-4 `rollback_criteria` in
-  `staged_rollout_plan.json`: "disable feature flag, restore A5 blocked, block official
-  result and allocator publish"), so readers and allocator publication are no longer
+  activation is invalidated traceably. **Governance rollback (restore the ENTIRE B4
+  envelope):** an abort does not merely stamp rows invalid — it returns EVERY flag B4
+  flipped to its blocked state: disable the feature flag, `A5`→`blocked`, A4 reverts
+  from `production_active_official` to a recorded invalidated/blocked state,
+  `official_result`→false, `db_write_mode`→`none`, `allow_db_write`→false,
+  `db_write_official`→false, `activation_allowed`→false, `allocator_publish`→false,
+  `allow_allocator_publish`→false, `production_endpoint_activation`→`none`,
+  `runtime_activation`→false. This is a SUPERSET of the inherited stage-4
+  `rollback_criteria` in `staged_rollout_plan.json` ("disable feature flag, restore A5
+  blocked, block official result and allocator publish"), extended to the companion
+  allow-gates and `db_write_mode` B4 added — restoring only the stage-4 subset would
+  leave `allow_db_write`/`db_write_official`/`activation_allowed`/`allow_allocator_publish`/
+  `db_write_mode` still sanctioning writes/publishes to the new tables around an
+  invalidated model. So readers and allocator publication are no longer
   sanctioned around an invalidated model. This emergency rollback is the sanctioned
   exception to the no-second-flip rule, which governs only the normal clean-close
   path. **Reader-enforceable invalidation:** an
