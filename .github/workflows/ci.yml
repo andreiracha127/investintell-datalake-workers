@@ -76,6 +76,7 @@ jobs:
           tests/test_threshold_signoff.py
           tests/test_dark_launch_readiness.py
           tests/test_direct_activation_plan.py
+          tests/test_direct_activation_stage_a.py
           -q
 
       - name: Compile Python modules

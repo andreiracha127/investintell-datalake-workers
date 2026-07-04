@@ -49,7 +49,9 @@ INHERITED_SLO_IDS = ("memory_slo", "error_rate_slo", "retry_rate_slo")
 
 
 def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # CRLF-normalized so the pin is checkout-independent (the canonical bytes are
+    # the LF git blob; a Windows autocrlf checkout must hash identically).
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def build(p95_ms: float, runs_total: int,

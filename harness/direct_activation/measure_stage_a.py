@@ -64,7 +64,10 @@ CONTAINER_PYTHONPATH = ("/repo:/repo/packages/investintell_quant_core/src"
 
 
 def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # CRLF-normalized so the pin is checkout-independent (autocrlf=true checkouts
+    # materialize committed LF artifacts as CRLF on Windows; the canonical bytes
+    # are the LF git blob, which is what CI on Linux reads).
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _parse_child_stdout(stdout: str, *, ctx: str) -> dict[str, Any]:

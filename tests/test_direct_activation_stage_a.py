@@ -1,0 +1,384 @@
+"""Guard pins for the Stage A (direct-activation) evidence root.
+
+Stage A validates the signed candidate live (``live_validation``), then measures its
+reproducibility + SLO conformance under the Phase 1 machinery. This suite pins the
+committed Stage A artifacts and the three measured records the round writes, reusing
+the Phase 1 guard semantics (strict JSON loader with duplicate-key + non-finite
+rejection, recursive governance walk with string-truthy semantics, regeneration pins,
+hash pins). It NEVER asserts any activation flag is on: Stage A flips nothing.
+
+CRLF note: ``core.autocrlf=true`` on Windows can re-smudge committed JSON to CRLF, but
+the records pin sha256 of the LF bytes the harness wrote; every hash helper here
+normalizes CRLF->LF before hashing so the pins hold on either checkout.
+
+Records written by the N=8 host + N=8 container measurement round (present in CI, may
+lag a local run): ``reproducibility_record.json``, ``slo_threshold_amendment_record.json``,
+``slo_conformance_record.json``. The tests that pin them open them directly (no silent
+skip) so a missing/deleted record is a hard failure in CI.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import re
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+STAGE_A_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
+SNAPSHOT = STAGE_A_ROOT / "input_snapshot"
+DARK_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
+THRESHOLDS = DARK_ROOT / "monitoring_thresholds_record.json"
+
+LIVE_VALIDATION_RECORD = STAGE_A_ROOT / "live_validation_record.json"
+REPRODUCIBILITY_RECORD = STAGE_A_ROOT / "reproducibility_record.json"
+AMENDMENT_RECORD = STAGE_A_ROOT / "slo_threshold_amendment_record.json"
+CONFORMANCE_RECORD = STAGE_A_ROOT / "slo_conformance_record.json"
+
+DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
+
+REQUIRED_OWNER_ROLES = {
+    "technical_owner",
+    "quant_owner",
+    "risk_owner",
+    "operations_owner",
+    "product_portfolio_owner",
+    "final_approver",
+}
+
+# Activation flags that must never be truthy anywhere in a Stage A artifact (the
+# Phase 1 FORBIDDEN set, adapted). A string "true" counts as truthy and must fail.
+FORBIDDEN_ACTIVATION_KEYS = {
+    "runtime_activation",
+    "runtime_activation_allowed",
+    "runtime_activation_attempt",
+    "activation_allowed",
+    "activation_allowed_in_this_pr",
+    "activation_requested",
+    "freeze_ready",
+    "official_result",
+    "official_result_published",
+    "allocator_publish",
+    "allocator_publish_attempt",
+    "allocator_received_output",
+    "allow_allocator_publish",
+    "allow_db_write",
+    "db_write_official",
+    "official_db_write_attempt",
+    "productive_db_received_official_result",
+    "approve_controlled_activation",
+    "A5_unblocked",
+    "production_endpoint_activated",
+    "production_endpoint_activation_attempt",
+    "backend_executes_engine",
+    "backend_executes_docker",
+    "backend_executes_subprocess",
+    "docker_execution_from_backend",
+    "feature_flag_default",
+    "approved",
+}
+
+# Wall-clock generation markers that would make the snapshot manifest non-deterministic.
+# (The pinned query bounds ``vintage_available_at_*`` are deterministic parameters, not
+# clock reads, so they are intentionally NOT in this set.)
+FORBIDDEN_CLOCK_KEYS = {
+    "generated_at",
+    "created_at",
+    "exported_at",
+    "written_at",
+    "run_at",
+    "timestamp",
+    "date_generated",
+    "now",
+}
+
+
+# --- strict JSON loader (Phase 1 pattern, local copy) ----------------------------
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        seen[key] = value
+    return seen
+
+
+def _reject_non_finite_constant(constant: str) -> None:
+    raise ValueError(f"non-finite JSON constant {constant!r}")
+
+
+def _reject_non_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"non-finite JSON number {value!r}")
+    return parsed
+
+
+def _loads_strict(text: str) -> Any:
+    return json.loads(
+        text,
+        object_pairs_hook=_reject_duplicate_keys,
+        parse_constant=_reject_non_finite_constant,
+        parse_float=_reject_non_finite_float,
+    )
+
+
+def _load_strict(path: Path) -> Any:
+    return _loads_strict(path.read_text(encoding="utf-8"))
+
+
+def _sha256_lf(path: Path) -> str:
+    """sha256 of the file bytes with CRLF normalized to LF (matches the harness pins)."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _stage_a_json_files() -> list[Path]:
+    return sorted(p for p in STAGE_A_ROOT.rglob("*.json") if p.is_file())
+
+
+def _walk(node: Any):
+    """Yield every (key, value) pair, recursively, through dicts and lists."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield key, value
+            yield from _walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+
+
+def _is_truthy_flag(value: Any) -> bool:
+    return value is True or (isinstance(value, str) and value.strip().lower() == "true")
+
+
+def _assert_governance_blocked(payload: Any, *, where: str) -> None:
+    for key, value in _walk(payload):
+        if key in FORBIDDEN_ACTIVATION_KEYS:
+            assert not _is_truthy_flag(value), f"{where}: {key}={value!r} is truthy"
+        if key in {"A5", "a5_status"}:
+            assert value == "blocked", f"{where}: {key}={value!r}; expected blocked"
+        if key == "db_write_mode":
+            assert value == "none", f"{where}: db_write_mode={value!r}; expected none"
+
+
+# --- 1. strict loader over every Stage A JSON ------------------------------------
+
+def test_all_stage_a_json_loads_strict() -> None:
+    files = _stage_a_json_files()
+    assert LIVE_VALIDATION_RECORD in files  # sanity: the committed record is present
+    for path in files:
+        _load_strict(path)  # raises on duplicate keys or NaN/Infinity/overflow floats
+
+
+def test_strict_loader_rejects_duplicate_keys() -> None:
+    with pytest.raises(ValueError, match="duplicate JSON key 'runtime_activation'"):
+        _loads_strict('{"runtime_activation": false, "runtime_activation": true}')
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_strict_loader_rejects_non_finite_constants(constant: str) -> None:
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        _loads_strict(f'{{"value": {constant}}}')
+
+
+@pytest.mark.parametrize("number", ["1e9999", "-1e9999"])
+def test_strict_loader_rejects_float_overflow(number: str) -> None:
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        _loads_strict(f'{{"value": {number}}}')
+
+
+# --- 2. recursive governance walk + string-truthy semantics ----------------------
+
+def test_stage_a_artifacts_keep_activation_blocked() -> None:
+    for path in _stage_a_json_files():
+        _assert_governance_blocked(_load_strict(path), where=path.name)
+
+
+def test_governance_walk_treats_string_true_as_truthy() -> None:
+    """Belt-and-suspenders: a stringified 'true' on a forbidden flag must fail, even
+    nested inside a list (the string-truthy escape the Phase 1 guards close)."""
+    payload = {"nested": [{"runtime_activation": "true"}]}
+    with pytest.raises(AssertionError, match="runtime_activation='true' is truthy"):
+        _assert_governance_blocked(payload, where="synthetic")
+
+
+# --- 3. live_validation_record equals a fresh regeneration -----------------------
+
+def test_live_validation_record_equals_regeneration() -> None:
+    """The committed record must be exactly what the committed executor derives today
+    from pinned pack v2 + the pinned delta snapshot; a hand-edited record cannot
+    survive. Reconstitutes the full 148-month latched chain (~84 s) -- acceptable."""
+    from harness.direct_activation import live_validation as lv
+
+    committed = _load_strict(LIVE_VALIDATION_RECORD)
+    regenerated = lv.compute(worker_commit_override=committed["provenance"]["worker_commit"])
+    assert regenerated == committed
+
+
+# --- 4. snapshot manifest hash + row pins ----------------------------------------
+
+def test_snapshot_manifest_hash_and_row_pins() -> None:
+    from harness.direct_activation import live_validation as lv
+
+    manifest = _load_strict(SNAPSHOT / "snapshot_manifest.json")
+
+    for name in ("delta_eod_prices.json", "delta_macro_vintages.json"):
+        path = SNAPSHOT / name
+        rows = _load_strict(path)
+        assert isinstance(rows, list)
+        entry = manifest["files"][name]
+        assert entry["sha256"] == _sha256_lf(path), name
+        assert entry["rows"] == len(rows), name
+
+    assert manifest["pack_v2_sha256"] == lv.PACK_SHA256_PIN
+
+    # deterministic manifest: no wall-clock generation timestamp anywhere
+    manifest_keys = {key for key, _ in _walk(manifest)}
+    assert manifest_keys.isdisjoint(FORBIDDEN_CLOCK_KEYS), (
+        f"manifest carries clock keys {manifest_keys & FORBIDDEN_CLOCK_KEYS}")
+
+
+# --- 5. delta composition: ticker set + date bounds ------------------------------
+
+def test_delta_prices_cover_exactly_the_sleeve_within_bounds() -> None:
+    from harness.direct_activation import export_snapshot as es
+
+    delta_prices = _load_strict(SNAPSHOT / "delta_eod_prices.json")
+    assert delta_prices  # non-empty
+
+    tickers = {row["ticker"] for row in delta_prices}
+    assert tickers == set(es.SLEEVE_TICKERS)
+
+    lower, upper = es.PRICE_OVERLAP_START, es.VALIDATION_AS_OF
+    for row in delta_prices:
+        d = date.fromisoformat(row["date"])
+        assert lower <= d <= upper, f"{row['ticker']} {row['date']} outside export bounds"
+
+
+# --- 6. reproducibility_record (measured round) ----------------------------------
+
+def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
+    repro = _load_strict(REPRODUCIBILITY_RECORD)
+    live = _load_strict(LIVE_VALIDATION_RECORD)
+
+    assert repro["artifact_type"] == "direct_activation_stage_a_reproducibility_record"
+    assert repro["runs_per_leg"] == 8
+    assert repro["runs_total"] == 16
+    assert repro["mismatch_count"] == 0
+    assert repro["verdict"] == "reproduced"
+
+    legs = repro["legs"]
+    assert set(legs) == {"host", "container"}
+    hashes: set[str] = set()
+    for leg_name in ("host", "container"):
+        leg = legs[leg_name]
+        assert len(leg["runs"]) == 8, leg_name
+        for run in leg["runs"]:
+            assert run["exit_code"] == 0, leg_name
+            hashes.add(run["logical_output_hash"])
+        assert leg["logical_output_hash"] is not None, leg_name
+        hashes.add(leg["logical_output_hash"])
+    # identical logical output across every run and both legs
+    hashes.add(repro["logical_output_hash"])
+    assert len(hashes) == 1, f"non-identical logical output: {sorted(hashes)}"
+
+    job = repro["job_identity"]
+    assert job["clean_tree"] is True  # bool, not the string "true"
+    assert re.fullmatch(r"[0-9a-f]{40}", job["worker_commit"])
+    assert job["tree_hashes"]
+
+    assert repro["live_validation_record_sha256"] == _sha256_lf(LIVE_VALIDATION_RECORD)
+    assert repro["governance"] == live["governance"]
+    _assert_governance_blocked(repro, where=REPRODUCIBILITY_RECORD.name)
+
+
+# --- 7. slo_threshold_amendment_record -------------------------------------------
+
+def test_slo_threshold_amendment_record_derives_and_inherits_correctly() -> None:
+    amendment = _load_strict(AMENDMENT_RECORD)
+    live = _load_strict(LIVE_VALIDATION_RECORD)
+    thresholds_doc = _load_strict(THRESHOLDS)
+    phase1 = {slo["id"]: slo for slo in thresholds_doc["slos"]}
+
+    amended = amendment["amended_slo"]
+    assert amended["id"] == "latency_slo"
+
+    measured = amendment["measured_round"]
+    assert amended["threshold"] == math.ceil(1.5 * measured["p95_ms"])
+    assert measured["reproducibility_record_sha256"] == _sha256_lf(REPRODUCIBILITY_RECORD)
+
+    inherited = amendment["inherited_unchanged"]
+    assert inherited["source"]["path"].endswith("monitoring_thresholds_record.json")
+    assert inherited["source"]["sha256"] == _sha256_lf(THRESHOLDS)
+    inherited_slos = {slo["id"]: slo for slo in inherited["slos"]}
+    assert set(inherited_slos) == {"memory_slo", "error_rate_slo", "retry_rate_slo"}
+    for slo_id, slo in inherited_slos.items():
+        assert slo["threshold"] == phase1[slo_id]["threshold"], slo_id
+
+    approvals = amendment["approval_matrix"]["approvals"]
+    roles = [entry["role"] for entry in approvals]
+    assert set(roles) == REQUIRED_OWNER_ROLES
+    assert len(roles) == len(REQUIRED_OWNER_ROLES)  # no duplicates
+    assert "engineering" not in roles
+    for entry in approvals:
+        assert isinstance(entry["owner"], str) and entry["owner"].strip(), entry["role"]
+    assert amendment["approval_matrix"]["approval_matrix_complete"] is True
+
+    assert amendment["governance"] == live["governance"]
+    _assert_governance_blocked(amendment, where=AMENDMENT_RECORD.name)
+
+
+# --- 8. slo_conformance_record ---------------------------------------------------
+
+def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
+    conformance = _load_strict(CONFORMANCE_RECORD)
+    live = _load_strict(LIVE_VALIDATION_RECORD)
+    thresholds_doc = _load_strict(THRESHOLDS)
+    phase1 = {slo["id"]: slo["threshold"] for slo in thresholds_doc["slos"]}
+
+    sources = conformance["thresholds_source"]
+    assert isinstance(sources, list) and sources
+    for entry in sources:
+        assert set(entry) >= {"path", "sha256"}
+        real = ROOT / entry["path"]
+        assert real.is_file(), entry["path"]
+        assert entry["sha256"] == _sha256_lf(real), entry["path"]
+
+    conf = conformance["conformance"]
+    for slo_id in ("memory_slo", "error_rate_slo", "retry_rate_slo"):
+        row = conf[slo_id]
+        assert row["status"] == "pass", slo_id
+        assert row["measured"] <= row["threshold"], slo_id
+        assert row["threshold"] == phase1[slo_id], slo_id
+
+    latency = conf["latency_slo"]
+    assert latency["status"] in {"pass", "pass_amended"}
+    if latency["status"] == "pass_amended":
+        assert latency["phase1_threshold"] == 37826
+        assert latency["measured_p95_ms"] <= latency["amended_threshold"]
+        assert latency["amendment_sha256"] == _sha256_lf(AMENDMENT_RECORD)
+
+    assert conformance["verdict"] == "conform"
+    assert conformance["governance"] == live["governance"]
+    _assert_governance_blocked(conformance, where=CONFORMANCE_RECORD.name)
+
+
+# --- 9. cross-record identity pins -----------------------------------------------
+
+def test_stage_a_records_share_identity_and_worker_commit() -> None:
+    live = _load_strict(LIVE_VALIDATION_RECORD)
+    repro = _load_strict(REPRODUCIBILITY_RECORD)
+    amendment = _load_strict(AMENDMENT_RECORD)
+    conformance = _load_strict(CONFORMANCE_RECORD)
+
+    for record in (live, repro, amendment, conformance):
+        assert record["direct_activation_id"] == DIRECT_ACTIVATION_ID
+        assert record["stage"] == "A"
+
+    assert repro["job_identity"]["worker_commit"] == live["provenance"]["worker_commit"]

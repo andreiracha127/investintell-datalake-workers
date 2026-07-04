@@ -60,7 +60,9 @@ def _load_json(path: Path) -> Any:
 
 
 def _sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    # CRLF-normalized so the pin is checkout-independent (the canonical bytes are
+    # the LF git blob; a Windows autocrlf checkout must hash identically).
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...],
