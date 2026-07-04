@@ -91,6 +91,17 @@ ALLOWED_TABLES = frozenset({
     "open_macro_v03_staleness_blocks",
 })
 
+# The inherited Phase 4 approval matrix roles (the set pinned by
+# tests/test_dark_launch_readiness.py / tests/test_controlled_activation_proposal.py).
+APPROVAL_ROLES = (
+    "technical_owner",
+    "quant_owner",
+    "risk_owner",
+    "operations_owner",
+    "product_portfolio_owner",
+    "final_approver",
+)
+
 # The certified pack v2 cut date: the prefix boundary between the pinned committed
 # pack and the live delta the worker reads.
 PACK_CUT = _dt.date(2026, 6, 30)
@@ -134,8 +145,34 @@ DELTA_EOD_SQL = (
 )
 
 
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError(f"duplicate JSON key {key!r}")
+        payload[key] = value
+    return payload
+
+
+def _reject_non_finite_constant(constant: str) -> None:
+    raise ValueError(f"non-finite JSON constant {constant!r}")
+
+
+def _reject_non_finite_float(value: str) -> float:
+    parsed = float(value)
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        raise ValueError(f"non-finite JSON number {value!r}")
+    return parsed
+
+
 def _load_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    """STRICT loader for every governance/pin/pack file the worker consumes:
+    duplicate keys and NaN/Infinity are rejected (the guard-test semantics), so a
+    doctored envelope can never smuggle a second key past the gate."""
+    return json.loads(path.read_text(encoding="utf-8"),
+                      object_pairs_hook=_reject_duplicate_keys,
+                      parse_constant=_reject_non_finite_constant,
+                      parse_float=_reject_non_finite_float)
 
 
 def _sha256_norm(path: Path) -> str:
@@ -183,6 +220,19 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     environment = envelope.get("environment")
     if not isinstance(environment, dict) or not environment.get("railway_service_name"):
         return "environment.railway_service_name missing"
+    # inherited Phase 4 approval matrix: EXACTLY the six pinned role ids, each with a
+    # named (non-empty) holder, and the strict-bool completeness flag. An absent or
+    # stale approval matrix blocks the flip.
+    matrix = envelope.get("approval_matrix")
+    if not isinstance(matrix, dict) or set(matrix) != set(APPROVAL_ROLES):
+        return "approval_matrix missing or roles != the six pinned ids"
+    for role in APPROVAL_ROLES:
+        entry = matrix.get(role)
+        holder = entry.get("owner") if isinstance(entry, dict) else None
+        if not (isinstance(holder, str) and holder.strip()):
+            return f"approval_matrix.{role}.owner missing or empty"
+    if envelope.get("approval_matrix_complete") is not True:
+        return "approval_matrix_complete!=true"
     return None
 
 
@@ -200,12 +250,59 @@ def verify_module_pins(pins: dict[str, Any], root: Path = ROOT) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Gate 3b — pack v2 REAL bytes (the declarative manifest is never the only source)
+# --------------------------------------------------------------------------- #
+def verify_pack_bytes(pack: Path | None = None) -> None:
+    """Verify the BYTES the run will consume from the committed pack, before any DB:
+
+    * sha256 (CRLF→LF normalized) of ``data/canonical/macro_observation_vintage.json``
+      and ``data/canonical/eod_prices.json`` against the ``SOURCE.json`` p1_export
+      per-table pins (the certified export byte hashes); and
+    * the aggregate ``input_pack_sha256`` RECOMPUTED over the pack tree with the
+      builder's own algorithm (``src.input_packs.manifest.compute_input_pack_sha256``,
+      the same function ``harness/p1_pack/verifier.py::verify_pack`` uses) against the
+      signed ``PACK_SHA256_PIN`` constant.
+
+    A single mutated byte in a canonical data file fails here, loudly."""
+    pack = pack if pack is not None else PACK
+    source = _load_json(pack / "SOURCE.json")
+    pins = {t["table"]: t["sha256"] for t in source["p1_export"]["tables"]}
+    for table, filename in (("macro_observation_vintage", "macro_observation_vintage.json"),
+                            ("eod_prices", "eod_prices.json")):
+        actual = _sha256_norm(pack / "data" / "canonical" / filename)
+        if actual != pins.get(table):
+            raise OpenMacroV03Error(
+                f"pack byte verification failed: {filename} sha256 {actual} != "
+                f"SOURCE.json pin {pins.get(table)} (the committed pack bytes are not "
+                "the certified export)")
+    manifest = _load_json(pack / "manifest.json")
+    if manifest.get("input_pack_sha256") != PACK_SHA256_PIN:
+        raise OpenMacroV03Error(
+            "pack byte verification failed: manifest input_pack_sha256 "
+            f"{manifest.get('input_pack_sha256')} != signed pin {PACK_SHA256_PIN}")
+    from src.input_packs.manifest import compute_input_pack_sha256
+    recomputed = compute_input_pack_sha256(pack, manifest)
+    if recomputed != PACK_SHA256_PIN:
+        raise OpenMacroV03Error(
+            f"pack byte verification failed: recomputed aggregate {recomputed} != "
+            f"signed pin {PACK_SHA256_PIN} (a pack file diverges from the certified "
+            "tree; the declarative manifest is not trusted alone)")
+
+
+# --------------------------------------------------------------------------- #
 # Gate 6 — as_of resolution
 # --------------------------------------------------------------------------- #
 def resolve_as_of(as_of_arg: str | None = None, *,
                   today: _dt.date | None = None) -> _dt.date | None:
     """Explicit override (arg or env) is trusted; otherwise the current
-    America/New_York calendar day, or ``None`` on a weekend (non-business day)."""
+    America/New_York calendar day, or ``None`` on a weekend (non-business day).
+
+    Calendar policy (DELIBERATE, owner-ratified): business days are Mon–Fri with NO
+    market-holiday calendar. On a US market holiday the worker RUNS and publishes a
+    ``carried`` decision (renewing ``valid_until`` — no reader blackout), and the
+    3-business-day price staleness gate absorbs the holiday price gap. This is
+    consistent with the decision chain and with Stage A, whose live validation ran
+    on 2026-07-03 (a market holiday) and published carried."""
     if as_of_arg:
         return _dt.date.fromisoformat(as_of_arg)
     env = os.environ.get(AS_OF_ENV)
@@ -360,7 +457,11 @@ def build_allocation(quadrant: str, price_rows: list[dict]) -> dict[str, Any]:
 # Gate 11 — valid_until + publish
 # --------------------------------------------------------------------------- #
 def valid_until(as_of: _dt.date) -> _dt.datetime:
-    """Next business day at 14:00 UTC (the reader's freshness horizon)."""
+    """Next business day at 14:00 UTC (the reader's freshness horizon).
+
+    Business days are DELIBERATELY Mon–Fri without a market-holiday calendar (see
+    ``resolve_as_of``): on a holiday the worker still runs and publishes carried,
+    renewing this horizon, so the reader never sees a holiday blackout."""
     base = _dt.datetime(as_of.year, as_of.month, as_of.day, tzinfo=_dt.timezone.utc)
     nb = add_business_days(base, 1)
     return nb.replace(hour=14, minute=0, second=0, microsecond=0)
@@ -422,27 +523,37 @@ _ALLOCATION_UPSERT_SQL = (
     "WHERE open_macro_v03_allocations.valid_status <> 'invalidated'"
 )
 
-_STALENESS_UPSERT_SQL = (
+# The ledger is IMMUTABLE: a re-run of a still-stale day preserves the FIRST
+# recorded block (ON CONFLICT DO NOTHING); rowcount 0 = block already recorded.
+_STALENESS_INSERT_SQL = (
     "INSERT INTO open_macro_v03_staleness_blocks "
     "(as_of, reason, stale_detail, input_vintage_sha256, input_prices_sha256, "
     " pack_v2_sha256, module_pins_sha256, code_commit, run_id) "
     "VALUES (%(as_of)s, %(reason)s, %(stale_detail)s::jsonb, %(input_vintage_sha256)s, "
     " %(input_prices_sha256)s, %(pack_v2_sha256)s, %(module_pins_sha256)s, "
     " %(code_commit)s, %(run_id)s) "
-    "ON CONFLICT (as_of) DO UPDATE SET "
-    " reason = EXCLUDED.reason, stale_detail = EXCLUDED.stale_detail, "
-    " input_vintage_sha256 = EXCLUDED.input_vintage_sha256, "
-    " input_prices_sha256 = EXCLUDED.input_prices_sha256, "
-    " pack_v2_sha256 = EXCLUDED.pack_v2_sha256, "
-    " module_pins_sha256 = EXCLUDED.module_pins_sha256, "
-    " code_commit = EXCLUDED.code_commit, run_id = EXCLUDED.run_id"
+    "ON CONFLICT (as_of) DO NOTHING"
 )
 
 
 def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) -> None:
     """Upsert decision + allocation in ONE transaction. A re-run NEVER resurrects an
-    invalidated row: the ON CONFLICT WHERE clause skips it (rowcount 0) ⇒ raise."""
+    invalidated row: the ON CONFLICT WHERE clause skips it (rowcount 0) ⇒ raise.
+
+    Ledger×output mutual exclusion: inside the SAME transaction, a staleness-block
+    ledger row for the as_of forbids publishing — the day was durably blocked, and
+    publishing over a recorded block requires EXPLICIT operator resolution (remove
+    or supersede the block through the sanctioned operational path), never a silent
+    later run."""
     with conn.cursor() as cur:
+        cur.execute(
+            "SELECT 1 FROM open_macro_v03_staleness_blocks WHERE as_of = %(as_of)s",
+            decision_row)
+        if cur.fetchone() is not None:
+            raise OpenMacroV03Error(
+                f"publish refused for {decision_row['as_of']}: a staleness-block "
+                "ledger row exists for this day; publishing after a recorded block "
+                "requires explicit operator resolution, not a re-run")
         cur.execute(_DECISION_UPSERT_SQL, decision_row)
         if cur.rowcount == 0:
             raise OpenMacroV03Error(
@@ -456,11 +567,26 @@ def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) 
     conn.commit()
 
 
-def record_staleness_block(conn, block_row: dict[str, Any]) -> None:
-    """Write the durable staleness-block ledger row in its own transaction."""
+def record_staleness_block(conn, block_row: dict[str, Any]) -> bool:
+    """Write the durable staleness-block ledger row in its own transaction.
+
+    Output×ledger mutual exclusion: inside the SAME transaction, ANY output row for
+    the as_of forbids recording a block — a block must never land on top of already
+    published output. The ledger is immutable (ON CONFLICT DO NOTHING): returns True
+    when this run inserted the row, False when the day's block was already recorded
+    (the first record is preserved verbatim)."""
     with conn.cursor() as cur:
-        cur.execute(_STALENESS_UPSERT_SQL, block_row)
+        for table in ("open_macro_v03_decisions", "open_macro_v03_allocations"):
+            cur.execute(f"SELECT 1 FROM {table} WHERE as_of = %(as_of)s", block_row)
+            if cur.fetchone() is not None:
+                raise OpenMacroV03Error(
+                    f"staleness-block refused for {block_row['as_of']}: an output row "
+                    f"already exists in {table}; a block is never recorded on top of "
+                    "published output")
+        cur.execute(_STALENESS_INSERT_SQL, block_row)
+        inserted = cur.rowcount == 1
     conn.commit()
+    return inserted
 
 
 # --------------------------------------------------------------------------- #
@@ -528,6 +654,135 @@ def ensure_schema(conn) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Catalog verification (B1b evidence base)
+# --------------------------------------------------------------------------- #
+# MAINTENANCE: this dict mirrors schemas/open_macro_v03_*.sql column by column and
+# named constraint by named constraint. Any DDL change MUST be reflected here (the
+# stage-B guard test cross-checks every expected column name against the committed
+# DDL text). Types are information_schema.columns.data_type spellings.
+EXPECTED_SCHEMA: dict[str, dict[str, dict[str, str]]] = {
+    "open_macro_v03_decisions": {
+        "columns": {
+            "as_of": "date", "quadrant": "text", "decision_validity": "text",
+            "carry_seed_as_of": "date", "candidate_confidence": "numeric",
+            "coverage_quality": "numeric", "growth_score": "numeric",
+            "inflation_score": "numeric", "input_vintage_sha256": "character",
+            "input_prices_sha256": "character", "pack_v2_sha256": "character",
+            "module_pins_sha256": "character", "judgment_ref": "text",
+            "threshold_ref": "text", "code_commit": "character", "run_id": "text",
+            "publish_state": "text", "valid_status": "text",
+            "valid_until": "timestamp with time zone",
+            "invalidated_at": "timestamp with time zone",
+            "invalidated_reason": "text",
+            "created_at": "timestamp with time zone",
+            "updated_at": "timestamp with time zone",
+        },
+        "constraints": {
+            "open_macro_v03_decisions_pkey": "p",
+            "open_macro_v03_decisions_invalidation_consistent": "c",
+            "open_macro_v03_decisions_validity_seed": "c",
+        },
+    },
+    "open_macro_v03_allocations": {
+        "columns": {
+            "as_of": "date", "book": "text", "w_spy": "numeric", "w_tlt": "numeric",
+            "w_tip": "numeric", "w_gld": "numeric", "w_dbc": "numeric",
+            "w_shy": "numeric", "risk_assets_weight": "numeric",
+            "defensive_assets_weight": "numeric", "risk_cap": "numeric",
+            "defensive_floor": "numeric", "priced_at": "date",
+            "input_prices_sha256": "character", "pack_v2_sha256": "character",
+            "module_pins_sha256": "character", "code_commit": "character",
+            "run_id": "text", "publish_state": "text", "valid_status": "text",
+            "valid_until": "timestamp with time zone",
+            "invalidated_at": "timestamp with time zone",
+            "invalidated_reason": "text",
+            "created_at": "timestamp with time zone",
+            "updated_at": "timestamp with time zone",
+        },
+        "constraints": {
+            "open_macro_v03_allocations_pkey": "p",
+            "open_macro_v03_allocations_as_of_fkey": "f",
+            "open_macro_v03_allocations_invalidation_consistent": "c",
+            "open_macro_v03_allocations_weights_sum": "c",
+            "open_macro_v03_allocations_risk_cap": "c",
+            "open_macro_v03_allocations_defensive_floor": "c",
+        },
+    },
+    "open_macro_v03_staleness_blocks": {
+        "columns": {
+            "as_of": "date", "reason": "text", "stale_detail": "jsonb",
+            "input_vintage_sha256": "character", "input_prices_sha256": "character",
+            "pack_v2_sha256": "character", "module_pins_sha256": "character",
+            "code_commit": "character", "run_id": "text",
+            "created_at": "timestamp with time zone",
+        },
+        "constraints": {
+            "open_macro_v03_staleness_blocks_pkey": "p",
+        },
+    },
+}
+
+_CATALOG_COLUMNS_SQL = (
+    "SELECT table_name, column_name, data_type FROM information_schema.columns "
+    "WHERE table_name = ANY(%(tables)s) ORDER BY table_name, ordinal_position")
+_CATALOG_CONSTRAINTS_SQL = (
+    "SELECT conrelid::regclass::text AS table_name, conname, contype::text "
+    "FROM pg_constraint WHERE conrelid::regclass::text = ANY(%(tables)s)")
+
+
+def verify_schema(conn) -> dict[str, Any]:
+    """Verify the live catalog against the committed DDL expectations (read-only).
+
+    Columns must match EXACTLY (names + data types) and every expected named
+    constraint (PK/FK/named CHECKs) must be present with the right contype; any
+    divergence raises. Returns the verified ``{table: {columns, constraints}}``
+    view — the evidence base for the B1b ``schema_migration_record``. This is the
+    SAME function the read-only monitor imports (it issues SELECTs only)."""
+    tables = sorted(EXPECTED_SCHEMA)
+    with conn.cursor() as cur:
+        cur.execute(_CATALOG_COLUMNS_SQL, {"tables": tables})
+        column_rows = cur.fetchall()
+        cur.execute(_CATALOG_CONSTRAINTS_SQL, {"tables": tables})
+        constraint_rows = cur.fetchall()
+
+    actual_columns: dict[str, dict[str, str]] = {t: {} for t in tables}
+    for table_name, column_name, data_type in column_rows:
+        actual_columns.setdefault(table_name, {})[column_name] = data_type
+    actual_constraints: dict[str, dict[str, str]] = {t: {} for t in tables}
+    for table_name, conname, contype in constraint_rows:
+        actual_constraints.setdefault(table_name, {})[conname] = contype
+
+    problems: list[str] = []
+    verified: dict[str, Any] = {}
+    for table, expected in EXPECTED_SCHEMA.items():
+        columns = actual_columns.get(table) or {}
+        if not columns:
+            problems.append(f"{table}: table missing from the catalog")
+            continue
+        if columns != expected["columns"]:
+            missing = sorted(set(expected["columns"]) - set(columns))
+            extra = sorted(set(columns) - set(expected["columns"]))
+            typediff = sorted(
+                c for c in set(columns) & set(expected["columns"])
+                if columns[c] != expected["columns"][c])
+            problems.append(
+                f"{table}: columns diverge from the committed DDL "
+                f"(missing={missing}, unexpected={extra}, type_mismatch={typediff})")
+        constraints = actual_constraints.get(table) or {}
+        for conname, contype in expected["constraints"].items():
+            if constraints.get(conname) != contype:
+                problems.append(
+                    f"{table}: expected constraint {conname} ({contype!r}) is "
+                    f"{constraints.get(conname)!r} in the catalog")
+        verified[table] = {"columns": dict(columns),
+                           "constraints": dict(constraints)}
+    if problems:
+        raise OpenMacroV03Error(
+            "schema catalog verification failed: " + "; ".join(problems))
+    return verified
+
+
+# --------------------------------------------------------------------------- #
 # run()
 # --------------------------------------------------------------------------- #
 def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
@@ -550,6 +805,10 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
     verify_module_pins(pins, ROOT)
     module_pins_sha256 = pins["module_pins_sha256"]
 
+    # Gate 3b — pack v2 REAL bytes (no DB): per-file SOURCE pins + recomputed
+    # aggregate; the declarative manifest is never the only source of truth.
+    verify_pack_bytes()
+
     # Gate 4 — connect + advisory lock.
     conn = connect(dsn)
     try:
@@ -557,8 +816,10 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             if not got:
                 return {"status": "lock_busy"}
 
-            # Gate 5 — schema.
+            # Gate 5 — schema (apply, then VERIFY the live catalog against the
+            # committed DDL expectations — the B1b evidence base).
             ensure_schema(conn)
+            verify_schema(conn)
 
             # Gate 6 — as_of.
             as_of_date = resolve_as_of(as_of)
@@ -582,7 +843,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                     "prices": report["prices"],
                     "criteria": report["criteria"],
                 }
-                record_staleness_block(conn, {
+                inserted = record_staleness_block(conn, {
                     "as_of": as_of_date,
                     "reason": "staleness SLO breach: " + "; ".join(
                         b.get("series_id") or b.get("ticker") or "?"
@@ -595,7 +856,8 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                     "code_commit": commit,
                     "run_id": run_id,
                 })
-                # post-write check: the ledger row is present.
+                # post-write check: the ledger row is present. A re-run of a
+                # still-stale day is clean (the immutable first record stands).
                 with conn.cursor() as cur:
                     cur.execute(
                         "SELECT 1 FROM open_macro_v03_staleness_blocks WHERE as_of=%s",
@@ -605,6 +867,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                             "staleness-block ledger row absent after write")
                 conn.commit()
                 return {"status": "staleness_block", "as_of": as_of_date.isoformat(),
+                        "ledger": "inserted" if inserted else "already_recorded",
                         "reason": report["breaches"], "run_id": run_id,
                         "wall_ms": int((time.monotonic() - t0) * 1000)}
 

@@ -281,3 +281,24 @@ def test_ddl_files_exist_and_carry_key_constraints():
     assert "stale_detail         JSONB       NOT NULL" in stale
     assert "valid_status" not in stale and "valid_until" not in stale
     assert "create_hypertable" not in stale
+
+
+def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
+    """The worker's EXPECTED_SCHEMA (verify_schema expectations, the B1b evidence
+    base) must mirror the committed DDL: the expected tables are exactly the three
+    sanctioned ones, and every expected column name and every expected NAMED
+    constraint appears in that table's .sql text (PK/FK auto-names excepted)."""
+    import src.workers.open_macro_v03 as w
+
+    assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES)
+    auto_named = {"open_macro_v03_decisions_pkey", "open_macro_v03_allocations_pkey",
+                  "open_macro_v03_staleness_blocks_pkey",
+                  "open_macro_v03_allocations_as_of_fkey"}
+    for table, expected in w.EXPECTED_SCHEMA.items():
+        ddl = (ROOT / "schemas" / f"{table}.sql").read_text(encoding="utf-8")
+        for column in expected["columns"]:
+            assert column in ddl, f"{table}: expected column {column} not in the DDL"
+        for conname in expected["constraints"]:
+            if conname in auto_named:
+                continue  # Postgres names PK/FK constraints automatically
+            assert conname in ddl, f"{table}: expected constraint {conname} not in the DDL"

@@ -117,6 +117,13 @@ def test_committed_blocked_envelope_blocks_without_db(monkeypatch):
     assert result["status"] == "governance_blocked"
 
 
+def _complete_matrix() -> dict:
+    return {role: {"owner": "Andrei Rachadel", "approval_status": "approved",
+                   "approval_evidence": "signed", "timestamp": "2026-07-06T00:00:00Z",
+                   "blocking": True}
+            for role in w.APPROVAL_ROLES}
+
+
 def _active_envelope() -> dict:
     return {
         "runtime_activation": True, "activation_allowed": True, "allow_db_write": True,
@@ -125,6 +132,8 @@ def _active_envelope() -> dict:
         "official_result": True, "A5": "active",
         "allowed_tables": sorted(w.ALLOWED_TABLES),
         "environment": {"railway_service_name": "open-macro-v03-worker"},
+        "approval_matrix": _complete_matrix(),
+        "approval_matrix_complete": True,
     }
 
 
@@ -153,6 +162,69 @@ def test_check_governance_all_gates(monkeypatch):
     env = _active_envelope()
     env["environment"] = None
     assert w.check_governance(env) is not None
+
+
+def test_check_governance_requires_the_approval_matrix():
+    # active envelope WITHOUT a matrix at all
+    env = _active_envelope()
+    del env["approval_matrix"]
+    assert "approval_matrix" in w.check_governance(env)
+    # incomplete matrix: only five roles
+    env = _active_envelope()
+    del env["approval_matrix"]["final_approver"]
+    assert "approval_matrix" in w.check_governance(env)
+    # unrecognized role in place of technical_owner ("engineering" never counts)
+    env = _active_envelope()
+    env["approval_matrix"]["engineering"] = env["approval_matrix"].pop("technical_owner")
+    assert "approval_matrix" in w.check_governance(env)
+    # a role without a named holder blocks
+    env = _active_envelope()
+    env["approval_matrix"]["risk_owner"]["owner"] = None
+    assert "approval_matrix.risk_owner" in w.check_governance(env)
+    env = _active_envelope()
+    env["approval_matrix"]["quant_owner"]["owner"] = "   "
+    assert "approval_matrix.quant_owner" in w.check_governance(env)
+    # strict-bool completeness: string "true" never passes
+    env = _active_envelope()
+    env["approval_matrix_complete"] = "true"
+    assert w.check_governance(env) == "approval_matrix_complete!=true"
+    # complete matrix passes
+    assert w.check_governance(_active_envelope()) is None
+
+
+def test_committed_blocked_envelope_is_blocked_by_the_matrix_gate_itself():
+    """Flip every boolean/scope gate of the COMMITTED envelope but keep its pending
+    matrix: the NEW approval-matrix gate must still block (not an accident of the
+    earlier boolean gates)."""
+    committed = json.loads(w.ENVELOPE_PATH.read_text(encoding="utf-8"))
+    forged = dict(committed)
+    forged.update({
+        "runtime_activation": True, "activation_allowed": True, "allow_db_write": True,
+        "db_write_official": True, "db_write_mode": "open_macro_v03_new_tables_only",
+        "allocator_publish": True, "allow_allocator_publish": True,
+        "official_result": True, "A5": "active",
+        "allowed_tables": sorted(w.ALLOWED_TABLES),
+        "environment": {"railway_service_name": "open-macro-v03-worker"},
+    })
+    reason = w.check_governance(forged)
+    assert reason is not None
+    assert "approval_matrix" in reason  # pending owners (None) fail the holder gate
+
+
+def test_worker_json_loader_is_strict(tmp_path):
+    dup = tmp_path / "dup.json"
+    dup.write_text('{"runtime_activation": true, "runtime_activation": false}',
+                   encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate JSON key 'runtime_activation'"):
+        w._load_json(dup)
+    nan = tmp_path / "nan.json"
+    nan.write_text('{"value": NaN}', encoding="utf-8")
+    with pytest.raises(ValueError, match="non-finite JSON constant"):
+        w._load_json(nan)
+    overflow = tmp_path / "overflow.json"
+    overflow.write_text('{"value": 1e9999}', encoding="utf-8")
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        w._load_json(overflow)
 
 
 def test_active_envelope_pin_mismatch_raises_before_db(tmp_path, monkeypatch):
@@ -213,6 +285,143 @@ def test_prefix_hash_mismatch_raises():
 
 
 # --------------------------------------------------------------------------- #
+# Gate 3b — pack v2 REAL bytes
+# --------------------------------------------------------------------------- #
+def test_verify_pack_bytes_accepts_the_committed_pack():
+    w.verify_pack_bytes()  # SOURCE pins + recomputed aggregate must all hold
+
+
+def test_verify_pack_bytes_mutated_byte_raises_before_db(tmp_path, monkeypatch):
+    """A single flipped byte in a canonical data file must abort — and abort BEFORE
+    any DB connection is even attempted in run()."""
+    import shutil
+    forged = tmp_path / "pack"
+    shutil.copytree(w.PACK, forged)
+    target = forged / "data" / "canonical" / "eod_prices.json"
+    data = bytearray(target.read_bytes())
+    idx = data.index(b'"close": ') + len(b'"close": ')
+    data[idx] = data[idx] ^ 0x01  # flip one digit byte in a real value
+    target.write_bytes(bytes(data))
+
+    with pytest.raises(w.OpenMacroV03Error, match="pack byte verification failed"):
+        w.verify_pack_bytes(forged)
+
+    # run() calls verify_pack_bytes before connecting: a pack failure must never
+    # reach the DB.
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "verify_pack_bytes",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            w.OpenMacroV03Error("pack byte verification failed: forged")))
+
+    def _no_connect(*a, **k):
+        raise AssertionError("must not connect after a pack-bytes failure")
+
+    monkeypatch.setattr(w, "connect", _no_connect)
+    with pytest.raises(w.OpenMacroV03Error, match="pack byte verification failed"):
+        w.run("unused-dsn")
+
+
+# --------------------------------------------------------------------------- #
+# Ledger × output mutual exclusion + immutable ledger
+# --------------------------------------------------------------------------- #
+def test_publish_refuses_when_ledger_row_exists():
+    def responder(sql, params):
+        if "SELECT 1 FROM open_macro_v03_staleness_blocks" in sql:
+            return {"rows": [(1,)]}
+        return {"rowcount": 1}
+
+    conn = _FakeConn(responder)
+    with pytest.raises(w.OpenMacroV03Error, match="publish refused.*staleness-block"):
+        w.publish(conn, _decision_row(), _allocation_row())
+    assert conn.commits == 0
+    dml = " ".join(sql for sql, _ in conn.executed)
+    assert "INSERT INTO open_macro_v03_decisions" not in dml
+
+
+def test_record_staleness_block_refuses_over_published_output():
+    def responder(sql, params):
+        if "SELECT 1 FROM open_macro_v03_allocations" in sql:
+            return {"rows": [(1,)]}
+        return {"rowcount": 1}
+
+    conn = _FakeConn(responder)
+    with pytest.raises(w.OpenMacroV03Error, match="staleness-block refused"):
+        w.record_staleness_block(conn, {"as_of": _dt.date(2026, 7, 6)})
+    assert conn.commits == 0
+    dml = " ".join(sql for sql, _ in conn.executed)
+    assert "INSERT INTO open_macro_v03_staleness_blocks" not in dml
+
+
+def test_record_staleness_block_is_immutable_on_rerun():
+    """ON CONFLICT DO NOTHING: a re-run of a still-stale day preserves the first
+    record; rowcount 0 is reported as already-recorded, never an error."""
+    def responder(sql, params):
+        if sql.startswith("INSERT INTO open_macro_v03_staleness_blocks"):
+            assert "DO NOTHING" in sql
+            return {"rowcount": 0}
+        return {}
+
+    conn = _FakeConn(responder)
+    inserted = w.record_staleness_block(conn, {
+        "as_of": _dt.date(2026, 7, 6), "reason": "r", "stale_detail": "{}",
+        "input_vintage_sha256": "a" * 64, "input_prices_sha256": "b" * 64,
+        "pack_v2_sha256": "c" * 64, "module_pins_sha256": "d" * 64,
+        "code_commit": "e" * 40, "run_id": "rid"})
+    assert inserted is False
+    assert conn.commits == 1
+
+
+# --------------------------------------------------------------------------- #
+# Catalog verification (verify_schema)
+# --------------------------------------------------------------------------- #
+def _catalog_responder(*, drop_column: str | None = None,
+                       drop_constraint: str | None = None):
+    def responder(sql, params):
+        if "information_schema.columns" in sql:
+            rows = []
+            for table in sorted(w.EXPECTED_SCHEMA):
+                for col, dtype in w.EXPECTED_SCHEMA[table]["columns"].items():
+                    if drop_column and col == drop_column:
+                        continue
+                    rows.append((table, col, dtype))
+            return {"rows": rows}
+        if "pg_constraint" in sql:
+            rows = []
+            for table in sorted(w.EXPECTED_SCHEMA):
+                for name, ctype in w.EXPECTED_SCHEMA[table]["constraints"].items():
+                    if drop_constraint and name == drop_constraint:
+                        continue
+                    rows.append((table, name, ctype))
+            return {"rows": rows}
+        return {}
+    return responder
+
+
+def test_verify_schema_passes_and_returns_the_catalog_view():
+    conn = _FakeConn(_catalog_responder())
+    verified = w.verify_schema(conn)
+    assert set(verified) == set(w.EXPECTED_SCHEMA)
+    assert verified["open_macro_v03_decisions"]["columns"]["quadrant"] == "text"
+    assert (verified["open_macro_v03_allocations"]["constraints"]
+            ["open_macro_v03_allocations_as_of_fkey"] == "f")
+
+
+def test_verify_schema_raises_on_missing_column():
+    conn = _FakeConn(_catalog_responder(drop_column="carry_seed_as_of"))
+    with pytest.raises(w.OpenMacroV03Error, match="columns diverge"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_on_missing_constraint():
+    conn = _FakeConn(_catalog_responder(
+        drop_constraint="open_macro_v03_allocations_weights_sum"))
+    with pytest.raises(w.OpenMacroV03Error, match="weights_sum"):
+        w.verify_schema(conn)
+
+
+# --------------------------------------------------------------------------- #
 # Gate 8 — staleness breach ⇒ ledger + NO output rows (drives run())
 # --------------------------------------------------------------------------- #
 def _stale_inputs():
@@ -231,6 +440,8 @@ def _stale_inputs():
 def test_staleness_breach_writes_ledger_and_no_output(monkeypatch):
     monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_schema", lambda conn: {})
     monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
     monkeypatch.setattr(w, "ensure_schema", lambda conn: None)
     monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: _stale_inputs())

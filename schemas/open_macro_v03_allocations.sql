@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS open_macro_v03_allocations (
         CHECK (publish_state IN ('publishing', 'published')),
     valid_status            TEXT        NOT NULL DEFAULT 'valid'
         CHECK (valid_status IN ('valid', 'invalidated')),
+    -- next business day 14:00 UTC. Mon-Fri calendar without market holidays is a
+    -- DELIBERATE decision (see open_macro_v03_decisions.sql / worker docstring).
     valid_until             TIMESTAMPTZ NOT NULL,
     invalidated_at          TIMESTAMPTZ,
     invalidated_reason      TEXT,

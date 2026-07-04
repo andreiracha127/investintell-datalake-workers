@@ -40,6 +40,9 @@ class _FakeCursor:
     def fetchone(self):
         return self._rows[0] if self._rows else None
 
+    def fetchall(self):
+        return list(self._rows)
+
 
 class _FakeConn:
     def __init__(self, responder) -> None:
@@ -55,11 +58,9 @@ class _FakeConn:
 
 
 def _responder(*, decision=None, allocation=None, ledger=None, future=0,
-               incoherent=0, schema_ok=True):
+               incoherent=0):
     """Build a SQL-shape-aware responder for the monitor's read-only queries."""
     def responder(sql, params):
-        if "to_regclass" in sql:
-            return [(params[0] if schema_ok else None,)]
         if "invalidated_at IS NULL" in sql:
             return [(incoherent,)]
         if "as_of > " in sql:
@@ -74,9 +75,18 @@ def _responder(*, decision=None, allocation=None, ledger=None, future=0,
     return responder
 
 
-def _arm(monkeypatch, responder):
-    """Activate the monitor (envelope flip simulated) over a fake conn."""
+def _arm(monkeypatch, responder, *, schema_ok=True):
+    """Activate the monitor (envelope flip simulated) over a fake conn. The catalog
+    leg runs through the worker's verify_schema, patched at the monitor boundary."""
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    if schema_ok:
+        monkeypatch.setattr(mon, "verify_schema", lambda conn: {})
+    else:
+        def _raise(conn):
+            raise mon.OpenMacroV03Error(
+                "schema catalog verification failed: open_macro_v03_decisions: "
+                "table missing from the catalog")
+        monkeypatch.setattr(mon, "verify_schema", _raise)
     conn = _FakeConn(responder)
     monkeypatch.setattr(mon, "connect", lambda dsn: conn)
     return conn
@@ -218,10 +228,33 @@ def test_incoherent_invalidation_raises(monkeypatch):
 
 
 def test_schema_missing_raises_and_never_creates(monkeypatch):
-    conn = _arm(monkeypatch, _responder(schema_ok=False))
+    conn = _arm(monkeypatch, _responder(), schema_ok=False)
     with pytest.raises(mon.OpenMacroV03MonitorAlert, match="schema_missing"):
         mon.run("dsn", as_of=AS_OF)
     # the monitor must never try to create anything
+    assert all(sql.lstrip().upper().startswith("SELECT") for sql, _ in conn.executed)
+
+
+def test_schema_check_uses_the_workers_verify_schema_read_only(monkeypatch):
+    """The catalog leg is the worker's verify_schema over the monitor's read-only
+    conn: with a faithful catalog responder the real function passes and issues
+    SELECTs only."""
+    import src.workers.open_macro_v03 as w
+
+    def catalog_responder(sql, params):
+        if "information_schema.columns" in sql:
+            return [(t, c, d) for t in sorted(w.EXPECTED_SCHEMA)
+                    for c, d in w.EXPECTED_SCHEMA[t]["columns"].items()]
+        if "pg_constraint" in sql:
+            return [(t, n, ct) for t in sorted(w.EXPECTED_SCHEMA)
+                    for n, ct in w.EXPECTED_SCHEMA[t]["constraints"].items()]
+        return _responder(decision=_published(), allocation=_published())(sql, params)
+
+    monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    conn = _FakeConn(catalog_responder)
+    monkeypatch.setattr(mon, "connect", lambda dsn: conn)
+    result = mon.run("dsn", as_of=AS_OF)
+    assert result["status"] == "healthy"
     assert all(sql.lstrip().upper().startswith("SELECT") for sql, _ in conn.executed)
 
 

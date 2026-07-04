@@ -45,10 +45,12 @@ from typing import Any
 from src.db import connect
 from src.workers.open_macro_v03 import (
     ENVELOPE_PATH,
+    OpenMacroV03Error,
     _canonical_sha256,
     _load_json,
     compose_inputs,
     resolve_as_of,
+    verify_schema,
 )
 from harness.direct_activation.live_validation import staleness_report
 
@@ -64,7 +66,6 @@ class OpenMacroV03MonitorAlert(RuntimeError):
         super().__init__(f"{classification}: {detail}" if detail else classification)
 
 
-_REGCLASS_SQL = "SELECT to_regclass(%s)"
 _DAY_ROW_SQL = ("SELECT publish_state, valid_status, valid_until "
                 "FROM {table} WHERE as_of = %s")
 _LEDGER_SQL = ("SELECT input_vintage_sha256, input_prices_sha256 "
@@ -76,14 +77,13 @@ _INCOHERENT_SQL = (
 
 
 def _check_schema(conn) -> None:
-    """All three sanctioned tables must exist; the monitor never creates them."""
-    with conn.cursor() as cur:
-        for table in ALL_TABLES:
-            cur.execute(_REGCLASS_SQL, (table,))
-            row = cur.fetchone()
-            if row is None or row[0] is None:
-                raise OpenMacroV03MonitorAlert(
-                    "schema_missing", f"table {table} does not exist")
+    """The full live catalog must match the committed DDL expectations (the SAME
+    read-only ``verify_schema`` the worker uses); the monitor never creates or
+    repairs anything — a missing or diverging catalog is itself the alarm."""
+    try:
+        verify_schema(conn)
+    except OpenMacroV03Error as exc:
+        raise OpenMacroV03MonitorAlert("schema_missing", str(exc)) from exc
 
 
 def _check_future_writes(conn, as_of: _dt.date) -> None:

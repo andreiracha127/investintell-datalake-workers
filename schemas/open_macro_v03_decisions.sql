@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS open_macro_v03_decisions (
         CHECK (publish_state IN ('publishing', 'published')),
     valid_status         TEXT          NOT NULL DEFAULT 'valid'
         CHECK (valid_status IN ('valid', 'invalidated')),
+    -- next business day 14:00 UTC. Business days are DELIBERATELY Mon-Fri without
+    -- a market-holiday calendar: on holidays the worker publishes carried and
+    -- renews this horizon (no reader blackout).
     valid_until          TIMESTAMPTZ   NOT NULL,
     invalidated_at       TIMESTAMPTZ,
     invalidated_reason   TEXT,
