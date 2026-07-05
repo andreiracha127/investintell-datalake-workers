@@ -319,6 +319,23 @@ def test_staleness_gate_requires_every_seed_series() -> None:
         lv.staleness_gate(without_mich, [])
 
 
+def test_staleness_gate_rejects_future_priced_bar() -> None:
+    """A price bar dated AFTER the as-of yields a negative day span -> empty range ->
+    business_age 0 -> would read as 'fresh', and compute() would price at that future
+    date. The gate must fail loud (symmetric with the macro future-vintage guard)."""
+    from harness.direct_activation import live_validation as lv
+
+    fresh_vintages = [{"series_id": sid,
+                       "available_at": f"{lv.VALIDATION_AS_OF.isoformat()}T00:00:00+00:00"}
+                      for sid in lv.EXPECTED_SEED_SERIES]
+    future = (lv.VALIDATION_AS_OF + timedelta(days=1)).isoformat()
+    prices = [{"ticker": t, "date": lv.VALIDATION_AS_OF.isoformat()}
+              for t in lv.sleeve_mod.SLEEVE_TICKERS]
+    prices.append({"ticker": lv.sleeve_mod.SLEEVE_TICKERS[0], "date": future})
+    with pytest.raises(lv.LiveValidationError, match="future price bar"):
+        lv.staleness_gate(fresh_vintages, prices)
+
+
 # --- 4. snapshot manifest hash + row pins ----------------------------------------
 
 def test_snapshot_manifest_equals_full_reconstruction() -> None:
@@ -398,6 +415,16 @@ def test_verify_snapshot_manifest_rejects_tampered_deterministic_fields() -> Non
         ("vintage lower bound",
          lambda m: m["query_parameters"].__setitem__(
              "vintage_available_at_lower_exclusive", "2026-06-29T23:59:59.999999+00:00")),
+        # full-manifest binding: identity/provenance/extra-key tampers over the SAME
+        # delta bytes must be rejected by the executor too, not only the CI test
+        ("full manifest diverged",
+         lambda m: m["provenance"].__setitem__("source", "staging datalake (read-only)")),
+        ("full manifest diverged",
+         lambda m: m.__setitem__("direct_activation_id", "some_other_activation")),
+        ("full manifest diverged", lambda m: m.__setitem__("stage", "B")),
+        ("full manifest diverged",
+         lambda m: m.__setitem__("staleness_gate_at_export", "fail")),
+        ("full manifest diverged", lambda m: m.__setitem__("unexpected_key", True)),
     ]
     for match, mutate in cases:
         with pytest.raises(lv.LiveValidationError, match=match):
@@ -544,6 +571,28 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
                          "qc_a3_core.py"}
     assert set(job["tree_hashes"]) == expected_surfaces
     worker_commit = job["worker_commit"]
+    # The AUTHORITATIVE, shallow-safe binding is tree_hashes == HEAD:<surface> (the
+    # merged tree, always present in any checkout including a PR merge commit).
+    #
+    # worker_commit is, by construction, the clean CODE commit measured BEFORE the
+    # evidence child commit — the measured logical_output_hash embeds worker_commit, so
+    # it can never be the evidence commit itself; it is that commit's parent (a genuine
+    # ancestor of HEAD). A shallow clone of the merge commit need not fetch that object,
+    # so resolving <worker_commit>:<surface> unconditionally would fail there. Bind it
+    # only when its object is present: then it MUST be an ancestor of HEAD and its
+    # surface trees must match the pins.
+    wc_present = subprocess.run(
+        ["git", "cat-file", "-e", f"{worker_commit}^{{commit}}"],
+        cwd=ROOT, capture_output=True,
+    ).returncode == 0
+    if wc_present:
+        is_ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", worker_commit, "HEAD"],
+            cwd=ROOT, capture_output=True,
+        ).returncode
+        assert is_ancestor == 0, (
+            f"job_identity.worker_commit {worker_commit} is present but is NOT an "
+            f"ancestor of HEAD — the evidence cites a commit off the merged history")
     for surface, pinned in job["tree_hashes"].items():
         head_object = subprocess.run(
             ["git", "rev-parse", f"HEAD:{surface}"],
@@ -553,22 +602,15 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
             f"tree_hashes[{surface!r}] pins {pinned} but HEAD:{surface} is "
             f"{head_object} — a compute surface changed after the measured round; "
             f"re-run Stage A so the evidence binds to the merged tree")
-        # Tie the pins to the CITED worker_commit, not just HEAD: a record could stamp
-        # an unrelated/nonexistent commit in provenance while leaving tree_hashes at the
-        # measured HEAD. Resolving <worker_commit>:<surface> fails loud on a bogus commit
-        # and proves the cited commit actually contained the measured compute surfaces.
-        commit_object = subprocess.run(
-            ["git", "rev-parse", f"{worker_commit}:{surface}"],
-            cwd=ROOT, capture_output=True, text=True,
-        )
-        assert commit_object.returncode == 0, (
-            f"job_identity.worker_commit {worker_commit} does not resolve "
-            f"{worker_commit}:{surface} — the record cites a commit that does not "
-            f"contain the measured compute surface {surface!r}")
-        assert pinned == commit_object.stdout.strip(), (
-            f"tree_hashes[{surface!r}] pins {pinned} but {worker_commit}:{surface} is "
-            f"{commit_object.stdout.strip()} — the cited worker_commit did not contain "
-            f"the measured compute surface")
+        if wc_present:
+            commit_object = subprocess.run(
+                ["git", "rev-parse", f"{worker_commit}:{surface}"],
+                cwd=ROOT, capture_output=True, text=True, check=True,
+            ).stdout.strip()
+            assert pinned == commit_object, (
+                f"tree_hashes[{surface!r}] pins {pinned} but {worker_commit}:{surface} "
+                f"is {commit_object} — the cited worker_commit did not contain the "
+                f"measured compute surface")
 
     assert repro["live_validation_record_sha256"] == _sha256_lf(LIVE_VALIDATION_RECORD)
     assert repro["governance"] == live["governance"]

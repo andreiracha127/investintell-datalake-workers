@@ -48,6 +48,16 @@ CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
 # coverage while dodging the freshness gate, so absence is a fail-loud error.
 EXPECTED_SEED_SERIES = tuple(sorted(spec.series_id for spec in SEED_SOURCES))
 
+# Deterministic snapshot-manifest identity/provenance the consume path binds in full
+# (so false metadata over the same delta bytes is rejected here, not only by the CI
+# reconstruction test). These mirror the exporter's build_manifest constants.
+DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
+SNAPSHOT_SCHEMA_VERSION = 1
+SNAPSHOT_ARTIFACT_TYPE = "direct_activation_input_snapshot_manifest"
+DB_SERVICE_ID = "t83f4np6x4"
+DB_SOURCE = "production datalake (read-only)"
+DB_TABLES = ["eod_prices", "macro_observation_vintage"]
+
 # staleness criteria (Phase 1 staleness_verification_record semantics)
 MONTHLY_MAX_AGE_DAYS = 45
 MICH_MAX_AGE_DAYS = 90          # documented publication-lag policy
@@ -123,6 +133,48 @@ def verify_snapshot_manifest(manifest: dict[str, Any], delta_vintages: list[dict
     _require(qp["vintage_available_at_upper_inclusive"] == _as_of_end_utc(VALIDATION_AS_OF),
              "snapshot manifest: vintage upper bound diverged from the as-of ceiling")
 
+    # Full-manifest binding: reconstruct the ENTIRE expected manifest deterministically
+    # and require exact equality, so identity/provenance metadata (artifact_type, stage,
+    # direct_activation_id, schema_version, provenance.source/db_service_id/tables,
+    # staleness_gate_at_export) and any EXTRA keys are bound too — the executor itself is
+    # the fail-loud manifest binding for the measurement path, not only the CI test.
+    expected = {
+        "artifact_type": SNAPSHOT_ARTIFACT_TYPE,
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
+        "stage": "A",
+        "direct_activation_id": DIRECT_ACTIVATION_ID,
+        "validation_as_of": VALIDATION_AS_OF.isoformat(),
+        "pack_v2_sha256": PACK_SHA256_PIN,
+        "query_parameters": {
+            "validation_as_of": VALIDATION_AS_OF.isoformat(),
+            "price_overlap_start": PRICE_OVERLAP_START.isoformat(),
+            "pack_cut": PACK_CUT.isoformat(),
+            "vintage_available_at_lower_exclusive": _as_of_end_utc(PACK_CUT),
+            "vintage_available_at_upper_inclusive": _as_of_end_utc(VALIDATION_AS_OF),
+            "series_ids": list(EXPECTED_SEED_SERIES),
+            "tickers": list(sleeve_mod.SLEEVE_TICKERS),
+        },
+        "files": {
+            "delta_eod_prices.json": {
+                "sha256": _sha256_file(snapshot_dir / "delta_eod_prices.json"),
+                "rows": len(delta_prices),
+            },
+            "delta_macro_vintages.json": {
+                "sha256": _sha256_file(snapshot_dir / "delta_macro_vintages.json"),
+                "rows": len(delta_vintages),
+            },
+        },
+        "staleness_gate_at_export": "pass",
+        "provenance": {
+            "source": DB_SOURCE,
+            "db_service_id": DB_SERVICE_ID,
+            "tables": DB_TABLES,
+        },
+    }
+    _require(manifest == expected,
+             "snapshot manifest: full manifest diverged from the deterministic "
+             "reconstruction (identity/provenance/extra-key tamper)")
+
 
 def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...],
                  *, what: str) -> list[dict]:
@@ -194,6 +246,14 @@ def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str
                  if r["ticker"] == ticker]
         _require(bool(dates), f"staleness: no prices at all for {ticker}")
         last = max(dates)
+        # A price bar dated AFTER the as-of is future data (symmetric with the macro
+        # future-vintage guard above). The exporter's upper bound rejects it, so it can
+        # only come from a tampered/over-inclusive snapshot; a negative day span makes
+        # the business_age range() empty -> business_age 0 -> would read as "fresh", and
+        # compute() would then price the allocation at that future date. Fail loud.
+        _require(last <= VALIDATION_AS_OF,
+                 f"staleness: {ticker} last price {last} is after as-of "
+                 f"{VALIDATION_AS_OF} (future price bar)")
         business_age = len([1 for i in range(1, (VALIDATION_AS_OF - last).days + 1)
                             if (last + _dt.timedelta(days=i)).weekday() < 5])
         _require(business_age <= PRICE_MAX_AGE_BUSINESS_DAYS,
