@@ -1,0 +1,212 @@
+[
+ {
+  "adjusted_close": 26.57,
+  "close": 26.57,
+  "date": "2026-06-26",
+  "ticker": "DBC",
+  "volume": 522315
+ },
+ {
+  "adjusted_close": 26.56,
+  "close": 26.56,
+  "date": "2026-06-29",
+  "ticker": "DBC",
+  "volume": 728739
+ },
+ {
+  "adjusted_close": 26.66,
+  "close": 26.66,
+  "date": "2026-06-30",
+  "ticker": "DBC",
+  "volume": 1480308
+ },
+ {
+  "adjusted_close": 26.45,
+  "close": 26.45,
+  "date": "2026-07-01",
+  "ticker": "DBC",
+  "volume": 1940150
+ },
+ {
+  "adjusted_close": 26.57,
+  "close": 26.57,
+  "date": "2026-07-02",
+  "ticker": "DBC",
+  "volume": 830230
+ },
+ {
+  "adjusted_close": 373.63,
+  "close": 373.63,
+  "date": "2026-06-26",
+  "ticker": "GLD",
+  "volume": 5603324
+ },
+ {
+  "adjusted_close": 368.58,
+  "close": 368.58,
+  "date": "2026-06-29",
+  "ticker": "GLD",
+  "volume": 5006269
+ },
+ {
+  "adjusted_close": 368.38,
+  "close": 368.38,
+  "date": "2026-06-30",
+  "ticker": "GLD",
+  "volume": 5302053
+ },
+ {
+  "adjusted_close": 370.6,
+  "close": 370.6,
+  "date": "2026-07-01",
+  "ticker": "GLD",
+  "volume": 9058287
+ },
+ {
+  "adjusted_close": 378.13,
+  "close": 378.13,
+  "date": "2026-07-02",
+  "ticker": "GLD",
+  "volume": 7607967
+ },
+ {
+  "adjusted_close": 81.9513627187,
+  "close": 82.19,
+  "date": "2026-06-26",
+  "ticker": "SHY",
+  "volume": 2949017
+ },
+ {
+  "adjusted_close": 81.9314207883,
+  "close": 82.17,
+  "date": "2026-06-29",
+  "ticker": "SHY",
+  "volume": 2234617
+ },
+ {
+  "adjusted_close": 81.8715949973,
+  "close": 82.11,
+  "date": "2026-06-30",
+  "ticker": "SHY",
+  "volume": 3358822
+ },
+ {
+  "adjusted_close": 81.84,
+  "close": 81.84,
+  "date": "2026-07-01",
+  "ticker": "SHY",
+  "volume": 3433657
+ },
+ {
+  "adjusted_close": 81.94,
+  "close": 81.94,
+  "date": "2026-07-02",
+  "ticker": "SHY",
+  "volume": 3507924
+ },
+ {
+  "adjusted_close": 728.99,
+  "close": 728.99,
+  "date": "2026-06-26",
+  "ticker": "SPY",
+  "volume": 71033969
+ },
+ {
+  "adjusted_close": 741,
+  "close": 741,
+  "date": "2026-06-29",
+  "ticker": "SPY",
+  "volume": 58035228
+ },
+ {
+  "adjusted_close": 746.77,
+  "close": 746.77,
+  "date": "2026-06-30",
+  "ticker": "SPY",
+  "volume": 55626035
+ },
+ {
+  "adjusted_close": 745.76,
+  "close": 745.76,
+  "date": "2026-07-01",
+  "ticker": "SPY",
+  "volume": 47100878
+ },
+ {
+  "adjusted_close": 744.78,
+  "close": 744.78,
+  "date": "2026-07-02",
+  "ticker": "SPY",
+  "volume": 57505953
+ },
+ {
+  "adjusted_close": 108.6374052563,
+  "close": 109.7,
+  "date": "2026-06-26",
+  "ticker": "TIP",
+  "volume": 2679252
+ },
+ {
+  "adjusted_close": 108.8354679824,
+  "close": 109.9,
+  "date": "2026-06-29",
+  "ticker": "TIP",
+  "volume": 2428814
+ },
+ {
+  "adjusted_close": 108.3700205761,
+  "close": 109.43,
+  "date": "2026-06-30",
+  "ticker": "TIP",
+  "volume": 4144974
+ },
+ {
+  "adjusted_close": 108.17,
+  "close": 108.17,
+  "date": "2026-07-01",
+  "ticker": "TIP",
+  "volume": 1691010
+ },
+ {
+  "adjusted_close": 108.33,
+  "close": 108.33,
+  "date": "2026-07-02",
+  "ticker": "TIP",
+  "volume": 2011799
+ },
+ {
+  "adjusted_close": 87.0363310994,
+  "close": 87.36,
+  "date": "2026-06-26",
+  "ticker": "TLT",
+  "volume": 21650818
+ },
+ {
+  "adjusted_close": 87.1259976493,
+  "close": 87.45,
+  "date": "2026-06-29",
+  "ticker": "TLT",
+  "volume": 19457155
+ },
+ {
+  "adjusted_close": 86.0998138005,
+  "close": 86.42,
+  "date": "2026-06-30",
+  "ticker": "TLT",
+  "volume": 31079477
+ },
+ {
+  "adjusted_close": 85.52,
+  "close": 85.52,
+  "date": "2026-07-01",
+  "ticker": "TLT",
+  "volume": 28109797
+ },
+ {
+  "adjusted_close": 85.51,
+  "close": 85.51,
+  "date": "2026-07-02",
+  "ticker": "TLT",
+  "volume": 20957228
+ }
+]
