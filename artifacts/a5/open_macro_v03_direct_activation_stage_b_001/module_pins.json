@@ -1,8 +1,9 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "ae1192135e79f9a2cb367008944014ace0228c3438770afd6a5d509fc03ebbcc",
+ "module_pins_sha256": "0258df2554cebcbd5146cee2c8b410c3a4502610b77e723dfeef7ebb692c2836",
  "modules": {
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
+  "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
   "scripts/p1_export/export_p1_sources.py": "b9ca2043c3393d9386383010f4963149c8f554499dceb70c6fc7c33705fb91b7",
   "src/macro_sources.py": "e6c325bd768a36f80293258a333a07e1cd976f252c4bfaa6e9fa1a3904acb11e",

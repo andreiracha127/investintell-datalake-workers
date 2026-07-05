@@ -32,7 +32,10 @@ PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002
 
 # The FULL transitive closure of the decision-chain pure modules + the harness sleeve
 # + the P1 export format helpers. Every module the runtime worker consumes to compute
-# and read the certified candidate.
+# and read the certified candidate. NB: harness/phase0q/pit.py is the PIT vintage
+# selector (``PitIndex``) that decision.py imports and run_decision_series builds at
+# runtime — pinned here so a change to PIT selection cannot alter the official
+# decision without tripping verify_module_pins.
 PINNED_MODULES = (
     "src/quadrant_score.py",
     "src/macro_transforms.py",
@@ -43,6 +46,7 @@ PINNED_MODULES = (
     "src/quadrant_snapshot.py",
     "src/quadrant_staleness.py",
     "harness/phase0q/decision.py",
+    "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
     "scripts/p1_export/export_p1_sources.py",
 )

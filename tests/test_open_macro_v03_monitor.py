@@ -79,6 +79,10 @@ def _arm(monkeypatch, responder, *, schema_ok=True):
     """Activate the monitor (envelope flip simulated) over a fake conn. The catalog
     leg runs through the worker's verify_schema, patched at the monitor boundary."""
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)
+    # fix the as_of to the fixture business day so these DB-path tests are independent
+    # of the real clock (and the worker's future-override guard).
+    monkeypatch.setattr(mon, "resolve_as_of", lambda *a, **k: AS_OF_DATE)
     if schema_ok:
         monkeypatch.setattr(mon, "verify_schema", lambda conn: {})
     else:
@@ -137,8 +141,6 @@ def test_justified_staleness_block_exits_clean(monkeypatch):
     monkeypatch.setattr(mon, "compose_inputs", lambda c, d: (["vr"], ["pr"]))
     monkeypatch.setattr(mon, "staleness_report",
                         lambda v, p, d: {"breaches": [{"kind": "series"}]})
-    monkeypatch.setattr(mon, "_canonical_sha256",
-                        lambda rows: "v" * 64 if rows == ["vr"] else "p" * 64)
     result = mon.run("dsn", as_of=AS_OF)
     assert result["status"] == "staleness_block_day"
     assert result["checks"]["missing_output_slo"] == "staleness_block"
@@ -199,15 +201,19 @@ def test_unjustified_staleness_block_raises(monkeypatch):
         mon.run("dsn", as_of=AS_OF)
 
 
-def test_block_input_hash_mismatch_raises(monkeypatch):
-    _arm(monkeypatch, _responder(ledger=("x" * 64, "p" * 64)))  # vintage hash differs
-    monkeypatch.setattr(mon, "compose_inputs", lambda c, d: (["vr"], ["pr"]))
+def test_moving_inputs_dont_false_alarm_a_still_justified_block(monkeypatch):
+    # The ledger is an immutable first-write snapshot. A late same-day input moves the
+    # live composed-input hash away from that frozen snapshot, but a breach still
+    # exists: the day stays a justified block (no block_input_hash_mismatch false
+    # alarm — the monitor no longer requires the live hashes to match the ledger).
+    conn = _arm(monkeypatch, _responder(ledger=("frozen_v", "frozen_p")))
+    monkeypatch.setattr(mon, "compose_inputs", lambda c, d: (["vr_moved"], ["pr_moved"]))
     monkeypatch.setattr(mon, "staleness_report",
                         lambda v, p, d: {"breaches": [{"kind": "series"}]})
-    monkeypatch.setattr(mon, "_canonical_sha256",
-                        lambda rows: "v" * 64 if rows == ["vr"] else "p" * 64)
-    with pytest.raises(mon.OpenMacroV03MonitorAlert, match="block_input_hash_mismatch"):
-        mon.run("dsn", as_of=AS_OF)
+    result = mon.run("dsn", as_of=AS_OF)
+    assert result["status"] == "staleness_block_day"
+    assert result["checks"]["staleness_block_justified"] is True
+    assert conn.closed
 
 
 # --------------------------------------------------------------------------- #
@@ -251,6 +257,8 @@ def test_schema_check_uses_the_workers_verify_schema_read_only(monkeypatch):
         return _responder(decision=_published(), allocation=_published())(sql, params)
 
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)  # covered by worker tests
+    monkeypatch.setattr(mon, "resolve_as_of", lambda *a, **k: AS_OF_DATE)
     conn = _FakeConn(catalog_responder)
     monkeypatch.setattr(mon, "connect", lambda dsn: conn)
     result = mon.run("dsn", as_of=AS_OF)

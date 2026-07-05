@@ -20,15 +20,21 @@ worker; Saturday/Sunday exits 0 with ``non_business_day``):
 2. **Justified staleness-block cross-check** — on a block day the monitor recomputes
    ONLY the staleness gate over pack v2 + the live delta (the main worker's own
    helpers, imported, never duplicated) and confirms a breach actually exists today
-   (``unjustified_staleness_block`` otherwise) and that the ledger row's input hashes
-   equal the recomputed ones (``block_input_hash_mismatch`` otherwise).
+   (``unjustified_staleness_block`` otherwise). The ledger row's input hashes are a
+   FROZEN first-write snapshot (the ledger is immutable — ``ON CONFLICT DO NOTHING``),
+   so they deliberately do NOT have to equal the monitor's live recomputation: a late
+   same-day input (a normal macro vintage arrival) that leaves the breach standing
+   must not turn a still-justified block into a false alarm. The persisting breach is
+   the justification.
 3. **Re-scoped attempt detectors** (what is observable in the DB) — an invalidated
    row whose ``invalidated_at`` is missing or in the future raises
    ``incoherent_invalidation``; any row in either output table with a FUTURE
    ``as_of`` raises ``future_as_of_write``.
 
-The monitor has NO write path of any kind — not even ensure_schema. Missing tables
-raise ``schema_missing`` (itself a correct alert once activation is live). To avoid
+The monitor has NO DDL/DML write path of any kind — not even ensure_schema (it only
+pins its own session ``search_path`` to public, a session-local GUC, never a data
+write). Missing tables raise ``schema_missing`` (itself a correct alert once
+activation is live). To avoid
 false alarms BEFORE the governance flip, it reads the SAME committed
 ``activation_envelope.json`` as the main worker: while ``runtime_activation`` is not
 true it exits 0 with ``pre_activation`` without touching the DB — so it can be
@@ -46,9 +52,9 @@ from src.db import connect
 from src.workers.open_macro_v03 import (
     ENVELOPE_PATH,
     OpenMacroV03Error,
-    _canonical_sha256,
     _load_json,
     compose_inputs,
+    pin_search_path,
     resolve_as_of,
     verify_schema,
 )
@@ -68,8 +74,7 @@ class OpenMacroV03MonitorAlert(RuntimeError):
 
 _DAY_ROW_SQL = ("SELECT publish_state, valid_status, valid_until "
                 "FROM {table} WHERE as_of = %s")
-_LEDGER_SQL = ("SELECT input_vintage_sha256, input_prices_sha256 "
-               "FROM open_macro_v03_staleness_blocks WHERE as_of = %s")
+_LEDGER_SQL = "SELECT 1 FROM open_macro_v03_staleness_blocks WHERE as_of = %s"
 _FUTURE_SQL = "SELECT count(*) FROM {table} WHERE as_of > %s"
 _INCOHERENT_SQL = (
     "SELECT count(*) FROM {table} WHERE valid_status = 'invalidated' "
@@ -121,25 +126,22 @@ def _ledger_row(conn, as_of: _dt.date):
         return cur.fetchone()
 
 
-def _check_block_justified(conn, as_of: _dt.date, ledger_row) -> None:
+def _check_block_justified(conn, as_of: _dt.date) -> None:
     """A recorded block is honoured only if JUSTIFIED: the recomputed staleness gate
-    must actually breach today, and the ledger row's input hashes must equal the
-    recomputed composed-input hashes."""
+    must actually breach today.
+
+    The ledger row's input hashes are a FROZEN first-write snapshot (the ledger is
+    immutable — a re-run of a still-stale day preserves the first record), so they
+    deliberately do NOT track inputs that move later the same day. Requiring the
+    live recomputed hashes to equal that frozen snapshot would raise a false
+    ``block_input_hash_mismatch`` after a normal late macro-vintage arrival on a day
+    that is still legitimately blocked; the persisting breach is the justification."""
     vintage_rows, price_rows = compose_inputs(conn, as_of)
     report = staleness_report(vintage_rows, price_rows, as_of)
     if not report["breaches"]:
         raise OpenMacroV03MonitorAlert(
             "unjustified_staleness_block",
             f"ledger row for {as_of.isoformat()} but the recomputed inputs are fresh")
-    recomputed_v = _canonical_sha256(vintage_rows)
-    recomputed_p = _canonical_sha256(price_rows)
-    ledger_v = (ledger_row[0] or "").strip()
-    ledger_p = (ledger_row[1] or "").strip()
-    if ledger_v != recomputed_v or ledger_p != recomputed_p:
-        raise OpenMacroV03MonitorAlert(
-            "block_input_hash_mismatch",
-            f"ledger hashes ({ledger_v[:12]}…, {ledger_p[:12]}…) != recomputed "
-            f"({recomputed_v[:12]}…, {recomputed_p[:12]}…)")
 
 
 def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
@@ -160,6 +162,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
 
     conn = connect(dsn)
     try:
+        pin_search_path(conn)
         _check_schema(conn)
         checks: dict[str, Any] = {"schema": "ok"}
 
@@ -181,7 +184,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                     "block_and_output_coexist",
                     f"ledger row AND output row(s) both present for "
                     f"{as_of_date.isoformat()}")
-            _check_block_justified(conn, as_of_date, ledger)
+            _check_block_justified(conn, as_of_date)
             checks["missing_output_slo"] = "staleness_block"
             checks["staleness_block_justified"] = True
             return {"status": "staleness_block_day", "as_of": as_of_date.isoformat(),

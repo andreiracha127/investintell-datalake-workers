@@ -69,12 +69,16 @@ class _FakeConn:
 
 
 def _lock_responder(inner=None):
-    """Wrap a responder so advisory-lock acquire/release work on the fake conn."""
+    """Wrap a responder so advisory-lock acquire/release + search_path pin work."""
     def responder(sql, params):
         if "pg_try_advisory_lock" in sql:
             return {"rows": [(True,)]}
         if "pg_advisory_unlock" in sql:
             return {"rows": [(1,)]}
+        if "SET search_path" in sql:
+            return {"rows": []}
+        if "SHOW search_path" in sql:
+            return {"rows": [("public",)]}
         return (inner or (lambda s, p: {}))(sql, params)
     return responder
 
@@ -262,6 +266,21 @@ def test_resolve_as_of_business_day_and_weekend():
     assert w.resolve_as_of("2026-06-30") == _dt.date(2026, 6, 30)               # explicit
 
 
+def test_resolve_as_of_rejects_future_arg_override():
+    # a future arg override (> current NY day) is refused before any publish
+    with pytest.raises(w.OpenMacroV03Error, match="future"):
+        w.resolve_as_of("2026-07-07", today=_dt.date(2026, 7, 6))
+    # current-or-past overrides stay trusted
+    assert w.resolve_as_of("2026-07-06", today=_dt.date(2026, 7, 6)) == _dt.date(2026, 7, 6)
+    assert w.resolve_as_of("2026-07-05", today=_dt.date(2026, 7, 6)) == _dt.date(2026, 7, 5)
+
+
+def test_resolve_as_of_rejects_future_env_override(monkeypatch):
+    monkeypatch.setenv("OPEN_MACRO_V03_AS_OF", "2026-07-10")
+    with pytest.raises(w.OpenMacroV03Error, match="future"):
+        w.resolve_as_of(today=_dt.date(2026, 7, 6))
+
+
 # --------------------------------------------------------------------------- #
 # Gate 7 — prefix hash gate
 # --------------------------------------------------------------------------- #
@@ -422,6 +441,28 @@ def test_verify_schema_raises_on_missing_constraint():
 
 
 # --------------------------------------------------------------------------- #
+# search_path pin (public, before any DDL/table access)
+# --------------------------------------------------------------------------- #
+def test_pin_search_path_forces_public_and_verifies():
+    conn = _FakeConn(_lock_responder())
+    w.pin_search_path(conn)
+    executed = " ".join(sql for sql, _ in conn.executed)
+    assert "SET search_path TO public" in executed
+    assert conn.commits == 1
+
+
+def test_pin_search_path_raises_when_not_public():
+    def responder(sql, params):
+        if "SHOW search_path" in sql:
+            return {"rows": [("scratch, public",)]}
+        return {"rows": []}
+
+    conn = _FakeConn(responder)
+    with pytest.raises(w.OpenMacroV03Error, match="non-public schema"):
+        w.pin_search_path(conn)
+
+
+# --------------------------------------------------------------------------- #
 # Gate 8 — staleness breach ⇒ ledger + NO output rows (drives run())
 # --------------------------------------------------------------------------- #
 def _stale_inputs():
@@ -446,6 +487,9 @@ def test_staleness_breach_writes_ledger_and_no_output(monkeypatch):
     monkeypatch.setattr(w, "ensure_schema", lambda conn: None)
     monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: _stale_inputs())
     monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+    # date resolution has its own dedicated tests; pin the as_of so this staleness
+    # test is independent of the real clock (and the future-override guard).
+    monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
 
     def responder(sql, params):
         if "SELECT 1 FROM open_macro_v03_staleness_blocks" in sql:

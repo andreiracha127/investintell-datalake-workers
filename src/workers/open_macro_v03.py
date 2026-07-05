@@ -16,7 +16,9 @@ Fail-loud ordering (zero side effects before every gate):
      only in the Stage B PR's final review, so a real run today returns governance_blocked.)
   3. Module pins — sha256 (CRLF→LF normalized) of each pinned pure module must match
      ⇒ else raise, BEFORE any DB access.
-  4. connect + a dedicated advisory lock (at most one run per business day).
+  4. connect + pin search_path=public (before any DDL/table access, so a non-public
+     DSN/role default cannot divert reads/writes) + a dedicated advisory lock (at
+     most one run per business day).
   5. ensure_schema (the three committed DDL files).
   6. resolve as_of (env override, else the current America/New_York business day).
   7. read inputs: pack v2 prefix (hash-compared to the pack pin — a pre-cut backfill
@@ -294,8 +296,16 @@ def verify_pack_bytes(pack: Path | None = None) -> None:
 # --------------------------------------------------------------------------- #
 def resolve_as_of(as_of_arg: str | None = None, *,
                   today: _dt.date | None = None) -> _dt.date | None:
-    """Explicit override (arg or env) is trusted; otherwise the current
-    America/New_York calendar day, or ``None`` on a weekend (non-business day).
+    """Explicit override (arg or env) is trusted for any past-or-current date;
+    otherwise the current America/New_York calendar day, or ``None`` on a weekend
+    (non-business day).
+
+    A FUTURE override (> the current America/New_York day) is REJECTED loud: the
+    worker only publishes for a past-or-current business day and must never stamp an
+    official future-dated decision/allocation (a future output row is itself illegal
+    by the monitor's ``future_as_of_write`` guard). There is no separate non-
+    publishing backfill path — ``run()`` is the only publish path — so the future
+    gate cannot block a legitimate replay.
 
     Calendar policy (DELIBERATE, owner-ratified): business days are Mon–Fri with NO
     market-holiday calendar. On a US market holiday the worker RUNS and publishes a
@@ -303,14 +313,19 @@ def resolve_as_of(as_of_arg: str | None = None, *,
     3-business-day price staleness gate absorbs the holiday price gap. This is
     consistent with the decision chain and with Stage A, whose live validation ran
     on 2026-07-03 (a market holiday) and published carried."""
-    if as_of_arg:
-        return _dt.date.fromisoformat(as_of_arg)
-    env = os.environ.get(AS_OF_ENV)
-    if env:
-        return _dt.date.fromisoformat(env)
     if today is None:
         from zoneinfo import ZoneInfo
         today = _dt.datetime.now(ZoneInfo("America/New_York")).date()
+    override = as_of_arg or os.environ.get(AS_OF_ENV)
+    if override:
+        resolved = _dt.date.fromisoformat(override)
+        if resolved > today:
+            raise OpenMacroV03Error(
+                f"as_of override {resolved.isoformat()} is in the future (> current "
+                f"America/New_York day {today.isoformat()}); the worker never stamps "
+                "an official future-dated decision (illegal by the monitor's "
+                "future_as_of_write guard)")
+        return resolved
     if today.weekday() >= 5:  # Sat/Sun
         return None
     return today
@@ -645,6 +660,29 @@ def code_commit() -> str:
                           capture_output=True, text=True, check=True).stdout.strip()
 
 
+def pin_search_path(conn) -> None:
+    """Force the session ``search_path`` to ``public`` BEFORE any DDL or table access.
+
+    Every input/output table is referenced bare (and some read SQL is imported from
+    the shared P1 exporter), so a non-public DSN/role default — e.g.
+    ``options=-csearch_path=scratch`` — would resolve them against that schema. A
+    scratch schema cloned up to ``PACK_CUT`` still satisfies the prefix-hash gate,
+    after which the worker would compose scratch deltas while stamping official
+    production provenance. SETTING the path (not merely verifying it) neutralizes
+    that: the session ``SET`` overrides any startup/role default, and the read-back
+    re-asserts it landed (fail loud otherwise)."""
+    with conn.cursor() as cur:
+        cur.execute("SET search_path TO public")
+        cur.execute("SHOW search_path")
+        current = (cur.fetchone()[0] or "").replace(" ", "")
+    conn.commit()
+    if current != "public":
+        raise OpenMacroV03Error(
+            f"search_path is {current!r} after pinning to public; refusing to run "
+            "against a non-public schema (input and output tables must resolve to "
+            "public)")
+
+
 def ensure_schema(conn) -> None:
     """Apply the three committed DDL files (idempotent)."""
     with conn.cursor() as cur:
@@ -809,9 +847,11 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
     # aggregate; the declarative manifest is never the only source of truth.
     verify_pack_bytes()
 
-    # Gate 4 — connect + advisory lock.
+    # Gate 4 — connect + pin search_path (public, before any DDL/table access) +
+    # advisory lock.
     conn = connect(dsn)
     try:
+        pin_search_path(conn)
         with advisory_lock(conn, LOCK_OPEN_MACRO_V03) as got:
             if not got:
                 return {"status": "lock_busy"}
