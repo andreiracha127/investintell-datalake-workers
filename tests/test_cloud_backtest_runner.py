@@ -36,6 +36,46 @@ HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 
 
 # --------------------------------------------------------------------------- #
+# Global-state isolation                                                       #
+# --------------------------------------------------------------------------- #
+@pytest.fixture(scope="module", autouse=True)
+def _restore_shipped_closure_after_purge():
+    """Contain this module's DELIBERATE global-state mutation so it never leaks.
+
+    The cloud backtest path purges the shipped closure (``src.*`` / ``harness.*`` /
+    ``investintell_quant_core.*``) from ``sys.modules`` and inserts a materialized
+    bundle root at ``sys.path[0]`` (``assert_fail_loud_db_stub`` /
+    ``purge_shipped_modules`` / ``run_compute``), so the CLOUD copies get imported in
+    place of the repo modules — notably the fail-loud ``src/db.py`` STUB, which exposes
+    only ``LOCK_REGIME_QUADRANT``. The runner never restores that (in the real cloud
+    process it is a throwaway), so without this fixture the stub ``src.db`` leaks into
+    every later test that does ``import src.db`` and breaks the lock-id registry guards
+    with ``AttributeError: module 'src.db' has no attribute 'LOCK_REGIME_GATE'``.
+
+    Snapshot ``sys.path`` + the shipped-closure ``sys.modules`` entries before this
+    module's tests and restore exactly that state once they finish. (The
+    stage_a/dark_launch suites already do the same for ``harness.*`` from the victim
+    side; this fixes it at the source and also covers ``src.*``, which nothing else
+    restored.)"""
+    import sys
+
+    roots = ("src", "harness", "investintell_quant_core")
+
+    def _in_closure(name: str) -> bool:
+        return name in roots or name.split(".", 1)[0] in roots
+
+    saved_path = list(sys.path)
+    saved_modules = {n: m for n, m in sys.modules.items() if _in_closure(n)}
+    try:
+        yield
+    finally:
+        sys.path[:] = saved_path
+        for name in [n for n in sys.modules if _in_closure(n) and n not in saved_modules]:
+            del sys.modules[name]
+        sys.modules.update(saved_modules)
+
+
+# --------------------------------------------------------------------------- #
 # Session bundle build + in-memory ObjectStore                                #
 # --------------------------------------------------------------------------- #
 
