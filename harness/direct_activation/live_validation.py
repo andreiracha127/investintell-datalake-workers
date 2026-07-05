@@ -192,6 +192,29 @@ def compose_rows(base: list[dict], delta: list[dict], key_fields: tuple[str, ...
     return list(merged.values())
 
 
+def vintage_delta_window_gate(delta_vintages: list[dict]) -> None:
+    """Every delta vintage row's ``available_at`` MUST fall in the exporter's delta
+    window (PACK_CUT, VALIDATION_AS_OF] — strictly after the pack cut, no later than the
+    as-of ceiling.
+
+    ``compose_rows`` only cross-checks keys present in BOTH pack and delta, so a
+    regenerated/hash-pinned delta carrying a PRE-cut vintage revision (or a post-as-of
+    one) would be merged silently and could alter the certified pack-v2 PIT history while
+    the manifest still claims the delta starts after the pack cut. Enforce the row-level
+    bounds before composing."""
+    lower_exclusive = _dt.datetime.fromisoformat(_as_of_end_utc(PACK_CUT))
+    upper_inclusive = _dt.datetime.fromisoformat(_as_of_end_utc(VALIDATION_AS_OF))
+    for row in delta_vintages:
+        raw = row["available_at"]
+        parsed = _dt.datetime.fromisoformat(raw)
+        if parsed.tzinfo is None:                 # normalize a naive stamp to UTC
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        _require(lower_exclusive < parsed <= upper_inclusive,
+                 f"vintage delta window: {row.get('series_id')} available_at {raw} is "
+                 f"outside (PACK_CUT {PACK_CUT}, VALIDATION_AS_OF {VALIDATION_AS_OF}]; a "
+                 f"pre-cut/post-as-of delta vintage cannot silently restate pack history")
+
+
 def overlap_completeness_gate(pack_prices: list[dict], delta_prices: list[dict]) -> None:
     """Every pack sleeve price key in ``PRICE_OVERLAP_START..PACK_CUT`` MUST be present
     in the delta.
@@ -226,19 +249,30 @@ def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str
     _require(not missing, f"staleness: SEED series absent from composed vintages: {missing}")
     per_series = {}
     for sid in sorted({r["series_id"] for r in vintage_rows}):
+        series_rows = [r for r in vintage_rows if r["series_id"] == sid]
+        # Freshness is the age of the LATEST OBSERVATION PERIOD's PIT-selected vintage,
+        # NOT max(available_at) over all vintages. A legitimate ALFRED/FRED revision to
+        # an OLD observation carries a recent available_at; anchoring on max(available_at)
+        # would let that recent revision mask a latest observation period that has gone
+        # stale (no new print in 45/90d). Anchor on the newest observation period and use
+        # the newest available_at WITHIN it (the PIT-selected revision the decision uses).
+        latest_obs = max(r["observation_period"] for r in series_rows)
         last = max(_dt.date.fromisoformat(r["available_at"][:10])
-                   for r in vintage_rows if r["series_id"] == sid)
+                   for r in series_rows if r["observation_period"] == latest_obs)
         age = (VALIDATION_AS_OF - last).days
         # A vintage available AFTER the as-of date is future macro data: PIT-impossible
         # for honest inputs (the exporter's upper bound rejects it at export time), so
         # a negative age can only come from a tampered snapshot that passed the manifest
         # gate or a future exporter regression. `age <= bound` alone would read that as
         # "fresh"; fail loud here in the consume path before deriving any decision.
-        _require(age >= 0, f"staleness: {sid} last available {last} is after as-of "
-                           f"{VALIDATION_AS_OF} (future macro vintage, age {age}d)")
+        _require(age >= 0, f"staleness: {sid} latest observation {latest_obs} available "
+                           f"{last} is after as-of {VALIDATION_AS_OF} (future vintage, "
+                           f"age {age}d)")
         bound = MICH_MAX_AGE_DAYS if sid == "MICH" else MONTHLY_MAX_AGE_DAYS
-        _require(age <= bound, f"staleness: {sid} last available {last} ({age}d > {bound}d)")
-        per_series[sid] = {"last_available_at": last.isoformat(), "age_days": age,
+        _require(age <= bound, f"staleness: {sid} latest observation {latest_obs} last "
+                               f"available {last} ({age}d > {bound}d)")
+        per_series[sid] = {"latest_observation_period": latest_obs,
+                           "last_available_at": last.isoformat(), "age_days": age,
                            "bound_days": bound}
     per_ticker = {}
     for ticker in sleeve_mod.SLEEVE_TICKERS:
@@ -301,9 +335,11 @@ def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
     manifest = _load_json(SNAPSHOT / "snapshot_manifest.json")
     verify_snapshot_manifest(manifest, delta_vintages, delta_prices)
 
-    # re-run the exporter's overlap-completeness gate on the pinned delta before
-    # composing, so a delta that dropped overlap bars cannot be silently backfilled
-    # from the pack tail without re-validation.
+    # re-run the exporter's row-level gates on the pinned delta before composing:
+    # every delta vintage must fall in the (PACK_CUT, VALIDATION_AS_OF] window, and the
+    # price overlap tail must be complete — so a hash-pinned delta cannot restate pack
+    # history or drop overlap bars that compose_rows would silently backfill.
+    vintage_delta_window_gate(delta_vintages)
     overlap_completeness_gate(pack_prices, delta_prices)
 
     vintage_rows = compose_rows(pack_vintages, delta_vintages, _VINTAGE_KEY,

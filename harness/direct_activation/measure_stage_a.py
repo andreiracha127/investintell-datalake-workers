@@ -409,6 +409,13 @@ def main(argv: list[str] | None = None) -> int:
                      "rather than the code that actually ran, so a dirty/local smoke "
                      "could overwrite the official records with the wrong provenance. "
                      "Use --dry-run or --out-dir for a pinned-commit smoke.")
+    if writes_committed and args.image != mo.IMAGE:
+        parser.error(
+            f"--image={args.image!r} cannot write to the committed Stage A dir: official "
+            f"Stage A reuses the Phase 1 machinery and MUST measure latency/memory on the "
+            f"Phase 1 image {mo.IMAGE!r} so the SLO evidence binds to the activation "
+            f"runtime; measuring on another image would stamp an alternate image_id but "
+            f"unbound SLO numbers. Use --dry-run or --out-dir for an alternate-image smoke.")
 
     raw = measure(args.runs_per_leg, skip_container=args.skip_container,
                   image=args.image, repo=ROOT,

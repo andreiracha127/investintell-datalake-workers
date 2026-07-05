@@ -16,10 +16,14 @@ memory of the very process that computed. ``_peak_bytes`` is duplicated from
 this child depends only on the stdlib and stays runnable in the hardened, read-only
 container where importing the dark_launch package is unnecessary.
 
-The whole live_validation record is hashed AS-IS: ``provenance.worker_commit`` is
-pinned by the injected env var (identical in every run), and ``compute()`` is
-otherwise a pure function of the committed pack v2 + the pinned delta snapshot, so
-there is nothing volatile to strip — the canonical hash IS the logical fingerprint.
+The record's LOGICAL output is hashed with ``provenance.worker_commit`` EXCLUDED:
+that field is environment provenance (the commit the measurement ran on), not logical
+output, and it varies across commits. Re-running the official path from the evidence
+commit injects THAT commit as ``worker_commit``; if it were part of the hash, the
+canonical fingerprint would diverge from the committed record and trip the cited-record
+gate even though the decision/allocation are byte-identical. Stripping it makes the
+fingerprint reproducible from ANY commit while ``compute()`` stays a pure function of
+the committed pack v2 + the pinned delta snapshot.
 """
 
 from __future__ import annotations
@@ -79,8 +83,18 @@ def _peak_bytes() -> int:
 
 
 def canonical_hash(record: dict) -> str:
-    """sha256 of the canonical JSON of the whole record (sort_keys, compact)."""
-    canonical = json.dumps(record, sort_keys=True, ensure_ascii=False,
+    """sha256 of the canonical JSON of the record's LOGICAL output.
+
+    ``provenance.worker_commit`` is EXCLUDED so the fingerprint is reproducible from any
+    commit (see module docstring). Everything else — including the rest of provenance
+    (e.g. ``modules``) — is part of the logical fingerprint. The input record is left
+    untouched; the stripping happens on a shallow copy of ``provenance``."""
+    logical = dict(record)
+    provenance = logical.get("provenance")
+    if isinstance(provenance, dict):
+        logical["provenance"] = {k: v for k, v in provenance.items()
+                                 if k != "worker_commit"}
+    canonical = json.dumps(logical, sort_keys=True, ensure_ascii=False,
                            separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 

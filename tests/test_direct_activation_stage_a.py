@@ -285,15 +285,16 @@ def test_staleness_gate_rejects_future_macro_vintage() -> None:
 
     def _basket(overrides: dict[str, date] | None = None) -> list[dict]:
         # a full SEED basket (so the seed-present gate is satisfied); ``overrides``
-        # dates a specific series, everything else sits fresh at the as-of.
+        # dates a specific series, everything else sits fresh at the as-of. One shared
+        # observation period so the freshness anchor is that (latest) period.
         overrides = overrides or {}
-        return [{"series_id": sid,
+        return [{"series_id": sid, "observation_period": "2026-05-01",
                  "available_at": f"{overrides.get(sid, lv.VALIDATION_AS_OF).isoformat()}"
                                  "T00:00:00+00:00"}
                 for sid in lv.EXPECTED_SEED_SERIES]
 
     # future macro vintage fails loud in the vintage loop (before touching prices)
-    with pytest.raises(lv.LiveValidationError, match="future macro vintage"):
+    with pytest.raises(lv.LiveValidationError, match="future vintage"):
         lv.staleness_gate(
             _basket({"PAYEMS": lv.VALIDATION_AS_OF + timedelta(days=1)}), [])
 
@@ -325,7 +326,7 @@ def test_staleness_gate_rejects_future_priced_bar() -> None:
     date. The gate must fail loud (symmetric with the macro future-vintage guard)."""
     from harness.direct_activation import live_validation as lv
 
-    fresh_vintages = [{"series_id": sid,
+    fresh_vintages = [{"series_id": sid, "observation_period": "2026-05-01",
                        "available_at": f"{lv.VALIDATION_AS_OF.isoformat()}T00:00:00+00:00"}
                       for sid in lv.EXPECTED_SEED_SERIES]
     future = (lv.VALIDATION_AS_OF + timedelta(days=1)).isoformat()
@@ -334,6 +335,51 @@ def test_staleness_gate_rejects_future_priced_bar() -> None:
     prices.append({"ticker": lv.sleeve_mod.SLEEVE_TICKERS[0], "date": future})
     with pytest.raises(lv.LiveValidationError, match="future price bar"):
         lv.staleness_gate(fresh_vintages, prices)
+
+
+def test_staleness_freshness_anchors_on_latest_observation() -> None:
+    """A recent revision to an OLD observation period must NOT mask a stale latest
+    observation. Freshness is the age of the newest observation period's PIT vintage,
+    not max(available_at) over all vintages."""
+    from harness.direct_activation import live_validation as lv
+
+    def _row(sid, obs, avail):
+        return {"series_id": sid, "observation_period": obs,
+                "available_at": f"{avail}T00:00:00+00:00"}
+
+    # 7 series fresh; PAYEMS: newest observation (2026-01) is stale (available 2026-02-15,
+    # ~138d old) but carries a RECENT revision of an ancient 2020-01 observation.
+    rows = [_row(sid, "2026-05-01", "2026-06-15")
+            for sid in lv.EXPECTED_SEED_SERIES if sid != "PAYEMS"]
+    rows += [_row("PAYEMS", "2026-01-01", "2026-02-15"),
+             _row("PAYEMS", "2020-01-01", "2026-07-01")]  # recent revision of old obs
+
+    # max(available_at) over PAYEMS is 2026-07-01 (age 2d) -> would pass the OLD metric;
+    # anchored on the latest observation (2026-01) it is ~138d old -> fails the 45d bound
+    with pytest.raises(lv.LiveValidationError, match="PAYEMS latest observation"):
+        lv.staleness_gate(rows, [])
+
+
+def test_vintage_delta_window_gate_rejects_out_of_window_rows() -> None:
+    """A delta vintage dated on/before PACK_CUT or after VALIDATION_AS_OF must be
+    rejected before composing (it could restate certified pack PIT history)."""
+    from harness.direct_activation import live_validation as lv
+
+    lv.vintage_delta_window_gate([])  # empty (the committed case) passes
+
+    in_window = [{"series_id": "INDPRO", "observation_period": "2026-06-01",
+                  "available_at": "2026-07-01T12:00:00+00:00"}]
+    lv.vintage_delta_window_gate(in_window)  # strictly after PACK_CUT, <= as-of
+
+    pre_cut = [{"series_id": "INDPRO", "observation_period": "2026-05-01",
+                "available_at": "2026-06-15T00:00:00+00:00"}]  # before pack cut
+    with pytest.raises(lv.LiveValidationError, match="vintage delta window"):
+        lv.vintage_delta_window_gate(pre_cut)
+
+    post_asof = [{"series_id": "INDPRO", "observation_period": "2026-06-01",
+                  "available_at": "2026-07-04T00:00:00+00:00"}]  # after as-of
+    with pytest.raises(lv.LiveValidationError, match="vintage delta window"):
+        lv.vintage_delta_window_gate(post_asof)
 
 
 # --- 4. snapshot manifest hash + row pins ----------------------------------------
@@ -728,6 +774,40 @@ def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
     assert conformance["verdict"] == "conform"
     assert conformance["governance"] == live["governance"]
     _assert_governance_blocked(conformance, where=CONFORMANCE_RECORD.name)
+
+
+# --- 8b. measurement machinery: reproducible fingerprint + image pin -------------
+
+def test_canonical_hash_excludes_worker_commit() -> None:
+    """The logical fingerprint must be reproducible from ANY commit: provenance.
+    worker_commit is excluded so re-running the official path from the evidence commit
+    (which injects that commit as worker_commit) reproduces the cited hash instead of
+    tripping the cited-record gate. Every other field still affects the hash."""
+    from harness.direct_activation.measure_stage_a_child import canonical_hash
+
+    base = {"decision_today": {"quadrant": "expansion"},
+            "provenance": {"worker_commit": "a" * 40, "modules": ["m"]}}
+    other_commit = {"decision_today": {"quadrant": "expansion"},
+                    "provenance": {"worker_commit": "b" * 40, "modules": ["m"]}}
+    assert canonical_hash(base) == canonical_hash(other_commit)  # worker_commit ignored
+
+    changed_modules = {"decision_today": {"quadrant": "expansion"},
+                       "provenance": {"worker_commit": "a" * 40, "modules": ["m2"]}}
+    changed_decision = {"decision_today": {"quadrant": "contraction"},
+                        "provenance": {"worker_commit": "a" * 40, "modules": ["m"]}}
+    assert canonical_hash(base) != canonical_hash(changed_modules)
+    assert canonical_hash(base) != canonical_hash(changed_decision)
+
+
+def test_official_measure_run_rejects_non_default_image() -> None:
+    """An official run writing to the committed Stage A dir must measure on the Phase 1
+    image so the SLO evidence binds to the activation runtime; a non-default --image is
+    refused before any measurement (mirrors the --skip-container / --worker-commit /
+    non-8 run-count guards on the committed path)."""
+    from harness.direct_activation import measure_stage_a as ms
+
+    with pytest.raises(SystemExit):
+        ms.main(["--image", "some-other-image:latest"])
 
 
 # --- 9. cross-record identity pins -----------------------------------------------
