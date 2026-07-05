@@ -175,6 +175,18 @@ def test_check_governance_all_gates(monkeypatch):
         assert reason is not None and "envelope identity" in reason, key
 
 
+def test_check_governance_requires_real_per_role_approvals():
+    # a named owner is NOT a sign-off: pending status or missing evidence/timestamp on
+    # any single role must block, even with approval_matrix_complete=true.
+    role = next(iter(w.APPROVAL_ROLES))
+    for bad in ({"approval_status": "pending"}, {"approval_evidence": None},
+                {"approval_evidence": ""}, {"timestamp": None}):
+        env = _active_envelope()
+        env["approval_matrix"][role] = {**env["approval_matrix"][role], **bad}
+        reason = w.check_governance(env)
+        assert reason is not None and role in reason, bad
+
+
 def test_check_governance_requires_the_approval_matrix():
     # active envelope WITHOUT a matrix at all
     env = _active_envelope()
@@ -404,28 +416,29 @@ def test_record_staleness_block_is_immutable_on_rerun():
 # --------------------------------------------------------------------------- #
 def _catalog_responder(*, drop_column: str | None = None,
                        drop_constraint: str | None = None,
-                       bad_constraint_def: str | None = None,
-                       drop_default: str | None = None):
+                       column_override: dict | None = None,
+                       constraint_override: dict | None = None):
+    column_override = column_override or {}
+    constraint_override = constraint_override or {}
+
     def responder(sql, params):
         if "information_schema.columns" in sql:
             rows = []
             for table in sorted(w.EXPECTED_SCHEMA):
-                defaults = w.EXPECTED_COLUMN_DEFAULTS.get(table, {})
-                for col, dtype in w.EXPECTED_SCHEMA[table]["columns"].items():
+                for col, meta in w.EXPECTED_SCHEMA[table]["columns"].items():
                     if drop_column and col == drop_column:
                         continue
-                    default = None if col == drop_default else defaults.get(col)
-                    rows.append((table, col, dtype, default, "NO"))
+                    dtype, clen, nullable, default = column_override.get(col, meta)
+                    rows.append((table, col, dtype, clen, nullable, default))
             return {"rows": rows}
         if "pg_constraint" in sql:
             rows = []
             for table in sorted(w.EXPECTED_SCHEMA):
-                defs = w.EXPECTED_CONSTRAINT_DEFS.get(table, {})
-                for name, ctype in w.EXPECTED_SCHEMA[table]["constraints"].items():
+                for name, meta in w.EXPECTED_SCHEMA[table]["constraints"].items():
                     if drop_constraint and name == drop_constraint:
                         continue
-                    condef = "RELAXED" if name == bad_constraint_def else defs.get(name, "")
-                    rows.append((table, name, ctype, condef))
+                    ctype, cdef = constraint_override.get(name, meta)
+                    rows.append((table, name, ctype, cdef))
             return {"rows": rows}
         return {}
     return responder
@@ -435,14 +448,15 @@ def test_verify_schema_passes_and_returns_the_catalog_view():
     conn = _FakeConn(_catalog_responder())
     verified = w.verify_schema(conn)
     assert set(verified) == set(w.EXPECTED_SCHEMA)
-    assert verified["open_macro_v03_decisions"]["columns"]["quadrant"] == "text"
+    assert verified["open_macro_v03_decisions"]["columns"]["quadrant"] == ("text", None, "NO", None)
     assert (verified["open_macro_v03_allocations"]["constraints"]
-            ["open_macro_v03_allocations_as_of_fkey"] == "f")
+            ["open_macro_v03_allocations_as_of_fkey"]
+            == ("f", "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"))
 
 
 def test_verify_schema_raises_on_missing_column():
     conn = _FakeConn(_catalog_responder(drop_column="carry_seed_as_of"))
-    with pytest.raises(w.OpenMacroV03Error, match="columns diverge"):
+    with pytest.raises(w.OpenMacroV03Error, match="column set diverges"):
         w.verify_schema(conn)
 
 
@@ -456,17 +470,42 @@ def test_verify_schema_raises_on_missing_constraint():
 def test_verify_schema_raises_on_relaxed_constraint_definition():
     # same name + contype but a drifted definition (CREATE TABLE IF NOT EXISTS never
     # repairs this) must still fail the gate.
+    conn = _FakeConn(_catalog_responder(constraint_override={
+        "open_macro_v03_allocations_risk_cap": ("c", "CHECK ((risk_assets_weight <= 999))")}))
+    with pytest.raises(w.OpenMacroV03Error, match="risk_cap"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_on_missing_inline_check():
+    # an inline auto-named CHECK (e.g. the quadrant enum) dropped from a pre-existing
+    # table must fail even though the PK/FK and named custom checks are present.
     conn = _FakeConn(_catalog_responder(
-        bad_constraint_def="open_macro_v03_allocations_risk_cap"))
-    with pytest.raises(w.OpenMacroV03Error, match="risk_cap definition drifted"):
+        drop_constraint="open_macro_v03_decisions_quadrant_check"))
+    with pytest.raises(w.OpenMacroV03Error, match="quadrant_check"):
         w.verify_schema(conn)
 
 
 def test_verify_schema_raises_when_dml_omitted_default_missing():
-    # a table missing DEFAULT now() on a DML-omitted NOT NULL column would pass the
+    # a table missing DEFAULT now() on a DML-omitted NOT NULL column would pass a bare
     # name+type gate and then fail on the first real write.
-    conn = _FakeConn(_catalog_responder(drop_default="created_at"))
-    with pytest.raises(w.OpenMacroV03Error, match="created_at must be NOT NULL DEFAULT"):
+    conn = _FakeConn(_catalog_responder(column_override={
+        "created_at": ("timestamp with time zone", None, "NO", None)}))
+    with pytest.raises(w.OpenMacroV03Error, match="created_at: signature"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_on_char_length_drift():
+    # CHAR(64) vs CHAR(40) both report data_type='character'; the length must be checked.
+    conn = _FakeConn(_catalog_responder(column_override={
+        "code_commit": ("character", 64, "NO", None)}))
+    with pytest.raises(w.OpenMacroV03Error, match="code_commit: signature"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_on_nullability_drift():
+    conn = _FakeConn(_catalog_responder(column_override={
+        "input_prices_sha256": ("character", 64, "YES", None)}))
+    with pytest.raises(w.OpenMacroV03Error, match="input_prices_sha256: signature"):
         w.verify_schema(conn)
 
 
@@ -650,6 +689,8 @@ def test_invalidate_updates_both_tables_not_ledger(monkeypatch):
     assert any("open_macro_v03_decisions" in s for s in updates)
     assert any("open_macro_v03_allocations" in s for s in updates)
     assert not any("staleness_blocks" in s for s, _ in conn.executed)
+    # the kill switch pins search_path to public first (same as run())
+    assert any("SET search_path" in s for s, _ in conn.executed)
 
 
 # --------------------------------------------------------------------------- #

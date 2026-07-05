@@ -403,6 +403,6 @@ def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
         for column in expected["columns"]:
             assert column in ddl, f"{table}: expected column {column} not in the DDL"
         for conname in expected["constraints"]:
-            if conname in auto_named:
-                continue  # Postgres names PK/FK constraints automatically
+            if conname in auto_named or conname.endswith("_check"):
+                continue  # PK/FK + inline auto-named CHECKs are not written by name in the DDL
             assert conname in ddl, f"{table}: expected constraint {conname} not in the DDL"

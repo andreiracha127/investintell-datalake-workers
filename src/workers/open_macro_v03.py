@@ -249,9 +249,21 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
         return "approval_matrix missing or roles != the six pinned ids"
     for role in APPROVAL_ROLES:
         entry = matrix.get(role)
-        holder = entry.get("owner") if isinstance(entry, dict) else None
+        if not isinstance(entry, dict):
+            return f"approval_matrix.{role} missing"
+        holder = entry.get("owner")
         if not (isinstance(holder, str) and holder.strip()):
             return f"approval_matrix.{role}.owner missing or empty"
+        # a named owner is not a sign-off: each role must be explicitly APPROVED with
+        # evidence and a timestamp, else a partially-filled matrix could pass the gate.
+        if entry.get("approval_status") != "approved":
+            return f"approval_matrix.{role}.approval_status!=approved"
+        evidence = entry.get("approval_evidence")
+        if not (isinstance(evidence, str) and evidence.strip()):
+            return f"approval_matrix.{role}.approval_evidence missing"
+        timestamp = entry.get("timestamp")
+        if not (isinstance(timestamp, str) and timestamp.strip()):
+            return f"approval_matrix.{role}.timestamp missing"
     if envelope.get("approval_matrix_complete") is not True:
         return "approval_matrix_complete!=true"
     return None
@@ -713,118 +725,146 @@ def ensure_schema(conn) -> None:
 # --------------------------------------------------------------------------- #
 # Catalog verification (B1b evidence base)
 # --------------------------------------------------------------------------- #
-# MAINTENANCE: this dict mirrors schemas/open_macro_v03_*.sql column by column and
-# named constraint by named constraint. Any DDL change MUST be reflected here (the
-# stage-B guard test cross-checks every expected column name against the committed
-# DDL text). Types are information_schema.columns.data_type spellings.
-EXPECTED_SCHEMA: dict[str, dict[str, dict[str, str]]] = {
+# MAINTENANCE: this dict mirrors schemas/open_macro_v03_*.sql EXACTLY, verified against
+# the certified prod catalog (Investintell-Prod). Any DDL change MUST be reflected here
+# (a stage-B guard test cross-checks every expected column/named-constraint against the
+# committed DDL text). verify_schema compares the FULL column signature and every
+# constraint definition, so drift a bare name+type gate would miss (CHAR(40) vs CHAR(64),
+# a nullable/default change, a relaxed CHECK, a missing inline CHECK) fails loud.
+#   columns:     col  -> (data_type, character_maximum_length | None, is_nullable, column_default | None)
+#   constraints: name -> (contype, pg_get_constraintdef)   # exact prod catalog strings
+EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
     "open_macro_v03_decisions": {
         "columns": {
-            "as_of": "date", "quadrant": "text", "decision_validity": "text",
-            "carry_seed_as_of": "date", "candidate_confidence": "numeric",
-            "coverage_quality": "numeric", "growth_score": "numeric",
-            "inflation_score": "numeric", "input_vintage_sha256": "character",
-            "input_prices_sha256": "character", "pack_v2_sha256": "character",
-            "module_pins_sha256": "character", "judgment_ref": "text",
-            "threshold_ref": "text", "code_commit": "character", "run_id": "text",
-            "publish_state": "text", "valid_status": "text",
-            "valid_until": "timestamp with time zone",
-            "invalidated_at": "timestamp with time zone",
-            "invalidated_reason": "text",
-            "created_at": "timestamp with time zone",
-            "updated_at": "timestamp with time zone",
+            "as_of": ("date", None, "NO", None),
+            "quadrant": ("text", None, "NO", None),
+            "decision_validity": ("text", None, "NO", None),
+            "carry_seed_as_of": ("date", None, "NO", None),
+            "candidate_confidence": ("numeric", None, "YES", None),
+            "coverage_quality": ("numeric", None, "NO", None),
+            "growth_score": ("numeric", None, "YES", None),
+            "inflation_score": ("numeric", None, "YES", None),
+            "input_vintage_sha256": ("character", 64, "NO", None),
+            "input_prices_sha256": ("character", 64, "NO", None),
+            "pack_v2_sha256": ("character", 64, "NO", None),
+            "module_pins_sha256": ("character", 64, "NO", None),
+            "judgment_ref": ("text", None, "NO", None),
+            "threshold_ref": ("text", None, "NO", None),
+            "code_commit": ("character", 40, "NO", None),
+            "run_id": ("text", None, "NO", None),
+            "publish_state": ("text", None, "NO", "'published'::text"),
+            "valid_status": ("text", None, "NO", "'valid'::text"),
+            "valid_until": ("timestamp with time zone", None, "NO", None),
+            "invalidated_at": ("timestamp with time zone", None, "YES", None),
+            "invalidated_reason": ("text", None, "YES", None),
+            "created_at": ("timestamp with time zone", None, "NO", "now()"),
+            "updated_at": ("timestamp with time zone", None, "NO", "now()"),
         },
         "constraints": {
-            "open_macro_v03_decisions_pkey": "p",
-            "open_macro_v03_decisions_invalidation_consistent": "c",
-            "open_macro_v03_decisions_validity_seed": "c",
+            "open_macro_v03_decisions_pkey": ("p", "PRIMARY KEY (as_of)"),
+            "open_macro_v03_decisions_check": ("c", "CHECK ((carry_seed_as_of <= as_of))"),
+            "open_macro_v03_decisions_quadrant_check": ("c",
+                "CHECK ((quadrant = ANY (ARRAY['recovery'::text, 'expansion'::text, "
+                "'slowdown'::text, 'contraction'::text])))"),
+            "open_macro_v03_decisions_decision_validity_check": ("c",
+                "CHECK ((decision_validity = ANY (ARRAY['fresh'::text, 'carried'::text])))"),
+            "open_macro_v03_decisions_candidate_confidence_check": ("c",
+                "CHECK (((candidate_confidence IS NULL) OR ((candidate_confidence >= "
+                "(0)::numeric) AND (candidate_confidence <= (1)::numeric))))"),
+            "open_macro_v03_decisions_publish_state_check": ("c",
+                "CHECK ((publish_state = ANY (ARRAY['publishing'::text, 'published'::text])))"),
+            "open_macro_v03_decisions_valid_status_check": ("c",
+                "CHECK ((valid_status = ANY (ARRAY['valid'::text, 'invalidated'::text])))"),
+            "open_macro_v03_decisions_invalidation_consistent": ("c",
+                "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))"),
+            "open_macro_v03_decisions_validity_seed": ("c",
+                "CHECK ((((decision_validity = 'fresh'::text) AND (carry_seed_as_of = as_of)) "
+                "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of))))"),
         },
     },
     "open_macro_v03_allocations": {
         "columns": {
-            "as_of": "date", "book": "text", "w_spy": "numeric", "w_tlt": "numeric",
-            "w_tip": "numeric", "w_gld": "numeric", "w_dbc": "numeric",
-            "w_shy": "numeric", "risk_assets_weight": "numeric",
-            "defensive_assets_weight": "numeric", "risk_cap": "numeric",
-            "defensive_floor": "numeric", "priced_at": "date",
-            "input_prices_sha256": "character", "pack_v2_sha256": "character",
-            "module_pins_sha256": "character", "code_commit": "character",
-            "run_id": "text", "publish_state": "text", "valid_status": "text",
-            "valid_until": "timestamp with time zone",
-            "invalidated_at": "timestamp with time zone",
-            "invalidated_reason": "text",
-            "created_at": "timestamp with time zone",
-            "updated_at": "timestamp with time zone",
+            "as_of": ("date", None, "NO", None),
+            "book": ("text", None, "NO", "'compressed_50'::text"),
+            "w_spy": ("numeric", None, "NO", None),
+            "w_tlt": ("numeric", None, "NO", None),
+            "w_tip": ("numeric", None, "NO", None),
+            "w_gld": ("numeric", None, "NO", None),
+            "w_dbc": ("numeric", None, "NO", None),
+            "w_shy": ("numeric", None, "NO", None),
+            "risk_assets_weight": ("numeric", None, "NO", None),
+            "defensive_assets_weight": ("numeric", None, "NO", None),
+            "risk_cap": ("numeric", None, "NO", "0.65"),
+            "defensive_floor": ("numeric", None, "NO", "0.20"),
+            "priced_at": ("date", None, "NO", None),
+            "input_prices_sha256": ("character", 64, "NO", None),
+            "pack_v2_sha256": ("character", 64, "NO", None),
+            "module_pins_sha256": ("character", 64, "NO", None),
+            "code_commit": ("character", 40, "NO", None),
+            "run_id": ("text", None, "NO", None),
+            "publish_state": ("text", None, "NO", "'published'::text"),
+            "valid_status": ("text", None, "NO", "'valid'::text"),
+            "valid_until": ("timestamp with time zone", None, "NO", None),
+            "invalidated_at": ("timestamp with time zone", None, "YES", None),
+            "invalidated_reason": ("text", None, "YES", None),
+            "created_at": ("timestamp with time zone", None, "NO", "now()"),
+            "updated_at": ("timestamp with time zone", None, "NO", "now()"),
         },
         "constraints": {
-            "open_macro_v03_allocations_pkey": "p",
-            "open_macro_v03_allocations_as_of_fkey": "f",
-            "open_macro_v03_allocations_invalidation_consistent": "c",
-            "open_macro_v03_allocations_weights_sum": "c",
-            "open_macro_v03_allocations_risk_cap": "c",
-            "open_macro_v03_allocations_defensive_floor": "c",
+            "open_macro_v03_allocations_pkey": ("p", "PRIMARY KEY (as_of)"),
+            "open_macro_v03_allocations_as_of_fkey": ("f",
+                "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"),
+            "open_macro_v03_allocations_book_check": ("c",
+                "CHECK ((book = 'compressed_50'::text))"),
+            "open_macro_v03_allocations_w_spy_check": ("c",
+                "CHECK (((w_spy >= (0)::numeric) AND (w_spy <= (1)::numeric)))"),
+            "open_macro_v03_allocations_w_tlt_check": ("c",
+                "CHECK (((w_tlt >= (0)::numeric) AND (w_tlt <= (1)::numeric)))"),
+            "open_macro_v03_allocations_w_tip_check": ("c",
+                "CHECK (((w_tip >= (0)::numeric) AND (w_tip <= (1)::numeric)))"),
+            "open_macro_v03_allocations_w_gld_check": ("c",
+                "CHECK (((w_gld >= (0)::numeric) AND (w_gld <= (1)::numeric)))"),
+            "open_macro_v03_allocations_w_dbc_check": ("c",
+                "CHECK (((w_dbc >= (0)::numeric) AND (w_dbc <= (1)::numeric)))"),
+            "open_macro_v03_allocations_w_shy_check": ("c",
+                "CHECK (((w_shy >= (0)::numeric) AND (w_shy <= (1)::numeric)))"),
+            "open_macro_v03_allocations_publish_state_check": ("c",
+                "CHECK ((publish_state = ANY (ARRAY['publishing'::text, 'published'::text])))"),
+            "open_macro_v03_allocations_valid_status_check": ("c",
+                "CHECK ((valid_status = ANY (ARRAY['valid'::text, 'invalidated'::text])))"),
+            "open_macro_v03_allocations_invalidation_consistent": ("c",
+                "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))"),
+            "open_macro_v03_allocations_weights_sum": ("c",
+                "CHECK ((abs(((((((w_spy + w_tlt) + w_tip) + w_gld) + w_dbc) + w_shy) "
+                "- (1)::numeric)) < 0.000000001))"),
+            "open_macro_v03_allocations_risk_cap": ("c",
+                "CHECK ((risk_assets_weight <= (risk_cap + 0.000000001)))"),
+            "open_macro_v03_allocations_defensive_floor": ("c",
+                "CHECK ((defensive_assets_weight >= (defensive_floor - 0.000000001)))"),
         },
     },
     "open_macro_v03_staleness_blocks": {
         "columns": {
-            "as_of": "date", "reason": "text", "stale_detail": "jsonb",
-            "input_vintage_sha256": "character", "input_prices_sha256": "character",
-            "pack_v2_sha256": "character", "module_pins_sha256": "character",
-            "code_commit": "character", "run_id": "text",
-            "created_at": "timestamp with time zone",
+            "as_of": ("date", None, "NO", None),
+            "reason": ("text", None, "NO", None),
+            "stale_detail": ("jsonb", None, "NO", None),
+            "input_vintage_sha256": ("character", 64, "NO", None),
+            "input_prices_sha256": ("character", 64, "NO", None),
+            "pack_v2_sha256": ("character", 64, "NO", None),
+            "module_pins_sha256": ("character", 64, "NO", None),
+            "code_commit": ("character", 40, "NO", None),
+            "run_id": ("text", None, "NO", None),
+            "created_at": ("timestamp with time zone", None, "NO", "now()"),
         },
         "constraints": {
-            "open_macro_v03_staleness_blocks_pkey": "p",
+            "open_macro_v03_staleness_blocks_pkey": ("p", "PRIMARY KEY (as_of)"),
         },
     },
-}
-
-# The pg_get_constraintdef of every pinned constraint at the certified prod catalog
-# (exact catalog strings; Postgres normalizes expressions). A constraint recreated
-# under the same name + contype but a DIFFERENT definition — e.g. a relaxed risk_cap
-# CHECK — changes this string, so contype alone is not enough: the definition is
-# compared too, since CREATE TABLE IF NOT EXISTS never repairs such drift.
-EXPECTED_CONSTRAINT_DEFS: dict[str, dict[str, str]] = {
-    "open_macro_v03_decisions": {
-        "open_macro_v03_decisions_pkey": "PRIMARY KEY (as_of)",
-        "open_macro_v03_decisions_invalidation_consistent":
-            "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))",
-        "open_macro_v03_decisions_validity_seed":
-            "CHECK ((((decision_validity = 'fresh'::text) AND (carry_seed_as_of = as_of)) "
-            "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of))))",
-    },
-    "open_macro_v03_allocations": {
-        "open_macro_v03_allocations_pkey": "PRIMARY KEY (as_of)",
-        "open_macro_v03_allocations_as_of_fkey":
-            "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)",
-        "open_macro_v03_allocations_invalidation_consistent":
-            "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))",
-        "open_macro_v03_allocations_weights_sum":
-            "CHECK ((abs(((((((w_spy + w_tlt) + w_tip) + w_gld) + w_dbc) + w_shy) "
-            "- (1)::numeric)) < 0.000000001))",
-        "open_macro_v03_allocations_risk_cap":
-            "CHECK ((risk_assets_weight <= (risk_cap + 0.000000001)))",
-        "open_macro_v03_allocations_defensive_floor":
-            "CHECK ((defensive_assets_weight >= (defensive_floor - 0.000000001)))",
-    },
-    "open_macro_v03_staleness_blocks": {
-        "open_macro_v03_staleness_blocks_pkey": "PRIMARY KEY (as_of)",
-    },
-}
-
-# Columns the publish / staleness-block DML OMITS, relying on the DDL to supply the
-# value: their DEFAULT must be present (and the column NOT NULL) or the first real
-# write fails on a drifted column that passed the name+type gate. Values are the exact
-# information_schema.columns.column_default strings.
-EXPECTED_COLUMN_DEFAULTS: dict[str, dict[str, str]] = {
-    "open_macro_v03_decisions": {"created_at": "now()", "updated_at": "now()"},
-    "open_macro_v03_allocations": {"created_at": "now()", "updated_at": "now()"},
-    "open_macro_v03_staleness_blocks": {"created_at": "now()"},
 }
 
 _CATALOG_COLUMNS_SQL = (
-    "SELECT table_name, column_name, data_type, column_default, is_nullable "
-    "FROM information_schema.columns "
+    "SELECT table_name, column_name, data_type, character_maximum_length, "
+    "is_nullable, column_default FROM information_schema.columns "
     "WHERE table_schema = 'public' AND table_name = ANY(%(tables)s) "
     "ORDER BY table_name, ordinal_position")
 _CATALOG_CONSTRAINTS_SQL = (
@@ -840,14 +880,16 @@ def verify_schema(conn) -> dict[str, Any]:
 
     Scoped to the ``public`` schema (both queries), so a look-alike scratch schema
     with same-named ``open_macro_v03_*`` tables can never be certified in place of the
-    objects the worker actually reads and writes. Columns must match EXACTLY (names +
-    data types); every expected named constraint must be present with the right
-    contype AND the right ``pg_get_constraintdef`` (a relaxed CHECK with the same name
-    is caught); and every DML-omitted column must carry its committed DEFAULT (so the
-    first real write cannot fail on a drifted NOT-NULL column that passed the
-    name+type gate). Any divergence raises. Returns the verified
-    ``{table: {columns, constraints}}`` view — the evidence base for the B1b
-    ``schema_migration_record``. This is the SAME function the read-only monitor
+    objects the worker actually reads and writes. The FULL column signature must match
+    (data_type + character_maximum_length + is_nullable + column_default — so CHAR(40)
+    vs CHAR(64), a nullability flip, or a missing/altered DEFAULT is caught, not just
+    the base type), no column may be missing or extra, and EVERY expected constraint
+    (PK/FK, the named custom CHECKs, AND the inline auto-named CHECKs like quadrant /
+    publish_state / the weight ranges) must be present with the right contype AND the
+    exact ``pg_get_constraintdef`` (a relaxed same-named CHECK is caught, since
+    ``CREATE TABLE IF NOT EXISTS`` never repairs drift). Any divergence raises. Returns
+    the verified ``{table: {columns, constraints}}`` view — the evidence base for the
+    B1b ``schema_migration_record``. This is the SAME function the read-only monitor
     imports (it issues SELECTs only)."""
     tables = sorted(EXPECTED_SCHEMA)
     with conn.cursor() as cur:
@@ -856,16 +898,13 @@ def verify_schema(conn) -> dict[str, Any]:
         cur.execute(_CATALOG_CONSTRAINTS_SQL, {"tables": tables})
         constraint_rows = cur.fetchall()
 
-    actual_columns: dict[str, dict[str, str]] = {t: {} for t in tables}
-    actual_defaults: dict[str, dict[str, str | None]] = {t: {} for t in tables}
-    for table_name, column_name, data_type, column_default, is_nullable in column_rows:
-        actual_columns.setdefault(table_name, {})[column_name] = data_type
-        actual_defaults.setdefault(table_name, {})[column_name] = (column_default, is_nullable)
-    actual_constraints: dict[str, dict[str, str]] = {t: {} for t in tables}
-    actual_condefs: dict[str, dict[str, str]] = {t: {} for t in tables}
+    actual_columns: dict[str, dict[str, tuple]] = {t: {} for t in tables}
+    for table_name, column_name, data_type, char_max_len, is_nullable, column_default in column_rows:
+        actual_columns.setdefault(table_name, {})[column_name] = (
+            data_type, char_max_len, is_nullable, column_default)
+    actual_constraints: dict[str, dict[str, tuple]] = {t: {} for t in tables}
     for table_name, conname, contype, condef in constraint_rows:
-        actual_constraints.setdefault(table_name, {})[conname] = contype
-        actual_condefs.setdefault(table_name, {})[conname] = condef
+        actual_constraints.setdefault(table_name, {})[conname] = (contype, condef)
 
     problems: list[str] = []
     verified: dict[str, Any] = {}
@@ -874,35 +913,24 @@ def verify_schema(conn) -> dict[str, Any]:
         if not columns:
             problems.append(f"{table}: table missing from the catalog")
             continue
-        if columns != expected["columns"]:
-            missing = sorted(set(expected["columns"]) - set(columns))
-            extra = sorted(set(columns) - set(expected["columns"]))
-            typediff = sorted(
-                c for c in set(columns) & set(expected["columns"])
-                if columns[c] != expected["columns"][c])
+        exp_cols = expected["columns"]
+        missing = sorted(set(exp_cols) - set(columns))
+        extra = sorted(set(columns) - set(exp_cols))
+        if missing or extra:
             problems.append(
-                f"{table}: columns diverge from the committed DDL "
-                f"(missing={missing}, unexpected={extra}, type_mismatch={typediff})")
+                f"{table}: column set diverges from the committed DDL "
+                f"(missing={missing}, unexpected={extra})")
+        for col in sorted(set(exp_cols) & set(columns)):
+            if columns[col] != exp_cols[col]:
+                problems.append(
+                    f"{table}.{col}: signature {columns[col]} != expected {exp_cols[col]} "
+                    "(data_type, char_max_len, is_nullable, column_default)")
         constraints = actual_constraints.get(table) or {}
-        condefs = actual_condefs.get(table) or {}
-        for conname, contype in expected["constraints"].items():
-            if constraints.get(conname) != contype:
+        for conname, exp in expected["constraints"].items():
+            if constraints.get(conname) != exp:
                 problems.append(
-                    f"{table}: expected constraint {conname} ({contype!r}) is "
-                    f"{constraints.get(conname)!r} in the catalog")
-        for conname, expected_def in EXPECTED_CONSTRAINT_DEFS.get(table, {}).items():
-            if condefs.get(conname) != expected_def:
-                problems.append(
-                    f"{table}: constraint {conname} definition drifted "
-                    f"(expected {expected_def!r}, catalog {condefs.get(conname)!r})")
-        defaults = actual_defaults.get(table) or {}
-        for column, expected_default in EXPECTED_COLUMN_DEFAULTS.get(table, {}).items():
-            got_default, got_nullable = defaults.get(column, (None, None))
-            if got_default != expected_default or got_nullable != "NO":
-                problems.append(
-                    f"{table}: DML-omitted column {column} must be NOT NULL DEFAULT "
-                    f"{expected_default!r} (catalog default={got_default!r}, "
-                    f"is_nullable={got_nullable!r})")
+                    f"{table}: constraint {conname} {constraints.get(conname)} != "
+                    f"expected {exp} (contype, definition)")
         verified[table] = {"columns": dict(columns),
                            "constraints": dict(constraints)}
     if problems:
@@ -1084,6 +1112,7 @@ def invalidate(dsn: str, *, as_of: str, to: str | None = None,
     to = to or as_of
     conn = connect(dsn)
     try:
+        pin_search_path(conn)  # the kill switch must resolve the SAME public rows run() writes
         with advisory_lock(conn, LOCK_OPEN_MACRO_V03) as got:
             if not got:
                 return {"status": "lock_busy"}
