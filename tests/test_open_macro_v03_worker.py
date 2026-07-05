@@ -135,6 +135,7 @@ def _active_envelope() -> dict:
         "db_write_official": True, "db_write_mode": "open_macro_v03_new_tables_only",
         "allocator_publish": True, "allow_allocator_publish": True,
         "official_result": True, "A5": "active",
+        "freeze_ready": False, "production_endpoint_activation": "none",
         "allowed_tables": sorted(w.ALLOWED_TABLES),
         "environment": {"railway_service_name": "open-macro-v03-worker"},
         "approval_matrix": _complete_matrix(),
@@ -150,11 +151,16 @@ def test_check_governance_all_gates(monkeypatch):
         ("allow_db_write", False), ("db_write_official", False),
         ("db_write_mode", "none"), ("allocator_publish", False),
         ("allow_allocator_publish", False), ("official_result", False),
-        ("A5", "blocked"),
+        ("A5", "blocked"), ("freeze_ready", True),
+        ("production_endpoint_activation", "exposed"),
     ]:
         env = _active_envelope()
         env[key] = bad
         assert w.check_governance(env) is not None, key
+    # a Railway service other than the approved one blocks
+    env = _active_envelope()
+    env["environment"] = {"railway_service_name": "staging-worker"}
+    assert w.check_governance(env) is not None
     # string 'true' must not spoof a boolean flip
     env = _active_envelope()
     env["runtime_activation"] = "true"
@@ -256,8 +262,8 @@ def test_active_envelope_pin_mismatch_raises_before_db(tmp_path, monkeypatch):
     env_path.write_text(json.dumps(_active_envelope()), encoding="utf-8")
     pins_path = tmp_path / "module_pins.json"
     pins_path.write_text(json.dumps({
-        "modules": {"src/quadrant_score.py": "0" * 64},  # deliberately wrong
-        "module_pins_sha256": "deadbeef",
+        "modules": {"src/quadrant_score.py": "0" * 64},  # truncated + wrong
+        "pack": {}, "module_pins_sha256": "deadbeef",
     }), encoding="utf-8")
     monkeypatch.setattr(w, "ENVELOPE_PATH", env_path)
     monkeypatch.setattr(w, "PINS_PATH", pins_path)
@@ -266,8 +272,22 @@ def test_active_envelope_pin_mismatch_raises_before_db(tmp_path, monkeypatch):
         raise AssertionError("must not connect on a pin mismatch")
 
     monkeypatch.setattr(w, "connect", _no_connect)
-    with pytest.raises(w.OpenMacroV03Error, match="module pin mismatch"):
+    # a truncated manifest is rejected by the set-completeness gate before any DB
+    with pytest.raises(w.OpenMacroV03Error, match="module pin set diverges"):
         w.run("unused-dsn")
+
+
+def test_verify_module_pins_rejects_truncated_or_altered_manifest():
+    pins = w._load_json(w.PINS_PATH)
+    # dropping any pinned module trips the set-completeness gate (P1: a truncated
+    # module_pins.json must not pass by iterating only the keys it contains)
+    truncated = {**pins, "modules": {k: v for k, v in list(pins["modules"].items())[1:]}}
+    with pytest.raises(w.OpenMacroV03Error, match="module pin set diverges"):
+        w.verify_module_pins(truncated, w.ROOT)
+    # a doctored module_pins_sha256 (block altered) is rejected by the recompute
+    altered = {**pins, "module_pins_sha256": "0" * 64}
+    with pytest.raises(w.OpenMacroV03Error, match="module_pins_sha256"):
+        w.verify_module_pins(altered, w.ROOT)
 
 
 def test_verify_module_pins_accepts_the_committed_pins():
@@ -627,9 +647,20 @@ def test_build_allocation_respects_sum_cap_floor(quadrant):
 
 def test_build_allocation_fails_loud_on_nan_price():
     rows = _priced_rows()
-    rows[0]["adjusted_close"] = None  # SPY unusable
-    with pytest.raises(w.OpenMacroV03Error, match="price gate"):
+    rows[0]["adjusted_close"] = None  # SPY unusable -> no date prices the full sleeve
+    with pytest.raises(w.OpenMacroV03Error, match="full sleeve"):
         w.build_allocation("expansion", rows)
+
+
+def test_build_allocation_uses_latest_common_date_on_split_ingest():
+    # partial ingest: only SPY has the newest session, so the global max date would
+    # leave the other tickers unpriced. The sleeve is priced at the latest COMMON date
+    # instead of raising after the ledger gate (a silent missing_output).
+    rows = _priced_rows("2026-06-30")
+    rows.append({"ticker": "SPY", "date": "2026-07-01", "close": 101.0,
+                 "adjusted_close": 101.0, "volume": 1000})
+    alloc = w.build_allocation("expansion", rows)
+    assert alloc["priced_at"] == _dt.date(2026, 6, 30)
 
 
 # --------------------------------------------------------------------------- #

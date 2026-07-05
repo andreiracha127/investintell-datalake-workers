@@ -62,6 +62,10 @@ from harness.direct_activation.live_validation import (
     consumable_today,
     staleness_report,
 )
+from harness.direct_activation.build_stage_b_artifacts import (
+    PINNED_MODULES,
+    _canonical_block_sha256,
+)
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import (
@@ -129,6 +133,12 @@ ENVELOPE_IDENTITY: dict[str, Any] = {
     "stage_b_id": "open_macro_v03_direct_activation_stage_b_001",
     "direct_activation_id": "open_macro_v03_direct_activation_001",
 }
+
+# The ONE approved Railway service the worker may publish official rows from. The
+# envelope must name exactly this service AND (when the runtime sets RAILWAY_SERVICE_NAME)
+# match it, so an artifact naming a staging/local service — or copied into another
+# service that happens to carry the prod DSN + feature flag — cannot pass governance.
+APPROVED_RAILWAY_SERVICE = "open-macro-v03-worker"
 
 
 class OpenMacroV03Error(RuntimeError):
@@ -233,14 +243,28 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
         return "allow_allocator_publish!=true"
     if not _true("official_result"):
         return "official_result!=true"
+    # Stage B publishes to the new tables ONLY; the Stage C freeze and the production
+    # endpoint stay blocked. A final JSON that flips these before the ratified cutover
+    # must be rejected here, before any DB access.
+    if envelope.get("freeze_ready") is not False:
+        return "freeze_ready!=false (Stage B never sets the Stage C freeze)"
+    if envelope.get("production_endpoint_activation") != "none":
+        return "production_endpoint_activation!='none' (Stage B does not expose the endpoint)"
     if envelope.get("A5") != "active":
         return "A5!=active"
     allowed = envelope.get("allowed_tables")
     if not isinstance(allowed, list) or set(allowed) != set(ALLOWED_TABLES):
         return "allowed_tables!=the three sanctioned tables"
     environment = envelope.get("environment")
-    if not isinstance(environment, dict) or not environment.get("railway_service_name"):
-        return "environment.railway_service_name missing"
+    if not isinstance(environment, dict):
+        return "environment missing"
+    service = environment.get("railway_service_name")
+    if service != APPROVED_RAILWAY_SERVICE:
+        return f"environment.railway_service_name!={APPROVED_RAILWAY_SERVICE!r} (got {service!r})"
+    runtime_service = os.environ.get("RAILWAY_SERVICE_NAME")
+    if runtime_service and service != runtime_service:
+        return (f"environment.railway_service_name {service!r} != runtime Railway service "
+                f"{runtime_service!r} (artifact copied into the wrong service)")
     # inherited Phase 4 approval matrix: EXACTLY the six pinned role ids, each with a
     # named (non-empty) holder, and the strict-bool completeness flag. An absent or
     # stale approval matrix blocks the flip.
@@ -273,13 +297,29 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
 # Gate 3 — module pins
 # --------------------------------------------------------------------------- #
 def verify_module_pins(pins: dict[str, Any], root: Path = ROOT) -> None:
-    """Raise unless the sha256 (CRLF→LF) of EACH pinned module matches its pin."""
+    """Raise unless the pin manifest is COMPLETE and intact: the pinned module set is
+    exactly the committed closure (``PINNED_MODULES``), each module's sha256 (CRLF→LF)
+    matches the tree, AND ``module_pins_sha256`` recomputes over the {modules, pack}
+    block. A truncated or doctored ``module_pins.json`` — one that omits a formula/
+    sleeve module or carries an empty ``modules`` object — cannot pass by iterating only
+    the keys it happens to contain and then stamp an unchecked ``module_pins_sha256``."""
     modules = pins["modules"]
-    for rel, expected in sorted(modules.items()):
+    if set(modules) != set(PINNED_MODULES):
+        missing = sorted(set(PINNED_MODULES) - set(modules))
+        extra = sorted(set(modules) - set(PINNED_MODULES))
+        raise OpenMacroV03Error(
+            f"module pin set diverges from the committed manifest "
+            f"(missing={missing}, unexpected={extra})")
+    for rel in sorted(modules):
         actual = _sha256_norm(root / rel)
-        if actual != expected:
+        if actual != modules[rel]:
             raise OpenMacroV03Error(
-                f"module pin mismatch for {rel}: {actual} != pinned {expected}")
+                f"module pin mismatch for {rel}: {actual} != pinned {modules[rel]}")
+    recomputed = _canonical_block_sha256({"modules": modules, "pack": pins["pack"]})
+    if recomputed != pins.get("module_pins_sha256"):
+        raise OpenMacroV03Error(
+            f"module_pins_sha256 {pins.get('module_pins_sha256')!r} != recomputed "
+            f"{recomputed!r} (the pin block was altered)")
 
 
 # --------------------------------------------------------------------------- #
@@ -471,14 +511,24 @@ def build_allocation(quadrant: str, price_rows: list[dict]) -> dict[str, Any]:
     prices = sleeve_mod.PriceFrame(price_rows)
     if not prices.dates:
         raise OpenMacroV03Error("no priced sessions for the sleeve")
-    priced_at = max(prices.dates)
-    available: list[str] = []
-    for ticker in sleeve_mod.SLEEVE_TICKERS:
-        price = prices.price(ticker, priced_at)
-        if not (price is not None and price == price and price > 0):
-            raise OpenMacroV03Error(
-                f"price gate: {ticker} has no usable price at {priced_at}")
-        available.append(ticker)
+
+    def _usable(p: float | None) -> bool:
+        return p is not None and p == p and p > 0
+
+    # Price the WHOLE sleeve at one coherent snapshot: the latest date at which EVERY
+    # ticker has a usable price. The global max date can be a partial-ingest day one
+    # ticker lags (still fresh per-ticker, so the staleness gate passed) — pricing
+    # against it would raise here, AFTER the ledger gate, producing neither an output
+    # nor a staleness-block row (a silent missing_output for the monitor).
+    priced_at = next(
+        (d for d in sorted(prices.dates, reverse=True)
+         if all(_usable(prices.price(t, d)) for t in sleeve_mod.SLEEVE_TICKERS)),
+        None)
+    if priced_at is None:
+        raise OpenMacroV03Error(
+            "no session prices the full sleeve at a single date (split-date partial "
+            "ingest); refuse rather than price tickers at inconsistent dates")
+    available: list[str] = list(sleeve_mod.SLEEVE_TICKERS)
     weights = sleeve_mod.target_weights(
         quadrant, sleeve_mod.SleeveParams(candidate_id=CANDIDATE_ID),
         available, compressed=True)
