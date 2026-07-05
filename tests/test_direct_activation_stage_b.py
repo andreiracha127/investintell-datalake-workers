@@ -31,6 +31,7 @@ DECISION_CHAIN_MODULES = (
     "src/quadrant_assemble.py",
     "src/quadrant_snapshot.py",
     "src/quadrant_staleness.py",
+    "harness/direct_activation/live_validation.py",
     "harness/phase0q/decision.py",
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
@@ -161,33 +162,48 @@ def test_decision_and_sleeve_import_only_pinned_src_modules():
         assert imported <= PINNED_SRC_MODULES, f"{rel}: {imported - PINNED_SRC_MODULES}"
 
 
-def _imported_phase0q_modules(path: Path) -> set[str]:
-    """harness/phase0q/*.py modules imported by ``path`` (relative or absolute)."""
+def _imported_harness_modules(path: Path) -> set[str]:
+    """harness/**.py modules imported by ``path`` (relative or absolute), resolved to
+    repo-relative .py paths that actually exist."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
+    pkg = path.relative_to(ROOT).with_suffix("").parts  # e.g. harness/direct_activation/live_validation
     found: set[str] = set()
+
+    def _add(dotted: str) -> None:
+        rel = dotted.replace(".", "/") + ".py"
+        if (ROOT / rel).is_file():
+            found.add(rel)
+
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            if node.level == 1 and node.module is None:  # from . import pit
-                found.update(f"harness/phase0q/{a.name}.py" for a in node.names)
-            elif node.level == 1 and node.module:        # from .pit import PitIndex
-                found.add(f"harness/phase0q/{node.module.split('.')[0]}.py")
-            elif node.level == 0 and node.module and node.module.startswith("harness.phase0q."):
-                found.add(node.module.replace(".", "/") + ".py")
+            if node.level == 0 and node.module and (
+                    node.module == "harness" or node.module.startswith("harness.")):
+                _add(node.module)                               # from harness.x import y (y is a name)
+                for a in node.names:
+                    _add(f"{node.module}.{a.name}")             # ...or y is a submodule
+            elif node.level >= 1:
+                base = pkg[:len(pkg) - node.level]              # resolve the relative anchor
+                if base and base[0] == "harness":
+                    prefix = ".".join(base) + ("." + node.module if node.module else "")
+                    _add(prefix)
+                    for a in node.names:
+                        _add(f"{prefix}.{a.name}")
         elif isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name.startswith("harness.phase0q."):
-                    found.add("/".join(alias.name.split(".")[:3]) + ".py")
+            for a in node.names:
+                if a.name == "harness" or a.name.startswith("harness."):
+                    _add(a.name)
     return found
 
 
-def test_phase0q_import_closure_is_pinned():
-    """A pinned harness.phase0q module importing another harness.phase0q module (e.g.
-    decision.py -> pit.py, the PIT vintage selector) must have that dependency pinned
-    too. This guards the exact gap that let pit.py drive the official decision while
-    escaping verify_module_pins."""
+def test_harness_import_closure_is_pinned():
+    """A pinned harness module importing another harness module (e.g. decision.py ->
+    pit.py, the PIT vintage selector; live_validation.py -> decision/sleeve) must have
+    that dependency pinned too. This guards the exact gap that let pit.py drive the
+    official decision while escaping verify_module_pins, generalized to every pinned
+    harness module."""
     pinned = set(_load_json(PINS)["modules"])
-    for rel in sorted(m for m in pinned if m.startswith("harness/phase0q/")):
-        for dep in _imported_phase0q_modules(ROOT / rel):
+    for rel in sorted(m for m in pinned if m.startswith("harness/")):
+        for dep in _imported_harness_modules(ROOT / rel):
             assert dep in pinned, f"{rel} imports unpinned {dep}"
 
 

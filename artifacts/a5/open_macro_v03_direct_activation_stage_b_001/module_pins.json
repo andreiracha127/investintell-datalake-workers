@@ -1,7 +1,8 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "0258df2554cebcbd5146cee2c8b410c3a4502610b77e723dfeef7ebb692c2836",
+ "module_pins_sha256": "7f8855deca1a6d083c500ecb31796fdec3eda6fe2b463d9e6f65b1ffc256cae6",
  "modules": {
+  "harness/direct_activation/live_validation.py": "24c46775981b3fc1ec82b88a272c0beeb7299d70955de639075c9caf458bf8de",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",

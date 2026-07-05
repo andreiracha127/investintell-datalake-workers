@@ -130,6 +130,7 @@ def _complete_matrix() -> dict:
 
 def _active_envelope() -> dict:
     return {
+        **w.ENVELOPE_IDENTITY,
         "runtime_activation": True, "activation_allowed": True, "allow_db_write": True,
         "db_write_official": True, "db_write_mode": "open_macro_v03_new_tables_only",
         "allocator_publish": True, "allow_allocator_publish": True,
@@ -166,6 +167,12 @@ def test_check_governance_all_gates(monkeypatch):
     env = _active_envelope()
     env["environment"] = None
     assert w.check_governance(env) is not None
+    # a wrong/stale envelope identity is rejected before any activation boolean
+    for key in w.ENVELOPE_IDENTITY:
+        env = _active_envelope()
+        env[key] = "WRONG"
+        reason = w.check_governance(env)
+        assert reason is not None and "envelope identity" in reason, key
 
 
 def test_check_governance_requires_the_approval_matrix():
@@ -396,23 +403,29 @@ def test_record_staleness_block_is_immutable_on_rerun():
 # Catalog verification (verify_schema)
 # --------------------------------------------------------------------------- #
 def _catalog_responder(*, drop_column: str | None = None,
-                       drop_constraint: str | None = None):
+                       drop_constraint: str | None = None,
+                       bad_constraint_def: str | None = None,
+                       drop_default: str | None = None):
     def responder(sql, params):
         if "information_schema.columns" in sql:
             rows = []
             for table in sorted(w.EXPECTED_SCHEMA):
+                defaults = w.EXPECTED_COLUMN_DEFAULTS.get(table, {})
                 for col, dtype in w.EXPECTED_SCHEMA[table]["columns"].items():
                     if drop_column and col == drop_column:
                         continue
-                    rows.append((table, col, dtype))
+                    default = None if col == drop_default else defaults.get(col)
+                    rows.append((table, col, dtype, default, "NO"))
             return {"rows": rows}
         if "pg_constraint" in sql:
             rows = []
             for table in sorted(w.EXPECTED_SCHEMA):
+                defs = w.EXPECTED_CONSTRAINT_DEFS.get(table, {})
                 for name, ctype in w.EXPECTED_SCHEMA[table]["constraints"].items():
                     if drop_constraint and name == drop_constraint:
                         continue
-                    rows.append((table, name, ctype))
+                    condef = "RELAXED" if name == bad_constraint_def else defs.get(name, "")
+                    rows.append((table, name, ctype, condef))
             return {"rows": rows}
         return {}
     return responder
@@ -437,6 +450,23 @@ def test_verify_schema_raises_on_missing_constraint():
     conn = _FakeConn(_catalog_responder(
         drop_constraint="open_macro_v03_allocations_weights_sum"))
     with pytest.raises(w.OpenMacroV03Error, match="weights_sum"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_on_relaxed_constraint_definition():
+    # same name + contype but a drifted definition (CREATE TABLE IF NOT EXISTS never
+    # repairs this) must still fail the gate.
+    conn = _FakeConn(_catalog_responder(
+        bad_constraint_def="open_macro_v03_allocations_risk_cap"))
+    with pytest.raises(w.OpenMacroV03Error, match="risk_cap definition drifted"):
+        w.verify_schema(conn)
+
+
+def test_verify_schema_raises_when_dml_omitted_default_missing():
+    # a table missing DEFAULT now() on a DML-omitted NOT NULL column would pass the
+    # name+type gate and then fail on the first real write.
+    conn = _FakeConn(_catalog_responder(drop_default="created_at"))
+    with pytest.raises(w.OpenMacroV03Error, match="created_at must be NOT NULL DEFAULT"):
         w.verify_schema(conn)
 
 

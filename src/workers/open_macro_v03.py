@@ -118,6 +118,18 @@ THRESHOLD_REF = "open_macro_v03_threshold_signoff_001"
 
 DB_WRITE_MODE = "open_macro_v03_new_tables_only"
 
+# The identity fields the Stage B builder stamps on the envelope. check_governance
+# rejects any envelope whose identity does not match EXACTLY before it trusts a single
+# activation boolean — a wrong/stale artifact at ENVELOPE_PATH with all booleans filled
+# must never let the worker publish official rows under an unratified governance record.
+ENVELOPE_IDENTITY: dict[str, Any] = {
+    "artifact_type": "open_macro_v03_stage_b_activation_envelope",
+    "schema_version": 1,
+    "stage": "B",
+    "stage_b_id": "open_macro_v03_direct_activation_stage_b_001",
+    "direct_activation_id": "open_macro_v03_direct_activation_001",
+}
+
 
 class OpenMacroV03Error(RuntimeError):
     """A Stage B runtime gate did not hold; the run must fail loud."""
@@ -194,9 +206,16 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     """Return ``None`` when EVERY activation gate holds, else a short reason string.
 
     Booleans are checked with strict identity (``is True``) so a string ``"true"``
-    can never spoof a flip. All gates must be satisfied together."""
+    can never spoof a flip. All gates must be satisfied together. The envelope's
+    identity (artifact_type / schema_version / stage / stage_b_id / direct_activation_id)
+    is validated FIRST: a wrong or stale artifact at this path is rejected before any
+    activation boolean is trusted."""
     def _true(key: str) -> bool:
         return envelope.get(key) is True
+
+    for key, want in ENVELOPE_IDENTITY.items():
+        if envelope.get(key) != want:
+            return f"envelope identity {key}!={want!r} (got {envelope.get(key)!r})"
 
     if not _true("runtime_activation"):
         return "runtime_activation!=true"
@@ -760,22 +779,76 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, str]]] = {
     },
 }
 
+# The pg_get_constraintdef of every pinned constraint at the certified prod catalog
+# (exact catalog strings; Postgres normalizes expressions). A constraint recreated
+# under the same name + contype but a DIFFERENT definition — e.g. a relaxed risk_cap
+# CHECK — changes this string, so contype alone is not enough: the definition is
+# compared too, since CREATE TABLE IF NOT EXISTS never repairs such drift.
+EXPECTED_CONSTRAINT_DEFS: dict[str, dict[str, str]] = {
+    "open_macro_v03_decisions": {
+        "open_macro_v03_decisions_pkey": "PRIMARY KEY (as_of)",
+        "open_macro_v03_decisions_invalidation_consistent":
+            "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))",
+        "open_macro_v03_decisions_validity_seed":
+            "CHECK ((((decision_validity = 'fresh'::text) AND (carry_seed_as_of = as_of)) "
+            "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of))))",
+    },
+    "open_macro_v03_allocations": {
+        "open_macro_v03_allocations_pkey": "PRIMARY KEY (as_of)",
+        "open_macro_v03_allocations_as_of_fkey":
+            "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)",
+        "open_macro_v03_allocations_invalidation_consistent":
+            "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))",
+        "open_macro_v03_allocations_weights_sum":
+            "CHECK ((abs(((((((w_spy + w_tlt) + w_tip) + w_gld) + w_dbc) + w_shy) "
+            "- (1)::numeric)) < 0.000000001))",
+        "open_macro_v03_allocations_risk_cap":
+            "CHECK ((risk_assets_weight <= (risk_cap + 0.000000001)))",
+        "open_macro_v03_allocations_defensive_floor":
+            "CHECK ((defensive_assets_weight >= (defensive_floor - 0.000000001)))",
+    },
+    "open_macro_v03_staleness_blocks": {
+        "open_macro_v03_staleness_blocks_pkey": "PRIMARY KEY (as_of)",
+    },
+}
+
+# Columns the publish / staleness-block DML OMITS, relying on the DDL to supply the
+# value: their DEFAULT must be present (and the column NOT NULL) or the first real
+# write fails on a drifted column that passed the name+type gate. Values are the exact
+# information_schema.columns.column_default strings.
+EXPECTED_COLUMN_DEFAULTS: dict[str, dict[str, str]] = {
+    "open_macro_v03_decisions": {"created_at": "now()", "updated_at": "now()"},
+    "open_macro_v03_allocations": {"created_at": "now()", "updated_at": "now()"},
+    "open_macro_v03_staleness_blocks": {"created_at": "now()"},
+}
+
 _CATALOG_COLUMNS_SQL = (
-    "SELECT table_name, column_name, data_type FROM information_schema.columns "
-    "WHERE table_name = ANY(%(tables)s) ORDER BY table_name, ordinal_position")
+    "SELECT table_name, column_name, data_type, column_default, is_nullable "
+    "FROM information_schema.columns "
+    "WHERE table_schema = 'public' AND table_name = ANY(%(tables)s) "
+    "ORDER BY table_name, ordinal_position")
 _CATALOG_CONSTRAINTS_SQL = (
-    "SELECT conrelid::regclass::text AS table_name, conname, contype::text "
-    "FROM pg_constraint WHERE conrelid::regclass::text = ANY(%(tables)s)")
+    "SELECT conrelid::regclass::text AS table_name, conname, contype::text, "
+    "pg_get_constraintdef(oid) AS condef "
+    "FROM pg_constraint "
+    "WHERE connamespace = 'public'::regnamespace "
+    "AND conrelid::regclass::text = ANY(%(tables)s)")
 
 
 def verify_schema(conn) -> dict[str, Any]:
     """Verify the live catalog against the committed DDL expectations (read-only).
 
-    Columns must match EXACTLY (names + data types) and every expected named
-    constraint (PK/FK/named CHECKs) must be present with the right contype; any
-    divergence raises. Returns the verified ``{table: {columns, constraints}}``
-    view — the evidence base for the B1b ``schema_migration_record``. This is the
-    SAME function the read-only monitor imports (it issues SELECTs only)."""
+    Scoped to the ``public`` schema (both queries), so a look-alike scratch schema
+    with same-named ``open_macro_v03_*`` tables can never be certified in place of the
+    objects the worker actually reads and writes. Columns must match EXACTLY (names +
+    data types); every expected named constraint must be present with the right
+    contype AND the right ``pg_get_constraintdef`` (a relaxed CHECK with the same name
+    is caught); and every DML-omitted column must carry its committed DEFAULT (so the
+    first real write cannot fail on a drifted NOT-NULL column that passed the
+    name+type gate). Any divergence raises. Returns the verified
+    ``{table: {columns, constraints}}`` view — the evidence base for the B1b
+    ``schema_migration_record``. This is the SAME function the read-only monitor
+    imports (it issues SELECTs only)."""
     tables = sorted(EXPECTED_SCHEMA)
     with conn.cursor() as cur:
         cur.execute(_CATALOG_COLUMNS_SQL, {"tables": tables})
@@ -784,11 +857,15 @@ def verify_schema(conn) -> dict[str, Any]:
         constraint_rows = cur.fetchall()
 
     actual_columns: dict[str, dict[str, str]] = {t: {} for t in tables}
-    for table_name, column_name, data_type in column_rows:
+    actual_defaults: dict[str, dict[str, str | None]] = {t: {} for t in tables}
+    for table_name, column_name, data_type, column_default, is_nullable in column_rows:
         actual_columns.setdefault(table_name, {})[column_name] = data_type
+        actual_defaults.setdefault(table_name, {})[column_name] = (column_default, is_nullable)
     actual_constraints: dict[str, dict[str, str]] = {t: {} for t in tables}
-    for table_name, conname, contype in constraint_rows:
+    actual_condefs: dict[str, dict[str, str]] = {t: {} for t in tables}
+    for table_name, conname, contype, condef in constraint_rows:
         actual_constraints.setdefault(table_name, {})[conname] = contype
+        actual_condefs.setdefault(table_name, {})[conname] = condef
 
     problems: list[str] = []
     verified: dict[str, Any] = {}
@@ -807,11 +884,25 @@ def verify_schema(conn) -> dict[str, Any]:
                 f"{table}: columns diverge from the committed DDL "
                 f"(missing={missing}, unexpected={extra}, type_mismatch={typediff})")
         constraints = actual_constraints.get(table) or {}
+        condefs = actual_condefs.get(table) or {}
         for conname, contype in expected["constraints"].items():
             if constraints.get(conname) != contype:
                 problems.append(
                     f"{table}: expected constraint {conname} ({contype!r}) is "
                     f"{constraints.get(conname)!r} in the catalog")
+        for conname, expected_def in EXPECTED_CONSTRAINT_DEFS.get(table, {}).items():
+            if condefs.get(conname) != expected_def:
+                problems.append(
+                    f"{table}: constraint {conname} definition drifted "
+                    f"(expected {expected_def!r}, catalog {condefs.get(conname)!r})")
+        defaults = actual_defaults.get(table) or {}
+        for column, expected_default in EXPECTED_COLUMN_DEFAULTS.get(table, {}).items():
+            got_default, got_nullable = defaults.get(column, (None, None))
+            if got_default != expected_default or got_nullable != "NO":
+                problems.append(
+                    f"{table}: DML-omitted column {column} must be NOT NULL DEFAULT "
+                    f"{expected_default!r} (catalog default={got_default!r}, "
+                    f"is_nullable={got_nullable!r})")
         verified[table] = {"columns": dict(columns),
                            "constraints": dict(constraints)}
     if problems:

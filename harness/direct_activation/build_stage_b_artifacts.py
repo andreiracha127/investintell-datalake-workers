@@ -35,7 +35,10 @@ PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002
 # and read the certified candidate. NB: harness/phase0q/pit.py is the PIT vintage
 # selector (``PitIndex``) that decision.py imports and run_decision_series builds at
 # runtime — pinned here so a change to PIT selection cannot alter the official
-# decision without tripping verify_module_pins.
+# decision without tripping verify_module_pins. NB: harness/direct_activation/
+# live_validation.py is pinned too — the worker imports compose_rows / consumable_today /
+# staleness_report / _VINTAGE_KEY from it, so a change to input composition, carry
+# selection, or the staleness block/publish decision cannot escape the pin gate.
 PINNED_MODULES = (
     "src/quadrant_score.py",
     "src/macro_transforms.py",
@@ -45,6 +48,7 @@ PINNED_MODULES = (
     "src/quadrant_assemble.py",
     "src/quadrant_snapshot.py",
     "src/quadrant_staleness.py",
+    "harness/direct_activation/live_validation.py",
     "harness/phase0q/decision.py",
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",

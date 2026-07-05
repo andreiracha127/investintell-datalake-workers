@@ -249,10 +249,12 @@ def test_schema_check_uses_the_workers_verify_schema_read_only(monkeypatch):
 
     def catalog_responder(sql, params):
         if "information_schema.columns" in sql:
-            return [(t, c, d) for t in sorted(w.EXPECTED_SCHEMA)
+            return [(t, c, d, w.EXPECTED_COLUMN_DEFAULTS.get(t, {}).get(c), "NO")
+                    for t in sorted(w.EXPECTED_SCHEMA)
                     for c, d in w.EXPECTED_SCHEMA[t]["columns"].items()]
         if "pg_constraint" in sql:
-            return [(t, n, ct) for t in sorted(w.EXPECTED_SCHEMA)
+            return [(t, n, ct, w.EXPECTED_CONSTRAINT_DEFS.get(t, {}).get(n, ""))
+                    for t in sorted(w.EXPECTED_SCHEMA)
                     for n, ct in w.EXPECTED_SCHEMA[t]["constraints"].items()]
         return _responder(decision=_published(), allocation=_published())(sql, params)
 
