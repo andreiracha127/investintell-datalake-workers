@@ -57,6 +57,7 @@ from harness.direct_activation.live_validation import (
     CHAIN_START,
     PACK,
     PACK_SHA256_PIN,
+    PRICE_MAX_AGE_BUSINESS_DAYS,
     _VINTAGE_KEY,
     compose_rows,
     consumable_today,
@@ -315,6 +316,23 @@ def verify_module_pins(pins: dict[str, Any], root: Path = ROOT) -> None:
         if actual != modules[rel]:
             raise OpenMacroV03Error(
                 f"module pin mismatch for {rel}: {actual} != pinned {modules[rel]}")
+    # The pack block must be the CERTIFIED pack metadata, not merely internally
+    # consistent: a stale/altered pack block with a matching recomputed hash would still
+    # stamp a wrong module_pins_sha256 (for a different pin bundle) into the official
+    # rows, corrupting the provenance the monitor / Stage C evidence relies on.
+    pack_manifest = _load_json(PACK / "manifest.json")
+    expected_pack = {
+        "input_pack_id": pack_manifest["input_pack_id"],
+        "input_pack_sha256": pack_manifest["input_pack_sha256"],
+        "canonical_snapshot_sha256": pack_manifest["canonical_snapshot_sha256"],
+    }
+    if expected_pack["input_pack_sha256"] != PACK_SHA256_PIN:
+        raise OpenMacroV03Error(
+            "certified pack manifest input_pack_sha256 diverged from the signed pin")
+    if pins.get("pack") != expected_pack:
+        raise OpenMacroV03Error(
+            f"module_pins pack block {pins.get('pack')} != certified pack "
+            f"{expected_pack} (a stale/altered pack block cannot be stamped as provenance)")
     recomputed = _canonical_block_sha256({"modules": modules, "pack": pins["pack"]})
     if recomputed != pins.get("module_pins_sha256"):
         raise OpenMacroV03Error(
@@ -506,7 +524,8 @@ def compose_inputs(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
 # --------------------------------------------------------------------------- #
 # Gate 10 — allocation
 # --------------------------------------------------------------------------- #
-def build_allocation(quadrant: str, price_rows: list[dict]) -> dict[str, Any]:
+def build_allocation(quadrant: str, price_rows: list[dict],
+                     as_of: _dt.date) -> dict[str, Any]:
     """Today's consumable compressed_50 target with the risk-cap/defensive-floor gates."""
     prices = sleeve_mod.PriceFrame(price_rows)
     if not prices.dates:
@@ -528,6 +547,17 @@ def build_allocation(quadrant: str, price_rows: list[dict]) -> dict[str, Any]:
         raise OpenMacroV03Error(
             "no session prices the full sleeve at a single date (split-date partial "
             "ingest); refuse rather than price tickers at inconsistent dates")
+    # …and that common date must still satisfy the SAME price-age SLO the staleness gate
+    # enforces. staleness_report only checks price DATES, so a recent-but-unusable print
+    # (NaN/zero/negative) can pass it while the freshest sleeve-wide USABLE date is stale;
+    # publishing a stale priced_at then would be wrong — bound it here.
+    business_age = len([1 for i in range(1, (as_of - priced_at).days + 1)
+                        if (priced_at + _dt.timedelta(days=i)).weekday() < 5])
+    if business_age > PRICE_MAX_AGE_BUSINESS_DAYS:
+        raise OpenMacroV03Error(
+            f"sleeve-wide usable priced_at {priced_at} is {business_age} business days "
+            f"old (> {PRICE_MAX_AGE_BUSINESS_DAYS}); a recent-but-unusable print must not "
+            "publish a stale allocation")
     available: list[str] = list(sleeve_mod.SLEEVE_TICKERS)
     weights = sleeve_mod.target_weights(
         quadrant, sleeve_mod.SleeveParams(candidate_id=CANDIDATE_ID),
@@ -922,6 +952,7 @@ _CATALOG_CONSTRAINTS_SQL = (
     "pg_get_constraintdef(oid) AS condef "
     "FROM pg_constraint "
     "WHERE connamespace = 'public'::regnamespace "
+    "AND contype IN ('c', 'p', 'f') "  # NOT NULL ('n') is verified via column is_nullable
     "AND conrelid::regclass::text = ANY(%(tables)s)")
 
 
@@ -981,6 +1012,13 @@ def verify_schema(conn) -> dict[str, Any]:
                 problems.append(
                     f"{table}: constraint {conname} {constraints.get(conname)} != "
                     f"expected {exp} (contype, definition)")
+        # an EXTRA CHECK/FK from a manual migration would let a valid publish() fail
+        # against a constraint the DDL never declared; CREATE TABLE IF NOT EXISTS never
+        # removes it, so reject unexpected constraints too (mirror the column-set check).
+        extra_cons = sorted(set(constraints) - set(expected["constraints"]))
+        if extra_cons:
+            problems.append(
+                f"{table}: unexpected constraints not in the committed DDL: {extra_cons}")
         verified[table] = {"columns": dict(columns),
                            "constraints": dict(constraints)}
     if problems:
@@ -1085,7 +1123,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             last, validity, seed_as_of = consumable_today(chain, as_of_date)
 
             # Gate 10 — allocation.
-            allocation = build_allocation(last.quadrant, price_rows)
+            allocation = build_allocation(last.quadrant, price_rows, as_of_date)
             weights = allocation["weights"]
 
             vu = valid_until(as_of_date)

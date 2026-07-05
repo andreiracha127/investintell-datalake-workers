@@ -38,21 +38,28 @@ activation is live). To avoid
 false alarms BEFORE the governance flip, it reads the SAME committed
 ``activation_envelope.json`` as the main worker: while ``runtime_activation`` is not
 true it exits 0 with ``pre_activation`` without touching the DB — so it can be
-deployed AHEAD of the flip (B5 ordering: monitoring live before the first write)
-and is armed the instant the envelope flips.
+deployed AHEAD of the flip (B5 ordering: monitoring live before the first write). It
+mirrors the worker's Gate 1 + Gate 2 EXACTLY: while the ``open_macro_v03_runtime_activation``
+feature flag is unset OR any ``check_governance`` gate is still false it exits 0 with
+``pre_activation`` (no DB), so a deploy-ahead or a partial final flip never pages a
+``missing_output`` for a day the writer is intentionally gated off — the monitor arms
+only the instant run() itself would proceed to write.
 """
 
 from __future__ import annotations
 
 import datetime as _dt
+import os
 import time
 from typing import Any
 
 from src.db import connect
 from src.workers.open_macro_v03 import (
     ENVELOPE_PATH,
+    RUNTIME_FLAG_ENV,
     OpenMacroV03Error,
     _load_json,
+    check_governance,
     compose_inputs,
     pin_search_path,
     resolve_as_of,
@@ -152,9 +159,16 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
     # Pre-activation: the committed envelope gates the monitor exactly like the
     # worker, so a deploy ahead of the flip never false-alarms and arms itself
     # the instant the envelope flips. No DB access in this state.
+    # Mirror the worker's Gate 1 + Gate 2 EXACTLY: arm only when run() would proceed to
+    # write. If the Railway feature flag is unset (flag_off) or ANY governance gate is
+    # still false (governance_blocked), the writer is intentionally gated off, so a
+    # missing_output alarm here would be a false page during deploy-ahead / partial-flip.
+    if os.environ.get(RUNTIME_FLAG_ENV) != "true":
+        return {"status": "pre_activation", "reason": "flag_off"}
     envelope = _load_json(ENVELOPE_PATH)
-    if envelope.get("runtime_activation") is not True:
-        return {"status": "pre_activation"}
+    reason = check_governance(envelope)
+    if reason is not None:
+        return {"status": "pre_activation", "reason": reason}
 
     as_of_date = resolve_as_of(as_of)
     if as_of_date is None:

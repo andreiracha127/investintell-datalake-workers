@@ -78,7 +78,10 @@ def _responder(*, decision=None, allocation=None, ledger=None, future=0,
 def _arm(monkeypatch, responder, *, schema_ok=True):
     """Activate the monitor (envelope flip simulated) over a fake conn. The catalog
     leg runs through the worker's verify_schema, patched at the monitor boundary."""
+    # arm the monitor exactly as run() would proceed: feature flag on + governance clear
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)
     # fix the as_of to the fixture business day so these DB-path tests are independent
     # of the real clock (and the worker's future-override guard).
@@ -104,16 +107,36 @@ def _published(vu=FUTURE_VU):
 # Pre-activation / non-business-day short-circuits
 # --------------------------------------------------------------------------- #
 def test_pre_activation_with_committed_blocked_envelope_no_db(monkeypatch):
-    # the REAL committed envelope is fully blocked -> pre_activation, no DB
+    # flag ON but the REAL committed envelope is fully blocked (governance) -> the
+    # monitor mirrors run()'s Gate 2 and short-circuits pre_activation, no DB.
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+
     def _no_connect(*a, **k):
         raise AssertionError("must not connect pre-activation")
 
     monkeypatch.setattr(mon, "connect", _no_connect)
-    assert mon.run("unused-dsn") == {"status": "pre_activation"}
+    result = mon.run("unused-dsn")
+    assert result["status"] == "pre_activation"
+    assert result["reason"] is not None  # governance-blocked reason
+
+
+def test_pre_activation_when_feature_flag_off_no_db(monkeypatch):
+    # flag OFF (Gate 1) short-circuits before even loading the envelope or connecting
+    monkeypatch.delenv("open_macro_v03_runtime_activation", raising=False)
+
+    def _no_load(*a, **k):
+        raise AssertionError("must not load the envelope when the flag is off")
+
+    monkeypatch.setattr(mon, "_load_json", _no_load)
+    monkeypatch.setattr(mon, "connect",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no db")))
+    assert mon.run("unused-dsn") == {"status": "pre_activation", "reason": "flag_off"}
 
 
 def test_non_business_day_exits_clean_without_db(monkeypatch):
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "resolve_as_of", lambda *a, **k: None)
 
     def _no_connect(*a, **k):
@@ -258,7 +281,9 @@ def test_schema_check_uses_the_workers_verify_schema_read_only(monkeypatch):
                     for n, meta in w.EXPECTED_SCHEMA[t]["constraints"].items()]
         return _responder(decision=_published(), allocation=_published())(sql, params)
 
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
+    monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)  # covered by worker tests
     monkeypatch.setattr(mon, "resolve_as_of", lambda *a, **k: AS_OF_DATE)
     conn = _FakeConn(catalog_responder)

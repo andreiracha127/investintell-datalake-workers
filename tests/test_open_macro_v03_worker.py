@@ -505,6 +505,23 @@ def test_verify_schema_raises_on_missing_inline_check():
         w.verify_schema(conn)
 
 
+def test_verify_schema_raises_on_unexpected_constraint():
+    # an EXTRA CHECK from a manual migration (CREATE TABLE IF NOT EXISTS never removes
+    # it) must fail — a later valid publish() could break against it.
+    base = _catalog_responder()
+
+    def responder(sql, params):
+        result = base(sql, params)
+        if "pg_constraint" in sql:
+            result["rows"].append(("open_macro_v03_decisions", "extra_manual_check",
+                                   "c", "CHECK ((quadrant <> 'z'::text))"))
+        return result
+
+    conn = _FakeConn(responder)
+    with pytest.raises(w.OpenMacroV03Error, match="unexpected constraints"):
+        w.verify_schema(conn)
+
+
 def test_verify_schema_raises_when_dml_omitted_default_missing():
     # a table missing DEFAULT now() on a DML-omitted NOT NULL column would pass a bare
     # name+type gate and then fail on the first real write.
@@ -637,7 +654,7 @@ def _priced_rows(date="2026-06-30"):
 
 @pytest.mark.parametrize("quadrant", ["recovery", "expansion", "slowdown", "contraction"])
 def test_build_allocation_respects_sum_cap_floor(quadrant):
-    alloc = w.build_allocation(quadrant, _priced_rows())
+    alloc = w.build_allocation(quadrant, _priced_rows(), _dt.date(2026, 6, 30))
     weights = alloc["weights"]
     assert abs(sum(weights.values()) - 1.0) < 1e-9
     assert alloc["risk_assets_weight"] <= 0.65 + 1e-9
@@ -649,7 +666,7 @@ def test_build_allocation_fails_loud_on_nan_price():
     rows = _priced_rows()
     rows[0]["adjusted_close"] = None  # SPY unusable -> no date prices the full sleeve
     with pytest.raises(w.OpenMacroV03Error, match="full sleeve"):
-        w.build_allocation("expansion", rows)
+        w.build_allocation("expansion", rows, _dt.date(2026, 6, 30))
 
 
 def test_build_allocation_uses_latest_common_date_on_split_ingest():
@@ -659,8 +676,20 @@ def test_build_allocation_uses_latest_common_date_on_split_ingest():
     rows = _priced_rows("2026-06-30")
     rows.append({"ticker": "SPY", "date": "2026-07-01", "close": 101.0,
                  "adjusted_close": 101.0, "volume": 1000})
-    alloc = w.build_allocation("expansion", rows)
+    alloc = w.build_allocation("expansion", rows, _dt.date(2026, 7, 1))
     assert alloc["priced_at"] == _dt.date(2026, 6, 30)
+
+
+def test_build_allocation_refuses_stale_common_date():
+    # every ticker has a recent-but-UNUSABLE latest print (passes staleness_report's
+    # date-only check), forcing the common usable date older than the 3-business-day
+    # SLO -> refuse rather than publish a stale allocation.
+    rows = _priced_rows("2026-06-22")  # >3 business days before the as_of below
+    rows += [{"ticker": t, "date": "2026-06-30", "close": 0.0,  # newer but unusable
+              "adjusted_close": 0.0, "volume": 1000}
+             for t in ("SPY", "TLT", "TIP", "GLD", "DBC", "SHY")]
+    with pytest.raises(w.OpenMacroV03Error, match="business days old"):
+        w.build_allocation("expansion", rows, _dt.date(2026, 6, 30))
 
 
 # --------------------------------------------------------------------------- #
