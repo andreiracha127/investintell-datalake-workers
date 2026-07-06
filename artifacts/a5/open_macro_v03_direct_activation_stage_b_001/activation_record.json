@@ -54,10 +54,10 @@
    "dark_launch_manifest.json": "2c333d92853a198d0dc09203aee5fefff42c65842ab96113803a3d29c95ab46d"
   },
   "stage_a": {
-   "live_validation_record.json": "dcb8e225664afaef761f278cdade66e9b5d8e155ff5e58bb44cb7397ac5f2e2d",
-   "reproducibility_record.json": "50a25cb1ac9662b26b20b9f076aa6a8043c22d555a226ccc1bc8bb6ed400e591",
-   "slo_conformance_record.json": "5f4643871721e390e5cae8558ce3c53c42a74cde0abd8f07c1a9e29f3f685457",
-   "slo_threshold_amendment_record.json": "9632166045313f3f88085fa75d65dc09d22dbb8c8d3e99306596f9f2123202f6"
+   "live_validation_record.json": "8aae2a1f2059d9dd5518b3aded4e5173558f4192930f7cb0e2045efc829a84b4",
+   "reproducibility_record.json": "74ece97f400e6bc0e98b8da05f856dbc9b9b6e73f0493dadaa85891453164bc3",
+   "slo_conformance_record.json": "b0b53d11f66cd8c264fac865c4afa20f86c93852bc911be0b1398dc06e42ef2b",
+   "slo_threshold_amendment_record.json": "980de3cda7ad6f4613d94897966b228528994b6cd08ec11e3505498394714f27"
   },
   "stage_b": {
    "backend_flag_inert_record.json": "06ce17b9c07e5749aebedcd042250a9010ab564222ed5935d5bcc84296cc0736",
