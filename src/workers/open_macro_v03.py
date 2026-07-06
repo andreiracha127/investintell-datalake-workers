@@ -458,6 +458,12 @@ def resolve_as_of(as_of_arg: str | None = None, *,
                 f"America/New_York day {today.isoformat()}); the worker never stamps "
                 "an official future-dated decision (illegal by the monitor's "
                 "future_as_of_write guard)")
+        if resolved < PACK_CUT:
+            raise OpenMacroV03Error(
+                f"as_of override {resolved.isoformat()} is before the pack cut "
+                f"{PACK_CUT.isoformat()}; compose_inputs always loads the certified pack "
+                "THROUGH the cut plus the live delta, so a pre-cut replay would be "
+                "evaluated with pack data from the future of that as_of")
         if resolved.weekday() >= 5:  # Sat/Sun override: non-business day, never publish
             return None
         return resolved

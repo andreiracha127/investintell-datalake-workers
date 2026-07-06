@@ -349,6 +349,13 @@ def test_resolve_as_of_skips_weekend_override():
     assert w.resolve_as_of("2026-07-05", today=_dt.date(2026, 7, 6)) is None  # Sunday
 
 
+def test_resolve_as_of_rejects_pre_cut_override():
+    # an override before PACK_CUT (2026-06-30) would be evaluated with pack data from the
+    # future of that as_of (compose_inputs always loads through the cut) -> reject
+    with pytest.raises(w.OpenMacroV03Error, match="before the pack cut"):
+        w.resolve_as_of("2026-06-26", today=_dt.date(2026, 7, 6))
+
+
 # --------------------------------------------------------------------------- #
 # Gate 7 — prefix hash gate
 # --------------------------------------------------------------------------- #
