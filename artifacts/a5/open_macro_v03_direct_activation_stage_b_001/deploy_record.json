@@ -1,0 +1,89 @@
+{
+ "activation_precondition": {
+  "approved_writer_service": "open-macro-v03-worker",
+  "deployed_writer_service_now": "open-macro-v03",
+  "fail_closed_if_skipped": "if open_macro_v03_runtime_activation is flipped to true BEFORE the rename, the writer's Gate 2b (check_writer_runtime) sees runtime RAILWAY_SERVICE_NAME='open-macro-v03' != approved 'open-macro-v03-worker' and returns status='wrong_service' with ZERO writes; the armed monitor then trips its missing-output SLO. This is the intended fail-loud safeguard, not a silent path.",
+  "ordering": "rename_before_b4_runtime_flip",
+  "reference": "activation_envelope.json environment.note (pinned name = APPROVED_RAILWAY_SERVICE); src/workers/open_macro_v03.py check_writer_runtime (WRITER-only runtime-identity gate)",
+  "required_step": "rename the deployed Railway writer service open-macro-v03 -> open-macro-v03-worker on the owner dashboard so the runtime RAILWAY_SERVICE_NAME converges to APPROVED_RAILWAY_SERVICE"
+ },
+ "artifact_type": "stage_b_deploy_record",
+ "deployed_on": "2026-07-06",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "note": "deploy evidence only; every flip happens in the B4 activation commit",
+  "official_result": false,
+  "runtime_activation": false
+ },
+ "inert_smoke": {
+  "method": "railway run with each service's injected environment, executing the deployed code path (python -m src.run_worker) at the same commit",
+  "note": "both services exit inert with ZERO side effects: the worker at the B2 feature-flag gate (flag false), the monitor at its governance gate (committed envelope still blocked). The first on-platform cron runs fire 2026-07-07 06:45/07:15 UTC, still inert until the B4 flip.",
+  "open_macro_v03": {
+   "status": "flag_off",
+   "worker": "open_macro_v03"
+  },
+  "open_macro_v03_monitor": {
+   "reason": "runtime_activation!=true",
+   "status": "pre_activation",
+   "worker": "open_macro_v03_monitor"
+  }
+ },
+ "monitoring": {
+  "missing_output_slo": "live at flip time via open_macro_v03_monitor",
+  "ordering_note": "B5 binding order honoured: the monitor service is deployed and armed BEFORE the B4 governance flip enables the first sanctioned write; its alert mechanism is a non-zero cron run (Railway marks the run failed) per monitor docstring",
+  "slo_thresholds": "artifacts/a5/open_macro_v03_direct_activation_stage_a_001/slo_threshold_amendment_record.json (latency, amended) + artifacts/a5/open_macro_v03_dark_launch_001/monitoring_thresholds_record.json (memory/error/retry)"
+ },
+ "platform": "railway",
+ "project": {
+  "environment": "production",
+  "id": "1cc3be4b-c600-43ee-9525-69e05818e5fa",
+  "name": "investintell-workers"
+ },
+ "schema_version": 1,
+ "services": [
+  {
+   "cron_schedule": "45 6 * * 1-5",
+   "deployment": {
+    "at": "2026-07-06T14:04:55.248Z",
+    "id": "37621fdb-585d-47ff-b223-6e97424be94a",
+    "status": "SUCCESS"
+   },
+   "env": {
+    "DATABASE_URL": "reference ${{macro-ingestion.DATABASE_URL}} (shared workers DSN; value never materialized in any record)",
+    "WORKER": "open_macro_v03",
+    "open_macro_v03_runtime_activation": "false"
+   },
+   "id": "0bfdcf33-f542-459e-a1e8-2aac514cc14e",
+   "name": "open-macro-v03",
+   "worker": "open_macro_v03"
+  },
+  {
+   "cron_schedule": "15 7 * * 1-5",
+   "deployment": {
+    "at": "2026-07-06T14:05:52.131Z",
+    "id": "d762adf9-ce42-4905-a911-c595b8f8f30b",
+    "status": "SUCCESS"
+   },
+   "env": {
+    "DATABASE_URL": "reference ${{macro-ingestion.DATABASE_URL}}",
+    "WORKER": "open_macro_v03_monitor"
+   },
+   "id": "9304ee42-b85a-4898-a65a-13a177a3bcad",
+   "name": "open-macro-v03-monitor",
+   "worker": "open_macro_v03_monitor"
+  }
+ ],
+ "source": {
+  "branch": "main",
+  "builder": "nixpacks",
+  "deployed_commit": "559cf3a6c7afe9b79b7dbb02a7ad145b9446a620",
+  "repo": "andreiracha127/investintell-datalake-workers",
+  "restart_policy": "never",
+  "start_command": "python -m src.run_worker"
+ },
+ "stage": "B"
+}

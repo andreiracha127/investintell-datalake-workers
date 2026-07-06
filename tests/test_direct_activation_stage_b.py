@@ -103,6 +103,10 @@ def _sha256_norm(path: Path) -> str:
 def test_stage_b_artifacts_exist():
     assert ENVELOPE.is_file()
     assert PINS.is_file()
+    assert (STAGE_B / "activation_record.json").is_file()
+    assert (STAGE_B / "deploy_record.json").is_file()
+    assert (STAGE_B / "backend_flag_inert_record.json").is_file()
+    assert (STAGE_B / "schema_migration_record.json").is_file()
 
 
 # --------------------------------------------------------------------------- #
@@ -229,41 +233,159 @@ def test_harness_import_closure_is_pinned():
 # --------------------------------------------------------------------------- #
 # Committed envelope is FULLY BLOCKED
 # --------------------------------------------------------------------------- #
-def test_committed_envelope_is_fully_blocked():
+ACTIVE_APPROVAL_EVIDENCE = (
+    "Approved by Andrei Rachadel (holder of all six owner roles) per "
+    "plan_go_decision_record.json (owner decisions 1-5, plan GO, 2026-07-03) and "
+    "immediate_activation_decision_record.json (FULL IMMEDIATE ACTIVATION); this "
+    "sign-off is ratified by the merge of this activation PR."
+)
+
+FINAL_APPROVER_ACT = (
+    "I, Andrei Rachadel, as final_approver, activate open_macro_v03 as the ONLY "
+    "model with official output from activation, ratified by the merge of this "
+    "activation PR"
+)
+
+
+def _expected_active_envelope() -> dict:
+    """Deterministic regeneration of the ACTIVE envelope: the committed builder's
+    BLOCKED base + EXACTLY the documented B4 flips (the promotion-gate transform).
+    Byte-equality against the committed artifact proves no other field moved and
+    the serialization discipline (sort_keys / indent=1 / LF) held."""
+    from harness.direct_activation.build_stage_b_artifacts import (
+        build_activation_envelope)
+    envelope = build_activation_envelope()
+    envelope.update({
+        "A5": "active",
+        "runtime_activation": True,
+        "activation_allowed": True,
+        "allow_db_write": True,
+        "db_write_official": True,
+        "db_write_mode": "open_macro_v03_new_tables_only",
+        "allocator_publish": True,
+        "allow_allocator_publish": True,
+        "official_result": True,
+        "production_endpoint_activation": "none",
+        "freeze_ready": False,
+        "allowed_tables": sorted([
+            "open_macro_v03_decisions", "open_macro_v03_allocations",
+            "open_macro_v03_staleness_blocks"]),
+        "approval_matrix": {
+            role: {"owner": "Andrei Rachadel", "approval_status": "approved",
+                   "approval_evidence": ACTIVE_APPROVAL_EVIDENCE,
+                   "timestamp": "2026-07-06", "blocking": True}
+            for role in sorted(APPROVAL_ROLES)},
+        "approval_matrix_complete": True,
+        "environment": {
+            "railway_service_name": "open-macro-v03-worker",
+            "note": ("the ONE approved production Railway service "
+                     "(APPROVED_RAILWAY_SERVICE); the deployed service rename "
+                     "open-macro-v03 -> open-macro-v03-worker is pending on the owner "
+                     "dashboard and the infrastructure converges to this pinned name"),
+        },
+        "note": ("Stage B envelope ACTIVE: the B4 governance flip ratified by the merge "
+                 "of this activation PR. freeze_ready stays false and "
+                 "production_endpoint_activation stays 'none' by design (B3 split: the "
+                 "post-merge backend_cutover_record only attests the ratified condition)."),
+    })
+    return envelope
+
+
+def test_committed_envelope_is_active_exact():
+    """B4 flip: the committed envelope is the ACTIVE state, field by field, and is
+    byte-identical to the deterministic regeneration from the builder's blocked base
+    + the documented flips. The worker's own gate must accept it."""
     env = _load_json(ENVELOPE)
-    assert env["A5"] == "blocked"
-    assert env["runtime_activation"] is False
-    assert env["activation_allowed"] is False
-    assert env["allow_db_write"] is False
-    assert env["db_write_official"] is False
-    assert env["db_write_mode"] == "none"
-    assert env["allocator_publish"] is False
-    assert env["allow_allocator_publish"] is False
-    assert env["official_result"] is False
-    assert env["production_endpoint_activation"] == "none"
-    assert env["freeze_ready"] is False
-    assert env["allowed_tables"] == []
-    assert env["approval_matrix_complete"] is False
-    assert env["environment"] is None
+    assert env == _expected_active_envelope()
+    committed_bytes = ENVELOPE.read_bytes().replace(b"\r\n", b"\n")
+    regenerated = (json.dumps(_expected_active_envelope(), sort_keys=True, indent=1,
+                              ensure_ascii=False) + "\n").encode("utf-8")
+    assert committed_bytes == regenerated
+    import src.workers.open_macro_v03 as w
+    assert w.check_governance(env) is None
 
 
-def test_committed_envelope_approval_matrix_all_pending():
+def test_committed_envelope_approval_matrix_complete_per_role():
     env = _load_json(ENVELOPE)
     matrix = env["approval_matrix"]
     assert set(matrix) == APPROVAL_ROLES
     for role, entry in matrix.items():
-        assert entry["approval_status"] == "pending", role
+        assert entry["owner"] == "Andrei Rachadel", role
+        assert entry["approval_status"] == "approved", role
+        assert entry["approval_evidence"] == ACTIVE_APPROVAL_EVIDENCE, role
+        assert "plan_go_decision_record" in entry["approval_evidence"]
+        assert "immediate_activation_decision_record" in entry["approval_evidence"]
+        assert "ratified by the merge of this activation PR" in entry["approval_evidence"]
+        assert entry["timestamp"] == "2026-07-06", role
         assert entry["blocking"] is True, role
-        assert entry["owner"] is None, role
+    assert env["approval_matrix_complete"] is True
 
 
-def test_committed_envelope_has_no_truthy_activation_flags():
+def test_committed_envelope_keeps_the_b4_blocked_fields_blocked():
+    """B3/B4 by design: the Stage C freeze and the production endpoint do NOT flip
+    in the activation PR - the post-merge cutover record only attests the ratified
+    condition. String-truthy discipline still applies to the blocked fields."""
     env = _load_json(ENVELOPE)
+    assert env["freeze_ready"] is False
+    assert not _is_truthy_flag(env["freeze_ready"])
+    assert env["production_endpoint_activation"] == "none"
+    assert env["allowed_tables"] == sorted([
+        "open_macro_v03_decisions", "open_macro_v03_allocations",
+        "open_macro_v03_staleness_blocks"])
+    assert env["environment"]["railway_service_name"] == "open-macro-v03-worker"
     for key, value in _walk(env):
-        if key in FORBIDDEN_TRUE_FIELDS:
-            assert not _is_truthy_flag(value), f"{key} is truthy in the blocked envelope"
-        if key in {"A5", "a5_status"}:
-            assert value == "blocked", f"{key}={value!r}"
+        if key in {"feature_flag_default", "approved", "production_endpoint_activated",
+                   "freeze_ready"}:
+            assert not _is_truthy_flag(value), f"{key} truthy in the active envelope"
+
+
+def test_activation_record_pins_the_human_act_and_evidence():
+    """The B4 human act: verbatim final_approver act, mirrored complete matrix, the
+    A4 advance (this flip, never Stage C), recomputable evidence refs (CRLF->LF),
+    the CONDITIONAL ratified endpoint (both values signed; current stays none) and
+    the inherited immutability restatement."""
+    record = _load_json(STAGE_B / "activation_record.json")
+    assert record["artifact_type"] == "stage_b_activation_record"
+    assert record["schema_version"] == 1
+    assert record["stage"] == "B"
+    assert record["stage_b_id"] == "open_macro_v03_direct_activation_stage_b_001"
+    assert record["direct_activation_id"] == "open_macro_v03_direct_activation_001"
+    assert record["A4"] == "production_active_official"
+    assert record["final_approver_act"] == FINAL_APPROVER_ACT
+    assert record["approved_on"] == "2026-07-06"
+
+    env = _load_json(ENVELOPE)
+    assert record["approval_matrix"] == env["approval_matrix"]
+    assert record["approval_matrix_complete"] is True
+
+    refs = record["evidence_refs_sha256_crlf_normalized"]
+    stage_a = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
+    dark = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
+    assert set(refs["stage_a"]) == {
+        "live_validation_record.json", "reproducibility_record.json",
+        "slo_conformance_record.json", "slo_threshold_amendment_record.json"}
+    assert set(refs["stage_b"]) == {
+        "schema_migration_record.json", "deploy_record.json",
+        "backend_flag_inert_record.json", "module_pins.json"}
+    assert set(refs["dark_launch_readiness"]) == {"dark_launch_manifest.json"}
+    for name, pinned in refs["stage_a"].items():
+        assert _sha256_norm(stage_a / name) == pinned, name
+    for name, pinned in refs["stage_b"].items():
+        assert _sha256_norm(STAGE_B / name) == pinned, name
+    for name, pinned in refs["dark_launch_readiness"].items():
+        assert _sha256_norm(dark / name) == pinned, name
+
+    assert record["production_endpoint_activation"] == "none"
+    cond = record["production_endpoint_activation_ratified"]
+    assert cond["state"] == "conditional"
+    assert cond["value_until_condition"] == "none"
+    assert cond["ratified_target_route"] == "/macro/open-macro-v03/allocation"
+    assert "backend_cutover_record.json" in cond["condition"]
+    assert cond["both_values_signed_here"] is True
+
+    assert record["immutability_constraint"] == {
+        "formula_changes": "none", "input_pack_changes": "none",
+        "calibration_pack_changes": "none", "contract_v1_changes": "none"}
 
 
 def test_envelope_loader_rejects_duplicate_keys():

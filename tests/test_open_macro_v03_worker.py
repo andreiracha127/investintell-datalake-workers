@@ -117,8 +117,36 @@ def test_flag_off_is_inert_without_db(monkeypatch):
     assert w.run("unused-dsn") == {"status": "flag_off"}
 
 
-def test_committed_blocked_envelope_blocks_without_db(monkeypatch):
+def test_committed_active_envelope_passes_governance_wrong_service_blocks(monkeypatch):
+    """B4 flipped: the COMMITTED envelope passes check_governance. The next key is
+    the WRITER runtime identity (Gate 2b): without the approved RAILWAY_SERVICE_NAME
+    the run stops wrong_service BEFORE any pins/pack/DB work - the feature flag env
+    var stays the second key and the service identity the third."""
+    committed = w._load_json(w.ENVELOPE_PATH)
+    assert w.check_governance(committed) is None
+
     monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.delenv("RAILWAY_SERVICE_NAME", raising=False)
+
+    def _no_connect(*a, **k):
+        raise AssertionError("must not connect from an unapproved service")
+
+    monkeypatch.setattr(w, "connect", _no_connect)
+    result = w.run("unused-dsn")
+    assert result["status"] == "wrong_service"
+
+
+def test_blocked_builder_envelope_still_blocks_without_db(monkeypatch):
+    """The builder's BLOCKED base (the deploy-ahead state every service carried
+    before this flip) must still short-circuit governance_blocked with no DB."""
+    from harness.direct_activation.build_stage_b_artifacts import (
+        build_activation_envelope)
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    blocked = build_activation_envelope()
+    real_load = w._load_json
+    monkeypatch.setattr(
+        w, "_load_json",
+        lambda path: blocked if Path(path) == Path(w.ENVELOPE_PATH) else real_load(path))
 
     def _no_connect(*a, **k):
         raise AssertionError("must not connect while governance is blocked")
@@ -243,12 +271,14 @@ def test_check_governance_requires_the_approval_matrix():
     assert w.check_governance(_active_envelope()) is None
 
 
-def test_committed_blocked_envelope_is_blocked_by_the_matrix_gate_itself():
-    """Flip every boolean/scope gate of the COMMITTED envelope but keep its pending
-    matrix: the NEW approval-matrix gate must still block (not an accident of the
-    earlier boolean gates)."""
-    committed = json.loads(w.ENVELOPE_PATH.read_text(encoding="utf-8"))
-    forged = dict(committed)
+def test_blocked_builder_envelope_is_blocked_by_the_matrix_gate_itself():
+    """Flip every boolean/scope gate of the builder's BLOCKED envelope but keep its
+    pending matrix: the approval-matrix gate must still block (not an accident of
+    the earlier boolean gates). Uses the builder base because the COMMITTED envelope
+    now carries the ratified, complete matrix."""
+    from harness.direct_activation.build_stage_b_artifacts import (
+        build_activation_envelope)
+    forged = dict(build_activation_envelope())
     forged.update({
         "runtime_activation": True, "activation_allowed": True, "allow_db_write": True,
         "db_write_official": True, "db_write_mode": "open_macro_v03_new_tables_only",

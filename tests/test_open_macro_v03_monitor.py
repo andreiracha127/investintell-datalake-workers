@@ -106,9 +106,14 @@ def _published(vu=FUTURE_VU):
 # --------------------------------------------------------------------------- #
 # Pre-activation / non-business-day short-circuits
 # --------------------------------------------------------------------------- #
-def test_pre_activation_with_committed_blocked_envelope_no_db(monkeypatch):
-    # the REAL committed envelope is fully blocked (governance) -> the monitor mirrors
-    # run()'s Gate 2 and short-circuits pre_activation, no DB.
+def test_pre_activation_with_blocked_envelope_no_db(monkeypatch):
+    # a BLOCKED envelope (the builder's base - the deploy-ahead state before the B4
+    # flip) -> the monitor mirrors run()'s Gate 2 and short-circuits pre_activation,
+    # no DB. The COMMITTED envelope is now ACTIVE (see the armed test below).
+    from harness.direct_activation.build_stage_b_artifacts import (
+        build_activation_envelope)
+    monkeypatch.setattr(mon, "_load_json", lambda path: build_activation_envelope())
+
     def _no_connect(*a, **k):
         raise AssertionError("must not connect pre-activation")
 
@@ -116,6 +121,13 @@ def test_pre_activation_with_committed_blocked_envelope_no_db(monkeypatch):
     result = mon.run("unused-dsn")
     assert result["status"] == "pre_activation"
     assert result["reason"] is not None  # governance-blocked reason
+
+
+def test_committed_active_envelope_arms_the_monitor():
+    """B4 flipped: the COMMITTED envelope passes the shared governance gate, so the
+    monitor is armed from the flip instant (it would proceed to the DB legs)."""
+    import src.workers.open_macro_v03 as w
+    assert w.check_governance(w._load_json(w.ENVELOPE_PATH)) is None
 
 
 def test_flag_off_on_active_day_still_fires_missing_output(monkeypatch):

@@ -1,14 +1,6 @@
 {
- "A5": "active",
- "activation_allowed": true,
- "allocator_publish": true,
- "allow_allocator_publish": true,
- "allow_db_write": true,
- "allowed_tables": [
-  "open_macro_v03_allocations",
-  "open_macro_v03_decisions",
-  "open_macro_v03_staleness_blocks"
- ],
+ "A4": "production_active_official",
+ "a4_note": "A4 advances to production_active_official IN THIS Stage B flip (official from activation); Stage C ratifies and never re-flips.",
  "approval_matrix": {
   "final_approver": {
    "approval_evidence": "Approved by Andrei Rachadel (holder of all six owner roles) per plan_go_decision_record.json (owner decisions 1-5, plan GO, 2026-07-03) and immediate_activation_decision_record.json (FULL IMMEDIATE ACTIVATION); this sign-off is ratified by the merge of this activation PR.",
@@ -54,19 +46,42 @@
   }
  },
  "approval_matrix_complete": true,
- "artifact_type": "open_macro_v03_stage_b_activation_envelope",
- "db_write_mode": "open_macro_v03_new_tables_only",
- "db_write_official": true,
+ "approved_on": "2026-07-06",
+ "artifact_type": "stage_b_activation_record",
  "direct_activation_id": "open_macro_v03_direct_activation_001",
- "environment": {
-  "note": "the ONE approved production Railway service (APPROVED_RAILWAY_SERVICE); the deployed service rename open-macro-v03 -> open-macro-v03-worker is pending on the owner dashboard and the infrastructure converges to this pinned name",
-  "railway_service_name": "open-macro-v03-worker"
+ "evidence_refs_sha256_crlf_normalized": {
+  "dark_launch_readiness": {
+   "dark_launch_manifest.json": "2c333d92853a198d0dc09203aee5fefff42c65842ab96113803a3d29c95ab46d"
+  },
+  "stage_a": {
+   "live_validation_record.json": "dcb8e225664afaef761f278cdade66e9b5d8e155ff5e58bb44cb7397ac5f2e2d",
+   "reproducibility_record.json": "50a25cb1ac9662b26b20b9f076aa6a8043c22d555a226ccc1bc8bb6ed400e591",
+   "slo_conformance_record.json": "5f4643871721e390e5cae8558ce3c53c42a74cde0abd8f07c1a9e29f3f685457",
+   "slo_threshold_amendment_record.json": "9632166045313f3f88085fa75d65dc09d22dbb8c8d3e99306596f9f2123202f6"
+  },
+  "stage_b": {
+   "backend_flag_inert_record.json": "06ce17b9c07e5749aebedcd042250a9010ab564222ed5935d5bcc84296cc0736",
+   "deploy_record.json": "92acb63ef6d6802f685dc4bc1540315d6baf24531cdd41baab5aec459bb62e26",
+   "module_pins.json": "de0ba19cc8dc01ce7206ddb2be63acd64624f10824483ba654087bf1af0b3c89",
+   "schema_migration_record.json": "2f85d9c21dfe4a72b703f6a53342d7746a6d648fc370c6a4686a133609623e52"
+  }
  },
- "freeze_ready": false,
- "note": "Stage B envelope ACTIVE: the B4 governance flip ratified by the merge of this activation PR. freeze_ready stays false and production_endpoint_activation stays 'none' by design (B3 split: the post-merge backend_cutover_record only attests the ratified condition).",
- "official_result": true,
+ "final_approver_act": "I, Andrei Rachadel, as final_approver, activate open_macro_v03 as the ONLY model with official output from activation, ratified by the merge of this activation PR",
+ "governance_note": "the activation state lives in activation_envelope.json; this record is the explicit verbatim human act B4 requires, ratified by the merge of this activation PR",
+ "immutability_constraint": {
+  "calibration_pack_changes": "none",
+  "contract_v1_changes": "none",
+  "formula_changes": "none",
+  "input_pack_changes": "none"
+ },
  "production_endpoint_activation": "none",
- "runtime_activation": true,
+ "production_endpoint_activation_ratified": {
+  "both_values_signed_here": true,
+  "condition": "the POST-MERGE backend_cutover_record.json attesting the first verified row; the cutover record only ATTESTS this ratified condition - it decides nothing new",
+  "ratified_target_route": "/macro/open-macro-v03/allocation",
+  "state": "conditional",
+  "value_until_condition": "none"
+ },
  "schema_version": 1,
  "stage": "B",
  "stage_b_id": "open_macro_v03_direct_activation_stage_b_001"
