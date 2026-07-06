@@ -1,0 +1,46 @@
+{
+ "artifact_type": "stage_b_backend_flag_inert_record",
+ "backend": {
+  "merge_commit": "7470a97",
+  "merged": true,
+  "pull_request": 8,
+  "repo": "andreiracha127/investintell-light"
+ },
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "flag": {
+  "default": false,
+  "location": "backend/app/core/config.py::Settings",
+  "name": "use_open_macro_v03",
+  "state_in_every_deploy": "False unless explicitly set in the deploy environment; NOT set anywhere as of this record"
+ },
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "note": "pre-merge evidence only; every flip happens in the B4 activation commit",
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false
+ },
+ "merge_order_note": "B3(a): with the route flag-gated and inert, backend merge ORDER is irrelevant — an early backend merge exposes no live reader to absent or empty tables",
+ "old_read_path_untouched": {
+  "note": "the incumbent consumer path is unchanged by PR #8; the switch to the new tables happens only at the POST-MERGE cutover attested by backend_cutover_record.json, never before",
+  "route": "/macro/regime",
+  "source_table": "regime_composite_daily"
+ },
+ "recorded_on": "2026-07-06",
+ "route": {
+  "evidence": "backend/tests/test_open_macro_v03_route.py — includes an exploding-session test proving the datalake is never touched while inert; full backend suite green at merge (1659 passed)",
+  "inert_semantics": [
+   "flag off => HTTP 404 raised by the flag-gated dependency BEFORE the datalake session provider is invoked (no engine built, no DSN parsed)",
+   "flag on without DATALAKE_DB_URL => HTTP 503",
+   "flag on with tables absent (SQLSTATE 42P01) => HTTP 404",
+   "no valid pair (or partial pair) => HTTP 404; never serves an older pair"
+  ],
+  "path": "/macro/open-macro-v03/allocation",
+  "reader_contract": "valid_status='valid' AND publish_state='published' AND valid_until > now() AND book='compressed_50'; decision and allocation joined on the same as_of"
+ },
+ "schema_version": 1,
+ "stage": "B"
+}
