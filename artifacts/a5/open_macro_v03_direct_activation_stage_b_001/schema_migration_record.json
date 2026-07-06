@@ -1,0 +1,102 @@
+{
+ "applied": {
+  "applied_on": "2026-07-04",
+  "ddl_files": {
+   "schemas/open_macro_v03_allocations.sql": "f7714fd70405b51035abca1d479465453664c9bebd3dc5833bd8d464d04ddc67",
+   "schemas/open_macro_v03_decisions.sql": "93c5ccbd7a078ab7b37866fa5efe7efa3b76254ca3f17487103b7985a5b3c84d",
+   "schemas/open_macro_v03_staleness_blocks.sql": "e84b3101bc291d53155a58618198b8540d70d0e82db052f87e7051eb19b75627"
+  },
+  "method": "committed DDL (schemas/open_macro_v03_*.sql) executed against the pinned production host (first label t83f4np6x4) via railway-injected DSN + psycopg; idempotent CREATE TABLE IF NOT EXISTS"
+ },
+ "artifact_type": "stage_b_schema_migration_record",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "allow_allocator_publish": false,
+  "allow_db_write": false,
+  "db_write_mode": "none",
+  "db_write_official": false,
+  "freeze_ready": false,
+  "note": "B1b evidence only: the empty tables exist and match the committed DDL. No governance flag flips here; every flip happens in the Stage B PR's final review.",
+  "official_result": false,
+  "production_endpoint_activation": "none",
+  "runtime_activation": false
+ },
+ "idempotent_upsert_semantics": "ON CONFLICT (as_of) DO UPDATE guarded by valid_status <> 'invalidated' (outputs) / DO NOTHING (immutable ledger); documented and tested in tests/test_open_macro_v03_worker.py",
+ "schema_version": 1,
+ "stage": "B",
+ "stage_b_id": "open_macro_v03_direct_activation_stage_b_001",
+ "verification": {
+  "method": "independent read-only catalog verification (information_schema.columns, pg_constraint, pg_indexes, role_table_grants) cross-checked against the committed DDL AND the worker EXPECTED_SCHEMA",
+  "notes": [
+   "The inline CHECK (carry_seed_as_of <= as_of) on open_macro_v03_decisions carries the Postgres AUTO-NAME 'open_macro_v03_decisions_check' because it is declared inline (unnamed) in the committed DDL. This is recorded verbatim so a future rename of that constraint is a DELIBERATE change, not drift."
+  ],
+  "per_table": {
+   "open_macro_v03_allocations": {
+    "columns_verified": true,
+    "constraints_verified": [
+     "open_macro_v03_allocations_pkey (p)",
+     "open_macro_v03_allocations_as_of_fkey (f)",
+     "open_macro_v03_allocations_book_check (c)",
+     "open_macro_v03_allocations_w_spy_check (c)",
+     "open_macro_v03_allocations_w_tlt_check (c)",
+     "open_macro_v03_allocations_w_tip_check (c)",
+     "open_macro_v03_allocations_w_gld_check (c)",
+     "open_macro_v03_allocations_w_dbc_check (c)",
+     "open_macro_v03_allocations_w_shy_check (c)",
+     "open_macro_v03_allocations_weights_sum (c)",
+     "open_macro_v03_allocations_risk_cap (c)",
+     "open_macro_v03_allocations_defensive_floor (c)",
+     "open_macro_v03_allocations_publish_state_check (c)",
+     "open_macro_v03_allocations_valid_status_check (c)",
+     "open_macro_v03_allocations_invalidation_consistent (c)"
+    ],
+    "grants": {
+     "tsdbadmin": "owner; sole grantee (shared workers DSN role)"
+    },
+    "indexes_verified": [
+     "idx_open_macro_v03_allocations_valid"
+    ],
+    "row_count": 0,
+    "verdict": "match"
+   },
+   "open_macro_v03_decisions": {
+    "columns_verified": true,
+    "constraints_verified": [
+     "open_macro_v03_decisions_pkey (p)",
+     "open_macro_v03_decisions_quadrant_check (c)",
+     "open_macro_v03_decisions_decision_validity_check (c)",
+     "open_macro_v03_decisions_check (c)",
+     "open_macro_v03_decisions_candidate_confidence_check (c)",
+     "open_macro_v03_decisions_publish_state_check (c)",
+     "open_macro_v03_decisions_valid_status_check (c)",
+     "open_macro_v03_decisions_invalidation_consistent (c)",
+     "open_macro_v03_decisions_validity_seed (c)"
+    ],
+    "grants": {
+     "tsdbadmin": "owner; sole grantee (shared workers DSN role)"
+    },
+    "indexes_verified": [
+     "idx_open_macro_v03_decisions_valid"
+    ],
+    "row_count": 0,
+    "verdict": "match"
+   },
+   "open_macro_v03_staleness_blocks": {
+    "columns_verified": true,
+    "constraints_verified": [
+     "open_macro_v03_staleness_blocks_pkey (p)"
+    ],
+    "grants": {
+     "tsdbadmin": "owner; sole grantee (shared workers DSN role)"
+    },
+    "indexes_verified": [],
+    "row_count": 0,
+    "verdict": "match"
+   }
+  },
+  "verified_on": "2026-07-04"
+ }
+}

@@ -36,6 +36,53 @@ HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 
 
 # --------------------------------------------------------------------------- #
+# Global-state isolation                                                       #
+# --------------------------------------------------------------------------- #
+_CLOSURE_ROOTS = ("src", "harness", "investintell_quant_core")
+_PRISTINE_SYS_PATH: list | None = None
+_PRISTINE_CLOSURE_MODULES: dict | None = None
+
+
+def _in_shipped_closure(name: str) -> bool:
+    return name in _CLOSURE_ROOTS or name.split(".", 1)[0] in _CLOSURE_ROOTS
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _snapshot_shipped_closure():
+    """Capture the PRISTINE shipped-closure state ONCE at session start.
+
+    The snapshot MUST be taken before any session-scoped cloud fixture
+    (``built_bundle`` / ``session_verdict``) runs ``execute_reproducibility_check`` /
+    ``run_compute``, which purge ``src.*`` / ``harness.*`` / ``investintell_quant_core.*``
+    from ``sys.modules`` and insert a materialized bundle root on ``sys.path`` — swapping
+    in the fail-loud ``src/db.py`` STUB (only ``LOCK_REGIME_QUADRANT``). pytest sets up
+    higher-scoped fixtures first, so a module-scoped snapshot would capture the ALREADY
+    polluted state; this session-scoped autouse fixture snapshots the clean state first."""
+    import sys
+    global _PRISTINE_SYS_PATH, _PRISTINE_CLOSURE_MODULES
+    _PRISTINE_SYS_PATH = list(sys.path)
+    _PRISTINE_CLOSURE_MODULES = {n: m for n, m in sys.modules.items()
+                                 if _in_shipped_closure(n)}
+    yield
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_shipped_closure_after_purge():
+    """Restore the PRISTINE closure (captured at session start) once THIS module's tests
+    finish, so the cloud stub ``src.db`` cannot leak into later tests and break the
+    lock-id registry guards with ``AttributeError: ... 'LOCK_REGIME_GATE'``. Restoring at
+    MODULE teardown (not session teardown) keeps the leak from reaching tests that run
+    after this module but before the session ends."""
+    import sys
+    yield
+    sys.path[:] = _PRISTINE_SYS_PATH
+    for name in [n for n in sys.modules
+                 if _in_shipped_closure(n) and n not in _PRISTINE_CLOSURE_MODULES]:
+        del sys.modules[name]
+    sys.modules.update(_PRISTINE_CLOSURE_MODULES)
+
+
+# --------------------------------------------------------------------------- #
 # Session bundle build + in-memory ObjectStore                                #
 # --------------------------------------------------------------------------- #
 

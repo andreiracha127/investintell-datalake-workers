@@ -59,6 +59,10 @@ LOCK_REGIME_QUADRANT = 900_208
 # before these services are allowed to run concurrently.
 LOCK_SCREENER_METRICS = 900_207
 LOCK_FUND_FACTORS = 900_214
+# open_macro_v03 direct-activation runtime worker (Stage B). 900_215 is the next
+# free id in the metrics band (900_2xx); it does not collide with any worker above
+# (900_207 is the known SCREENER/REGIME_GATE double-assignment, left untouched).
+LOCK_OPEN_MACRO_V03 = 900_215
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211

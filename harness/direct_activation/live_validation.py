@@ -238,7 +238,31 @@ def overlap_completeness_gate(pack_prices: list[dict], delta_prices: list[dict])
              f"byte-for-byte against the pinned delta")
 
 
-def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str, Any]:
+def staleness_report(vintage_rows: list[dict], price_rows: list[dict],
+                     as_of: _dt.date = VALIDATION_AS_OF) -> dict[str, Any]:
+    """Non-raising freshness report as of ``as_of`` with the FULL hardened Stage A
+    semantics, breach-listed instead of first-failure-raised.
+
+    The Stage B worker consumes this to write a durable staleness-block ledger row
+    listing EVERY violated condition (a POSITIVE, replayable record) rather than
+    crashing on the first one. Every hardened check of the raising gate is preserved
+    verbatim as a reported breach:
+
+    * SEED basket completeness FIRST — a SEED series absent from the composed
+      vintages is a reported breach (worker semantics: input unavailability is a
+      staleness/availability block, recorded in the ledger and cross-checked by the
+      monitor/Stage C verifier — never a silent pass at 0.80 coverage). The raising
+      ``staleness_gate`` wrapper still fails loud for Stage A.
+    * Freshness anchored on the LATEST OBSERVATION PERIOD's PIT-selected vintage
+      (newest ``available_at`` WITHIN the newest ``observation_period``), NEVER on
+      ``max(available_at)`` over all vintages — a recent revision to an old
+      observation cannot mask a stale latest print.
+    * Future macro vintages (age < 0) and future price bars are breaches — PIT-
+      impossible for honest inputs; ``age <= bound`` alone would read them as fresh.
+
+    Each breach carries the EXACT message the raising gate would use, so the
+    wrapper reproduces Stage A behaviour byte-for-byte."""
+    breaches: list[dict[str, Any]] = []
     # The freshness loop below only visits series PRESENT in the composed vintages;
     # a SEED series absent altogether would never be age-checked yet the basket would
     # still return `staleness: pass`. Require the full SEED basket to be present FIRST
@@ -246,7 +270,16 @@ def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str
     # gate and be treated as consumable at 0.80 coverage.
     present = {r["series_id"] for r in vintage_rows}
     missing = [sid for sid in EXPECTED_SEED_SERIES if sid not in present]
-    _require(not missing, f"staleness: SEED series absent from composed vintages: {missing}")
+    if missing:
+        # Short-circuit exactly like the original raising gate did: nothing else is
+        # derived past an incomplete basket (the basket breach IS the blocking
+        # reason; the worker records it verbatim in the ledger stale_detail).
+        return {"series": {}, "prices": {}, "breaches": [{
+            "kind": "series_basket", "missing_series": missing,
+            "message": f"staleness: SEED series absent from composed vintages: {missing}",
+        }], "criteria": {"monthly_max_age_days": MONTHLY_MAX_AGE_DAYS,
+                         "mich_max_age_days": MICH_MAX_AGE_DAYS,
+                         "price_max_age_business_days": PRICE_MAX_AGE_BUSINESS_DAYS}}
     per_series = {}
     for sid in sorted({r["series_id"] for r in vintage_rows}):
         series_rows = [r for r in vintage_rows if r["series_id"] == sid]
@@ -259,54 +292,95 @@ def staleness_gate(vintage_rows: list[dict], price_rows: list[dict]) -> dict[str
         latest_obs = max(r["observation_period"] for r in series_rows)
         last = max(_dt.date.fromisoformat(r["available_at"][:10])
                    for r in series_rows if r["observation_period"] == latest_obs)
-        age = (VALIDATION_AS_OF - last).days
-        # A vintage available AFTER the as-of date is future macro data: PIT-impossible
-        # for honest inputs (the exporter's upper bound rejects it at export time), so
-        # a negative age can only come from a tampered snapshot that passed the manifest
-        # gate or a future exporter regression. `age <= bound` alone would read that as
-        # "fresh"; fail loud here in the consume path before deriving any decision.
-        _require(age >= 0, f"staleness: {sid} latest observation {latest_obs} available "
-                           f"{last} is after as-of {VALIDATION_AS_OF} (future vintage, "
-                           f"age {age}d)")
+        age = (as_of - last).days
         bound = MICH_MAX_AGE_DAYS if sid == "MICH" else MONTHLY_MAX_AGE_DAYS
-        _require(age <= bound, f"staleness: {sid} latest observation {latest_obs} last "
-                               f"available {last} ({age}d > {bound}d)")
         per_series[sid] = {"latest_observation_period": latest_obs,
                            "last_available_at": last.isoformat(), "age_days": age,
                            "bound_days": bound}
+        # A vintage available AFTER the as-of date is future macro data: PIT-impossible
+        # for honest inputs (the exporter's upper bound rejects it at export time).
+        # `age <= bound` alone would read that as "fresh"; report it as a breach.
+        if age < 0:
+            breaches.append({
+                "kind": "series", "series_id": sid, "reason": "future_vintage",
+                "latest_observation_period": latest_obs,
+                "last_available_at": last.isoformat(), "age_days": age,
+                "message": (f"staleness: {sid} latest observation {latest_obs} available "
+                            f"{last} is after as-of {as_of} (future vintage, "
+                            f"age {age}d)"),
+            })
+        elif age > bound:
+            breaches.append({
+                "kind": "series", "series_id": sid, "reason": "over_max_age",
+                "latest_observation_period": latest_obs,
+                "last_available_at": last.isoformat(), "age_days": age,
+                "bound_days": bound,
+                "message": (f"staleness: {sid} latest observation {latest_obs} last "
+                            f"available {last} ({age}d > {bound}d)"),
+            })
     per_ticker = {}
     for ticker in sleeve_mod.SLEEVE_TICKERS:
         dates = [_dt.date.fromisoformat(r["date"]) for r in price_rows
                  if r["ticker"] == ticker]
-        _require(bool(dates), f"staleness: no prices at all for {ticker}")
+        if not dates:
+            per_ticker[ticker] = {"last_price_date": None, "business_age_days": None}
+            breaches.append({
+                "kind": "price", "ticker": ticker, "reason": "no_prices",
+                "message": f"staleness: no prices at all for {ticker}",
+            })
+            continue
         last = max(dates)
-        # A price bar dated AFTER the as-of is future data (symmetric with the macro
-        # future-vintage guard above). The exporter's upper bound rejects it, so it can
-        # only come from a tampered/over-inclusive snapshot; a negative day span makes
-        # the business_age range() empty -> business_age 0 -> would read as "fresh", and
-        # compute() would then price the allocation at that future date. Fail loud.
-        _require(last <= VALIDATION_AS_OF,
-                 f"staleness: {ticker} last price {last} is after as-of "
-                 f"{VALIDATION_AS_OF} (future price bar)")
-        business_age = len([1 for i in range(1, (VALIDATION_AS_OF - last).days + 1)
+        business_age = len([1 for i in range(1, (as_of - last).days + 1)
                             if (last + _dt.timedelta(days=i)).weekday() < 5])
-        _require(business_age <= PRICE_MAX_AGE_BUSINESS_DAYS,
-                 f"staleness: {ticker} last price {last} ({business_age} business days old)")
         per_ticker[ticker] = {"last_price_date": last.isoformat(),
                               "business_age_days": business_age}
-    return {"series": per_series, "prices": per_ticker,
+        # A price bar dated AFTER the as-of is future data (symmetric with the macro
+        # future-vintage guard above); a negative day span makes the business_age
+        # range() empty -> business_age 0 -> would read as "fresh". Report it.
+        if last > as_of:
+            breaches.append({
+                "kind": "price", "ticker": ticker, "reason": "future_price_bar",
+                "last_price_date": last.isoformat(),
+                "message": (f"staleness: {ticker} last price {last} is after as-of "
+                            f"{as_of} (future price bar)"),
+            })
+        elif business_age > PRICE_MAX_AGE_BUSINESS_DAYS:
+            breaches.append({
+                "kind": "price", "ticker": ticker, "reason": "over_max_business_age",
+                "last_price_date": last.isoformat(),
+                "business_age_days": business_age,
+                "bound_business_days": PRICE_MAX_AGE_BUSINESS_DAYS,
+                "message": (f"staleness: {ticker} last price {last} "
+                            f"({business_age} business days old)"),
+            })
+    return {"series": per_series, "prices": per_ticker, "breaches": breaches,
             "criteria": {"monthly_max_age_days": MONTHLY_MAX_AGE_DAYS,
                          "mich_max_age_days": MICH_MAX_AGE_DAYS,
                          "price_max_age_business_days": PRICE_MAX_AGE_BUSINESS_DAYS}}
 
 
-def consumable_today(chain: list) -> tuple[Any, str, Any]:
+def staleness_gate(vintage_rows: list[dict], price_rows: list[dict],
+                   as_of: _dt.date = VALIDATION_AS_OF) -> dict[str, Any]:
+    """Fail-loud freshness gate (Stage A semantics): a thin raising wrapper over
+    :func:`staleness_report`. The report carries the exact message of every hardened
+    check (SEED basket completeness, PIT-anchored latest-observation freshness,
+    future-vintage/future-price guards, business-day price age); the FIRST breach in
+    check order raises with that same message, so the behaviour is identical to the
+    original inline gate. Returns the (breach-free) series/prices/criteria detail."""
+    report = staleness_report(vintage_rows, price_rows, as_of)
+    for breach in report["breaches"]:
+        _require(False, breach["message"])
+    return {"series": report["series"], "prices": report["prices"],
+            "criteria": report["criteria"]}
+
+
+def consumable_today(chain: list, as_of: _dt.date = VALIDATION_AS_OF) -> tuple[Any, str, Any]:
     """Today's consumable decision: the LAST valid decision in the latched chain
-    (fresh if decided today, carried otherwise) — the ratified carry semantics."""
+    (fresh if decided on ``as_of``, carried otherwise) — the ratified carry semantics."""
     valid = [row for row in chain if row.has_valid_quadrant()]
     _require(bool(valid), "no valid decision anywhere in the latched chain (no carry seed)")
     last = valid[-1]
-    validity = "fresh" if last.as_of == VALIDATION_AS_OF else "carried"
+    validity = "fresh" if last.as_of == as_of else "carried"
     return last, validity, last.as_of
 
 
