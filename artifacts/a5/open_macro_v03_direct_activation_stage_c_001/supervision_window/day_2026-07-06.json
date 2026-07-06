@@ -77,5 +77,5 @@
  "schema_version": 1,
  "stage": "C",
  "stage_c_id": "open_macro_v03_direct_activation_stage_c_001",
- "verifier_commit": "3eae5e867974815e56943a388872db288adf5ec3"
+ "verifier_commit": "40f2bd9d38bcc1eedfb1df100661edd2986c37be"
 }

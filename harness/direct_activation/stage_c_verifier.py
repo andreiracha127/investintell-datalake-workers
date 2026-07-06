@@ -27,10 +27,14 @@ cross-repo access is unavailable, but the REAL supervision window requires the r
 leg (or pinned backend evidence) for every counted day.
 
 Window accounting (``report``): counted days are business days AFTER the post-merge
-``backend_cutover_record.json`` (Stage B artifact root) with outcome ``verified`` —
-days verified while the route is still inert are verified-but-not-consumed and do
-NOT count (plan B3/Stage C); justified staleness-blocks PAUSE the count (not counted,
-not aborts); ``window_complete`` only with >= 10 counted days and zero aborts.
+``backend_cutover_record.json`` (Stage B artifact root) with outcome ``verified`` AND
+carrying route evidence (a verified DB-only day whose ``route_evidence`` is
+"unavailable"/absent does NOT count — the REAL window requires the consumer leg for
+every counted day); days verified while the route is still inert are
+verified-but-not-consumed and do NOT count (plan B3/Stage C); justified
+staleness-blocks PAUSE the count (not counted, not aborts). A skipped run on a
+post-cutover business day is reported as a ``supervision_gap``. ``window_complete``
+only with >= 10 counted days, zero aborts, and zero gaps.
 
 The verifier never writes to the database (guard-tested: no DML/DDL keyword in this
 module). Its only filesystem output is the day record / window report artifacts.
@@ -311,6 +315,16 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
     return resp.status_code, payload
 
 
+def _route_number(name: str, value: Any, problems: list[str]) -> float | None:
+    """Route numerics are the consumer WIRE contract: a JSON number, never a string
+    or bool. ``_num`` would silently coerce ``"0.5"`` → 0.5 and hide a consumer-visible
+    serialization regression, so the raw JSON type is asserted BEFORE coercion."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        problems.append(f"route_divergence: {name} not a JSON number ({value!r})")
+        return None
+    return float(value)
+
+
 def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list[str]]:
     """(route_evidence, abort_reasons) for the consumer-visible payload leg.
 
@@ -346,8 +360,29 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
                             f"recomputed {rec[key]!r}")
     if payload.get("book") != BOOK:
         problems.append(f"route_divergence: book {payload.get('book')!r} != {BOOK!r}")
+    # freshness/provenance fields the consumer sees and the verifier recomputes: a
+    # correct weight vector served with a stale carry seed, priced_at, or valid_until
+    # is still a consumer-visible divergence (a wrong valid_until makes the route look
+    # fresh/stale incorrectly).
+    if _date_iso(payload.get("carry_seed_as_of")) != rec["carry_seed_as_of"]:
+        problems.append(
+            f"route_divergence: carry_seed_as_of {payload.get('carry_seed_as_of')!r} "
+            f"!= recomputed {rec['carry_seed_as_of']}")
+    if _date_iso(payload.get("priced_at")) != rec["priced_at"]:
+        problems.append(f"route_divergence: priced_at {payload.get('priced_at')!r} "
+                        f"!= recomputed {rec['priced_at']}")
+    expected_vu = valid_until(as_of)
+    try:
+        route_vu: _dt.datetime | None = _utc(payload.get("valid_until"))
+    except (TypeError, ValueError, AttributeError):
+        route_vu = None
+    if route_vu != expected_vu:
+        problems.append(
+            f"route_divergence: valid_until {payload.get('valid_until')!r} != "
+            f"expected {expected_vu.isoformat()}")
     for key in ("candidate_confidence", "risk_assets_weight", "defensive_assets_weight"):
-        if _num(payload.get(key)) != _num(rec[key]):
+        served_num = _route_number(key, payload.get(key), problems)
+        if served_num is not None and served_num != _num(rec[key]):
             problems.append(f"route_divergence: {key} {payload.get(key)!r} != "
                             f"recomputed {rec[key]!r}")
     positions = payload.get("positions")
@@ -359,7 +394,14 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
             if not isinstance(position, dict) or "ticker" not in position:
                 problems.append(f"route_divergence: malformed position {position!r}")
                 continue
-            route_weights[position["ticker"]] = position.get("weight")
+            ticker = position["ticker"]
+            if ticker in route_weights:
+                # a duplicate row would silently overwrite: consumers receive/sum a
+                # different exposure — treat as divergence, never keep the last one.
+                problems.append(
+                    f"route_divergence: duplicate position ticker {ticker!r}")
+                continue
+            route_weights[ticker] = position.get("weight")
         unexpected = sorted(set(route_weights) - set(SLEEVE_TICKERS))
         if unexpected:
             problems.append(
@@ -367,7 +409,8 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
         for ticker in SLEEVE_TICKERS:
             # zero-weight positions are omitted by the API: absent == 0.0
             served = route_weights.get(ticker, 0.0)
-            if _num(served) != _num(rec["weights"][ticker]):
+            served_num = _route_number(f"positions[{ticker}].weight", served, problems)
+            if served_num is not None and served_num != _num(rec["weights"][ticker]):
                 problems.append(
                     f"route_divergence: positions[{ticker}].weight {served!r} "
                     f"!= recomputed {rec['weights'][ticker]!r}")
@@ -471,13 +514,19 @@ def build_window_report(window_dir: Path | None = None,
     counted = 0
     aborts: list[dict[str, Any]] = []
     blocks_paused = 0
+    seen_dates: set[str] = set()
     for path in sorted(window_dir.glob("day_*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
         as_of = _dt.date.fromisoformat(record["as_of"])
+        seen_dates.add(record["as_of"])
         outcome = record["outcome"]
         is_business = as_of.weekday() < 5
         consumed = cutover_date is not None and as_of >= cutover_date
-        counts = outcome == "verified" and is_business and consumed
+        # a counted production day must carry the consumer-visible route leg (or
+        # pinned backend evidence): a verified day whose route evidence is
+        # "unavailable"/absent is DB-only and must not close the REAL window.
+        has_route = isinstance(record.get("route_evidence"), dict)
+        counts = outcome == "verified" and is_business and consumed and has_route
         if counts:
             counted += 1
         if outcome == "abort":
@@ -485,14 +534,33 @@ def build_window_report(window_dir: Path | None = None,
                            "abort_reasons": record["abort_reasons"]})
         if outcome == "staleness_block_justified":
             blocks_paused += 1
+        if consumed and outcome == "verified" and not has_route:
+            note = "verified_without_route_evidence: not counted (DB-only leg)"
+        elif not consumed and outcome == "verified":
+            note = "verified_but_not_consumed: route still inert (pre-cutover)"
+        else:
+            note = None
         days.append({
             "as_of": record["as_of"],
             "outcome": outcome,
             "counted": counts,
             "consumed": consumed,
-            "note": (None if consumed or outcome != "verified"
-                     else "verified_but_not_consumed: route still inert (pre-cutover)"),
+            "note": note,
         })
+
+    # A skipped verifier run on a post-cutover business day is otherwise INVISIBLE
+    # (the loop only sees files that exist), so ten later verified files could close
+    # the window without covering every consumed production day. Derive the expected
+    # business-day sequence cutover→latest record and surface any missing weekday as a
+    # gap (calendar policy: Mon–Fri, no holiday calendar — every weekday is supervised).
+    gaps: list[str] = []
+    if cutover_date is not None and seen_dates:
+        latest = max(_dt.date.fromisoformat(d) for d in seen_dates)
+        cursor = cutover_date
+        while cursor <= latest:
+            if cursor.weekday() < 5 and cursor.isoformat() not in seen_dates:
+                gaps.append(cursor.isoformat())
+            cursor += _dt.timedelta(days=1)
 
     return {
         "artifact_type": "stage_c_window_report",
@@ -506,7 +574,8 @@ def build_window_report(window_dir: Path | None = None,
         "counted_days": counted,
         "staleness_blocks_paused": blocks_paused,
         "aborts": aborts,
-        "window_complete": counted >= WINDOW_TARGET_DAYS and not aborts,
+        "supervision_gaps": gaps,
+        "window_complete": counted >= WINDOW_TARGET_DAYS and not aborts and not gaps,
     }
 
 

@@ -282,7 +282,7 @@ def _route_payload(**over):
                "candidate_confidence": 0.81, "book": "compressed_50",
                "priced_at": "2026-07-02",
                "risk_assets_weight": 0.50, "defensive_assets_weight": 0.39,
-               "valid_until": "2026-07-07T14:00:00+00:00",
+               "valid_until": VU.isoformat(),
                "positions": _positions()}
     payload.update(over)
     return payload
@@ -375,6 +375,67 @@ def test_no_backend_env_marks_route_unavailable(monkeypatch):
     assert record["route_evidence"] == "unavailable"
 
 
+@pytest.mark.parametrize("field, bad", [
+    ("carry_seed_as_of", "2026-06-29"),
+    ("priced_at", "2026-07-01"),
+    ("valid_until", "2026-07-08T14:00:00+00:00"),
+])
+def test_route_freshness_field_divergence_aborts(monkeypatch, field, bad):
+    """A correct weight vector served with a stale carry seed / priced_at / valid_until
+    is still a consumer-visible divergence (a wrong valid_until misreports freshness)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(**{field: bad})))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any(f"route_divergence: {field}" in r for r in record["abort_reasons"])
+
+
+def test_route_duplicate_position_ticker_aborts(monkeypatch):
+    """Two rows for the same sleeve ticker must abort — never silently keep the last."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions()
+    positions.append({"ticker": "SPY", "weight": WEIGHTS["SPY"],
+                      "asset_class": "etf", "strategy_label": "open_macro_v03"})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("duplicate position ticker 'SPY'" in r for r in record["abort_reasons"])
+
+
+def test_route_stringified_numeric_aborts(monkeypatch):
+    """A JSON string where a number is expected is a consumer wire regression that
+    numeric coercion would otherwise hide."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(
+        sv, "_fetch_route",
+        lambda url: (200, _route_payload(risk_assets_weight="0.50")))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("risk_assets_weight not a JSON number" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_stringified_position_weight_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions({**WEIGHTS, "SPY": "0.39"})  # SPY weight as a string
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions[SPY].weight not a JSON number" in r
+               for r in record["abort_reasons"])
+
+
 def test_recompute_matches_the_current_worker_contract():
     """Signature-drift guard: recompute() calls the worker's own helpers positionally;
     a hardened worker changing these signatures must fail HERE, not silently at the
@@ -414,10 +475,13 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # Window report
 # --------------------------------------------------------------------------- #
-def _write_day(dirpath: Path, as_of: str, outcome: str, reasons=()):
-    (dirpath / f"day_{as_of}.json").write_text(json.dumps({
-        "as_of": as_of, "outcome": outcome, "abort_reasons": list(reasons),
-    }), encoding="utf-8")
+def _write_day(dirpath: Path, as_of: str, outcome: str, reasons=(), *, route=True):
+    record = {"as_of": as_of, "outcome": outcome, "abort_reasons": list(reasons)}
+    # a counted day carries route evidence (a dict); pass route=False to model a
+    # DB-only verified day whose route_evidence was "unavailable".
+    record["route_evidence"] = ({"status_code": 200, "payload": {}} if route
+                                else "unavailable")
+    (dirpath / f"day_{as_of}.json").write_text(json.dumps(record), encoding="utf-8")
 
 
 def _business_days(start: _dt.date, n: int) -> list[str]:
@@ -495,6 +559,56 @@ def test_pre_cutover_days_do_not_count(tmp_path):
         _write_day(window, day, "verified")
     report = sv.build_window_report(window, cutover)
     assert report["counted_days"] == 2  # only 07-08 and 07-09
+
+
+def test_verified_without_route_evidence_does_not_count(tmp_path):
+    """A DB-only verified day (route_evidence unavailable) must not close the REAL
+    window: only days carrying the consumer route leg are counted."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[9], "verified", route=False)  # DB-only leg
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    dbonly = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert dbonly["counted"] is False
+    assert dbonly["note"] == "verified_without_route_evidence: not counted (DB-only leg)"
+
+
+def test_missing_business_day_is_a_gap_and_blocks_completion(tmp_path):
+    """A skipped post-cutover weekday is otherwise invisible; the report must surface
+    it as a supervision gap and refuse window_complete even with >= 10 verified days."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 11)
+    skipped = days[3]
+    for day in days:
+        if day == skipped:
+            continue
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert report["supervision_gaps"] == [skipped]
+    assert report["window_complete"] is False
+
+
+def test_contiguous_window_has_no_gaps(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["supervision_gaps"] == []
+    assert report["window_complete"] is True
 
 
 # --------------------------------------------------------------------------- #
