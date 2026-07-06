@@ -267,10 +267,23 @@ def test_partial_pair_aborts():
 # --------------------------------------------------------------------------- #
 # Backend route leg
 # --------------------------------------------------------------------------- #
+def _positions(weights=None):
+    """The REAL API shape: positions list, zero-weight positions OMITTED."""
+    weights = weights if weights is not None else WEIGHTS
+    return [{"ticker": t, "weight": v, "asset_class": "etf",
+             "strategy_label": "open_macro_v03"}
+            for t, v in weights.items() if v != 0.0]
+
+
 def _route_payload(**over):
     payload = {"as_of": AS_OF.isoformat(), "quadrant": "expansion",
-               "decision_validity": "carried", "book": "compressed_50",
-               "weights": dict(WEIGHTS)}
+               "decision_validity": "carried",
+               "carry_seed_as_of": "2026-06-30",
+               "candidate_confidence": 0.81, "book": "compressed_50",
+               "priced_at": "2026-07-02",
+               "risk_assets_weight": 0.50, "defensive_assets_weight": 0.39,
+               "valid_until": "2026-07-07T14:00:00+00:00",
+               "positions": _positions()}
     payload.update(over)
     return payload
 
@@ -286,15 +299,62 @@ def test_route_match_records_evidence(monkeypatch):
     assert record["route_evidence"]["payload"]["quadrant"] == "expansion"
 
 
+def test_route_zero_weight_position_omitted_compares_as_zero(monkeypatch):
+    """The API omits zero-weight positions: a recomputed 0.0 for a ticker absent
+    from positions is a MATCH, never a divergence."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    zero_dbc = {**WEIGHTS, "DBC": 0.0}
+    _patch_recompute(monkeypatch, _recompute(weights=dict(zero_dbc)))
+    payload = _route_payload(positions=_positions(zero_dbc))  # DBC omitted
+    assert all(p["ticker"] != "DBC" for p in payload["positions"])
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, payload))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    route_reasons = [r for r in record["abort_reasons"] if "route" in r]
+    assert route_reasons == []
+
+
 def test_route_weight_divergence_aborts(monkeypatch):
     conn = _FakeConn(_responder(decision=_decision_tuple(),
                                 allocation=_allocation_tuple()))
     _patch_recompute(monkeypatch, _recompute())
-    bad = _route_payload(weights={**WEIGHTS, "SPY": 0.99})
+    bad = _route_payload(positions=_positions({**WEIGHTS, "SPY": 0.99}))
     monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, bad))
     record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
     assert record["outcome"] == "abort"
-    assert any("route_divergence: weights.SPY" in r for r in record["abort_reasons"])
+    assert any("route_divergence: positions[SPY].weight" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_confidence_divergence_aborts(monkeypatch):
+    """candidate_confidence is served from the DB: with exact NUMERIC write fidelity
+    in production, float64 equality is the contract — the 15-digit truncated value
+    the day-1 abort observed must fail here."""
+    exact = 0.8121545618518331
+    truncated = 0.812154561851833
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(candidate_confidence=exact),
+        allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(candidate_confidence=exact))
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(candidate_confidence=truncated)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: candidate_confidence" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_missing_positions_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    legacy = _route_payload()
+    legacy.pop("positions")
+    legacy["weights"] = dict(WEIGHTS)  # the OLD shape must not satisfy the check
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, legacy))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions missing" in r for r in record["abort_reasons"])
 
 
 def test_route_404_aborts_as_inactive(monkeypatch):

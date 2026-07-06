@@ -312,7 +312,21 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
 
 
 def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list[str]]:
-    """(route_evidence, abort_reasons) for the consumer-visible payload leg."""
+    """(route_evidence, abort_reasons) for the consumer-visible payload leg.
+
+    REAL payload shape (investintell-light /macro/open-macro-v03/allocation):
+    ``{as_of, quadrant, decision_validity, carry_seed_as_of, candidate_confidence,
+    book, priced_at, risk_assets_weight, defensive_assets_weight, valid_until,
+    positions: [{ticker, weight, asset_class, strategy_label}]}``.
+
+    * weights come from ``positions`` (ticker → weight); the API OMITS zero-weight
+      positions, so an absent sleeve ticker compares as 0.0 — never as missing.
+    * numeric fields (candidate_confidence, risk/defensive, per-position weight)
+      are compared with EXACT float64 equality: the payload is served from the DB
+      and, with the NUMERIC write-fidelity fix in production, the stored values
+      round-trip the exact floats the worker computed (a divergence is evidence,
+      not noise).
+    """
     status, payload = _fetch_route(backend_url)
     if status == 404:
         return ({"status_code": 404, "payload": payload},
@@ -332,14 +346,30 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
                             f"recomputed {rec[key]!r}")
     if payload.get("book") != BOOK:
         problems.append(f"route_divergence: book {payload.get('book')!r} != {BOOK!r}")
-    route_weights = payload.get("weights")
-    if not isinstance(route_weights, dict):
-        problems.append("route_divergence: weights missing from payload")
+    for key in ("candidate_confidence", "risk_assets_weight", "defensive_assets_weight"):
+        if _num(payload.get(key)) != _num(rec[key]):
+            problems.append(f"route_divergence: {key} {payload.get(key)!r} != "
+                            f"recomputed {rec[key]!r}")
+    positions = payload.get("positions")
+    if not isinstance(positions, list):
+        problems.append("route_divergence: positions missing from payload")
     else:
+        route_weights: dict[str, Any] = {}
+        for position in positions:
+            if not isinstance(position, dict) or "ticker" not in position:
+                problems.append(f"route_divergence: malformed position {position!r}")
+                continue
+            route_weights[position["ticker"]] = position.get("weight")
+        unexpected = sorted(set(route_weights) - set(SLEEVE_TICKERS))
+        if unexpected:
+            problems.append(
+                f"route_divergence: positions carry non-sleeve tickers {unexpected}")
         for ticker in SLEEVE_TICKERS:
-            if _num(route_weights.get(ticker)) != _num(rec["weights"][ticker]):
+            # zero-weight positions are omitted by the API: absent == 0.0
+            served = route_weights.get(ticker, 0.0)
+            if _num(served) != _num(rec["weights"][ticker]):
                 problems.append(
-                    f"route_divergence: weights.{ticker} {route_weights.get(ticker)!r} "
+                    f"route_divergence: positions[{ticker}].weight {served!r} "
                     f"!= recomputed {rec['weights'][ticker]!r}")
     return evidence, problems
 
