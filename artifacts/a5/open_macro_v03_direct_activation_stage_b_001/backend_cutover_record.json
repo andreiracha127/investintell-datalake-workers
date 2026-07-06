@@ -1,0 +1,57 @@
+{
+ "alert_rescope": "production_endpoint_activation_attempt_alert re-scopes at THIS record: serving the named route from the sanctioned tables is the product, not an attempt; any OTHER production endpoint serving open_macro_v03 output remains alertable",
+ "artifact_type": "stage_b_backend_cutover_record",
+ "cutover_date": "2026-07-06",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "endpoint": {
+  "deployed_commit_branch": "main@7678d43 (contains PR #8 merge 7470a97)",
+  "flag": {
+   "flipped_on": "2026-07-06",
+   "flipped_to": "true",
+   "name": "USE_OPEN_MACRO_V03"
+  },
+  "post_flip_probe": "HTTP 200 serving the official allocation from open_macro_v03_decisions/open_macro_v03_allocations: as_of 2026-07-06, expansion carried, compressed_50, positions with per-ETF strategy labels, payload equal to the verified DB pair",
+  "pre_flip_probe": "HTTP 404 {'detail': 'open_macro_v03 route is not active'} (inert, deployed)",
+  "route": "/macro/open-macro-v03/allocation",
+  "service": "api (Railway project investintell-light, production)"
+ },
+ "governance": {
+  "note": "attestation only - the endpoint value was DECIDED and signed in the Stage B activation PR (#35); this record attests the ratified condition was met and introduces NO new governance value"
+ },
+ "ratified_condition": {
+  "attestation": {
+   "first_row": {
+    "as_of": "2026-07-06",
+    "carry_seed_as_of": "2026-06-30",
+    "decision_validity": "carried",
+    "quadrant": "expansion",
+    "run_id": "open_macro_v03-2026-07-06-3b013074",
+    "worker_commit": "86cf28782ad0e92d5b46d7c6372e757f4c0f4c6f"
+   },
+   "independent_verification": "first_row_verified: true — every field of the decision+allocation pair checked against production (read-only catalog/table queries), pack pin exact (23a639781853...), FK pair coherent, zero staleness blocks, incumbent table untouched (max as_of 2026-06-24)",
+   "monitor": {
+    "as_of": "2026-07-06",
+    "checks": {
+     "future_as_of_write": "none",
+     "invalidation_coherence": "ok",
+     "missing_output_slo": "pass",
+     "schema": "ok"
+    },
+    "status": "healthy"
+   }
+  },
+  "condition": "first sanctioned row written AND verified",
+  "source": "activation_record.json (production_endpoint_activation, conditional state signed at the B4 flip)"
+ },
+ "reads_confirmation": {
+  "new_tables": [
+   "open_macro_v03_decisions",
+   "open_macro_v03_allocations"
+  ],
+  "note": "/macro/regime (regime_composite_daily, a separate risk-on/off composite feature) remains served unchanged; it is not part of the open_macro_v03 product surface",
+  "regime_quadrant_snapshot": "the sanctioned route NEVER reads it (no code path); the incumbent quadrant snapshot table remains readable and untouched, per old_model_decommission_record.json"
+ },
+ "schema_version": 1,
+ "stage": "B",
+ "stage_c_note": "the 10-business-day supervision window COUNTS days from this record's cutover_date onward (B3/Stage C: days before it are verified-but-not-consumed)"
+}

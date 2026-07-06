@@ -1,0 +1,24 @@
+{
+ "artifact_type": "stage_b_old_model_decommission_record",
+ "decommissioned_on": "2026-07-06",
+ "direct_activation_id": "open_macro_v03_direct_activation_001",
+ "emergency_re_enable": {
+  "documented_by": "Andrei Rachadel (owner of all six roles), 2026-07-06",
+  "procedure": "owner OPTION, never automatic: create/point a Railway service with WORKER=quadrant_macro on this repo (same DATABASE_URL, cron as desired) - the worker and its schema remain in-tree; the backend consumer for it would need a separate, explicit read path (none exists today)"
+ },
+ "governance": {
+  "note": "operational record; flips nothing"
+ },
+ "incumbent": {
+  "action": "none required to stop it (nothing was running); this record formalizes the decommission per the owner decision that open_macro_v03 is the ONLY model from activation day",
+  "model": "regime quadrant snapshot producer (src/workers/quadrant_macro.py)",
+  "output_table": "regime_quadrant_snapshot",
+  "state_found": "already de facto stopped: no Railway service runs WORKER=quadrant_macro (verified against the production project's service list); the table holds 2 rows, last as_of 2026-06-24, and received no writes on activation day"
+ },
+ "schema_version": 1,
+ "stage": "B",
+ "what_stays": {
+  "historical_tables": "regime_quadrant_snapshot remains readable and untouched; no data was deleted or modified",
+  "other_regime_features": "regime_composite_daily / regime_gate_daily and their services (regime-composite, regime-gate, credit-regime) serve OTHER product features (risk-on/off gate) and are NOT part of the decommissioned model"
+ }
+}
