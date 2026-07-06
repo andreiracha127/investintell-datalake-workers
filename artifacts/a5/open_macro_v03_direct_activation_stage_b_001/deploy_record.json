@@ -1,4 +1,12 @@
 {
+ "activation_precondition": {
+  "approved_writer_service": "open-macro-v03-worker",
+  "deployed_writer_service_now": "open-macro-v03",
+  "fail_closed_if_skipped": "if open_macro_v03_runtime_activation is flipped to true BEFORE the rename, the writer's Gate 2b (check_writer_runtime) sees runtime RAILWAY_SERVICE_NAME='open-macro-v03' != approved 'open-macro-v03-worker' and returns status='wrong_service' with ZERO writes; the armed monitor then trips its missing-output SLO. This is the intended fail-loud safeguard, not a silent path.",
+  "ordering": "rename_before_b4_runtime_flip",
+  "reference": "activation_envelope.json environment.note (pinned name = APPROVED_RAILWAY_SERVICE); src/workers/open_macro_v03.py check_writer_runtime (WRITER-only runtime-identity gate)",
+  "required_step": "rename the deployed Railway writer service open-macro-v03 -> open-macro-v03-worker on the owner dashboard so the runtime RAILWAY_SERVICE_NAME converges to APPROVED_RAILWAY_SERVICE"
+ },
  "artifact_type": "stage_b_deploy_record",
  "deployed_on": "2026-07-06",
  "direct_activation_id": "open_macro_v03_direct_activation_001",
