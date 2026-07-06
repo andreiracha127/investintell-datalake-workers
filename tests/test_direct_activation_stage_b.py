@@ -359,8 +359,6 @@ def test_activation_record_pins_the_human_act_and_evidence():
     assert record["approval_matrix_complete"] is True
 
     refs = record["evidence_refs_sha256_crlf_normalized"]
-    stage_a = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
-    dark = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
     assert set(refs["stage_a"]) == {
         "live_validation_record.json", "reproducibility_record.json",
         "slo_conformance_record.json", "slo_threshold_amendment_record.json"}
@@ -368,12 +366,26 @@ def test_activation_record_pins_the_human_act_and_evidence():
         "schema_migration_record.json", "deploy_record.json",
         "backend_flag_inert_record.json", "module_pins.json"}
     assert set(refs["dark_launch_readiness"]) == {"dark_launch_manifest.json"}
-    for name, pinned in refs["stage_a"].items():
-        assert _sha256_norm(stage_a / name) == pinned, name
-    for name, pinned in refs["stage_b"].items():
-        assert _sha256_norm(STAGE_B / name) == pinned, name
-    for name, pinned in refs["dark_launch_readiness"].items():
-        assert _sha256_norm(dark / name) == pinned, name
+    # The record is a BYTE-FROZEN pin of the evidence AS RATIFIED at the activation
+    # merge (PR #35, 86cf287). Stage A evidence is legitimately RE-MEASURED at each
+    # later PR tree (the R3/R5/R8/stage-C re-pins), so the refs are verified against
+    # the git blobs at the ratification point, never the mutable working tree — the
+    # historical record can neither drift nor be forced to chase re-measurements.
+    ratification_merge = "86cf28782ad0e92d5b46d7c6372e757f4c0f4c6f"
+    rel_dirs = {
+        "stage_a": "artifacts/a5/open_macro_v03_direct_activation_stage_a_001",
+        "stage_b": "artifacts/a5/open_macro_v03_direct_activation_stage_b_001",
+        "dark_launch_readiness": "artifacts/a5/open_macro_v03_dark_launch_001",
+    }
+    import subprocess
+    for group, entries in refs.items():
+        for name, pinned in entries.items():
+            blob = subprocess.run(
+                ["git", "cat-file", "blob",
+                 f"{ratification_merge}:{rel_dirs[group]}/{name}"],
+                cwd=ROOT, capture_output=True, check=True).stdout
+            actual = hashlib.sha256(blob.replace(b"\r\n", b"\n")).hexdigest()
+            assert actual == pinned, f"{group}/{name} diverges from the ratified bytes"
 
     assert record["production_endpoint_activation"] == "none"
     cond = record["production_endpoint_activation_ratified"]

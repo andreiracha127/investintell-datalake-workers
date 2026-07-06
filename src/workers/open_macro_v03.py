@@ -37,6 +37,7 @@ manual kill switch; it is NEVER called by ``run()`` and never touches the ledger
 from __future__ import annotations
 
 import datetime as _dt
+import decimal
 import hashlib
 import json
 import os
@@ -714,15 +715,45 @@ _STALENESS_INSERT_SQL = (
 )
 
 
+def _exact_numeric(value: Any) -> Any:
+    """Python float → ``decimal.Decimal(repr(value))`` for EXACT NUMERIC persistence.
+
+    Postgres casts a float8 parameter to NUMERIC through 15 significant digits, so
+    passing a raw Python float silently truncates the stored value (measured in
+    production on 2026-07-06: candidate_confidence recomputed 0.8121545618518331 vs
+    stored 0.812154561851833 — a Stage C verifier abort). ``repr`` of a float is the
+    SHORTEST decimal string that round-trips (17 significant digits when needed), so
+    ``float(Decimal(repr(x))) == x`` exactly and the NUMERIC column stores the
+    precise float64 the worker computed. ``None`` and non-float values pass through
+    unchanged (dates, strings, ints, Decimals)."""
+    if isinstance(value, float):
+        return decimal.Decimal(repr(value))
+    return value
+
+
+def _exact_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
+    """A copy of ``params`` with EVERY float converted via :func:`_exact_numeric` —
+    the single write-fidelity chokepoint for the publish/ledger DB parameters."""
+    return {key: _exact_numeric(value) for key, value in params.items()}
+
+
 def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) -> None:
     """Upsert decision + allocation in ONE transaction. A re-run NEVER resurrects an
     invalidated row: the ON CONFLICT WHERE clause skips it (rowcount 0) ⇒ raise.
 
     Ledger×output mutual exclusion: inside the SAME transaction, a staleness-block
     ledger row for the as_of forbids publishing — the day was durably blocked, and
-    publishing over a recorded block requires EXPLICIT operator resolution (remove
+    publishing after a recorded block requires EXPLICIT operator resolution (remove
     or supersede the block through the sanctioned operational path), never a silent
-    later run."""
+    later run.
+
+    Write fidelity: every float parameter is converted to ``Decimal(repr(x))``
+    before reaching the driver (see :func:`_exact_numeric`), so the NUMERIC columns
+    store the exact float64 values the worker computed — the float8→numeric
+    15-digit truncation can never diverge the published row from the recomputable
+    output the Stage C verifier asserts against."""
+    decision_row = _exact_numeric_params(decision_row)
+    allocation_row = _exact_numeric_params(allocation_row)
     with conn.cursor() as cur:
         cur.execute(
             "SELECT 1 FROM open_macro_v03_staleness_blocks WHERE as_of = %(as_of)s",
@@ -752,7 +783,10 @@ def record_staleness_block(conn, block_row: dict[str, Any]) -> bool:
     the as_of forbids recording a block — a block must never land on top of already
     published output. The ledger is immutable (ON CONFLICT DO NOTHING): returns True
     when this run inserted the row, False when the day's block was already recorded
-    (the first record is preserved verbatim)."""
+    (the first record is preserved verbatim). Float parameters (if any ever appear
+    in the ledger row) go through the same :func:`_exact_numeric` chokepoint as the
+    publish path."""
+    block_row = _exact_numeric_params(block_row)
     with conn.cursor() as cur:
         for table in ("open_macro_v03_decisions", "open_macro_v03_allocations"):
             cur.execute(f"SELECT 1 FROM {table} WHERE as_of = %(as_of)s", block_row)

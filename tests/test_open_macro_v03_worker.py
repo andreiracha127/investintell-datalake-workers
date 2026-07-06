@@ -790,6 +790,99 @@ def test_publish_writes_both_and_commits():
     assert conn.commits == 1
 
 
+# --------------------------------------------------------------------------- #
+# NUMERIC write fidelity (production defect 2026-07-06: float8->numeric casts
+# truncate at 15 significant digits; Decimal(repr(x)) round-trips exactly)
+# --------------------------------------------------------------------------- #
+# Adversarial floats, headed by the REAL production values the Stage C verifier
+# caught truncated (recomputed 0.8121545618518331, stored 0.812154561851833).
+_ADVERSARIAL_FLOATS = [
+    0.8121545618518331,           # candidate_confidence — the observed abort
+    0.1 + 0.2,                    # 0.30000000000000004 (17 sig digits)
+    1.0 / 3.0, 2.0 / 3.0,
+    0.39374999999999993,
+    1e-17, 1.7976931348623157e308, 5e-324,
+    -0.8121545618518331,
+    0.0, 1.0, 0.65, 0.2,
+]
+
+
+def test_exact_numeric_round_trips_adversarial_floats():
+    import decimal
+    for x in _ADVERSARIAL_FLOATS:
+        converted = w._exact_numeric(x)
+        assert isinstance(converted, decimal.Decimal), x
+        assert float(converted) == x, f"{x!r} did not round-trip"
+        # str(Decimal(repr(x))) is repr(x) (Decimal upper-cases the exponent marker):
+        # the shortest decimal that round-trips, carrying up to 17 significant digits
+        # when the float needs them
+        assert str(converted).lower() == repr(x).lower()
+    # 17 significant digits preserved where 15 would truncate
+    assert str(w._exact_numeric(0.8121545618518331)) == "0.8121545618518331"
+    assert len("8121545618518331") == 16  # > the 15-digit float8->numeric cast
+    # None and non-floats pass through untouched
+    assert w._exact_numeric(None) is None
+    assert w._exact_numeric("abc") == "abc"
+    assert w._exact_numeric(7) == 7 and type(w._exact_numeric(7)) is int
+    d = _dt.date(2026, 7, 6)
+    assert w._exact_numeric(d) is d
+
+
+def test_exact_numeric_round_trips_the_real_sleeve_weights():
+    """The actual compressed_50 target weights for every quadrant (the exact floats
+    production publishes) must survive Decimal(repr(x)) round-trip."""
+    from harness.phase0q import sleeve as sleeve_mod
+    for quadrant in ("recovery", "expansion", "slowdown", "contraction"):
+        weights = sleeve_mod.target_weights(
+            quadrant, sleeve_mod.SleeveParams(candidate_id=w.CANDIDATE_ID),
+            list(sleeve_mod.SLEEVE_TICKERS), compressed=True)
+        for ticker, value in weights.items():
+            converted = w._exact_numeric(value)
+            assert float(converted) == value, (quadrant, ticker)
+
+
+def test_publish_sends_no_raw_float_parameter():
+    """The write-fidelity guard: EVERY parameter dict the publish path executes is
+    float-free (floats became exact Decimals through the single chokepoint)."""
+    captured: list = []
+
+    def responder(sql, params):
+        captured.append(params)
+        return {"rowcount": 1}
+
+    conn = _FakeConn(responder)
+    decision = _decision_row()
+    allocation = _allocation_row()
+    decision["candidate_confidence"] = 0.8121545618518331
+    allocation["w_spy"] = 0.39374999999999993
+    w.publish(conn, decision, allocation)
+    assert captured, "publish executed nothing"
+    for params in captured:
+        if isinstance(params, dict):
+            for key, value in params.items():
+                assert not isinstance(value, float), \
+                    f"raw float leaked to the driver: {key}={value!r}"
+
+
+def test_record_staleness_block_sends_no_raw_float_parameter():
+    captured: list = []
+
+    def responder(sql, params):
+        captured.append(params)
+        return {"rowcount": 1}
+
+    conn = _FakeConn(responder)
+    w.record_staleness_block(conn, {
+        "as_of": _dt.date(2026, 7, 6), "reason": "r", "stale_detail": "{}",
+        "input_vintage_sha256": "a" * 64, "input_prices_sha256": "b" * 64,
+        "pack_v2_sha256": "c" * 64, "module_pins_sha256": "d" * 64,
+        "code_commit": "e" * 40, "run_id": "rid"})
+    for params in captured:
+        if isinstance(params, dict):
+            for key, value in params.items():
+                assert not isinstance(value, float), key
+
+
 def test_publish_raises_when_row_is_invalidated():
     # decision upsert conflicts with an invalidated row (rowcount 0)
     def responder(sql, params):
