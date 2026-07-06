@@ -63,10 +63,6 @@ from harness.direct_activation.live_validation import (
     consumable_today,
     staleness_report,
 )
-from harness.direct_activation.build_stage_b_artifacts import (
-    PINNED_MODULES,
-    _canonical_block_sha256,
-)
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import (
@@ -262,15 +258,10 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     service = environment.get("railway_service_name")
     if service != APPROVED_RAILWAY_SERVICE:
         return f"environment.railway_service_name!={APPROVED_RAILWAY_SERVICE!r} (got {service!r})"
-    # The RUNTIME identity must be present AND the approved service. An absent
-    # RAILWAY_SERVICE_NAME (local / misconfigured runner) is NOT trusted — it must block,
-    # never silently bypass, so a self-declared envelope cannot publish official rows
-    # outside the approved Railway service.
-    runtime_service = os.environ.get("RAILWAY_SERVICE_NAME")
-    if runtime_service != APPROVED_RAILWAY_SERVICE:
-        return (f"runtime RAILWAY_SERVICE_NAME {runtime_service!r} != approved "
-                f"{APPROVED_RAILWAY_SERVICE!r} (official writes only from the approved "
-                "Railway service; absent identity is not trusted)")
+    # NB: the RUNTIME Railway identity (os.environ RAILWAY_SERVICE_NAME) is a WRITER-only
+    # gate — see check_writer_runtime(), called by run(). It is deliberately NOT part of
+    # this predicate, so the read-only monitor (a separate Railway service) can share the
+    # SAME governance check and still arm after activation.
     # inherited Phase 4 approval matrix: EXACTLY the six pinned role ids, each with a
     # named (non-empty) holder, and the strict-bool completeness flag. An absent or
     # stale approval matrix blocks the flip.
@@ -299,20 +290,68 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     return None
 
 
+def check_writer_runtime() -> str | None:
+    """WRITER-only gate: official rows may be published only FROM the approved Railway
+    service. An absent or mismatched runtime ``RAILWAY_SERVICE_NAME`` (a local or
+    misconfigured runner carrying the prod DSN + feature flag) blocks — absent identity
+    is not trusted. The read-only MONITOR is a separate service and does NOT call this;
+    it shares ``check_governance`` only, so it still arms after activation."""
+    runtime_service = os.environ.get("RAILWAY_SERVICE_NAME")
+    if runtime_service != APPROVED_RAILWAY_SERVICE:
+        return (f"runtime RAILWAY_SERVICE_NAME {runtime_service!r} != approved "
+                f"{APPROVED_RAILWAY_SERVICE!r} (official writes only from the approved "
+                "Railway service; absent identity is not trusted)")
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # Gate 3 — module pins
 # --------------------------------------------------------------------------- #
+# The trust base of the pin gate lives HERE, in the runtime worker itself, NOT in the
+# (unpinned) build_stage_b_artifacts.py generator — otherwise a change to that helper
+# alongside the manifest could redefine the closure/hash the gate compares against and
+# smuggle a truncated or re-canonicalized bundle. The builder is checked against THIS
+# list (a stage-B guard test), so the two cannot drift.
+EXPECTED_PINNED_MODULES = (
+    "src/quadrant_score.py",
+    "src/macro_transforms.py",
+    "src/macro_sources.py",
+    "src/quadrant_confidence.py",
+    "src/quadrant_hysteresis.py",
+    "src/quadrant_assemble.py",
+    "src/quadrant_snapshot.py",
+    "src/quadrant_staleness.py",
+    "harness/direct_activation/live_validation.py",
+    "harness/phase0q/decision.py",
+    "harness/phase0q/pit.py",
+    "harness/phase0q/sleeve.py",
+    "scripts/p1_export/export_p1_sources.py",
+    "src/input_packs/manifest.py",
+    "src/input_packs/hashing.py",
+    "src/input_packs/p0_contract.py",
+)
+
+
+def _pins_block_sha256(block: dict) -> str:
+    """Canonical sha256 over the {modules, pack} pin block (same routine the builder
+    uses, kept HERE so the gate owns its own hash algorithm)."""
+    return hashlib.sha256(
+        json.dumps(block, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def verify_module_pins(pins: dict[str, Any], root: Path = ROOT) -> None:
     """Raise unless the pin manifest is COMPLETE and intact: the pinned module set is
-    exactly the committed closure (``PINNED_MODULES``), each module's sha256 (CRLF→LF)
-    matches the tree, AND ``module_pins_sha256`` recomputes over the {modules, pack}
-    block. A truncated or doctored ``module_pins.json`` — one that omits a formula/
-    sleeve module or carries an empty ``modules`` object — cannot pass by iterating only
-    the keys it happens to contain and then stamp an unchecked ``module_pins_sha256``."""
+    exactly the worker-owned closure (``EXPECTED_PINNED_MODULES``), each module's sha256
+    (CRLF→LF) matches the tree, the pack block is the certified pack, AND
+    ``module_pins_sha256`` recomputes over the {modules, pack} block. A truncated or
+    doctored ``module_pins.json`` — one that omits a formula/sleeve module or carries an
+    empty ``modules`` object — cannot pass by iterating only the keys it contains and
+    then stamp an unchecked ``module_pins_sha256``."""
     modules = pins["modules"]
-    if set(modules) != set(PINNED_MODULES):
-        missing = sorted(set(PINNED_MODULES) - set(modules))
-        extra = sorted(set(modules) - set(PINNED_MODULES))
+    if set(modules) != set(EXPECTED_PINNED_MODULES):
+        missing = sorted(set(EXPECTED_PINNED_MODULES) - set(modules))
+        extra = sorted(set(modules) - set(EXPECTED_PINNED_MODULES))
         raise OpenMacroV03Error(
             f"module pin set diverges from the committed manifest "
             f"(missing={missing}, unexpected={extra})")
@@ -338,7 +377,7 @@ def verify_module_pins(pins: dict[str, Any], root: Path = ROOT) -> None:
         raise OpenMacroV03Error(
             f"module_pins pack block {pins.get('pack')} != certified pack "
             f"{expected_pack} (a stale/altered pack block cannot be stamped as provenance)")
-    recomputed = _canonical_block_sha256({"modules": modules, "pack": pins["pack"]})
+    recomputed = _pins_block_sha256({"modules": modules, "pack": pins["pack"]})
     if recomputed != pins.get("module_pins_sha256"):
         raise OpenMacroV03Error(
             f"module_pins_sha256 {pins.get('module_pins_sha256')!r} != recomputed "
@@ -390,9 +429,9 @@ def verify_pack_bytes(pack: Path | None = None) -> None:
 # --------------------------------------------------------------------------- #
 def resolve_as_of(as_of_arg: str | None = None, *,
                   today: _dt.date | None = None) -> _dt.date | None:
-    """Explicit override (arg or env) is trusted for any past-or-current date;
-    otherwise the current America/New_York calendar day, or ``None`` on a weekend
-    (non-business day).
+    """Explicit override (arg or env) is trusted for any past-or-current BUSINESS day;
+    a weekend override returns ``None`` (non-business day, exactly like the auto path),
+    otherwise the current America/New_York calendar day, or ``None`` on a weekend.
 
     A FUTURE override (> the current America/New_York day) is REJECTED loud: the
     worker only publishes for a past-or-current business day and must never stamp an
@@ -419,6 +458,8 @@ def resolve_as_of(as_of_arg: str | None = None, *,
                 f"America/New_York day {today.isoformat()}); the worker never stamps "
                 "an official future-dated decision (illegal by the monitor's "
                 "future_as_of_write guard)")
+        if resolved.weekday() >= 5:  # Sat/Sun override: non-business day, never publish
+            return None
         return resolved
     if today.weekday() >= 5:  # Sat/Sun
         return None
@@ -1049,6 +1090,12 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
     reason = check_governance(envelope)
     if reason is not None:
         return {"status": "governance_blocked", "reason": reason}
+
+    # Gate 2b — WRITER runtime identity (no DB): official rows only from the approved
+    # Railway service (the monitor, a separate service, does not enforce this).
+    reason = check_writer_runtime()
+    if reason is not None:
+        return {"status": "wrong_service", "reason": reason}
 
     # Gate 3 — module pins (no DB).
     pins = _load_json(PINS_PATH)

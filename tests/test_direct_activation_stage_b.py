@@ -125,6 +125,18 @@ def test_module_pins_match_recomputed_tree_hashes():
     assert pins["module_pins_sha256"] == recomputed
 
 
+def test_worker_owns_the_pin_policy_and_matches_the_builder():
+    # the runtime pin trust base lives in the worker (EXPECTED_PINNED_MODULES +
+    # _pins_block_sha256), NOT the unpinned builder; the builder (generator) and the
+    # committed manifest must match it, so the gate cannot redefine its own trust base.
+    import src.workers.open_macro_v03 as w
+    from harness.direct_activation import build_stage_b_artifacts as b
+    assert tuple(w.EXPECTED_PINNED_MODULES) == tuple(b.PINNED_MODULES)
+    assert set(w.EXPECTED_PINNED_MODULES) == set(_load_json(PINS)["modules"])
+    block = {"modules": {"a": "1"}, "pack": {"x": "y"}}
+    assert w._pins_block_sha256(block) == b._canonical_block_sha256(block)
+
+
 def test_module_pins_pack_matches_certified_pack():
     pins = _load_json(PINS)
     manifest = json.loads(

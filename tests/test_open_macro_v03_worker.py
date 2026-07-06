@@ -188,14 +188,19 @@ def test_check_governance_all_gates(monkeypatch):
         assert reason is not None and "envelope identity" in reason, key
 
 
-def test_check_governance_requires_the_runtime_service_identity(monkeypatch):
-    # an ABSENT runtime RAILWAY_SERVICE_NAME (local/misconfigured runner) must block,
-    # not silently bypass; a wrong runtime service must block too.
+def test_check_writer_runtime_requires_the_approved_service(monkeypatch):
+    # WRITER-only gate: the runtime RAILWAY_SERVICE_NAME must be the approved service.
+    # An absent identity (local/misconfigured runner) or a different service blocks.
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-worker")
+    assert w.check_writer_runtime() is None
     monkeypatch.delenv("RAILWAY_SERVICE_NAME", raising=False)
-    reason = w.check_governance(_active_envelope())
-    assert reason is not None and "RAILWAY_SERVICE_NAME" in reason
-    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "some-other-service")
-    assert w.check_governance(_active_envelope()) is not None
+    assert w.check_writer_runtime() is not None
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-monitor")
+    assert w.check_writer_runtime() is not None
+    # ...and this is NOT part of check_governance, so the monitor (a separate service)
+    # can share the governance predicate and still pass.
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-monitor")
+    assert w.check_governance(_active_envelope()) is None
 
 
 def test_check_governance_requires_real_per_role_approvals():
@@ -326,15 +331,22 @@ def test_resolve_as_of_rejects_future_arg_override():
     # a future arg override (> current NY day) is refused before any publish
     with pytest.raises(w.OpenMacroV03Error, match="future"):
         w.resolve_as_of("2026-07-07", today=_dt.date(2026, 7, 6))
-    # current-or-past overrides stay trusted
+    # current-or-past BUSINESS-day overrides stay trusted
     assert w.resolve_as_of("2026-07-06", today=_dt.date(2026, 7, 6)) == _dt.date(2026, 7, 6)
-    assert w.resolve_as_of("2026-07-05", today=_dt.date(2026, 7, 6)) == _dt.date(2026, 7, 5)
+    assert w.resolve_as_of("2026-07-03", today=_dt.date(2026, 7, 6)) == _dt.date(2026, 7, 3)  # Fri
 
 
 def test_resolve_as_of_rejects_future_env_override(monkeypatch):
     monkeypatch.setenv("OPEN_MACRO_V03_AS_OF", "2026-07-10")
     with pytest.raises(w.OpenMacroV03Error, match="future"):
         w.resolve_as_of(today=_dt.date(2026, 7, 6))
+
+
+def test_resolve_as_of_skips_weekend_override():
+    # a weekend override is a non-business day -> None (never publishes an official row),
+    # exactly like the auto path; the monitor also exits non_business_day on weekends.
+    assert w.resolve_as_of("2026-07-04", today=_dt.date(2026, 7, 6)) is None  # Saturday
+    assert w.resolve_as_of("2026-07-05", today=_dt.date(2026, 7, 6)) is None  # Sunday
 
 
 # --------------------------------------------------------------------------- #
