@@ -17,6 +17,13 @@ import pytest
 import src.workers.open_macro_v03 as w
 
 
+@pytest.fixture(autouse=True)
+def _approved_railway_service(monkeypatch):
+    # governance requires the runtime RAILWAY_SERVICE_NAME to be the approved service;
+    # default it so tests exercising an ACTIVE envelope pass (a dedicated test unsets it).
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-worker")
+
+
 # --------------------------------------------------------------------------- #
 # Fakes
 # --------------------------------------------------------------------------- #
@@ -179,6 +186,16 @@ def test_check_governance_all_gates(monkeypatch):
         env[key] = "WRONG"
         reason = w.check_governance(env)
         assert reason is not None and "envelope identity" in reason, key
+
+
+def test_check_governance_requires_the_runtime_service_identity(monkeypatch):
+    # an ABSENT runtime RAILWAY_SERVICE_NAME (local/misconfigured runner) must block,
+    # not silently bypass; a wrong runtime service must block too.
+    monkeypatch.delenv("RAILWAY_SERVICE_NAME", raising=False)
+    reason = w.check_governance(_active_envelope())
+    assert reason is not None and "RAILWAY_SERVICE_NAME" in reason
+    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "some-other-service")
+    assert w.check_governance(_active_envelope()) is not None
 
 
 def test_check_governance_requires_real_per_role_approvals():

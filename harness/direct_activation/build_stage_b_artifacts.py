@@ -53,6 +53,13 @@ PINNED_MODULES = (
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
     "scripts/p1_export/export_p1_sources.py",
+    # pack-verification + input-canonicalization helpers the GUARDED runtime path runs:
+    # compute_input_pack_sha256 (manifest -> hashing) for the pack aggregate check, and
+    # p0_contract.normalize_* (via the export helper) for input hashing. Pinned so those
+    # semantics cannot change without a new module_pins_sha256.
+    "src/input_packs/manifest.py",
+    "src/input_packs/hashing.py",
+    "src/input_packs/p0_contract.py",
 )
 
 APPROVAL_ROLES = (

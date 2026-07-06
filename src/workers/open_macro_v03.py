@@ -262,10 +262,15 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     service = environment.get("railway_service_name")
     if service != APPROVED_RAILWAY_SERVICE:
         return f"environment.railway_service_name!={APPROVED_RAILWAY_SERVICE!r} (got {service!r})"
+    # The RUNTIME identity must be present AND the approved service. An absent
+    # RAILWAY_SERVICE_NAME (local / misconfigured runner) is NOT trusted — it must block,
+    # never silently bypass, so a self-declared envelope cannot publish official rows
+    # outside the approved Railway service.
     runtime_service = os.environ.get("RAILWAY_SERVICE_NAME")
-    if runtime_service and service != runtime_service:
-        return (f"environment.railway_service_name {service!r} != runtime Railway service "
-                f"{runtime_service!r} (artifact copied into the wrong service)")
+    if runtime_service != APPROVED_RAILWAY_SERVICE:
+        return (f"runtime RAILWAY_SERVICE_NAME {runtime_service!r} != approved "
+                f"{APPROVED_RAILWAY_SERVICE!r} (official writes only from the approved "
+                "Railway service; absent identity is not trusted)")
     # inherited Phase 4 approval matrix: EXACTLY the six pinned role ids, each with a
     # named (non-empty) holder, and the strict-bool completeness flag. An absent or
     # stale approval matrix blocks the flip.

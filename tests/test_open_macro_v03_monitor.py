@@ -78,8 +78,8 @@ def _responder(*, decision=None, allocation=None, ledger=None, future=0,
 def _arm(monkeypatch, responder, *, schema_ok=True):
     """Activate the monitor (envelope flip simulated) over a fake conn. The catalog
     leg runs through the worker's verify_schema, patched at the monitor boundary."""
-    # arm the monitor exactly as run() would proceed: feature flag on + governance clear
-    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    # arm the monitor exactly as run() would proceed: governance fully active (the
+    # monitor gates on governance ONLY, never the feature flag).
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
     monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)
@@ -107,10 +107,8 @@ def _published(vu=FUTURE_VU):
 # Pre-activation / non-business-day short-circuits
 # --------------------------------------------------------------------------- #
 def test_pre_activation_with_committed_blocked_envelope_no_db(monkeypatch):
-    # flag ON but the REAL committed envelope is fully blocked (governance) -> the
-    # monitor mirrors run()'s Gate 2 and short-circuits pre_activation, no DB.
-    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
-
+    # the REAL committed envelope is fully blocked (governance) -> the monitor mirrors
+    # run()'s Gate 2 and short-circuits pre_activation, no DB.
     def _no_connect(*a, **k):
         raise AssertionError("must not connect pre-activation")
 
@@ -120,21 +118,17 @@ def test_pre_activation_with_committed_blocked_envelope_no_db(monkeypatch):
     assert result["reason"] is not None  # governance-blocked reason
 
 
-def test_pre_activation_when_feature_flag_off_no_db(monkeypatch):
-    # flag OFF (Gate 1) short-circuits before even loading the envelope or connecting
+def test_flag_off_on_active_day_still_fires_missing_output(monkeypatch):
+    # governance FULLY active but no output + no ledger (e.g. the worker was gated off by
+    # a forgotten feature flag): the monitor must NOT silence — missing_output fires.
     monkeypatch.delenv("open_macro_v03_runtime_activation", raising=False)
-
-    def _no_load(*a, **k):
-        raise AssertionError("must not load the envelope when the flag is off")
-
-    monkeypatch.setattr(mon, "_load_json", _no_load)
-    monkeypatch.setattr(mon, "connect",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("no db")))
-    assert mon.run("unused-dsn") == {"status": "pre_activation", "reason": "flag_off"}
+    conn = _arm(monkeypatch, _responder())  # _arm makes governance active, flag irrelevant
+    with pytest.raises(mon.OpenMacroV03MonitorAlert, match="missing_output"):
+        mon.run("dsn", as_of=AS_OF)
+    assert conn.closed
 
 
 def test_non_business_day_exits_clean_without_db(monkeypatch):
-    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
     monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "resolve_as_of", lambda *a, **k: None)
@@ -281,7 +275,6 @@ def test_schema_check_uses_the_workers_verify_schema_read_only(monkeypatch):
                     for n, meta in w.EXPECTED_SCHEMA[t]["constraints"].items()]
         return _responder(decision=_published(), allocation=_published())(sql, params)
 
-    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
     monkeypatch.setattr(mon, "_load_json", lambda path: {"runtime_activation": True})
     monkeypatch.setattr(mon, "check_governance", lambda env: None)
     monkeypatch.setattr(mon, "pin_search_path", lambda conn: None)  # covered by worker tests

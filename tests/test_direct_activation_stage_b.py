@@ -36,6 +36,13 @@ DECISION_CHAIN_MODULES = (
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
 )
+# pack-verification + input-canonicalization helpers the guarded runtime path executes
+# (compute_input_pack_sha256: manifest -> hashing; p0_contract via the export helper).
+PACK_HELPER_MODULES = (
+    "src/input_packs/manifest.py",
+    "src/input_packs/hashing.py",
+    "src/input_packs/p0_contract.py",
+)
 PINNED_SRC_MODULES = {
     "src.quadrant_score", "src.macro_transforms", "src.macro_sources",
     "src.quadrant_confidence", "src.quadrant_hysteresis", "src.quadrant_assemble",
@@ -107,9 +114,9 @@ def test_module_pins_match_recomputed_tree_hashes():
     # every pinned module hash equals the recomputed CRLF→LF sha256
     for rel, expected in modules.items():
         assert _sha256_norm(ROOT / rel) == expected, rel
-    # the 11-module closure + export helper set is pinned
-    assert set(modules) == set(DECISION_CHAIN_MODULES) | {
-        "scripts/p1_export/export_p1_sources.py"}
+    # the decision-chain closure + export helper + pack-verification helpers are pinned
+    assert set(modules) == (set(DECISION_CHAIN_MODULES) | set(PACK_HELPER_MODULES)
+                            | {"scripts/p1_export/export_p1_sources.py"})
     # module_pins_sha256 is the canonical hash over the {modules, pack} block
     block = {"modules": modules, "pack": pins["pack"]}
     recomputed = hashlib.sha256(
