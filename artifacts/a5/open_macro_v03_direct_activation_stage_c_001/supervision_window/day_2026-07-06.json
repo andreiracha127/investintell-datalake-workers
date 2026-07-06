@@ -1,0 +1,81 @@
+{
+ "abort_reasons": [],
+ "artifact_type": "stage_c_supervision_day_record",
+ "as_of": "2026-07-06",
+ "ledger_input_hashes": null,
+ "outcome": "verified",
+ "recompute": {
+  "candidate_id": "open_macro_v03_compressed_50",
+  "decision_validity": "carried",
+  "input_prices_sha256": "d4e837489d204906a620287daccdbba7f88e3c2f3414950326208db878233b4e",
+  "input_vintage_sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
+  "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+  "quadrant": "expansion",
+  "weights": {
+   "DBC": 0.11249999999999999,
+   "GLD": 0.10625000000000001,
+   "SHY": 0.13125,
+   "SPY": 0.39375000000000004,
+   "TIP": 0.14375,
+   "TLT": 0.1125
+  }
+ },
+ "route_evidence": {
+  "payload": {
+   "as_of": "2026-07-06",
+   "book": "compressed_50",
+   "candidate_confidence": 0.8121545618518331,
+   "carry_seed_as_of": "2026-06-30",
+   "decision_validity": "carried",
+   "defensive_assets_weight": 0.3875,
+   "positions": [
+    {
+     "asset_class": "equity",
+     "strategy_label": "US Equity Beta",
+     "ticker": "SPY",
+     "weight": 0.39375000000000004
+    },
+    {
+     "asset_class": "fixed_income",
+     "strategy_label": "Long Duration Treasuries",
+     "ticker": "TLT",
+     "weight": 0.1125
+    },
+    {
+     "asset_class": "fixed_income",
+     "strategy_label": "Inflation-Protected",
+     "ticker": "TIP",
+     "weight": 0.14375
+    },
+    {
+     "asset_class": "fixed_income",
+     "strategy_label": "Short Duration Treasuries",
+     "ticker": "SHY",
+     "weight": 0.13125
+    },
+    {
+     "asset_class": "gold",
+     "strategy_label": "Gold",
+     "ticker": "GLD",
+     "weight": 0.10625000000000001
+    },
+    {
+     "asset_class": "alternatives",
+     "strategy_label": "Broad Commodities",
+     "ticker": "DBC",
+     "weight": 0.11249999999999999
+    }
+   ],
+   "priced_at": "2026-07-02",
+   "quadrant": "expansion",
+   "risk_assets_weight": 0.5062500000000001,
+   "source": "open_macro_v03",
+   "valid_until": "2026-07-07T14:00:00Z"
+  },
+  "status_code": 200
+ },
+ "schema_version": 1,
+ "stage": "C",
+ "stage_c_id": "open_macro_v03_direct_activation_stage_c_001",
+ "verifier_commit": "3eae5e867974815e56943a388872db288adf5ec3"
+}
