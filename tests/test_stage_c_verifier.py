@@ -222,13 +222,22 @@ def test_false_block_aborts(monkeypatch):
     assert any("false_block" in r for r in record["abort_reasons"])
 
 
-def test_block_hash_mismatch_aborts(monkeypatch):
+def test_block_hash_divergence_does_not_abort_but_is_pinned(monkeypatch):
+    """Round-8 semantics (main): the ledger's input hashes are a FROZEN first-write
+    snapshot — a later same-day arrival that leaves the breach standing must not turn
+    a still-justified block into a false abort. Both hash sets are pinned side by
+    side in the day record as evidence."""
     conn = _FakeConn(_responder(ledger=_ledger_tuple(input_prices_sha256="x" * 64)))
     _patch_recompute(monkeypatch,
                      _recompute(breaches=[{"kind": "series", "series_id": "MICH"}]))
     record = sv.verify_day(conn, AS_OF)
-    assert record["outcome"] == "abort"
-    assert any("block_input_hash_mismatch" in r for r in record["abort_reasons"])
+    assert record["outcome"] == "staleness_block_justified"
+    assert record["abort_reasons"] == []
+    assert record["ledger_input_hashes"] == {
+        "input_vintage_sha256": VINTAGE_SHA,
+        "input_prices_sha256": "x" * 64,
+    }
+    assert record["recompute"]["input_prices_sha256"] == PRICES_SHA  # divergent, pinned
 
 
 def test_block_and_output_coexist_aborts(monkeypatch):
@@ -306,6 +315,20 @@ def test_no_backend_env_marks_route_unavailable(monkeypatch):
     assert record["route_evidence"] == "unavailable"
 
 
+def test_recompute_matches_the_current_worker_contract():
+    """Signature-drift guard: recompute() calls the worker's own helpers positionally;
+    a hardened worker changing these signatures must fail HERE, not silently at the
+    first live verification (the round-8 build_allocation as_of addition is the
+    precedent)."""
+    import inspect
+    assert list(inspect.signature(sv.build_allocation).parameters) == [
+        "quadrant", "price_rows", "as_of"]
+    assert list(inspect.signature(sv.compose_inputs).parameters) == ["conn", "as_of"]
+    assert list(inspect.signature(sv.valid_until).parameters) == ["as_of"]
+    assert list(inspect.signature(sv.staleness_report).parameters) == [
+        "vintage_rows", "price_rows", "as_of"]
+
+
 # --------------------------------------------------------------------------- #
 # Day record schema + writing
 # --------------------------------------------------------------------------- #
@@ -316,8 +339,10 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
     record = sv.verify_day(conn, AS_OF)
     assert set(record) == {
         "artifact_type", "schema_version", "stage", "stage_c_id", "as_of", "outcome",
-        "abort_reasons", "recompute", "route_evidence", "verifier_commit",
+        "abort_reasons", "recompute", "ledger_input_hashes", "route_evidence",
+        "verifier_commit",
     }
+    assert record["ledger_input_hashes"] is None  # no ledger row on a published day
     assert record["verifier_commit"] == "f" * 40
     out = sv.write_day_record(record, tmp_path)
     assert out.name == f"day_{AS_OF.isoformat()}.json"

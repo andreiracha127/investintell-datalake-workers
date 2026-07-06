@@ -55,6 +55,7 @@ from src.workers.open_macro_v03 import (
     build_allocation,
     code_commit,
     compose_inputs,
+    pin_search_path,
     resolve_as_of,
     valid_until,
 )
@@ -177,7 +178,7 @@ def recompute(conn, as_of: _dt.date) -> dict[str, Any]:
         return result  # a breach day has no legitimate published pair to recompute
     chain = run_decision_series(vintage_rows, CHAIN_START, as_of)
     last, validity, seed_as_of = consumable_today(chain, as_of)
-    allocation = build_allocation(last.quadrant, price_rows)
+    allocation = build_allocation(last.quadrant, price_rows, as_of)
     result.update({
         "quadrant": last.quadrant,
         "decision_validity": validity,
@@ -277,16 +278,21 @@ def _compare_pair(decision: dict, allocation: dict, rec: dict,
 
 
 def _check_block(ledger: dict, rec: dict) -> list[str]:
-    """A recorded staleness-block is honoured only if JUSTIFIED (plan Stage C)."""
+    """A recorded staleness-block is honoured only if JUSTIFIED (plan Stage C):
+    the verifier independently recomputes the staleness determination and aborts
+    when the recomputed inputs are actually fresh.
+
+    The ledger row's input hashes are a FROZEN first-write snapshot (the ledger is
+    immutable — ON CONFLICT DO NOTHING), so they deliberately do NOT have to equal
+    the verifier's later same-day recomputation: a normal late macro-vintage arrival
+    that leaves the breach standing must not turn a still-justified block into a
+    false abort (the round-8 monitor semantics ratified on main). Both hash sets are
+    still pinned side by side in the day record as evidence."""
     problems: list[str] = []
     if not rec["staleness_breaches"]:
         problems.append(
             "false_block: ledger row present but the recomputed inputs are fresh "
             "(a false block would silently pause the window)")
-    if (ledger["input_vintage_sha256"] or "").strip() != rec["input_vintage_sha256"]:
-        problems.append("block_input_hash_mismatch: input_vintage_sha256")
-    if (ledger["input_prices_sha256"] or "").strip() != rec["input_prices_sha256"]:
-        problems.append("block_input_hash_mismatch: input_prices_sha256")
     return problems
 
 
@@ -373,6 +379,15 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
         if not abort_reasons:
             outcome = "verified"
 
+    # the ledger's frozen first-write hashes are pinned SIDE BY SIDE with the live
+    # recompute (evidence, not an abort criterion — see _check_block).
+    ledger_hashes = None
+    if ledger is not None:
+        ledger_hashes = {
+            "input_vintage_sha256": (ledger.get("input_vintage_sha256") or "").strip(),
+            "input_prices_sha256": (ledger.get("input_prices_sha256") or "").strip(),
+        }
+
     return {
         "artifact_type": "stage_c_supervision_day_record",
         "schema_version": 1,
@@ -390,6 +405,7 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             "weights": rec.get("weights"),
             "candidate_id": CANDIDATE_ID,
         },
+        "ledger_input_hashes": ledger_hashes,
         "route_evidence": route_evidence,
         "verifier_commit": code_commit(),
     }
@@ -504,6 +520,9 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = connect(resolve_dsn())
     try:
+        # session-local schema pin (the worker's own helper): the verifier must read
+        # the SAME public tables the worker wrote, immune to a role search_path.
+        pin_search_path(conn)
         record = verify_day(conn, as_of, backend_url=backend_url)
     finally:
         conn.close()
