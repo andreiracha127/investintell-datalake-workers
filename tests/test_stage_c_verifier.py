@@ -934,6 +934,42 @@ def test_bypass_abort_record_preserves_the_recomputed_breaches(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Round-6 review hardening
+# --------------------------------------------------------------------------- #
+def test_route_evidence_pins_the_resolved_url(monkeypatch):
+    """Every route_evidence dict pins the resolved URL that was actually exercised —
+    an auditor can see WHICH host served the evidence (sanctioned production vs a
+    mispointed staging/local clone) — on the verified, 404, and ambiguous paths."""
+    url = "https://backend.example"
+    expected = "https://backend.example/macro/open-macro-v03/allocation"
+
+    # verified path
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route", lambda u: (200, _route_payload()))
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["outcome"] == "verified"
+    assert record["route_evidence"]["url"] == expected
+
+    # 404 path
+    monkeypatch.setattr(sv, "_fetch_route", lambda u: (404, None))
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["route_evidence"]["url"] == expected
+
+    # ambiguous-wire path
+    def _dup(u):
+        raise sv._AmbiguousRoutePayload("duplicate JSON key 'weight'",
+                                        status_code=200, raw_text="{}")
+    monkeypatch.setattr(sv, "_fetch_route", _dup)
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["route_evidence"]["url"] == expected
+
+    # trailing slash normalizes to the same resolved URL
+    assert sv._route_url("https://backend.example/") == expected
+
+
+# --------------------------------------------------------------------------- #
 # Read-only guard
 # --------------------------------------------------------------------------- #
 def test_verifier_is_read_only_by_construction():

@@ -346,6 +346,13 @@ def _parse_route_payload(status_code: int, text: str) -> Any:
         return None
 
 
+def _route_url(backend_url: str) -> str:
+    """The resolved URL the route leg actually exercises — pinned into every
+    ``route_evidence`` dict so an auditor can see WHICH host served the evidence
+    (the sanctioned production service vs a mispointed staging/local clone)."""
+    return backend_url.rstrip("/") + ROUTE_PATH
+
+
 def _fetch_route(backend_url: str) -> tuple[int, Any]:
     """GET the sanctioned backend route; returns (status_code, json payload|None).
     Isolated for test monkeypatching.
@@ -358,7 +365,7 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
     ambiguous consumer-visible wire contract, which ``check_route`` records as a
     ``route_divergence`` with the raw text pinned as evidence."""
     import httpx
-    resp = httpx.get(backend_url.rstrip("/") + ROUTE_PATH, timeout=30.0)
+    resp = httpx.get(_route_url(backend_url), timeout=30.0)
     return resp.status_code, _parse_route_payload(resp.status_code, resp.text)
 
 
@@ -431,22 +438,23 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
       round-trip the exact floats the worker computed (a divergence is evidence,
       not noise).
     """
+    route_url = _route_url(backend_url)
     try:
         status, payload = _fetch_route(backend_url)
     except _AmbiguousRoutePayload as exc:
         # duplicate JSON keys: the wire bytes are ambiguous (consumers may read
         # divergent values), so this can NEVER verify — even when the surviving
         # last-wins value would match. Preserve the raw wire text as evidence.
-        evidence = {"status_code": exc.status_code, "payload": None,
-                    "raw_wire_text": exc.raw_text}
+        evidence = {"url": route_url, "status_code": exc.status_code,
+                    "payload": None, "raw_wire_text": exc.raw_text}
         return evidence, [f"route_divergence: ambiguous wire payload — {exc.detail}"]
     if status == 404:
-        return ({"status_code": 404, "payload": _json_safe(payload)},
+        return ({"url": route_url, "status_code": 404, "payload": _json_safe(payload)},
                 ["route_inactive_during_window: sanctioned route returned 404 while "
                  "the backend flag is expected on"])
     # compare against the RAW payload (so a non-finite is caught by _route_number) but
     # persist a strict-JSON-safe copy as evidence (never an invalid day_*.json).
-    evidence = {"status_code": status, "payload": _json_safe(payload)}
+    evidence = {"url": route_url, "status_code": status, "payload": _json_safe(payload)}
     problems: list[str] = []
     if status != 200 or not isinstance(payload, dict):
         problems.append(f"route_divergence: unexpected response status={status}")
