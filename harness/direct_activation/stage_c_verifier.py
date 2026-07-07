@@ -305,7 +305,12 @@ def _check_block(ledger: dict, rec: dict) -> list[str]:
 # --------------------------------------------------------------------------- #
 def _fetch_route(backend_url: str) -> tuple[int, Any]:
     """GET the sanctioned backend route; returns (status_code, json payload|None).
-    Isolated for test monkeypatching."""
+    Isolated for test monkeypatching.
+
+    A transport-layer failure (DNS/TLS/connect/read timeout — ``httpx.RequestError``,
+    raised BEFORE any HTTP response is received) is left to propagate: it is a
+    verifier-side outage, NOT evidence about production's correctness, and
+    ``verify_day`` re-raises it fail-loud (see ``_is_route_transport_error``)."""
     import httpx
     resp = httpx.get(backend_url.rstrip("/") + ROUTE_PATH, timeout=30.0)
     try:
@@ -313,6 +318,25 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
     except Exception:
         payload = None
     return resp.status_code, payload
+
+
+def _is_route_transport_error(exc: BaseException) -> bool:
+    """True iff *exc* is an httpx transport-layer failure — no HTTP response was ever
+    received (DNS resolution, TLS handshake, connect/read timeout, connection reset).
+
+    These are verifier-side/network outages, categorically different from a genuine
+    ``route_divergence`` (which is returned by ``check_route`` with the offending
+    response pinned as ``route_evidence`` — a divergence NEVER raises). Recording a
+    transport outage as an ``outcome='abort'`` day record would (a) conflate an
+    infrastructure outage with a real payload divergence and (b), as a consumed
+    business-day abort, block the supervision window with NO route response captured.
+    So the caller re-raises these: fail-loud, no artifact, re-run required (a skipped
+    day surfaces as a ``supervision_gap`` until a clean re-run)."""
+    try:
+        import httpx
+    except ImportError:  # httpx only imports when the route leg actually ran
+        return False
+    return isinstance(exc, httpx.RequestError)
 
 
 def _json_safe(obj: Any) -> Any:
@@ -492,6 +516,17 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             if not abort_reasons:
                 outcome = "verified"
     except Exception as exc:  # a production recompute/route failure must be PRESERVED
+        # A verifier-side transport failure reaching the sanctioned route (DNS/TLS/
+        # timeout — httpx.RequestError, raised BEFORE any response) is NOT evidence about
+        # production's correctness. Recording it as an abort day would conflate a network
+        # outage with a genuine route_divergence and — as a consumed business-day abort —
+        # block the window with no route response captured. A real divergence returns via
+        # check_route() with the response pinned as evidence and NEVER raises, so transport
+        # failures re-raise: fail-loud, no artifact, re-run required (surfaced as a
+        # supervision_gap until a clean re-run). This does not weaken fail-loud — it makes
+        # the transport leg STRICTLY louder than a recorded abort.
+        if _is_route_transport_error(exc):
+            raise
         # If recompute() raises (e.g. compose_inputs() detects prefix-hash drift or
         # build_allocation() refuses unusable prices) — or any comparison raises — the
         # exception would escape verify_day() and main() would never call
@@ -567,9 +602,20 @@ def build_window_report(window_dir: Path | None = None,
     aborts: list[dict[str, Any]] = []
     blocks_paused = 0
     seen_dates: set[str] = set()
+    counted_dates: set[str] = set()
+    duplicate_dates: list[str] = []
     for path in sorted(window_dir.glob("day_*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
         as_of = _dt.date.fromisoformat(record["as_of"])
+        # The Stage C exit requirement is ten DISTINCT verified production days. The
+        # pipeline writes exactly one deterministic day_{as_of}.json per date, so two
+        # files naming the same as_of (e.g. a copied/attempt file committed beside the
+        # canonical record — still matching the day_*.json glob) are an ambiguous
+        # supervision state: counting both could reach the target with fewer than ten
+        # distinct days. Surface the duplicate and refuse completion, and count each
+        # date at most once, instead of counting files.
+        if record["as_of"] in seen_dates and record["as_of"] not in duplicate_dates:
+            duplicate_dates.append(record["as_of"])
         seen_dates.add(record["as_of"])
         outcome = record["outcome"]
         is_business = as_of.weekday() < 5
@@ -579,8 +625,9 @@ def build_window_report(window_dir: Path | None = None,
         # "unavailable"/absent is DB-only and must not close the REAL window.
         has_route = isinstance(record.get("route_evidence"), dict)
         counts = outcome == "verified" and is_business and consumed and has_route
-        if counts:
+        if counts and record["as_of"] not in counted_dates:
             counted += 1
+            counted_dates.add(record["as_of"])
         if outcome == "abort":
             # Keep EVERY abort visible, but tag whether it lands inside the real
             # post-cutover production window. A pre-cutover (non-consumed) or non-business
@@ -642,8 +689,10 @@ def build_window_report(window_dir: Path | None = None,
         "staleness_blocks_paused": blocks_paused,
         "aborts": aborts,
         "supervision_gaps": gaps,
+        "duplicate_dates": duplicate_dates,
         "window_complete": (counted >= WINDOW_TARGET_DAYS
-                            and not blocking_aborts and not gaps),
+                            and not blocking_aborts and not gaps
+                            and not duplicate_dates),
     }
 
 

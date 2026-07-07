@@ -732,6 +732,79 @@ def test_post_cutover_abort_still_blocks_completion(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Round-3 review hardening
+# --------------------------------------------------------------------------- #
+def test_route_transport_failure_fails_loud_without_a_record(monkeypatch):
+    """A verifier-side transport failure reaching the sanctioned route (httpx.RequestError:
+    DNS/TLS/connect/read timeout, raised BEFORE any response) must FAIL LOUD — re-raise and
+    write NO abort record — so a network outage is never recorded as a route_divergence-style
+    abort that blocks the window with no route response captured."""
+    import httpx
+
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+
+    def _boom(url):
+        raise httpx.ConnectError("name resolution failed")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    with pytest.raises(httpx.RequestError):
+        sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+
+
+def test_recompute_error_still_records_when_not_transport(monkeypatch):
+    """The transport carve-out is narrow: a non-transport raise on the route leg (or any
+    recompute/comparison raise) is still PRESERVED as an abort day record, unchanged."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+
+    def _boom(url):
+        raise ValueError("not a transport error")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("recompute_error: ValueError: not a transport error" in r
+               for r in record["abort_reasons"])
+
+
+def test_duplicate_day_file_counts_once_and_blocks_completion(tmp_path):
+    """Two day_*.json files naming the same as_of (a copied/attempt file beside the
+    canonical record) must count as ONE distinct verified day, surface a duplicate, and
+    refuse window_complete — never inflate counted_days past the distinct dates."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days:
+        _write_day(window, day, "verified")
+    # a copied/attempt file naming an already-counted business day (matches day_*.json)
+    dup = {"as_of": days[0], "outcome": "verified", "abort_reasons": [],
+           "route_evidence": {"status_code": 200, "payload": {}}}
+    (window / f"day_{days[0]}_attempt.json").write_text(json.dumps(dup), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10  # not 11: the duplicate date is counted once
+    assert report["duplicate_dates"] == [days[0]]
+    assert report["window_complete"] is False
+
+
+def test_no_duplicate_dates_on_a_clean_window(tmp_path):
+    """The distinct-date guard is inert on a normal one-file-per-date window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["duplicate_dates"] == []
+    assert report["window_complete"] is True
+
+
+# --------------------------------------------------------------------------- #
 # Read-only guard
 # --------------------------------------------------------------------------- #
 def test_verifier_is_read_only_by_construction():
