@@ -622,8 +622,18 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             # would make write_day_record() (allow_nan=False) raise and the abort
             # artifact would never be preserved — keep the EVIDENCE strict-JSON-safe.
             "weights": _json_safe(rec.get("weights")),
+            # the recomputed breach details are the JUSTIFICATION evidence for a
+            # staleness_block_justified day (why the pause was honoured) and for a
+            # staleness_bypass abort (what the worker ignored): pin them in the
+            # artifact so an auditor validates the day record itself instead of
+            # re-running against live inputs that have since moved.
+            "staleness_breaches": _json_safe(rec.get("staleness_breaches")),
             "candidate_id": CANDIDATE_ID,
         },
+        # the ledger row's own frozen reason string, pinned verbatim beside the
+        # recomputed breaches (first-write snapshot vs live recompute — see
+        # _check_block for why the two may legitimately differ in hashes).
+        "ledger_reason": ledger.get("reason") if ledger is not None else None,
         "ledger_input_hashes": ledger_hashes,
         "route_evidence": route_evidence,
         "verifier_commit": code_commit(),

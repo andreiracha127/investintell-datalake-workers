@@ -460,10 +460,12 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
     record = sv.verify_day(conn, AS_OF)
     assert set(record) == {
         "artifact_type", "schema_version", "stage", "stage_c_id", "as_of", "outcome",
-        "abort_reasons", "recompute", "ledger_input_hashes", "route_evidence",
-        "verifier_commit",
+        "abort_reasons", "recompute", "ledger_reason", "ledger_input_hashes",
+        "route_evidence", "verifier_commit",
     }
     assert record["ledger_input_hashes"] is None  # no ledger row on a published day
+    assert record["ledger_reason"] is None
+    assert record["recompute"]["staleness_breaches"] == []  # clean recompute, pinned
     assert record["verifier_commit"] == "f" * 40
     out = sv.write_day_record(record, tmp_path)
     assert out.name == f"day_{AS_OF.isoformat()}.json"
@@ -899,6 +901,36 @@ def test_route_duplicate_key_payload_aborts_with_wire_evidence(monkeypatch):
                "'quadrant'" in r for r in record["abort_reasons"])
     assert record["route_evidence"]["raw_wire_text"] == wire
     assert record["route_evidence"]["payload"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Round-5 review hardening
+# --------------------------------------------------------------------------- #
+def test_justified_block_record_preserves_the_justification_evidence(monkeypatch):
+    """A staleness_block_justified day pauses the window; the day record must carry
+    the WHY — the recomputed breach details and the ledger row's frozen reason — so an
+    auditor validates the artifact itself instead of re-running against live inputs
+    that have since moved."""
+    breaches = [{"kind": "series", "series_id": "MICH", "age_days": 42}]
+    conn = _FakeConn(_responder(ledger=_ledger_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breaches))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "staleness_block_justified"
+    assert record["recompute"]["staleness_breaches"] == breaches
+    assert record["ledger_reason"] == "staleness SLO breach: MICH"
+
+
+def test_bypass_abort_record_preserves_the_recomputed_breaches(monkeypatch):
+    """A staleness_bypass abort must pin WHAT the worker ignored: the recomputed
+    breaches ride in the day record beside the abort reason."""
+    breaches = [{"kind": "series", "series_id": "MICH", "age_days": 42}]
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breaches))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("staleness_bypass" in r for r in record["abort_reasons"])
+    assert record["recompute"]["staleness_breaches"] == breaches
 
 
 # --------------------------------------------------------------------------- #
