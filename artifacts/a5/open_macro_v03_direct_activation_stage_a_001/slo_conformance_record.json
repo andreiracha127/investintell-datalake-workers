@@ -7,14 +7,14 @@
    "threshold": 0.0
   },
   "latency_slo": {
-   "amended_threshold": 123383,
-   "amendment_sha256": "940d09cbae2c2eb3caef747589c937db7f27def36acae17369dc6361b14e57bf",
-   "measured_p95_ms": 82255.061,
+   "amended_threshold": 221430,
+   "amendment_sha256": "6ac75ae0549c2f3cf68b4a16cc9a073a47d7a137ecd400a4123ad06b9dcb2954",
+   "measured_p95_ms": 147619.849,
    "phase1_threshold": 37826,
    "status": "pass_amended"
   },
   "memory_slo": {
-   "measured": 1081614336,
+   "measured": 1082068992,
    "status": "pass",
    "threshold": 2047279104
   },
@@ -36,13 +36,13 @@
  },
  "measured": {
   "error_rate": 0.0,
-  "latency_p95_ms": 82255.061,
+  "latency_p95_ms": 147619.849,
   "latency_p95_ms_per_leg": {
-   "container": 81155.041,
-   "host": 82255.061
+   "container": 80309.513,
+   "host": 147619.849
   },
   "latency_p95_note": "worst leg of the host+container matrix (max of per-leg p95s), the Phase 1 Task 4 semantics",
-  "memory_peak_bytes": 1081614336,
+  "memory_peak_bytes": 1082068992,
   "retry_rate": 0.0,
   "retry_rate_note": "no retry path exists in the Stage A executor; every run is a first attempt (a nonzero child exit aborts the round)"
  },
@@ -56,7 +56,7 @@
   },
   {
    "path": "artifacts/a5/open_macro_v03_direct_activation_stage_a_001/slo_threshold_amendment_record.json",
-   "sha256": "940d09cbae2c2eb3caef747589c937db7f27def36acae17369dc6361b14e57bf"
+   "sha256": "6ac75ae0549c2f3cf68b4a16cc9a073a47d7a137ecd400a4123ad06b9dcb2954"
   }
  ],
  "verdict": "conform"
