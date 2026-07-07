@@ -1,0 +1,1548 @@
+"""Unit tests for the Stage C independent verifier.
+
+No real Postgres and no network: the DB reads run through a duck-typed fake conn
+and the recompute/route legs are monkeypatched at the module boundary (the same
+pattern as the worker/monitor tests)."""
+
+from __future__ import annotations
+
+import datetime as _dt
+import json
+import re
+import shutil
+from pathlib import Path
+
+import pytest
+
+import harness.direct_activation.stage_c_verifier as sv
+from src.workers.open_macro_v03 import valid_until
+
+AS_OF = _dt.date(2026, 7, 6)  # Monday
+VU = valid_until(AS_OF)
+
+VINTAGE_SHA = "v" * 64
+PRICES_SHA = "p" * 64
+# the provenance pins the worker stamps on every published row: the signed pack pin and
+# the canonical module-pins hash. The fakes carry matching values so the default pair
+# verifies; a divergence test overrides one side.
+PACK_SHA = sv.PACK_SHA256_PIN
+MODULE_PINS_SHA = "m" * 64
+
+WEIGHTS = {"SPY": 0.39, "TLT": 0.11, "TIP": 0.14, "GLD": 0.11, "DBC": 0.11, "SHY": 0.14}
+
+
+# --------------------------------------------------------------------------- #
+# Fakes
+# --------------------------------------------------------------------------- #
+class _FakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self._rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.conn.executed.append((sql, params))
+        self._rows = self.conn.responder(sql, params)
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _FakeConn:
+    def __init__(self, responder):
+        self.executed = []
+        self.responder = responder
+
+    def cursor(self):
+        return _FakeCursor(self)
+
+    def close(self):
+        pass
+
+
+def _decision_tuple(**over):
+    base = {
+        "quadrant": "expansion", "decision_validity": "carried",
+        "carry_seed_as_of": _dt.date(2026, 6, 30), "candidate_confidence": 0.81,
+        "coverage_quality": 1.0, "growth_score": 0.2, "inflation_score": -0.1,
+        "input_vintage_sha256": VINTAGE_SHA, "input_prices_sha256": PRICES_SHA,
+        "publish_state": "published", "valid_status": "valid", "valid_until": VU,
+        "pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA,
+    }
+    base.update(over)
+    return tuple(base[c] for c in sv._DECISION_COLS)
+
+
+def _allocation_tuple(**over):
+    base = {
+        "book": "compressed_50", "w_spy": WEIGHTS["SPY"], "w_tlt": WEIGHTS["TLT"],
+        "w_tip": WEIGHTS["TIP"], "w_gld": WEIGHTS["GLD"], "w_dbc": WEIGHTS["DBC"],
+        "w_shy": WEIGHTS["SHY"], "risk_assets_weight": 0.50,
+        "defensive_assets_weight": 0.39, "priced_at": _dt.date(2026, 7, 2),
+        "input_prices_sha256": PRICES_SHA, "publish_state": "published",
+        "valid_status": "valid", "valid_until": VU,
+        "pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA,
+    }
+    base.update(over)
+    return tuple(base[c] for c in sv._ALLOCATION_COLS)
+
+
+def _ledger_tuple(**over):
+    base = {"reason": "staleness SLO breach: MICH",
+            "input_vintage_sha256": VINTAGE_SHA, "input_prices_sha256": PRICES_SHA}
+    base.update(over)
+    return tuple(base[c] for c in sv._LEDGER_COLS)
+
+
+def _responder(*, decision=None, allocation=None, ledger=None):
+    def responder(sql, params):
+        if "open_macro_v03_staleness_blocks" in sql:
+            return [ledger] if ledger is not None else []
+        if "open_macro_v03_decisions" in sql:
+            return [decision] if decision is not None else []
+        if "open_macro_v03_allocations" in sql:
+            return [allocation] if allocation is not None else []
+        raise AssertionError(f"unexpected SQL: {sql}")
+    return responder
+
+
+def _recompute(breaches=(), **over):
+    rec = {
+        "input_vintage_sha256": VINTAGE_SHA,
+        "input_prices_sha256": PRICES_SHA,
+        "pack_v2_sha256": sv.PACK_SHA256_PIN,
+        "module_pins_sha256": MODULE_PINS_SHA,
+        "staleness_breaches": list(breaches),
+    }
+    if not breaches:
+        rec.update({
+            "quadrant": "expansion", "decision_validity": "carried",
+            "carry_seed_as_of": "2026-06-30", "candidate_confidence": 0.81,
+            "coverage_quality": 1.0, "growth_score": 0.2, "inflation_score": -0.1,
+            "weights": dict(WEIGHTS), "risk_assets_weight": 0.50,
+            "defensive_assets_weight": 0.39, "priced_at": "2026-07-02",
+        })
+    rec.update(over)
+    return rec
+
+
+@pytest.fixture(autouse=True)
+def _pin_commit(monkeypatch):
+    monkeypatch.setattr(sv, "code_commit", lambda: "f" * 40)
+
+
+@pytest.fixture(autouse=True)
+def _stub_pack_bytes(monkeypatch):
+    """The pack-byte integrity gate reads the committed pack from disk; stub it to a
+    no-op for the hermetic unit tests (no filesystem dependency). The REAL gate is
+    exercised against a mutated tmp pack in test_pack_bytes_mismatch_aborts."""
+    monkeypatch.setattr(sv, "verify_pack_bytes", lambda *a, **k: None)
+
+
+def _patch_recompute(monkeypatch, rec):
+    # recompute now takes an optional price_upper_bound kwarg (published-pair branch);
+    # the stub tolerates and ignores it.
+    monkeypatch.setattr(sv, "recompute", lambda conn, as_of, **kw: rec)
+
+
+def _sleeve_panel(dates):
+    """A minimal usable sleeve price panel: every sleeve ticker priced (non-NaN) on each
+    date. Shape mirrors format_eod_price_rows (ticker/date/close/adjusted_close/volume);
+    PriceFrame reads adjusted_close."""
+    return [{"ticker": t, "date": d, "close": 100.0, "adjusted_close": 100.0,
+             "volume": 1000.0}
+            for d in dates for t in sv.SLEEVE_TICKERS]
+
+
+def _allocation_from(alloc, **over):
+    """Build an allocation tuple whose weights/priced_at/risk-defensive match a real
+    build_allocation() result (so a real-recompute day verifies)."""
+    w = alloc["weights"]
+    base = dict(w_spy=w["SPY"], w_tlt=w["TLT"], w_tip=w["TIP"], w_gld=w["GLD"],
+                w_dbc=w["DBC"], w_shy=w["SHY"],
+                risk_assets_weight=alloc["risk_assets_weight"],
+                defensive_assets_weight=alloc["defensive_assets_weight"],
+                priced_at=alloc["priced_at"])
+    base.update(over)
+    return _allocation_tuple(**base)
+
+
+def _advanced_price_scenario(monkeypatch):
+    """Stub the recompute sub-helpers for a PAST published day whose DB prices have
+    ADVANCED: a later full sleeve close (2026-07-06) now exists beyond the published
+    priced_at (2026-07-02). Only compose_inputs/staleness/module-pins and the vintage
+    decision chain are stubbed — build_allocation stays REAL so the price bounding and the
+    six-price gate are exercised for real. Returns (h_vintage, h_prices, expected_alloc,
+    advanced_panel)."""
+    from src.workers.open_macro_v03 import build_allocation as real_alloc
+    vintage_rows = [{"series_id": "GDP", "available_at": "2026-07-01T00:00:00+00:00",
+                     "value": 1.0}]
+    advanced = _sleeve_panel(["2026-06-30", "2026-07-01", "2026-07-02", "2026-07-06"])
+    bounded = [r for r in advanced if r["date"][:10] <= "2026-07-02"]
+    monkeypatch.setattr(sv, "compose_inputs",
+                        lambda conn, as_of: (list(vintage_rows), list(advanced)))
+    monkeypatch.setattr(sv, "staleness_report", lambda v, p, a: {"breaches": []})
+    monkeypatch.setattr(sv, "_expected_module_pins_sha256", lambda: MODULE_PINS_SHA)
+    monkeypatch.setattr(sv, "run_decision_series", lambda v, s, a: ["chain"])
+
+    class _Last:
+        quadrant = "expansion"
+        candidate_confidence = 0.81
+        coverage_quality = 1.0
+        growth_score = 0.2
+        inflation_score = -0.1
+
+    monkeypatch.setattr(sv, "consumable_today",
+                        lambda chain, a: (_Last(), "carried", _dt.date(2026, 6, 30)))
+    return (sv._canonical_sha256(vintage_rows), sv._canonical_sha256(bounded),
+            real_alloc("expansion", bounded, AS_OF), advanced)
+
+
+# --------------------------------------------------------------------------- #
+# Path (a): published pair
+# --------------------------------------------------------------------------- #
+def test_recompute_match_yields_verified(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+    assert record["abort_reasons"] == []
+    assert record["route_evidence"] == "unavailable"
+    assert record["recompute"]["input_vintage_sha256"] == VINTAGE_SHA
+
+
+def test_divergent_weight_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple(w_spy=0.99)))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("field_mismatch: w_spy" in r for r in record["abort_reasons"])
+
+
+def test_divergent_quadrant_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(quadrant="slowdown"),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("field_mismatch: quadrant" in r for r in record["abort_reasons"])
+
+
+def test_input_hash_mismatch_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(input_vintage_sha256="x" * 64),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("input_hash_mismatch: decision.input_vintage_sha256" in r
+               for r in record["abort_reasons"])
+
+
+def test_staleness_bypass_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch,
+                     _recompute(breaches=[{"kind": "series", "series_id": "MICH"}]))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("staleness_bypass" in r for r in record["abort_reasons"])
+
+
+def test_nan_in_published_numeric_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(growth_score=float("nan")),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("nan_inf" in r for r in record["abort_reasons"])
+
+
+def test_valid_until_divergence_aborts(monkeypatch):
+    wrong_vu = VU + _dt.timedelta(days=3)
+    conn = _FakeConn(_responder(decision=_decision_tuple(valid_until=wrong_vu),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("valid_until_mismatch: decision" in r for r in record["abort_reasons"])
+
+
+# --------------------------------------------------------------------------- #
+# Path (b): staleness-block day
+# --------------------------------------------------------------------------- #
+def test_justified_block_passes(monkeypatch):
+    conn = _FakeConn(_responder(ledger=_ledger_tuple()))
+    _patch_recompute(monkeypatch,
+                     _recompute(breaches=[{"kind": "series", "series_id": "MICH"}]))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "staleness_block_justified"
+    assert record["abort_reasons"] == []
+
+
+def test_false_block_aborts(monkeypatch):
+    conn = _FakeConn(_responder(ledger=_ledger_tuple()))
+    _patch_recompute(monkeypatch, _recompute())  # fresh inputs
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("false_block" in r for r in record["abort_reasons"])
+
+
+def test_block_hash_divergence_does_not_abort_but_is_pinned(monkeypatch):
+    """Round-8 semantics (main): the ledger's input hashes are a FROZEN first-write
+    snapshot — a later same-day arrival that leaves the breach standing must not turn
+    a still-justified block into a false abort. Both hash sets are pinned side by
+    side in the day record as evidence."""
+    conn = _FakeConn(_responder(ledger=_ledger_tuple(input_prices_sha256="x" * 64)))
+    _patch_recompute(monkeypatch,
+                     _recompute(breaches=[{"kind": "series", "series_id": "MICH"}]))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "staleness_block_justified"
+    assert record["abort_reasons"] == []
+    assert record["ledger_input_hashes"] == {
+        "input_vintage_sha256": VINTAGE_SHA,
+        "input_prices_sha256": "x" * 64,
+    }
+    assert record["recompute"]["input_prices_sha256"] == PRICES_SHA  # divergent, pinned
+
+
+def test_block_and_output_coexist_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(), ledger=_ledger_tuple()))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("block_and_output_coexist" in r for r in record["abort_reasons"])
+
+
+# --------------------------------------------------------------------------- #
+# missing / partial
+# --------------------------------------------------------------------------- #
+def test_missing_output_aborts():
+    conn = _FakeConn(_responder())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("missing_output" in r for r in record["abort_reasons"])
+
+
+def test_partial_pair_aborts():
+    conn = _FakeConn(_responder(decision=_decision_tuple()))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("partial_pair" in r for r in record["abort_reasons"])
+
+
+# --------------------------------------------------------------------------- #
+# Backend route leg
+# --------------------------------------------------------------------------- #
+def _positions(weights=None):
+    """The REAL API shape: positions list, zero-weight positions OMITTED."""
+    weights = weights if weights is not None else WEIGHTS
+    return [{"ticker": t, "weight": v, "asset_class": "etf",
+             "strategy_label": "open_macro_v03"}
+            for t, v in weights.items() if v != 0.0]
+
+
+def _route_payload(**over):
+    payload = {"as_of": AS_OF.isoformat(), "quadrant": "expansion",
+               "decision_validity": "carried",
+               "carry_seed_as_of": "2026-06-30",
+               "candidate_confidence": 0.81, "book": "compressed_50",
+               "priced_at": "2026-07-02",
+               "risk_assets_weight": 0.50, "defensive_assets_weight": 0.39,
+               "valid_until": VU.isoformat(),
+               "positions": _positions()}
+    payload.update(over)
+    return payload
+
+
+def test_route_match_records_evidence(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, _route_payload()))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "verified"
+    assert record["route_evidence"]["status_code"] == 200
+    assert record["route_evidence"]["payload"]["quadrant"] == "expansion"
+
+
+def test_route_zero_weight_position_omitted_compares_as_zero(monkeypatch):
+    """The API omits zero-weight positions: a recomputed 0.0 for a ticker absent
+    from positions is a MATCH, never a divergence."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    zero_dbc = {**WEIGHTS, "DBC": 0.0}
+    _patch_recompute(monkeypatch, _recompute(weights=dict(zero_dbc)))
+    payload = _route_payload(positions=_positions(zero_dbc))  # DBC omitted
+    assert all(p["ticker"] != "DBC" for p in payload["positions"])
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, payload))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    route_reasons = [r for r in record["abort_reasons"] if "route" in r]
+    assert route_reasons == []
+
+
+def test_route_weight_divergence_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    bad = _route_payload(positions=_positions({**WEIGHTS, "SPY": 0.99}))
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, bad))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: positions[SPY].weight" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_confidence_divergence_aborts(monkeypatch):
+    """candidate_confidence is served from the DB: with exact NUMERIC write fidelity
+    in production, float64 equality is the contract — the 15-digit truncated value
+    the day-1 abort observed must fail here."""
+    exact = 0.8121545618518331
+    truncated = 0.812154561851833
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(candidate_confidence=exact),
+        allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(candidate_confidence=exact))
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(candidate_confidence=truncated)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: candidate_confidence" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_missing_positions_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    legacy = _route_payload()
+    legacy.pop("positions")
+    legacy["weights"] = dict(WEIGHTS)  # the OLD shape must not satisfy the check
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, legacy))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions missing" in r for r in record["abort_reasons"])
+
+
+def test_route_404_aborts_as_inactive(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (404, None))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_inactive_during_window" in r for r in record["abort_reasons"])
+
+
+def test_no_backend_env_marks_route_unavailable(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF, backend_url=None)
+    assert record["route_evidence"] == "unavailable"
+
+
+@pytest.mark.parametrize("field, bad", [
+    ("carry_seed_as_of", "2026-06-29"),
+    ("priced_at", "2026-07-01"),
+    ("valid_until", "2026-07-08T14:00:00+00:00"),
+])
+def test_route_freshness_field_divergence_aborts(monkeypatch, field, bad):
+    """A correct weight vector served with a stale carry seed / priced_at / valid_until
+    is still a consumer-visible divergence (a wrong valid_until misreports freshness)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(**{field: bad})))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any(f"route_divergence: {field}" in r for r in record["abort_reasons"])
+
+
+def test_route_duplicate_position_ticker_aborts(monkeypatch):
+    """Two rows for the same sleeve ticker must abort — never silently keep the last."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions()
+    positions.append({"ticker": "SPY", "weight": WEIGHTS["SPY"],
+                      "asset_class": "etf", "strategy_label": "open_macro_v03"})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("duplicate position ticker 'SPY'" in r for r in record["abort_reasons"])
+
+
+def test_route_stringified_numeric_aborts(monkeypatch):
+    """A JSON string where a number is expected is a consumer wire regression that
+    numeric coercion would otherwise hide."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(
+        sv, "_fetch_route",
+        lambda url: (200, _route_payload(risk_assets_weight="0.50")))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("risk_assets_weight not a JSON number" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_stringified_position_weight_aborts(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions({**WEIGHTS, "SPY": "0.39"})  # SPY weight as a string
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions[SPY].weight not a JSON number" in r
+               for r in record["abort_reasons"])
+
+
+def test_recompute_matches_the_current_worker_contract():
+    """Signature-drift guard: recompute() calls the worker's own helpers positionally;
+    a hardened worker changing these signatures must fail HERE, not silently at the
+    first live verification (the round-8 build_allocation as_of addition is the
+    precedent)."""
+    import inspect
+    assert list(inspect.signature(sv.build_allocation).parameters) == [
+        "quadrant", "price_rows", "as_of"]
+    assert list(inspect.signature(sv.compose_inputs).parameters) == ["conn", "as_of"]
+    assert list(inspect.signature(sv.valid_until).parameters) == ["as_of"]
+    assert list(inspect.signature(sv.staleness_report).parameters) == [
+        "vintage_rows", "price_rows", "as_of"]
+
+
+# --------------------------------------------------------------------------- #
+# Day record schema + writing
+# --------------------------------------------------------------------------- #
+def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert set(record) == {
+        "artifact_type", "schema_version", "stage", "stage_c_id", "as_of", "outcome",
+        "abort_reasons", "recompute", "ledger_reason", "ledger_input_hashes",
+        "published_provenance", "route_evidence", "verifier_commit",
+    }
+    assert record["ledger_input_hashes"] is None  # no ledger row on a published day
+    assert record["ledger_reason"] is None
+    assert record["recompute"]["staleness_breaches"] == []  # clean recompute, pinned
+    # every scalar the verifier compares is serialized into the recompute block so the
+    # bundle is self-substantiating (round-7 hardening) — plus the EXPECTED module-pins
+    # hash beside the signed pack pin (round-8).
+    assert set(record["recompute"]) == {
+        "input_vintage_sha256", "input_prices_sha256", "pack_v2_sha256",
+        "module_pins_sha256", "quadrant",
+        "decision_validity", "carry_seed_as_of", "candidate_confidence",
+        "coverage_quality", "growth_score", "inflation_score", "risk_assets_weight",
+        "defensive_assets_weight", "priced_at", "weights", "expected_valid_until",
+        "staleness_breaches", "candidate_id",
+    }
+    assert record["verifier_commit"] == "f" * 40
+    out = sv.write_day_record(record, tmp_path)
+    assert out.name == f"day_{AS_OF.isoformat()}.json"
+    raw = out.read_bytes()
+    assert raw.endswith(b"\n") and b"\r\n" not in raw
+    assert json.loads(raw) == record
+
+
+# --------------------------------------------------------------------------- #
+# Window report
+# --------------------------------------------------------------------------- #
+ROUTE_URL = "https://backend.example/macro/open-macro-v03/allocation"
+
+
+def _write_day(dirpath: Path, as_of: str, outcome: str, reasons=(), *, route=True):
+    # a well-formed day record carries the identity fields write_day_record stamps
+    # (artifact_type / verifier_commit / recompute) so it counts toward the window.
+    record = {
+        "artifact_type": "stage_c_supervision_day_record",
+        "as_of": as_of,
+        "outcome": outcome,
+        "abort_reasons": list(reasons),
+        "verifier_commit": "f" * 40,
+        "recompute": {"input_vintage_sha256": "v" * 64},
+    }
+    # a counted day carries route evidence (a dict WITH a resolved url); pass route=False
+    # to model a DB-only verified day whose route_evidence was "unavailable".
+    record["route_evidence"] = ({"url": ROUTE_URL, "status_code": 200, "payload": {}}
+                                if route else "unavailable")
+    (dirpath / f"day_{as_of}.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def _business_days(start: _dt.date, n: int) -> list[str]:
+    out, day = [], start
+    while len(out) < n:
+        if day.weekday() < 5:
+            out.append(day.isoformat())
+        day += _dt.timedelta(days=1)
+    return out
+
+
+def test_window_completes_with_ten_verified_post_cutover(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert report["aborts"] == []
+    assert report["window_complete"] is True
+
+
+def test_block_pauses_the_window_without_aborting(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[9], "staleness_block_justified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["staleness_blocks_paused"] == 1
+    assert report["aborts"] == []
+    assert report["window_complete"] is False  # paused, not aborted
+
+
+def test_abort_invalidates_the_window(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 11)
+    for day in days[:10]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[10], "abort", ["field_mismatch: quadrant"])
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert len(report["aborts"]) == 1
+    assert report["window_complete"] is False
+
+
+def test_no_cutover_record_counts_zero_days(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, tmp_path / "missing_cutover.json")
+    assert report["cutover"]["present"] is False
+    assert report["counted_days"] == 0
+    assert report["window_complete"] is False
+    assert all(d["note"] == "verified_but_not_consumed: route still inert (pre-cutover)"
+               for d in report["days"])
+
+
+def test_pre_cutover_days_do_not_count(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-08"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 4):  # 07-06..07-09
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 2  # only 07-08 and 07-09
+
+
+def test_verified_without_route_evidence_does_not_count(tmp_path):
+    """A DB-only verified day (route_evidence unavailable) must not close the REAL
+    window: only days carrying the consumer route leg are counted."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[9], "verified", route=False)  # DB-only leg
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    dbonly = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert dbonly["counted"] is False
+    assert dbonly["note"] == "verified_without_route_evidence: not counted (DB-only leg)"
+
+
+def test_missing_business_day_is_a_gap_and_blocks_completion(tmp_path):
+    """A skipped post-cutover weekday is otherwise invisible; the report must surface
+    it as a supervision gap and refuse window_complete even with >= 10 verified days."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 11)
+    skipped = days[3]
+    for day in days:
+        if day == skipped:
+            continue
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert report["supervision_gaps"] == [skipped]
+    assert report["window_complete"] is False
+
+
+def test_contiguous_window_has_no_gaps(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["supervision_gaps"] == []
+    assert report["window_complete"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Round-2 review hardening
+# --------------------------------------------------------------------------- #
+def test_recompute_exception_becomes_an_abort_record(monkeypatch):
+    """A recompute()/build_allocation() raise on a published day must be PRESERVED as an
+    abort day record (not escape verify_day and lose the evidence to a later gap)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+
+    def _boom(conn, as_of, **kw):
+        raise RuntimeError("prefix-hash drift")
+
+    monkeypatch.setattr(sv, "recompute", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("recompute_error: RuntimeError: prefix-hash drift" in r
+               for r in record["abort_reasons"])
+    # never falsely verified, and the record is still writable/strict-JSON
+    assert record["route_evidence"] is None
+
+
+def test_route_nonfinite_number_diverges_and_stays_valid_json(monkeypatch, tmp_path):
+    """A NaN/Infinity route numeric must abort AND never produce an invalid day_*.json:
+    the evidence payload is persisted strict-JSON-safe and the writer pins allow_nan."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(
+        sv, "_fetch_route",
+        lambda url: (200, _route_payload(risk_assets_weight=float("inf"))))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("risk_assets_weight non-finite" in r for r in record["abort_reasons"])
+    # evidence preserved as a strict-JSON string, artifact round-trips under strict parse
+    assert record["route_evidence"]["payload"]["risk_assets_weight"] == "inf"
+    out = sv.write_day_record(record, tmp_path)
+    reparsed = json.loads(out.read_text(encoding="utf-8"),
+                          parse_constant=lambda c: pytest.fail(f"non-strict JSON: {c}"))
+    assert reparsed == record
+
+
+def test_route_nonfinite_position_weight_diverges(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions({**WEIGHTS, "SPY": float("nan")})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions[SPY].weight non-finite" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_non_string_ticker_diverges_without_crashing(monkeypatch):
+    """A non-string (unhashable) ticker must become a route_divergence, not a TypeError
+    that aborts verify_day WITHOUT writing the day record."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions()
+    positions.append({"ticker": ["SPY"], "weight": 0.1,  # list ticker (unhashable)
+                      "asset_class": "etf", "strategy_label": "open_macro_v03"})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("non-string position ticker" in r for r in record["abort_reasons"])
+
+
+@pytest.mark.parametrize("field, bad", [
+    ("carry_seed_as_of", "2026-06-30T00:00:00Z"),
+    ("priced_at", "2026-07-02T00:00:00Z"),
+])
+def test_route_date_timestamp_form_diverges_not_sliced(monkeypatch, field, bad):
+    """A date-only wire field served as a timestamp whose first ten chars still match
+    must diverge — the route comparison checks the EXACT wire string (no _date_iso)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(**{field: bad})))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any(f"route_divergence: {field}" in r for r in record["abort_reasons"])
+
+
+def test_pre_cutover_abort_does_not_block_completion(tmp_path):
+    """A pre-cutover (non-consumed) abort stays visible but must NOT permanently block a
+    clean ten-day consumed window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-08"}), encoding="utf-8")
+    _write_day(window, "2026-07-06", "abort", ["field_mismatch: quadrant"])  # pre-cutover
+    for day in _business_days(_dt.date(2026, 7, 8), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert len(report["aborts"]) == 1               # still surfaced
+    assert report["aborts"][0]["consumed"] is False
+    assert report["window_complete"] is True         # not blocked by the pre-cutover abort
+    pre = next(d for d in report["days"] if d["as_of"] == "2026-07-06")
+    assert pre["note"] == "pre_cutover_abort: outside the production window (not blocking)"
+
+
+def test_post_cutover_abort_still_blocks_completion(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 11)
+    for day in days[:10]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[10], "abort", ["field_mismatch: quadrant"])  # consumed abort
+    report = sv.build_window_report(window, cutover)
+    assert report["aborts"][0]["consumed"] is True
+    assert report["window_complete"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Round-3 review hardening
+# --------------------------------------------------------------------------- #
+def test_route_transport_failure_fails_loud_without_a_record(monkeypatch):
+    """A verifier-side transport failure reaching the sanctioned route (httpx.RequestError:
+    DNS/TLS/connect/read timeout, raised BEFORE any response) must FAIL LOUD — re-raise and
+    write NO abort record — so a network outage is never recorded as a route_divergence-style
+    abort that blocks the window with no route response captured."""
+    import httpx
+
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+
+    def _boom(url):
+        raise httpx.ConnectError("name resolution failed")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    with pytest.raises(httpx.RequestError):
+        sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+
+
+def test_recompute_error_still_records_when_not_transport(monkeypatch):
+    """The transport carve-out is narrow: a non-transport raise on the route leg (or any
+    recompute/comparison raise) is still PRESERVED as an abort day record, unchanged."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+
+    def _boom(url):
+        raise ValueError("not a transport error")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("recompute_error: ValueError: not a transport error" in r
+               for r in record["abort_reasons"])
+
+
+def test_duplicate_day_file_counts_once_and_blocks_completion(tmp_path):
+    """Two day_*.json files naming the same as_of (a copied/attempt file beside the
+    canonical record) must count as ONE distinct verified day, surface a duplicate, and
+    refuse window_complete — never inflate counted_days past the distinct dates."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days:
+        _write_day(window, day, "verified")
+    # a copied/attempt file naming an already-counted business day (matches day_*.json) —
+    # itself a well-formed record, so the ONLY defect surfaced is the duplicate date.
+    dup = {"artifact_type": "stage_c_supervision_day_record", "as_of": days[0],
+           "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+           "recompute": {"input_vintage_sha256": "v" * 64},
+           "route_evidence": {"url": ROUTE_URL, "status_code": 200, "payload": {}}}
+    (window / f"day_{days[0]}_attempt.json").write_text(json.dumps(dup), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10  # not 11: the duplicate date is counted once
+    assert report["duplicate_dates"] == [days[0]]
+    assert report["malformed_day_records"] == []  # both files are well-formed
+    assert report["window_complete"] is False
+
+
+def test_no_duplicate_dates_on_a_clean_window(tmp_path):
+    """The distinct-date guard is inert on a normal one-file-per-date window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["duplicate_dates"] == []
+    assert report["window_complete"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Round-4 review hardening
+# --------------------------------------------------------------------------- #
+def test_db_abort_skips_the_route_leg_and_survives_transport_failure(monkeypatch):
+    """Once the DB comparison has found a divergence, the route leg must NOT run: a
+    transport failure there would re-raise (fail-loud, no artifact) and destroy the
+    already-detected DB abort evidence."""
+    import httpx
+
+    conn = _FakeConn(_responder(decision=_decision_tuple(quadrant="contraction"),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    calls: list[str] = []
+
+    def _boom(url):
+        calls.append(url)
+        raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert calls == []  # route leg never consulted on a DB-divergent day
+    assert record["outcome"] == "abort"
+    assert any("field_mismatch: quadrant" in r for r in record["abort_reasons"])
+    assert not any("recompute_error" in r for r in record["abort_reasons"])
+
+
+def test_staleness_bypass_still_skips_the_route_leg(monkeypatch):
+    """The old explicit staleness_bypass guard is subsumed: a bypass is an abort
+    reason, so the route leg is skipped the same way."""
+    breach = [{"series_id": "MICH", "age_days": 99}]
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breach))
+    calls: list[str] = []
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: calls.append(url) or (200, _route_payload()))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert calls == []
+    assert record["outcome"] == "abort"
+    assert any("staleness_bypass" in r for r in record["abort_reasons"])
+
+
+def test_nonfinite_recomputed_weight_abort_record_still_serializes(monkeypatch, tmp_path):
+    """A non-finite RECOMPUTED weight is flagged nan_inf by _compare_pair; the day
+    record must still be writable (allow_nan=False) with the evidence preserved as a
+    strict-JSON string — never crash the writer and lose the abort artifact."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    bad = _recompute(weights={**WEIGHTS, "SPY": float("nan")})
+    _patch_recompute(monkeypatch, bad)
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("nan_inf: recompute.weights.SPY" in r for r in record["abort_reasons"])
+    assert record["recompute"]["weights"]["SPY"] == "nan"
+    out = sv.write_day_record(record, tmp_path)
+    reparsed = json.loads(out.read_text(encoding="utf-8"),
+                          parse_constant=lambda c: pytest.fail(f"non-strict JSON: {c}"))
+    assert reparsed == record
+
+
+def test_duplicate_json_keys_in_route_payload_diverge():
+    """Duplicate JSON object keys are an ambiguous wire contract (consumers may read
+    divergent values from the same bytes; Python keeps the last silently) — the parse
+    hook must reject them at every object level."""
+    with pytest.raises(sv._AmbiguousRoutePayload) as exc_info:
+        sv._parse_route_payload(200, '{"as_of": "2026-07-06", "as_of": "2026-07-07"}')
+    assert "duplicate JSON key 'as_of'" in exc_info.value.detail
+    assert exc_info.value.status_code == 200
+    # nested objects are covered too
+    with pytest.raises(sv._AmbiguousRoutePayload):
+        sv._parse_route_payload(200, '{"p": {"weight": 0.1, "weight": 0.39}}')
+    # clean payloads still parse; a non-JSON body is now PRESERVED as evidence (a
+    # _NonJSONRouteBody carrying the raw bytes) instead of being discarded as None.
+    assert sv._parse_route_payload(200, '{"a": 1}') == {"a": 1}
+    non_json = sv._parse_route_payload(502, "Bad Gateway")
+    assert isinstance(non_json, sv._NonJSONRouteBody)
+    assert non_json.raw_body == "Bad Gateway"
+    assert non_json.parse_error
+
+
+def test_route_duplicate_key_payload_aborts_with_wire_evidence(monkeypatch):
+    """check_route converts _AmbiguousRoutePayload into a route_divergence abort with
+    the raw wire text pinned as evidence (never a transport-style re-raise)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    wire = '{"quadrant": "expansion", "quadrant": "contraction"}'
+
+    def _dup(url):
+        raise sv._AmbiguousRoutePayload("duplicate JSON key 'quadrant'",
+                                        status_code=200, raw_text=wire)
+
+    monkeypatch.setattr(sv, "_fetch_route", _dup)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: ambiguous wire payload — duplicate JSON key "
+               "'quadrant'" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_wire_text"] == wire
+    assert record["route_evidence"]["payload"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Round-5 review hardening
+# --------------------------------------------------------------------------- #
+def test_justified_block_record_preserves_the_justification_evidence(monkeypatch):
+    """A staleness_block_justified day pauses the window; the day record must carry
+    the WHY — the recomputed breach details and the ledger row's frozen reason — so an
+    auditor validates the artifact itself instead of re-running against live inputs
+    that have since moved."""
+    breaches = [{"kind": "series", "series_id": "MICH", "age_days": 42}]
+    conn = _FakeConn(_responder(ledger=_ledger_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breaches))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "staleness_block_justified"
+    assert record["recompute"]["staleness_breaches"] == breaches
+    assert record["ledger_reason"] == "staleness SLO breach: MICH"
+
+
+def test_bypass_abort_record_preserves_the_recomputed_breaches(monkeypatch):
+    """A staleness_bypass abort must pin WHAT the worker ignored: the recomputed
+    breaches ride in the day record beside the abort reason."""
+    breaches = [{"kind": "series", "series_id": "MICH", "age_days": 42}]
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breaches))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("staleness_bypass" in r for r in record["abort_reasons"])
+    assert record["recompute"]["staleness_breaches"] == breaches
+
+
+# --------------------------------------------------------------------------- #
+# Round-6 review hardening
+# --------------------------------------------------------------------------- #
+def test_route_evidence_pins_the_resolved_url(monkeypatch):
+    """Every route_evidence dict pins the resolved URL that was actually exercised —
+    an auditor can see WHICH host served the evidence (sanctioned production vs a
+    mispointed staging/local clone) — on the verified, 404, and ambiguous paths."""
+    url = "https://backend.example"
+    expected = "https://backend.example/macro/open-macro-v03/allocation"
+
+    # verified path
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route", lambda u: (200, _route_payload()))
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["outcome"] == "verified"
+    assert record["route_evidence"]["url"] == expected
+
+    # 404 path
+    monkeypatch.setattr(sv, "_fetch_route", lambda u: (404, None))
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["route_evidence"]["url"] == expected
+
+    # ambiguous-wire path
+    def _dup(u):
+        raise sv._AmbiguousRoutePayload("duplicate JSON key 'weight'",
+                                        status_code=200, raw_text="{}")
+    monkeypatch.setattr(sv, "_fetch_route", _dup)
+    record = sv.verify_day(conn, AS_OF, backend_url=url)
+    assert record["route_evidence"]["url"] == expected
+
+    # trailing slash normalizes to the same resolved URL
+    assert sv._route_url("https://backend.example/") == expected
+
+
+# --------------------------------------------------------------------------- #
+# Round-7 review hardening
+# --------------------------------------------------------------------------- #
+def test_verified_without_route_url_does_not_count(tmp_path):
+    """A verified day whose route_evidence is a dict but carries NO resolved url must not
+    count toward the REAL window (a counted day pins WHICH host served the evidence)."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    # route evidence present as a dict but WITHOUT a resolved url
+    record = {"artifact_type": "stage_c_supervision_day_record", "as_of": days[9],
+              "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+              "recompute": {"input_vintage_sha256": "v" * 64},
+              "route_evidence": {"status_code": 200, "payload": {}}}  # no url
+    (window / f"day_{days[9]}.json").write_text(json.dumps(record), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    no_url = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert no_url["counted"] is False
+    assert no_url["note"] == ("verified_without_route_url: route evidence missing a "
+                              "resolved url (not counted)")
+
+
+def test_empty_url_route_evidence_does_not_count(tmp_path):
+    """An empty-string url is treated the same as a missing url — not a resolved host."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    day = _business_days(_dt.date(2026, 7, 6), 1)[0]
+    record = {"artifact_type": "stage_c_supervision_day_record", "as_of": day,
+              "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+              "recompute": {"input_vintage_sha256": "v" * 64},
+              "route_evidence": {"url": "  ", "status_code": 200, "payload": {}}}
+    (window / f"day_{day}.json").write_text(json.dumps(record), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 0
+
+
+def test_route_naive_valid_until_aborts(monkeypatch):
+    """A route valid_until without a timezone offset (naive) must abort as
+    route_naive_valid_until — never be silently assumed UTC (the DB column is timestamptz;
+    the wire value must carry its own offset)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    naive = VU.replace(tzinfo=None).isoformat()  # e.g. "2026-07-08T14:00:00" — no offset
+    assert "+" not in naive and not naive.endswith("Z")
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(valid_until=naive)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_naive_valid_until" in r for r in record["abort_reasons"])
+
+
+def test_db_naive_valid_until_still_assumed_utc(monkeypatch):
+    """The DB leg is UNCHANGED: its timestamptz column is tz-aware, so a naive value is
+    still assumed UTC — the naive-rejection is ROUTE-only."""
+    naive_vu = VU.replace(tzinfo=None)
+    conn = _FakeConn(_responder(decision=_decision_tuple(valid_until=naive_vu),
+                                allocation=_allocation_tuple(valid_until=naive_vu)))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+
+
+def test_recompute_block_serializes_all_compared_scalars(monkeypatch, tmp_path):
+    """The recompute block pins every compared scalar (round-7): candidate_confidence,
+    risk/defensive weights, priced_at, carry_seed_as_of, and the expected valid_until —
+    so the bundle is self-substantiating and round-trips under strict JSON."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    rc = record["recompute"]
+    assert rc["candidate_confidence"] == 0.81
+    assert rc["coverage_quality"] == 1.0
+    assert rc["growth_score"] == 0.2
+    assert rc["inflation_score"] == -0.1
+    assert rc["risk_assets_weight"] == 0.50
+    assert rc["defensive_assets_weight"] == 0.39
+    assert rc["priced_at"] == "2026-07-02"
+    assert rc["carry_seed_as_of"] == "2026-06-30"
+    assert rc["expected_valid_until"] == VU.isoformat()
+    out = sv.write_day_record(record, tmp_path)
+    assert json.loads(out.read_text(encoding="utf-8")) == record
+
+
+def test_malformed_day_record_is_flagged_and_not_counted(tmp_path):
+    """A truncated/hand-authored file (only as_of + outcome + route_evidence) matching the
+    day_*.json glob must NOT count and must be surfaced as a malformed_day_record; the
+    report is not aborted, only the offending day is excluded and flagged."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    truncated = {"as_of": days[9], "outcome": "verified", "route_evidence": {}}
+    (window / f"day_{days[9]}.json").write_text(json.dumps(truncated), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["malformed_day_records"] == [days[9]]
+    assert report["window_complete"] is False
+    bad = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert bad["counted"] is False
+    assert bad["note"] == "malformed_day_record: missing identity fields (not counted)"
+
+
+def test_clean_window_has_no_malformed_records(tmp_path):
+    """The identity guard is inert on a normal well-formed window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["malformed_day_records"] == []
+    assert report["window_complete"] is True
+
+
+def test_non_json_route_body_preserved_as_evidence(monkeypatch):
+    """A non-JSON route body (an HTML error page served with 200) must abort
+    route_non_json_body with the raw offending body preserved in route_evidence — never
+    silently discarded as None."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    html = "<html><body>502 Bad Gateway</body></html>"
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, sv._parse_route_payload(200, html)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_non_json_body" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_body"] == html
+    assert record["route_evidence"]["payload"] is None
+    assert record["route_evidence"]["parse_error"]
+    assert record["route_evidence"]["url"].endswith("/macro/open-macro-v03/allocation")
+
+
+def test_non_json_route_body_is_truncated(monkeypatch):
+    """A very large non-JSON body is truncated to a bounded evidence size."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    big = "x" * 5000
+    body = sv._parse_route_payload(200, big)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, body))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    raw = record["route_evidence"]["raw_body"]
+    assert raw.startswith("x" * 100)
+    assert len(raw) <= sv.ROUTE_BODY_EVIDENCE_MAX + len("…(truncated)")
+
+
+def test_non_json_404_body_still_reads_as_inactive(monkeypatch):
+    """A 404 whose body is non-JSON (a typical HTML 404 page) still surfaces as route
+    inactivity, with the offending body preserved as evidence."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    body = sv._parse_route_payload(404, "<html>404 Not Found</html>")
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (404, body))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_inactive_during_window" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_body"] == "<html>404 Not Found</html>"
+
+
+# --------------------------------------------------------------------------- #
+# Round-8 review hardening
+# --------------------------------------------------------------------------- #
+# Fix 1 — published provenance pins are compared (not just logical outputs)
+def test_stale_published_module_pins_aborts(monkeypatch):
+    """A published row with correct logical outputs but a STALE/forged module_pins_sha256
+    (stamped by a different pin bundle) must abort provenance_pin_mismatch — not verify."""
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(module_pins_sha256="z" * 64),
+        allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("provenance_pin_mismatch: decision.module_pins_sha256" in r
+               for r in record["abort_reasons"])
+
+
+def test_stale_published_pack_pin_aborts(monkeypatch):
+    """A published pack_v2_sha256 diverging from the signed PACK_SHA256_PIN aborts."""
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(),
+        allocation=_allocation_tuple(pack_v2_sha256="z" * 64)))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("provenance_pin_mismatch: allocation.pack_v2_sha256" in r
+               for r in record["abort_reasons"])
+
+
+def test_published_provenance_is_pinned_in_the_day_record(monkeypatch):
+    """The day record pins the PUBLISHED provenance pins beside the EXPECTED ones so a
+    provenance_pin_mismatch (or a clean pass) is validated from the artifact itself."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+    assert record["published_provenance"] == {
+        "decision": {"pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA},
+        "allocation": {"pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA},
+    }
+    assert record["recompute"]["module_pins_sha256"] == MODULE_PINS_SHA
+    assert record["recompute"]["pack_v2_sha256"] == PACK_SHA
+
+
+def test_expected_module_pins_matches_the_worker_source_of_truth():
+    """The verifier derives the EXPECTED module_pins_sha256 from the SAME source of truth
+    the worker stamps from (the committed module_pins.json, after verify_module_pins)."""
+    from src.workers.open_macro_v03 import PINS_PATH, _load_json, verify_module_pins
+    pins = _load_json(PINS_PATH)
+    verify_module_pins(pins)
+    assert sv._expected_module_pins_sha256() == pins["module_pins_sha256"]
+
+
+# Fix 2 — the pack BYTES are verified before recomputing against them
+def test_pack_bytes_mismatch_aborts(monkeypatch, tmp_path):
+    """A drifted committed pack — a single mutated canonical byte, still named by the
+    signed PACK_SHA256_PIN in the manifest — must abort pack_bytes_mismatch BEFORE the
+    recompute reads the mutated bytes (verify_pack_bytes runs once per day)."""
+    from harness.direct_activation.live_validation import PACK
+    from src.workers.open_macro_v03 import verify_pack_bytes as real_verify_pack_bytes
+
+    tmp_pack = tmp_path / "pack"
+    shutil.copytree(PACK, tmp_pack)
+    target = tmp_pack / "data" / "canonical" / "eod_prices.json"
+    data = bytearray(target.read_bytes())
+    i = len(data) - 1
+    while i >= 0 and data[i] in (0x0A, 0x0D):  # skip trailing newline bytes
+        i -= 1
+    data[i] ^= 0x01  # flip exactly one content byte
+    target.write_bytes(bytes(data))
+
+    # the real byte gate detects the drift directly
+    with pytest.raises(sv.OpenMacroV03Error):
+        real_verify_pack_bytes(pack=tmp_pack)
+
+    # and verify_day surfaces it as a pack_bytes_mismatch abort, never recomputing
+    monkeypatch.setattr(sv, "verify_pack_bytes",
+                        lambda *a, **k: real_verify_pack_bytes(pack=tmp_pack))
+    calls: list[str] = []
+    monkeypatch.setattr(
+        sv, "recompute",
+        lambda conn, as_of, **kw: calls.append("recompute") or _recompute())
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("pack_bytes_mismatch" in r for r in record["abort_reasons"])
+    assert calls == []  # aborted BEFORE the recompute read the mutated bytes
+
+
+# Fix 3 — current-only route: backfill of an earlier day is not a spurious divergence
+def test_route_served_equals_asof_still_full_compares(monkeypatch):
+    """served as_of == requested → the full consumer-visible compare still runs; a
+    quadrant divergence aborts (the fail-loud current-day path is unchanged)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(quadrant="contraction")))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: quadrant" in r for r in record["abort_reasons"])
+
+
+def test_route_backfill_served_later_is_not_a_divergence(monkeypatch):
+    """When production has advanced (route serves a LATER as_of than requested), the
+    current-only route cannot serve the historical pair: record backfill evidence, do NOT
+    abort, and the DB recompute leg still verifies normally."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    later = _route_payload(as_of="2026-07-07")  # served > requested (2026-07-06)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, later))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "verified"  # DB leg clean; route leg not an abort
+    assert record["abort_reasons"] == []
+    ev = record["route_evidence"]
+    assert ev["served_as_of"] == "2026-07-07"
+    assert ev["route_backfill_not_servable"] is True
+    assert ev["note"] == ("route_advanced_backfill: live route serves 2026-07-07, "
+                          "cannot serve historical 2026-07-06")
+
+
+def test_route_served_before_asof_aborts(monkeypatch):
+    """A route serving an EARLIER as_of than requested cannot serve the requested pair at
+    all — a route_stale_before_asof abort (the current-only route cannot serve a future
+    pair)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    earlier = _route_payload(as_of="2026-07-03")  # served < requested (2026-07-06)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, earlier))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_stale_before_asof" in r for r in record["abort_reasons"])
+
+
+def test_route_backfill_day_does_not_count(tmp_path):
+    """A verified day whose route evidence is route_backfill_not_servable must NOT count
+    toward the window even though it carries a resolved url (the current day proves the
+    consumed leg, not a backfill re-run)."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    backfill = {
+        "artifact_type": "stage_c_supervision_day_record", "as_of": days[9],
+        "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+        "recompute": {"input_vintage_sha256": "v" * 64},
+        "route_evidence": {"url": ROUTE_URL, "status_code": 200, "payload": {},
+                           "served_as_of": "2026-07-30",
+                           "route_backfill_not_servable": True,
+                           "note": "route_advanced_backfill: ..."},
+    }
+    (window / f"day_{days[9]}.json").write_text(json.dumps(backfill), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    day = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert day["counted"] is False
+    assert day["note"] == ("route_backfill_not_servable: current-only route serves a "
+                           "later as_of (historical day not counted)")
+
+
+# Fix 4 — a past supervised day stays reproducible after eod_prices advances
+# (the inputs-side twin of the L394 route backfill): the sleeve PRICE recompute is
+# bounded to the PUBLISHED priced_at.
+def test_verify_day_bounds_prices_to_published_priced_at(monkeypatch):
+    """verify_day extracts the published allocation priced_at and passes it as the sleeve
+    price recompute bound."""
+    captured = {}
+
+    def _spy(conn, as_of, *, price_upper_bound=None):
+        captured["bound"] = price_upper_bound
+        return _recompute()
+
+    monkeypatch.setattr(sv, "recompute", _spy)
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple(priced_at=_dt.date(2026, 7, 2))))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+    assert captured["bound"] == _dt.date(2026, 7, 2)
+
+
+def test_recompute_drops_prices_after_published_priced_at(monkeypatch):
+    """recompute with a price_upper_bound drops every sleeve close later than priced_at
+    BEFORE build_allocation sees the panel, and hashes only the bounded panel."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    seen = {}
+
+    def _capture(quadrant, price_rows, as_of):
+        seen["dates"] = sorted({r["date"][:10] for r in price_rows})
+        return exp
+
+    monkeypatch.setattr(sv, "build_allocation", _capture)
+    rec = sv.recompute(None, AS_OF, price_upper_bound=_dt.date(2026, 7, 2))
+    assert seen["dates"] == ["2026-06-30", "2026-07-01", "2026-07-02"]  # 07-06 dropped
+    assert rec["input_prices_sha256"] == h_prices
+    assert rec["priced_at"] == "2026-07-02"
+
+
+def test_recompute_without_price_bound_keeps_the_asof_panel(monkeypatch):
+    """Without a bound (staleness-block / no-allocation branch), the price panel keeps the
+    as_of bound — the fix is scoped to published pairs and demonstrates the bug it fixes:
+    the unbounded panel recomputes the LATER priced_at (2026-07-06)."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    rec = sv.recompute(None, AS_OF)  # no bound
+    assert rec["priced_at"] == "2026-07-06"  # would spuriously diverge vs published 07-02
+    assert rec["input_prices_sha256"] == sv._canonical_sha256(advanced)
+
+
+def test_reverify_past_day_with_advanced_prices_still_verifies(monkeypatch):
+    """(a) Re-verifying a past published day AFTER eod_prices advanced still VERIFIES: the
+    sleeve price panel is bounded to the published priced_at so priced_at and
+    input_prices_sha256 reproduce (real build_allocation runs on the bounded panel)."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(input_vintage_sha256=h_vintage,
+                                 input_prices_sha256=h_prices),
+        allocation=_allocation_from(exp, input_prices_sha256=h_prices)))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified", record["abort_reasons"]
+    assert record["recompute"]["priced_at"] == "2026-07-02"
+    assert record["recompute"]["input_prices_sha256"] == h_prices
+
+
+def test_reverify_six_price_gate_runs_against_the_bounded_panel(monkeypatch):
+    """(b) The 'all six sleeve tickers priced at a single date' gate runs against the
+    BOUNDED panel: if no bounded date prices the full sleeve, real build_allocation refuses
+    and the day aborts — even though the LATER (excluded) close would price all six."""
+    from src.workers.open_macro_v03 import build_allocation as real_alloc
+    vintage_rows = [{"series_id": "GDP", "available_at": "2026-07-01T00:00:00+00:00",
+                     "value": 1.0}]
+    rows = _sleeve_panel(["2026-07-06"])  # full sleeve, but BEYOND the priced_at bound
+    for d, missing in {"2026-06-30": "SPY", "2026-07-01": "TLT",
+                       "2026-07-02": "SHY"}.items():  # each bounded date drops one ticker
+        rows += [{"ticker": t, "date": d, "close": 100.0, "adjusted_close": 100.0,
+                  "volume": 1000.0} for t in sv.SLEEVE_TICKERS if t != missing]
+    monkeypatch.setattr(sv, "compose_inputs",
+                        lambda conn, as_of: (list(vintage_rows), list(rows)))
+    monkeypatch.setattr(sv, "staleness_report", lambda v, p, a: {"breaches": []})
+    monkeypatch.setattr(sv, "_expected_module_pins_sha256", lambda: MODULE_PINS_SHA)
+    monkeypatch.setattr(sv, "run_decision_series", lambda v, s, a: ["chain"])
+
+    class _Last:
+        quadrant = "expansion"
+        candidate_confidence = 0.81
+        coverage_quality = 1.0
+        growth_score = 0.2
+        inflation_score = -0.1
+
+    monkeypatch.setattr(sv, "consumable_today",
+                        lambda chain, a: (_Last(), "carried", _dt.date(2026, 6, 30)))
+    monkeypatch.setattr(sv, "build_allocation", real_alloc)  # REAL six-price gate
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple(priced_at=_dt.date(2026, 7, 2))))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("recompute_error" in r and "full sleeve" in r
+               for r in record["abort_reasons"])
+
+
+def test_reverify_vintage_drift_still_aborts(monkeypatch):
+    """(c) The bound is PRICE-only: prices reproduce, but a genuine vintage drift on the
+    re-run (published input_vintage_sha256 != recomputed) is still a legitimate abort,
+    never masked by the price reproduction."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(input_vintage_sha256="d" * 64,
+                                 input_prices_sha256=h_prices),
+        allocation=_allocation_from(exp, input_prices_sha256=h_prices)))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("input_hash_mismatch: decision.input_vintage_sha256" in r
+               for r in record["abort_reasons"])
+    # prices reproduced — the price/priced_at legs do NOT mask the vintage drift
+    assert not any("input_prices_sha256" in r for r in record["abort_reasons"])
+    assert not any("priced_at" in r for r in record["abort_reasons"])
+
+
+# --------------------------------------------------------------------------- #
+# Read-only guard
+# --------------------------------------------------------------------------- #
+def test_verifier_is_read_only_by_construction():
+    text = (Path(sv.__file__)).read_text(encoding="utf-8")
+    forbidden = re.findall(
+        r"\b(INSERT|UPDATE|DELETE|UPSERT|TRUNCATE|ALTER|DROP|CREATE|COPY|GRANT|MERGE)\b",
+        text)
+    assert forbidden == [], f"verifier contains write-capable keywords: {forbidden}"
+    imports = re.findall(r"from src\.workers\.open_macro_v03 import \(([^)]*)\)", text, re.S)
+    assert imports
+    for write_helper in ("publish", "record_staleness_block", "invalidate",
+                         "ensure_schema", "_invalidate_both"):
+        assert write_helper not in imports[0], f"verifier imports write helper {write_helper}"
