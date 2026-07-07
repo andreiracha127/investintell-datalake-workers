@@ -83,6 +83,13 @@ CUTOVER_PATH = (ROOT / "artifacts" / "a5"
 ROUTE_PATH = "/macro/open-macro-v03/allocation"
 BACKEND_URL_ENV = "OPEN_MACRO_BACKEND_URL"
 WINDOW_TARGET_DAYS = 10
+# the exact ``artifact_type`` write_day_record stamps — a day record only counts toward
+# the window if it carries this identity (a truncated/hand-authored file is excluded and
+# surfaced as a malformed_day_record, never silently counted).
+DAY_RECORD_ARTIFACT_TYPE = "stage_c_supervision_day_record"
+# a non-JSON route body is preserved verbatim (truncated to this many chars) as evidence
+# instead of being silently discarded as None.
+ROUTE_BODY_EVIDENCE_MAX = 2000
 
 _DECISION_COLS = (
     "quadrant", "decision_validity", "carry_seed_as_of", "candidate_confidence",
@@ -332,18 +339,37 @@ def _pairs_rejecting_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return out
 
 
+class _NonJSONRouteBody:
+    """A route response body that is not valid JSON (an HTML error page, a truncated or
+    malformed JSON document). Rather than silently discarding the bytes as ``None``, the
+    raw body is preserved (truncated to ``ROUTE_BODY_EVIDENCE_MAX`` chars) together with
+    the parser's error message; ``check_route`` pins both in ``route_evidence`` and aborts
+    with ``route_non_json_body`` so an auditor can see WHAT the backend actually served."""
+
+    __slots__ = ("raw_body", "parse_error")
+
+    def __init__(self, raw_body: str, parse_error: str):
+        self.raw_body = raw_body
+        self.parse_error = parse_error
+
+
 def _parse_route_payload(status_code: int, text: str) -> Any:
     """Parse the route body as JSON with duplicate-key rejection at EVERY object level.
-    A non-JSON body parses to None (handled downstream as a status/shape divergence);
-    duplicate keys raise ``_AmbiguousRoutePayload`` with the wire text attached."""
+    A non-JSON body returns a ``_NonJSONRouteBody`` carrying the (truncated) raw bytes and
+    the parse error — NOT ``None`` — so the offending body is preserved as evidence rather
+    than discarded; duplicate keys raise ``_AmbiguousRoutePayload`` with the wire text
+    attached."""
     try:
         return json.loads(text, object_pairs_hook=_pairs_rejecting_duplicates)
     except _AmbiguousRoutePayload as exc:
         exc.status_code = status_code
         exc.raw_text = text
         raise
-    except Exception:
-        return None
+    except Exception as exc:
+        body = text if isinstance(text, str) else str(text)
+        if len(body) > ROUTE_BODY_EVIDENCE_MAX:
+            body = body[:ROUTE_BODY_EVIDENCE_MAX] + "…(truncated)"
+        return _NonJSONRouteBody(body, f"{type(exc).__name__}: {exc}")
 
 
 def _route_url(backend_url: str) -> str:
@@ -422,6 +448,22 @@ def _route_number(name: str, value: Any, problems: list[str]) -> float | None:
     return num
 
 
+def _route_timestamp_is_naive(value: Any) -> bool:
+    """True iff a ROUTE ``valid_until`` wire value is a timestamp string that carries NO
+    timezone (naive). On the consumer route leg a naive ``valid_until`` must NOT be
+    silently assumed UTC (unlike the DB column, which is ``timestamptz`` and tz-aware by
+    construction): a horizon served without its own offset is an ambiguous consumer-visible
+    contract and aborts as ``route_naive_valid_until``. Non-string / unparseable values are
+    not classified here — they fall through to the ordinary divergence path."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = _dt.datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is None
+
+
 def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list[str]]:
     """(route_evidence, abort_reasons) for the consumer-visible payload leg.
 
@@ -448,6 +490,20 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
         evidence = {"url": route_url, "status_code": exc.status_code,
                     "payload": None, "raw_wire_text": exc.raw_text}
         return evidence, [f"route_divergence: ambiguous wire payload — {exc.detail}"]
+    if isinstance(payload, _NonJSONRouteBody):
+        # a non-JSON body (HTML error page / malformed JSON) is preserved verbatim
+        # (truncated) as evidence instead of being discarded as None. A 404 still reads as
+        # route inactivity; any other status carrying a non-JSON body is a
+        # route_non_json_body divergence with the offending bytes pinned.
+        evidence = {"url": route_url, "status_code": status, "payload": None,
+                    "raw_body": payload.raw_body, "parse_error": payload.parse_error}
+        if status == 404:
+            return evidence, [
+                "route_inactive_during_window: sanctioned route returned 404 while the "
+                "backend flag is expected on"]
+        return evidence, [
+            f"route_divergence: route_non_json_body (status={status}) — "
+            f"{payload.parse_error}"]
     if status == 404:
         return ({"url": route_url, "status_code": 404, "payload": _json_safe(payload)},
                 ["route_inactive_during_window: sanctioned route returned 404 while "
@@ -485,14 +541,22 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
         problems.append(f"route_divergence: priced_at {payload.get('priced_at')!r} "
                         f"!= recomputed {rec['priced_at']}")
     expected_vu = valid_until(as_of)
-    try:
-        route_vu: _dt.datetime | None = _utc(payload.get("valid_until"))
-    except (TypeError, ValueError, AttributeError):
-        route_vu = None
-    if route_vu != expected_vu:
+    raw_vu = payload.get("valid_until")
+    if _route_timestamp_is_naive(raw_vu):
+        # a naive route valid_until must NOT be assumed UTC (the DB timestamptz column is
+        # tz-aware by construction; the wire value must carry its own offset).
         problems.append(
-            f"route_divergence: valid_until {payload.get('valid_until')!r} != "
-            f"expected {expected_vu.isoformat()}")
+            f"route_naive_valid_until: valid_until {raw_vu!r} carries no timezone offset "
+            "(naive) — refusing to assume UTC")
+    else:
+        try:
+            route_vu: _dt.datetime | None = _utc(raw_vu)
+        except (TypeError, ValueError, AttributeError):
+            route_vu = None
+        if route_vu != expected_vu:
+            problems.append(
+                f"route_divergence: valid_until {raw_vu!r} != "
+                f"expected {expected_vu.isoformat()}")
     for key in ("candidate_confidence", "risk_assets_weight", "defensive_assets_weight"):
         served_num = _route_number(key, payload.get(key), problems)
         if served_num is not None and served_num != _num(rec[key]):
@@ -602,6 +666,11 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
         abort_reasons.append(f"recompute_error: {type(exc).__name__}: {exc}")
         outcome = "abort"
 
+    # the expected freshness horizon is a pure function of as_of — pin it so the day
+    # record is self-substantiating (an auditor validates the artifact without re-deriving
+    # valid_until against a live clock).
+    expected_valid_until = valid_until(as_of).isoformat()
+
     # the ledger's frozen first-write hashes are pinned SIDE BY SIDE with the live
     # recompute (evidence, not an abort criterion — see _check_block).
     ledger_hashes = None
@@ -612,7 +681,7 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
         }
 
     return {
-        "artifact_type": "stage_c_supervision_day_record",
+        "artifact_type": DAY_RECORD_ARTIFACT_TYPE,
         "schema_version": 1,
         "stage": "C",
         "stage_c_id": "open_macro_v03_direct_activation_stage_c_001",
@@ -625,11 +694,24 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             "pack_v2_sha256": rec.get("pack_v2_sha256", PACK_SHA256_PIN),
             "quadrant": rec.get("quadrant"),
             "decision_validity": rec.get("decision_validity"),
-            # same treatment as the route evidence: a non-finite recomputed weight is
-            # already flagged as a nan_inf abort by _compare_pair, but the raw float
-            # would make write_day_record() (allow_nan=False) raise and the abort
-            # artifact would never be preserved — keep the EVIDENCE strict-JSON-safe.
+            "carry_seed_as_of": rec.get("carry_seed_as_of"),
+            # EVERY scalar the verifier compares field-by-field is serialized here so the
+            # bundle is self-substantiating — an auditor re-validates the day record itself
+            # instead of re-running against live inputs that have since moved. Numerics ride
+            # through _json_safe: a non-finite recomputed value is already flagged nan_inf by
+            # _compare_pair, but the raw float would make write_day_record() (allow_nan=False)
+            # raise and the abort artifact would never be preserved.
+            "candidate_confidence": _json_safe(rec.get("candidate_confidence")),
+            "coverage_quality": _json_safe(rec.get("coverage_quality")),
+            "growth_score": _json_safe(rec.get("growth_score")),
+            "inflation_score": _json_safe(rec.get("inflation_score")),
+            "risk_assets_weight": _json_safe(rec.get("risk_assets_weight")),
+            "defensive_assets_weight": _json_safe(rec.get("defensive_assets_weight")),
+            "priced_at": rec.get("priced_at"),
             "weights": _json_safe(rec.get("weights")),
+            # the expected freshness horizon compared against the published/route rows —
+            # pinned so the artifact carries its own valid_until reference.
+            "expected_valid_until": expected_valid_until,
             # the recomputed breach details are the JUSTIFICATION evidence for a
             # staleness_block_justified day (why the pause was honoured) and for a
             # staleness_bypass abort (what the worker ignored): pin them in the
@@ -662,6 +744,29 @@ def write_day_record(record: dict[str, Any], window_dir: Path | None = None) -> 
 # --------------------------------------------------------------------------- #
 # Window report
 # --------------------------------------------------------------------------- #
+def _malformed_day_record(record: dict[str, Any]) -> bool:
+    """True iff *record* lacks the identity fields ``write_day_record`` stamps and so must
+    NOT be counted toward the window. A truncated / hand-authored file that matches the
+    ``day_*.json`` glob but carries only a subset (e.g. just ``as_of`` + ``outcome`` +
+    ``route_evidence``) is an ambiguous supervision artifact: it is excluded from the count
+    and surfaced as a ``malformed_day_record``, never silently counted. Identity =
+    the exact ``artifact_type``, ``as_of``, ``outcome``, a non-empty ``verifier_commit``,
+    and (for a verified day) the ``recompute`` block."""
+    if record.get("artifact_type") != DAY_RECORD_ARTIFACT_TYPE:
+        return True
+    if not isinstance(record.get("as_of"), str) or not record.get("as_of"):
+        return True
+    if not record.get("outcome"):
+        return True
+    verifier_commit = record.get("verifier_commit")
+    if not isinstance(verifier_commit, str) or not verifier_commit.strip():
+        return True
+    if record.get("outcome") == "verified" and not isinstance(
+            record.get("recompute"), dict):
+        return True
+    return False
+
+
 def build_window_report(window_dir: Path | None = None,
                         cutover_path: Path | None = None) -> dict[str, Any]:
     """Aggregate the day records into the window report. Counted days are business
@@ -682,9 +787,16 @@ def build_window_report(window_dir: Path | None = None,
     seen_dates: set[str] = set()
     counted_dates: set[str] = set()
     duplicate_dates: list[str] = []
+    malformed_day_records: list[str] = []
     for path in sorted(window_dir.glob("day_*.json")):
         record = json.loads(path.read_text(encoding="utf-8"))
-        as_of = _dt.date.fromisoformat(record["as_of"])
+        as_of_str = record.get("as_of")
+        if not isinstance(as_of_str, str) or not as_of_str:
+            # a record without a placeable as_of cannot be positioned in the window at all;
+            # surface it by filename as malformed and skip (it never counts, never a gap).
+            malformed_day_records.append(path.name)
+            continue
+        as_of = _dt.date.fromisoformat(as_of_str)
         # The Stage C exit requirement is ten DISTINCT verified production days. The
         # pipeline writes exactly one deterministic day_{as_of}.json per date, so two
         # files naming the same as_of (e.g. a copied/attempt file committed beside the
@@ -692,20 +804,32 @@ def build_window_report(window_dir: Path | None = None,
         # supervision state: counting both could reach the target with fewer than ten
         # distinct days. Surface the duplicate and refuse completion, and count each
         # date at most once, instead of counting files.
-        if record["as_of"] in seen_dates and record["as_of"] not in duplicate_dates:
-            duplicate_dates.append(record["as_of"])
-        seen_dates.add(record["as_of"])
-        outcome = record["outcome"]
+        if as_of_str in seen_dates and as_of_str not in duplicate_dates:
+            duplicate_dates.append(as_of_str)
+        seen_dates.add(as_of_str)
+        outcome = record.get("outcome")
         is_business = as_of.weekday() < 5
         consumed = cutover_date is not None and as_of >= cutover_date
-        # a counted production day must carry the consumer-visible route leg (or
-        # pinned backend evidence): a verified day whose route evidence is
-        # "unavailable"/absent is DB-only and must not close the REAL window.
-        has_route = isinstance(record.get("route_evidence"), dict)
-        counts = outcome == "verified" and is_business and consumed and has_route
-        if counts and record["as_of"] not in counted_dates:
+        # a truncated/hand-authored file that matches the glob but lacks the identity
+        # fields write_day_record stamps is an ambiguous artifact: it must NOT count and is
+        # surfaced as a malformed_day_record (window_complete requires zero malformed).
+        malformed = _malformed_day_record(record)
+        if malformed and as_of_str not in malformed_day_records:
+            malformed_day_records.append(as_of_str)
+        # a counted production day must carry the consumer-visible route leg with a RESOLVED
+        # url (or pinned backend evidence): a verified day whose route evidence is
+        # "unavailable"/absent (DB-only) — or a dict missing a resolved url — must not close
+        # the REAL window.
+        route_evidence = record.get("route_evidence")
+        has_route_dict = isinstance(route_evidence, dict)
+        has_route_url = (has_route_dict
+                         and isinstance(route_evidence.get("url"), str)
+                         and bool(route_evidence.get("url").strip()))
+        counts = (outcome == "verified" and is_business and consumed
+                  and has_route_url and not malformed)
+        if counts and as_of_str not in counted_dates:
             counted += 1
-            counted_dates.add(record["as_of"])
+            counted_dates.add(as_of_str)
         if outcome == "abort":
             # Keep EVERY abort visible, but tag whether it lands inside the real
             # post-cutover production window. A pre-cutover (non-consumed) or non-business
@@ -713,14 +837,19 @@ def build_window_report(window_dir: Path | None = None,
             # intentionally inert — is OUTSIDE the supervised window (mirrors
             # verified-but-not-consumed) and must NOT permanently block completion; only
             # a consumed business-day abort invalidates the window (see window_complete).
-            aborts.append({"as_of": record["as_of"],
-                           "abort_reasons": record["abort_reasons"],
+            aborts.append({"as_of": as_of_str,
+                           "abort_reasons": record.get("abort_reasons", []),
                            "consumed": consumed,
                            "is_business": is_business})
         if outcome == "staleness_block_justified":
             blocks_paused += 1
-        if consumed and outcome == "verified" and not has_route:
+        if malformed:
+            note = "malformed_day_record: missing identity fields (not counted)"
+        elif consumed and outcome == "verified" and not has_route_dict:
             note = "verified_without_route_evidence: not counted (DB-only leg)"
+        elif consumed and outcome == "verified" and not has_route_url:
+            note = ("verified_without_route_url: route evidence missing a resolved url "
+                    "(not counted)")
         elif not consumed and outcome == "verified":
             note = "verified_but_not_consumed: route still inert (pre-cutover)"
         elif not (consumed and is_business) and outcome == "abort":
@@ -728,7 +857,7 @@ def build_window_report(window_dir: Path | None = None,
         else:
             note = None
         days.append({
-            "as_of": record["as_of"],
+            "as_of": as_of_str,
             "outcome": outcome,
             "counted": counts,
             "consumed": consumed,
@@ -768,9 +897,11 @@ def build_window_report(window_dir: Path | None = None,
         "aborts": aborts,
         "supervision_gaps": gaps,
         "duplicate_dates": duplicate_dates,
+        "malformed_day_records": malformed_day_records,
         "window_complete": (counted >= WINDOW_TARGET_DAYS
                             and not blocking_aborts and not gaps
-                            and not duplicate_dates),
+                            and not duplicate_dates
+                            and not malformed_day_records),
     }
 
 

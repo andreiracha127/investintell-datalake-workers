@@ -466,6 +466,15 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
     assert record["ledger_input_hashes"] is None  # no ledger row on a published day
     assert record["ledger_reason"] is None
     assert record["recompute"]["staleness_breaches"] == []  # clean recompute, pinned
+    # every scalar the verifier compares is serialized into the recompute block so the
+    # bundle is self-substantiating (round-7 hardening).
+    assert set(record["recompute"]) == {
+        "input_vintage_sha256", "input_prices_sha256", "pack_v2_sha256", "quadrant",
+        "decision_validity", "carry_seed_as_of", "candidate_confidence",
+        "coverage_quality", "growth_score", "inflation_score", "risk_assets_weight",
+        "defensive_assets_weight", "priced_at", "weights", "expected_valid_until",
+        "staleness_breaches", "candidate_id",
+    }
     assert record["verifier_commit"] == "f" * 40
     out = sv.write_day_record(record, tmp_path)
     assert out.name == f"day_{AS_OF.isoformat()}.json"
@@ -477,12 +486,24 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------- #
 # Window report
 # --------------------------------------------------------------------------- #
+ROUTE_URL = "https://backend.example/macro/open-macro-v03/allocation"
+
+
 def _write_day(dirpath: Path, as_of: str, outcome: str, reasons=(), *, route=True):
-    record = {"as_of": as_of, "outcome": outcome, "abort_reasons": list(reasons)}
-    # a counted day carries route evidence (a dict); pass route=False to model a
-    # DB-only verified day whose route_evidence was "unavailable".
-    record["route_evidence"] = ({"status_code": 200, "payload": {}} if route
-                                else "unavailable")
+    # a well-formed day record carries the identity fields write_day_record stamps
+    # (artifact_type / verifier_commit / recompute) so it counts toward the window.
+    record = {
+        "artifact_type": "stage_c_supervision_day_record",
+        "as_of": as_of,
+        "outcome": outcome,
+        "abort_reasons": list(reasons),
+        "verifier_commit": "f" * 40,
+        "recompute": {"input_vintage_sha256": "v" * 64},
+    }
+    # a counted day carries route evidence (a dict WITH a resolved url); pass route=False
+    # to model a DB-only verified day whose route_evidence was "unavailable".
+    record["route_evidence"] = ({"url": ROUTE_URL, "status_code": 200, "payload": {}}
+                                if route else "unavailable")
     (dirpath / f"day_{as_of}.json").write_text(json.dumps(record), encoding="utf-8")
 
 
@@ -783,13 +804,17 @@ def test_duplicate_day_file_counts_once_and_blocks_completion(tmp_path):
     days = _business_days(_dt.date(2026, 7, 6), 10)
     for day in days:
         _write_day(window, day, "verified")
-    # a copied/attempt file naming an already-counted business day (matches day_*.json)
-    dup = {"as_of": days[0], "outcome": "verified", "abort_reasons": [],
-           "route_evidence": {"status_code": 200, "payload": {}}}
+    # a copied/attempt file naming an already-counted business day (matches day_*.json) —
+    # itself a well-formed record, so the ONLY defect surfaced is the duplicate date.
+    dup = {"artifact_type": "stage_c_supervision_day_record", "as_of": days[0],
+           "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+           "recompute": {"input_vintage_sha256": "v" * 64},
+           "route_evidence": {"url": ROUTE_URL, "status_code": 200, "payload": {}}}
     (window / f"day_{days[0]}_attempt.json").write_text(json.dumps(dup), encoding="utf-8")
     report = sv.build_window_report(window, cutover)
     assert report["counted_days"] == 10  # not 11: the duplicate date is counted once
     assert report["duplicate_dates"] == [days[0]]
+    assert report["malformed_day_records"] == []  # both files are well-formed
     assert report["window_complete"] is False
 
 
@@ -877,9 +902,13 @@ def test_duplicate_json_keys_in_route_payload_diverge():
     # nested objects are covered too
     with pytest.raises(sv._AmbiguousRoutePayload):
         sv._parse_route_payload(200, '{"p": {"weight": 0.1, "weight": 0.39}}')
-    # clean payloads and non-JSON bodies keep their existing behaviour
+    # clean payloads still parse; a non-JSON body is now PRESERVED as evidence (a
+    # _NonJSONRouteBody carrying the raw bytes) instead of being discarded as None.
     assert sv._parse_route_payload(200, '{"a": 1}') == {"a": 1}
-    assert sv._parse_route_payload(502, "Bad Gateway") is None
+    non_json = sv._parse_route_payload(502, "Bad Gateway")
+    assert isinstance(non_json, sv._NonJSONRouteBody)
+    assert non_json.raw_body == "Bad Gateway"
+    assert non_json.parse_error
 
 
 def test_route_duplicate_key_payload_aborts_with_wire_evidence(monkeypatch):
@@ -967,6 +996,182 @@ def test_route_evidence_pins_the_resolved_url(monkeypatch):
 
     # trailing slash normalizes to the same resolved URL
     assert sv._route_url("https://backend.example/") == expected
+
+
+# --------------------------------------------------------------------------- #
+# Round-7 review hardening
+# --------------------------------------------------------------------------- #
+def test_verified_without_route_url_does_not_count(tmp_path):
+    """A verified day whose route_evidence is a dict but carries NO resolved url must not
+    count toward the REAL window (a counted day pins WHICH host served the evidence)."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    # route evidence present as a dict but WITHOUT a resolved url
+    record = {"artifact_type": "stage_c_supervision_day_record", "as_of": days[9],
+              "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+              "recompute": {"input_vintage_sha256": "v" * 64},
+              "route_evidence": {"status_code": 200, "payload": {}}}  # no url
+    (window / f"day_{days[9]}.json").write_text(json.dumps(record), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    no_url = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert no_url["counted"] is False
+    assert no_url["note"] == ("verified_without_route_url: route evidence missing a "
+                              "resolved url (not counted)")
+
+
+def test_empty_url_route_evidence_does_not_count(tmp_path):
+    """An empty-string url is treated the same as a missing url — not a resolved host."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    day = _business_days(_dt.date(2026, 7, 6), 1)[0]
+    record = {"artifact_type": "stage_c_supervision_day_record", "as_of": day,
+              "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+              "recompute": {"input_vintage_sha256": "v" * 64},
+              "route_evidence": {"url": "  ", "status_code": 200, "payload": {}}}
+    (window / f"day_{day}.json").write_text(json.dumps(record), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 0
+
+
+def test_route_naive_valid_until_aborts(monkeypatch):
+    """A route valid_until without a timezone offset (naive) must abort as
+    route_naive_valid_until — never be silently assumed UTC (the DB column is timestamptz;
+    the wire value must carry its own offset)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    naive = VU.replace(tzinfo=None).isoformat()  # e.g. "2026-07-08T14:00:00" — no offset
+    assert "+" not in naive and not naive.endswith("Z")
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(valid_until=naive)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_naive_valid_until" in r for r in record["abort_reasons"])
+
+
+def test_db_naive_valid_until_still_assumed_utc(monkeypatch):
+    """The DB leg is UNCHANGED: its timestamptz column is tz-aware, so a naive value is
+    still assumed UTC — the naive-rejection is ROUTE-only."""
+    naive_vu = VU.replace(tzinfo=None)
+    conn = _FakeConn(_responder(decision=_decision_tuple(valid_until=naive_vu),
+                                allocation=_allocation_tuple(valid_until=naive_vu)))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+
+
+def test_recompute_block_serializes_all_compared_scalars(monkeypatch, tmp_path):
+    """The recompute block pins every compared scalar (round-7): candidate_confidence,
+    risk/defensive weights, priced_at, carry_seed_as_of, and the expected valid_until —
+    so the bundle is self-substantiating and round-trips under strict JSON."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    rc = record["recompute"]
+    assert rc["candidate_confidence"] == 0.81
+    assert rc["coverage_quality"] == 1.0
+    assert rc["growth_score"] == 0.2
+    assert rc["inflation_score"] == -0.1
+    assert rc["risk_assets_weight"] == 0.50
+    assert rc["defensive_assets_weight"] == 0.39
+    assert rc["priced_at"] == "2026-07-02"
+    assert rc["carry_seed_as_of"] == "2026-06-30"
+    assert rc["expected_valid_until"] == VU.isoformat()
+    out = sv.write_day_record(record, tmp_path)
+    assert json.loads(out.read_text(encoding="utf-8")) == record
+
+
+def test_malformed_day_record_is_flagged_and_not_counted(tmp_path):
+    """A truncated/hand-authored file (only as_of + outcome + route_evidence) matching the
+    day_*.json glob must NOT count and must be surfaced as a malformed_day_record; the
+    report is not aborted, only the offending day is excluded and flagged."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    truncated = {"as_of": days[9], "outcome": "verified", "route_evidence": {}}
+    (window / f"day_{days[9]}.json").write_text(json.dumps(truncated), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["malformed_day_records"] == [days[9]]
+    assert report["window_complete"] is False
+    bad = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert bad["counted"] is False
+    assert bad["note"] == "malformed_day_record: missing identity fields (not counted)"
+
+
+def test_clean_window_has_no_malformed_records(tmp_path):
+    """The identity guard is inert on a normal well-formed window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    for day in _business_days(_dt.date(2026, 7, 6), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["malformed_day_records"] == []
+    assert report["window_complete"] is True
+
+
+def test_non_json_route_body_preserved_as_evidence(monkeypatch):
+    """A non-JSON route body (an HTML error page served with 200) must abort
+    route_non_json_body with the raw offending body preserved in route_evidence — never
+    silently discarded as None."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    html = "<html><body>502 Bad Gateway</body></html>"
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, sv._parse_route_payload(200, html)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_non_json_body" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_body"] == html
+    assert record["route_evidence"]["payload"] is None
+    assert record["route_evidence"]["parse_error"]
+    assert record["route_evidence"]["url"].endswith("/macro/open-macro-v03/allocation")
+
+
+def test_non_json_route_body_is_truncated(monkeypatch):
+    """A very large non-JSON body is truncated to a bounded evidence size."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    big = "x" * 5000
+    body = sv._parse_route_payload(200, big)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, body))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    raw = record["route_evidence"]["raw_body"]
+    assert raw.startswith("x" * 100)
+    assert len(raw) <= sv.ROUTE_BODY_EVIDENCE_MAX + len("…(truncated)")
+
+
+def test_non_json_404_body_still_reads_as_inactive(monkeypatch):
+    """A 404 whose body is non-JSON (a typical HTML 404 page) still surfaces as route
+    inactivity, with the offending body preserved as evidence."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    body = sv._parse_route_payload(404, "<html>404 Not Found</html>")
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (404, body))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_inactive_during_window" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_body"] == "<html>404 Not Found</html>"
 
 
 # --------------------------------------------------------------------------- #
