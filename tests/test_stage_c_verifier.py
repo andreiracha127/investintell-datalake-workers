@@ -145,7 +145,62 @@ def _stub_pack_bytes(monkeypatch):
 
 
 def _patch_recompute(monkeypatch, rec):
-    monkeypatch.setattr(sv, "recompute", lambda conn, as_of: rec)
+    # recompute now takes an optional price_upper_bound kwarg (published-pair branch);
+    # the stub tolerates and ignores it.
+    monkeypatch.setattr(sv, "recompute", lambda conn, as_of, **kw: rec)
+
+
+def _sleeve_panel(dates):
+    """A minimal usable sleeve price panel: every sleeve ticker priced (non-NaN) on each
+    date. Shape mirrors format_eod_price_rows (ticker/date/close/adjusted_close/volume);
+    PriceFrame reads adjusted_close."""
+    return [{"ticker": t, "date": d, "close": 100.0, "adjusted_close": 100.0,
+             "volume": 1000.0}
+            for d in dates for t in sv.SLEEVE_TICKERS]
+
+
+def _allocation_from(alloc, **over):
+    """Build an allocation tuple whose weights/priced_at/risk-defensive match a real
+    build_allocation() result (so a real-recompute day verifies)."""
+    w = alloc["weights"]
+    base = dict(w_spy=w["SPY"], w_tlt=w["TLT"], w_tip=w["TIP"], w_gld=w["GLD"],
+                w_dbc=w["DBC"], w_shy=w["SHY"],
+                risk_assets_weight=alloc["risk_assets_weight"],
+                defensive_assets_weight=alloc["defensive_assets_weight"],
+                priced_at=alloc["priced_at"])
+    base.update(over)
+    return _allocation_tuple(**base)
+
+
+def _advanced_price_scenario(monkeypatch):
+    """Stub the recompute sub-helpers for a PAST published day whose DB prices have
+    ADVANCED: a later full sleeve close (2026-07-06) now exists beyond the published
+    priced_at (2026-07-02). Only compose_inputs/staleness/module-pins and the vintage
+    decision chain are stubbed — build_allocation stays REAL so the price bounding and the
+    six-price gate are exercised for real. Returns (h_vintage, h_prices, expected_alloc,
+    advanced_panel)."""
+    from src.workers.open_macro_v03 import build_allocation as real_alloc
+    vintage_rows = [{"series_id": "GDP", "available_at": "2026-07-01T00:00:00+00:00",
+                     "value": 1.0}]
+    advanced = _sleeve_panel(["2026-06-30", "2026-07-01", "2026-07-02", "2026-07-06"])
+    bounded = [r for r in advanced if r["date"][:10] <= "2026-07-02"]
+    monkeypatch.setattr(sv, "compose_inputs",
+                        lambda conn, as_of: (list(vintage_rows), list(advanced)))
+    monkeypatch.setattr(sv, "staleness_report", lambda v, p, a: {"breaches": []})
+    monkeypatch.setattr(sv, "_expected_module_pins_sha256", lambda: MODULE_PINS_SHA)
+    monkeypatch.setattr(sv, "run_decision_series", lambda v, s, a: ["chain"])
+
+    class _Last:
+        quadrant = "expansion"
+        candidate_confidence = 0.81
+        coverage_quality = 1.0
+        growth_score = 0.2
+        inflation_score = -0.1
+
+    monkeypatch.setattr(sv, "consumable_today",
+                        lambda chain, a: (_Last(), "carried", _dt.date(2026, 6, 30)))
+    return (sv._canonical_sha256(vintage_rows), sv._canonical_sha256(bounded),
+            real_alloc("expansion", bounded, AS_OF), advanced)
 
 
 # --------------------------------------------------------------------------- #
@@ -662,7 +717,7 @@ def test_recompute_exception_becomes_an_abort_record(monkeypatch):
     conn = _FakeConn(_responder(decision=_decision_tuple(),
                                 allocation=_allocation_tuple()))
 
-    def _boom(conn, as_of):
+    def _boom(conn, as_of, **kw):
         raise RuntimeError("prefix-hash drift")
 
     monkeypatch.setattr(sv, "recompute", _boom)
@@ -1273,8 +1328,9 @@ def test_pack_bytes_mismatch_aborts(monkeypatch, tmp_path):
     monkeypatch.setattr(sv, "verify_pack_bytes",
                         lambda *a, **k: real_verify_pack_bytes(pack=tmp_pack))
     calls: list[str] = []
-    monkeypatch.setattr(sv, "recompute",
-                        lambda conn, as_of: calls.append("recompute") or _recompute())
+    monkeypatch.setattr(
+        sv, "recompute",
+        lambda conn, as_of, **kw: calls.append("recompute") or _recompute())
     conn = _FakeConn(_responder(decision=_decision_tuple(),
                                 allocation=_allocation_tuple()))
     record = sv.verify_day(conn, AS_OF)
@@ -1358,6 +1414,122 @@ def test_route_backfill_day_does_not_count(tmp_path):
     assert day["counted"] is False
     assert day["note"] == ("route_backfill_not_servable: current-only route serves a "
                            "later as_of (historical day not counted)")
+
+
+# Fix 4 — a past supervised day stays reproducible after eod_prices advances
+# (the inputs-side twin of the L394 route backfill): the sleeve PRICE recompute is
+# bounded to the PUBLISHED priced_at.
+def test_verify_day_bounds_prices_to_published_priced_at(monkeypatch):
+    """verify_day extracts the published allocation priced_at and passes it as the sleeve
+    price recompute bound."""
+    captured = {}
+
+    def _spy(conn, as_of, *, price_upper_bound=None):
+        captured["bound"] = price_upper_bound
+        return _recompute()
+
+    monkeypatch.setattr(sv, "recompute", _spy)
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple(priced_at=_dt.date(2026, 7, 2))))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+    assert captured["bound"] == _dt.date(2026, 7, 2)
+
+
+def test_recompute_drops_prices_after_published_priced_at(monkeypatch):
+    """recompute with a price_upper_bound drops every sleeve close later than priced_at
+    BEFORE build_allocation sees the panel, and hashes only the bounded panel."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    seen = {}
+
+    def _capture(quadrant, price_rows, as_of):
+        seen["dates"] = sorted({r["date"][:10] for r in price_rows})
+        return exp
+
+    monkeypatch.setattr(sv, "build_allocation", _capture)
+    rec = sv.recompute(None, AS_OF, price_upper_bound=_dt.date(2026, 7, 2))
+    assert seen["dates"] == ["2026-06-30", "2026-07-01", "2026-07-02"]  # 07-06 dropped
+    assert rec["input_prices_sha256"] == h_prices
+    assert rec["priced_at"] == "2026-07-02"
+
+
+def test_recompute_without_price_bound_keeps_the_asof_panel(monkeypatch):
+    """Without a bound (staleness-block / no-allocation branch), the price panel keeps the
+    as_of bound — the fix is scoped to published pairs and demonstrates the bug it fixes:
+    the unbounded panel recomputes the LATER priced_at (2026-07-06)."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    rec = sv.recompute(None, AS_OF)  # no bound
+    assert rec["priced_at"] == "2026-07-06"  # would spuriously diverge vs published 07-02
+    assert rec["input_prices_sha256"] == sv._canonical_sha256(advanced)
+
+
+def test_reverify_past_day_with_advanced_prices_still_verifies(monkeypatch):
+    """(a) Re-verifying a past published day AFTER eod_prices advanced still VERIFIES: the
+    sleeve price panel is bounded to the published priced_at so priced_at and
+    input_prices_sha256 reproduce (real build_allocation runs on the bounded panel)."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(input_vintage_sha256=h_vintage,
+                                 input_prices_sha256=h_prices),
+        allocation=_allocation_from(exp, input_prices_sha256=h_prices)))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified", record["abort_reasons"]
+    assert record["recompute"]["priced_at"] == "2026-07-02"
+    assert record["recompute"]["input_prices_sha256"] == h_prices
+
+
+def test_reverify_six_price_gate_runs_against_the_bounded_panel(monkeypatch):
+    """(b) The 'all six sleeve tickers priced at a single date' gate runs against the
+    BOUNDED panel: if no bounded date prices the full sleeve, real build_allocation refuses
+    and the day aborts — even though the LATER (excluded) close would price all six."""
+    from src.workers.open_macro_v03 import build_allocation as real_alloc
+    vintage_rows = [{"series_id": "GDP", "available_at": "2026-07-01T00:00:00+00:00",
+                     "value": 1.0}]
+    rows = _sleeve_panel(["2026-07-06"])  # full sleeve, but BEYOND the priced_at bound
+    for d, missing in {"2026-06-30": "SPY", "2026-07-01": "TLT",
+                       "2026-07-02": "SHY"}.items():  # each bounded date drops one ticker
+        rows += [{"ticker": t, "date": d, "close": 100.0, "adjusted_close": 100.0,
+                  "volume": 1000.0} for t in sv.SLEEVE_TICKERS if t != missing]
+    monkeypatch.setattr(sv, "compose_inputs",
+                        lambda conn, as_of: (list(vintage_rows), list(rows)))
+    monkeypatch.setattr(sv, "staleness_report", lambda v, p, a: {"breaches": []})
+    monkeypatch.setattr(sv, "_expected_module_pins_sha256", lambda: MODULE_PINS_SHA)
+    monkeypatch.setattr(sv, "run_decision_series", lambda v, s, a: ["chain"])
+
+    class _Last:
+        quadrant = "expansion"
+        candidate_confidence = 0.81
+        coverage_quality = 1.0
+        growth_score = 0.2
+        inflation_score = -0.1
+
+    monkeypatch.setattr(sv, "consumable_today",
+                        lambda chain, a: (_Last(), "carried", _dt.date(2026, 6, 30)))
+    monkeypatch.setattr(sv, "build_allocation", real_alloc)  # REAL six-price gate
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple(priced_at=_dt.date(2026, 7, 2))))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("recompute_error" in r and "full sleeve" in r
+               for r in record["abort_reasons"])
+
+
+def test_reverify_vintage_drift_still_aborts(monkeypatch):
+    """(c) The bound is PRICE-only: prices reproduce, but a genuine vintage drift on the
+    re-run (published input_vintage_sha256 != recomputed) is still a legitimate abort,
+    never masked by the price reproduction."""
+    h_vintage, h_prices, exp, advanced = _advanced_price_scenario(monkeypatch)
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(input_vintage_sha256="d" * 64,
+                                 input_prices_sha256=h_prices),
+        allocation=_allocation_from(exp, input_prices_sha256=h_prices)))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("input_hash_mismatch: decision.input_vintage_sha256" in r
+               for r in record["abort_reasons"])
+    # prices reproduced — the price/priced_at legs do NOT mask the vintage drift
+    assert not any("input_prices_sha256" in r for r in record["abort_reasons"])
+    assert not any("priced_at" in r for r in record["abort_reasons"])
 
 
 # --------------------------------------------------------------------------- #

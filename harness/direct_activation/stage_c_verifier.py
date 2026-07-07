@@ -197,10 +197,44 @@ def _expected_module_pins_sha256() -> str:
     return pins["module_pins_sha256"]
 
 
-def recompute(conn, as_of: _dt.date) -> dict[str, Any]:
+def recompute(conn, as_of: _dt.date, *,
+              price_upper_bound: _dt.date | None = None) -> dict[str, Any]:
     """Recompute the day's logical outputs from pinned inputs — the SAME helpers the
-    worker uses (imported), so parity is by construction, divergence is evidence."""
+    worker uses (imported), so parity is by construction, divergence is evidence.
+
+    Reproducibility of a PAST supervised day (the inputs-side twin of the current-only
+    route backfill in check_route): eod_prices ADVANCES over time. A business day is
+    published pricing at the last common sleeve close available that morning, but by the
+    time the day is re-verified the DB already carries LATER closes. Composing the sleeve
+    price panel with the naive ``<= as_of`` bound would then admit those later closes,
+    recompute a LATER priced_at, and diverge input_prices_sha256 — a spurious abort that
+    makes committed evidence non-re-verifiable the moment prices move. So when the
+    published priced_at is known (``price_upper_bound``, from the allocation row) the
+    sleeve PRICE panel is bounded to it: historical closes are immutable, so the panel
+    reproduces EXACTLY what the worker read and priced_at / input_prices_sha256 match for
+    ANY re-run on ANY later day. For the current day (as_of == publish day, priced_at ==
+    the current last common close) the bound is a no-op — behaviour is identical.
+
+    Only the PRICE leg takes this bound. The VINTAGE delta stays bounded by as_of and the
+    published input_vintage_sha256 is still compared field-by-field, so a genuine vintage
+    drift on a re-run is a LEGITIMATE abort, never masked here.
+
+    Non-circular by construction: priced_at determines NO weight. The weights come from
+    the recomputed quadrant (an independent function of the vintages — itself hashed and
+    compared) and the fixed compressed_50 book; priced_at only selects the pricing snapshot
+    and which tickers carry a usable price. Bounding the recompute to priced_at therefore
+    cannot let a wrong weight pass: a tampered priced_at would still have to agree with the
+    independently recomputed quadrant/weights AND the input_vintage_sha256 comparison. The
+    "all six sleeve tickers priced (non-NaN) at a single date" gate inside build_allocation
+    runs against this BOUNDED panel, unchanged."""
     vintage_rows, price_rows = compose_inputs(conn, as_of)
+    if price_upper_bound is not None:
+        # reproduce the worker's price panel: drop any sleeve close LATER than the
+        # published priced_at (eod_prices may have advanced since publication). Historical
+        # closes are immutable, so the bounded panel is byte-identical to what the worker
+        # composed at publish time.
+        bound = price_upper_bound.isoformat()
+        price_rows = [row for row in price_rows if row["date"][:10] <= bound]
     report = staleness_report(vintage_rows, price_rows, as_of)
     result: dict[str, Any] = {
         "input_vintage_sha256": _canonical_sha256(vintage_rows),
@@ -698,6 +732,20 @@ def _published_provenance(decision: dict | None,
     return {"decision": _pick(decision), "allocation": _pick(allocation)}
 
 
+def _published_priced_at(allocation: dict | None) -> _dt.date | None:
+    """The published allocation's ``priced_at`` as a date — the upper bound for the sleeve
+    price recompute (see recompute's reproducibility note). ``None`` when absent/unparseable
+    (then the recompute falls back to the as_of bound and any priced_at/price-hash
+    divergence surfaces normally, never masked)."""
+    raw = allocation.get("priced_at") if allocation is not None else None
+    if raw is None:
+        return None
+    try:
+        return _dt.date.fromisoformat(_date_iso(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict[str, Any]:
     """One supervised day: classify, recompute, compare. Returns the day record."""
     decision, allocation, ledger = fetch_day(conn, as_of)
@@ -738,7 +786,11 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             present = "decision" if decision is not None else "allocation"
             abort_reasons.append(f"partial_pair: only the {present} row exists")
         else:
-            rec = recompute(conn, as_of)
+            # bound the sleeve PRICE recompute to the PUBLISHED priced_at so a past day
+            # stays reproducible after eod_prices advances (see recompute's note); the
+            # vintage leg stays as_of-bounded and its hash is still compared.
+            rec = recompute(conn, as_of,
+                            price_upper_bound=_published_priced_at(allocation))
             abort_reasons.extend(_compare_pair(decision, allocation, rec, as_of))
             # The route leg runs ONLY while the day is still clean after the DB
             # comparison. A DB-divergent day aborts regardless of what the route
