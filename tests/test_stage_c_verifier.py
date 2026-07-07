@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,11 @@ VU = valid_until(AS_OF)
 
 VINTAGE_SHA = "v" * 64
 PRICES_SHA = "p" * 64
+# the provenance pins the worker stamps on every published row: the signed pack pin and
+# the canonical module-pins hash. The fakes carry matching values so the default pair
+# verifies; a divergence test overrides one side.
+PACK_SHA = sv.PACK_SHA256_PIN
+MODULE_PINS_SHA = "m" * 64
 
 WEIGHTS = {"SPY": 0.39, "TLT": 0.11, "TIP": 0.14, "GLD": 0.11, "DBC": 0.11, "SHY": 0.14}
 
@@ -66,6 +72,7 @@ def _decision_tuple(**over):
         "coverage_quality": 1.0, "growth_score": 0.2, "inflation_score": -0.1,
         "input_vintage_sha256": VINTAGE_SHA, "input_prices_sha256": PRICES_SHA,
         "publish_state": "published", "valid_status": "valid", "valid_until": VU,
+        "pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA,
     }
     base.update(over)
     return tuple(base[c] for c in sv._DECISION_COLS)
@@ -79,6 +86,7 @@ def _allocation_tuple(**over):
         "defensive_assets_weight": 0.39, "priced_at": _dt.date(2026, 7, 2),
         "input_prices_sha256": PRICES_SHA, "publish_state": "published",
         "valid_status": "valid", "valid_until": VU,
+        "pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA,
     }
     base.update(over)
     return tuple(base[c] for c in sv._ALLOCATION_COLS)
@@ -108,6 +116,7 @@ def _recompute(breaches=(), **over):
         "input_vintage_sha256": VINTAGE_SHA,
         "input_prices_sha256": PRICES_SHA,
         "pack_v2_sha256": sv.PACK_SHA256_PIN,
+        "module_pins_sha256": MODULE_PINS_SHA,
         "staleness_breaches": list(breaches),
     }
     if not breaches:
@@ -125,6 +134,14 @@ def _recompute(breaches=(), **over):
 @pytest.fixture(autouse=True)
 def _pin_commit(monkeypatch):
     monkeypatch.setattr(sv, "code_commit", lambda: "f" * 40)
+
+
+@pytest.fixture(autouse=True)
+def _stub_pack_bytes(monkeypatch):
+    """The pack-byte integrity gate reads the committed pack from disk; stub it to a
+    no-op for the hermetic unit tests (no filesystem dependency). The REAL gate is
+    exercised against a mutated tmp pack in test_pack_bytes_mismatch_aborts."""
+    monkeypatch.setattr(sv, "verify_pack_bytes", lambda *a, **k: None)
 
 
 def _patch_recompute(monkeypatch, rec):
@@ -461,15 +478,17 @@ def test_day_record_schema_and_serialization(monkeypatch, tmp_path):
     assert set(record) == {
         "artifact_type", "schema_version", "stage", "stage_c_id", "as_of", "outcome",
         "abort_reasons", "recompute", "ledger_reason", "ledger_input_hashes",
-        "route_evidence", "verifier_commit",
+        "published_provenance", "route_evidence", "verifier_commit",
     }
     assert record["ledger_input_hashes"] is None  # no ledger row on a published day
     assert record["ledger_reason"] is None
     assert record["recompute"]["staleness_breaches"] == []  # clean recompute, pinned
     # every scalar the verifier compares is serialized into the recompute block so the
-    # bundle is self-substantiating (round-7 hardening).
+    # bundle is self-substantiating (round-7 hardening) — plus the EXPECTED module-pins
+    # hash beside the signed pack pin (round-8).
     assert set(record["recompute"]) == {
-        "input_vintage_sha256", "input_prices_sha256", "pack_v2_sha256", "quadrant",
+        "input_vintage_sha256", "input_prices_sha256", "pack_v2_sha256",
+        "module_pins_sha256", "quadrant",
         "decision_validity", "carry_seed_as_of", "candidate_confidence",
         "coverage_quality", "growth_score", "inflation_score", "risk_assets_weight",
         "defensive_assets_weight", "priced_at", "weights", "expected_valid_until",
@@ -1172,6 +1191,173 @@ def test_non_json_404_body_still_reads_as_inactive(monkeypatch):
     assert record["outcome"] == "abort"
     assert any("route_inactive_during_window" in r for r in record["abort_reasons"])
     assert record["route_evidence"]["raw_body"] == "<html>404 Not Found</html>"
+
+
+# --------------------------------------------------------------------------- #
+# Round-8 review hardening
+# --------------------------------------------------------------------------- #
+# Fix 1 — published provenance pins are compared (not just logical outputs)
+def test_stale_published_module_pins_aborts(monkeypatch):
+    """A published row with correct logical outputs but a STALE/forged module_pins_sha256
+    (stamped by a different pin bundle) must abort provenance_pin_mismatch — not verify."""
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(module_pins_sha256="z" * 64),
+        allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("provenance_pin_mismatch: decision.module_pins_sha256" in r
+               for r in record["abort_reasons"])
+
+
+def test_stale_published_pack_pin_aborts(monkeypatch):
+    """A published pack_v2_sha256 diverging from the signed PACK_SHA256_PIN aborts."""
+    conn = _FakeConn(_responder(
+        decision=_decision_tuple(),
+        allocation=_allocation_tuple(pack_v2_sha256="z" * 64)))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("provenance_pin_mismatch: allocation.pack_v2_sha256" in r
+               for r in record["abort_reasons"])
+
+
+def test_published_provenance_is_pinned_in_the_day_record(monkeypatch):
+    """The day record pins the PUBLISHED provenance pins beside the EXPECTED ones so a
+    provenance_pin_mismatch (or a clean pass) is validated from the artifact itself."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "verified"
+    assert record["published_provenance"] == {
+        "decision": {"pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA},
+        "allocation": {"pack_v2_sha256": PACK_SHA, "module_pins_sha256": MODULE_PINS_SHA},
+    }
+    assert record["recompute"]["module_pins_sha256"] == MODULE_PINS_SHA
+    assert record["recompute"]["pack_v2_sha256"] == PACK_SHA
+
+
+def test_expected_module_pins_matches_the_worker_source_of_truth():
+    """The verifier derives the EXPECTED module_pins_sha256 from the SAME source of truth
+    the worker stamps from (the committed module_pins.json, after verify_module_pins)."""
+    from src.workers.open_macro_v03 import PINS_PATH, _load_json, verify_module_pins
+    pins = _load_json(PINS_PATH)
+    verify_module_pins(pins)
+    assert sv._expected_module_pins_sha256() == pins["module_pins_sha256"]
+
+
+# Fix 2 — the pack BYTES are verified before recomputing against them
+def test_pack_bytes_mismatch_aborts(monkeypatch, tmp_path):
+    """A drifted committed pack — a single mutated canonical byte, still named by the
+    signed PACK_SHA256_PIN in the manifest — must abort pack_bytes_mismatch BEFORE the
+    recompute reads the mutated bytes (verify_pack_bytes runs once per day)."""
+    from harness.direct_activation.live_validation import PACK
+    from src.workers.open_macro_v03 import verify_pack_bytes as real_verify_pack_bytes
+
+    tmp_pack = tmp_path / "pack"
+    shutil.copytree(PACK, tmp_pack)
+    target = tmp_pack / "data" / "canonical" / "eod_prices.json"
+    data = bytearray(target.read_bytes())
+    i = len(data) - 1
+    while i >= 0 and data[i] in (0x0A, 0x0D):  # skip trailing newline bytes
+        i -= 1
+    data[i] ^= 0x01  # flip exactly one content byte
+    target.write_bytes(bytes(data))
+
+    # the real byte gate detects the drift directly
+    with pytest.raises(sv.OpenMacroV03Error):
+        real_verify_pack_bytes(pack=tmp_pack)
+
+    # and verify_day surfaces it as a pack_bytes_mismatch abort, never recomputing
+    monkeypatch.setattr(sv, "verify_pack_bytes",
+                        lambda *a, **k: real_verify_pack_bytes(pack=tmp_pack))
+    calls: list[str] = []
+    monkeypatch.setattr(sv, "recompute",
+                        lambda conn, as_of: calls.append("recompute") or _recompute())
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("pack_bytes_mismatch" in r for r in record["abort_reasons"])
+    assert calls == []  # aborted BEFORE the recompute read the mutated bytes
+
+
+# Fix 3 — current-only route: backfill of an earlier day is not a spurious divergence
+def test_route_served_equals_asof_still_full_compares(monkeypatch):
+    """served as_of == requested → the full consumer-visible compare still runs; a
+    quadrant divergence aborts (the fail-loud current-day path is unchanged)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(quadrant="contraction")))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: quadrant" in r for r in record["abort_reasons"])
+
+
+def test_route_backfill_served_later_is_not_a_divergence(monkeypatch):
+    """When production has advanced (route serves a LATER as_of than requested), the
+    current-only route cannot serve the historical pair: record backfill evidence, do NOT
+    abort, and the DB recompute leg still verifies normally."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    later = _route_payload(as_of="2026-07-07")  # served > requested (2026-07-06)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, later))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "verified"  # DB leg clean; route leg not an abort
+    assert record["abort_reasons"] == []
+    ev = record["route_evidence"]
+    assert ev["served_as_of"] == "2026-07-07"
+    assert ev["route_backfill_not_servable"] is True
+    assert ev["note"] == ("route_advanced_backfill: live route serves 2026-07-07, "
+                          "cannot serve historical 2026-07-06")
+
+
+def test_route_served_before_asof_aborts(monkeypatch):
+    """A route serving an EARLIER as_of than requested cannot serve the requested pair at
+    all — a route_stale_before_asof abort (the current-only route cannot serve a future
+    pair)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    earlier = _route_payload(as_of="2026-07-03")  # served < requested (2026-07-06)
+    monkeypatch.setattr(sv, "_fetch_route", lambda url: (200, earlier))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_stale_before_asof" in r for r in record["abort_reasons"])
+
+
+def test_route_backfill_day_does_not_count(tmp_path):
+    """A verified day whose route evidence is route_backfill_not_servable must NOT count
+    toward the window even though it carries a resolved url (the current day proves the
+    consumed leg, not a backfill re-run)."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 10)
+    for day in days[:9]:
+        _write_day(window, day, "verified")
+    backfill = {
+        "artifact_type": "stage_c_supervision_day_record", "as_of": days[9],
+        "outcome": "verified", "abort_reasons": [], "verifier_commit": "f" * 40,
+        "recompute": {"input_vintage_sha256": "v" * 64},
+        "route_evidence": {"url": ROUTE_URL, "status_code": 200, "payload": {},
+                           "served_as_of": "2026-07-30",
+                           "route_backfill_not_servable": True,
+                           "note": "route_advanced_backfill: ..."},
+    }
+    (window / f"day_{days[9]}.json").write_text(json.dumps(backfill), encoding="utf-8")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 9
+    assert report["window_complete"] is False
+    day = next(d for d in report["days"] if d["as_of"] == days[9])
+    assert day["counted"] is False
+    assert day["note"] == ("route_backfill_not_servable: current-only route serves a "
+                           "later as_of (historical day not counted)")
 
 
 # --------------------------------------------------------------------------- #

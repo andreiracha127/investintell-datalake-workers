@@ -57,13 +57,18 @@ from src.workers.open_macro_v03 import (
     BOOK,
     CANDIDATE_ID,
     PACK_SHA256_PIN,
+    PINS_PATH,
+    OpenMacroV03Error,
     _canonical_sha256,
+    _load_json,
     build_allocation,
     code_commit,
     compose_inputs,
     pin_search_path,
     resolve_as_of,
     valid_until,
+    verify_module_pins,
+    verify_pack_bytes,
 )
 from harness.direct_activation.live_validation import (
     CHAIN_START,
@@ -95,23 +100,26 @@ _DECISION_COLS = (
     "quadrant", "decision_validity", "carry_seed_as_of", "candidate_confidence",
     "coverage_quality", "growth_score", "inflation_score", "input_vintage_sha256",
     "input_prices_sha256", "publish_state", "valid_status", "valid_until",
+    "pack_v2_sha256", "module_pins_sha256",
 )
 _ALLOCATION_COLS = (
     "book", "w_spy", "w_tlt", "w_tip", "w_gld", "w_dbc", "w_shy",
     "risk_assets_weight", "defensive_assets_weight", "priced_at",
     "input_prices_sha256", "publish_state", "valid_status", "valid_until",
+    "pack_v2_sha256", "module_pins_sha256",
 )
 _LEDGER_COLS = ("reason", "input_vintage_sha256", "input_prices_sha256")
 
 _DECISION_SQL = (
     "SELECT quadrant, decision_validity, carry_seed_as_of, candidate_confidence, "
     "coverage_quality, growth_score, inflation_score, input_vintage_sha256, "
-    "input_prices_sha256, publish_state, valid_status, valid_until "
+    "input_prices_sha256, publish_state, valid_status, valid_until, "
+    "pack_v2_sha256, module_pins_sha256 "
     "FROM open_macro_v03_decisions WHERE as_of = %s")
 _ALLOCATION_SQL = (
     "SELECT book, w_spy, w_tlt, w_tip, w_gld, w_dbc, w_shy, risk_assets_weight, "
     "defensive_assets_weight, priced_at, input_prices_sha256, publish_state, "
-    "valid_status, valid_until "
+    "valid_status, valid_until, pack_v2_sha256, module_pins_sha256 "
     "FROM open_macro_v03_allocations WHERE as_of = %s")
 _LEDGER_SQL = (
     "SELECT reason, input_vintage_sha256, input_prices_sha256 "
@@ -176,6 +184,19 @@ def _finite_or_none(name: str, value: Any, problems: list[str]) -> None:
 # --------------------------------------------------------------------------- #
 # Independent recomputation
 # --------------------------------------------------------------------------- #
+def _expected_module_pins_sha256() -> str:
+    """The canonical ``module_pins_sha256`` the worker STAMPS on every published row —
+    read from the SAME source of truth the worker uses (the committed ``module_pins.json``
+    under the Stage B artifact root), AFTER ``verify_module_pins`` confirms the pin bundle
+    is intact: the complete worker-owned module closure, each module's CRLF→LF sha256
+    against the tree, the certified pack block, and a self-consistent aggregate. A
+    published row whose ``module_pins_sha256`` diverges from this value carries STALE or
+    forged provenance (stamped by a different pin bundle) and aborts."""
+    pins = _load_json(PINS_PATH)
+    verify_module_pins(pins)
+    return pins["module_pins_sha256"]
+
+
 def recompute(conn, as_of: _dt.date) -> dict[str, Any]:
     """Recompute the day's logical outputs from pinned inputs — the SAME helpers the
     worker uses (imported), so parity is by construction, divergence is evidence."""
@@ -185,6 +206,7 @@ def recompute(conn, as_of: _dt.date) -> dict[str, Any]:
         "input_vintage_sha256": _canonical_sha256(vintage_rows),
         "input_prices_sha256": _canonical_sha256(price_rows),
         "pack_v2_sha256": PACK_SHA256_PIN,
+        "module_pins_sha256": _expected_module_pins_sha256(),
         "staleness_breaches": report["breaches"],
     }
     if report["breaches"]:
@@ -279,6 +301,19 @@ def _compare_pair(decision: dict, allocation: dict, rec: dict,
         problems.append("input_hash_mismatch: decision.input_prices_sha256")
     if (allocation["input_prices_sha256"] or "").strip() != rec["input_prices_sha256"]:
         problems.append("input_hash_mismatch: allocation.input_prices_sha256")
+
+    # published provenance pins — the two hashes the worker STAMPS on every official row
+    # (Gate 3/3b): the signed pack pin and the canonical module-pins hash. A row whose
+    # LOGICAL outputs are correct but that carries a STALE/forged pack_v2_sha256 or
+    # module_pins_sha256 (e.g. stamped by an earlier pin bundle) would otherwise verify
+    # while corrupting the provenance the monitor / Stage C evidence relies on. Compare the
+    # PUBLISHED pins against the signed pack pin and the freshly-recomputed canonical
+    # module-pins hash (same source of truth the worker reads).
+    for name, row in (("decision", decision), ("allocation", allocation)):
+        if (row["pack_v2_sha256"] or "").strip() != PACK_SHA256_PIN:
+            problems.append(f"provenance_pin_mismatch: {name}.pack_v2_sha256")
+        if (row["module_pins_sha256"] or "").strip() != rec["module_pins_sha256"]:
+            problems.append(f"provenance_pin_mismatch: {name}.module_pins_sha256")
 
     # expected freshness horizon
     expected_vu = valid_until(as_of)
@@ -479,6 +514,15 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
       and, with the NUMERIC write-fidelity fix in production, the stored values
       round-trip the exact floats the worker computed (a divergence is evidence,
       not noise).
+
+    The route is CURRENT-ONLY: it always serves the MOST RECENT published pair and is
+    NOT parametrizable by date, so the CURRENT day is the one that proves the consumed
+    leg. When ``--as-of`` is re-run for an EARLIER day after production has advanced, the
+    live route serves a later ``as_of`` it cannot rewind — that is recorded as
+    non-servable backfill evidence (``route_backfill_not_servable``), NOT a divergence,
+    and the day does not count as route-verified (the DB recompute leg still
+    verifies/aborts normally). A served ``as_of`` BEFORE the requested day (a route that
+    cannot serve the requested pair at all) is a real ``route_stale_before_asof`` abort.
     """
     route_url = _route_url(backend_url)
     try:
@@ -515,9 +559,40 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
     if status != 200 or not isinstance(payload, dict):
         problems.append(f"route_divergence: unexpected response status={status}")
         return evidence, problems
-    if payload.get("as_of") != as_of.isoformat():
-        problems.append(f"route_divergence: as_of {payload.get('as_of')!r} != "
+    # current-only route: reconcile the served as_of against the requested one before the
+    # field-by-field compare (see the docstring). served == requested → full compare;
+    # served > requested → non-servable backfill (evidence only, no abort, not counted);
+    # served < requested → the route cannot serve the requested pair (abort).
+    served_as_of_raw = payload.get("as_of")
+    served_date: _dt.date | None = None
+    if isinstance(served_as_of_raw, str):
+        try:
+            served_date = _dt.date.fromisoformat(served_as_of_raw)
+        except ValueError:
+            served_date = None
+    if served_date is None:
+        # a non-string / unparseable as_of is an outright wire divergence — flag it and
+        # fall through to the field-by-field compare (unchanged behaviour).
+        problems.append(f"route_divergence: as_of {served_as_of_raw!r} != "
                         f"{as_of.isoformat()}")
+    elif served_date > as_of:
+        # production advanced past a backfilled (earlier) day: the current-only route
+        # cannot rewind to the historical pair. Record it as evidence, do NOT abort, and
+        # mark the day non-route-servable so build_window_report does NOT count it.
+        evidence["served_as_of"] = served_as_of_raw
+        evidence["route_backfill_not_servable"] = True
+        evidence["note"] = (
+            f"route_advanced_backfill: live route serves {served_as_of_raw}, cannot "
+            f"serve historical {as_of.isoformat()}")
+        return evidence, []
+    elif served_date < as_of:
+        # the current-only route cannot serve a FUTURE pair: a served as_of before the
+        # requested day means the route cannot serve the requested pair at all — abort.
+        problems.append(
+            f"route_stale_before_asof: route serves {served_as_of_raw} < requested "
+            f"{as_of.isoformat()} (a current-only route cannot serve the requested day)")
+        return evidence, problems
+    # served_date == as_of: fall through to the full consumer-visible compare below.
     for key in ("quadrant", "decision_validity"):
         if payload.get(key) != rec[key]:
             problems.append(f"route_divergence: {key} {payload.get(key)!r} != "
@@ -605,6 +680,24 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
 # --------------------------------------------------------------------------- #
 # Day verification
 # --------------------------------------------------------------------------- #
+def _published_provenance(decision: dict | None,
+                          allocation: dict | None) -> dict[str, Any]:
+    """The provenance pins (``pack_v2_sha256`` / ``module_pins_sha256``) the worker
+    STAMPED on the published rows, extracted verbatim for the day record. Pinned beside
+    the recompute block's EXPECTED values so a ``provenance_pin_mismatch`` abort — or a
+    clean pass — is validated from the artifact itself, never re-derived against DB rows
+    that have since moved. A missing row (partial/absent pair, staleness block) yields
+    ``None`` for that side."""
+    def _pick(row: dict | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "pack_v2_sha256": (row.get("pack_v2_sha256") or "").strip() or None,
+            "module_pins_sha256": (row.get("module_pins_sha256") or "").strip() or None,
+        }
+    return {"decision": _pick(decision), "allocation": _pick(allocation)}
+
+
 def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict[str, Any]:
     """One supervised day: classify, recompute, compare. Returns the day record."""
     decision, allocation, ledger = fetch_day(conn, as_of)
@@ -614,7 +707,22 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
     route_evidence: Any = "unavailable" if not backend_url else None
 
     try:
-        if ledger is not None and (decision is not None or allocation is not None):
+        # Pack-byte integrity gate (fail-loud, BEFORE any recompute reads the pack).
+        # compose_inputs() only checks the pack manifest VALUE plus the live-prefix
+        # hashes; a checkout whose canonical pack bytes drifted — while the manifest
+        # still names the signed PACK_SHA256_PIN — would otherwise be recomputed against
+        # mutated bytes. verify_pack_bytes (the worker's own publish-path gate, imported
+        # never duplicated) recomputes the canonical sha256 of the REAL pack files vs the
+        # SOURCE.json per-table pins and the signed aggregate; a single mutated byte fails
+        # here, loud. It reads only the committed pack and runs once per day.
+        try:
+            verify_pack_bytes()
+        except OpenMacroV03Error as exc:
+            abort_reasons.append(f"pack_bytes_mismatch: {exc}")
+
+        if abort_reasons:
+            pass  # a drifted pack aborts before recomputing against the mutated bytes
+        elif ledger is not None and (decision is not None or allocation is not None):
             abort_reasons.append(
                 "block_and_output_coexist: ledger row and output row(s) both present")
         elif ledger is not None:
@@ -692,6 +800,10 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             "input_vintage_sha256": rec.get("input_vintage_sha256"),
             "input_prices_sha256": rec.get("input_prices_sha256"),
             "pack_v2_sha256": rec.get("pack_v2_sha256", PACK_SHA256_PIN),
+            # the canonical module-pins hash the published rows are compared against
+            # (the EXPECTED side of provenance_pin_mismatch) — pinned beside the published
+            # values in published_provenance so the artifact carries both.
+            "module_pins_sha256": rec.get("module_pins_sha256"),
             "quadrant": rec.get("quadrant"),
             "decision_validity": rec.get("decision_validity"),
             "carry_seed_as_of": rec.get("carry_seed_as_of"),
@@ -725,6 +837,10 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
         # _check_block for why the two may legitimately differ in hashes).
         "ledger_reason": ledger.get("reason") if ledger is not None else None,
         "ledger_input_hashes": ledger_hashes,
+        # the provenance pins the worker STAMPED on the published rows, pinned verbatim
+        # (self-substantiating evidence beside the recompute block's EXPECTED pack_v2 /
+        # module_pins — a provenance_pin_mismatch abort is validated from the artifact).
+        "published_provenance": _published_provenance(decision, allocation),
         "route_evidence": route_evidence,
         "verifier_commit": code_commit(),
     }
@@ -825,8 +941,13 @@ def build_window_report(window_dir: Path | None = None,
         has_route_url = (has_route_dict
                          and isinstance(route_evidence.get("url"), str)
                          and bool(route_evidence.get("url").strip()))
+        # a backfilled day whose current-only route could not serve the historical as_of
+        # carries route evidence WITH a url, but was NOT proven consumed by this run — it
+        # must NOT satisfy the route-verified count (the current day proves the leg).
+        route_backfill = (has_route_dict
+                          and bool(route_evidence.get("route_backfill_not_servable")))
         counts = (outcome == "verified" and is_business and consumed
-                  and has_route_url and not malformed)
+                  and has_route_url and not malformed and not route_backfill)
         if counts and as_of_str not in counted_dates:
             counted += 1
             counted_dates.add(as_of_str)
@@ -845,6 +966,9 @@ def build_window_report(window_dir: Path | None = None,
             blocks_paused += 1
         if malformed:
             note = "malformed_day_record: missing identity fields (not counted)"
+        elif consumed and outcome == "verified" and route_backfill:
+            note = ("route_backfill_not_servable: current-only route serves a later "
+                    "as_of (historical day not counted)")
         elif consumed and outcome == "verified" and not has_route_dict:
             note = "verified_without_route_evidence: not counted (DB-only leg)"
         elif consumed and outcome == "verified" and not has_route_url:
