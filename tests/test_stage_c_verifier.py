@@ -612,6 +612,126 @@ def test_contiguous_window_has_no_gaps(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Round-2 review hardening
+# --------------------------------------------------------------------------- #
+def test_recompute_exception_becomes_an_abort_record(monkeypatch):
+    """A recompute()/build_allocation() raise on a published day must be PRESERVED as an
+    abort day record (not escape verify_day and lose the evidence to a later gap)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+
+    def _boom(conn, as_of):
+        raise RuntimeError("prefix-hash drift")
+
+    monkeypatch.setattr(sv, "recompute", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("recompute_error: RuntimeError: prefix-hash drift" in r
+               for r in record["abort_reasons"])
+    # never falsely verified, and the record is still writable/strict-JSON
+    assert record["route_evidence"] is None
+
+
+def test_route_nonfinite_number_diverges_and_stays_valid_json(monkeypatch, tmp_path):
+    """A NaN/Infinity route numeric must abort AND never produce an invalid day_*.json:
+    the evidence payload is persisted strict-JSON-safe and the writer pins allow_nan."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(
+        sv, "_fetch_route",
+        lambda url: (200, _route_payload(risk_assets_weight=float("inf"))))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("risk_assets_weight non-finite" in r for r in record["abort_reasons"])
+    # evidence preserved as a strict-JSON string, artifact round-trips under strict parse
+    assert record["route_evidence"]["payload"]["risk_assets_weight"] == "inf"
+    out = sv.write_day_record(record, tmp_path)
+    reparsed = json.loads(out.read_text(encoding="utf-8"),
+                          parse_constant=lambda c: pytest.fail(f"non-strict JSON: {c}"))
+    assert reparsed == record
+
+
+def test_route_nonfinite_position_weight_diverges(monkeypatch):
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions({**WEIGHTS, "SPY": float("nan")})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("positions[SPY].weight non-finite" in r
+               for r in record["abort_reasons"])
+
+
+def test_route_non_string_ticker_diverges_without_crashing(monkeypatch):
+    """A non-string (unhashable) ticker must become a route_divergence, not a TypeError
+    that aborts verify_day WITHOUT writing the day record."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    positions = _positions()
+    positions.append({"ticker": ["SPY"], "weight": 0.1,  # list ticker (unhashable)
+                      "asset_class": "etf", "strategy_label": "open_macro_v03"})
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(positions=positions)))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("non-string position ticker" in r for r in record["abort_reasons"])
+
+
+@pytest.mark.parametrize("field, bad", [
+    ("carry_seed_as_of", "2026-06-30T00:00:00Z"),
+    ("priced_at", "2026-07-02T00:00:00Z"),
+])
+def test_route_date_timestamp_form_diverges_not_sliced(monkeypatch, field, bad):
+    """A date-only wire field served as a timestamp whose first ten chars still match
+    must diverge — the route comparison checks the EXACT wire string (no _date_iso)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: (200, _route_payload(**{field: bad})))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any(f"route_divergence: {field}" in r for r in record["abort_reasons"])
+
+
+def test_pre_cutover_abort_does_not_block_completion(tmp_path):
+    """A pre-cutover (non-consumed) abort stays visible but must NOT permanently block a
+    clean ten-day consumed window."""
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-08"}), encoding="utf-8")
+    _write_day(window, "2026-07-06", "abort", ["field_mismatch: quadrant"])  # pre-cutover
+    for day in _business_days(_dt.date(2026, 7, 8), 10):
+        _write_day(window, day, "verified")
+    report = sv.build_window_report(window, cutover)
+    assert report["counted_days"] == 10
+    assert len(report["aborts"]) == 1               # still surfaced
+    assert report["aborts"][0]["consumed"] is False
+    assert report["window_complete"] is True         # not blocked by the pre-cutover abort
+    pre = next(d for d in report["days"] if d["as_of"] == "2026-07-06")
+    assert pre["note"] == "pre_cutover_abort: outside the production window (not blocking)"
+
+
+def test_post_cutover_abort_still_blocks_completion(tmp_path):
+    window = tmp_path / "window"
+    window.mkdir()
+    cutover = tmp_path / "backend_cutover_record.json"
+    cutover.write_text(json.dumps({"cutover_date": "2026-07-06"}), encoding="utf-8")
+    days = _business_days(_dt.date(2026, 7, 6), 11)
+    for day in days[:10]:
+        _write_day(window, day, "verified")
+    _write_day(window, days[10], "abort", ["field_mismatch: quadrant"])  # consumed abort
+    report = sv.build_window_report(window, cutover)
+    assert report["aborts"][0]["consumed"] is True
+    assert report["window_complete"] is False
+
+
+# --------------------------------------------------------------------------- #
 # Read-only guard
 # --------------------------------------------------------------------------- #
 def test_verifier_is_read_only_by_construction():

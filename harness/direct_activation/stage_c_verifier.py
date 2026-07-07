@@ -315,14 +315,38 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
     return resp.status_code, payload
 
 
+def _json_safe(obj: Any) -> Any:
+    """Recursively replace non-finite floats (``NaN``/``Infinity`` — valid Python floats
+    but NOT valid strict JSON) with their string form, so a captured route payload is
+    always serializable as strict JSON in the day record. A non-finite value is
+    separately flagged as ``route_divergence`` by ``_route_number``; here we only make
+    the preserved EVIDENCE strict-JSON-valid instead of emitting an invalid
+    ``day_*.json`` (Python's ``json`` accepts ``NaN``/``Infinity`` on write by default —
+    the writers below additionally pin ``allow_nan=False`` as a hard fail-loud guard)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else repr(obj)
+    if isinstance(obj, dict):
+        return {k: _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj]
+    return obj
+
+
 def _route_number(name: str, value: Any, problems: list[str]) -> float | None:
     """Route numerics are the consumer WIRE contract: a JSON number, never a string
     or bool. ``_num`` would silently coerce ``"0.5"`` → 0.5 and hide a consumer-visible
-    serialization regression, so the raw JSON type is asserted BEFORE coercion."""
+    serialization regression, so the raw JSON type is asserted BEFORE coercion. A
+    non-finite constant (``NaN``/``Infinity`` — Python's JSON parser accepts them as
+    floats) is also a divergence AND must never survive into the serialized day record,
+    so it is rejected here before the payload is preserved."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         problems.append(f"route_divergence: {name} not a JSON number ({value!r})")
         return None
-    return float(value)
+    num = float(value)
+    if not math.isfinite(num):
+        problems.append(f"route_divergence: {name} non-finite ({value!r})")
+        return None
+    return num
 
 
 def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list[str]]:
@@ -343,10 +367,12 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
     """
     status, payload = _fetch_route(backend_url)
     if status == 404:
-        return ({"status_code": 404, "payload": payload},
+        return ({"status_code": 404, "payload": _json_safe(payload)},
                 ["route_inactive_during_window: sanctioned route returned 404 while "
                  "the backend flag is expected on"])
-    evidence = {"status_code": status, "payload": payload}
+    # compare against the RAW payload (so a non-finite is caught by _route_number) but
+    # persist a strict-JSON-safe copy as evidence (never an invalid day_*.json).
+    evidence = {"status_code": status, "payload": _json_safe(payload)}
     problems: list[str] = []
     if status != 200 or not isinstance(payload, dict):
         problems.append(f"route_divergence: unexpected response status={status}")
@@ -364,11 +390,16 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
     # correct weight vector served with a stale carry seed, priced_at, or valid_until
     # is still a consumer-visible divergence (a wrong valid_until makes the route look
     # fresh/stale incorrectly).
-    if _date_iso(payload.get("carry_seed_as_of")) != rec["carry_seed_as_of"]:
+    # The route serves these as date-only ISO strings ("YYYY-MM-DD") and ``rec`` holds
+    # the same date-only form. Compare the EXACT wire string (NOT _date_iso, which slices
+    # to the first ten chars): a timestamp/padded serialization like
+    # "2026-07-02T00:00:00Z" whose first ten chars match must count as a consumer-visible
+    # payload divergence, never silently pass as equal.
+    if payload.get("carry_seed_as_of") != rec["carry_seed_as_of"]:
         problems.append(
             f"route_divergence: carry_seed_as_of {payload.get('carry_seed_as_of')!r} "
             f"!= recomputed {rec['carry_seed_as_of']}")
-    if _date_iso(payload.get("priced_at")) != rec["priced_at"]:
+    if payload.get("priced_at") != rec["priced_at"]:
         problems.append(f"route_divergence: priced_at {payload.get('priced_at')!r} "
                         f"!= recomputed {rec['priced_at']}")
     expected_vu = valid_until(as_of)
@@ -395,6 +426,14 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
                 problems.append(f"route_divergence: malformed position {position!r}")
                 continue
             ticker = position["ticker"]
+            if not isinstance(ticker, str):
+                # a non-string ticker (JSON array/object) is unhashable: using it as a
+                # dict key below would raise TypeError and abort verify_day() WITHOUT
+                # writing the day record, losing the serialization failure — flag it as
+                # divergence and preserve it as evidence instead.
+                problems.append(
+                    f"route_divergence: non-string position ticker {ticker!r}")
+                continue
             if ticker in route_weights:
                 # a duplicate row would silently overwrite: consumers receive/sum a
                 # different exposure — treat as divergence, never keep the last one.
@@ -428,29 +467,41 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
     rec: dict[str, Any] = {}
     route_evidence: Any = "unavailable" if not backend_url else None
 
-    if ledger is not None and (decision is not None or allocation is not None):
-        abort_reasons.append(
-            "block_and_output_coexist: ledger row and output row(s) both present")
-    elif ledger is not None:
-        rec = recompute(conn, as_of)
-        abort_reasons.extend(_check_block(ledger, rec))
-        if not abort_reasons:
-            outcome = "staleness_block_justified"
-    elif decision is None and allocation is None:
-        abort_reasons.append(
-            "missing_output: no output rows and no staleness-block ledger row "
-            "(silent worker exit — inherited missing_output_slo)")
-    elif decision is None or allocation is None:
-        present = "decision" if decision is not None else "allocation"
-        abort_reasons.append(f"partial_pair: only the {present} row exists")
-    else:
-        rec = recompute(conn, as_of)
-        abort_reasons.extend(_compare_pair(decision, allocation, rec, as_of))
-        if backend_url and "staleness_bypass" not in " ".join(abort_reasons):
-            route_evidence, route_problems = check_route(backend_url, as_of, rec)
-            abort_reasons.extend(route_problems)
-        if not abort_reasons:
-            outcome = "verified"
+    try:
+        if ledger is not None and (decision is not None or allocation is not None):
+            abort_reasons.append(
+                "block_and_output_coexist: ledger row and output row(s) both present")
+        elif ledger is not None:
+            rec = recompute(conn, as_of)
+            abort_reasons.extend(_check_block(ledger, rec))
+            if not abort_reasons:
+                outcome = "staleness_block_justified"
+        elif decision is None and allocation is None:
+            abort_reasons.append(
+                "missing_output: no output rows and no staleness-block ledger row "
+                "(silent worker exit — inherited missing_output_slo)")
+        elif decision is None or allocation is None:
+            present = "decision" if decision is not None else "allocation"
+            abort_reasons.append(f"partial_pair: only the {present} row exists")
+        else:
+            rec = recompute(conn, as_of)
+            abort_reasons.extend(_compare_pair(decision, allocation, rec, as_of))
+            if backend_url and "staleness_bypass" not in " ".join(abort_reasons):
+                route_evidence, route_problems = check_route(backend_url, as_of, rec)
+                abort_reasons.extend(route_problems)
+            if not abort_reasons:
+                outcome = "verified"
+    except Exception as exc:  # a production recompute/route failure must be PRESERVED
+        # If recompute() raises (e.g. compose_inputs() detects prefix-hash drift or
+        # build_allocation() refuses unusable prices) — or any comparison raises — the
+        # exception would escape verify_day() and main() would never call
+        # write_day_record(), so the abort evidence is lost and the failure is invisible
+        # until a later run infers a gap. Convert it into an abort day record (outcome
+        # stays "abort", main() still exits non-zero) so it is preserved as supervision
+        # evidence. This never masks a pass: outcome is only set to verified/justified at
+        # the END of a branch, after the raising call.
+        abort_reasons.append(f"recompute_error: {type(exc).__name__}: {exc}")
+        outcome = "abort"
 
     # the ledger's frozen first-write hashes are pinned SIDE BY SIDE with the live
     # recompute (evidence, not an abort criterion — see _check_block).
@@ -489,7 +540,8 @@ def write_day_record(record: dict[str, Any], window_dir: Path | None = None) -> 
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"day_{record['as_of']}.json"
     out.write_text(
-        json.dumps(record, sort_keys=True, indent=1, ensure_ascii=False) + "\n",
+        json.dumps(record, sort_keys=True, indent=1, ensure_ascii=False,
+                   allow_nan=False) + "\n",
         encoding="utf-8", newline="\n")
     return out
 
@@ -530,14 +582,24 @@ def build_window_report(window_dir: Path | None = None,
         if counts:
             counted += 1
         if outcome == "abort":
+            # Keep EVERY abort visible, but tag whether it lands inside the real
+            # post-cutover production window. A pre-cutover (non-consumed) or non-business
+            # abort — e.g. a dry-run attempt written while the sanctioned route is
+            # intentionally inert — is OUTSIDE the supervised window (mirrors
+            # verified-but-not-consumed) and must NOT permanently block completion; only
+            # a consumed business-day abort invalidates the window (see window_complete).
             aborts.append({"as_of": record["as_of"],
-                           "abort_reasons": record["abort_reasons"]})
+                           "abort_reasons": record["abort_reasons"],
+                           "consumed": consumed,
+                           "is_business": is_business})
         if outcome == "staleness_block_justified":
             blocks_paused += 1
         if consumed and outcome == "verified" and not has_route:
             note = "verified_without_route_evidence: not counted (DB-only leg)"
         elif not consumed and outcome == "verified":
             note = "verified_but_not_consumed: route still inert (pre-cutover)"
+        elif not (consumed and is_business) and outcome == "abort":
+            note = "pre_cutover_abort: outside the production window (not blocking)"
         else:
             note = None
         days.append({
@@ -562,6 +624,11 @@ def build_window_report(window_dir: Path | None = None,
                 gaps.append(cursor.isoformat())
             cursor += _dt.timedelta(days=1)
 
+    # Only aborts on a CONSUMED business day (inside the real production window)
+    # invalidate completion; pre-cutover/non-business aborts stay visible in ``aborts``
+    # but never permanently block ten clean consumed days.
+    blocking_aborts = [a for a in aborts if a["consumed"] and a["is_business"]]
+
     return {
         "artifact_type": "stage_c_window_report",
         "schema_version": 1,
@@ -575,7 +642,8 @@ def build_window_report(window_dir: Path | None = None,
         "staleness_blocks_paused": blocks_paused,
         "aborts": aborts,
         "supervision_gaps": gaps,
-        "window_complete": counted >= WINDOW_TARGET_DAYS and not aborts and not gaps,
+        "window_complete": (counted >= WINDOW_TARGET_DAYS
+                            and not blocking_aborts and not gaps),
     }
 
 
@@ -584,7 +652,8 @@ def write_window_report(report: dict[str, Any], stage_c_dir: Path | None = None)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "window_report.json"
     out.write_text(
-        json.dumps(report, sort_keys=True, indent=1, ensure_ascii=False) + "\n",
+        json.dumps(report, sort_keys=True, indent=1, ensure_ascii=False,
+                   allow_nan=False) + "\n",
         encoding="utf-8", newline="\n")
     return out
 
