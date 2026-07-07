@@ -1,7 +1,7 @@
 {
  "abort_reasons": [],
  "artifact_type": "stage_c_supervision_day_record",
- "as_of": "2026-07-06",
+ "as_of": "2026-07-07",
  "ledger_input_hashes": null,
  "ledger_reason": null,
  "outcome": "verified",
@@ -22,14 +22,14 @@
   "coverage_quality": 1.0,
   "decision_validity": "carried",
   "defensive_assets_weight": 0.3875,
-  "expected_valid_until": "2026-07-07T14:00:00+00:00",
+  "expected_valid_until": "2026-07-08T14:00:00+00:00",
   "growth_score": 0.31059021116536806,
   "inflation_score": 0.8492221683295019,
-  "input_prices_sha256": "d4e837489d204906a620287daccdbba7f88e3c2f3414950326208db878233b4e",
+  "input_prices_sha256": "ac57cc9d2700c97e99e7fa0bb668e64a3494ca1e8ab729b8c7da499b8a640b9c",
   "input_vintage_sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
   "module_pins_sha256": "d23aa8c0e3c19c72e0d26fb6ab50a37207adacc00a4460af4bde6ecde785ba94",
   "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
-  "priced_at": "2026-07-02",
+  "priced_at": "2026-07-06",
   "quadrant": "expansion",
   "risk_assets_weight": 0.5062500000000001,
   "staleness_breaches": [],
@@ -43,7 +43,6 @@
   }
  },
  "route_evidence": {
-  "note": "route_advanced_backfill: live route serves 2026-07-07, cannot serve historical 2026-07-06",
   "payload": {
    "as_of": "2026-07-07",
    "book": "compressed_50",
@@ -95,8 +94,6 @@
    "source": "open_macro_v03",
    "valid_until": "2026-07-08T14:00:00Z"
   },
-  "route_backfill_not_servable": true,
-  "served_as_of": "2026-07-07",
   "status_code": 200,
   "url": "https://api-production-2b6d.up.railway.app/macro/open-macro-v03/allocation"
  },
