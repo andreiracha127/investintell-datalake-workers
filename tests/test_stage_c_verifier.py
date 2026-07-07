@@ -805,6 +805,103 @@ def test_no_duplicate_dates_on_a_clean_window(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# Round-4 review hardening
+# --------------------------------------------------------------------------- #
+def test_db_abort_skips_the_route_leg_and_survives_transport_failure(monkeypatch):
+    """Once the DB comparison has found a divergence, the route leg must NOT run: a
+    transport failure there would re-raise (fail-loud, no artifact) and destroy the
+    already-detected DB abort evidence."""
+    import httpx
+
+    conn = _FakeConn(_responder(decision=_decision_tuple(quadrant="contraction"),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    calls: list[str] = []
+
+    def _boom(url):
+        calls.append(url)
+        raise httpx.ConnectError("network down")
+
+    monkeypatch.setattr(sv, "_fetch_route", _boom)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert calls == []  # route leg never consulted on a DB-divergent day
+    assert record["outcome"] == "abort"
+    assert any("field_mismatch: quadrant" in r for r in record["abort_reasons"])
+    assert not any("recompute_error" in r for r in record["abort_reasons"])
+
+
+def test_staleness_bypass_still_skips_the_route_leg(monkeypatch):
+    """The old explicit staleness_bypass guard is subsumed: a bypass is an abort
+    reason, so the route leg is skipped the same way."""
+    breach = [{"series_id": "MICH", "age_days": 99}]
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute(breaches=breach))
+    calls: list[str] = []
+    monkeypatch.setattr(sv, "_fetch_route",
+                        lambda url: calls.append(url) or (200, _route_payload()))
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert calls == []
+    assert record["outcome"] == "abort"
+    assert any("staleness_bypass" in r for r in record["abort_reasons"])
+
+
+def test_nonfinite_recomputed_weight_abort_record_still_serializes(monkeypatch, tmp_path):
+    """A non-finite RECOMPUTED weight is flagged nan_inf by _compare_pair; the day
+    record must still be writable (allow_nan=False) with the evidence preserved as a
+    strict-JSON string — never crash the writer and lose the abort artifact."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    bad = _recompute(weights={**WEIGHTS, "SPY": float("nan")})
+    _patch_recompute(monkeypatch, bad)
+    record = sv.verify_day(conn, AS_OF)
+    assert record["outcome"] == "abort"
+    assert any("nan_inf: recompute.weights.SPY" in r for r in record["abort_reasons"])
+    assert record["recompute"]["weights"]["SPY"] == "nan"
+    out = sv.write_day_record(record, tmp_path)
+    reparsed = json.loads(out.read_text(encoding="utf-8"),
+                          parse_constant=lambda c: pytest.fail(f"non-strict JSON: {c}"))
+    assert reparsed == record
+
+
+def test_duplicate_json_keys_in_route_payload_diverge():
+    """Duplicate JSON object keys are an ambiguous wire contract (consumers may read
+    divergent values from the same bytes; Python keeps the last silently) — the parse
+    hook must reject them at every object level."""
+    with pytest.raises(sv._AmbiguousRoutePayload) as exc_info:
+        sv._parse_route_payload(200, '{"as_of": "2026-07-06", "as_of": "2026-07-07"}')
+    assert "duplicate JSON key 'as_of'" in exc_info.value.detail
+    assert exc_info.value.status_code == 200
+    # nested objects are covered too
+    with pytest.raises(sv._AmbiguousRoutePayload):
+        sv._parse_route_payload(200, '{"p": {"weight": 0.1, "weight": 0.39}}')
+    # clean payloads and non-JSON bodies keep their existing behaviour
+    assert sv._parse_route_payload(200, '{"a": 1}') == {"a": 1}
+    assert sv._parse_route_payload(502, "Bad Gateway") is None
+
+
+def test_route_duplicate_key_payload_aborts_with_wire_evidence(monkeypatch):
+    """check_route converts _AmbiguousRoutePayload into a route_divergence abort with
+    the raw wire text pinned as evidence (never a transport-style re-raise)."""
+    conn = _FakeConn(_responder(decision=_decision_tuple(),
+                                allocation=_allocation_tuple()))
+    _patch_recompute(monkeypatch, _recompute())
+    wire = '{"quadrant": "expansion", "quadrant": "contraction"}'
+
+    def _dup(url):
+        raise sv._AmbiguousRoutePayload("duplicate JSON key 'quadrant'",
+                                        status_code=200, raw_text=wire)
+
+    monkeypatch.setattr(sv, "_fetch_route", _dup)
+    record = sv.verify_day(conn, AS_OF, backend_url="https://backend.example")
+    assert record["outcome"] == "abort"
+    assert any("route_divergence: ambiguous wire payload — duplicate JSON key "
+               "'quadrant'" in r for r in record["abort_reasons"])
+    assert record["route_evidence"]["raw_wire_text"] == wire
+    assert record["route_evidence"]["payload"] is None
+
+
+# --------------------------------------------------------------------------- #
 # Read-only guard
 # --------------------------------------------------------------------------- #
 def test_verifier_is_read_only_by_construction():

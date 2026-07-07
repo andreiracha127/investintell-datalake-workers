@@ -17,7 +17,9 @@ output (the inherited ``missing_output_slo``). An abort writes the day record an
 exits non-zero.
 
 Backend route evidence: when ``OPEN_MACRO_BACKEND_URL`` is set and the day carries a
-published pair, the verifier fetches ``{url}/macro/open-macro-v03/allocation``
+published pair whose DB comparison is clean (a DB-divergent day aborts regardless,
+and its abort evidence must never be lost to a route-leg transport re-raise), the
+verifier fetches ``{url}/macro/open-macro-v03/allocation``
 (read-only) and asserts the consumer-visible payload matches the recomputed output
 (divergence = abort ``route_divergence``; a 404 while the flag is expected on = abort
 ``route_inactive_during_window``), pinning the response as ``route_evidence`` in the
@@ -303,6 +305,47 @@ def _check_block(ledger: dict, rec: dict) -> list[str]:
 # --------------------------------------------------------------------------- #
 # Backend route evidence
 # --------------------------------------------------------------------------- #
+class _AmbiguousRoutePayload(Exception):
+    """The route wire payload contains duplicate JSON object keys: different consumers
+    may legally read different values from the SAME bytes (first-wins vs last-wins —
+    RFC 8259 leaves duplicate-name behaviour unspecified), so the consumer-visible
+    state is ambiguous. Python's ``json`` silently keeps the LAST duplicate — a payload
+    whose final duplicate happens to match the recomputation would otherwise verify.
+    Raised by ``_parse_route_payload``; ``check_route`` converts it into a
+    ``route_divergence`` with the raw wire text preserved as evidence (it is a payload
+    defect, never re-raised as a transport outage)."""
+
+    def __init__(self, detail: str, status_code: int | None = None,
+                 raw_text: str | None = None):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+        self.raw_text = raw_text
+
+
+def _pairs_rejecting_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise _AmbiguousRoutePayload(f"duplicate JSON key {key!r}")
+        out[key] = value
+    return out
+
+
+def _parse_route_payload(status_code: int, text: str) -> Any:
+    """Parse the route body as JSON with duplicate-key rejection at EVERY object level.
+    A non-JSON body parses to None (handled downstream as a status/shape divergence);
+    duplicate keys raise ``_AmbiguousRoutePayload`` with the wire text attached."""
+    try:
+        return json.loads(text, object_pairs_hook=_pairs_rejecting_duplicates)
+    except _AmbiguousRoutePayload as exc:
+        exc.status_code = status_code
+        exc.raw_text = text
+        raise
+    except Exception:
+        return None
+
+
 def _fetch_route(backend_url: str) -> tuple[int, Any]:
     """GET the sanctioned backend route; returns (status_code, json payload|None).
     Isolated for test monkeypatching.
@@ -310,14 +353,13 @@ def _fetch_route(backend_url: str) -> tuple[int, Any]:
     A transport-layer failure (DNS/TLS/connect/read timeout — ``httpx.RequestError``,
     raised BEFORE any HTTP response is received) is left to propagate: it is a
     verifier-side outage, NOT evidence about production's correctness, and
-    ``verify_day`` re-raises it fail-loud (see ``_is_route_transport_error``)."""
+    ``verify_day`` re-raises it fail-loud (see ``_is_route_transport_error``). A
+    payload with duplicate JSON keys raises ``_AmbiguousRoutePayload`` instead — an
+    ambiguous consumer-visible wire contract, which ``check_route`` records as a
+    ``route_divergence`` with the raw text pinned as evidence."""
     import httpx
     resp = httpx.get(backend_url.rstrip("/") + ROUTE_PATH, timeout=30.0)
-    try:
-        payload = resp.json()
-    except Exception:
-        payload = None
-    return resp.status_code, payload
+    return resp.status_code, _parse_route_payload(resp.status_code, resp.text)
 
 
 def _is_route_transport_error(exc: BaseException) -> bool:
@@ -389,7 +431,15 @@ def check_route(backend_url: str, as_of: _dt.date, rec: dict) -> tuple[Any, list
       round-trip the exact floats the worker computed (a divergence is evidence,
       not noise).
     """
-    status, payload = _fetch_route(backend_url)
+    try:
+        status, payload = _fetch_route(backend_url)
+    except _AmbiguousRoutePayload as exc:
+        # duplicate JSON keys: the wire bytes are ambiguous (consumers may read
+        # divergent values), so this can NEVER verify — even when the surviving
+        # last-wins value would match. Preserve the raw wire text as evidence.
+        evidence = {"status_code": exc.status_code, "payload": None,
+                    "raw_wire_text": exc.raw_text}
+        return evidence, [f"route_divergence: ambiguous wire payload — {exc.detail}"]
     if status == 404:
         return ({"status_code": 404, "payload": _json_safe(payload)},
                 ["route_inactive_during_window: sanctioned route returned 404 while "
@@ -510,7 +560,13 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
         else:
             rec = recompute(conn, as_of)
             abort_reasons.extend(_compare_pair(decision, allocation, rec, as_of))
-            if backend_url and "staleness_bypass" not in " ".join(abort_reasons):
+            # The route leg runs ONLY while the day is still clean after the DB
+            # comparison. A DB-divergent day aborts regardless of what the route
+            # serves, and fetching anyway would let a transport failure on the route
+            # leg re-raise (fail-loud, no artifact) and DESTROY the already-detected
+            # DB abort evidence. Skipping also subsumes the old staleness_bypass
+            # check: a bypass is itself an abort reason.
+            if backend_url and not abort_reasons:
                 route_evidence, route_problems = check_route(backend_url, as_of, rec)
                 abort_reasons.extend(route_problems)
             if not abort_reasons:
@@ -561,7 +617,11 @@ def verify_day(conn, as_of: _dt.date, *, backend_url: str | None = None) -> dict
             "pack_v2_sha256": rec.get("pack_v2_sha256", PACK_SHA256_PIN),
             "quadrant": rec.get("quadrant"),
             "decision_validity": rec.get("decision_validity"),
-            "weights": rec.get("weights"),
+            # same treatment as the route evidence: a non-finite recomputed weight is
+            # already flagged as a nan_inf abort by _compare_pair, but the raw float
+            # would make write_day_record() (allow_nan=False) raise and the abort
+            # artifact would never be preserved — keep the EVIDENCE strict-JSON-safe.
+            "weights": _json_safe(rec.get("weights")),
             "candidate_id": CANDIDATE_ID,
         },
         "ledger_input_hashes": ledger_hashes,
