@@ -3,14 +3,25 @@
  "artifact_type": "stage_c_supervision_day_record",
  "as_of": "2026-07-06",
  "ledger_input_hashes": null,
+ "ledger_reason": null,
  "outcome": "verified",
  "recompute": {
+  "candidate_confidence": 0.8121545618518331,
   "candidate_id": "open_macro_v03_compressed_50",
+  "carry_seed_as_of": "2026-06-30",
+  "coverage_quality": 1.0,
   "decision_validity": "carried",
+  "defensive_assets_weight": 0.3875,
+  "expected_valid_until": "2026-07-07T14:00:00+00:00",
+  "growth_score": 0.31059021116536806,
+  "inflation_score": 0.8492221683295019,
   "input_prices_sha256": "d4e837489d204906a620287daccdbba7f88e3c2f3414950326208db878233b4e",
   "input_vintage_sha256": "14c2d6a4f6a0eadd506c606d78f6ccef52ed15e6708ac4e6e822599b5dfda070",
   "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+  "priced_at": "2026-07-02",
   "quadrant": "expansion",
+  "risk_assets_weight": 0.5062500000000001,
+  "staleness_breaches": [],
   "weights": {
    "DBC": 0.11249999999999999,
    "GLD": 0.10625000000000001,
@@ -72,10 +83,11 @@
    "source": "open_macro_v03",
    "valid_until": "2026-07-07T14:00:00Z"
   },
-  "status_code": 200
+  "status_code": 200,
+  "url": "https://api-production-2b6d.up.railway.app/macro/open-macro-v03/allocation"
  },
  "schema_version": 1,
  "stage": "C",
  "stage_c_id": "open_macro_v03_direct_activation_stage_c_001",
- "verifier_commit": "40f2bd9d38bcc1eedfb1df100661edd2986c37be"
+ "verifier_commit": "674558425a076a9a4f0a32f8d2f692763bd501da"
 }
