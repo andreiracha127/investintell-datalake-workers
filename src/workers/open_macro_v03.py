@@ -64,6 +64,7 @@ from harness.direct_activation.live_validation import (
     consumable_today,
     staleness_report,
 )
+from harness.direct_activation import carry_decay
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import (
@@ -1214,6 +1215,15 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             chain = decision_mod.run_decision_series(vintage_rows, CHAIN_START, as_of_date)
             last, validity, seed_as_of = consumable_today(chain, as_of_date)
 
+            # Tranche W3: carry_decay_v1 provenance, ADVISORY-only. carry_age_months /
+            # carry_expired are computed and surfaced on the run RESULT (never the DB
+            # rows): the frozen open_macro_v03_decisions/allocations CHECK constraints
+            # admit only the four quadrant labels, fresh/carried and the compressed_50
+            # book, so publishing a center-book degradation requires a ratified schema
+            # evolution + the phase0q_005 policy ratification first. CARRY_DECAY_V1_ACTIVE
+            # ships False, so the published decision/allocation below are unchanged.
+            carry = carry_decay.carry_provenance(chain, as_of_date)
+
             # Gate 10 — allocation.
             allocation = build_allocation(last.quadrant, price_rows, as_of_date)
             weights = allocation["weights"]
@@ -1270,6 +1280,18 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 "weights": weights,
                 "run_id": run_id,
                 "wall_ms": int((time.monotonic() - t0) * 1000),
+                # Tranche W3: advisory carry provenance (does NOT gate the publish above).
+                "carry_provenance": {
+                    "carry_policy": carry["carry_policy"],
+                    "carry_seed_as_of": carry["carry_seed_as_of"].isoformat(),
+                    "carry_age_months": carry["carry_age_months"],
+                    "carry_expired": carry["carry_expired"],
+                    "max_carry_months": carry["max_carry_months"],
+                    "carry_decay_active": carry_decay.CARRY_DECAY_V1_ACTIVE,
+                    "note": ("advisory only: carry_decay_v1 degradation is gated OFF "
+                             "pending phase0q_005 ratification + a DB-schema evolution; "
+                             "the published rows are the un-degraded compressed_50 book"),
+                },
             }
     finally:
         conn.close()
