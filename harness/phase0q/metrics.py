@@ -499,47 +499,75 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
     }
 
 
-def _calendar_year_return(series: Sequence[tuple[_dt.date, float]], year: int) -> float | None:
-    """Total return of a (date, nav) series WITHIN one calendar year: nav_last/nav_first
-    - 1 over the in-year points. ``None`` when fewer than two in-year points or a
-    non-positive anchor (division guard)."""
-    in_year = sorted((d, v) for d, v in series if d.year == year)
-    if len(in_year) < 2:
-        return None
-    first, last = in_year[0][1], in_year[-1][1]
-    if first is None or first <= 0 or last is None:
-        return None
-    return last / first - 1.0
-
-
 def upside_capture_by_calendar_year(
     strategy_nav: Sequence[tuple[_dt.date, float]],
     spy_nav: Sequence[tuple[_dt.date, float]],
 ) -> dict[str, Any]:
-    """Per calendar year: strategy return / SPY return, judged ONLY in years SPY rose
-    (Tranche W1). The audit's core economic finding is that the model mapped the most
-    bullish disinflationary years to the most defensive book; a benchmark-relative,
-    per-calendar-year upside-capture number is how a ratified gate would catch that.
+    """Per calendar year: strategy return / SPY return, judged ONLY in FULL calendar
+    years SPY rose (Tranche W1). The audit's core economic finding is that the model
+    mapped the most bullish disinflationary years to the most defensive book; a
+    benchmark-relative, per-calendar-year upside-capture number is how a ratified gate
+    would catch that.
 
-    ``strategy_nav`` / ``spy_nav`` are (date, nav) sequences. For each year present in
-    BOTH, reports ``strategy_return``, ``spy_return``, ``spy_up`` (spy_return > 0) and
-    ``upside_capture`` = strategy_return / spy_return when ``spy_up`` (else ``None`` —
-    a down year is a downside-capture question, out of scope here). All divisions are
-    guarded (a non-positive SPY return yields ``upside_capture: None``)."""
-    strat_years = {d.year for d, _ in strategy_nav}
-    spy_years = {d.year for d, _ in spy_nav}
+    COVERAGE + ALIGNMENT DISCIPLINE (a partial period must never be labeled a calendar
+    year): both returns are computed over the COMMON sessions of the two series (same
+    first/last common session — one series' extra tail can never leak into the other's
+    return), and a year only carries ``full_year_coverage: True`` when its common span
+    starts in January and ends in December. A mid-year window start, a truncated pack
+    or a missing benchmark tail yields ``full_year_coverage: False`` with a
+    ``coverage_reason`` (``starts_after_january`` / ``ends_before_december`` /
+    ``insufficient_common_sessions`` / ``non_positive_anchor``); the partial-period
+    returns are still reported for information, but ``upside_capture`` is ``None`` and
+    the timeline-gate judge skips the year (never enforced as a bull year).
+
+    ``upside_capture`` = strategy_return / spy_return, only when the year has full
+    coverage AND ``spy_up`` (spy_return > 0; a down year is a downside-capture
+    question, out of scope). All divisions are guarded."""
+    strat = {d: v for d, v in strategy_nav}
+    spy = {d: v for d, v in spy_nav}
+    common = sorted(set(strat) & set(spy))
     per_year: dict[str, Any] = {}
-    for year in sorted(strat_years & spy_years):
-        strat_ret = _calendar_year_return(strategy_nav, year)
-        spy_ret = _calendar_year_return(spy_nav, year)
-        if strat_ret is None or spy_ret is None:
-            continue
-        spy_up = spy_ret > 0.0
-        capture = (strat_ret / spy_ret) if spy_up else None
-        per_year[str(year)] = {
-            "strategy_return": strat_ret,
-            "spy_return": spy_ret,
-            "spy_up": spy_up,
-            "upside_capture": capture,
+    for year in sorted({d.year for d in common}):
+        dates = [d for d in common if d.year == year]
+        first, last = dates[0], dates[-1]
+        entry: dict[str, Any] = {
+            "strategy_return": None,
+            "spy_return": None,
+            "spy_up": None,
+            "upside_capture": None,
+            "full_year_coverage": False,
+            "coverage_reason": None,
+            "first_common_session": first.isoformat(),
+            "last_common_session": last.isoformat(),
         }
+        if len(dates) < 2:
+            entry["coverage_reason"] = "insufficient_common_sessions"
+            per_year[str(year)] = entry
+            continue
+        s0, s1 = strat[first], strat[last]
+        b0, b1 = spy[first], spy[last]
+        anchors_ok = all(v is not None and v == v for v in (s0, s1, b0, b1)) \
+            and s0 > 0 and b0 > 0
+        if not anchors_ok:
+            entry["coverage_reason"] = "non_positive_anchor"
+            per_year[str(year)] = entry
+            continue
+        strategy_return = s1 / s0 - 1.0
+        spy_return = b1 / b0 - 1.0
+        reasons: list[str] = []
+        if first.month != 1:
+            reasons.append("starts_after_january")
+        if last.month != 12:
+            reasons.append("ends_before_december")
+        full = not reasons
+        spy_up = spy_return > 0.0
+        entry.update({
+            "strategy_return": strategy_return,
+            "spy_return": spy_return,
+            "spy_up": spy_up,
+            "upside_capture": (strategy_return / spy_return) if (full and spy_up) else None,
+            "full_year_coverage": full,
+            "coverage_reason": ",".join(reasons) if reasons else None,
+        })
+        per_year[str(year)] = entry
     return per_year

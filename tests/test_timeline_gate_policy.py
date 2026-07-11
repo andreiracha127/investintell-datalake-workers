@@ -130,9 +130,9 @@ def test_bull_year_upside_gate_judges_only_up_years():
     # 2021 SPY +25% (bull), captured only 0.20 (< 0.35) -> fail; 2020 SPY +10% (not bull).
     upside = {
         "2020": {"spy_return": 0.10, "upside_capture": 0.10, "spy_up": True,
-                 "strategy_return": 0.01},
+                 "strategy_return": 0.01, "full_year_coverage": True},
         "2021": {"spy_return": 0.25, "upside_capture": 0.20, "spy_up": True,
-                 "strategy_return": 0.05},
+                 "strategy_return": 0.05, "full_year_coverage": True},
     }
     j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10, upside), policy)
     g = j["per_gate"]["min_upside_capture_bull_year"]
@@ -145,11 +145,46 @@ def test_bull_year_upside_gate_judges_only_up_years():
 def test_bull_year_upside_gate_not_applicable_without_a_bull_year():
     policy = runner.load_timeline_gate_policy()
     upside = {"2022": {"spy_return": 0.05, "upside_capture": 0.9, "spy_up": True,
-                       "strategy_return": 0.045}}
+                       "strategy_return": 0.045, "full_year_coverage": True}}
     j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10, upside), policy)
     g = j["per_gate"]["min_upside_capture_bull_year"]
     assert g["applicable"] is False
     assert g["go"] is True  # nothing to judge; does not vacuously fail
+
+
+def test_bull_year_upside_gate_skips_partial_years():
+    """A PARTIAL year whose partial-period SPY return clears the bull threshold must
+    NOT be enforced as a bull year: the judge only considers full-calendar-year
+    coverage, and surfaces what it excluded."""
+    policy = runner.load_timeline_gate_policy()
+    upside = {
+        # partial (mid-year start): +18% over June..December — above the threshold,
+        # but not a calendar-year figure. Its capture is None by construction.
+        "2019": {"spy_return": 0.18, "upside_capture": None, "spy_up": True,
+                 "strategy_return": 0.08, "full_year_coverage": False,
+                 "coverage_reason": "starts_after_january"},
+        # full bull year, healthy capture -> the only judged year, passes.
+        "2021": {"spy_return": 0.25, "upside_capture": 0.60, "spy_up": True,
+                 "strategy_return": 0.15, "full_year_coverage": True},
+    }
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10, upside), policy)
+    g = j["per_gate"]["min_upside_capture_bull_year"]
+    assert g["bull_years"] == ["2021"]         # 2019 excluded despite +18%
+    assert g["excluded_partial_years"] == ["2019"]
+    assert g["measured"] == pytest.approx(0.60)
+    assert g["go"] is True
+
+
+def test_bull_year_upside_gate_only_partial_years_is_not_applicable():
+    policy = runner.load_timeline_gate_policy()
+    upside = {"2019": {"spy_return": 0.18, "upside_capture": None, "spy_up": True,
+                       "strategy_return": 0.08, "full_year_coverage": False,
+                       "coverage_reason": "starts_after_january"}}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10, upside), policy)
+    g = j["per_gate"]["min_upside_capture_bull_year"]
+    assert g["applicable"] is False
+    assert g["go"] is True
+    assert g["excluded_partial_years"] == ["2019"]
 
 
 # --------------------------------------------------------------------------- #

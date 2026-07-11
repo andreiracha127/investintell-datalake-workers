@@ -248,9 +248,11 @@ def judge_timeline_gates(
     signed by the quant_owner BEFORE any candidate is judged against these bounds.
 
     Directions: ``min_*`` gates require measured >= bound; ``max_*`` gates require
-    measured <= bound. ``min_upside_capture_bull_year`` is judged only over calendar
-    years whose SPY return clears ``bull_year_spy_return_threshold`` (else the gate is
-    not applicable and does not vacuously fail)."""
+    measured <= bound. ``min_upside_capture_bull_year`` is judged only over FULL
+    calendar years (``full_year_coverage`` true — partial periods from a mid-year
+    window start or a truncated benchmark are surfaced as ``excluded_partial_years``,
+    never enforced) whose SPY return clears ``bull_year_spy_return_threshold`` (else
+    the gate is not applicable and does not vacuously fail)."""
     if policy is None:
         return {"policy_status": "policy_absent", "mode": "advisory",
                 "gates_enforced": False, "per_gate": {}, "overall_go": None}
@@ -282,8 +284,17 @@ def judge_timeline_gates(
     if "min_upside_capture_bull_year" in gates:
         bound = gates["min_upside_capture_bull_year"]
         threshold = params.get("bull_year_spy_return_threshold", 0.15)
+        # only FULL calendar years are judged: a partial period (mid-year window
+        # start, truncated pack, missing benchmark tail) can post a partial-period
+        # SPY return above the bull threshold, and enforcing it as a bull year would
+        # judge the strategy against a figure that is not a calendar-year return.
+        # Partial years are surfaced (excluded_partial_years) but never enforced.
         bull_years = {y: e for y, e in uc.items()
-                      if e.get("spy_return") is not None and e["spy_return"] > threshold}
+                      if e.get("full_year_coverage") is True
+                      and e.get("spy_return") is not None
+                      and e["spy_return"] > threshold}
+        excluded_partial = sorted(
+            y for y, e in uc.items() if e.get("full_year_coverage") is not True)
         captures = [e["upside_capture"] for e in bull_years.values()
                     if e.get("upside_capture") is not None]
         applicable = bool(captures)
@@ -292,6 +303,7 @@ def judge_timeline_gates(
             "measured": measured, "bound": bound, "direction": "min",
             "applicable": applicable, "bull_year_spy_return_threshold": threshold,
             "bull_years": sorted(bull_years),
+            "excluded_partial_years": excluded_partial,
             "go": (measured >= bound) if applicable else True}
 
     overall_go = all(g["go"] for g in per_gate.values()) if per_gate else None

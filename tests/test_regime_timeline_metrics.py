@@ -198,27 +198,69 @@ def test_upside_capture_judges_only_up_years_with_division_guard():
     spy = [(dt.date(2021, 1, 4), 100.0), (dt.date(2021, 12, 31), 120.0),
            (dt.date(2022, 1, 3), 120.0), (dt.date(2022, 12, 30), 108.0)]
     out = metrics.upside_capture_by_calendar_year(strategy, spy)
+    assert out["2021"]["full_year_coverage"] is True
     assert out["2021"]["spy_up"] is True
     assert out["2021"]["strategy_return"] == pytest.approx(0.10)
     assert out["2021"]["spy_return"] == pytest.approx(0.20)
     assert out["2021"]["upside_capture"] == pytest.approx(0.5)
     # SPY fell in 2022 -> not an upside-capture year; capture is None (guarded).
+    assert out["2022"]["full_year_coverage"] is True
     assert out["2022"]["spy_up"] is False
     assert out["2022"]["upside_capture"] is None
 
 
-def test_upside_capture_skips_years_with_too_few_points():
-    strategy = [(dt.date(2021, 6, 1), 1.0)]  # single point -> no return
+def test_upside_capture_marks_years_with_too_few_points_non_applicable():
+    strategy = [(dt.date(2021, 6, 1), 1.0)]  # single common session -> no return
     spy = [(dt.date(2021, 6, 1), 100.0)]
-    assert metrics.upside_capture_by_calendar_year(strategy, spy) == {}
+    out = metrics.upside_capture_by_calendar_year(strategy, spy)
+    entry = out["2021"]
+    assert entry["full_year_coverage"] is False
+    assert entry["coverage_reason"] == "insufficient_common_sessions"
+    assert entry["upside_capture"] is None
+    assert entry["strategy_return"] is None and entry["spy_return"] is None
 
 
 def test_upside_capture_flat_spy_year_is_not_up():
     strategy = [(dt.date(2021, 1, 4), 1.0), (dt.date(2021, 12, 31), 1.05)]
     spy = [(dt.date(2021, 1, 4), 100.0), (dt.date(2021, 12, 31), 100.0)]  # 0% -> not up
     out = metrics.upside_capture_by_calendar_year(strategy, spy)
+    assert out["2021"]["full_year_coverage"] is True
     assert out["2021"]["spy_up"] is False
     assert out["2021"]["upside_capture"] is None
+
+
+def test_upside_capture_mid_year_start_is_partial_not_a_calendar_year():
+    """A June window start must NOT be labeled a calendar-year result: a partial-period
+    SPY return above the bull threshold would otherwise be enforced as a bull year."""
+    strategy = [(dt.date(2019, 6, 3), 1.0), (dt.date(2019, 12, 31), 1.08)]
+    spy = [(dt.date(2019, 6, 3), 100.0), (dt.date(2019, 12, 31), 118.0)]  # +18% partial
+    out = metrics.upside_capture_by_calendar_year(strategy, spy)
+    entry = out["2019"]
+    assert entry["full_year_coverage"] is False
+    assert "starts_after_january" in entry["coverage_reason"]
+    assert entry["upside_capture"] is None            # never judged as a bull year
+    # partial-period returns are still reported for information (aligned common span).
+    assert entry["spy_return"] == pytest.approx(0.18)
+    assert entry["first_common_session"] == "2019-06-03"
+
+
+def test_upside_capture_missing_benchmark_tail_is_partial_and_aligned():
+    """A truncated benchmark (SPY ends in September) makes the year partial, and BOTH
+    returns must be computed over the COMMON aligned first/last sessions — not each
+    series' own in-year endpoints."""
+    strategy = [(dt.date(2021, 1, 4), 1.0), (dt.date(2021, 9, 30), 1.06),
+                (dt.date(2021, 12, 31), 1.20)]   # strategy continues to December
+    spy = [(dt.date(2021, 1, 4), 100.0), (dt.date(2021, 9, 30), 112.0)]  # tail missing
+    out = metrics.upside_capture_by_calendar_year(strategy, spy)
+    entry = out["2021"]
+    assert entry["full_year_coverage"] is False
+    assert "ends_before_december" in entry["coverage_reason"]
+    assert entry["upside_capture"] is None
+    # aligned to the common span Jan-04..Sep-30: strategy 6%, SPY 12% — the strategy's
+    # own December point must NOT leak into the return.
+    assert entry["strategy_return"] == pytest.approx(0.06)
+    assert entry["spy_return"] == pytest.approx(0.12)
+    assert entry["last_common_session"] == "2021-09-30"
 
 
 # --------------------------------------------------------------------------- #
@@ -258,11 +300,19 @@ def test_gate_report_always_carries_timeline_block(fast_run):
     # upside capture is present (may be empty if no complete year) and well-formed.
     uc = tl["upside_capture_by_calendar_year"]
     for year, entry in uc.items():
-        assert set(entry) == {"strategy_return", "spy_return", "spy_up", "upside_capture"}
-        if entry["spy_up"]:
+        assert set(entry) == {"strategy_return", "spy_return", "spy_up",
+                              "upside_capture", "full_year_coverage",
+                              "coverage_reason", "first_common_session",
+                              "last_common_session"}
+        if entry["full_year_coverage"] and entry["spy_up"]:
             assert entry["upside_capture"] is not None
         else:
             assert entry["upside_capture"] is None
+    # the fast window starts 2019-06-01: 2019 is a PARTIAL year and must say so; 2020
+    # spans January..December of the pack sessions and is a full calendar year.
+    assert uc["2019"]["full_year_coverage"] is False
+    assert "starts_after_january" in uc["2019"]["coverage_reason"]
+    assert uc["2020"]["full_year_coverage"] is True
 
 
 def test_timeline_block_also_surfaced_on_run_dict(fast_run):
