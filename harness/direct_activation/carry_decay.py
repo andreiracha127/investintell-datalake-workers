@@ -16,23 +16,26 @@ Age is CALENDAR-MONTH distance from ``carry_seed_as_of`` to the as-of, NOT a row
 so a chain gap ages the carry naturally (this MIRRORS the Light-repo backtest exactly,
 which is a hard fidelity requirement — the two repos must consume the same policy).
 
-GOVERNANCE (read before wiring this into any publish path)
-----------------------------------------------------------
-This module is PURE and NON-PINNED and it is DEFAULT-OFF (``CARRY_DECAY_V1_ACTIVE =
-False``). It deliberately does NOT edit the ratified, hash-pinned decision-chain
-modules (``harness/direct_activation/live_validation.py``, ``harness/phase0q/decision.py``,
-``harness/phase0q/sleeve.py``): a byte change there would break the module-pin trust
-base (``tests/test_direct_activation_stage_b.py::test_module_pins_match_recomputed_tree_hashes``)
-and re-pinning it to bless this change would be a self-ratification of the activation
-bundle. It also does NOT publish a degraded position: the ``open_macro_v03_decisions`` /
-``open_macro_v03_allocations`` CHECK constraints admit only the four quadrant labels,
-the ``fresh``/``carried`` validities and the ``compressed_50`` book, and those DDLs are
-frozen by the Stage B ``immutability_constraint``. So until (a) the proposed
-``timeline_gate_policy`` (phase0q_005) is ratified, (b) the DB schema is evolved to
-persist ``carry_expired`` / center-book allocations, and (c) the decision-chain closure
-is re-pinned under a governance-sanctioned deploy, the runtime COMPUTES and REPORTS this
-provenance advisory-only. Backtests/harness legs may drive the degradation directly via
-``evaluate(..., active=True)``.
+GOVERNANCE (status: RATIFIED + ACTIVE)
+--------------------------------------
+The ``timeline_gate_policy`` (phase0q_005) was RATIFIED by the quant_owner (Andrei
+Rachadel) on 2026-07-11 and carry_decay_v1 ships ACTIVE (``CARRY_DECAY_V1_ACTIVE =
+True``): the Stage B worker publishes the degraded CENTER book (``center_50``) with
+``decision_validity = 'carried_expired'`` and honest provenance columns when the carry
+age exceeds the cap. The DB surface is the ADDITIVE migration
+``schemas/open_macro_v03_carry_decay_v1_migration.sql`` (applied by the orchestrator in
+a controlled step; the worker's ``verify_schema``/publish path fails loud against an
+unmigrated catalog). The remaining dependencies are OPS steps — migration application +
+worker redeploy — not approvals.
+
+This module remains PURE and NON-PINNED: it deliberately does NOT edit the ratified,
+hash-pinned decision-chain modules (``harness/direct_activation/live_validation.py``,
+``harness/phase0q/decision.py``, ``harness/phase0q/sleeve.py``) — a byte change there
+would break the module-pin trust base
+(``tests/test_direct_activation_stage_b.py::test_module_pins_match_recomputed_tree_hashes``)
+and re-pinning to bless it would be self-ratification of the activation bundle. The
+non-pinned worker composes this module ON TOP of the pinned ``consumable_today`` seed
+selection, so the frozen decision path is untouched.
 """
 
 from __future__ import annotations
@@ -47,11 +50,12 @@ from harness.phase0q import sleeve as _sleeve
 CARRY_POLICY_ID = "carry_decay_v1"
 MAX_CARRY_MONTHS = 3
 
-# Default OFF. Production activation depends on deploy + ratification of the proposed
-# phase0q_005 timeline_gate_policy AND a DB-schema evolution able to persist the
-# carry_expired / center-book state (see the module docstring governance note). The
-# harness/backtest legs pass ``active=True`` explicitly to measure the degraded policy.
-CARRY_DECAY_V1_ACTIVE = False
+# Default ON since the phase0q_005 timeline_gate_policy ratification (quant_owner,
+# 2026-07-11): the publish path degrades an expired carry to the CENTER book. The DB
+# surface is the additive carry_decay_v1 migration (applied by the orchestrator);
+# against an unmigrated catalog the worker fails loud instead of publishing. Tests
+# exercise the pre-ratification behaviour with an explicit ``active=False``.
+CARRY_DECAY_V1_ACTIVE = True
 
 
 def carry_age_months(seed_as_of: _dt.date, as_of: _dt.date) -> int:

@@ -97,8 +97,22 @@ def test_seed_is_last_valid_on_or_before_as_of():
 # degradation to CENTER (active) vs byte-identical default (OFF)              #
 # --------------------------------------------------------------------------- #
 
-def test_default_flag_is_off():
-    assert cd.CARRY_DECAY_V1_ACTIVE is False
+def test_default_flag_is_active():
+    """carry_decay_v1 ships ON: the phase0q_005 policy was RATIFIED by the
+    quant_owner on 2026-07-11 and the publish path degrades an expired carry.
+    Remaining dependencies are OPS steps (migration DDL application + deploy),
+    not approvals."""
+    assert cd.CARRY_DECAY_V1_ACTIVE is True
+
+
+def test_default_evaluate_degrades_an_expired_carry():
+    """With the ratified default (active ON), evaluate() with NO explicit ``active``
+    argument degrades a 4-month-old carry to the center book."""
+    ev = cd.evaluate(_gated_after_contraction(), _me(2026, 6), PARAMS, AVAIL)
+    assert ev["active"] is True
+    assert ev["carry_expired"] is True
+    assert ev["degraded_to_center"] is True
+    assert ev["book_id"] == "center_50"
 
 
 @pytest.mark.parametrize("as_of,age", [
@@ -125,10 +139,11 @@ def test_active_past_cap_degrades_to_center():
     assert ev["weights"] == cd.center_book_50(PARAMS, AVAIL)
 
 
-def test_inactive_never_degrades_byte_identical_to_seed_book():
-    # DEFAULT (active=False): even a 4-month expired carry keeps the seed compressed_50
-    # book byte-for-byte — the un-ratified policy changes nothing.
-    ev = cd.evaluate(_gated_after_contraction(), _me(2026, 6), PARAMS, AVAIL)  # active default
+def test_inactive_mode_never_degrades_byte_identical_to_seed_book():
+    # EXPLICIT active=False (the pre-ratification behaviour, kept testable): even a
+    # 4-month expired carry keeps the seed compressed_50 book byte-for-byte — an
+    # inactive policy changes nothing while still reporting honest provenance.
+    ev = cd.evaluate(_gated_after_contraction(), _me(2026, 6), PARAMS, AVAIL, active=False)
     assert ev["carry_expired"] is True               # provenance still reports the expiry
     assert ev["degraded_to_center"] is False
     assert ev["book_id"] == "compressed_50"
