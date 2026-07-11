@@ -139,6 +139,55 @@ def test_timeline_out_of_order_input_is_sorted_not_double_counted():
     assert m["max_carry_age_months"] == 1  # 2021-02 carries the 2021-01 seed
 
 
+def test_timeline_fails_loud_on_same_month_distinct_days():
+    """Two rows in the same calendar month with different days are a duplicate month
+    (the cadence is calendar-monthly), not two decisions."""
+    chain = [
+        _FakeDecision(dt.date(2021, 1, 15), "expansion", "valid"),
+        _FakeDecision(dt.date(2021, 1, 31), "contraction", "valid"),
+    ]
+    with pytest.raises(ValueError, match="duplicate decision month"):
+        metrics.regime_timeline_metrics(chain)
+
+
+# --------------------------------------------------------------------------- #
+# gap-bearing chains: everything is CALENDAR-MONTH distance, not row count     #
+# --------------------------------------------------------------------------- #
+
+def test_gap_bearing_chain_measures_carry_age_in_calendar_months():
+    """A January valid seed followed by a lone June gated row (Feb-May rows missing)
+    is a 5-month-old carry, not a 1-row-old one. A missing month has no published
+    decision — nothing fresh happened, so the carry keeps aging through it."""
+    chain = _chain(
+        (2021, 1, "expansion", "valid"),
+        (2021, 6, None, "low_confidence"),  # rows for Feb..May are missing
+    )
+    m = metrics.regime_timeline_metrics(chain)
+    assert m["n_months"] == 6                       # calendar span Jan..Jun
+    assert m["max_carry_age_months"] == 5           # Jun is 5 months after the seed
+    assert m["max_abstention_streak_months"] == 5   # Feb..Jun have no fresh valid
+    assert m["max_same_quadrant_run_months"] == 6   # expansion carried Jan..Jun
+    assert m["fresh_valid_rate"]["global"] == pytest.approx(1 / 6)
+
+
+def test_gap_bearing_chain_rolling_windows_use_calendar_months():
+    """Rolling 12/24/36m are trailing CALENDAR months, not the last N rows: a chain
+    with only two rows 39 months apart must not report the seed inside rolling_36m."""
+    chain = _chain(
+        (2018, 1, "expansion", "valid"),     # month index 0
+        (2021, 4, None, "low_confidence"),   # month index 39
+    )
+    m = metrics.regime_timeline_metrics(chain)
+    assert m["n_months"] == 40
+    assert m["fresh_valid_rate"]["global"] == pytest.approx(1 / 40)
+    # the only valid month (2018-01) is 39 months before the end: outside all windows.
+    assert m["fresh_valid_rate"]["rolling_12m"] == pytest.approx(0.0)
+    assert m["fresh_valid_rate"]["rolling_24m"] == pytest.approx(0.0)
+    assert m["fresh_valid_rate"]["rolling_36m"] == pytest.approx(0.0)
+    assert m["max_carry_age_months"] == 39
+    assert m["max_abstention_streak_months"] == 39
+
+
 # --------------------------------------------------------------------------- #
 # upside_capture_by_calendar_year                                            #
 # --------------------------------------------------------------------------- #

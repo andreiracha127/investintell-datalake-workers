@@ -358,42 +358,30 @@ def stability_from_folds(fold_metrics: Sequence[Mapping[str, float]]) -> dict[st
 # ``artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.proposed.json``.
 
 
+def _month_index(d: _dt.date) -> int:
+    """Absolute calendar-month index (year*12 + month-1) — the unit every timeline
+    duration/window below is measured in."""
+    return d.year * 12 + (d.month - 1)
+
+
 def _sorted_decisions(decisions: Sequence[Any]) -> list[Any]:
-    """Decisions ordered by ``as_of`` (monthly cadence). Duplicate as_of months are a
-    corrupt chain: the timeline reporter fails loud rather than silently double-count
-    (parity with the carry-cap consumable path, which also rejects duplicate months)."""
+    """Decisions canonically ordered by ``as_of`` (monthly cadence). Duplicate CALENDAR
+    months — regardless of day-of-month — are a corrupt chain: the timeline reporter
+    fails loud rather than silently double-count (parity with the carry-cap consumable
+    path, which also rejects duplicate months). Unlike the runtime consumable path
+    (``carry_decay._validated_monthly_chain``), the reporter DOES canonicalize input
+    order by sorting: it is a pure measurement over a set of monthly rows, not a
+    consumer of a latched stream, so arrival order carries no meaning here."""
     ordered = sorted(decisions, key=lambda d: d.as_of)
-    seen: set[_dt.date] = set()
+    seen: set[int] = set()
     for row in ordered:
-        if row.as_of in seen:
+        mi = _month_index(row.as_of)
+        if mi in seen:
             raise ValueError(
                 f"regime_timeline_metrics: duplicate decision month {row.as_of} "
-                "(a monthly latched chain has at most one row per month)")
-        seen.add(row.as_of)
+                "(a monthly latched chain has at most one row per calendar month)")
+        seen.add(mi)
     return ordered
-
-
-def _consumable_quadrants(ordered: Sequence[Any]) -> list[str | None]:
-    """The consumable quadrant carried each month: the fresh quadrant when the month is
-    a valid decision, else the LAST VALID quadrant on/before it (carry-forward), or
-    ``None`` before the first valid decision seeds the chain (no consumable position)."""
-    out: list[str | None] = []
-    last_valid: str | None = None
-    for row in ordered:
-        if row.has_valid_quadrant():
-            last_valid = row.quadrant
-        out.append(last_valid)
-    return out
-
-
-def _trailing_fresh_valid_rate(ordered: Sequence[Any], months: int) -> float:
-    """Fraction of the trailing ``months`` decision rows that are fresh-valid (the
-    window the ratified-only gate ``min_fresh_valid_rate_36m`` judges). Uses
-    min(months, n) as the denominator so a short chain is not diluted by absent tail."""
-    if not ordered:
-        return 0.0
-    tail = ordered[-months:]
-    return sum(1 for r in tail if r.has_valid_quadrant()) / len(tail)
 
 
 def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
@@ -404,76 +392,110 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
     ``has_valid_quadrant()``). Returns a dict of REPORTED (never silently gating)
     diagnostics:
 
-      * ``fresh_valid_rate``      global + trailing rolling 12/24/36-month rates,
-      * ``max_abstention_streak_months``  longest run of consecutive non-valid months,
-      * ``max_carry_age_months``  longest run of consecutive carried (gated) months that
-        follows a valid seed — the carry age the carry_decay_v1 cap bounds,
-      * ``max_same_quadrant_run_months``  longest run in the SAME consumable quadrant
-        over the carry-filled chain (the 2023-02→2026 contraction anchor the audit flagged),
+      * ``fresh_valid_rate``      global + trailing 12/24/36-CALENDAR-month rates,
+      * ``max_abstention_streak_months``  longest run of consecutive calendar months
+        without a fresh valid decision,
+      * ``max_carry_age_months``  greatest calendar-month distance a carried position
+        reaches from its last valid seed — the age the carry_decay_v1 cap bounds,
+      * ``max_same_quadrant_run_months``  longest run of calendar months in the SAME
+        consumable quadrant over the carry-filled chain (the 2023-02→2026 contraction
+        anchor the audit flagged),
       * ``quadrant_mix``          fresh-valid month count per quadrant,
-      * ``n_valid`` / ``n_low_confidence`` / ``n_months``.
+      * ``n_valid`` / ``n_low_confidence`` / ``n_months`` / ``n_decision_rows``.
+
+    UNITS: every duration and window is CALENDAR-MONTH distance derived from a month
+    index, never a row count. The harness sources these rows contiguously (one
+    month-end row per month from ``decision.run_decision_series`` and the reclassified
+    experiment series), where the two are identical — but the function must stay
+    correct for any monthly chain: in a gap-bearing chain a missing month means NO
+    decision was published, so nothing fresh happened that month — it counts as an
+    abstaining month, the carry keeps aging through it and the carried consumable
+    quadrant extends across it (exactly the carry semantics). ``n_months`` is the
+    calendar span first..last inclusive; ``n_decision_rows`` is the observed row count
+    (equal when contiguous).
     """
     ordered = _sorted_decisions(decisions)
-    n = len(ordered)
+    n_rows = len(ordered)
     n_valid = sum(1 for r in ordered if r.has_valid_quadrant())
     n_low = sum(1 for r in ordered if getattr(r, "status", None) == "low_confidence")
-
-    # longest abstention streak + longest carry age (a gated month that follows a seed).
-    max_abstention = 0
-    streak = 0
-    max_carry_age = 0
-    carry_age = 0
-    seen_valid = False
-    for row in ordered:
-        if row.has_valid_quadrant():
-            seen_valid = True
-            streak = 0
-            carry_age = 0
-        else:
-            streak += 1
-            if streak > max_abstention:
-                max_abstention = streak
-            if seen_valid:  # carry age is only defined once a valid seed exists
-                carry_age += 1
-                if carry_age > max_carry_age:
-                    max_carry_age = carry_age
-
-    # longest same-quadrant run over the carry-filled consumable chain.
-    consumable = _consumable_quadrants(ordered)
-    max_same_run = 0
-    run = 0
-    prev: str | None = None
-    for q in consumable:
-        if q is None:
-            run = 0
-            prev = None
-            continue
-        run = run + 1 if q == prev else 1
-        if run > max_same_run:
-            max_same_run = run
-        prev = q
 
     quadrant_mix = {q: 0 for q in ("recovery", "expansion", "slowdown", "contraction")}
     for row in ordered:
         if row.has_valid_quadrant():
             quadrant_mix[row.quadrant] = quadrant_mix.get(row.quadrant, 0) + 1
 
+    if not ordered:
+        zero_rate = {"global": 0.0, "rolling_12m": 0.0, "rolling_24m": 0.0,
+                     "rolling_36m": 0.0}
+        return {"n_months": 0, "n_decision_rows": 0, "n_valid": 0,
+                "n_low_confidence": 0, "fresh_valid_rate": zero_rate,
+                "max_abstention_streak_months": 0, "max_carry_age_months": 0,
+                "max_same_quadrant_run_months": 0, "quadrant_mix": quadrant_mix,
+                "first_as_of": None, "last_as_of": None}
+
+    m0 = _month_index(ordered[0].as_of)
+    m1 = _month_index(ordered[-1].as_of)
+    n_months = m1 - m0 + 1
+    row_by_month = {_month_index(r.as_of): r for r in ordered}
+    valid_months = {mi for mi, r in row_by_month.items() if r.has_valid_quadrant()}
+
+    def trailing_rate(window_months: int) -> float:
+        """Fresh-valid fraction of the trailing ``window_months`` CALENDAR months
+        (denominator = min(window, span) so a short chain is not diluted)."""
+        lo = max(m0, m1 - window_months + 1)
+        span = m1 - lo + 1
+        return sum(1 for mi in valid_months if mi >= lo) / span
+
+    # single calendar-month sweep: abstention streak, carry age (distance from the
+    # last valid month), and the same-quadrant run over the carry-filled consumable.
+    max_abstention = 0
+    streak = 0
+    max_carry_age = 0
+    last_valid_mi: int | None = None
+    max_same_run = 0
+    same_run = 0
+    consumable_prev: str | None = None
+    consumable: str | None = None
+    for mi in range(m0, m1 + 1):
+        if mi in valid_months:
+            streak = 0
+            last_valid_mi = mi
+            consumable = row_by_month[mi].quadrant
+        else:
+            streak += 1
+            if streak > max_abstention:
+                max_abstention = streak
+            if last_valid_mi is not None:
+                age = mi - last_valid_mi
+                if age > max_carry_age:
+                    max_carry_age = age
+        if consumable is None:
+            same_run = 0
+        elif consumable == consumable_prev:
+            same_run += 1
+        else:
+            same_run = 1
+        consumable_prev = consumable
+        if same_run > max_same_run:
+            max_same_run = same_run
+
     return {
-        "n_months": n,
+        "n_months": n_months,
+        "n_decision_rows": n_rows,
         "n_valid": n_valid,
         "n_low_confidence": n_low,
         "fresh_valid_rate": {
-            "global": (n_valid / n) if n else 0.0,
-            "rolling_12m": _trailing_fresh_valid_rate(ordered, 12),
-            "rolling_24m": _trailing_fresh_valid_rate(ordered, 24),
-            "rolling_36m": _trailing_fresh_valid_rate(ordered, 36),
+            "global": n_valid / n_months,
+            "rolling_12m": trailing_rate(12),
+            "rolling_24m": trailing_rate(24),
+            "rolling_36m": trailing_rate(36),
         },
         "max_abstention_streak_months": max_abstention,
         "max_carry_age_months": max_carry_age,
         "max_same_quadrant_run_months": max_same_run,
         "quadrant_mix": quadrant_mix,
-        "first_as_of": ordered[0].as_of.isoformat() if ordered else None,
-        "last_as_of": ordered[-1].as_of.isoformat() if ordered else None,
+        "first_as_of": ordered[0].as_of.isoformat(),
+        "last_as_of": ordered[-1].as_of.isoformat(),
     }
 
 
