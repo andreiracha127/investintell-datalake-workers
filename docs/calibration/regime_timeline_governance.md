@@ -1,13 +1,24 @@
 # Regime timeline governance (open_macro_v03)
 
-Status: **proposed_not_ratified** — this note and the artifacts it references are
-instrumentation. Nothing here changes a frozen model default, activates anything, or
-ratifies itself. `A5: blocked`, `runtime_activation: false`, `db_write: none`.
+Status: **ratified + active in code** — the timeline gate policy
+(`artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json`) was **ratified
+by the quant_owner (Andrei Rachadel) on 2026-07-11** with the bounds exactly as
+proposed, and `carry_decay_v1` ships **ACTIVE** (`CARRY_DECAY_V1_ACTIVE = True`) in the
+Stage B worker publish path. The remaining switches are **ops steps, not approvals**:
+the orchestrator applies the additive migration DDL to the production DB and redeploys
+the worker (Railway). No frozen model parameter was changed and nothing here was
+self-ratified (the ratification was ordered by the owner and recorded per the
+phase0q_003 convention).
 
 This note records the Tranche W hardening of the open_macro_v03 regime system: what the
-regime audit found, the `carry_decay_v1` carry policy, the proposed blocking timeline
-gates, the ratification process, and the momentum-semantics disclosure that must
+regime audit found, the `carry_decay_v1` carry policy, the ratified blocking timeline
+gates, the ratification record, and the momentum-semantics disclosure that must
 accompany every investor-facing regime label.
+
+**Expectation set by the ratified gates:** the frozen v1 model FAILS them on the
+certified 2021-2026 timeline, so official phase0q runs will report a **timeline
+`no_go`** in `gates_overall_base_cost` until a recalibrated candidate passes review.
+That no_go is the intended honest outcome — not a defect, and never a crash.
 
 ## 1. The gap the audit found
 
@@ -44,9 +55,10 @@ cell (`scripts/regime_recalibration_experiment.py`, default cell 10y / 0.70):
 | max same-quadrant run (consumable) | **38 months** (the 2023→2026 contraction anchor) |
 | quadrant mix (valid) | recovery 4, expansion 12, slowdown 1, contraction 6 |
 
-## 2. `carry_decay_v1` — bounded carry
+## 2. `carry_decay_v1` — bounded carry (ACTIVE)
 
-`harness/direct_activation/carry_decay.py` (pure, non-pinned, default-OFF).
+`harness/direct_activation/carry_decay.py` (pure, non-pinned, **`CARRY_DECAY_V1_ACTIVE
+= True`** since the 2026-07-11 ratification).
 
 - A seed book is consumable for at most **`MAX_CARRY_MONTHS = 3`** monthly decision
   points. `carry_age_months` is the **calendar-month** distance from `carry_seed_as_of`
@@ -56,13 +68,23 @@ cell (`scripts/regime_recalibration_experiment.py`, default cell 10y / 0.70):
   through the sleeve risk-cap / defensive-floor machinery — with `carry_expired = true`.
   Degraded months keep being re-evaluated monthly; a **fresh valid decision resets the age
   to 0**.
+- **Publish path (Stage B worker):** an expired carry publishes
+  `decision_validity = 'carried_expired'` (seed quadrant preserved as reference), the
+  allocation `book = 'center_50'`, and provenance columns `carry_age_months` /
+  `carry_expired` (+ `carry_seed_as_of` on allocations) on both rows. The DB surface is
+  the **additive** migration `schemas/open_macro_v03_carry_decay_v1_migration.sql`
+  (widened `decision_validity` / `book` CHECKs + nullable provenance columns; old rows
+  untouched; the three byte-pinned base DDL files are not edited).
 - This mirrors the Light-repo backtest (`carry_decay_v1`) **exactly** — cross-repo
-  fidelity is a hard requirement, the two repos must consume the same policy.
+  fidelity is a hard requirement, the two repos must consume the same policy. The new
+  DB vocabulary the Light repo needs: validity `'carried_expired'`, book `'center_50'`,
+  columns `carry_age_months` / `carry_seed_as_of` / `carry_expired`.
 
-## 3. Proposed blocking gates (phase0q_005)
+## 3. Ratified blocking gates (phase0q_005)
 
-`artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.proposed.json`
-(`status: proposed_not_ratified`, `ratified_by: null`).
+`artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json`
+(**`status: ratified`, `ratified_by: quant_owner` (Andrei Rachadel),
+`decision_date: 2026-07-11`** — bounds exactly as proposed).
 
 | gate | bound | measured (default cell) |
 |---|---|---|
@@ -70,39 +92,43 @@ cell (`scripts/regime_recalibration_experiment.py`, default cell 10y / 0.70):
 | `max_abstention_streak_months` | ≤ 6 | 18 → **no_go** |
 | `max_carry_age_months` | ≤ 3 | 18 → **no_go** |
 | `max_same_quadrant_run_months` | ≤ 12 | 38 → **no_go** |
-| `min_upside_capture_bull_year` | ≥ 0.35 (SPY > +15% years) | reported per year |
+| `min_upside_capture_bull_year` | ≥ 0.35 (SPY > +15% FULL calendar years) | reported per year |
 
-`runner.judge_timeline_gates()` computes these on every run and attaches them to the gate
-report under `timeline.gate_judgment`. Until the policy is ratified the judgment is
-**advisory** (`mode: advisory`, `gates_enforced: false`) and never enters
-`gates_overall_base_cost`; only `status == "ratified"` makes it gating. When ratified it
-re-elevates `fresh_decision_rate` / `abstention_rate` / carry-age / occupancy from
-`diagnostics_not_gating` back to blocking at the run level (an amendment of phase0q_003;
-the per-window `consumable_position_coverage` gate stays).
+`runner.judge_timeline_gates()` computes these on every run. With the ratified policy
+the judgment is **gating** (`mode: gating`, `gates_enforced: true`) and lands as a
+distinct blocking **`timeline`** entry in `gates_overall_base_cost` — a real go/no_go,
+never a crash. It re-elevates `fresh_decision_rate` / `abstention_rate` / carry-age /
+occupancy from `diagnostics_not_gating` back to blocking at the run level (an amendment
+of phase0q_003; the per-window `consumable_position_coverage` gate stays). An
+unratified policy remains advisory and never enters the overall gates (behaviour kept
+under test). **Official phase0q runs will report timeline `no_go` until recalibration
+lands** — by the table above, that is the honest state of the frozen v1 model.
 
-## 4. Ratification process (self-ratification is prohibited)
+## 4. Ratification record + remaining ops switches
 
-This tranche delivers instrumentation only. Before `carry_decay_v1` can change any
-published behaviour, ALL of the following must happen through the sanctioned governance
-path — none of them is done here:
+1. **Ratification — DONE.** The quant_owner (Andrei Rachadel) ratified the policy on
+   2026-07-11, bounds unchanged from the proposal; recorded in the artifact with the
+   phase0q_003 field convention (`ratified_by` / `ratified_by_name` / `decision_date`).
+   The self-ratification ban stands — the ratification was ordered by the owner, not
+   initiated by the engineering side. The bounds govern abstention / flip / duration
+   behaviour, **never** CAGR/Sharpe (the freeze rule; see the confidence docstring in
+   `src/quadrant_confidence.py`).
+2. **DB schema evolution — DDL COMMITTED, application is an ops step.** The additive
+   migration `schemas/open_macro_v03_carry_decay_v1_migration.sql` is committed and
+   idempotent; the **orchestrator applies it to the production DB in a controlled
+   step** (it is deliberately NOT in the worker's `ensure_schema`). `EXPECTED_SCHEMA` /
+   `verify_schema` expect the post-migration catalog, so an unmigrated DB fails loud
+   (no writes) rather than accepting disguised rows.
+3. **Deploy — ops step.** The worker (Railway service `open-macro-v03-worker`) must be
+   redeployed with this code for the active carry policy to publish. Order-independent
+   with (2): whichever lands first, the fail-loud gates prevent any inconsistent write.
+4. **Pinned modules untouched.** The frozen decision chain (`consumable_today`,
+   `decision.py`, `sleeve.py`, …) was not edited; the non-pinned worker composes
+   `carry_decay` on top of the pinned seed selection, so no `module_pins.json`
+   regeneration was needed.
 
-1. **quant_owner ratifies** `timeline_gate_policy.proposed.json` (set `status: ratified`,
-   name `ratified_by`, set `decision_date`) with the bounds reviewed against
-   abstention / flip / duration behaviour — **never** against CAGR/Sharpe (the freeze
-   rule; see the confidence docstring in `src/quadrant_confidence.py`).
-2. **DB schema evolution.** The `open_macro_v03_decisions` / `open_macro_v03_allocations`
-   CHECK constraints admit only the four quadrant labels, `fresh`/`carried`, and the
-   `compressed_50` book. Persisting a `carry_expired` / center-book allocation needs new
-   columns/labels, and those DDLs are frozen by the Stage B `immutability_constraint`.
-3. **Re-pin the decision-chain closure.** Flipping `consumable_today` itself (rather than
-   the additive advisory computation in the worker) would change a hash-pinned module and
-   require regenerating `module_pins.json` — a governance-sanctioned re-pin, not a silent
-   edit. Regenerating it to bless an unratified change would be self-ratification of the
-   activation bundle and is forbidden.
-
-Until then, the runtime **computes and reports** carry provenance (advisory) and the
-harness/backtest legs may exercise the degradation directly via
-`carry_decay.evaluate(..., active=True)`.
+There is **no remaining approval-shaped dependency**: everything still pending is an
+operational switch (DDL application + redeploy).
 
 ## 5. Momentum-semantics disclosure (labels)
 
@@ -125,11 +151,12 @@ every surface that exposes a regime must disclose:
 | item | where |
 |---|---|
 | W1 timeline metrics (always reported) | `harness/phase0q/metrics.py`, `harness/phase0q/runner.py` (`timeline` block) |
-| W2 proposed gate policy + advisory judge | `artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.proposed.json`, `runner.judge_timeline_gates` |
-| W3 `carry_decay_v1` (default-OFF) + advisory worker provenance | `harness/direct_activation/carry_decay.py`, `src/workers/open_macro_v03.py` |
+| W2 gate policy (ratified 2026-07-11) + gating judge | `artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json`, `runner.judge_timeline_gates` + the blocking `timeline` overall gate |
+| W3 `carry_decay_v1` (ACTIVE) + publish-path degradation | `harness/direct_activation/carry_decay.py`, `src/workers/open_macro_v03.py`, `schemas/open_macro_v03_carry_decay_v1_migration.sql` |
 | W4 golden timeline replay | `tests/test_regime_timeline_golden.py` |
 | W5 baseline-window regression + recalibration experiment | `tests/test_baseline_window_regression.py`, `scripts/regime_recalibration_experiment.py` |
 | W6 this note | `docs/calibration/regime_timeline_governance.md` |
 
 Frozen model parameters (confidence floor 0.70, axis weights, hysteresis, 10y robust
-baseline) are unchanged. Recalibration is a future, separately-ratified experiment.
+baseline) are unchanged. Recalibration is a future, separately-ratified experiment —
+until it lands, official phase0q runs report the timeline `no_go` documented above.
