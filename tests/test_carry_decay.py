@@ -177,3 +177,23 @@ def test_duplicate_month_fails_loud():
              _Dec(_me(2026, 2), "expansion", True)]
     with pytest.raises(ValueError, match="duplicate decision month"):
         cd.carry_provenance(chain, _me(2026, 3))
+
+
+def test_two_distinct_dates_in_same_calendar_month_fail_loud():
+    """The chain cadence is CALENDAR-MONTHLY: two rows in the same month with
+    different days (e.g. a mid-month and a month-end row) are a duplicate month,
+    not two decisions — dedup by full date would silently keep both."""
+    chain = [_Dec(dt.date(2026, 2, 15), "contraction", True),
+             _Dec(_me(2026, 2), "expansion", True)]
+    with pytest.raises(ValueError, match="duplicate decision month"):
+        cd.carry_provenance(chain, _me(2026, 3))
+
+
+def test_out_of_order_chain_fails_loud_not_silently_sorted():
+    """An out-of-order chain is corrupt input (the latched chain is produced in
+    ascending month order); it must raise, never be silently repaired by sorting —
+    mirror of the Light-repo fail-loud semantics."""
+    chain = [_Dec(_me(2026, 3), "expansion", True),
+             _Dec(_me(2026, 2), "contraction", True)]
+    with pytest.raises(ValueError, match="out-of-order"):
+        cd.carry_provenance(chain, _me(2026, 4))

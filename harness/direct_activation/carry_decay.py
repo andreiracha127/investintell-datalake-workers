@@ -67,17 +67,33 @@ def carry_age_months(seed_as_of: _dt.date, as_of: _dt.date) -> int:
     return age
 
 
-def _ordered_unique(chain: Sequence[Any]) -> list[Any]:
-    """Chain ordered by ``as_of`` with a fail-loud duplicate-month guard (a monthly
-    latched chain has at most one row per month; a duplicate is a corrupt chain)."""
-    ordered = sorted(chain, key=lambda r: r.as_of)
-    seen: set[_dt.date] = set()
-    for row in ordered:
-        if row.as_of in seen:
-            raise ValueError(
-                f"carry_decay_v1: duplicate decision month {row.as_of} in the chain")
-        seen.add(row.as_of)
-    return ordered
+def _validated_monthly_chain(chain: Sequence[Any]) -> list[Any]:
+    """Fail-loud validation of the AS-SUPPLIED chain order and cadence.
+
+    The latched chain is produced in strictly ascending CALENDAR-MONTH order (one
+    decision row per month). This validates the ORIGINAL sequence — it never sorts,
+    because sorting would silently repair an out-of-order (corrupt) chain — and keys
+    duplicates on (year, month), not the full date, so two rows in the same month with
+    different days are rejected too. Mirror of the Light-repo carry_decay_v1 semantics:
+    duplicate/out-of-order months fail loud."""
+    rows = list(chain)
+    prev_key: tuple[int, int] | None = None
+    prev_as_of: _dt.date | None = None
+    for row in rows:
+        key = (row.as_of.year, row.as_of.month)
+        if prev_key is not None:
+            if key == prev_key:
+                raise ValueError(
+                    f"carry_decay_v1: duplicate decision month {row.as_of} in the "
+                    f"chain (already saw {prev_as_of} in {prev_key[0]}-{prev_key[1]:02d})")
+            if key < prev_key:
+                raise ValueError(
+                    f"carry_decay_v1: out-of-order decision month {row.as_of} after "
+                    f"{prev_as_of} (the latched chain must be strictly ascending by "
+                    "calendar month; refusing to silently repair a corrupt chain)")
+        prev_key = key
+        prev_as_of = row.as_of
+    return rows
 
 
 def carry_provenance(
@@ -92,8 +108,9 @@ def carry_provenance(
     Returns ``carry_seed_as_of``, seed ``quadrant``, ``decision_validity``
     (fresh iff age 0), ``carry_age_months`` and ``carry_expired`` (age > cap). Raises
     when the chain carries no valid seed (nothing consumable) — same fail-loud contract
-    as the ratified path."""
-    ordered = _ordered_unique(chain)
+    as the ratified path. The chain must arrive strictly ascending by calendar month
+    (see :func:`_validated_monthly_chain`); out-of-order/duplicate months raise."""
+    ordered = _validated_monthly_chain(chain)
     valid = [r for r in ordered if r.as_of <= as_of and r.has_valid_quadrant()]
     if not valid:
         raise ValueError(
