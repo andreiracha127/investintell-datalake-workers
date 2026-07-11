@@ -107,6 +107,108 @@ def test_judge_policy_absent_blocks_nothing():
 
 
 # --------------------------------------------------------------------------- #
+# Ratification contract: one status string can never forge gating              #
+# --------------------------------------------------------------------------- #
+
+def _ratified_policy():
+    return json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+
+
+def test_committed_policy_matches_the_pinned_canonical_hash():
+    """The committed artifact validates cleanly and its canonical content hash equals
+    the code-reviewed pin — any content edit requires a re-pin in code review."""
+    policy = _ratified_policy()
+    assert runner._policy_canonical_sha256(policy) == \
+        runner.RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256
+    assert runner.validate_ratified_policy(policy) == []
+
+
+def _assert_never_gates(judgment, expect_violation_substring):
+    assert judgment["gates_enforced"] is False
+    assert judgment["mode"] == "advisory"
+    assert judgment["policy_status"] == "ratified_claim_invalid"
+    assert any(expect_violation_substring in v
+               for v in judgment["ratification_violations"]), \
+        judgment["ratification_violations"]
+    # NEVER a partial enforcement: no per-gate judgments from a forged claim.
+    assert judgment["per_gate"] == {}
+    assert judgment["overall_go"] is None
+
+
+def test_status_only_forgery_never_gates():
+    """A proposed-shaped policy with only status flipped to 'ratified' (no ratifier,
+    no decision_date) must never gate."""
+    forged = {**_ratified_policy(), "ratified_by": None,
+              "ratified_by_name": None, "decision_date": None}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "ratified_by")
+
+
+def test_wrong_ratifier_never_gates():
+    forged = {**_ratified_policy(), "ratified_by": "engineering_agent"}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "quant_owner")
+
+
+def test_missing_gate_key_never_gates_and_never_partially_enforces():
+    """Deleting a gate from a claimed-ratified policy must not silently shrink the
+    enforced set — the whole claim is invalid."""
+    policy = _ratified_policy()
+    gates = dict(policy["gates"])
+    gates.pop("max_carry_age_months")
+    forged = {**policy, "gates": gates}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "gate keys")
+
+
+def test_extra_gate_key_never_gates():
+    policy = _ratified_policy()
+    forged = {**policy, "gates": {**policy["gates"], "max_novelty_months": 1}}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "gate keys")
+
+
+def test_malformed_bound_never_gates():
+    policy = _ratified_policy()
+    forged = {**policy,
+              "gates": {**policy["gates"], "min_fresh_valid_rate_36m": "0.40"}}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "not a positive finite number")
+
+
+def test_tampered_content_with_valid_fields_never_gates():
+    """An edit that keeps every validated field intact (e.g. rewriting the rationale)
+    still fails the canonical content pin — content cannot move without a
+    code-reviewed re-pin."""
+    forged = {**_ratified_policy(), "rationale": "edited"}
+    j = runner.judge_timeline_gates(_block(0.5, 3, 3, 10), forged)
+    _assert_never_gates(j, "sha256")
+
+
+def test_overall_entry_fails_closed_on_invalid_ratification_claim():
+    """A forged/tampered ratification claim surfaces as a LOUD no_go overall entry
+    (fail closed) — it can weaken nothing and can never produce a trusted go."""
+    judgment = {"policy_status": "ratified_claim_invalid", "gates_enforced": False,
+                "ratification_violations": ["canonical content sha256 mismatch"],
+                "phase0q_id": "open_macro_v03_phase0q_005"}
+    entry = runner.timeline_overall_gate_entry(judgment)
+    assert entry["go_no_go"] == "no_go"
+    assert entry["policy_status"] == "ratified_claim_invalid"
+    assert entry["ratification_violations"]
+
+
+def test_overall_entry_absent_for_clean_advisory_and_present_when_gating():
+    advisory = {"policy_status": "proposed_not_ratified", "gates_enforced": False}
+    assert runner.timeline_overall_gate_entry(advisory) is None
+    gating = {"policy_status": "ratified", "gates_enforced": True,
+              "overall_go": False, "phase0q_id": "open_macro_v03_phase0q_005"}
+    entry = runner.timeline_overall_gate_entry(gating)
+    assert entry["go_no_go"] == "no_go"
+    gating_go = {**gating, "overall_go": True}
+    assert runner.timeline_overall_gate_entry(gating_go)["go_no_go"] == "go"
+
+
+# --------------------------------------------------------------------------- #
 # Gate direction + bull-year upside logic                                     #
 # --------------------------------------------------------------------------- #
 
