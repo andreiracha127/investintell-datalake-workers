@@ -159,6 +159,58 @@ def _valid_decision_dates(series: Sequence[decision.DecisionRow]) -> set[_dt.dat
 
 
 # ------------------------------------------------------------------------- #
+# Regime timeline block (Tranche W1 — ALWAYS reported, never gating here)    #
+# ------------------------------------------------------------------------- #
+
+def _spy_buy_hold_nav(
+    prices: sleeve.PriceFrame, primary: tuple[_dt.date, _dt.date],
+) -> list[tuple[_dt.date, float]]:
+    """SPY adjusted-close buy-and-hold NAV over the primary window (base 1.0 at the
+    first priced session). The benchmark leg for calendar-year upside capture."""
+    series: list[tuple[_dt.date, float]] = []
+    base: float | None = None
+    for d in prices.dates_in(*primary):
+        p = prices.price("SPY", d)
+        if p is None or p != p or p <= 0:  # NaN / non-positive guard
+            continue
+        if base is None:
+            base = p
+        series.append((d, p / base))
+    return series
+
+
+def build_timeline_block(
+    decisions: Sequence[decision.DecisionRow],
+    prices: sleeve.PriceFrame,
+    config: "RunConfig",
+) -> dict[str, Any]:
+    """The regime-timeline diagnostics block reported on every run (Tranche W1).
+
+    ALWAYS computed and attached to the gate report: the abstention/carry/quadrant
+    occupancy of the latched chain plus benchmark-relative upside capture, over the
+    configured primary window at BASE_COST_BPS for the FIRST configured candidate
+    (the measurement reference candidate). These are diagnostics; the proposed
+    (not-yet-ratified) gate policy that judges them is wired advisory-only until it is
+    ratified (see judge_timeline_gates)."""
+    base_params = config.candidates[0]
+    strat_res = _run_window(prices, decisions, base_params,
+                            config.primary_window[0], config.primary_window[1],
+                            BASE_COST_BPS)
+    strategy_nav = list(zip(strat_res.dates, strat_res.nav))
+    spy_nav = _spy_buy_hold_nav(prices, config.primary_window)
+    return {
+        "reference_candidate_id": base_params.candidate_id,
+        "primary_window": {
+            "start": config.primary_window[0].isoformat(),
+            "end": config.primary_window[1].isoformat(),
+        },
+        "regime_timeline_metrics": metrics.regime_timeline_metrics(decisions),
+        "upside_capture_by_calendar_year": metrics.upside_capture_by_calendar_year(
+            strategy_nav, spy_nav),
+    }
+
+
+# ------------------------------------------------------------------------- #
 # OOS folds                                                                  #
 # ------------------------------------------------------------------------- #
 
@@ -445,10 +497,12 @@ def run_harness(pack_dir: str | Path, config: RunConfig) -> dict[str, Any]:
             cell["provenance"] = _cell_provenance(pack, config, params, cost_bps)
             cells.append(cell)
 
-    gate_report = build_gate_report(pack, config, cells, folds)
+    timeline = build_timeline_block(decisions, prices, config)
+    gate_report = build_gate_report(pack, config, cells, folds, timeline)
     result = build_contract_result(pack, config, cells, gate_report)
     return {"result": result, "gate_report": gate_report, "cells": cells,
-            "decisions": decisions, "input_pack_sha256": pack.input_pack_sha256}
+            "decisions": decisions, "timeline": timeline,
+            "input_pack_sha256": pack.input_pack_sha256}
 
 
 def _cell_provenance(pack, config, params, cost_bps) -> dict[str, Any]:
@@ -470,7 +524,7 @@ def _cell_provenance(pack, config, params, cost_bps) -> dict[str, Any]:
 # Gate report + contract result                                             #
 # ------------------------------------------------------------------------- #
 
-def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
+def build_gate_report(pack, config, cells, folds, timeline=None) -> dict[str, Any]:
     per_cost: dict[str, Any] = {}
     for cost_bps in config.cost_grid:
         cost_cells = [c for c in cells if c["cost_bps"] == cost_bps]
@@ -534,6 +588,11 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
         "gates_overall_base_cost": overall,
         "per_cost_level": per_cost,
         "data_quality": data_quality,
+        # Tranche W1: regime-timeline diagnostics are ALWAYS reported (abstention/carry/
+        # quadrant occupancy + benchmark-relative upside capture) so the behaviour the
+        # risk-only envelope was blind to is never invisible again. Judged only when the
+        # proposed timeline gate policy is ratified (else advisory — see judge wiring).
+        "timeline": timeline if timeline is not None else {},
         "execution_legs": {"local_python_pure": "complete", "qc_research_object_store": "pending"},
         "governance": GOVERNANCE_PINS,
         "provenance": {

@@ -31,7 +31,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import statistics
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -340,3 +340,184 @@ def stability_from_folds(fold_metrics: Sequence[Mapping[str, float]]) -> dict[st
         median = statistics.median(values)
         out[f"{key}_max_dev_from_median"] = max(abs(v - median) for v in values)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Regime timeline metrics (Tranche W1 — ALWAYS computed, never gating here)    #
+# --------------------------------------------------------------------------- #
+# The phase0q_003 amendment reclassified fresh_decision_rate / abstention_rate as
+# ``diagnostics_not_gating`` and made ``consumable_position_coverage`` the blocking
+# stress metric (carry-forward counts as covered). That is exactly why a decision
+# chain that abstained 43/66 months (2021-2026) and carried a 2023-02 contraction
+# book for years reported 100% coverage and passed the risk-only envelope: the
+# pathology was the optimum of the envelope, invisible to every reported number.
+# These timeline metrics make the abstention/carry/quadrant-occupancy behaviour a
+# FIRST-CLASS reported object over the LATCHED CONSUMABLE chain, so the regime the
+# strategy is actually positioned in can never again be invisible. They are pure and
+# deterministic; the proposed (not-yet-ratified) gate policy that judges them lives in
+# ``artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.proposed.json``.
+
+
+def _sorted_decisions(decisions: Sequence[Any]) -> list[Any]:
+    """Decisions ordered by ``as_of`` (monthly cadence). Duplicate as_of months are a
+    corrupt chain: the timeline reporter fails loud rather than silently double-count
+    (parity with the carry-cap consumable path, which also rejects duplicate months)."""
+    ordered = sorted(decisions, key=lambda d: d.as_of)
+    seen: set[_dt.date] = set()
+    for row in ordered:
+        if row.as_of in seen:
+            raise ValueError(
+                f"regime_timeline_metrics: duplicate decision month {row.as_of} "
+                "(a monthly latched chain has at most one row per month)")
+        seen.add(row.as_of)
+    return ordered
+
+
+def _consumable_quadrants(ordered: Sequence[Any]) -> list[str | None]:
+    """The consumable quadrant carried each month: the fresh quadrant when the month is
+    a valid decision, else the LAST VALID quadrant on/before it (carry-forward), or
+    ``None`` before the first valid decision seeds the chain (no consumable position)."""
+    out: list[str | None] = []
+    last_valid: str | None = None
+    for row in ordered:
+        if row.has_valid_quadrant():
+            last_valid = row.quadrant
+        out.append(last_valid)
+    return out
+
+
+def _trailing_fresh_valid_rate(ordered: Sequence[Any], months: int) -> float:
+    """Fraction of the trailing ``months`` decision rows that are fresh-valid (the
+    window the ratified-only gate ``min_fresh_valid_rate_36m`` judges). Uses
+    min(months, n) as the denominator so a short chain is not diluted by absent tail."""
+    if not ordered:
+        return 0.0
+    tail = ordered[-months:]
+    return sum(1 for r in tail if r.has_valid_quadrant()) / len(tail)
+
+
+def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
+    """Timeline health of the monthly latched decision chain (Tranche W1).
+
+    ``decisions`` is the monthly :class:`~harness.phase0q.decision.DecisionRow`-shaped
+    chain (any object exposing ``as_of``, ``status``, ``quadrant`` and
+    ``has_valid_quadrant()``). Returns a dict of REPORTED (never silently gating)
+    diagnostics:
+
+      * ``fresh_valid_rate``      global + trailing rolling 12/24/36-month rates,
+      * ``max_abstention_streak_months``  longest run of consecutive non-valid months,
+      * ``max_carry_age_months``  longest run of consecutive carried (gated) months that
+        follows a valid seed — the carry age the carry_decay_v1 cap bounds,
+      * ``max_same_quadrant_run_months``  longest run in the SAME consumable quadrant
+        over the carry-filled chain (the 2023-02→2026 contraction anchor the audit flagged),
+      * ``quadrant_mix``          fresh-valid month count per quadrant,
+      * ``n_valid`` / ``n_low_confidence`` / ``n_months``.
+    """
+    ordered = _sorted_decisions(decisions)
+    n = len(ordered)
+    n_valid = sum(1 for r in ordered if r.has_valid_quadrant())
+    n_low = sum(1 for r in ordered if getattr(r, "status", None) == "low_confidence")
+
+    # longest abstention streak + longest carry age (a gated month that follows a seed).
+    max_abstention = 0
+    streak = 0
+    max_carry_age = 0
+    carry_age = 0
+    seen_valid = False
+    for row in ordered:
+        if row.has_valid_quadrant():
+            seen_valid = True
+            streak = 0
+            carry_age = 0
+        else:
+            streak += 1
+            if streak > max_abstention:
+                max_abstention = streak
+            if seen_valid:  # carry age is only defined once a valid seed exists
+                carry_age += 1
+                if carry_age > max_carry_age:
+                    max_carry_age = carry_age
+
+    # longest same-quadrant run over the carry-filled consumable chain.
+    consumable = _consumable_quadrants(ordered)
+    max_same_run = 0
+    run = 0
+    prev: str | None = None
+    for q in consumable:
+        if q is None:
+            run = 0
+            prev = None
+            continue
+        run = run + 1 if q == prev else 1
+        if run > max_same_run:
+            max_same_run = run
+        prev = q
+
+    quadrant_mix = {q: 0 for q in ("recovery", "expansion", "slowdown", "contraction")}
+    for row in ordered:
+        if row.has_valid_quadrant():
+            quadrant_mix[row.quadrant] = quadrant_mix.get(row.quadrant, 0) + 1
+
+    return {
+        "n_months": n,
+        "n_valid": n_valid,
+        "n_low_confidence": n_low,
+        "fresh_valid_rate": {
+            "global": (n_valid / n) if n else 0.0,
+            "rolling_12m": _trailing_fresh_valid_rate(ordered, 12),
+            "rolling_24m": _trailing_fresh_valid_rate(ordered, 24),
+            "rolling_36m": _trailing_fresh_valid_rate(ordered, 36),
+        },
+        "max_abstention_streak_months": max_abstention,
+        "max_carry_age_months": max_carry_age,
+        "max_same_quadrant_run_months": max_same_run,
+        "quadrant_mix": quadrant_mix,
+        "first_as_of": ordered[0].as_of.isoformat() if ordered else None,
+        "last_as_of": ordered[-1].as_of.isoformat() if ordered else None,
+    }
+
+
+def _calendar_year_return(series: Sequence[tuple[_dt.date, float]], year: int) -> float | None:
+    """Total return of a (date, nav) series WITHIN one calendar year: nav_last/nav_first
+    - 1 over the in-year points. ``None`` when fewer than two in-year points or a
+    non-positive anchor (division guard)."""
+    in_year = sorted((d, v) for d, v in series if d.year == year)
+    if len(in_year) < 2:
+        return None
+    first, last = in_year[0][1], in_year[-1][1]
+    if first is None or first <= 0 or last is None:
+        return None
+    return last / first - 1.0
+
+
+def upside_capture_by_calendar_year(
+    strategy_nav: Sequence[tuple[_dt.date, float]],
+    spy_nav: Sequence[tuple[_dt.date, float]],
+) -> dict[str, Any]:
+    """Per calendar year: strategy return / SPY return, judged ONLY in years SPY rose
+    (Tranche W1). The audit's core economic finding is that the model mapped the most
+    bullish disinflationary years to the most defensive book; a benchmark-relative,
+    per-calendar-year upside-capture number is how a ratified gate would catch that.
+
+    ``strategy_nav`` / ``spy_nav`` are (date, nav) sequences. For each year present in
+    BOTH, reports ``strategy_return``, ``spy_return``, ``spy_up`` (spy_return > 0) and
+    ``upside_capture`` = strategy_return / spy_return when ``spy_up`` (else ``None`` —
+    a down year is a downside-capture question, out of scope here). All divisions are
+    guarded (a non-positive SPY return yields ``upside_capture: None``)."""
+    strat_years = {d.year for d, _ in strategy_nav}
+    spy_years = {d.year for d, _ in spy_nav}
+    per_year: dict[str, Any] = {}
+    for year in sorted(strat_years & spy_years):
+        strat_ret = _calendar_year_return(strategy_nav, year)
+        spy_ret = _calendar_year_return(spy_nav, year)
+        if strat_ret is None or spy_ret is None:
+            continue
+        spy_up = spy_ret > 0.0
+        capture = (strat_ret / spy_ret) if spy_up else None
+        per_year[str(year)] = {
+            "strategy_return": strat_ret,
+            "spy_return": spy_ret,
+            "spy_up": spy_up,
+            "upside_capture": capture,
+        }
+    return per_year
