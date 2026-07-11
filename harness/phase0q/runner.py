@@ -85,6 +85,15 @@ OOS_STEP_MONTHS = 12
 CONTRACT_BUNDLE_SHA256 = pack_verifier.CONTRACT_BUNDLE_SHA256
 INPUT_PACK_ID = pack_verifier.INPUT_PACK_ID
 
+# Tranche W2: the PROPOSED (not-yet-ratified) regime-timeline gate policy. The harness
+# judges the timeline metrics against it ADVISORY-only until the artifact is ratified
+# (status == "ratified"): an unratified policy blocks nothing and never enters
+# gates_overall_base_cost — the bounds must be ratified by the quant_owner first.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+TIMELINE_GATE_POLICY_PATH = (
+    _REPO_ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
+    / "timeline_gate_policy.proposed.json")
+
 GOVERNANCE_PINS = {
     "A5": "blocked",
     "runtime_activation": False,
@@ -198,7 +207,7 @@ def build_timeline_block(
                             BASE_COST_BPS)
     strategy_nav = list(zip(strat_res.dates, strat_res.nav))
     spy_nav = _spy_buy_hold_nav(prices, config.primary_window)
-    return {
+    block: dict[str, Any] = {
         "reference_candidate_id": base_params.candidate_id,
         "primary_window": {
             "start": config.primary_window[0].isoformat(),
@@ -207,6 +216,93 @@ def build_timeline_block(
         "regime_timeline_metrics": metrics.regime_timeline_metrics(decisions),
         "upside_capture_by_calendar_year": metrics.upside_capture_by_calendar_year(
             strategy_nav, spy_nav),
+    }
+    # Tranche W2: attach the timeline-gate judgment. ADVISORY unless the policy is
+    # ratified — an unratified policy blocks nothing and does not touch the existing
+    # gates_overall_base_cost.
+    policy = load_timeline_gate_policy()
+    block["gate_judgment"] = judge_timeline_gates(block, policy)
+    return block
+
+
+def load_timeline_gate_policy(
+    path: "str | Path" = TIMELINE_GATE_POLICY_PATH,
+) -> dict[str, Any] | None:
+    """Load the proposed timeline-gate policy artifact, or ``None`` if it is absent
+    (the harness then reports ``policy_absent`` and judges nothing)."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def judge_timeline_gates(
+    timeline: Mapping[str, Any], policy: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Judge the regime-timeline metrics against the gate policy (Tranche W2).
+
+    Governance: the judgment is ENFORCED only when ``policy["status"] == "ratified"``
+    (``mode == "gating"``); for the proposed artifact (``proposed_not_ratified``) the
+    result is ``mode == "advisory"`` — computed and attached, but blocking nothing and
+    never entering the run-level ``gates_overall_base_cost``. A ratified policy must be
+    signed by the quant_owner BEFORE any candidate is judged against these bounds.
+
+    Directions: ``min_*`` gates require measured >= bound; ``max_*`` gates require
+    measured <= bound. ``min_upside_capture_bull_year`` is judged only over calendar
+    years whose SPY return clears ``bull_year_spy_return_threshold`` (else the gate is
+    not applicable and does not vacuously fail)."""
+    if policy is None:
+        return {"policy_status": "policy_absent", "mode": "advisory",
+                "gates_enforced": False, "per_gate": {}, "overall_go": None}
+
+    status = policy.get("status")
+    mode = "gating" if status == "ratified" else "advisory"
+    gates = policy.get("gates", {})
+    params = policy.get("gate_parameters", {})
+    m = timeline["regime_timeline_metrics"]
+    uc = timeline.get("upside_capture_by_calendar_year", {})
+
+    per_gate: dict[str, Any] = {}
+
+    if "min_fresh_valid_rate_36m" in gates:
+        measured = m["fresh_valid_rate"]["rolling_36m"]
+        bound = gates["min_fresh_valid_rate_36m"]
+        per_gate["min_fresh_valid_rate_36m"] = {
+            "measured": measured, "bound": bound, "direction": "min",
+            "go": measured >= bound}
+
+    for key in ("max_abstention_streak_months", "max_carry_age_months",
+                "max_same_quadrant_run_months"):
+        if key in gates:
+            measured = m[key]
+            bound = gates[key]
+            per_gate[key] = {"measured": measured, "bound": bound,
+                             "direction": "max", "go": measured <= bound}
+
+    if "min_upside_capture_bull_year" in gates:
+        bound = gates["min_upside_capture_bull_year"]
+        threshold = params.get("bull_year_spy_return_threshold", 0.15)
+        bull_years = {y: e for y, e in uc.items()
+                      if e.get("spy_return") is not None and e["spy_return"] > threshold}
+        captures = [e["upside_capture"] for e in bull_years.values()
+                    if e.get("upside_capture") is not None]
+        applicable = bool(captures)
+        measured = min(captures) if captures else None
+        per_gate["min_upside_capture_bull_year"] = {
+            "measured": measured, "bound": bound, "direction": "min",
+            "applicable": applicable, "bull_year_spy_return_threshold": threshold,
+            "bull_years": sorted(bull_years),
+            "go": (measured >= bound) if applicable else True}
+
+    overall_go = all(g["go"] for g in per_gate.values()) if per_gate else None
+    return {
+        "policy_status": status,
+        "policy_artifact_type": policy.get("artifact_type"),
+        "phase0q_id": policy.get("phase0q_id"),
+        "mode": mode,
+        "gates_enforced": mode == "gating",
+        "per_gate": per_gate,
+        "overall_go": overall_go,
     }
 
 
