@@ -85,14 +85,18 @@ OOS_STEP_MONTHS = 12
 CONTRACT_BUNDLE_SHA256 = pack_verifier.CONTRACT_BUNDLE_SHA256
 INPUT_PACK_ID = pack_verifier.INPUT_PACK_ID
 
-# Tranche W2: the PROPOSED (not-yet-ratified) regime-timeline gate policy. The harness
-# judges the timeline metrics against it ADVISORY-only until the artifact is ratified
-# (status == "ratified"): an unratified policy blocks nothing and never enters
-# gates_overall_base_cost — the bounds must be ratified by the quant_owner first.
+# Tranche W2: the regime-timeline gate policy — RATIFIED by the quant_owner
+# (Andrei Rachadel) on 2026-07-11 with the bounds exactly as proposed. A ratified
+# policy (status == "ratified") makes the timeline judgment GATING: it enters
+# ``gates_overall_base_cost`` as a distinct blocking ``timeline`` go/no_go. An
+# unratified policy at this path stays advisory and blocks nothing (the
+# pre-ratification behaviour, still exercised by tests). The frozen v1 model FAILS
+# these gates on the certified 2021-2026 timeline — the resulting no_go is the
+# intended honest outcome until recalibration lands, never a crash.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 TIMELINE_GATE_POLICY_PATH = (
     _REPO_ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
-    / "timeline_gate_policy.proposed.json")
+    / "timeline_gate_policy.json")
 
 GOVERNANCE_PINS = {
     "A5": "blocked",
@@ -217,20 +221,22 @@ def build_timeline_block(
         "upside_capture_by_calendar_year": metrics.upside_capture_by_calendar_year(
             strategy_nav, spy_nav),
     }
-    # Tranche W2: attach the timeline-gate judgment. ADVISORY unless the policy is
-    # ratified — an unratified policy blocks nothing and does not touch the existing
-    # gates_overall_base_cost.
+    # Tranche W2: attach the timeline-gate judgment. GATING for the committed
+    # ratified policy (a blocking 'timeline' entry lands in gates_overall_base_cost);
+    # an unratified policy stays advisory and blocks nothing.
     policy = load_timeline_gate_policy()
     block["gate_judgment"] = judge_timeline_gates(block, policy)
     return block
 
 
 def load_timeline_gate_policy(
-    path: "str | Path" = TIMELINE_GATE_POLICY_PATH,
+    path: "str | Path | None" = None,
 ) -> dict[str, Any] | None:
-    """Load the proposed timeline-gate policy artifact, or ``None`` if it is absent
-    (the harness then reports ``policy_absent`` and judges nothing)."""
-    p = Path(path)
+    """Load the timeline-gate policy artifact, or ``None`` if it is absent (the
+    harness then reports ``policy_absent`` and judges nothing). ``path`` defaults to
+    the module's ``TIMELINE_GATE_POLICY_PATH`` resolved at CALL time, so tests can
+    point the runner at an alternative (e.g. unratified) policy artifact."""
+    p = Path(path if path is not None else TIMELINE_GATE_POLICY_PATH)
     if not p.is_file():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
@@ -242,10 +248,12 @@ def judge_timeline_gates(
     """Judge the regime-timeline metrics against the gate policy (Tranche W2).
 
     Governance: the judgment is ENFORCED only when ``policy["status"] == "ratified"``
-    (``mode == "gating"``); for the proposed artifact (``proposed_not_ratified``) the
-    result is ``mode == "advisory"`` — computed and attached, but blocking nothing and
-    never entering the run-level ``gates_overall_base_cost``. A ratified policy must be
-    signed by the quant_owner BEFORE any candidate is judged against these bounds.
+    (``mode == "gating"``); an unratified policy (``proposed_not_ratified``) yields
+    ``mode == "advisory"`` — computed and attached, but blocking nothing and never
+    entering the run-level ``gates_overall_base_cost``. The committed phase0q_005
+    artifact was ratified by the quant_owner (Andrei Rachadel) on 2026-07-11 with the
+    bounds exactly as proposed, so runs against it are GATING; the ratification came
+    from the owner, never from the harness itself (self-ratification stays prohibited).
 
     Directions: ``min_*`` gates require measured >= bound; ``max_*`` gates require
     measured <= bound. ``min_upside_capture_bull_year`` is judged only over FULL
@@ -663,6 +671,20 @@ def build_gate_report(pack, config, cells, folds, timeline=None) -> dict[str, An
             "go_no_go": "go" if all(
                 base_judgements[cid][gate]["go"] for cid in base_judgements) else "no_go",
             "base_cost_bps": BASE_COST_BPS,
+        }
+
+    # phase0q_005 (RATIFIED 2026-07-11): when the timeline gate policy is ratified the
+    # timeline judgment is a BLOCKING overall gate — a distinct, honest go/no_go entry
+    # (never a crash). The frozen v1 model is expected to report no_go here until a
+    # recalibrated candidate passes review. An advisory (unratified) judgment never
+    # enters this dict — the pre-ratification behaviour.
+    timeline_judgment = (timeline or {}).get("gate_judgment") or {}
+    if timeline_judgment.get("gates_enforced"):
+        overall["timeline"] = {
+            "go_no_go": "go" if timeline_judgment.get("overall_go") is True else "no_go",
+            "policy_status": timeline_judgment.get("policy_status"),
+            "phase0q_id": timeline_judgment.get("phase0q_id"),
+            "source": "timeline_gate_policy",
         }
 
     # surface per-cell data-quality status so a reduced_quality cell (triggered flag)

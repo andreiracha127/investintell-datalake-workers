@@ -1,0 +1,51 @@
+{
+  "artifact_type": "phase0q_timeline_gate_policy",
+  "schema_version": 1,
+  "phase0q_id": "open_macro_v03_phase0q_005",
+  "status": "ratified",
+  "ratified_by": "quant_owner",
+  "ratified_by_name": "Andrei Rachadel",
+  "decision_date": "2026-07-11",
+  "title": "Regime-timeline blocking gates (carry_decay_v1 + abstention/occupancy/upside)",
+  "summary": "RATIFIED set of BLOCKING timeline gates for the open_macro_v03 regime candidate. Ratified by the quant_owner on 2026-07-11 with the bounds EXACTLY as proposed (no bound was tuned between proposal and ratification). From this decision_date the harness judges every run against these gates as a distinct blocking 'timeline' go/no_go in the gate report. The current frozen v1 model FAILS these gates on the certified 2021-2026 timeline (fresh_valid_36m 0.194, abstention streak 18, carry age 18, same-quadrant run 38): that no_go is the intended, honest outcome and stands until a recalibrated candidate passes review.",
+  "gates": {
+    "min_fresh_valid_rate_36m": 0.40,
+    "max_abstention_streak_months": 6,
+    "max_carry_age_months": 3,
+    "max_same_quadrant_run_months": 12,
+    "min_upside_capture_bull_year": 0.35
+  },
+  "gate_semantics": {
+    "min_fresh_valid_rate_36m": "At least this fraction of the trailing 36 calendar months must carry a FRESH-VALID decision (a real, non-carried consumable decision). Judged on regime_timeline_metrics.fresh_valid_rate.rolling_36m. Bounds the model's tendency to abstain for multi-year stretches.",
+    "max_abstention_streak_months": "The longest run of consecutive calendar months without a fresh valid decision must not exceed this. Judged on regime_timeline_metrics.max_abstention_streak_months.",
+    "max_carry_age_months": "The greatest calendar-month distance a carried position reaches from its last valid seed must not exceed this. This is the SAME bound the carry_decay_v1 runtime cap enforces (MAX_CARRY_MONTHS = 3): past age 3 the consumable degrades to the mandate-tilted CENTER book (carry_expired). Judged on regime_timeline_metrics.max_carry_age_months.",
+    "max_same_quadrant_run_months": "The longest run of calendar months in the SAME consumable quadrant over the carry-filled latched chain must not exceed this. Directly bounds the 2023-02 -> 2026 contraction anchor the audit flagged. Judged on regime_timeline_metrics.max_same_quadrant_run_months.",
+    "min_upside_capture_bull_year": "In every BULL calendar year (SPY total return > bull_year_spy_return_threshold over a FULL calendar year of common sessions), the strategy must capture at least this fraction of SPY's return. The gate's measured value is the MINIMUM upside_capture across full-coverage bull years in the primary window; partial-coverage years (mid-year window start, truncated benchmark) are surfaced as excluded_partial_years and never enforced; down/flat years are a downside-capture question out of this gate's scope. Judged on upside_capture_by_calendar_year."
+  },
+  "gate_parameters": {
+    "fresh_valid_rate_window_months": 36,
+    "bull_year_spy_return_threshold": 0.15
+  },
+  "rationale": "The phase0q_003 stress_gate_semantics_amendment (ratified 2026-07-02) correctly stopped penalizing intended per-window abstention by making consumable_position_coverage the blocking stress metric, but it reclassified fresh_decision_rate / abstention_rate as diagnostics_not_gating and the acceptance envelope stayed risk-only (turnover / MDD / vol / worst-5d / fold stability; no return target). The joint effect: a decision chain that abstained 43 of 66 months (2021-2026) and carried a single 2023-02 contraction book for years reported 100% consumable coverage, near-zero turnover, low vol and low MDD -- i.e. the multi-year defensive carry was the OPTIMUM of the envelope. These gates restore a blocking judgment on the timeline itself: fresh-valid density, abstention streak, carry age, single-quadrant occupancy and benchmark-relative upside in bull years. The bounds are deliberately loose (e.g. 36m fresh-valid >= 0.40, carry age <= 3) rather than tuned to any CAGR/Sharpe target, consistent with the freeze rule to calibrate abstention/flip/duration behaviour and NEVER against CAGR.",
+  "amends": {
+    "target": "artifacts/quant/open_macro_v03_phase0q_003/stress_gate_semantics_amendment.json",
+    "target_artifact_type": "phase0q_stress_gate_semantics_amendment",
+    "effect_when_ratified": "IN FORCE since decision_date 2026-07-11: re-elevates fresh_decision_rate and abstention_rate (and, via the timeline gates, carry age and single-quadrant occupancy) from diagnostics_not_gating back to BLOCKING at the run level, surfaced as the 'timeline' entry in gates_overall_base_cost. consumable_position_coverage remains the per-stress-window blocking metric from phase0q_003; these timeline gates are an ADDITIONAL run-level layer, not a repeal of the phase0q_003 carry semantics.",
+    "does_not_amend": "The frozen model parameters (confidence floor 0.70, axis weights, hysteresis, 10y robust baseline) are NOT touched by this policy. Recalibration is a separate future experiment; this artifact only sets the acceptance bounds it will be judged against."
+  },
+  "activation": {
+    "ratification": "SATISFIED: ratified by the quant_owner (Andrei Rachadel) on 2026-07-11, bounds unchanged from the proposal.",
+    "in_force": "The harness judge (runner.judge_timeline_gates) is GATING for this artifact: every run reports a blocking timeline go/no_go. The frozen v1 model is expected to report no_go until recalibration lands.",
+    "carry_decay_v1_runtime": "ACTIVE in code (CARRY_DECAY_V1_ACTIVE = True) with the additive schema evolution committed as schemas/open_macro_v03_carry_decay_v1_migration.sql. Remaining OPS steps (not approvals): the orchestrator applies the migration DDL to the production DB in a controlled step, and the worker is redeployed (Railway). Until both land, the worker's verify_schema/publish path fails loud rather than writing old-shaped rows for an expired carry."
+  },
+  "governance": {
+    "A5": "blocked",
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "db_write_mode": "none",
+    "official_result": false,
+    "runtime_activation": false,
+    "self_ratification": "prohibited",
+    "note": "These pins describe THIS ARTIFACT's own side effects (a policy record writes nothing and activates nothing by itself); runtime activation remains governed by the Stage B activation envelope and its approval matrix. The self-ratification ban stands: this ratification was ordered by the quant_owner and is recorded here, not initiated by the engineering agent."
+  }
+}

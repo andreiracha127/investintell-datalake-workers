@@ -354,8 +354,9 @@ def stability_from_folds(fold_metrics: Sequence[Mapping[str, float]]) -> dict[st
 # These timeline metrics make the abstention/carry/quadrant-occupancy behaviour a
 # FIRST-CLASS reported object over the LATCHED CONSUMABLE chain, so the regime the
 # strategy is actually positioned in can never again be invisible. They are pure and
-# deterministic; the proposed (not-yet-ratified) gate policy that judges them lives in
-# ``artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.proposed.json``.
+# deterministic; the gate policy that judges them (RATIFIED by the quant_owner
+# 2026-07-11 — blocking at the run level via the runner's ``timeline`` overall gate)
+# lives in ``artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json``.
 
 
 def _month_index(d: _dt.date) -> int:
