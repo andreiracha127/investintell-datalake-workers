@@ -540,6 +540,31 @@ def test_verify_schema_passes_and_returns_the_catalog_view():
             == ("f", "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"))
 
 
+def test_expected_schema_carries_the_carry_decay_v1_shape():
+    """carry_decay_v1 (phase0q_005, ratified 2026-07-11): EXPECTED_SCHEMA must expect
+    the POST-migration catalog — nullable carry-provenance columns, the widened
+    decision_validity / book vocabularies ('carried_expired' / 'center_50') and the
+    consistency CHECKs — so verify_schema certifies the migrated production catalog
+    and fails loud against an unmigrated one (the worker never writes new-shaped rows
+    into an old-shaped schema)."""
+    dec = w.EXPECTED_SCHEMA["open_macro_v03_decisions"]
+    assert dec["columns"]["carry_age_months"] == ("integer", None, "YES", None)
+    assert dec["columns"]["carry_expired"] == ("boolean", None, "YES", None)
+    validity_def = dec["constraints"]["open_macro_v03_decisions_decision_validity_check"][1]
+    assert "'carried_expired'::text" in validity_def
+    seed_def = dec["constraints"]["open_macro_v03_decisions_validity_seed"][1]
+    assert "'carried_expired'::text" in seed_def and "carry_seed_as_of < as_of" in seed_def
+    assert "open_macro_v03_decisions_carry_expired_consistent" in dec["constraints"]
+
+    alloc = w.EXPECTED_SCHEMA["open_macro_v03_allocations"]
+    assert alloc["columns"]["carry_age_months"] == ("integer", None, "YES", None)
+    assert alloc["columns"]["carry_seed_as_of"] == ("date", None, "YES", None)
+    assert alloc["columns"]["carry_expired"] == ("boolean", None, "YES", None)
+    book_def = alloc["constraints"]["open_macro_v03_allocations_book_check"][1]
+    assert "'compressed_50'::text" in book_def and "'center_50'::text" in book_def
+    assert "open_macro_v03_allocations_center_book_consistent" in alloc["constraints"]
+
+
 def test_verify_schema_raises_on_missing_column():
     conn = _FakeConn(_catalog_responder(drop_column="carry_seed_as_of"))
     with pytest.raises(w.OpenMacroV03Error, match="column set diverges"):

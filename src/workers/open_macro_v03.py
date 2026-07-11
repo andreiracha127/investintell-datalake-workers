@@ -926,6 +926,12 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "invalidated_reason": ("text", None, "YES", None),
             "created_at": ("timestamp with time zone", None, "NO", "now()"),
             "updated_at": ("timestamp with time zone", None, "NO", "now()"),
+            # carry_decay_v1 (phase0q_005, ratified 2026-07-11): nullable provenance
+            # columns added by schemas/open_macro_v03_carry_decay_v1_migration.sql
+            # (old rows keep NULLs; the base CREATE TABLE files are byte-pinned and
+            # unchanged — the migration is applied by the orchestrator).
+            "carry_age_months": ("integer", None, "YES", None),
+            "carry_expired": ("boolean", None, "YES", None),
         },
         "constraints": {
             "open_macro_v03_decisions_pkey": ("p", "PRIMARY KEY (as_of)"),
@@ -933,8 +939,10 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "open_macro_v03_decisions_quadrant_check": ("c",
                 "CHECK ((quadrant = ANY (ARRAY['recovery'::text, 'expansion'::text, "
                 "'slowdown'::text, 'contraction'::text])))"),
+            # carry_decay_v1: vocabulary widened to admit 'carried_expired'.
             "open_macro_v03_decisions_decision_validity_check": ("c",
-                "CHECK ((decision_validity = ANY (ARRAY['fresh'::text, 'carried'::text])))"),
+                "CHECK ((decision_validity = ANY (ARRAY['fresh'::text, 'carried'::text, "
+                "'carried_expired'::text])))"),
             "open_macro_v03_decisions_candidate_confidence_check": ("c",
                 "CHECK (((candidate_confidence IS NULL) OR ((candidate_confidence >= "
                 "(0)::numeric) AND (candidate_confidence <= (1)::numeric))))"),
@@ -944,9 +952,14 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
                 "CHECK ((valid_status = ANY (ARRAY['valid'::text, 'invalidated'::text])))"),
             "open_macro_v03_decisions_invalidation_consistent": ("c",
                 "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))"),
+            # carry_decay_v1: carried_expired requires an older seed, like carried.
             "open_macro_v03_decisions_validity_seed": ("c",
                 "CHECK ((((decision_validity = 'fresh'::text) AND (carry_seed_as_of = as_of)) "
-                "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of))))"),
+                "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of)) "
+                "OR ((decision_validity = 'carried_expired'::text) AND (carry_seed_as_of < as_of))))"),
+            # carry_decay_v1: the validity token and the provenance flag never disagree.
+            "open_macro_v03_decisions_carry_expired_consistent": ("c",
+                "CHECK (((decision_validity = 'carried_expired'::text) = (carry_expired IS TRUE)))"),
         },
     },
     "open_macro_v03_allocations": {
@@ -976,13 +989,23 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "invalidated_reason": ("text", None, "YES", None),
             "created_at": ("timestamp with time zone", None, "NO", "now()"),
             "updated_at": ("timestamp with time zone", None, "NO", "now()"),
+            # carry_decay_v1 (phase0q_005, ratified 2026-07-11): nullable provenance
+            # columns (see the decisions table note; allocations also gain a NULLABLE
+            # carry_seed_as_of so a center_50 row is self-describing without a join).
+            "carry_age_months": ("integer", None, "YES", None),
+            "carry_seed_as_of": ("date", None, "YES", None),
+            "carry_expired": ("boolean", None, "YES", None),
         },
         "constraints": {
             "open_macro_v03_allocations_pkey": ("p", "PRIMARY KEY (as_of)"),
             "open_macro_v03_allocations_as_of_fkey": ("f",
                 "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"),
+            # carry_decay_v1: vocabulary widened to admit the degraded CENTER book.
             "open_macro_v03_allocations_book_check": ("c",
-                "CHECK ((book = 'compressed_50'::text))"),
+                "CHECK ((book = ANY (ARRAY['compressed_50'::text, 'center_50'::text])))"),
+            # carry_decay_v1: the degraded book and the provenance flag never disagree.
+            "open_macro_v03_allocations_center_book_consistent": ("c",
+                "CHECK (((book = 'center_50'::text) = (carry_expired IS TRUE)))"),
             "open_macro_v03_allocations_w_spy_check": ("c",
                 "CHECK (((w_spy >= (0)::numeric) AND (w_spy <= (1)::numeric)))"),
             "open_macro_v03_allocations_w_tlt_check": ("c",

@@ -544,18 +544,66 @@ def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
     """The worker's EXPECTED_SCHEMA (verify_schema expectations, the B1b evidence
     base) must mirror the committed DDL: the expected tables are exactly the three
     sanctioned ones, and every expected column name and every expected NAMED
-    constraint appears in that table's .sql text (PK/FK auto-names excepted)."""
+    constraint appears in that table's committed DDL text — the base .sql PLUS the
+    additive carry_decay_v1 migration (the byte-pinned base files are never edited;
+    schema evolution lands as a separate additive migration file)."""
     import src.workers.open_macro_v03 as w
 
+    migration = (ROOT / "schemas" / "open_macro_v03_carry_decay_v1_migration.sql"
+                 ).read_text(encoding="utf-8")
     assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES)
     auto_named = {"open_macro_v03_decisions_pkey", "open_macro_v03_allocations_pkey",
                   "open_macro_v03_staleness_blocks_pkey",
                   "open_macro_v03_allocations_as_of_fkey"}
     for table, expected in w.EXPECTED_SCHEMA.items():
-        ddl = (ROOT / "schemas" / f"{table}.sql").read_text(encoding="utf-8")
+        ddl = (ROOT / "schemas" / f"{table}.sql").read_text(encoding="utf-8") + migration
         for column in expected["columns"]:
             assert column in ddl, f"{table}: expected column {column} not in the DDL"
         for conname in expected["constraints"]:
             if conname in auto_named or conname.endswith("_check"):
                 continue  # PK/FK + inline auto-named CHECKs are not written by name in the DDL
             assert conname in ddl, f"{table}: expected constraint {conname} not in the DDL"
+
+
+def test_carry_decay_migration_ddl_is_additive_and_carries_key_tokens():
+    """carry_decay_v1 schema evolution (phase0q_005, ratified 2026-07-11): the
+    migration is a SEPARATE additive file — the three byte-pinned base DDL files stay
+    untouched (their schema_migration_record pins hold) — that widens the
+    decision_validity / book CHECKs with the new greppable tokens and adds nullable
+    carry-provenance columns. Strictly additive: no destructive statement, existing
+    rows stay valid. Applied by the orchestrator in a controlled step (NOT by
+    ensure_schema)."""
+    path = ROOT / "schemas" / "open_macro_v03_carry_decay_v1_migration.sql"
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+
+    # the new vocabulary tokens (the Light repo greps for these).
+    assert "'carried_expired'" in text
+    assert "'center_50'" in text
+    # widened CHECKs keep the old vocabulary too (old-shaped rows remain valid).
+    assert "'fresh'" in text and "'carried'" in text
+    assert "'compressed_50'" in text
+
+    # nullable provenance columns, idempotent adds.
+    assert "ADD COLUMN IF NOT EXISTS carry_age_months" in text
+    assert "ADD COLUMN IF NOT EXISTS carry_expired" in text
+    assert "ADD COLUMN IF NOT EXISTS carry_seed_as_of" in text  # allocations only
+    assert "NOT NULL" not in text  # every added column is nullable (additive)
+
+    # strictly additive: no destructive statement anywhere (DROP CONSTRAINT is the
+    # sanctioned idempotent widen-recreate pair and is explicitly allowed).
+    import re
+    assert not re.search(r"\b(DROP\s+TABLE|DROP\s+COLUMN|TRUNCATE|DELETE|UPDATE\s+SET)\b",
+                         text, re.IGNORECASE)
+    # every DROP is a DROP CONSTRAINT IF EXISTS immediately re-added.
+    drops = re.findall(r"DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+(\w+)", text)
+    adds = re.findall(r"ADD\s+CONSTRAINT\s+(\w+)", text)
+    assert set(drops) <= set(adds), "a dropped constraint must be re-added (widen, not remove)"
+
+    # the consistency constraints that bind the new vocabulary to the provenance flag.
+    assert "open_macro_v03_decisions_carry_expired_consistent" in text
+    assert "open_macro_v03_allocations_center_book_consistent" in text
+
+    # governance: applied by the orchestrator, never silently by the worker.
+    import src.workers.open_macro_v03 as w
+    assert "schemas/open_macro_v03_carry_decay_v1_migration.sql" not in w._SCHEMAS
