@@ -925,6 +925,58 @@ def test_run_publishes_seed_book_when_carry_within_cap(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
+# Gate 5 is READ-ONLY: no schema establishment before verification
+# --------------------------------------------------------------------------- #
+def _no_gate5_mocks(monkeypatch):
+    """Pre-DB gates mocked; Gate 5 (catalog verification) runs FOR REAL so the
+    read-only fail-loud behaviour is actually exercised."""
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+    monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
+
+
+_MUTATING_SQL = r"\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|COPY|GRANT)\b"
+
+
+def test_run_is_read_only_and_fails_loud_against_an_absent_catalog(monkeypatch):
+    """run() must NOT establish schema before verifying. Against an ABSENT catalog
+    (fresh database), Gate 5 fails loud with ZERO mutating statements and no
+    schema/data commit — schema lifecycle (base DDL + carry_decay migration) belongs
+    to the ORCHESTRATOR, never the worker."""
+    import re
+    _no_gate5_mocks(monkeypatch)
+    conn = _FakeConn(_lock_responder())  # catalog queries return no rows
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    with pytest.raises(w.OpenMacroV03Error, match="table missing from the catalog"):
+        w.run("dsn", as_of="2026-07-06")
+    mutating = [sql for sql, _ in conn.executed if re.search(_MUTATING_SQL, sql, re.I)]
+    assert mutating == [], f"mutating SQL executed before/at Gate 5: {mutating}"
+    # the ONLY commit is the session search_path pin (SET search_path is a session
+    # setting, not a schema/data write); nothing durable was committed.
+    assert conn.commits == 1
+
+
+def test_run_is_read_only_and_fails_loud_against_an_unmigrated_catalog(monkeypatch):
+    """Against a PRESENT but UNMIGRATED catalog (base tables without the carry_decay
+    columns), Gate 5 fails loud with zero mutating statements: the worker never
+    writes new-shaped rows into an old-shaped schema and never mutates the schema
+    itself."""
+    import re
+    _no_gate5_mocks(monkeypatch)
+    # simulate the pre-migration catalog: a carry provenance column is absent.
+    conn = _FakeConn(_lock_responder(_catalog_responder(drop_column="carry_expired")))
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    with pytest.raises(w.OpenMacroV03Error, match="column set diverges"):
+        w.run("dsn", as_of="2026-07-06")
+    mutating = [sql for sql, _ in conn.executed if re.search(_MUTATING_SQL, sql, re.I)]
+    assert mutating == [], f"mutating SQL executed before/at Gate 5: {mutating}"
+    assert conn.commits == 1
+
+
+# --------------------------------------------------------------------------- #
 # Gate 11 — publish never resurrects an invalidated row
 # --------------------------------------------------------------------------- #
 def _decision_row():

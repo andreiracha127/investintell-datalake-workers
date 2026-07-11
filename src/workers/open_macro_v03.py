@@ -19,7 +19,10 @@ Fail-loud ordering (zero side effects before every gate):
   4. connect + pin search_path=public (before any DDL/table access, so a non-public
      DSN/role default cannot divert reads/writes) + a dedicated advisory lock (at
      most one run per business day).
-  5. ensure_schema (the three committed DDL files).
+  5. READ-ONLY catalog verification (verify_schema) against the committed base DDL +
+     carry_decay_v1 migration expectations — run() never applies schema; an absent or
+     unmigrated catalog fails loud with zero writes (schema lifecycle belongs to the
+     orchestrator's controlled apply step).
   6. resolve as_of (env override, else the current America/New_York business day).
   7. read inputs: pack v2 prefix (hash-compared to the pack pin — a pre-cut backfill
      can never silently shift the input basis) + pinned live delta, composed fail-loud.
@@ -911,7 +914,13 @@ def pin_search_path(conn) -> None:
 
 
 def ensure_schema(conn) -> None:
-    """Apply the three committed DDL files (idempotent)."""
+    """Apply the three committed BASE DDL files (idempotent). OPS TOOLING ONLY —
+    deliberately NOT called by ``run()``: applying schema before verification would
+    hand a fresh/partial database old-shaped tables (the base files lack the
+    carry_decay_v1 migration) and commit a partial catalog behind the fail-loud
+    abort. The orchestrator owns schema lifecycle: base files + the additive
+    ``schemas/open_macro_v03_carry_decay_v1_migration.sql`` in a controlled step;
+    ``run()``'s Gate 5 is a strictly READ-ONLY ``verify_schema``."""
     with conn.cursor() as cur:
         for rel in _SCHEMAS:
             cur.execute((ROOT / rel).read_text(encoding="utf-8"))
@@ -1208,9 +1217,17 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             if not got:
                 return {"status": "lock_busy"}
 
-            # Gate 5 — schema (apply, then VERIFY the live catalog against the
-            # committed DDL expectations — the B1b evidence base).
-            ensure_schema(conn)
+            # Gate 5 — READ-ONLY catalog verification against the committed DDL
+            # expectations (the B1b evidence base). run() deliberately does NOT call
+            # ensure_schema: executing the base CREATE TABLE files before verifying
+            # would give a missing/partially-initialized database old-shaped tables
+            # (the base files lack the carry_decay_v1 migration, so the result could
+            # never verify anyway) and leave a committed partial catalog behind the
+            # abort. Schema lifecycle — base DDL AND the additive migration
+            # (schemas/open_macro_v03_carry_decay_v1_migration.sql) — belongs to the
+            # ORCHESTRATOR's controlled apply step, exactly like the migration
+            # itself. An absent or unmigrated catalog therefore fails loud HERE with
+            # zero mutating statements and zero schema/data commits.
             verify_schema(conn)
 
             # Gate 6 — as_of.
