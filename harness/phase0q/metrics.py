@@ -31,7 +31,7 @@ from __future__ import annotations
 import datetime as _dt
 import math
 import statistics
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 TRADING_DAYS_PER_YEAR = 252
 
@@ -340,3 +340,235 @@ def stability_from_folds(fold_metrics: Sequence[Mapping[str, float]]) -> dict[st
         median = statistics.median(values)
         out[f"{key}_max_dev_from_median"] = max(abs(v - median) for v in values)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Regime timeline metrics (Tranche W1 — ALWAYS computed, never gating here)    #
+# --------------------------------------------------------------------------- #
+# The phase0q_003 amendment reclassified fresh_decision_rate / abstention_rate as
+# ``diagnostics_not_gating`` and made ``consumable_position_coverage`` the blocking
+# stress metric (carry-forward counts as covered). That is exactly why a decision
+# chain that abstained 43/66 months (2021-2026) and carried a 2023-02 contraction
+# book for years reported 100% coverage and passed the risk-only envelope: the
+# pathology was the optimum of the envelope, invisible to every reported number.
+# These timeline metrics make the abstention/carry/quadrant-occupancy behaviour a
+# FIRST-CLASS reported object over the LATCHED CONSUMABLE chain, so the regime the
+# strategy is actually positioned in can never again be invisible. They are pure and
+# deterministic; the gate policy that judges them (RATIFIED by the quant_owner
+# 2026-07-11 — blocking at the run level via the runner's ``timeline`` overall gate)
+# lives in ``artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json``.
+
+
+def _month_index(d: _dt.date) -> int:
+    """Absolute calendar-month index (year*12 + month-1) — the unit every timeline
+    duration/window below is measured in."""
+    return d.year * 12 + (d.month - 1)
+
+
+def _sorted_decisions(decisions: Sequence[Any]) -> list[Any]:
+    """Decisions canonically ordered by ``as_of`` (monthly cadence). Duplicate CALENDAR
+    months — regardless of day-of-month — are a corrupt chain: the timeline reporter
+    fails loud rather than silently double-count (parity with the carry-cap consumable
+    path, which also rejects duplicate months). Unlike the runtime consumable path
+    (``carry_decay._validated_monthly_chain``), the reporter DOES canonicalize input
+    order by sorting: it is a pure measurement over a set of monthly rows, not a
+    consumer of a latched stream, so arrival order carries no meaning here."""
+    ordered = sorted(decisions, key=lambda d: d.as_of)
+    seen: set[int] = set()
+    for row in ordered:
+        mi = _month_index(row.as_of)
+        if mi in seen:
+            raise ValueError(
+                f"regime_timeline_metrics: duplicate decision month {row.as_of} "
+                "(a monthly latched chain has at most one row per calendar month)")
+        seen.add(mi)
+    return ordered
+
+
+def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
+    """Timeline health of the monthly latched decision chain (Tranche W1).
+
+    ``decisions`` is the monthly :class:`~harness.phase0q.decision.DecisionRow`-shaped
+    chain (any object exposing ``as_of``, ``status``, ``quadrant`` and
+    ``has_valid_quadrant()``). Returns a dict of REPORTED (never silently gating)
+    diagnostics:
+
+      * ``fresh_valid_rate``      global + trailing 12/24/36-CALENDAR-month rates,
+      * ``max_abstention_streak_months``  longest run of consecutive calendar months
+        without a fresh valid decision,
+      * ``max_carry_age_months``  greatest calendar-month distance a carried position
+        reaches from its last valid seed — the age the carry_decay_v1 cap bounds,
+      * ``max_same_quadrant_run_months``  longest run of calendar months in the SAME
+        consumable quadrant over the carry-filled chain (the 2023-02→2026 contraction
+        anchor the audit flagged),
+      * ``quadrant_mix``          fresh-valid month count per quadrant,
+      * ``n_valid`` / ``n_low_confidence`` / ``n_months`` / ``n_decision_rows``.
+
+    UNITS: every duration and window is CALENDAR-MONTH distance derived from a month
+    index, never a row count. The harness sources these rows contiguously (one
+    month-end row per month from ``decision.run_decision_series`` and the reclassified
+    experiment series), where the two are identical — but the function must stay
+    correct for any monthly chain: in a gap-bearing chain a missing month means NO
+    decision was published, so nothing fresh happened that month — it counts as an
+    abstaining month, the carry keeps aging through it and the carried consumable
+    quadrant extends across it (exactly the carry semantics). ``n_months`` is the
+    calendar span first..last inclusive; ``n_decision_rows`` is the observed row count
+    (equal when contiguous).
+    """
+    ordered = _sorted_decisions(decisions)
+    n_rows = len(ordered)
+    n_valid = sum(1 for r in ordered if r.has_valid_quadrant())
+    n_low = sum(1 for r in ordered if getattr(r, "status", None) == "low_confidence")
+
+    quadrant_mix = {q: 0 for q in ("recovery", "expansion", "slowdown", "contraction")}
+    for row in ordered:
+        if row.has_valid_quadrant():
+            quadrant_mix[row.quadrant] = quadrant_mix.get(row.quadrant, 0) + 1
+
+    if not ordered:
+        zero_rate = {"global": 0.0, "rolling_12m": 0.0, "rolling_24m": 0.0,
+                     "rolling_36m": 0.0}
+        return {"n_months": 0, "n_decision_rows": 0, "n_valid": 0,
+                "n_low_confidence": 0, "fresh_valid_rate": zero_rate,
+                "max_abstention_streak_months": 0, "max_carry_age_months": 0,
+                "max_same_quadrant_run_months": 0, "quadrant_mix": quadrant_mix,
+                "first_as_of": None, "last_as_of": None}
+
+    m0 = _month_index(ordered[0].as_of)
+    m1 = _month_index(ordered[-1].as_of)
+    n_months = m1 - m0 + 1
+    row_by_month = {_month_index(r.as_of): r for r in ordered}
+    valid_months = {mi for mi, r in row_by_month.items() if r.has_valid_quadrant()}
+
+    def trailing_rate(window_months: int) -> float:
+        """Fresh-valid fraction of the trailing ``window_months`` CALENDAR months
+        (denominator = min(window, span) so a short chain is not diluted)."""
+        lo = max(m0, m1 - window_months + 1)
+        span = m1 - lo + 1
+        return sum(1 for mi in valid_months if mi >= lo) / span
+
+    # single calendar-month sweep: abstention streak, carry age (distance from the
+    # last valid month), and the same-quadrant run over the carry-filled consumable.
+    max_abstention = 0
+    streak = 0
+    max_carry_age = 0
+    last_valid_mi: int | None = None
+    max_same_run = 0
+    same_run = 0
+    consumable_prev: str | None = None
+    consumable: str | None = None
+    for mi in range(m0, m1 + 1):
+        if mi in valid_months:
+            streak = 0
+            last_valid_mi = mi
+            consumable = row_by_month[mi].quadrant
+        else:
+            streak += 1
+            if streak > max_abstention:
+                max_abstention = streak
+            if last_valid_mi is not None:
+                age = mi - last_valid_mi
+                if age > max_carry_age:
+                    max_carry_age = age
+        if consumable is None:
+            same_run = 0
+        elif consumable == consumable_prev:
+            same_run += 1
+        else:
+            same_run = 1
+        consumable_prev = consumable
+        if same_run > max_same_run:
+            max_same_run = same_run
+
+    return {
+        "n_months": n_months,
+        "n_decision_rows": n_rows,
+        "n_valid": n_valid,
+        "n_low_confidence": n_low,
+        "fresh_valid_rate": {
+            "global": n_valid / n_months,
+            "rolling_12m": trailing_rate(12),
+            "rolling_24m": trailing_rate(24),
+            "rolling_36m": trailing_rate(36),
+        },
+        "max_abstention_streak_months": max_abstention,
+        "max_carry_age_months": max_carry_age,
+        "max_same_quadrant_run_months": max_same_run,
+        "quadrant_mix": quadrant_mix,
+        "first_as_of": ordered[0].as_of.isoformat(),
+        "last_as_of": ordered[-1].as_of.isoformat(),
+    }
+
+
+def upside_capture_by_calendar_year(
+    strategy_nav: Sequence[tuple[_dt.date, float]],
+    spy_nav: Sequence[tuple[_dt.date, float]],
+) -> dict[str, Any]:
+    """Per calendar year: strategy return / SPY return, judged ONLY in FULL calendar
+    years SPY rose (Tranche W1). The audit's core economic finding is that the model
+    mapped the most bullish disinflationary years to the most defensive book; a
+    benchmark-relative, per-calendar-year upside-capture number is how a ratified gate
+    would catch that.
+
+    COVERAGE + ALIGNMENT DISCIPLINE (a partial period must never be labeled a calendar
+    year): both returns are computed over the COMMON sessions of the two series (same
+    first/last common session — one series' extra tail can never leak into the other's
+    return), and a year only carries ``full_year_coverage: True`` when its common span
+    starts in January and ends in December. A mid-year window start, a truncated pack
+    or a missing benchmark tail yields ``full_year_coverage: False`` with a
+    ``coverage_reason`` (``starts_after_january`` / ``ends_before_december`` /
+    ``insufficient_common_sessions`` / ``non_positive_anchor``); the partial-period
+    returns are still reported for information, but ``upside_capture`` is ``None`` and
+    the timeline-gate judge skips the year (never enforced as a bull year).
+
+    ``upside_capture`` = strategy_return / spy_return, only when the year has full
+    coverage AND ``spy_up`` (spy_return > 0; a down year is a downside-capture
+    question, out of scope). All divisions are guarded."""
+    strat = {d: v for d, v in strategy_nav}
+    spy = {d: v for d, v in spy_nav}
+    common = sorted(set(strat) & set(spy))
+    per_year: dict[str, Any] = {}
+    for year in sorted({d.year for d in common}):
+        dates = [d for d in common if d.year == year]
+        first, last = dates[0], dates[-1]
+        entry: dict[str, Any] = {
+            "strategy_return": None,
+            "spy_return": None,
+            "spy_up": None,
+            "upside_capture": None,
+            "full_year_coverage": False,
+            "coverage_reason": None,
+            "first_common_session": first.isoformat(),
+            "last_common_session": last.isoformat(),
+        }
+        if len(dates) < 2:
+            entry["coverage_reason"] = "insufficient_common_sessions"
+            per_year[str(year)] = entry
+            continue
+        s0, s1 = strat[first], strat[last]
+        b0, b1 = spy[first], spy[last]
+        anchors_ok = all(v is not None and v == v for v in (s0, s1, b0, b1)) \
+            and s0 > 0 and b0 > 0
+        if not anchors_ok:
+            entry["coverage_reason"] = "non_positive_anchor"
+            per_year[str(year)] = entry
+            continue
+        strategy_return = s1 / s0 - 1.0
+        spy_return = b1 / b0 - 1.0
+        reasons: list[str] = []
+        if first.month != 1:
+            reasons.append("starts_after_january")
+        if last.month != 12:
+            reasons.append("ends_before_december")
+        full = not reasons
+        spy_up = spy_return > 0.0
+        entry.update({
+            "strategy_return": strategy_return,
+            "spy_return": spy_return,
+            "spy_up": spy_up,
+            "upside_capture": (strategy_return / spy_return) if (full and spy_up) else None,
+            "full_year_coverage": full,
+            "coverage_reason": ",".join(reasons) if reasons else None,
+        })
+        per_year[str(year)] = entry
+    return per_year

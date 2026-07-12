@@ -19,7 +19,10 @@ Fail-loud ordering (zero side effects before every gate):
   4. connect + pin search_path=public (before any DDL/table access, so a non-public
      DSN/role default cannot divert reads/writes) + a dedicated advisory lock (at
      most one run per business day).
-  5. ensure_schema (the three committed DDL files).
+  5. READ-ONLY catalog verification (verify_schema) against the committed base DDL +
+     carry_decay_v1 migration expectations — run() never applies schema; an absent or
+     unmigrated catalog fails loud with zero writes (schema lifecycle belongs to the
+     orchestrator's controlled apply step).
   6. resolve as_of (env override, else the current America/New_York business day).
   7. read inputs: pack v2 prefix (hash-compared to the pack pin — a pre-cut backfill
      can never silently shift the input basis) + pinned live delta, composed fail-loud.
@@ -64,6 +67,7 @@ from harness.direct_activation.live_validation import (
     consumable_today,
     staleness_report,
 )
+from harness.direct_activation import carry_decay
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import (
@@ -115,6 +119,10 @@ AS_OF_ENV = "OPEN_MACRO_V03_AS_OF"
 
 CANDIDATE_ID = "open_macro_v03_compressed_50"
 BOOK = "compressed_50"
+# carry_decay_v1 (phase0q_005, ratified 2026-07-11): the degraded book an expired
+# carry publishes — the mandate-tilted centroid of the compressed_50 family, the
+# same token carry_decay.evaluate emits and the migration DDL admits.
+CENTER_BOOK = "center_50"
 JUDGMENT_REF = "open_macro_v03_dark_launch_readiness_001:go_candidate"
 THRESHOLD_REF = "open_macro_v03_threshold_signoff_001"
 
@@ -578,8 +586,15 @@ def compose_inputs(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
 # Gate 10 — allocation
 # --------------------------------------------------------------------------- #
 def build_allocation(quadrant: str, price_rows: list[dict],
-                     as_of: _dt.date) -> dict[str, Any]:
-    """Today's consumable compressed_50 target with the risk-cap/defensive-floor gates."""
+                     as_of: _dt.date, *,
+                     degraded_to_center: bool = False) -> dict[str, Any]:
+    """Today's consumable allocation with the risk-cap/defensive-floor gates.
+
+    ``degraded_to_center`` (carry_decay_v1, phase0q_005 ratified 2026-07-11): when the
+    consumable carry has EXPIRED (calendar age > MAX_CARRY_MONTHS) the published book
+    is the mandate-tilted CENTER book (``center_50`` — the centroid of the four
+    compressed_50 books through the same constraint machinery), not the stale seed
+    quadrant's compressed_50 target. All pricing/constraint gates are identical."""
     prices = sleeve_mod.PriceFrame(price_rows)
     if not prices.dates:
         raise OpenMacroV03Error("no priced sessions for the sleeve")
@@ -612,9 +627,15 @@ def build_allocation(quadrant: str, price_rows: list[dict],
             f"old (> {PRICE_MAX_AGE_BUSINESS_DAYS}); a recent-but-unusable print must not "
             "publish a stale allocation")
     available: list[str] = list(sleeve_mod.SLEEVE_TICKERS)
-    weights = sleeve_mod.target_weights(
-        quadrant, sleeve_mod.SleeveParams(candidate_id=CANDIDATE_ID),
-        available, compressed=True)
+    if degraded_to_center:
+        weights = carry_decay.center_book_50(
+            sleeve_mod.SleeveParams(candidate_id=CANDIDATE_ID), available)
+        book = CENTER_BOOK
+    else:
+        weights = sleeve_mod.target_weights(
+            quadrant, sleeve_mod.SleeveParams(candidate_id=CANDIDATE_ID),
+            available, compressed=True)
+        book = BOOK
     total = sum(weights.values())
     if abs(total - 1.0) >= 1e-9:
         raise OpenMacroV03Error(f"weights do not sum to 1: {total}")
@@ -629,6 +650,7 @@ def build_allocation(quadrant: str, price_rows: list[dict],
         "risk_assets_weight": float(risk),
         "defensive_assets_weight": float(defensive),
         "priced_at": priced_at,
+        "book": book,
     }
 
 
@@ -648,11 +670,13 @@ def valid_until(as_of: _dt.date) -> _dt.datetime:
 
 _DECISION_UPSERT_SQL = (
     "INSERT INTO open_macro_v03_decisions "
-    "(as_of, quadrant, decision_validity, carry_seed_as_of, candidate_confidence, "
+    "(as_of, quadrant, decision_validity, carry_seed_as_of, carry_age_months, "
+    " carry_expired, candidate_confidence, "
     " coverage_quality, growth_score, inflation_score, input_vintage_sha256, "
     " input_prices_sha256, pack_v2_sha256, module_pins_sha256, judgment_ref, "
     " threshold_ref, code_commit, run_id, publish_state, valid_status, valid_until) "
     "VALUES (%(as_of)s, %(quadrant)s, %(decision_validity)s, %(carry_seed_as_of)s, "
+    " %(carry_age_months)s, %(carry_expired)s, "
     " %(candidate_confidence)s, %(coverage_quality)s, %(growth_score)s, "
     " %(inflation_score)s, %(input_vintage_sha256)s, %(input_prices_sha256)s, "
     " %(pack_v2_sha256)s, %(module_pins_sha256)s, %(judgment_ref)s, %(threshold_ref)s, "
@@ -660,6 +684,8 @@ _DECISION_UPSERT_SQL = (
     "ON CONFLICT (as_of) DO UPDATE SET "
     " quadrant = EXCLUDED.quadrant, decision_validity = EXCLUDED.decision_validity, "
     " carry_seed_as_of = EXCLUDED.carry_seed_as_of, "
+    " carry_age_months = EXCLUDED.carry_age_months, "
+    " carry_expired = EXCLUDED.carry_expired, "
     " candidate_confidence = EXCLUDED.candidate_confidence, "
     " coverage_quality = EXCLUDED.coverage_quality, growth_score = EXCLUDED.growth_score, "
     " inflation_score = EXCLUDED.inflation_score, "
@@ -679,11 +705,14 @@ _ALLOCATION_UPSERT_SQL = (
     "INSERT INTO open_macro_v03_allocations "
     "(as_of, book, w_spy, w_tlt, w_tip, w_gld, w_dbc, w_shy, risk_assets_weight, "
     " defensive_assets_weight, risk_cap, defensive_floor, priced_at, "
+    " carry_age_months, carry_seed_as_of, carry_expired, "
     " input_prices_sha256, pack_v2_sha256, module_pins_sha256, code_commit, run_id, "
     " publish_state, valid_status, valid_until) "
     "VALUES (%(as_of)s, %(book)s, %(w_spy)s, %(w_tlt)s, %(w_tip)s, %(w_gld)s, "
     " %(w_dbc)s, %(w_shy)s, %(risk_assets_weight)s, %(defensive_assets_weight)s, "
-    " %(risk_cap)s, %(defensive_floor)s, %(priced_at)s, %(input_prices_sha256)s, "
+    " %(risk_cap)s, %(defensive_floor)s, %(priced_at)s, "
+    " %(carry_age_months)s, %(carry_seed_as_of)s, %(carry_expired)s, "
+    " %(input_prices_sha256)s, "
     " %(pack_v2_sha256)s, %(module_pins_sha256)s, %(code_commit)s, %(run_id)s, "
     " 'published', 'valid', %(valid_until)s) "
     "ON CONFLICT (as_of) DO UPDATE SET "
@@ -692,7 +721,11 @@ _ALLOCATION_UPSERT_SQL = (
     " w_shy = EXCLUDED.w_shy, risk_assets_weight = EXCLUDED.risk_assets_weight, "
     " defensive_assets_weight = EXCLUDED.defensive_assets_weight, "
     " risk_cap = EXCLUDED.risk_cap, defensive_floor = EXCLUDED.defensive_floor, "
-    " priced_at = EXCLUDED.priced_at, input_prices_sha256 = EXCLUDED.input_prices_sha256, "
+    " priced_at = EXCLUDED.priced_at, "
+    " carry_age_months = EXCLUDED.carry_age_months, "
+    " carry_seed_as_of = EXCLUDED.carry_seed_as_of, "
+    " carry_expired = EXCLUDED.carry_expired, "
+    " input_prices_sha256 = EXCLUDED.input_prices_sha256, "
     " pack_v2_sha256 = EXCLUDED.pack_v2_sha256, "
     " module_pins_sha256 = EXCLUDED.module_pins_sha256, "
     " code_commit = EXCLUDED.code_commit, run_id = EXCLUDED.run_id, "
@@ -881,7 +914,13 @@ def pin_search_path(conn) -> None:
 
 
 def ensure_schema(conn) -> None:
-    """Apply the three committed DDL files (idempotent)."""
+    """Apply the three committed BASE DDL files (idempotent). OPS TOOLING ONLY —
+    deliberately NOT called by ``run()``: applying schema before verification would
+    hand a fresh/partial database old-shaped tables (the base files lack the
+    carry_decay_v1 migration) and commit a partial catalog behind the fail-loud
+    abort. The orchestrator owns schema lifecycle: base files + the additive
+    ``schemas/open_macro_v03_carry_decay_v1_migration.sql`` in a controlled step;
+    ``run()``'s Gate 5 is a strictly READ-ONLY ``verify_schema``."""
     with conn.cursor() as cur:
         for rel in _SCHEMAS:
             cur.execute((ROOT / rel).read_text(encoding="utf-8"))
@@ -925,6 +964,12 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "invalidated_reason": ("text", None, "YES", None),
             "created_at": ("timestamp with time zone", None, "NO", "now()"),
             "updated_at": ("timestamp with time zone", None, "NO", "now()"),
+            # carry_decay_v1 (phase0q_005, ratified 2026-07-11): nullable provenance
+            # columns added by schemas/open_macro_v03_carry_decay_v1_migration.sql
+            # (old rows keep NULLs; the base CREATE TABLE files are byte-pinned and
+            # unchanged — the migration is applied by the orchestrator).
+            "carry_age_months": ("integer", None, "YES", None),
+            "carry_expired": ("boolean", None, "YES", None),
         },
         "constraints": {
             "open_macro_v03_decisions_pkey": ("p", "PRIMARY KEY (as_of)"),
@@ -932,8 +977,10 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "open_macro_v03_decisions_quadrant_check": ("c",
                 "CHECK ((quadrant = ANY (ARRAY['recovery'::text, 'expansion'::text, "
                 "'slowdown'::text, 'contraction'::text])))"),
+            # carry_decay_v1: vocabulary widened to admit 'carried_expired'.
             "open_macro_v03_decisions_decision_validity_check": ("c",
-                "CHECK ((decision_validity = ANY (ARRAY['fresh'::text, 'carried'::text])))"),
+                "CHECK ((decision_validity = ANY (ARRAY['fresh'::text, 'carried'::text, "
+                "'carried_expired'::text])))"),
             "open_macro_v03_decisions_candidate_confidence_check": ("c",
                 "CHECK (((candidate_confidence IS NULL) OR ((candidate_confidence >= "
                 "(0)::numeric) AND (candidate_confidence <= (1)::numeric))))"),
@@ -943,9 +990,14 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
                 "CHECK ((valid_status = ANY (ARRAY['valid'::text, 'invalidated'::text])))"),
             "open_macro_v03_decisions_invalidation_consistent": ("c",
                 "CHECK (((valid_status = 'invalidated'::text) = (invalidated_at IS NOT NULL)))"),
+            # carry_decay_v1: carried_expired requires an older seed, like carried.
             "open_macro_v03_decisions_validity_seed": ("c",
                 "CHECK ((((decision_validity = 'fresh'::text) AND (carry_seed_as_of = as_of)) "
-                "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of))))"),
+                "OR ((decision_validity = 'carried'::text) AND (carry_seed_as_of < as_of)) "
+                "OR ((decision_validity = 'carried_expired'::text) AND (carry_seed_as_of < as_of))))"),
+            # carry_decay_v1: the validity token and the provenance flag never disagree.
+            "open_macro_v03_decisions_carry_expired_consistent": ("c",
+                "CHECK (((decision_validity = 'carried_expired'::text) = (carry_expired IS TRUE)))"),
         },
     },
     "open_macro_v03_allocations": {
@@ -975,13 +1027,23 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "invalidated_reason": ("text", None, "YES", None),
             "created_at": ("timestamp with time zone", None, "NO", "now()"),
             "updated_at": ("timestamp with time zone", None, "NO", "now()"),
+            # carry_decay_v1 (phase0q_005, ratified 2026-07-11): nullable provenance
+            # columns (see the decisions table note; allocations also gain a NULLABLE
+            # carry_seed_as_of so a center_50 row is self-describing without a join).
+            "carry_age_months": ("integer", None, "YES", None),
+            "carry_seed_as_of": ("date", None, "YES", None),
+            "carry_expired": ("boolean", None, "YES", None),
         },
         "constraints": {
             "open_macro_v03_allocations_pkey": ("p", "PRIMARY KEY (as_of)"),
             "open_macro_v03_allocations_as_of_fkey": ("f",
                 "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"),
+            # carry_decay_v1: vocabulary widened to admit the degraded CENTER book.
             "open_macro_v03_allocations_book_check": ("c",
-                "CHECK ((book = 'compressed_50'::text))"),
+                "CHECK ((book = ANY (ARRAY['compressed_50'::text, 'center_50'::text])))"),
+            # carry_decay_v1: the degraded book and the provenance flag never disagree.
+            "open_macro_v03_allocations_center_book_consistent": ("c",
+                "CHECK (((book = 'center_50'::text) = (carry_expired IS TRUE)))"),
             "open_macro_v03_allocations_w_spy_check": ("c",
                 "CHECK (((w_spy >= (0)::numeric) AND (w_spy <= (1)::numeric)))"),
             "open_macro_v03_allocations_w_tlt_check": ("c",
@@ -1155,9 +1217,17 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             if not got:
                 return {"status": "lock_busy"}
 
-            # Gate 5 — schema (apply, then VERIFY the live catalog against the
-            # committed DDL expectations — the B1b evidence base).
-            ensure_schema(conn)
+            # Gate 5 — READ-ONLY catalog verification against the committed DDL
+            # expectations (the B1b evidence base). run() deliberately does NOT call
+            # ensure_schema: executing the base CREATE TABLE files before verifying
+            # would give a missing/partially-initialized database old-shaped tables
+            # (the base files lack the carry_decay_v1 migration, so the result could
+            # never verify anyway) and leave a committed partial catalog behind the
+            # abort. Schema lifecycle — base DDL AND the additive migration
+            # (schemas/open_macro_v03_carry_decay_v1_migration.sql) — belongs to the
+            # ORCHESTRATOR's controlled apply step, exactly like the migration
+            # itself. An absent or unmigrated catalog therefore fails loud HERE with
+            # zero mutating statements and zero schema/data commits.
             verify_schema(conn)
 
             # Gate 6 — as_of.
@@ -1214,8 +1284,24 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             chain = decision_mod.run_decision_series(vintage_rows, CHAIN_START, as_of_date)
             last, validity, seed_as_of = consumable_today(chain, as_of_date)
 
-            # Gate 10 — allocation.
-            allocation = build_allocation(last.quadrant, price_rows, as_of_date)
+            # carry_decay_v1 (phase0q_005, RATIFIED 2026-07-11; CARRY_DECAY_V1_ACTIVE
+            # ships True): calendar-month carry age of the consumable seed. A carry
+            # older than MAX_CARRY_MONTHS degrades the PUBLISHED position to the
+            # mandate-tilted CENTER book with decision_validity 'carried_expired' and
+            # honest provenance columns on BOTH rows. The seed quadrant stays on the
+            # decision row as the reference (the quadrant CHECK vocabulary is
+            # unchanged); the allocation book says 'center_50'. The additive migration
+            # (schemas/open_macro_v03_carry_decay_v1_migration.sql) must have been
+            # applied by the orchestrator — verify_schema (Gate 5) and the INSERTs
+            # fail loud against an unmigrated catalog, never writing a disguised row.
+            carry = carry_decay.carry_provenance(chain, as_of_date)
+            degraded = bool(carry_decay.CARRY_DECAY_V1_ACTIVE and carry["carry_expired"])
+            if degraded:
+                validity = "carried_expired"
+
+            # Gate 10 — allocation (CENTER book when the carry expired).
+            allocation = build_allocation(last.quadrant, price_rows, as_of_date,
+                                          degraded_to_center=degraded)
             weights = allocation["weights"]
 
             vu = valid_until(as_of_date)
@@ -1224,6 +1310,11 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 "quadrant": last.quadrant,
                 "decision_validity": validity,
                 "carry_seed_as_of": seed_as_of,
+                # published carry provenance: carry_expired mirrors the ENFORCED
+                # state (== degraded), so the carried_expired<->carry_expired
+                # consistency CHECK always holds on the row.
+                "carry_age_months": carry["carry_age_months"],
+                "carry_expired": degraded,
                 "candidate_confidence": last.candidate_confidence,
                 "coverage_quality": last.coverage_quality,
                 "growth_score": last.growth_score,
@@ -1240,7 +1331,7 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
             }
             allocation_row = {
                 "as_of": as_of_date,
-                "book": BOOK,
+                "book": allocation["book"],
                 "w_spy": weights["SPY"], "w_tlt": weights["TLT"], "w_tip": weights["TIP"],
                 "w_gld": weights["GLD"], "w_dbc": weights["DBC"], "w_shy": weights["SHY"],
                 "risk_assets_weight": allocation["risk_assets_weight"],
@@ -1248,6 +1339,9 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 "risk_cap": sleeve_mod.RISK_CAP_BASELINE,
                 "defensive_floor": sleeve_mod.DEFENSIVE_FLOOR_BASELINE,
                 "priced_at": allocation["priced_at"],
+                "carry_age_months": carry["carry_age_months"],
+                "carry_seed_as_of": seed_as_of,
+                "carry_expired": degraded,
                 "input_prices_sha256": input_prices_sha256,
                 "pack_v2_sha256": PACK_SHA256_PIN,
                 "module_pins_sha256": module_pins_sha256,
@@ -1267,9 +1361,24 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 "as_of": as_of_date.isoformat(),
                 "quadrant": last.quadrant,
                 "decision_validity": validity,
+                "book": allocation["book"],
                 "weights": weights,
                 "run_id": run_id,
                 "wall_ms": int((time.monotonic() - t0) * 1000),
+                # carry_decay_v1 (phase0q_005, ratified 2026-07-11): ENFORCED carry
+                # provenance — what was actually published, mirrored on the DB rows.
+                "carry_provenance": {
+                    "carry_policy": carry["carry_policy"],
+                    "carry_seed_as_of": carry["carry_seed_as_of"].isoformat(),
+                    "carry_age_months": carry["carry_age_months"],
+                    "carry_expired": degraded,
+                    "degraded_to_center": degraded,
+                    "max_carry_months": carry["max_carry_months"],
+                    "carry_decay_active": carry_decay.CARRY_DECAY_V1_ACTIVE,
+                    "note": ("carry_decay_v1 ACTIVE: an expired carry publishes the "
+                             "mandate-tilted center_50 book with decision_validity "
+                             "carried_expired and provenance columns on both rows"),
+                },
             }
     finally:
         conn.close()

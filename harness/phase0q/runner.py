@@ -25,7 +25,9 @@ normalizer; all timestamps are INJECTED (no wall-clock in canonical outputs); no
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -84,6 +86,114 @@ OOS_STEP_MONTHS = 12
 
 CONTRACT_BUNDLE_SHA256 = pack_verifier.CONTRACT_BUNDLE_SHA256
 INPUT_PACK_ID = pack_verifier.INPUT_PACK_ID
+
+# Tranche W2: the regime-timeline gate policy — RATIFIED by the quant_owner
+# (Andrei Rachadel) on 2026-07-11 with the bounds exactly as proposed. A ratified
+# policy (status == "ratified") makes the timeline judgment GATING: it enters
+# ``gates_overall_base_cost`` as a distinct blocking ``timeline`` go/no_go. An
+# unratified policy at this path stays advisory and blocks nothing (the
+# pre-ratification behaviour, still exercised by tests). The frozen v1 model FAILS
+# these gates on the certified 2021-2026 timeline — the resulting no_go is the
+# intended honest outcome until recalibration lands, never a crash.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+TIMELINE_GATE_POLICY_PATH = (
+    _REPO_ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
+    / "timeline_gate_policy.json")
+
+# The code-reviewed content pin of the RATIFIED policy (repo pin culture): sha256 of
+# the canonical JSON (sort_keys, compact separators — key-order/whitespace/CRLF
+# independent, so it is checkout-stable). A ratification claim only gates when the
+# whole artifact content hashes to this pin: editing ANY byte of policy content
+# (bounds, semantics, rationale, governance) without a code-reviewed re-pin here
+# demotes the claim to a fail-closed no_go (see validate_ratified_policy /
+# timeline_overall_gate_entry) — one status string can never forge ratification.
+RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256 = (
+    "fb3dde69f1165192eb4c99fc242f215508a2b46decf510c65dcf3a73204d8524")
+
+# The COMPLETE ratified gate set: a claimed-ratified policy missing a key (a silently
+# weakened policy) or carrying an extra one is invalid as a whole — never a partial
+# enforcement of whatever survived.
+_RATIFIED_GATE_KEYS = frozenset({
+    "min_fresh_valid_rate_36m",
+    "max_abstention_streak_months",
+    "max_carry_age_months",
+    "max_same_quadrant_run_months",
+    "min_upside_capture_bull_year",
+})
+
+
+def _policy_canonical_sha256(policy: Mapping[str, Any]) -> str:
+    """sha256 of the policy mapping's canonical JSON serialization."""
+    return hashlib.sha256(
+        json.dumps(policy, sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def validate_ratified_policy(policy: Mapping[str, Any]) -> list[str]:
+    """FULL ratified-policy contract check (Tranche W hardening): the list of
+    violations for a policy CLAIMING ``status == "ratified"`` (empty == valid).
+
+    Everything must hold before the judge may enforce: exact artifact identity, the
+    quant_owner ratifier with a named holder and a well-formed decision_date, the
+    COMPLETE five-gate set with positive finite numeric bounds, the unaltered
+    governance pins, and the canonical content sha256 equal to the code-reviewed pin.
+    Violations are returned (not raised) so the caller can fail CLOSED — a forged or
+    tampered claim becomes a loud no_go, never a crash and never a trusted go."""
+    violations: list[str] = []
+    if policy.get("artifact_type") != "phase0q_timeline_gate_policy":
+        violations.append(
+            f"artifact_type {policy.get('artifact_type')!r} != 'phase0q_timeline_gate_policy'")
+    if policy.get("phase0q_id") != "open_macro_v03_phase0q_005":
+        violations.append(
+            f"phase0q_id {policy.get('phase0q_id')!r} != 'open_macro_v03_phase0q_005'")
+    if policy.get("ratified_by") != "quant_owner":
+        violations.append(
+            f"ratified_by {policy.get('ratified_by')!r} != 'quant_owner'")
+    name = policy.get("ratified_by_name")
+    if not (isinstance(name, str) and name.strip()):
+        violations.append("ratified_by_name missing or empty")
+    decision_date = policy.get("decision_date")
+    try:
+        if not isinstance(decision_date, str):
+            raise ValueError
+        _dt.date.fromisoformat(decision_date)
+    except ValueError:
+        violations.append(
+            f"decision_date {decision_date!r} is not a well-formed ISO date")
+    gates = policy.get("gates")
+    if not isinstance(gates, Mapping) or set(gates) != _RATIFIED_GATE_KEYS:
+        got = sorted(gates) if isinstance(gates, Mapping) else gates
+        violations.append(
+            f"gate keys {got!r} != the complete ratified set "
+            f"{sorted(_RATIFIED_GATE_KEYS)} (missing/extra gates invalidate the "
+            "whole claim; never a partial enforcement)")
+    else:
+        for key in sorted(_RATIFIED_GATE_KEYS):
+            bound = gates[key]
+            if (isinstance(bound, bool) or not isinstance(bound, (int, float))
+                    or not math.isfinite(bound) or bound <= 0):
+                violations.append(
+                    f"gate {key} bound {bound!r} is not a positive finite number")
+        rate = gates.get("min_fresh_valid_rate_36m")
+        if (isinstance(rate, (int, float)) and not isinstance(rate, bool)
+                and math.isfinite(rate) and rate > 1):
+            violations.append(
+                f"min_fresh_valid_rate_36m bound {rate!r} > 1 (a rate must be <= 1)")
+    governance = policy.get("governance")
+    if (not isinstance(governance, Mapping)
+            or governance.get("runtime_activation") is not False
+            or governance.get("A5") != "blocked"
+            or governance.get("self_ratification") != "prohibited"):
+        violations.append(
+            "governance pins missing or altered (runtime_activation must be false, "
+            "A5 'blocked', self_ratification 'prohibited')")
+    actual = _policy_canonical_sha256(policy)
+    if actual != RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256:
+        violations.append(
+            f"canonical content sha256 {actual} != pinned "
+            f"{RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256} (policy content was "
+            "edited without a code-reviewed re-pin)")
+    return violations
 
 GOVERNANCE_PINS = {
     "A5": "blocked",
@@ -156,6 +266,216 @@ def _decisions_in(series: Sequence[decision.DecisionRow], start: _dt.date, end: 
 
 def _valid_decision_dates(series: Sequence[decision.DecisionRow]) -> set[_dt.date]:
     return {r.as_of for r in series if r.has_valid_quadrant()}
+
+
+# ------------------------------------------------------------------------- #
+# Regime timeline block (Tranche W1 — ALWAYS reported, never gating here)    #
+# ------------------------------------------------------------------------- #
+
+def _spy_buy_hold_nav(
+    prices: sleeve.PriceFrame, primary: tuple[_dt.date, _dt.date],
+) -> list[tuple[_dt.date, float]]:
+    """SPY adjusted-close buy-and-hold NAV over the primary window (base 1.0 at the
+    first priced session). The benchmark leg for calendar-year upside capture."""
+    series: list[tuple[_dt.date, float]] = []
+    base: float | None = None
+    for d in prices.dates_in(*primary):
+        p = prices.price("SPY", d)
+        if p is None or p != p or p <= 0:  # NaN / non-positive guard
+            continue
+        if base is None:
+            base = p
+        series.append((d, p / base))
+    return series
+
+
+def build_timeline_block(
+    decisions: Sequence[decision.DecisionRow],
+    prices: sleeve.PriceFrame,
+    config: "RunConfig",
+) -> dict[str, Any]:
+    """The regime-timeline diagnostics block reported on every run (Tranche W1).
+
+    ALWAYS computed and attached to the gate report: the abstention/carry/quadrant
+    occupancy of the latched chain plus benchmark-relative upside capture, over the
+    configured primary window at BASE_COST_BPS for the FIRST configured candidate
+    (the measurement reference candidate). These are diagnostics; the proposed
+    (not-yet-ratified) gate policy that judges them is wired advisory-only until it is
+    ratified (see judge_timeline_gates)."""
+    base_params = config.candidates[0]
+    strat_res = _run_window(prices, decisions, base_params,
+                            config.primary_window[0], config.primary_window[1],
+                            BASE_COST_BPS)
+    strategy_nav = list(zip(strat_res.dates, strat_res.nav))
+    spy_nav = _spy_buy_hold_nav(prices, config.primary_window)
+    block: dict[str, Any] = {
+        "reference_candidate_id": base_params.candidate_id,
+        "primary_window": {
+            "start": config.primary_window[0].isoformat(),
+            "end": config.primary_window[1].isoformat(),
+        },
+        "regime_timeline_metrics": metrics.regime_timeline_metrics(decisions),
+        "upside_capture_by_calendar_year": metrics.upside_capture_by_calendar_year(
+            strategy_nav, spy_nav),
+    }
+    # Tranche W2: attach the timeline-gate judgment. GATING for the committed
+    # ratified policy (a blocking 'timeline' entry lands in gates_overall_base_cost);
+    # an unratified policy stays advisory and blocks nothing.
+    policy = load_timeline_gate_policy()
+    block["gate_judgment"] = judge_timeline_gates(block, policy)
+    return block
+
+
+def load_timeline_gate_policy(
+    path: "str | Path | None" = None,
+) -> dict[str, Any] | None:
+    """Load the timeline-gate policy artifact, or ``None`` if it is absent (the
+    harness then reports ``policy_absent`` and judges nothing). ``path`` defaults to
+    the module's ``TIMELINE_GATE_POLICY_PATH`` resolved at CALL time, so tests can
+    point the runner at an alternative (e.g. unratified) policy artifact."""
+    p = Path(path if path is not None else TIMELINE_GATE_POLICY_PATH)
+    if not p.is_file():
+        return None
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def judge_timeline_gates(
+    timeline: Mapping[str, Any], policy: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Judge the regime-timeline metrics against the gate policy (Tranche W2).
+
+    Governance: the judgment is ENFORCED only when ``policy["status"] == "ratified"``
+    AND the FULL ratified contract validates (:func:`validate_ratified_policy`:
+    artifact identity, quant_owner ratifier + decision_date, the complete five-gate
+    set with well-formed bounds, governance pins, and the code-reviewed canonical
+    content pin ``RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256``) — one status
+    string can never forge gating. A claimed-ratified policy failing validation
+    yields ``policy_status == "ratified_claim_invalid"``: never enforced (not even a
+    surviving subset of gates) and surfaced FAIL-CLOSED as a no_go overall entry. A
+    genuinely unratified policy (``proposed_not_ratified``) stays advisory — computed
+    and attached, blocking nothing, never entering ``gates_overall_base_cost``. The
+    committed phase0q_005 artifact was ratified by the quant_owner (Andrei Rachadel)
+    on 2026-07-11 with the bounds exactly as proposed, so runs against it are GATING;
+    the ratification came from the owner, never from the harness itself
+    (self-ratification stays prohibited).
+
+    Directions: ``min_*`` gates require measured >= bound; ``max_*`` gates require
+    measured <= bound. ``min_upside_capture_bull_year`` is judged only over FULL
+    calendar years (``full_year_coverage`` true — partial periods from a mid-year
+    window start or a truncated benchmark are surfaced as ``excluded_partial_years``,
+    never enforced) whose SPY return clears ``bull_year_spy_return_threshold`` (else
+    the gate is not applicable and does not vacuously fail)."""
+    if policy is None:
+        return {"policy_status": "policy_absent", "mode": "advisory",
+                "gates_enforced": False, "ratification_violations": [],
+                "per_gate": {}, "overall_go": None}
+
+    status = policy.get("status")
+    if status == "ratified":
+        # A ratification CLAIM gates only after the FULL contract validates
+        # (identity, ratifier, decision_date, the complete five-gate set with
+        # well-formed bounds, governance pins, and the code-reviewed canonical
+        # content pin). A failed claim NEVER enforces — not even the surviving
+        # subset — and is surfaced fail-closed by timeline_overall_gate_entry.
+        violations = validate_ratified_policy(policy)
+        if violations:
+            return {"policy_status": "ratified_claim_invalid", "mode": "advisory",
+                    "gates_enforced": False,
+                    "policy_artifact_type": policy.get("artifact_type"),
+                    "phase0q_id": policy.get("phase0q_id"),
+                    "ratification_violations": violations,
+                    "per_gate": {}, "overall_go": None}
+        mode = "gating"
+    else:
+        mode = "advisory"
+    gates = policy.get("gates", {})
+    params = policy.get("gate_parameters", {})
+    m = timeline["regime_timeline_metrics"]
+    uc = timeline.get("upside_capture_by_calendar_year", {})
+
+    per_gate: dict[str, Any] = {}
+
+    if "min_fresh_valid_rate_36m" in gates:
+        measured = m["fresh_valid_rate"]["rolling_36m"]
+        bound = gates["min_fresh_valid_rate_36m"]
+        per_gate["min_fresh_valid_rate_36m"] = {
+            "measured": measured, "bound": bound, "direction": "min",
+            "go": measured >= bound}
+
+    for key in ("max_abstention_streak_months", "max_carry_age_months",
+                "max_same_quadrant_run_months"):
+        if key in gates:
+            measured = m[key]
+            bound = gates[key]
+            per_gate[key] = {"measured": measured, "bound": bound,
+                             "direction": "max", "go": measured <= bound}
+
+    if "min_upside_capture_bull_year" in gates:
+        bound = gates["min_upside_capture_bull_year"]
+        threshold = params.get("bull_year_spy_return_threshold", 0.15)
+        # only FULL calendar years are judged: a partial period (mid-year window
+        # start, truncated pack, missing benchmark tail) can post a partial-period
+        # SPY return above the bull threshold, and enforcing it as a bull year would
+        # judge the strategy against a figure that is not a calendar-year return.
+        # Partial years are surfaced (excluded_partial_years) but never enforced.
+        bull_years = {y: e for y, e in uc.items()
+                      if e.get("full_year_coverage") is True
+                      and e.get("spy_return") is not None
+                      and e["spy_return"] > threshold}
+        excluded_partial = sorted(
+            y for y, e in uc.items() if e.get("full_year_coverage") is not True)
+        captures = [e["upside_capture"] for e in bull_years.values()
+                    if e.get("upside_capture") is not None]
+        applicable = bool(captures)
+        measured = min(captures) if captures else None
+        per_gate["min_upside_capture_bull_year"] = {
+            "measured": measured, "bound": bound, "direction": "min",
+            "applicable": applicable, "bull_year_spy_return_threshold": threshold,
+            "bull_years": sorted(bull_years),
+            "excluded_partial_years": excluded_partial,
+            "go": (measured >= bound) if applicable else True}
+
+    overall_go = all(g["go"] for g in per_gate.values()) if per_gate else None
+    return {
+        "policy_status": status,
+        "policy_artifact_type": policy.get("artifact_type"),
+        "phase0q_id": policy.get("phase0q_id"),
+        "mode": mode,
+        "gates_enforced": mode == "gating",
+        "ratification_violations": [],
+        "per_gate": per_gate,
+        "overall_go": overall_go,
+    }
+
+
+def timeline_overall_gate_entry(judgment: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The ``gates_overall_base_cost['timeline']`` entry for a timeline judgment,
+    or ``None`` when there is nothing to surface.
+
+    * validated GATING judgment -> the blocking go/no_go entry;
+    * a CLAIMED-ratified policy that failed the contract/pin validation -> FAIL
+      CLOSED: a loud ``no_go`` entry carrying the violations (a forged or tampered
+      ratification can weaken nothing and can never produce a trusted go — and it
+      can never quietly restore the pre-ratification look either);
+    * clean advisory (genuinely unratified) or absent policy -> ``None`` (the
+      pre-ratification behaviour).
+    """
+    if judgment.get("policy_status") == "ratified_claim_invalid":
+        return {
+            "go_no_go": "no_go",
+            "policy_status": "ratified_claim_invalid",
+            "phase0q_id": judgment.get("phase0q_id"),
+            "source": "timeline_gate_policy",
+            "ratification_violations": list(judgment.get("ratification_violations", [])),
+        }
+    if judgment.get("gates_enforced"):
+        return {
+            "go_no_go": "go" if judgment.get("overall_go") is True else "no_go",
+            "policy_status": judgment.get("policy_status"),
+            "phase0q_id": judgment.get("phase0q_id"),
+            "source": "timeline_gate_policy",
+        }
+    return None
 
 
 # ------------------------------------------------------------------------- #
@@ -445,10 +765,12 @@ def run_harness(pack_dir: str | Path, config: RunConfig) -> dict[str, Any]:
             cell["provenance"] = _cell_provenance(pack, config, params, cost_bps)
             cells.append(cell)
 
-    gate_report = build_gate_report(pack, config, cells, folds)
+    timeline = build_timeline_block(decisions, prices, config)
+    gate_report = build_gate_report(pack, config, cells, folds, timeline)
     result = build_contract_result(pack, config, cells, gate_report)
     return {"result": result, "gate_report": gate_report, "cells": cells,
-            "decisions": decisions, "input_pack_sha256": pack.input_pack_sha256}
+            "decisions": decisions, "timeline": timeline,
+            "input_pack_sha256": pack.input_pack_sha256}
 
 
 def _cell_provenance(pack, config, params, cost_bps) -> dict[str, Any]:
@@ -470,7 +792,7 @@ def _cell_provenance(pack, config, params, cost_bps) -> dict[str, Any]:
 # Gate report + contract result                                             #
 # ------------------------------------------------------------------------- #
 
-def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
+def build_gate_report(pack, config, cells, folds, timeline=None) -> dict[str, Any]:
     per_cost: dict[str, Any] = {}
     for cost_bps in config.cost_grid:
         cost_cells = [c for c in cells if c["cost_bps"] == cost_bps]
@@ -503,6 +825,17 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
             "base_cost_bps": BASE_COST_BPS,
         }
 
+    # phase0q_005 (RATIFIED 2026-07-11): the validated ratified policy makes the
+    # timeline judgment a BLOCKING overall gate — a distinct, honest go/no_go entry
+    # (never a crash); the frozen v1 model is expected to report no_go here until a
+    # recalibrated candidate passes review. A CLAIMED-ratified but invalid/tampered
+    # policy fails CLOSED (a loud no_go with the violations); a genuinely unratified
+    # policy never enters this dict — the pre-ratification behaviour.
+    timeline_judgment = (timeline or {}).get("gate_judgment") or {}
+    timeline_entry = timeline_overall_gate_entry(timeline_judgment)
+    if timeline_entry is not None:
+        overall["timeline"] = timeline_entry
+
     # surface per-cell data-quality status so a reduced_quality cell (triggered flag)
     # can never be reported as cleanly passing the quantitative gates.
     dq_cells = [
@@ -534,6 +867,11 @@ def build_gate_report(pack, config, cells, folds) -> dict[str, Any]:
         "gates_overall_base_cost": overall,
         "per_cost_level": per_cost,
         "data_quality": data_quality,
+        # Tranche W1: regime-timeline diagnostics are ALWAYS reported (abstention/carry/
+        # quadrant occupancy + benchmark-relative upside capture) so the behaviour the
+        # risk-only envelope was blind to is never invisible again. Judged only when the
+        # proposed timeline gate policy is ratified (else advisory — see judge wiring).
+        "timeline": timeline if timeline is not None else {},
         "execution_legs": {"local_python_pure": "complete", "qc_research_object_store": "pending"},
         "governance": GOVERNANCE_PINS,
         "provenance": {

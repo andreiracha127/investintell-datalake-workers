@@ -540,6 +540,31 @@ def test_verify_schema_passes_and_returns_the_catalog_view():
             == ("f", "FOREIGN KEY (as_of) REFERENCES open_macro_v03_decisions(as_of)"))
 
 
+def test_expected_schema_carries_the_carry_decay_v1_shape():
+    """carry_decay_v1 (phase0q_005, ratified 2026-07-11): EXPECTED_SCHEMA must expect
+    the POST-migration catalog — nullable carry-provenance columns, the widened
+    decision_validity / book vocabularies ('carried_expired' / 'center_50') and the
+    consistency CHECKs — so verify_schema certifies the migrated production catalog
+    and fails loud against an unmigrated one (the worker never writes new-shaped rows
+    into an old-shaped schema)."""
+    dec = w.EXPECTED_SCHEMA["open_macro_v03_decisions"]
+    assert dec["columns"]["carry_age_months"] == ("integer", None, "YES", None)
+    assert dec["columns"]["carry_expired"] == ("boolean", None, "YES", None)
+    validity_def = dec["constraints"]["open_macro_v03_decisions_decision_validity_check"][1]
+    assert "'carried_expired'::text" in validity_def
+    seed_def = dec["constraints"]["open_macro_v03_decisions_validity_seed"][1]
+    assert "'carried_expired'::text" in seed_def and "carry_seed_as_of < as_of" in seed_def
+    assert "open_macro_v03_decisions_carry_expired_consistent" in dec["constraints"]
+
+    alloc = w.EXPECTED_SCHEMA["open_macro_v03_allocations"]
+    assert alloc["columns"]["carry_age_months"] == ("integer", None, "YES", None)
+    assert alloc["columns"]["carry_seed_as_of"] == ("date", None, "YES", None)
+    assert alloc["columns"]["carry_expired"] == ("boolean", None, "YES", None)
+    book_def = alloc["constraints"]["open_macro_v03_allocations_book_check"][1]
+    assert "'compressed_50'::text" in book_def and "'center_50'::text" in book_def
+    assert "open_macro_v03_allocations_center_book_consistent" in alloc["constraints"]
+
+
 def test_verify_schema_raises_on_missing_column():
     conn = _FakeConn(_catalog_responder(drop_column="carry_seed_as_of"))
     with pytest.raises(w.OpenMacroV03Error, match="column set diverges"):
@@ -758,12 +783,206 @@ def test_build_allocation_refuses_stale_common_date():
         w.build_allocation("expansion", rows, _dt.date(2026, 6, 30))
 
 
+def test_build_allocation_center_book_when_degraded():
+    """carry_decay_v1 ACTIVE: an expired carry publishes the mandate-tilted CENTER
+    book ('center_50'), not the stale seed quadrant's compressed_50 book. The same
+    sum/cap/floor gates hold."""
+    from harness.direct_activation import carry_decay
+    from harness.phase0q import sleeve as sleeve_mod
+    alloc = w.build_allocation("contraction", _priced_rows(), _dt.date(2026, 6, 30),
+                               degraded_to_center=True)
+    assert alloc["book"] == "center_50"
+    expected = carry_decay.center_book_50(
+        sleeve_mod.SleeveParams(candidate_id=w.CANDIDATE_ID),
+        list(sleeve_mod.SLEEVE_TICKERS))
+    assert alloc["weights"] == {t: expected.get(t, 0.0)
+                                for t in sleeve_mod.SLEEVE_TICKERS}
+    assert abs(sum(alloc["weights"].values()) - 1.0) < 1e-9
+    assert alloc["risk_assets_weight"] <= 0.65 + 1e-9
+    assert alloc["defensive_assets_weight"] >= 0.20 - 1e-9
+    # the degraded book differs from the seed quadrant's book (that is the point).
+    seed_book = w.build_allocation("contraction", _priced_rows(), _dt.date(2026, 6, 30))
+    assert seed_book["book"] == "compressed_50"
+    assert alloc["weights"] != seed_book["weights"]
+
+
+# --------------------------------------------------------------------------- #
+# carry_decay_v1 publish path (run() end-to-end over fakes)
+# --------------------------------------------------------------------------- #
+def _fresh_inputs():
+    """Inputs that PASS the staleness gate at as_of 2026-07-06 (Monday): every SEED
+    series printed 2026-07-01; every sleeve ticker priced Friday 2026-07-03."""
+    vintages = [{"series_id": s, "observation_period": "2026-06-01",
+                 "vintage_date": "2026-07-01",
+                 "value": 1.0, "available_at": "2026-07-01T00:00:00+00:00",
+                 "revision_number": 0, "source": "alfred", "source_spec_version": "v1"}
+                for s in ("ACOGNO", "AHETPI", "CPILFESL", "INDPRO", "MICH",
+                          "PAYEMS", "PCEC96", "PPIFIS")]
+    prices = [{"ticker": t, "date": "2026-07-03", "close": 100.0,
+               "adjusted_close": 100.0, "volume": 1000}
+              for t in ("SPY", "TLT", "TIP", "GLD", "DBC", "SHY")]
+    return vintages, prices
+
+
+def _publish_capture_responder(state):
+    """Fake-conn responder for a full publish run: allows the ledger check, captures
+    both INSERT param dicts, and echoes them back to post_write_verify."""
+    def responder(sql, params):
+        if "SELECT 1 FROM open_macro_v03_staleness_blocks" in sql:
+            return {"rows": []}
+        if "INSERT INTO open_macro_v03_decisions" in sql:
+            state["decision"] = params
+            return {"rowcount": 1}
+        if "INSERT INTO open_macro_v03_allocations" in sql:
+            state["allocation"] = params
+            return {"rowcount": 1}
+        if "SELECT quadrant, publish_state, valid_status" in sql:
+            return {"rows": [(state["decision"]["quadrant"], "published", "valid")]}
+        if "SELECT w_spy" in sql:
+            a = state["allocation"]
+            return {"rows": [(float(a["w_spy"]), float(a["w_tlt"]), float(a["w_tip"]),
+                              float(a["w_gld"]), float(a["w_dbc"]), float(a["w_shy"]),
+                              "published", "valid")]}
+        return {}
+    return responder
+
+
+def _run_to_publish(monkeypatch, chain, state):
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_schema", lambda conn: {})
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: _fresh_inputs())
+    monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+    monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
+    monkeypatch.setattr(w.decision_mod, "run_decision_series",
+                        lambda rows, start, end: chain)
+    conn = _FakeConn(_lock_responder(_publish_capture_responder(state)))
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    return w.run("dsn", as_of="2026-07-06")
+
+
+def test_run_publishes_center_book_when_carry_expired(monkeypatch):
+    """carry_decay_v1 ACTIVE end-to-end: a 5-calendar-month-old carry (seed
+    2026-02-28, as_of 2026-07-06) publishes decision_validity 'carried_expired'
+    with honest provenance columns and the 'center_50' allocation book — the
+    degraded position actually lands in the DB rows, not just the result dict."""
+    from harness.direct_activation import carry_decay
+    from harness.phase0q import sleeve as sleeve_mod
+    state: dict = {}
+    chain = [_FakeDecision(_dt.date(2026, 2, 28), "contraction")]
+    result = _run_to_publish(monkeypatch, chain, state)
+
+    assert result["status"] == "published"
+    assert result["decision_validity"] == "carried_expired"
+    assert result["book"] == "center_50"
+    assert result["carry_provenance"]["carry_age_months"] == 5
+    assert result["carry_provenance"]["carry_expired"] is True
+    assert result["carry_provenance"]["degraded_to_center"] is True
+
+    dec = state["decision"]
+    assert dec["decision_validity"] == "carried_expired"
+    assert dec["carry_age_months"] == 5
+    assert dec["carry_expired"] is True
+    assert dec["carry_seed_as_of"] == _dt.date(2026, 2, 28)
+    assert dec["quadrant"] == "contraction"  # seed quadrant preserved as reference
+
+    alloc = state["allocation"]
+    assert alloc["book"] == "center_50"
+    assert alloc["carry_age_months"] == 5
+    assert alloc["carry_expired"] is True
+    assert alloc["carry_seed_as_of"] == _dt.date(2026, 2, 28)
+    expected = carry_decay.center_book_50(
+        sleeve_mod.SleeveParams(candidate_id=w.CANDIDATE_ID),
+        list(sleeve_mod.SLEEVE_TICKERS))
+    for ticker in ("SPY", "TLT", "TIP", "GLD", "DBC", "SHY"):
+        assert float(alloc[f"w_{ticker.lower()}"]) == pytest.approx(
+            expected.get(ticker, 0.0), abs=1e-12)
+
+
+def test_run_publishes_seed_book_when_carry_within_cap(monkeypatch):
+    """A 1-month-old carry stays on the seed quadrant's compressed_50 book with
+    carried validity and carry_expired=false provenance."""
+    state: dict = {}
+    chain = [_FakeDecision(_dt.date(2026, 6, 30), "expansion")]
+    result = _run_to_publish(monkeypatch, chain, state)
+
+    assert result["status"] == "published"
+    assert result["decision_validity"] == "carried"
+    assert result["book"] == "compressed_50"
+    assert result["carry_provenance"]["carry_age_months"] == 1
+    assert result["carry_provenance"]["carry_expired"] is False
+
+    dec = state["decision"]
+    assert dec["decision_validity"] == "carried"
+    assert dec["carry_age_months"] == 1
+    assert dec["carry_expired"] is False
+    alloc = state["allocation"]
+    assert alloc["book"] == "compressed_50"
+    assert alloc["carry_expired"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Gate 5 is READ-ONLY: no schema establishment before verification
+# --------------------------------------------------------------------------- #
+def _no_gate5_mocks(monkeypatch):
+    """Pre-DB gates mocked; Gate 5 (catalog verification) runs FOR REAL so the
+    read-only fail-loud behaviour is actually exercised."""
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+    monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
+
+
+_MUTATING_SQL = r"\b(INSERT|UPDATE|DELETE|CREATE|ALTER|DROP|TRUNCATE|COPY|GRANT)\b"
+
+
+def test_run_is_read_only_and_fails_loud_against_an_absent_catalog(monkeypatch):
+    """run() must NOT establish schema before verifying. Against an ABSENT catalog
+    (fresh database), Gate 5 fails loud with ZERO mutating statements and no
+    schema/data commit — schema lifecycle (base DDL + carry_decay migration) belongs
+    to the ORCHESTRATOR, never the worker."""
+    import re
+    _no_gate5_mocks(monkeypatch)
+    conn = _FakeConn(_lock_responder())  # catalog queries return no rows
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    with pytest.raises(w.OpenMacroV03Error, match="table missing from the catalog"):
+        w.run("dsn", as_of="2026-07-06")
+    mutating = [sql for sql, _ in conn.executed if re.search(_MUTATING_SQL, sql, re.I)]
+    assert mutating == [], f"mutating SQL executed before/at Gate 5: {mutating}"
+    # the ONLY commit is the session search_path pin (SET search_path is a session
+    # setting, not a schema/data write); nothing durable was committed.
+    assert conn.commits == 1
+
+
+def test_run_is_read_only_and_fails_loud_against_an_unmigrated_catalog(monkeypatch):
+    """Against a PRESENT but UNMIGRATED catalog (base tables without the carry_decay
+    columns), Gate 5 fails loud with zero mutating statements: the worker never
+    writes new-shaped rows into an old-shaped schema and never mutates the schema
+    itself."""
+    import re
+    _no_gate5_mocks(monkeypatch)
+    # simulate the pre-migration catalog: a carry provenance column is absent.
+    conn = _FakeConn(_lock_responder(_catalog_responder(drop_column="carry_expired")))
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    with pytest.raises(w.OpenMacroV03Error, match="column set diverges"):
+        w.run("dsn", as_of="2026-07-06")
+    mutating = [sql for sql, _ in conn.executed if re.search(_MUTATING_SQL, sql, re.I)]
+    assert mutating == [], f"mutating SQL executed before/at Gate 5: {mutating}"
+    assert conn.commits == 1
+
+
 # --------------------------------------------------------------------------- #
 # Gate 11 — publish never resurrects an invalidated row
 # --------------------------------------------------------------------------- #
 def _decision_row():
     return {"as_of": _dt.date(2026, 6, 30), "quadrant": "expansion",
             "decision_validity": "fresh", "carry_seed_as_of": _dt.date(2026, 6, 30),
+            "carry_age_months": 0, "carry_expired": False,
             "candidate_confidence": 0.5, "coverage_quality": 0.9, "growth_score": 0.1,
             "inflation_score": -0.2, "input_vintage_sha256": "a" * 64,
             "input_prices_sha256": "b" * 64, "pack_v2_sha256": "c" * 64,
@@ -776,6 +995,8 @@ def _allocation_row():
             "w_tlt": 0.1, "w_tip": 0.1, "w_gld": 0.1, "w_dbc": 0.1, "w_shy": 0.1,
             "risk_assets_weight": 0.6, "defensive_assets_weight": 0.3, "risk_cap": 0.65,
             "defensive_floor": 0.20, "priced_at": _dt.date(2026, 6, 30),
+            "carry_age_months": 0, "carry_seed_as_of": _dt.date(2026, 6, 30),
+            "carry_expired": False,
             "input_prices_sha256": "b" * 64, "pack_v2_sha256": "c" * 64,
             "module_pins_sha256": "d" * 64, "code_commit": "e" * 40, "run_id": "rid",
             "valid_until": _dt.datetime.now()}
