@@ -117,6 +117,19 @@ QUANT_CORE_SOURCE_FILES = (
     "investintell_quant_core/hashing/canonical.py",
 )
 
+# Committed DATA artifacts run_harness READS at runtime (target == source path). The
+# phase0q_005 timeline gate policy (RATIFIED 2026-07-11) is loaded by the runner
+# (``runner.TIMELINE_GATE_POLICY_PATH``, resolved repo-root-relative) to judge the
+# blocking ``timeline`` entry of ``gates_overall_base_cost``; the local leg hash covers
+# that entry, so a cloud leg materialized WITHOUT the artifact would judge
+# ``policy_absent``, drop the entry and structurally fail to reproduce the local hash.
+# Shipped verbatim (gzipped + drift-checked against git HEAD) exactly like the code
+# closure: the bundle invariant is the COMPLETENESS of run_harness's runtime read
+# surface, not just its import closure.
+POLICY_ARTIFACT_FILES = (
+    "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json",
+)
+
 # Fail-loud offline DB stub materialized in Research in place of src/db.py. It
 # provides the ONE constant quadrant_assemble re-exports (LOCK_REGIME_QUADRANT) and
 # refuses every connection attempt so the cloud leg can never touch a database.
@@ -536,6 +549,19 @@ def _write_gzipped_sources(
     return harness_entries, src_entries, quant_core_entries
 
 
+def _write_gzipped_policy_artifacts(bundle_dir: Path) -> list[dict[str, Any]]:
+    """Gzip the committed runtime DATA artifacts (drift-checked) into the bundle.
+
+    Same mechanics as the code closure (``code/<target>.gz``; the notebook /
+    ``backtest_main.materialize_sources`` decompress every ``code/*.gz`` generically),
+    so the materialized cloud tree carries the policy artifact at the exact
+    repo-relative path the shipped runner resolves."""
+    return [
+        _gzip_source(bundle_dir, source_rel=rel, target_rel=rel)
+        for rel in POLICY_ARTIFACT_FILES
+    ]
+
+
 def _predrift_check_all_sources() -> None:
     """Evaluate git HEAD drift refusal for every shipped source up front.
 
@@ -548,7 +574,8 @@ def _predrift_check_all_sources() -> None:
         for p in PACK_DIR.rglob("*") if p.is_file()
     ]
     quant_core_rels = [f"{QUANT_CORE_SRC_ROOT}/{rel}" for rel in QUANT_CORE_SOURCE_FILES]
-    for rel in (*HARNESS_SOURCE_FILES, *SRC_SOURCE_FILES, *quant_core_rels, *pack_rels):
+    for rel in (*HARNESS_SOURCE_FILES, *SRC_SOURCE_FILES, *quant_core_rels,
+                *POLICY_ARTIFACT_FILES, *pack_rels):
         read_source_with_drift_refusal(rel)
 
 
@@ -597,6 +624,7 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
 
     pack_entries, pack_relpaths = _copy_pack_tree(bundle_dir)
     harness_entries, src_entries, quant_core_entries = _write_gzipped_sources(bundle_dir)
+    policy_entries = _write_gzipped_policy_artifacts(bundle_dir)
 
     scenario = build_scenario_config(harness_commit)
     write_json(bundle_dir / "scenario_config.json", scenario)
@@ -609,6 +637,7 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
     ordered_rels += [e["relative_path"] for e in harness_entries]
     ordered_rels += [e["relative_path"] for e in src_entries]
     ordered_rels += [e["relative_path"] for e in quant_core_entries]
+    ordered_rels += [e["relative_path"] for e in policy_entries]
 
     object_files = _object_files_manifest(bundle_dir, prefix, ordered_rels)
 
@@ -621,6 +650,7 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
         harness_entries=harness_entries,
         src_entries=src_entries,
         quant_core_entries=quant_core_entries,
+        policy_entries=policy_entries,
         object_files=object_files,
     )
     manifest_path = bundle_dir / "object_store_manifest.json"
@@ -661,6 +691,7 @@ def _object_store_manifest(
     harness_entries: list[dict[str, Any]],
     src_entries: list[dict[str, Any]],
     quant_core_entries: list[dict[str, Any]],
+    policy_entries: list[dict[str, Any]],
     object_files: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
     bundle_size = sum(item["file_size_bytes"] for item in object_files.values())
@@ -689,6 +720,9 @@ def _object_store_manifest(
         "harness_sources": harness_entries,
         "src_sources": src_entries,
         "quant_core_sources": quant_core_entries,
+        # runtime DATA artifacts the shipped runner reads (phase0q_005 ratified
+        # timeline gate policy) — part of the closure, drift-checked like code.
+        "policy_artifact_sources": policy_entries,
         "fail_loud_db_stub": "code/src/db.py.gz",
         "file_count": len(object_files),
         "bundle_size_bytes": bundle_size,

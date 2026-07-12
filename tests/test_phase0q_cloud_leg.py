@@ -129,6 +129,7 @@ def test_shipped_gzip_sources_match_git_head(built_bundle, bundle_manifest):
         bundle_manifest["harness_sources"],
         bundle_manifest["src_sources"],
         bundle_manifest["quant_core_sources"],
+        bundle_manifest["policy_artifact_sources"],
     )
     checked = 0
     for group in groups:
@@ -147,6 +148,29 @@ def test_shipped_gzip_sources_match_git_head(built_bundle, bundle_manifest):
             assert got == head, f"shipped {source_path} != git HEAD blob"
             checked += 1
     assert checked >= 20  # harness + src + quant_core closure
+
+
+def test_policy_artifact_shipped_and_drift_checked(built_bundle, bundle_manifest):
+    """phase0q_005 ratification: run_harness now READS the ratified timeline gate
+    policy artifact at runtime (runner.TIMELINE_GATE_POLICY_PATH), so the artifact is
+    part of the shipped runtime closure. Without it the materialized cloud leg would
+    judge policy_absent, drop the blocking `timeline` entry from
+    gates_overall_base_cost and fail to reproduce the local leg hash."""
+    entries = bundle_manifest["policy_artifact_sources"]
+    assert {e["source_path"] for e in entries} == {
+        "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json"}
+    for entry in entries:
+        # materialized at the repo-relative path the runner resolves.
+        assert entry["target_path"] == entry["source_path"]
+        gz_path = built_bundle / entry["relative_path"]
+        got = gzip.decompress(gz_path.read_bytes())
+        assert hashlib.sha256(got).hexdigest() == entry["plaintext_sha256"]
+        head = subprocess.check_output(
+            ["git", "cat-file", "blob", f"HEAD:{entry['source_path']}"], cwd=ROOT
+        ).replace(b"\r\n", b"\n")
+        assert got == head, f"shipped {entry['source_path']} != git HEAD blob"
+        # a real uploadable object, sha-pinned in the object table.
+        assert entry["relative_path"] in bundle_manifest["object_files"]
 
 
 def test_pack_tables_present_and_full_tree_shipped(built_bundle, bundle_manifest):
