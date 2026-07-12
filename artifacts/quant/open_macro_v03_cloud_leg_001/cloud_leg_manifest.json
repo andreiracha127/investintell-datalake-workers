@@ -8,10 +8,10 @@
     "lean_invocations": 0,
     "network_calls": 0
   },
-  "bundle_size_bytes": 49595135,
+  "bundle_size_bytes": 49606778,
   "cloud_leg_id": "open_macro_v03_cloud_leg_001",
   "contract_bundle_sha256": "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
-  "file_count": 50,
+  "file_count": 51,
   "governance": {
     "A3": "open_macro_v03",
     "A5": "blocked",
@@ -31,6 +31,11 @@
   "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
   "notes": "PREPARED, PENDING UPLOAD. Build-only: zero network calls, zero uploads, zero lean invocations were performed. The orchestrator runs the reviewed bundle build, upload (manifest last), lean cloud push, and post-run fetch/verify in the main session. No verdict grants activation: A5 stays blocked; runtime_activation / activation_allowed / allocator_publish / official_result are false; db_write_mode is none; status is candidate_not_approved; approved is false.",
   "object_key_sha_table": {
+    "code/artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json.gz": {
+      "content_sha256": "a2bcc51079798d595bf2348083f1d088e4247f08a2a218401e346475d9df48fc",
+      "file_size_bytes": 2831,
+      "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json.gz"
+    },
     "code/harness/__init__.py.gz": {
       "content_sha256": "5bdd2321860a425989651396509a7ded7ae90ea70b05d084dd32ec50a34014a2",
       "file_size_bytes": 220,
@@ -72,8 +77,8 @@
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/grid.py.gz"
     },
     "code/harness/phase0q/metrics.py.gz": {
-      "content_sha256": "95ab41a3476f8414b4d6f802b9462fd8df0b9acd71d8468a94c9d8a60010bee1",
-      "file_size_bytes": 4040,
+      "content_sha256": "2939f0ec7b02a6a37932f2b96c22f5bd4d65030e2af1a5e9583e6915d2b7e47d",
+      "file_size_bytes": 7721,
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/metrics.py.gz"
     },
     "code/harness/phase0q/pit.py.gz": {
@@ -82,8 +87,8 @@
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/pit.py.gz"
     },
     "code/harness/phase0q/runner.py.gz": {
-      "content_sha256": "ecd29c36b8cf1b0b8c4bbfe421487262df0919152760c1a07e5ecda7a7fbcfc9",
-      "file_size_bytes": 7406,
+      "content_sha256": "3b4599db4906527a2763948211684dd593f3ea12204f6eeb79c64b7e95f13024",
+      "file_size_bytes": 12537,
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/runner.py.gz"
     },
     "code/harness/phase0q/sleeve.py.gz": {
@@ -192,7 +197,7 @@
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/src/quadrant_staleness.py.gz"
     },
     "expected_results_manifest.json": {
-      "content_sha256": "018d4d6f2774c2ec3b9c328aa05074f4badf00b6db0dfeb2278e26a4ccd642fd",
+      "content_sha256": "e4314719d5054fe21372d7e494228418adcff2e4a8a784aa154a4dd09e8db5c5",
       "file_size_bytes": 4452,
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/expected_results_manifest.json"
     },
@@ -302,7 +307,7 @@
       "qc_research_object_store"
     ],
     "local_python_pure": {
-      "logical_hash": "83e6733e9f849c68cd12082b47d72c67a2f2c7242341618dbbe2f0ea76870b60",
+      "logical_hash": "0203958825dfa5b773630d15ba25975dbb78b37043ad68137fb854aee7ac4ca1",
       "run_fingerprint": "6850a1e361ded96fcf84a74a0f78b5a8db962be79320f388e83c2778eafec671",
       "source": "artifacts/quant/open_macro_v03_metric_evidence_001",
       "status": "complete"

@@ -329,6 +329,26 @@ def test_consolidated_report_cloud_side_pending():
     assert report["verdict"] == "pending"
 
 
+def test_committed_records_match_the_checked_in_generator(built_bundle, bundle_manifest):
+    """The committed cloud-leg records are PRODUCED by the checked-in generator
+    (harness.phase0q_cloud.record_artifacts) from a fresh HEAD bundle — never
+    hand-edited. Whole-record equality (not just the sha table), so any field drift
+    between the committed records and the sanctioned derivation fails loud."""
+    from harness.phase0q_cloud import record_artifacts as ra
+
+    expected_manifest = json.loads(
+        (built_bundle / "expected_results_manifest.json").read_text(encoding="utf-8"))
+    derived_record = ra.build_cloud_leg_manifest_record(bundle_manifest, expected_manifest)
+    committed_record = json.loads(
+        (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8"))
+    assert committed_record == derived_record
+
+    derived_report = ra.build_pending_consolidated_report(bundle_manifest, expected_manifest)
+    committed_report = json.loads(
+        (ARTIFACT_DIR / "consolidated_reproducibility_report.json").read_text(encoding="utf-8"))
+    assert committed_report == derived_report
+
+
 def test_build_only_manifest_declares_no_network_or_lean(bundle_manifest):
     policy = bundle_manifest["upload_policy"]
     assert policy["network_calls_during_build"] == 0

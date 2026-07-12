@@ -54,12 +54,18 @@ EXPECTED_FILE_SHA256 = {
 }
 
 # Two DISTINCT manifests, both pinned: the expected-results manifest is the comparison
-# target (pinned identically in the cloud_leg_manifest object table); the object-store
-# manifest is the per-object root of trust baked into the uploaded main.py.
+# target (pinned identically in the cloud_leg_manifest object table AS OF the run);
+# the object-store manifest is the per-object root of trust baked into the uploaded
+# main.py.
 EXPECTED_RESULTS_MANIFEST_SHA256 = (
     "018d4d6f2774c2ec3b9c328aa05074f4badf00b6db0dfeb2278e26a4ccd642fd")
 OBJECT_STORE_MANIFEST_SHA256 = (
     "74a27d7596255c5d0e18c0abe82d839894a0238b3eac1a69fdafde41ad43156c")
+
+# The evidence ratification commit: the last commit of this byte-frozen package. The
+# cross-artifact check below reads the cloud_leg_manifest git blob AT THIS COMMIT (the
+# manifest as uploaded for backtest efd8c9cc...), never the mutable working tree.
+EVIDENCE_RATIFICATION_COMMIT = "7bb85088bf2fc541f5e11a5bebe88c1802332adf"
 
 
 def _json(name: str) -> dict[str, Any]:
@@ -155,11 +161,22 @@ def test_provenance_pins_the_successful_run_and_the_exact_file_bytes() -> None:
     assert pins["expected_results_manifest_sha256"] == EXPECTED_RESULTS_MANIFEST_SHA256
     assert pins["object_store_manifest_sha256"] == OBJECT_STORE_MANIFEST_SHA256
 
-    # cross-artifact consistency: the expected-results pin must equal the committed
-    # cloud-leg bundle's object-table pin — the trail an auditor follows.
-    cloud_leg = json.loads(
-        (ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001" /
-         "cloud_leg_manifest.json").read_text(encoding="utf-8"))
+    # cross-artifact consistency: the expected-results pin must equal the cloud-leg
+    # bundle's object-table pin AS OF THE SUCCESSFUL RUN — the trail an auditor
+    # follows. Read the cloud_leg_manifest git BLOB at the evidence ratification
+    # commit, never the mutable working tree (the same principle as the stage-B
+    # evidence freeze): the working-tree manifest legitimately tracks HEAD and is
+    # re-prepared whenever the shipped closure evolves (e.g. the phase0q_005
+    # ratification changed runner.py/metrics.py and shipped the policy artifact),
+    # while this historical record can neither drift nor be forced to chase
+    # re-measurements.
+    import subprocess
+    blob = subprocess.check_output(
+        ["git", "cat-file", "blob",
+         f"{EVIDENCE_RATIFICATION_COMMIT}:artifacts/quant/"
+         "open_macro_v03_cloud_leg_001/cloud_leg_manifest.json"],
+        cwd=ROOT)
+    cloud_leg = json.loads(blob.decode("utf-8"))
     bundle_pin = cloud_leg["object_key_sha_table"]["expected_results_manifest.json"]["content_sha256"]
     assert bundle_pin == EXPECTED_RESULTS_MANIFEST_SHA256
 
