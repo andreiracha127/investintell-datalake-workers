@@ -9,15 +9,60 @@ from __future__ import annotations
 import contextlib
 import os
 from collections.abc import Iterator
+from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psycopg
 
 
+def _materialize_tls() -> dict[str, str] | None:
+    """PEMs via env → arquivos (key 0600). Railway não tem secret-files; env é o canal."""
+    ca, crt, key = (os.getenv(v) for v in ("DB_TLS_CA_PEM", "DB_TLS_CERT_PEM", "DB_TLS_KEY_PEM"))
+    if not (ca and crt and key):
+        return None
+    dir_str = os.getenv("DB_TLS_DIR", "/tmp/db-tls")
+    d = Path(dir_str)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "ca.crt").write_text(ca)
+    (d / "client.crt").write_text(crt)
+    kp = d / "client.key"
+    kp.write_text(key)
+    kp.chmod(0o600)
+    # Build DSN path values by plain "/" concatenation (not pathlib join): DSN
+    # paths are URI-shaped and libpq/psycopg accept forward slashes on every
+    # platform, including native Windows. Using the raw DB_TLS_DIR string keeps
+    # this stable across OSes instead of pathlib re-normalizing separators.
+    return {"sslmode": "verify-full", "sslrootcert": f"{dir_str}/ca.crt",
+            "sslcert": f"{dir_str}/client.crt", "sslkey": f"{dir_str}/client.key"}
+
+
+def _apply_tls(dsn: str, tls: dict[str, str]) -> str:
+    """Strip any pre-existing sslmode/ssl* query params and append the TLS ones."""
+    parts = urlsplit(dsn)
+    kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if not (k == "sslmode" or k.startswith("ssl"))]
+    kept.extend(tls.items())
+    # safe chars keep file-path separators (POSIX "/" and Windows "\") and
+    # drive-letter colons readable in the DSN instead of percent-encoded
+    # (libpq parses either, but unescaped is what operators expect in logs).
+    query = urlencode(kept, safe="/:\\")
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+
+
 def resolve_dsn(dsn: str | None = None) -> str:
-    """Return an explicit DSN, else DATABASE_URL from the environment."""
+    """Return an explicit DSN, else DATABASE_URL from the environment.
+
+    When ``DB_TLS_CA_PEM``/``DB_TLS_CERT_PEM``/``DB_TLS_KEY_PEM`` are set, the
+    PEMs are materialized to disk (see ``_materialize_tls``) and the resolved
+    DSN gets verify-full mTLS query params appended, regardless of whether the
+    DSN came from the explicit argument or DATABASE_URL.
+    """
     dsn = dsn or os.getenv("DATABASE_URL")
     if not dsn:
         raise RuntimeError("no DSN: pass dsn=... or set DATABASE_URL")
+    tls = _materialize_tls()
+    if tls:
+        dsn = _apply_tls(dsn, tls)
     return dsn
 
 
