@@ -20,7 +20,7 @@ def _materialize_tls() -> dict[str, str] | None:
     ca, crt, key = (os.getenv(v) for v in ("DB_TLS_CA_PEM", "DB_TLS_CERT_PEM", "DB_TLS_KEY_PEM"))
     if not (ca and crt and key):
         return None
-    dir_str = os.getenv("DB_TLS_DIR", "/tmp/db-tls")
+    dir_str = os.getenv("DB_TLS_DIR", "/tmp/db-tls").rstrip("/")
     d = Path(dir_str)
     d.mkdir(parents=True, exist_ok=True)
     (d / "ca.crt").write_text(ca)
@@ -37,7 +37,15 @@ def _materialize_tls() -> dict[str, str] | None:
 
 
 def _apply_tls(dsn: str, tls: dict[str, str]) -> str:
-    """Strip any pre-existing sslmode/ssl* query params and append the TLS ones."""
+    """Strip any pre-existing sslmode/ssl* query params and append the TLS ones.
+
+    NOTE: passwords in DATABASE_URL must be URL-encoded (e.g. "/" -> "%2F",
+    "@" -> "%40"). urlsplit/urlunsplit only split/rejoin the DSN around
+    delimiters — they never percent-decode or re-encode the netloc — so an
+    already-encoded userinfo section round-trips byte-identical here. Task 9
+    wires the Railway envs; the live `timescale-worker-writer` password
+    contains "/" and must be encoded before it reaches DATABASE_URL.
+    """
     parts = urlsplit(dsn)
     kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
             if not (k == "sslmode" or k.startswith("ssl"))]
