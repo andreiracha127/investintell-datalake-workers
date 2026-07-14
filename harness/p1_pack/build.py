@@ -61,13 +61,11 @@ DATASET_NAMESPACE = "lake://certified-input-packs/open_macro_v03/p1"
 # recomputed live at build time and cross-checked against this pin.
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 
-# The commit that froze the committed P1 source snapshots
-# (fixtures/p1_sources/open_macro_v03_002/, o export corrigido pós-cutover).
-# Pinned as a constant so rebuilds are byte-deterministic regardless of the
-# live HEAD; the pack is a pure transform of those snapshots. The P1 export
-# SOURCE.json carries the fuller export provenance
-# (SQL/params/rowcounts/per-table sha256) through verbatim.
+# The corrected snapshot and pack-003 builder live at separate reachable
+# commits. Keep their identities distinct instead of presenting the snapshot
+# fallback as the builder commit.
 SNAPSHOT_SOURCE_COMMIT = "e76d4822f09e8780eafed838bfdaf51c0b9750fc"
+BUILDER_COMMIT = "15b201c248f070873039e397412d2790548558e6"
 
 GOVERNANCE_PINS: dict[str, Any] = {
     "A5": "blocked",
@@ -298,13 +296,14 @@ def build_pack(
 
     # --- SOURCE.json: carry P1 export provenance through + builder provenance ---
     code_sha256 = builder_code_sha256()
-    builder_commit = str(export.get("source_commit") or SNAPSHOT_SOURCE_COMMIT)
+    source_commit = str(export.get("source_commit") or SNAPSHOT_SOURCE_COMMIT)
+    builder_commit = BUILDER_COMMIT
     source_payload = {
         "builder_code_sha256": code_sha256,
         "builder_commit": builder_commit,
         "builder_name": BUILDER_NAME,
         "source_repo": SOURCE_REPO,
-        "source_commit": builder_commit,
+        "source_commit": source_commit,
         "p1_export": export,
     }
     write_json(output_dir / "SOURCE.json", source_payload)
@@ -330,7 +329,7 @@ def build_pack(
                     "export_id": export_id,
                 }
             ],
-            "sources": [{"source_repo": SOURCE_REPO, "source_commit": builder_commit}],
+            "sources": [{"source_repo": SOURCE_REPO, "source_commit": source_commit}],
         },
     )
 
@@ -348,7 +347,7 @@ def build_pack(
         "as_of": as_of_str,
         "contract_bundle_sha256": contract_bundle_sha256(),
         "source_repo": SOURCE_REPO,
-        "source_commit": builder_commit,
+        "source_commit": source_commit,
         "builder_commit": builder_commit,
         "builder_code_sha256": code_sha256,
         "source_export_id": export_id,

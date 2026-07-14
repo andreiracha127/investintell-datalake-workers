@@ -144,6 +144,54 @@ def test_builder_carries_p1_export_provenance(tmp_path):
     source = _read(out / "SOURCE.json")
     assert source["p1_export"]["export_id"] == "tiny_export_001"
     assert source["builder_name"] == "certified-input-pack-builder-p1"
+    assert source["source_commit"] == "abcdef1234567890abcdef1234567890abcdef12"
+    assert source["builder_commit"] == p1_build.BUILDER_COMMIT
+
+
+def test_builder_provenance_pins_reachable_source_and_builder_commits():
+    pins = (
+        (p1_build.SNAPSHOT_SOURCE_COMMIT, "fixtures/p1_sources/open_macro_v03_002/SOURCE.json"),
+        (p1_build.BUILDER_COMMIT, "harness/p1_pack/build.py"),
+    )
+    for commit, path in pins:
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+            cwd=ROOT,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=True,
+        )
+
+    builder_source = subprocess.run(
+        ["git", "show", f"{p1_build.BUILDER_COMMIT}:harness/p1_pack/build.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert 'INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"' in builder_source
+
+
+def test_builder_keeps_snapshot_fallback_separate_from_builder_commit(tmp_path):
+    src = _tiny_sources(tmp_path)
+    export = _read(src / "SOURCE.json")
+    del export["source_commit"]
+    (src / "SOURCE.json").write_text(json.dumps(export), encoding="utf-8")
+
+    out = tmp_path / "pack"
+    p1_build.build_pack(sources=src, out=out)
+
+    source = _read(out / "SOURCE.json")
+    manifest = _read(out / "manifest.json")
+    provenance = _read(out / "provenance.json")
+    assert source["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert manifest["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert provenance["sources"][0]["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert source["builder_commit"] == p1_build.BUILDER_COMMIT
+    assert manifest["builder_commit"] == p1_build.BUILDER_COMMIT
 
 
 def test_builder_output_verifies(tmp_path):
