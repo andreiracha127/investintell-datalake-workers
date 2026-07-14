@@ -22,6 +22,10 @@ ROOT = Path(__file__).resolve().parents[1]
 P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03_002"
 REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
+CERTIFIED_PACK_IDENTITIES = (
+    ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
+    ("open_macro_v03_certified_input_pack_003", "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"),
+)
 
 
 def _read(path: Path):
@@ -264,6 +268,14 @@ def test_real_pack_manifest_satisfies_embedded_schema():
         _read(REAL_PACK / "manifest.json"),
         _read(REAL_PACK / "schemas" / "input_pack_manifest.schema.json"),
     )
+
+
+@pytest.mark.parametrize(("pack_id", "pack_sha256"), CERTIFIED_PACK_IDENTITIES)
+def test_verifier_reports_verified_pack_identity(pack_id, pack_sha256):
+    result = p1_verifier.verify_pack(ROOT / "fixtures" / "p1_packs" / pack_id)
+
+    assert result["ok"], json.dumps(result, indent=2)
+    assert (result["input_pack_id"], result["actual_input_pack_sha256"]) == (pack_id, pack_sha256)
 
 
 def test_real_pack_governance_pins(real_manifest):

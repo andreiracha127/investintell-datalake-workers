@@ -26,6 +26,10 @@ from harness.phase0q import decision, metrics, pit, runner, sleeve
 ROOT = Path(__file__).resolve().parents[1]
 PACK_DIR = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
 EVIDENCE_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_metric_evidence_001"
+CERTIFIED_PACK_IDENTITIES = (
+    ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
+    ("open_macro_v03_certified_input_pack_003", "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -558,6 +562,18 @@ def _fast_config():
 @pytest.fixture(scope="module")
 def fast_run():
     return runner.run_harness(PACK_DIR, _fast_config())
+
+
+@pytest.mark.parametrize(("pack_id", "pack_sha256"), CERTIFIED_PACK_IDENTITIES)
+def test_verified_pack_identity_propagates_to_gate_report(pack_id, pack_sha256, fast_run):
+    pack = runner.load_and_verify_pack(ROOT / "fixtures" / "p1_packs" / pack_id)
+    report = runner.build_gate_report(pack, _fast_config(), fast_run["cells"], folds=[])
+
+    assert (pack.input_pack_id, pack.input_pack_sha256) == (pack_id, pack_sha256)
+    assert (
+        report["provenance"]["input_pack_id"],
+        report["provenance"]["input_pack_sha256"],
+    ) == (pack_id, pack_sha256)
 
 
 def test_runner_result_validates_against_v2_contract_schema(fast_run):

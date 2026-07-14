@@ -504,6 +504,7 @@ def verify_pack(pack_dir: str | Path) -> dict[str, Any]:
 
     return {
         "ok": ok,
+        "input_pack_id": manifest.get("input_pack_id"),
         "parse_errors": parse_errors,
         "missing_required_files": missing_required_files,
         "missing_required_dirs": missing_required_dirs,
