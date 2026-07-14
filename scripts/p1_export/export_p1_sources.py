@@ -33,21 +33,29 @@ from typing import Any, Mapping, Sequence
 from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
 
-EXPORT_ID = "open_macro_v03_p1_sources_001"
+EXPORT_ID = "open_macro_v03_p1_sources_002"
 PINNED_DB_SERVICE_ID = "t83f4np6x4"
+# Post-cutover (Plano 2c, executado 2026-07-14) o data-lake de produção é o
+# TimescaleDB no VM gcloud timescale-sp atrás do NLB mTLS; o service id Tiger
+# permanece aceito para que re-exports históricos continuem reproduzíveis.
+PINNED_GCLOUD_NLB_HOST = "35.247.237.1"
 DB_SOURCE = f"tiger_{PINNED_DB_SERVICE_ID}"
 
 
 def assert_pinned_db_source(dsn: str) -> str:
-    """Refuse to stamp prod provenance unless the DSN references the pinned
-    Tiger service. A staging/local export must never be indistinguishable
+    """Refuse to stamp prod provenance unless the DSN references one of the
+    pinned production databases (legacy Tiger service or the GCloud
+    timescale-sp NLB). A staging/local export must never be indistinguishable
     from a prod export in SOURCE.json."""
-    if PINNED_DB_SERVICE_ID not in dsn:
-        raise SystemExit(
-            "refusing export: DSN does not reference pinned Tiger service "
-            f"{PINNED_DB_SERVICE_ID}; SOURCE.json provenance would be false"
-        )
-    return DB_SOURCE
+    if PINNED_DB_SERVICE_ID in dsn:
+        return f"tiger_{PINNED_DB_SERVICE_ID}"
+    if PINNED_GCLOUD_NLB_HOST in dsn:
+        return f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+    raise SystemExit(
+        "refusing export: DSN references neither the pinned Tiger service "
+        f"{PINNED_DB_SERVICE_ID} nor the pinned GCloud NLB "
+        f"{PINNED_GCLOUD_NLB_HOST}; SOURCE.json provenance would be false"
+    )
 SCHEMA_VERSION = 1
 
 # Reference sleeve tickers pinned by
@@ -171,7 +179,7 @@ def _table_provenance(*, table: str, file_bytes: bytes, rows: Sequence[Mapping[s
 
 
 def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
-                      now: dt.datetime) -> dict[str, Any]:
+                      now: dt.datetime, db_source: str = DB_SOURCE) -> dict[str, Any]:
     """Export the P1 source snapshots into ``out_dir`` and return SOURCE.json.
 
     ``conn`` is any connection-like object exposing ``cursor()`` (psycopg in
@@ -200,7 +208,7 @@ def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
     source = {
         "export_id": EXPORT_ID,
         "exported_at": _utc_iso(now),
-        "db_source": DB_SOURCE,
+        "db_source": db_source,
         "as_of": as_of.isoformat(),
         "runtime_activation": False,
         "A5": "blocked",
@@ -241,10 +249,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     from src import db
 
     dsn = db.resolve_dsn()
-    assert_pinned_db_source(dsn)
+    db_source = assert_pinned_db_source(dsn)
     conn = db.connect(dsn)
     try:
-        source = export_p1_sources(conn, Path(args.out), as_of=as_of, now=now)
+        source = export_p1_sources(conn, Path(args.out), as_of=as_of, now=now,
+                                   db_source=db_source)
     finally:
         conn.close()
 
