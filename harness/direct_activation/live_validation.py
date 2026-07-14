@@ -38,7 +38,7 @@ VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
 PRICE_OVERLAP_START = _dt.date(2026, 6, 26)  # delta re-exports the pack price tail from here
 CHAIN_START = _dt.date(2014, 3, 1)
-PACK_SHA256_PIN = "de88eda3901672a81a7c58b1e4375de1fb7c7fe4679cbd64e9c68b76ae6fd4fa"
+PACK_SHA256_PIN = "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
 
 # The SEED macro basket the decision consumes (imported from SEED_SOURCES, the one

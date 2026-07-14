@@ -39,6 +39,17 @@ from src.input_packs.p0_contract import TableSpec, normalize_row, row_sort_key
 
 from .contract import P1_TABLE_SPECS
 
+# Identidade do pack CERTIFICADO corrente (importada por consumidores de runtime,
+# ex. harness/phase0q/runner). A verificação aceita qualquer pack do REGISTRO de
+# packs certificados (o _002 histórico permanece verificável para replay de
+# evidência; o _003 é o corrente com a base pré-cut corrigida — re-certificação
+# de 2026-07-14 sob autoridade delegada pelo quant owner). Anti-swap: quando o
+# pack está num diretório com nome canônico de pack, o manifest DEVE declarar
+# exatamente essa identidade — um manifest não pode fingir ser outro pack.
+CERTIFIED_PACK_VERSIONS: dict[str, int] = {
+    "open_macro_v03_certified_input_pack_002": 2,
+    "open_macro_v03_certified_input_pack_003": 3,
+}
 INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
 INPUT_PACK_VERSION = 3
 
@@ -289,12 +300,20 @@ def _verify_expected_p1_content(
     component_payloads: dict[str, dict[str, Any]],
 ) -> list[str]:
     errors: list[str] = []
-    if manifest.get("input_pack_id") != INPUT_PACK_ID:
-        errors.append(f"manifest.json: expected input_pack_id {INPUT_PACK_ID}, got {manifest.get('input_pack_id')!r}")
-    if manifest.get("input_pack_version") != INPUT_PACK_VERSION:
+    pack_id = manifest.get("input_pack_id")
+    if pack_id not in CERTIFIED_PACK_VERSIONS:
         errors.append(
-            f"manifest.json: expected input_pack_version {INPUT_PACK_VERSION}, got {manifest.get('input_pack_version')!r}"
-        )
+            f"manifest.json: input_pack_id {pack_id!r} is not a certified pack id "
+            f"(expected one of {sorted(CERTIFIED_PACK_VERSIONS)})")
+    elif manifest.get("input_pack_version") != CERTIFIED_PACK_VERSIONS[pack_id]:
+        errors.append(
+            f"manifest.json: expected input_pack_version {CERTIFIED_PACK_VERSIONS[pack_id]}, "
+            f"got {manifest.get('input_pack_version')!r}")
+    dir_name = Path(root).resolve().name
+    if dir_name in CERTIFIED_PACK_VERSIONS and pack_id != dir_name:
+        errors.append(
+            f"manifest.json: input_pack_id {pack_id!r} does not match its committed "
+            f"directory {dir_name!r} (a manifest cannot impersonate another pack)")
     if manifest.get("contract_bundle_sha256") != CONTRACT_BUNDLE_SHA256:
         errors.append(
             f"manifest.json: expected contract_bundle_sha256 {CONTRACT_BUNDLE_SHA256}, "

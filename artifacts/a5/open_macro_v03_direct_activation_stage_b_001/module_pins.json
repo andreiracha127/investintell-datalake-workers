@@ -1,8 +1,8 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "c6367298193ed385a6da3d4337536dfa8b1a5865a1b6a7cb6bcebad91c883d8c",
+ "module_pins_sha256": "252377cade658f70ff66c4ececaa94f4061af7c6af8d386995174db744b51a1b",
  "modules": {
-  "harness/direct_activation/live_validation.py": "59d65b760f791d51f3646f10678dab5f071d12c546da324338c8c0cb20a2469d",
+  "harness/direct_activation/live_validation.py": "ab92d3dfb22bade24ff08adfbe1524e056e6684d80730c6e1a31f0e24dcc1211",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
@@ -22,7 +22,7 @@
  "pack": {
   "canonical_snapshot_sha256": "e4704f1072d304f42ffb2ab43832dc892b6f4cddd70c0d85f7042fe96f3bb874",
   "input_pack_id": "open_macro_v03_certified_input_pack_003",
-  "input_pack_sha256": "de88eda3901672a81a7c58b1e4375de1fb7c7fe4679cbd64e9c68b76ae6fd4fa"
+  "input_pack_sha256": "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"
  },
  "schema_version": 1,
  "stage": "B",

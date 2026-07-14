@@ -18,8 +18,8 @@ from harness.p1_pack import verifier as p1_verifier
 from harness.p1_pack.contract import P1_TABLE_SPECS, P1_TABLES_BY_NAME
 
 ROOT = Path(__file__).resolve().parents[1]
-P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03"
-REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03_002"
+REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 
 
@@ -123,8 +123,8 @@ def test_builder_pins_v2_bundle_and_governance(tmp_path):
     result = p1_build.build_pack(sources=src, out=out)
     manifest = _read(out / "manifest.json")
     assert manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
-    assert manifest["input_pack_version"] == 2
-    assert manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
+    assert manifest["input_pack_version"] == 3
+    assert manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
     assert manifest["A5"] == "blocked"
     assert manifest["runtime_activation"] is False
     assert manifest["activation_allowed"] is False
@@ -211,8 +211,8 @@ def test_real_pack_verifies():
 
 
 def test_real_pack_governance_pins(real_manifest):
-    assert real_manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
-    assert real_manifest["input_pack_version"] == 2
+    assert real_manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
+    assert real_manifest["input_pack_version"] == 3
     assert real_manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
     assert real_manifest["A5"] == "blocked"
     assert real_manifest["runtime_activation"] is False
@@ -369,5 +369,5 @@ def test_cli_builds_pack(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
+    assert payload["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
     assert p1_verifier.verify_pack(out)["ok"]
