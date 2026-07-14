@@ -39,8 +39,8 @@ from src.input_packs.p0_contract import TableSpec, normalize_row, row_sort_key
 
 from .contract import P1_TABLE_SPECS
 
-INPUT_PACK_ID = "open_macro_v03_certified_input_pack_002"
-INPUT_PACK_VERSION = 2
+INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
+INPUT_PACK_VERSION = 3
 
 REQUIRED_FILES: tuple[str, ...] = (
     "manifest.json",

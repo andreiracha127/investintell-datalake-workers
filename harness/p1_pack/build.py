@@ -50,8 +50,8 @@ from src.input_packs.p0_contract import (
 from .contract import P1_TABLE_SPECS
 
 PROFILE = "open_macro_v03"
-INPUT_PACK_ID = "open_macro_v03_certified_input_pack_002"
-INPUT_PACK_VERSION = 2
+INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
+INPUT_PACK_VERSION = 3
 SCHEMA_VERSION = "v2"
 SOURCE_REPO = "investintell-datalake-workers"
 BUILDER_NAME = "certified-input-pack-builder-p1"
@@ -62,11 +62,12 @@ DATASET_NAMESPACE = "lake://certified-input-packs/open_macro_v03/p1"
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 
 # The commit that froze the committed P1 source snapshots
-# (fixtures/p1_sources/open_macro_v03/). Pinned as a constant so rebuilds are
-# byte-deterministic regardless of the live HEAD; the pack is a pure transform of
-# those snapshots. The P1 export SOURCE.json carries the fuller export provenance
+# (fixtures/p1_sources/open_macro_v03_002/, o export corrigido pós-cutover).
+# Pinned as a constant so rebuilds are byte-deterministic regardless of the
+# live HEAD; the pack is a pure transform of those snapshots. The P1 export
+# SOURCE.json carries the fuller export provenance
 # (SQL/params/rowcounts/per-table sha256) through verbatim.
-SNAPSHOT_SOURCE_COMMIT = "fd5916ccd0011dc49b4e1276fbc20c573911339e"
+SNAPSHOT_SOURCE_COMMIT = "e76d4822f09e8780eafed838bfdaf51c0b9750fc"
 
 GOVERNANCE_PINS: dict[str, Any] = {
     "A5": "blocked",

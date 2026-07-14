@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CertifiedInputPackSourceV2",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "source_repo": { "const": "investintell-datalake-workers" },
+    "source_commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "builder_commit": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+    "builder_code_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "builder_name": { "type": "string", "minLength": 1 },
+    "p1_export": {
+      "type": "object",
+      "description": "The point-in-time P1 export SOURCE.json carried through verbatim (SQL, params, rowcounts, per-table sha256, export_id, db_source)."
+    }
+  },
+  "required": ["source_repo", "source_commit", "builder_commit", "builder_code_sha256", "builder_name", "p1_export"]
+}

@@ -30,7 +30,7 @@ from harness.phase0q import sleeve as sleeve_mod
 from src.macro_sources import SEED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[2]
-PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
 SNAPSHOT = STAGE_A / "input_snapshot"
 
@@ -38,7 +38,7 @@ VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
 PRICE_OVERLAP_START = _dt.date(2026, 6, 26)  # delta re-exports the pack price tail from here
 CHAIN_START = _dt.date(2014, 3, 1)
-PACK_SHA256_PIN = "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
+PACK_SHA256_PIN = "de88eda3901672a81a7c58b1e4375de1fb7c7fe4679cbd64e9c68b76ae6fd4fa"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
 
 # The SEED macro basket the decision consumes (imported from SEED_SOURCES, the one

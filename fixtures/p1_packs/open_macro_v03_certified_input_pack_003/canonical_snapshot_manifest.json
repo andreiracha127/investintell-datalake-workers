@@ -1,0 +1,36 @@
+{
+  "artifacts": [
+    {
+      "columns": [
+        "series_id",
+        "observation_period",
+        "vintage_date",
+        "value",
+        "available_at",
+        "revision_number",
+        "source",
+        "source_spec_version"
+      ],
+      "dataset_name": "canonical_macro_observation_vintage",
+      "path": "data/canonical/macro_observation_vintage.json",
+      "rows": 70753,
+      "sha256": "6c4cb11f9009336c20c1fa06a6167f420f75fd14e6701702ea832877f153ecb6"
+    },
+    {
+      "columns": [
+        "ticker",
+        "date",
+        "close",
+        "adjusted_close",
+        "volume"
+      ],
+      "dataset_name": "canonical_eod_prices",
+      "path": "data/canonical/eod_prices.json",
+      "rows": 35449,
+      "sha256": "bff53c8447895d2f67956464ef3dc6ed3fa3fec708b6c0f3671c12f5628ad5f2"
+    }
+  ],
+  "as_of": "2026-06-30",
+  "schema_version": "v2",
+  "snapshot_kind": "canonical"
+}

@@ -144,7 +144,7 @@ def test_worker_owns_the_pin_policy_and_matches_the_builder():
 def test_module_pins_pack_matches_certified_pack():
     pins = _load_json(PINS)
     manifest = json.loads(
-        (ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+        (ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
          / "manifest.json").read_text(encoding="utf-8"))
     assert pins["pack"]["input_pack_sha256"] == manifest["input_pack_sha256"]
     assert pins["pack"]["canonical_snapshot_sha256"] == manifest["canonical_snapshot_sha256"]
