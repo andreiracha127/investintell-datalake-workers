@@ -24,7 +24,7 @@ REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pac
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 CERTIFIED_PACK_IDENTITIES = (
     ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
-    ("open_macro_v03_certified_input_pack_003", "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"),
+    ("open_macro_v03_certified_input_pack_003", "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad"),
 )
 
 

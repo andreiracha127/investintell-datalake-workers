@@ -1,12 +1,12 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "252377cade658f70ff66c4ececaa94f4061af7c6af8d386995174db744b51a1b",
+ "module_pins_sha256": "37906703a63e9fb375223c08c6c550f5616ea397edb79f65d11fd4933790c5d4",
  "modules": {
-  "harness/direct_activation/live_validation.py": "ab92d3dfb22bade24ff08adfbe1524e056e6684d80730c6e1a31f0e24dcc1211",
+  "harness/direct_activation/live_validation.py": "178419d6260db28d3ab120a80484cdf871a446643903bcfbc1a46de181b133c8",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
-  "scripts/p1_export/export_p1_sources.py": "5cc31eec339c8f0e240d26f2e136200b22d321cf6cfd7360bce399a47b6b7927",
+  "scripts/p1_export/export_p1_sources.py": "4e6d34a164557c41353f61f8d0286501ab1a6485bff55809835987193e006e22",
   "src/input_packs/hashing.py": "44b72054e17662dcb27299b24d5b07736f6ae7f6e66e68a9317be593c8d29064",
   "src/input_packs/manifest.py": "03430d868cc8d32f519796d40ccaa22b0cdc3d3dba3c4ed29f6312e5ff0552c0",
   "src/input_packs/p0_contract.py": "0b6402ccad8cbcbcebc777b07f96ad6d06b4fd2288edde3f88d350d2eec112dc",
@@ -22,7 +22,7 @@
  "pack": {
   "canonical_snapshot_sha256": "e4704f1072d304f42ffb2ab43832dc892b6f4cddd70c0d85f7042fe96f3bb874",
   "input_pack_id": "open_macro_v03_certified_input_pack_003",
-  "input_pack_sha256": "b5faec3decdea709e5955e6b9bb1fdfb11dc33d2ba46b9641949f871f3df9ea7"
+  "input_pack_sha256": "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad"
  },
  "schema_version": 1,
  "stage": "B",
