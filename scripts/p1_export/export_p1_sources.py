@@ -29,6 +29,7 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit
 
 from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
@@ -49,7 +50,11 @@ def assert_pinned_db_source(dsn: str) -> str:
     from a prod export in SOURCE.json."""
     if PINNED_DB_SERVICE_ID in dsn:
         return f"tiger_{PINNED_DB_SERVICE_ID}"
-    if PINNED_GCLOUD_NLB_HOST in dsn:
+    try:
+        dsn_host = urlsplit(dsn).hostname
+    except ValueError:
+        dsn_host = None
+    if dsn_host == PINNED_GCLOUD_NLB_HOST:
         return f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
     raise SystemExit(
         "refusing export: DSN references neither the pinned Tiger service "

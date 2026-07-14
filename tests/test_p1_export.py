@@ -287,6 +287,33 @@ def test_assert_pinned_db_source_accepts_tiger_service_dsn():
     assert assert_pinned_db_source(dsn) == "tiger_t83f4np6x4"
 
 
+def test_assert_pinned_db_source_accepts_gcloud_host():
+    from scripts.p1_export.export_p1_sources import (
+        PINNED_GCLOUD_NLB_HOST,
+        assert_pinned_db_source,
+    )
+
+    dsn = f"postgresql://user:secret@{PINNED_GCLOUD_NLB_HOST}:5432/investintell"
+    assert assert_pinned_db_source(dsn) == f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+
+
+def test_assert_pinned_db_source_rejects_gcloud_pin_outside_host():
+    import pytest as _pytest
+
+    from scripts.p1_export.export_p1_sources import (
+        PINNED_GCLOUD_NLB_HOST,
+        assert_pinned_db_source,
+    )
+
+    dsns = (
+        f"postgresql://user:{PINNED_GCLOUD_NLB_HOST}@staging.example.com:5432/investintell",
+        f"postgresql://user:secret@staging.example.com:5432/investintell?target={PINNED_GCLOUD_NLB_HOST}",
+    )
+    for dsn in dsns:
+        with _pytest.raises(SystemExit, match="t83f4np6x4"):
+            assert_pinned_db_source(dsn)
+
+
 def test_assert_pinned_db_source_rejects_foreign_dsn():
     import pytest as _pytest
 
