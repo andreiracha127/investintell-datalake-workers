@@ -143,9 +143,9 @@ def test_source_json_provenance_complete(tmp_path):
     conn, out_dir, _ = _run_export(tmp_path)
     source = _load(out_dir, "SOURCE.json")
 
-    assert source["export_id"] == "open_macro_v03_p1_sources_001"
+    assert source["export_id"] == "open_macro_v03_p1_sources_002"
     assert source["exported_at"] == "2026-07-01T12:00:00+00:00"
-    assert source["db_source"] == "tiger_t83f4np6x4"
+    assert source["db_source"] == "gcloud_timescale_sp_35.247.237.1"
     assert source["as_of"] == "2026-06-30"
     assert source["runtime_activation"] is False
     assert source["A5"] == "blocked"
@@ -277,14 +277,37 @@ def test_eod_sql_selects_only_real_schema_columns():
     assert "adj_close AS adjusted_close" in EOD_PRICES_SQL
 
 
-def test_assert_pinned_db_source_accepts_tiger_service_dsn():
-    """SOURCE.json provenance must only ever be stamped after verifying the DSN
-    actually references the pinned Tiger service (regression: db_source was an
-    unconditional constant, so a staging/local export would carry prod provenance)."""
+def test_assert_pinned_db_source_accepts_gcloud_nlb_dsn():
+    """The corrected _002 export is certified only against the GCloud source."""
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = "postgresql://user:secret@35.247.237.1:5432/investintell_alloc"
+    assert assert_pinned_db_source(dsn) == "gcloud_timescale_sp_35.247.237.1"
+
+
+def test_assert_pinned_db_source_rejects_legacy_tiger_dsn():
     from scripts.p1_export.export_p1_sources import assert_pinned_db_source
 
     dsn = "postgresql://user:secret@t83f4np6x4.abc123.tsdb.cloud.timescale.com:32648/tsdb"
-    assert assert_pinned_db_source(dsn) == "tiger_t83f4np6x4"
+    with pytest.raises(SystemExit, match="corrected export .*_002.*GCloud"):
+        assert_pinned_db_source(dsn)
+
+
+def test_export_id_002_rejects_legacy_tiger_provenance_before_writing(tmp_path):
+    conn = FakeConn(macro_rows=_macro_rows(), eod_rows=_eod_rows())
+    out_dir = tmp_path / "legacy-tiger"
+
+    with pytest.raises(ValueError, match="corrected export .*_002.*GCloud"):
+        p1.export_p1_sources(
+            conn,
+            out_dir,
+            as_of=AS_OF,
+            now=NOW,
+            db_source="tiger_t83f4np6x4",
+        )
+
+    assert conn.executed == []
+    assert not out_dir.exists()
 
 
 def test_assert_pinned_db_source_accepts_gcloud_host():
@@ -310,7 +333,7 @@ def test_assert_pinned_db_source_rejects_gcloud_pin_outside_host():
         f"postgresql://user:secret@staging.example.com:5432/investintell?target={PINNED_GCLOUD_NLB_HOST}",
     )
     for dsn in dsns:
-        with _pytest.raises(SystemExit, match="t83f4np6x4"):
+        with _pytest.raises(SystemExit, match="pinned GCloud NLB"):
             assert_pinned_db_source(dsn)
 
 
@@ -319,7 +342,7 @@ def test_assert_pinned_db_source_rejects_foreign_dsn():
 
     from scripts.p1_export.export_p1_sources import assert_pinned_db_source
 
-    with _pytest.raises(SystemExit, match="t83f4np6x4"):
+    with _pytest.raises(SystemExit, match="35.247.237.1"):
         assert_pinned_db_source("postgresql://user:secret@localhost:5434/investintell_alloc")
 
 
@@ -336,5 +359,5 @@ def test_cli_refuses_to_connect_when_dsn_is_not_pinned(monkeypatch, tmp_path):
 
     monkeypatch.setattr(db, "connect", _must_not_connect)
 
-    with _pytest.raises(SystemExit, match="t83f4np6x4"):
+    with _pytest.raises(SystemExit, match="35.247.237.1"):
         mod.main(["--out", str(tmp_path)])

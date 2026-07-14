@@ -35,31 +35,25 @@ from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
 
 EXPORT_ID = "open_macro_v03_p1_sources_002"
-PINNED_DB_SERVICE_ID = "t83f4np6x4"
 # Post-cutover (Plano 2c, executado 2026-07-14) o data-lake de produção é o
-# TimescaleDB no VM gcloud timescale-sp atrás do NLB mTLS; o service id Tiger
-# permanece aceito para que re-exports históricos continuem reproduzíveis.
+# TimescaleDB no VM gcloud timescale-sp atrás do NLB mTLS. A recertificação
+# _002 corrige vintages pré-cut e, portanto, só é válida para essa origem.
 PINNED_GCLOUD_NLB_HOST = "35.247.237.1"
-DB_SOURCE = f"tiger_{PINNED_DB_SERVICE_ID}"
+DB_SOURCE = f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
 
 
 def assert_pinned_db_source(dsn: str) -> str:
-    """Refuse to stamp prod provenance unless the DSN references one of the
-    pinned production databases (legacy Tiger service or the GCloud
-    timescale-sp NLB). A staging/local export must never be indistinguishable
-    from a prod export in SOURCE.json."""
-    if PINNED_DB_SERVICE_ID in dsn:
-        return f"tiger_{PINNED_DB_SERVICE_ID}"
+    """Refuse to stamp the corrected export unless the DSN is its GCloud source."""
     try:
         dsn_host = urlsplit(dsn).hostname
     except ValueError:
         dsn_host = None
     if dsn_host == PINNED_GCLOUD_NLB_HOST:
-        return f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+        return DB_SOURCE
     raise SystemExit(
-        "refusing export: DSN references neither the pinned Tiger service "
-        f"{PINNED_DB_SERVICE_ID} nor the pinned GCloud NLB "
-        f"{PINNED_GCLOUD_NLB_HOST}; SOURCE.json provenance would be false"
+        f"refusing corrected export {EXPORT_ID}: DSN does not reference "
+        f"the pinned GCloud NLB {PINNED_GCLOUD_NLB_HOST}; SOURCE.json "
+        "provenance would be false"
     )
 SCHEMA_VERSION = 1
 
@@ -190,6 +184,12 @@ def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
     ``conn`` is any connection-like object exposing ``cursor()`` (psycopg in
     the CLI path, a fake in tests). Only SELECT statements are ever issued.
     """
+    if db_source != DB_SOURCE:
+        raise ValueError(
+            f"refusing corrected export {EXPORT_ID}: db_source must be the "
+            f"certified GCloud source {DB_SOURCE}, got {db_source!r}"
+        )
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
