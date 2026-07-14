@@ -142,12 +142,20 @@ def test_worker_owns_the_pin_policy_and_matches_the_builder():
 
 
 def test_module_pins_pack_matches_certified_pack():
+    from harness.direct_activation import build_stage_b_artifacts as builder
+
     pins = _load_json(PINS)
-    manifest = json.loads(
-        (ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
-         / "manifest.json").read_text(encoding="utf-8"))
-    assert pins["pack"]["input_pack_sha256"] == manifest["input_pack_sha256"]
-    assert pins["pack"]["canonical_snapshot_sha256"] == manifest["canonical_snapshot_sha256"]
+    certified_pack = (
+        ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
+    )
+    manifest = json.loads((certified_pack / "manifest.json").read_text(encoding="utf-8"))
+    assert builder.PACK == certified_pack
+    assert pins["pack"] == {
+        "input_pack_id": manifest["input_pack_id"],
+        "input_pack_sha256": manifest["input_pack_sha256"],
+        "canonical_snapshot_sha256": manifest["canonical_snapshot_sha256"],
+    }
+    assert builder.build_module_pins() == pins
 
 
 # --------------------------------------------------------------------------- #

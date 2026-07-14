@@ -9,7 +9,7 @@ Writes two committed artifacts under
 
 * ``module_pins.json`` — the sha256 (CRLF→LF normalized) of EACH consumed pure
   module of the decision chain + sleeve + the P1 export format helpers, plus the
-  pack v2 pins and a ``module_pins_sha256`` over the canonicalized pin block. The
+  pack v3 pins and a ``module_pins_sha256`` over the canonicalized pin block. The
   runtime worker verifies these before any DB access, so a Stage B PR cannot
   silently alter scoring/confidence/hysteresis/source-weights/latch/sleeve behaviour.
 * ``activation_envelope.json`` — the governance envelope INITIALLY FULLY BLOCKED.
@@ -28,7 +28,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_B = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_b_001"
-PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 
 # The FULL transitive closure of the decision-chain pure modules + the harness sleeve
 # + the P1 export format helpers. Every module the runtime worker consumes to compute
