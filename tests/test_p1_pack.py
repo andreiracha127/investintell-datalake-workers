@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from harness.p1_pack import build as p1_build
@@ -208,6 +209,13 @@ def test_real_pack_verifies():
     result = p1_verifier.verify_pack(REAL_PACK)
     assert result["ok"], json.dumps(result, indent=2)
     assert result["input_pack_sha256_match"] is True
+
+
+def test_real_pack_manifest_satisfies_embedded_schema():
+    jsonschema.validate(
+        _read(REAL_PACK / "manifest.json"),
+        _read(REAL_PACK / "schemas" / "input_pack_manifest.schema.json"),
+    )
 
 
 def test_real_pack_governance_pins(real_manifest):

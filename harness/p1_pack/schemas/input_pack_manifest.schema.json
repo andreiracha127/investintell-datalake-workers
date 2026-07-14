@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "CertifiedInputPackManifestV2",
+  "title": "CertifiedInputPackManifestV3",
   "type": "object",
   "additionalProperties": true,
   "properties": {
     "input_pack_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$" },
-    "input_pack_version": { "const": 2 },
+    "input_pack_version": { "const": 3 },
     "as_of": { "type": "string", "format": "date" },
     "contract_bundle_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "source_repo": { "const": "investintell-datalake-workers" },

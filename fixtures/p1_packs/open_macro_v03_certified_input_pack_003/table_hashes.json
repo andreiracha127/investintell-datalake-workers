@@ -35,7 +35,7 @@
       "name": "schema:input_pack_manifest.schema",
       "path": "schemas/input_pack_manifest.schema.json",
       "rows": 0,
-      "sha256": "ffcbdb8c50f6c70b30683aeab0b1038d4d98a5b3a67a98ea71e82980eb526323"
+      "sha256": "bb1f69fce03c1061ca74d9080130623737e17edb22f015ab476d2beb2e99d477"
     },
     {
       "name": "schema:provenance.schema",
