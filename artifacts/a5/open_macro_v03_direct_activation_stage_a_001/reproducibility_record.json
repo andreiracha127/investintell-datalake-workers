@@ -14,157 +14,157 @@
   "clean_tree": true,
   "image_id": "sha256:5ba3baa950a3e03c03f6bd497a6fdf98b5619348b85243ebff85de87483d74c5",
   "tree_hashes": {
-   "harness": "450effc165faed138cf799d7608bcb700bccf0f9",
+   "harness": "75d95a57fb305b46a9a50a2fa5d8c513af85a944",
    "packages": "42f413ed6b1bc854184d3d302c003a8d90ab99f0",
    "qc_a3_core.py": "5bfa9cfb343ac4111ed607402c23b48afe104f3f",
-   "scripts": "3726980a99d3d97de306477ff50500922dbbb1af",
+   "scripts": "4ae9fcad9d5f6894bdbda3a768c982287a6ead2e",
    "services": "5533b947b77b591c90f8966d85c8a6abfcc390f3",
-   "src": "ec94f6e6299fe0256a0ef1a48d221743a176dcb9"
+   "src": "73cd278bfbe734166751c9a0f338eabbb67654b0"
   },
-  "worker_commit": "c79bd8246df8991249a4fa2ba0ca6dbf257a868c"
+  "worker_commit": "50971f45ff94d41c15d250304368635b41c18327"
  },
  "legs": {
   "container": {
-   "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
+   "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
    "runs": [
     {
      "exit_code": 0,
      "index": 0,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079431168,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079406592,
      "platform": "linux",
-     "wall_ms": 129901.64
+     "wall_ms": 90737.497
     },
     {
      "exit_code": 0,
      "index": 1,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079050240,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1080008704,
      "platform": "linux",
-     "wall_ms": 130985.717
+     "wall_ms": 90963.592
     },
     {
      "exit_code": 0,
      "index": 2,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1077796864,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1078804480,
      "platform": "linux",
-     "wall_ms": 117248.598
+     "wall_ms": 89220.165
     },
     {
      "exit_code": 0,
      "index": 3,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1078919168,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1078415360,
      "platform": "linux",
-     "wall_ms": 119043.831
+     "wall_ms": 87331.296
     },
     {
      "exit_code": 0,
      "index": 4,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079734272,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1078730752,
      "platform": "linux",
-     "wall_ms": 123444.686
+     "wall_ms": 89828.978
     },
     {
      "exit_code": 0,
      "index": 5,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079324672,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1078190080,
      "platform": "linux",
-     "wall_ms": 118718.525
+     "wall_ms": 88433.523
     },
     {
      "exit_code": 0,
      "index": 6,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079099392,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1078935552,
      "platform": "linux",
-     "wall_ms": 117675.396
+     "wall_ms": 88624.192
     },
     {
      "exit_code": 0,
      "index": 7,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079615488,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1076654080,
      "platform": "linux",
-     "wall_ms": 118043.698
+     "wall_ms": 89473.027
     }
    ]
   },
   "host": {
-   "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
+   "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
    "runs": [
     {
      "exit_code": 0,
      "index": 0,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1080475648,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079750656,
      "platform": "win32",
-     "wall_ms": 125158.737
+     "wall_ms": 90428.735
     },
     {
      "exit_code": 0,
      "index": 1,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079717888,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1080307712,
      "platform": "win32",
-     "wall_ms": 118154.575
+     "wall_ms": 90687.03
     },
     {
      "exit_code": 0,
      "index": 2,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079939072,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079062528,
      "platform": "win32",
-     "wall_ms": 119706.565
+     "wall_ms": 92496.796
     },
     {
      "exit_code": 0,
      "index": 3,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1080250368,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079840768,
      "platform": "win32",
-     "wall_ms": 121902.822
+     "wall_ms": 92007.334
     },
     {
      "exit_code": 0,
      "index": 4,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1080000512,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079767040,
      "platform": "win32",
-     "wall_ms": 122517.929
+     "wall_ms": 90897.905
     },
     {
      "exit_code": 0,
      "index": 5,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1080160256,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079308288,
      "platform": "win32",
-     "wall_ms": 120839.697
+     "wall_ms": 90032.646
     },
     {
      "exit_code": 0,
      "index": 6,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1080029184,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1080000512,
      "platform": "win32",
-     "wall_ms": 118923.691
+     "wall_ms": 90463.247
     },
     {
      "exit_code": 0,
      "index": 7,
-     "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
-     "memory_peak_bytes": 1079689216,
+     "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
+     "memory_peak_bytes": 1079615488,
      "platform": "win32",
-     "wall_ms": 119823.117
+     "wall_ms": 90845.897
     }
    ]
   }
  },
- "live_validation_record_sha256": "bb7a48e1ce0156fe73e13c5f96ce0b16d7763204ff303b381bbe725da5b364ba",
- "logical_output_hash": "91f019ffc61b8c18a6586cba93390ab268c78c4c41ac69804eb05bd05af6d760",
+ "live_validation_record_sha256": "9816799b296cae1c8e9e116f287b2dfb5e0939f087dc02536d41de744919dcdb",
+ "logical_output_hash": "4e41108a102aad01e4868eb8046f98f37851bb4c19c21e07488d523ff048c69b",
  "mismatch_count": 0,
  "runs_per_leg": 8,
  "runs_total": 16,
