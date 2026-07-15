@@ -7,11 +7,16 @@ class _FakeCursor:
     def __exit__(self, *a): return False
     def execute(self, sql, params=None):
         self._sink.setdefault("sql", []).append(sql)
+        self._sink.setdefault("events", []).append(("sql", sql))
+        if self._sink.get("fail_on") and self._sink["fail_on"] in sql:
+            raise RuntimeError("refresh failed")
     def fetchone(self): return (True,)
 
 
 class _FakeConn:
-    def __init__(self, sink, tag): self._sink = sink; self._tag = tag
+    def __init__(self, sink, tag):
+        self._sink = sink
+        self._tag = tag
     def __enter__(self): return self
     def __exit__(self, *a): return False
     def cursor(self): return _FakeCursor(self._sink)
@@ -26,6 +31,12 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         return _FakeConn(sink, dsn)
 
     monkeypatch.setattr(mr, "connect", _fake_connect)
+    monkeypatch.setattr(
+        mr.market_overview_snapshot,
+        "run",
+        lambda dsn: sink.setdefault("events", []).append(("snapshot", dsn))
+        or {"published": 1, "as_of": "2026-07-13"},
+    )
     result = mr.run("postgres://app", datalake_dsn="postgres://lake")
 
     joined = "\n".join(sink["sql"])
@@ -53,6 +64,14 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         "stock_fund_holders_mv",
         "holding_reverse_lookup_mv",
     ]
+    assert result["market_overview_snapshot"] == {
+        "published": 1,
+        "as_of": "2026-07-13",
+    }
+    event_names = [event[0] for event in sink["events"]]
+    snapshot_index = event_names.index("snapshot")
+    assert "fund_top_holdings_mv" in sink["events"][snapshot_index - 1][1]
+    assert "stock_institutional_holders_mv" in sink["events"][snapshot_index + 1][1]
 
 
 def test_datalake_step_skipped_when_no_dsn(monkeypatch):
@@ -63,5 +82,58 @@ def test_datalake_step_skipped_when_no_dsn(monkeypatch):
         return _FakeConn(sink, dsn)
 
     monkeypatch.setattr(mr, "connect", _fake_connect)
+    monkeypatch.setattr(
+        mr.market_overview_snapshot,
+        "run",
+        lambda dsn: {"published": 1, "as_of": "2026-07-13"},
+    )
     result = mr.run("postgres://app", datalake_dsn=None)
     assert result["refreshed_datalake"] == []
+    assert result["market_overview_snapshot"]["published"] == 1
+
+
+def test_app_mv_failure_prevents_snapshot_publication(monkeypatch):
+    sink: dict = {"fail_on": "nav_latest_mv"}
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        return _FakeConn(sink, dsn)
+
+    called = {"snapshot": False}
+    monkeypatch.setattr(mr, "connect", _fake_connect)
+    monkeypatch.setattr(
+        mr.market_overview_snapshot,
+        "run",
+        lambda dsn: called.__setitem__("snapshot", True),
+    )
+
+    try:
+        mr.run("postgres://app", datalake_dsn="postgres://lake")
+    except RuntimeError as exc:
+        assert str(exc) == "refresh failed"
+    else:
+        raise AssertionError("MV failure must propagate")
+
+    assert called["snapshot"] is False
+    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])
+
+
+def test_snapshot_failure_propagates_before_datalake_refresh(monkeypatch):
+    sink: dict = {}
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        return _FakeConn(sink, dsn)
+
+    def _fail_snapshot(dsn):
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(mr, "connect", _fake_connect)
+    monkeypatch.setattr(mr.market_overview_snapshot, "run", _fail_snapshot)
+
+    try:
+        mr.run("postgres://app", datalake_dsn="postgres://lake")
+    except RuntimeError as exc:
+        assert str(exc) == "snapshot failed"
+    else:
+        raise AssertionError("snapshot failure must propagate")
+
+    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])

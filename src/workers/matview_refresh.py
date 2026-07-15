@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 
 from src.db import LOCK_MATVIEW_REFRESH, advisory_lock, connect
+from src.workers import market_overview_snapshot
 
 _APP_MVS = [
     "price_latest_mv",
@@ -52,7 +53,12 @@ def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
             if not got:
                 return {"refreshed": [], "refreshed_datalake": [], "skipped": "lock_busy"}
             refreshed = _refresh_all(dsn, _APP_MVS)
+            snapshot_stats = market_overview_snapshot.run(dsn)
             refreshed_datalake: list[str] = []
             if datalake_dsn:
                 refreshed_datalake = _refresh_all(datalake_dsn, _DATALAKE_MVS)
-            return {"refreshed": refreshed, "refreshed_datalake": refreshed_datalake}
+            return {
+                "refreshed": refreshed,
+                "market_overview_snapshot": snapshot_stats,
+                "refreshed_datalake": refreshed_datalake,
+            }
