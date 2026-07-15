@@ -33,7 +33,7 @@ ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
 # The clean source commit used for this prepared upload namespace.
-HARNESS_COMMIT = "d1a35b72bfe99cd2309f2c791853597206e902ed"
+HARNESS_COMMIT = "130b754bdbf06ab92f80075933e8b9784bba3a27"
 STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 
 
