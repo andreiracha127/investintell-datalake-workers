@@ -27,6 +27,7 @@ from typing import Any
 
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
+from scripts.p1_export.export_p1_sources import DB_SOURCE as P1_DB_SOURCE
 from src.macro_sources import SEED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,8 +55,10 @@ EXPECTED_SEED_SERIES = tuple(sorted(spec.series_id for spec in SEED_SOURCES))
 DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_ARTIFACT_TYPE = "direct_activation_input_snapshot_manifest"
-DB_SERVICE_ID = "t83f4np6x4"
+DB_SERVICE_ID = P1_DB_SOURCE
 DB_SOURCE = "production datalake (read-only)"
+DB_NAME = "market"
+DB_SCHEMA = "public"
 DB_TABLES = ["eod_prices", "macro_observation_vintage"]
 
 # staleness criteria (Phase 1 staleness_verification_record semantics)
@@ -168,6 +171,8 @@ def verify_snapshot_manifest(manifest: dict[str, Any], delta_vintages: list[dict
         "provenance": {
             "source": DB_SOURCE,
             "db_service_id": DB_SERVICE_ID,
+            "db_name": DB_NAME,
+            "db_schema": DB_SCHEMA,
             "tables": DB_TABLES,
         },
     }

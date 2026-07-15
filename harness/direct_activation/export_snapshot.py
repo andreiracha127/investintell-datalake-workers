@@ -40,6 +40,8 @@ from typing import Any, Mapping
 
 from harness.direct_activation import live_validation as _lv
 from scripts.p1_export.export_p1_sources import (
+    DB_SOURCE as P1_DB_SOURCE,
+    PINNED_GCLOUD_NLB_HOST,
     _as_of_end_utc,
     _execute_select,
     format_eod_price_rows,
@@ -52,16 +54,12 @@ VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PRICE_OVERLAP_START = _dt.date(2026, 6, 26)
 PACK_CUT = _dt.date(2026, 6, 30)            # pack v2 manifest as_of
 DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
-PINNED_DB_SERVICE_ID = "t83f4np6x4"
-# The pinned prod host is ``<service>.<project>.tsdb.cloud.timescale.com``; requiring
-# this managed-Timescale suffix (not just the first label) stops a hand-crafted DNS
-# alias like ``t83f4np6x4.staging.example.com`` from masquerading as prod provenance.
-PINNED_DB_HOST_SUFFIX = ".tsdb.cloud.timescale.com"
-# The pinned host is necessary but NOT sufficient: the SAME managed service can host a
-# scratch/staging database. Pin the production database NAME too so a DSN like
-# ``...timescale.com/scratch`` (or ``dbname=scratch``) on the right host cannot certify
-# official-looking Stage A evidence while the manifest stamps ``production datalake``.
-PINNED_DB_NAME = "tsdb"
+# Pack 003 was exported after the production cutover from the GCloud timescale-sp NLB.
+# Reuse the P1 exporter's exact source identity so the pack and Stage A delta cannot
+# silently drift back to the legacy Tiger service.
+PINNED_DB_SERVICE_ID = P1_DB_SOURCE
+PINNED_DB_HOST = PINNED_GCLOUD_NLB_HOST
+PINNED_DB_NAME = "market"
 SLEEVE_TICKERS = _lv.sleeve_mod.SLEEVE_TICKERS  # ("SPY","TLT","TIP","GLD","DBC","SHY")
 
 SNAPSHOT = _lv.SNAPSHOT
@@ -182,6 +180,8 @@ def build_manifest(price_bytes: bytes, price_rows: list[dict[str, Any]],
         "provenance": {
             "source": "production datalake (read-only)",
             "db_service_id": PINNED_DB_SERVICE_ID,
+            "db_name": PINNED_DB_NAME,
+            "db_schema": PINNED_DB_SCHEMA,
             "tables": ["eod_prices", "macro_observation_vintage"],
         },
     }
@@ -251,16 +251,12 @@ def export(conn: Any, out_dir: Path | str | None = None) -> dict[str, Any]:
 
 
 def _assert_pinned_db_source(dsn: str) -> None:
-    """Refuse to export unless the DSN's HOSTNAME is the pinned Tiger service, so a
-    staging/local DB can never masquerade as prod in the snapshot provenance.
+    """Refuse to export unless libpq will connect to the pinned GCloud market DB.
 
-    The DSN is PARSED (psycopg conninfo, which accepts both URL and keyword forms),
-    never substring-matched — a lookalike user/password/dbname or a query parameter
-    containing the service id must not satisfy the pin. The pinned service id must be
-    the FIRST hostname label AND the host must sit under the managed-Timescale domain
-    suffix (``<service>.<project>.tsdb.cloud.timescale.com``), so a hand-crafted alias
-    that merely starts with the service id (``t83f4np6x4.staging.example.com``) cannot
-    pass either."""
+    Parse URL and keyword conninfo with psycopg rather than matching DSN text. Require
+    one exact NLB host, reject ``hostaddr`` overrides, and pin the database name; this
+    keeps userinfo/query lookalikes, multi-host fallback, legacy Tiger, and another DB
+    on the same production server from receiving GCloud Stage A provenance."""
     from psycopg import conninfo
 
     try:
@@ -271,11 +267,8 @@ def _assert_pinned_db_source(dsn: str) -> None:
     _require(bool(host),
              "refusing export: DSN has no host; snapshot provenance would be false")
     host_str = str(host)
-    # libpq accepts a comma-separated host LIST and connects to the FIRST reachable
-    # host; conninfo_to_dict returns the whole list as one string, so a pin that only
-    # inspects the first label + suffix would pass a DSN like
-    # ``t83f4np6x4.staging.example.com,<pinned>`` while libpq talks to staging. Require
-    # a single effective host so exactly one host is validated and connected.
+    # libpq accepts a comma-separated host list and connects to the first reachable
+    # host. Require one effective host so every possible target has been validated.
     _require("," not in host_str,
              f"refusing export: DSN host {host!r} is a multi-host list; libpq would "
              f"pick the first reachable host, so exactly one pinned host must be given; "
@@ -289,15 +282,11 @@ def _assert_pinned_db_source(dsn: str) -> None:
              f"refusing export: DSN sets hostaddr={hostaddr!r}; libpq would connect to "
              f"that address regardless of the pinned host, so provenance cannot be "
              f"trusted; remove hostaddr")
-    _require(host_str.split(".")[0] == PINNED_DB_SERVICE_ID
-             and host_str.endswith(PINNED_DB_HOST_SUFFIX),
-             f"refusing export: DSN host {host!r} is not the pinned Tiger service "
-             f"{PINNED_DB_SERVICE_ID} under {PINNED_DB_HOST_SUFFIX}; snapshot "
-             f"provenance would be false")
-    # Same host, different database: pin the production dbname so a scratch/staging DB
-    # on the pinned service cannot masquerade as prod. libpq defaults an omitted dbname
-    # to the username, so a DSN without an explicit ``dbname`` is refused rather than
-    # silently connecting to a user-named database.
+    _require(host_str == PINNED_DB_HOST,
+             f"refusing export: DSN host {host!r} is not the pinned GCloud NLB "
+             f"{PINNED_DB_HOST}; snapshot provenance would be false")
+    # libpq defaults an omitted dbname to the username. Require the explicit production
+    # DB so GCloud's other databases cannot masquerade as the datalake source.
     dbname = parsed.get("dbname")
     _require(dbname == PINNED_DB_NAME,
              f"refusing export: DSN dbname={dbname!r} is not the pinned production "

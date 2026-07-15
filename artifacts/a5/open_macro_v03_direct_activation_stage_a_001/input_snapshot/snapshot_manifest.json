@@ -13,7 +13,9 @@
  },
  "pack_v2_sha256": "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad",
  "provenance": {
-  "db_service_id": "t83f4np6x4",
+  "db_name": "market",
+  "db_schema": "public",
+  "db_service_id": "gcloud_timescale_sp_35.247.237.1",
   "source": "production datalake (read-only)",
   "tables": [
    "eod_prices",
