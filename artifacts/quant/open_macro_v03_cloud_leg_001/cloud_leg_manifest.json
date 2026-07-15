@@ -8,7 +8,7 @@
     "lean_invocations": 0,
     "network_calls": 0
   },
-  "bundle_size_bytes": 49606778,
+  "bundle_size_bytes": 49607292,
   "cloud_leg_id": "open_macro_v03_cloud_leg_001",
   "contract_bundle_sha256": "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b",
   "file_count": 51,
@@ -52,8 +52,8 @@
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/p1_pack/contract.py.gz"
     },
     "code/harness/p1_pack/verifier.py.gz": {
-      "content_sha256": "090829e0e631e6376f116d81aea827a054c2debf1158c3068f1f02be5fcf02fd",
-      "file_size_bytes": 5226,
+      "content_sha256": "f93ed8bac9862c5d40287532c0cd338c0694bf16371ad1f4493ad463a9a67f55",
+      "file_size_bytes": 5760,
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/p1_pack/verifier.py.gz"
     },
     "code/harness/phase0q/__init__.py.gz": {
@@ -87,8 +87,8 @@
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/pit.py.gz"
     },
     "code/harness/phase0q/runner.py.gz": {
-      "content_sha256": "3b4599db4906527a2763948211684dd593f3ea12204f6eeb79c64b7e95f13024",
-      "file_size_bytes": 12537,
+      "content_sha256": "da316f6473808e660bb30d0de615a3134fdbb94041e40b02af2ff61b158da5c9",
+      "file_size_bytes": 12517,
       "object_store_key": "investintell/open_macro_v03/phase0q/68b07e810bc28665fedd85c6acd3ea5770b4b099/23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337/code/harness/phase0q/runner.py.gz"
     },
     "code/harness/phase0q/sleeve.py.gz": {
