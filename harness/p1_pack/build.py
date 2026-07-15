@@ -266,6 +266,55 @@ def _validate_source_export_identity(export: Mapping[str, Any]) -> None:
         )
 
 
+def _validate_source_export_tables(source_dir: Path, export: Mapping[str, Any]) -> None:
+    tables = export.get("tables")
+    if not isinstance(tables, list):
+        raise ValueError("P1 source SOURCE.json tables must be a JSON array")
+
+    entries: dict[str, Mapping[str, Any]] = {}
+    for index, entry in enumerate(tables):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"P1 source SOURCE.json tables[{index}] must be a JSON object")
+        table = entry.get("table")
+        if not isinstance(table, str) or not table:
+            raise ValueError(f"P1 source SOURCE.json tables[{index}] must name a table")
+        if table in entries:
+            raise ValueError(f"P1 source SOURCE.json has duplicate table provenance for {table}")
+        entries[table] = entry
+
+    for spec in P1_TABLE_SPECS:
+        entry = entries.get(spec.name)
+        if entry is None:
+            raise ValueError(f"P1 source SOURCE.json is missing table provenance for {spec.name}")
+
+        path = source_dir / f"{spec.name}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"missing P1 source snapshot: {path}")
+        file_bytes = path.read_bytes()
+        # The exporter hashes its canonical LF bytes. Git may materialize tracked
+        # JSON with CRLF under core.autocrlf on Windows, so restore those canonical
+        # bytes without otherwise reserializing or forgiving byte-level edits.
+        canonical_file_bytes = file_bytes.replace(b"\r\n", b"\n")
+        actual_sha256 = hashlib.sha256(canonical_file_bytes).hexdigest()
+        expected_sha256 = entry.get("sha256")
+        if expected_sha256 != actual_sha256:
+            raise ValueError(
+                f"{spec.name}: SOURCE.json sha256 {expected_sha256!r} "
+                f"does not match source file sha256 {actual_sha256!r}"
+            )
+
+        payload = json.loads(file_bytes.decode("utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError(f"{path} must contain a JSON array")
+        actual_row_count = len(payload)
+        expected_row_count = entry.get("row_count")
+        if expected_row_count != actual_row_count:
+            raise ValueError(
+                f"{spec.name}: SOURCE.json row_count {expected_row_count!r} "
+                f"does not match source file row_count {actual_row_count}"
+            )
+
+
 def build_pack(
     *,
     sources: str | Path,
@@ -276,6 +325,7 @@ def build_pack(
 
     export = _source_export(source_dir)
     _validate_source_export_identity(export)
+    _validate_source_export_tables(source_dir, export)
     as_of_str = str(export["as_of"])
     as_of_date = dt.date.fromisoformat(as_of_str)
     export_id = str(export["export_id"])

@@ -92,8 +92,12 @@ def _tiny_sources(tmp_path: Path) -> Path:
         {"ticker": "DBC", "date": "2006-02-06", "close": 24.2, "adjusted_close": 19.1, "volume": 500},
         {"ticker": "SPY", "date": "2026-07-15", "close": 500.0, "adjusted_close": 500.0, "volume": 900},
     ]
-    (src / "macro_observation_vintage.json").write_text(json.dumps(macro), encoding="utf-8")
-    (src / "eod_prices.json").write_text(json.dumps(eod), encoding="utf-8")
+    table_rows = {
+        "macro_observation_vintage": macro,
+        "eod_prices": eod,
+    }
+    for table, rows in table_rows.items():
+        (src / f"{table}.json").write_text(json.dumps(rows), encoding="utf-8")
     (src / "SOURCE.json").write_text(
         json.dumps(
             {
@@ -102,7 +106,14 @@ def _tiny_sources(tmp_path: Path) -> Path:
                 "source_commit": "abcdef1234567890abcdef1234567890abcdef12",
                 "db_source": "gcloud_timescale_sp_35.247.237.1",
                 "schema_version": 1,
-                "tables": [],
+                "tables": [
+                    {
+                        "table": table,
+                        "sha256": hashlib.sha256((src / f"{table}.json").read_bytes()).hexdigest(),
+                        "row_count": len(rows),
+                    }
+                    for table, rows in table_rows.items()
+                ],
             }
         ),
         encoding="utf-8",
@@ -135,6 +146,38 @@ def test_builder_rejects_legacy_source_export_identity(
     out = tmp_path / "pack"
 
     with pytest.raises(ValueError, match=message):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
+
+
+def test_builder_rejects_source_table_edited_after_export(tmp_path):
+    src = _tiny_sources(tmp_path)
+    table = src / "macro_observation_vintage.json"
+    table.write_bytes(table.read_bytes() + b"\n")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=r"macro_observation_vintage.*sha256"):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sha256", "0" * 64),
+        ("row_count", 0),
+    ],
+)
+def test_builder_rejects_stale_source_table_pins(tmp_path, field, value):
+    src = _tiny_sources(tmp_path)
+    source = _read(src / "SOURCE.json")
+    source["tables"][0][field] = value
+    (src / "SOURCE.json").write_text(json.dumps(source), encoding="utf-8")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=rf"macro_observation_vintage.*{field}"):
         p1_build.build_pack(sources=src, out=out)
 
     assert not out.exists()
