@@ -32,8 +32,9 @@ CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
-# A real 40-char commit SHA (the pack/contract provenance target); any valid hex works.
-HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
+# The clean source commit used for this prepared upload namespace.
+HARNESS_COMMIT = "d1a35b72bfe99cd2309f2c791853597206e902ed"
+STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 
 
 # --------------------------------------------------------------------------- #
@@ -87,6 +88,11 @@ def test_bundle_manifest_prefix_and_key(bundle_manifest):
 def test_bundle_build_invalid_commit_rejected(tmp_path):
     with pytest.raises(ValueError, match="40-char"):
         bundle_mod.build_bundle(tmp_path / "bad", "not-a-sha")
+
+
+def test_bundle_rejects_harness_commit_with_different_shipped_sources(tmp_path):
+    with pytest.raises(RuntimeError, match="immutable prefix refusal"):
+        bundle_mod.build_bundle(tmp_path / "stale-prefix", STALE_HARNESS_COMMIT)
 
 
 # --------------------------------------------------------------------------- #
