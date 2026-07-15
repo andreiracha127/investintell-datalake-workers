@@ -150,6 +150,29 @@ def test_build_payload_rejects_unavailable_source_rows() -> None:
         build_payload(AS_OF, [], {})
 
 
+def test_payload_contract_accepts_no_liquid_breadth() -> None:
+    payload = build_payload(
+        AS_OF,
+        [_row("PENNY", last=4, prev=3, volume=2_000_000, high=5, low=1)],
+        {},
+    )
+
+    assert payload["breadth"] is None
+    snapshot._validate_payload(payload, AS_OF)
+
+
+def test_payload_contract_rejects_unversioned_top_level_fields() -> None:
+    payload = build_payload(
+        AS_OF,
+        [_row("AAA", last=110, prev=100, volume=100_000, high=110, low=50)],
+        {},
+    )
+    payload["unexpected"] = True
+
+    with pytest.raises(ValueError, match="unexpected fields"):
+        snapshot._validate_payload(payload, AS_OF)
+
+
 class _FakeCursor:
     def __init__(self, sink: dict[str, Any]) -> None:
         self._sink = sink

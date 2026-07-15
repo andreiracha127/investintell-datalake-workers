@@ -366,6 +366,8 @@ def _validate_payload(payload: dict[str, Any], as_of: dt.date) -> None:
     }
     if not required.issubset(payload):
         fail(f"missing fields {sorted(required - payload.keys())}")
+    if payload.keys() != required:
+        fail(f"unexpected fields {sorted(payload.keys() - required)}")
     if payload["as_of"] != as_of.isoformat():
         fail("as_of does not match the source watermark")
     integer(payload["universe_size"], "universe_size")
@@ -414,6 +416,8 @@ def _validate_payload(payload: dict[str, Any], as_of: dt.date) -> None:
         integer(sector.get("n"), f"sectors[{index}].n", minimum=1)
 
     breadth = payload["breadth"]
+    if breadth is None:
+        return
     if not isinstance(breadth, dict):
         fail("breadth must be an object")
     for field in (
