@@ -1,10 +1,10 @@
 {
  "amended_slo": {
-  "derivation": "ceil(1.5 x measured p95 105835.135 ms) — the SAME Phase 1 Task 4 rule reapplied to the Stage A workload; worst leg of the host+container matrix",
+  "derivation": "ceil(1.5 x measured p95 96457.869 ms) — the SAME Phase 1 Task 4 rule reapplied to the Stage A workload; worst leg of the host+container matrix",
   "id": "latency_slo",
   "metric": "candidate_compute_latency_p95_ms",
   "scope": "stage_a_live_validation + open_macro_v03 runtime worker (B5)",
-  "threshold": 158753
+  "threshold": 144687
  },
  "approval_matrix": {
   "approval_matrix_complete": true,
@@ -71,11 +71,11 @@
   }
  },
  "measured_round": {
-  "p95_ms": 105835.135,
-  "reproducibility_record_sha256": "99eabca78737f1486cddb8488dc432d78b6aab6805998633a7b4d06d47517e16",
+  "p95_ms": 96457.869,
+  "reproducibility_record_sha256": "1d2c859cd0e35c92ddf1039a797496419558ed1f57a3e7d233edb3eb8d52efb9",
   "runs_total": 16
  },
- "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms per that record's own derivation), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain in live_validation.compute() (measured worst-leg p95 105835.135 ms in the round this amendment pins). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95), worst leg of the host+container matrix — to the correct workload; it is never an ad hoc bump to make a round pass.",
+ "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms per that record's own derivation), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain in live_validation.compute() (measured worst-leg p95 96457.869 ms in the round this amendment pins). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95), worst leg of the host+container matrix — to the correct workload; it is never an ad hoc bump to make a round pass.",
  "schema_version": 1,
  "stage": "A"
 }
