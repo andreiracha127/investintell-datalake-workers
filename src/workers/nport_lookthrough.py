@@ -124,18 +124,54 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
     return "UNKNOWN"
 
 
-def equity_country_key(isin: str | None, asset_class: str | None) -> str | None:
-    """Return the ISIN country prefix for equity holdings only.
+_ISO_3166_ALPHA2 = frozenset("""
+AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM
+BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX
+CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG
+GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR
+IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV
+LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE
+NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO
+RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF
+TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF
+WS YE YT ZA ZM ZW
+""".split())
+
+
+def _valid_isin(value: str) -> bool:
+    if len(value) != 12 or not value.isalnum() or value[:2] not in _ISO_3166_ALPHA2:
+        return False
+    digits = "".join(char if char.isdigit() else str(ord(char) - 55) for char in value)
+    total = 0
+    for index, char in enumerate(reversed(digits)):
+        digit = int(char)
+        if index % 2 == 1:
+            digit *= 2
+        total += digit // 10 + digit % 10
+    return total % 10 == 0
+
+
+def equity_country_key(
+    isin: str | None,
+    asset_class: str | None,
+    cusip: str | None = None,
+) -> str | None:
+    """Return a validated ISIN country prefix for equity holdings only.
 
     The explicit ``UNKNOWN`` bucket keeps geography coverage measurable by
-    consumers. Non-equity holdings do not participate in this dimension.
+    consumers. Synthetic ``IS:<isin>`` keys recover a missing ISIN column.
+    Non-equity holdings do not participate in this dimension.
     """
     if (asset_class or "") not in _EQUITY_CATS:
         return None
-    normalized = (isin or "").strip().upper()
-    if len(normalized) != 12 or not normalized.isalnum() or not normalized[:2].isalpha():
-        return "UNKNOWN"
-    return normalized[:2]
+    candidates = [(isin or "").strip().upper()]
+    synthetic = (cusip or "").strip().upper()
+    if synthetic.startswith("IS:"):
+        candidates.append(synthetic[3:])
+    for candidate in candidates:
+        if _valid_isin(candidate):
+            return candidate[:2]
+    return "UNKNOWN"
 
 
 # The "sector" dimension is DUAL-AXIS, chosen by N-PORT assetCat — a GICS sector
@@ -246,7 +282,11 @@ def expand_series(
             ("sector", sector_label(holding, sector_map), None),
             ("currency", holding.get("currency") or "UNKNOWN", None),
         ]
-        country = equity_country_key(holding.get("isin"), holding.get("asset_class"))
+        country = equity_country_key(
+            holding.get("isin"),
+            holding.get("asset_class"),
+            holding.get("cusip"),
+        )
         if country is not None:
             keys.append(("country", country, None))
         for dimension, key, label in keys:

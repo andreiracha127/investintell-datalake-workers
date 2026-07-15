@@ -14,8 +14,9 @@
 --   * dimension ∈ ('issuer','asset_class','sector','currency','country').
 --     issuer keys: CUSIP-6 for real/embedded CUSIPs, the synthetic key itself
 --     ('IS:…','LE:…','H:…','CIK:…') otherwise; categorical NULLs → 'UNKNOWN'.
---     country keys: ISIN alpha-2 prefix for equity holdings only; missing or
---     malformed ISINs remain explicit as 'UNKNOWN' so coverage is measurable.
+--     country keys: validated ISIN alpha-2 prefix for equity holdings only;
+--     synthetic IS:<isin> keys recover a missing ISIN column, while malformed
+--     identifiers remain explicit as 'UNKNOWN' so coverage is measurable.
 --   * coverage_pct in the summary is COPIED from cagg_nport_series_profile
 --     (never recomputed here).
 

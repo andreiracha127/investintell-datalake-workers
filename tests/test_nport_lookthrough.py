@@ -182,7 +182,9 @@ def test_equity_country_dimension_uses_isin_and_keeps_unknown_explicit():
     data = {"S1": (D_ROOT, [
         H(cusip="037833100", isin="US0378331005", asset="EC", pct=60.0),
         H(cusip="G1151C101", isin="GB00B03MLX29", asset="EP", pct=20.0),
-        H(cusip="594918104", isin=None, asset="EC", pct=10.0),
+        H(cusip="IS:IE00B4L5Y983", isin=None, asset="EC", pct=10.0),
+        H(cusip="594918104", isin="XX0000000000", asset="EC", pct=5.0),
+        H(cusip="02079K305", isin=None, asset="EC", pct=5.0),
         H(cusip="88888XAA1", isin="US0000000000", asset="DBT", pct=10.0),
     ])}
 
@@ -191,8 +193,10 @@ def test_equity_country_dimension_uses_isin_and_keeps_unknown_explicit():
     country = {k[1]: v for k, v in exposures.items() if k[0] == "country"}
     assert country["US"]["direct_pct"] == pytest.approx(60.0)
     assert country["GB"]["direct_pct"] == pytest.approx(20.0)
+    assert country["IE"]["direct_pct"] == pytest.approx(10.0)
     assert country["UNKNOWN"]["direct_pct"] == pytest.approx(10.0)
-    assert sum(cell["direct_pct"] for cell in country.values()) == pytest.approx(90.0)
+    assert "XX" not in country
+    assert sum(cell["direct_pct"] for cell in country.values()) == pytest.approx(100.0)
 
 
 def test_equity_country_dimension_preserves_indirect_lookthrough_weight():
