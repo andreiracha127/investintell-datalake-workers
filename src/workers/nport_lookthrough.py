@@ -52,7 +52,7 @@ DERIVATIVE_CLASSES = {"DE", "DFE", "DFF", "DIR", "DCO", "DCR", "DO"}
 SYNTHETIC_PREFIXES = ("IS:", "LE:", "H:", "CIK:")
 UNIDENTIFIED_PREFIXES = ("LE:", "H:", "CIK:")
 
-DIMENSIONS = ("issuer", "asset_class", "sector", "currency")
+DIMENSIONS = ("issuer", "asset_class", "sector", "currency", "country")
 
 HOLDING_COLS = ("cusip", "isin", "issuer_name", "asset_class", "sector",
                 "currency", "pct_of_nav")
@@ -122,6 +122,20 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
         embedded = _embedded_cusip9(isin)
         return embedded[:6] if embedded else f"IS:{isin}"
     return "UNKNOWN"
+
+
+def equity_country_key(isin: str | None, asset_class: str | None) -> str | None:
+    """Return the ISIN country prefix for equity holdings only.
+
+    The explicit ``UNKNOWN`` bucket keeps geography coverage measurable by
+    consumers. Non-equity holdings do not participate in this dimension.
+    """
+    if (asset_class or "") not in _EQUITY_CATS:
+        return None
+    normalized = (isin or "").strip().upper()
+    if len(normalized) != 12 or not normalized.isalnum() or not normalized[:2].isalpha():
+        return "UNKNOWN"
+    return normalized[:2]
 
 
 # The "sector" dimension is DUAL-AXIS, chosen by N-PORT assetCat — a GICS sector
@@ -225,13 +239,16 @@ def expand_series(
 
     def _accumulate(holding: dict, pct: float, depth: int) -> None:
         side = "direct_pct" if depth == 0 else "indirect_pct"
-        keys = (
+        keys = [
             ("issuer", issuer_key(holding.get("cusip"), holding.get("isin")),
              holding.get("issuer_name")),
             ("asset_class", holding.get("asset_class") or "UNKNOWN", None),
             ("sector", sector_label(holding, sector_map), None),
             ("currency", holding.get("currency") or "UNKNOWN", None),
-        )
+        ]
+        country = equity_country_key(holding.get("isin"), holding.get("asset_class"))
+        if country is not None:
+            keys.append(("country", country, None))
         for dimension, key, label in keys:
             cell = exposures.setdefault(
                 (dimension, key),

@@ -178,6 +178,42 @@ def test_direct_aggregation_dedupes_issuer_by_cusip6():
     assert summary["n_holdings"] == 3
 
 
+def test_equity_country_dimension_uses_isin_and_keeps_unknown_explicit():
+    data = {"S1": (D_ROOT, [
+        H(cusip="037833100", isin="US0378331005", asset="EC", pct=60.0),
+        H(cusip="G1151C101", isin="GB00B03MLX29", asset="EP", pct=20.0),
+        H(cusip="594918104", isin=None, asset="EC", pct=10.0),
+        H(cusip="88888XAA1", isin="US0000000000", asset="DBT", pct=10.0),
+    ])}
+
+    exposures, _summary = lt.expand_series("S1", make_get_holdings(data), EMPTY_MAP)
+
+    country = {k[1]: v for k, v in exposures.items() if k[0] == "country"}
+    assert country["US"]["direct_pct"] == pytest.approx(60.0)
+    assert country["GB"]["direct_pct"] == pytest.approx(20.0)
+    assert country["UNKNOWN"]["direct_pct"] == pytest.approx(10.0)
+    assert sum(cell["direct_pct"] for cell in country.values()) == pytest.approx(90.0)
+
+
+def test_equity_country_dimension_preserves_indirect_lookthrough_weight():
+    fund_map = {"cusip": {"111111111": "S_CHILD"}, "isin": {}}
+    data = {
+        "S1": (D_ROOT, [
+            H(cusip="037833100", isin="US0378331005", asset="EC", pct=50.0),
+            H(cusip="111111111", issuer="Some Fund", asset="RF", pct=50.0),
+        ]),
+        "S_CHILD": (D_CHILD, [
+            H(cusip="G1151C101", isin="GB00B03MLX29", asset="EC", pct=100.0),
+        ]),
+    }
+
+    exposures, _summary = lt.expand_series("S1", make_get_holdings(data), fund_map)
+
+    country = {k[1]: v for k, v in exposures.items() if k[0] == "country"}
+    assert country["US"]["direct_pct"] == pytest.approx(50.0)
+    assert country["GB"]["indirect_pct"] == pytest.approx(50.0)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Expansão — FoF profundidade 1
 # ──────────────────────────────────────────────────────────────────────────────

@@ -11,9 +11,11 @@
 --   * pct columns are in percentage points of the PARENT series NAV, sign
 --     preserved (shorts negative). Σpct > 100 is legitimate (derivatives /
 --     leverage) and is NEVER renormalized.
---   * dimension ∈ ('issuer','asset_class','sector','currency').
+--   * dimension ∈ ('issuer','asset_class','sector','currency','country').
 --     issuer keys: CUSIP-6 for real/embedded CUSIPs, the synthetic key itself
 --     ('IS:…','LE:…','H:…','CIK:…') otherwise; categorical NULLs → 'UNKNOWN'.
+--     country keys: ISIN alpha-2 prefix for equity holdings only; missing or
+--     malformed ISINs remain explicit as 'UNKNOWN' so coverage is measurable.
 --   * coverage_pct in the summary is COPIED from cagg_nport_series_profile
 --     (never recomputed here).
 
