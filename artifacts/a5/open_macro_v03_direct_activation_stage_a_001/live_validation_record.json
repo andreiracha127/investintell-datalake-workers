@@ -1,15 +1,15 @@
 {
  "allocation_today": {
   "book": "compressed_50",
-  "defensive_assets_weight": 0.3875,
+  "defensive_assets_weight": 0.4875,
   "priced_at": "2026-07-02",
-  "risk_assets_weight": 0.50625,
+  "risk_assets_weight": 0.35625,
   "weights": {
    "DBC": 0.1125,
-   "GLD": 0.10625,
-   "SHY": 0.13125,
-   "SPY": 0.39375,
-   "TIP": 0.14375,
+   "GLD": 0.15625,
+   "SHY": 0.18125,
+   "SPY": 0.24375,
+   "TIP": 0.19375,
    "TLT": 0.1125
   }
  },
@@ -22,14 +22,14 @@
  },
  "decision_today": {
   "as_of": "2026-07-03",
-  "candidate_confidence": 0.812154561852,
-  "carry_seed_as_of": "2026-06-30",
+  "candidate_confidence": 0.705341683284,
+  "carry_seed_as_of": "2026-04-30",
   "chain_length": 148,
   "coverage_quality": 1.0,
   "decision_validity": "carried",
-  "quadrant": "expansion",
+  "quadrant": "slowdown",
   "status": "valid",
-  "valid_decisions_in_chain": 61
+  "valid_decisions_in_chain": 60
  },
  "direct_activation_id": "open_macro_v03_direct_activation_001",
  "gates": {
@@ -51,7 +51,7 @@
  },
  "inputs": {
   "composed_price_rows": 35461,
-  "composed_vintage_rows": 70747,
+  "composed_vintage_rows": 70753,
   "delta_files_sha256": {
    "delta_eod_prices.json": "1e6eafc967090ba6b52d74b4d318960598e0e3294828d72281ee2dae2a72eb3a",
    "delta_macro_vintages.json": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
@@ -59,14 +59,14 @@
   "delta_price_rows": 30,
   "delta_vintage_rows": 0,
   "delta_vintages_note": "legitimately EMPTY: the monthly basket's max available_at (2026-06-15, INDPRO) predates the pack cut (2026-06-30); July releases are not out yet and MICH sits inside its documented publication lag",
-  "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
+  "pack_v2_sha256": "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
  },
  "provenance": {
   "modules": [
    "harness.phase0q.decision",
    "harness.phase0q.sleeve"
   ],
-  "worker_commit": "c79bd8246df8991249a4fa2ba0ca6dbf257a868c"
+  "worker_commit": "bde3a797b8c908079d4889513d95f0a302ad11b5"
  },
  "schema_version": 1,
  "stage": "A",
@@ -128,10 +128,10 @@
     "latest_observation_period": "2026-05-01"
    },
    "MICH": {
-    "age_days": 70,
+    "age_days": 42,
     "bound_days": 90,
-    "last_available_at": "2026-04-24",
-    "latest_observation_period": "2026-04-01"
+    "last_available_at": "2026-05-22",
+    "latest_observation_period": "2026-05-01"
    },
    "PAYEMS": {
     "age_days": 28,
@@ -140,10 +140,10 @@
     "latest_observation_period": "2026-05-01"
    },
    "PCEC96": {
-    "age_days": 36,
+    "age_days": 8,
     "bound_days": 45,
-    "last_available_at": "2026-05-28",
-    "latest_observation_period": "2026-04-01"
+    "last_available_at": "2026-06-25",
+    "latest_observation_period": "2026-05-01"
    },
    "PPIFIS": {
     "age_days": 22,

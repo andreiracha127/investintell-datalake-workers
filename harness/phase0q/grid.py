@@ -485,7 +485,11 @@ def _median(values: Sequence[float]) -> float:
 # Deliverable payload builders                                                 #
 # --------------------------------------------------------------------------- #
 
-def build_compression_grid_manifest(harness_commit: str) -> dict[str, Any]:
+def build_compression_grid_manifest(
+    harness_commit: str,
+    *,
+    input_pack_id: str,
+) -> dict[str, Any]:
     """``compression_grid_manifest.json`` — naming convention, variants, governance
     pins, provenance."""
     return {
@@ -513,7 +517,7 @@ def build_compression_grid_manifest(harness_commit: str) -> dict[str, Any]:
         "measurement_only": True,
         "governance": dict(GOVERNANCE_PINS),
         "provenance": {
-            "input_pack_id": runner.INPUT_PACK_ID,
+            "input_pack_id": input_pack_id,
             "input_pack_sha256": PACK_SHA256,
             "contract_bundle_sha256": CONTRACT_BUNDLE_V2_SHA256,
             "harness_commit": harness_commit,

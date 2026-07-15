@@ -27,10 +27,11 @@ from typing import Any
 
 from harness.phase0q import decision as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
+from scripts.p1_export.export_p1_sources import DB_SOURCE as P1_DB_SOURCE
 from src.macro_sources import SEED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[2]
-PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
 SNAPSHOT = STAGE_A / "input_snapshot"
 
@@ -38,7 +39,7 @@ VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
 PRICE_OVERLAP_START = _dt.date(2026, 6, 26)  # delta re-exports the pack price tail from here
 CHAIN_START = _dt.date(2014, 3, 1)
-PACK_SHA256_PIN = "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"
+PACK_SHA256_PIN = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
 
 # The SEED macro basket the decision consumes (imported from SEED_SOURCES, the one
@@ -54,8 +55,10 @@ EXPECTED_SEED_SERIES = tuple(sorted(spec.series_id for spec in SEED_SOURCES))
 DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
 SNAPSHOT_SCHEMA_VERSION = 1
 SNAPSHOT_ARTIFACT_TYPE = "direct_activation_input_snapshot_manifest"
-DB_SERVICE_ID = "t83f4np6x4"
+DB_SERVICE_ID = P1_DB_SOURCE
 DB_SOURCE = "production datalake (read-only)"
+DB_NAME = "market"
+DB_SCHEMA = "public"
 DB_TABLES = ["eod_prices", "macro_observation_vintage"]
 
 # staleness criteria (Phase 1 staleness_verification_record semantics)
@@ -168,6 +171,8 @@ def verify_snapshot_manifest(manifest: dict[str, Any], delta_vintages: list[dict
         "provenance": {
             "source": DB_SOURCE,
             "db_service_id": DB_SERVICE_ID,
+            "db_name": DB_NAME,
+            "db_schema": DB_SCHEMA,
             "tables": DB_TABLES,
         },
     }

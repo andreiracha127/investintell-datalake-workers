@@ -34,6 +34,7 @@ import datetime as dt
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -50,23 +51,24 @@ from src.input_packs.p0_contract import (
 from .contract import P1_TABLE_SPECS
 
 PROFILE = "open_macro_v03"
-INPUT_PACK_ID = "open_macro_v03_certified_input_pack_002"
-INPUT_PACK_VERSION = 2
+INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
+INPUT_PACK_VERSION = 3
 SCHEMA_VERSION = "v2"
 SOURCE_REPO = "investintell-datalake-workers"
 BUILDER_NAME = "certified-input-pack-builder-p1"
 DATASET_NAMESPACE = "lake://certified-input-packs/open_macro_v03/p1"
+REQUIRED_SOURCE_EXPORT_ID = "open_macro_v03_p1_sources_002"
+REQUIRED_DB_SOURCE = "gcloud_timescale_sp_35.247.237.1"
 
 # The contract bundle v2 sha (bundle_sha256 in contracts/quant-engine/v2/manifest.json),
 # recomputed live at build time and cross-checked against this pin.
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 
-# The commit that froze the committed P1 source snapshots
-# (fixtures/p1_sources/open_macro_v03/). Pinned as a constant so rebuilds are
-# byte-deterministic regardless of the live HEAD; the pack is a pure transform of
-# those snapshots. The P1 export SOURCE.json carries the fuller export provenance
-# (SQL/params/rowcounts/per-table sha256) through verbatim.
-SNAPSHOT_SOURCE_COMMIT = "fd5916ccd0011dc49b4e1276fbc20c573911339e"
+# The corrected snapshot and pack-003 builder live at separate reachable
+# commits. Keep their identities distinct instead of presenting the snapshot
+# fallback as the builder commit.
+SNAPSHOT_SOURCE_COMMIT = "e76d4822f09e8780eafed838bfdaf51c0b9750fc"
+BUILDER_COMMIT = "3eab2bc6c10d6bf9d09a4028d203edd41f4de58d"
 
 GOVERNANCE_PINS: dict[str, Any] = {
     "A5": "blocked",
@@ -159,17 +161,37 @@ def canonical_text_file_sha256(path: Path) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def builder_code_sha256() -> str:
-    """Deterministic content hash of the P1 builder package source files."""
+def builder_code_sha256(commit: str = BUILDER_COMMIT) -> str:
+    """Hash the committed P1 builder package identified by ``commit``."""
     root = repo_root()
-    files = sorted((root / "harness" / "p1_pack").glob("*.py"))
+    paths = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commit, "--", "harness/p1_pack"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    files = sorted(
+        path
+        for path in paths
+        if Path(path).parent.as_posix() == "harness/p1_pack" and path.endswith(".py")
+    )
+    if not files:
+        raise ValueError(f"builder commit {commit!r} contains no P1 builder package files")
     return canonical_json_sha256(
         {
             "builder_name": BUILDER_NAME,
             "files": [
                 {
-                    "path": path.relative_to(root).as_posix(),
-                    "sha256": canonical_text_file_sha256(path),
+                    "path": path,
+                    "sha256": hashlib.sha256(
+                        subprocess.run(
+                            ["git", "show", f"{commit}:{path}"],
+                            cwd=root,
+                            check=True,
+                            capture_output=True,
+                        ).stdout.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+                    ).hexdigest(),
                 }
                 for path in files
             ],
@@ -229,6 +251,70 @@ def _source_export(source_dir: Path) -> dict[str, Any]:
     return export
 
 
+def _validate_source_export_identity(export: Mapping[str, Any]) -> None:
+    export_id = str(export.get("export_id") or "")
+    if export_id != REQUIRED_SOURCE_EXPORT_ID:
+        raise ValueError(
+            "pack 003 requires the corrected source export "
+            f"{REQUIRED_SOURCE_EXPORT_ID!r}; got {export_id!r}"
+        )
+    db_source = str(export.get("db_source") or "")
+    if db_source != REQUIRED_DB_SOURCE:
+        raise ValueError(
+            f"pack 003 requires the GCloud source {REQUIRED_DB_SOURCE!r}; "
+            f"got {db_source!r}"
+        )
+
+
+def _validate_source_export_tables(source_dir: Path, export: Mapping[str, Any]) -> None:
+    tables = export.get("tables")
+    if not isinstance(tables, list):
+        raise ValueError("P1 source SOURCE.json tables must be a JSON array")
+
+    entries: dict[str, Mapping[str, Any]] = {}
+    for index, entry in enumerate(tables):
+        if not isinstance(entry, Mapping):
+            raise ValueError(f"P1 source SOURCE.json tables[{index}] must be a JSON object")
+        table = entry.get("table")
+        if not isinstance(table, str) or not table:
+            raise ValueError(f"P1 source SOURCE.json tables[{index}] must name a table")
+        if table in entries:
+            raise ValueError(f"P1 source SOURCE.json has duplicate table provenance for {table}")
+        entries[table] = entry
+
+    for spec in P1_TABLE_SPECS:
+        entry = entries.get(spec.name)
+        if entry is None:
+            raise ValueError(f"P1 source SOURCE.json is missing table provenance for {spec.name}")
+
+        path = source_dir / f"{spec.name}.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"missing P1 source snapshot: {path}")
+        file_bytes = path.read_bytes()
+        # The exporter hashes its canonical LF bytes. Git may materialize tracked
+        # JSON with CRLF under core.autocrlf on Windows, so restore those canonical
+        # bytes without otherwise reserializing or forgiving byte-level edits.
+        canonical_file_bytes = file_bytes.replace(b"\r\n", b"\n")
+        actual_sha256 = hashlib.sha256(canonical_file_bytes).hexdigest()
+        expected_sha256 = entry.get("sha256")
+        if expected_sha256 != actual_sha256:
+            raise ValueError(
+                f"{spec.name}: SOURCE.json sha256 {expected_sha256!r} "
+                f"does not match source file sha256 {actual_sha256!r}"
+            )
+
+        payload = json.loads(file_bytes.decode("utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError(f"{path} must contain a JSON array")
+        actual_row_count = len(payload)
+        expected_row_count = entry.get("row_count")
+        if expected_row_count != actual_row_count:
+            raise ValueError(
+                f"{spec.name}: SOURCE.json row_count {expected_row_count!r} "
+                f"does not match source file row_count {actual_row_count}"
+            )
+
+
 def build_pack(
     *,
     sources: str | Path,
@@ -238,6 +324,8 @@ def build_pack(
     output_dir = Path(out)
 
     export = _source_export(source_dir)
+    _validate_source_export_identity(export)
+    _validate_source_export_tables(source_dir, export)
     as_of_str = str(export["as_of"])
     as_of_date = dt.date.fromisoformat(as_of_str)
     export_id = str(export["export_id"])
@@ -297,13 +385,14 @@ def build_pack(
 
     # --- SOURCE.json: carry P1 export provenance through + builder provenance ---
     code_sha256 = builder_code_sha256()
-    builder_commit = str(export.get("source_commit") or SNAPSHOT_SOURCE_COMMIT)
+    source_commit = str(export.get("source_commit") or SNAPSHOT_SOURCE_COMMIT)
+    builder_commit = BUILDER_COMMIT
     source_payload = {
         "builder_code_sha256": code_sha256,
         "builder_commit": builder_commit,
         "builder_name": BUILDER_NAME,
         "source_repo": SOURCE_REPO,
-        "source_commit": builder_commit,
+        "source_commit": source_commit,
         "p1_export": export,
     }
     write_json(output_dir / "SOURCE.json", source_payload)
@@ -329,7 +418,7 @@ def build_pack(
                     "export_id": export_id,
                 }
             ],
-            "sources": [{"source_repo": SOURCE_REPO, "source_commit": builder_commit}],
+            "sources": [{"source_repo": SOURCE_REPO, "source_commit": source_commit}],
         },
     )
 
@@ -347,7 +436,7 @@ def build_pack(
         "as_of": as_of_str,
         "contract_bundle_sha256": contract_bundle_sha256(),
         "source_repo": SOURCE_REPO,
-        "source_commit": builder_commit,
+        "source_commit": source_commit,
         "builder_commit": builder_commit,
         "builder_code_sha256": code_sha256,
         "source_export_id": export_id,

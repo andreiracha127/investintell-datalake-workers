@@ -40,7 +40,11 @@ def measure_all(pack_dir: str | Path) -> dict[str, Any]:
     grid_results = grid.measure_grid_results(prices, decisions, PARAMS)
     oos = {vid: grid.measure_oos_fold_report(prices, decisions, PARAMS, vid)
            for vid in grid.VARIANT_FACTORS}
-    return {"grid": grid_results, "oos": oos}
+    return {
+        "input_pack_id": pack.input_pack_id,
+        "grid": grid_results,
+        "oos": oos,
+    }
 
 
 def _fmt(x: float, nd: int = 4) -> str:
@@ -172,7 +176,10 @@ def generate(pack_dir: str | Path, harness_commit: str, out_dir: Path = OUT_DIR)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
 
-    manifest = grid.build_compression_grid_manifest(harness_commit)
+    manifest = grid.build_compression_grid_manifest(
+        harness_commit,
+        input_pack_id=measured["input_pack_id"],
+    )
     p = out_dir / "compression_grid_manifest.json"
     p.write_text(runner.canonical_json(manifest), encoding="utf-8", newline="")
     written.append(p)

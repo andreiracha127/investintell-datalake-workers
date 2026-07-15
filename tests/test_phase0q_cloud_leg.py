@@ -32,8 +32,9 @@ CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
-# A real 40-char commit SHA (the pack/contract provenance target); any valid hex works.
-HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
+# The clean source commit used for this prepared upload namespace.
+HARNESS_COMMIT = "130b754bdbf06ab92f80075933e8b9784bba3a27"
+STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 
 
 # --------------------------------------------------------------------------- #
@@ -87,6 +88,32 @@ def test_bundle_manifest_prefix_and_key(bundle_manifest):
 def test_bundle_build_invalid_commit_rejected(tmp_path):
     with pytest.raises(ValueError, match="40-char"):
         bundle_mod.build_bundle(tmp_path / "bad", "not-a-sha")
+
+
+def test_bundle_rejects_harness_commit_with_different_shipped_sources(tmp_path):
+    with pytest.raises(RuntimeError, match="immutable prefix refusal"):
+        bundle_mod.build_bundle(tmp_path / "stale-prefix", STALE_HARNESS_COMMIT)
+
+
+def test_bundle_rejects_non_ancestor_commit_with_identical_sources(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "marker.txt").write_text("same tree\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "head"], cwd=repo, check=True)
+    tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True
+    ).strip()
+    off_branch = subprocess.check_output(
+        ["git", "commit-tree", tree, "-m", "off branch"], cwd=repo, text=True
+    ).strip()
+
+    monkeypatch.setattr(bundle_mod, "REPO_ROOT", repo)
+    with pytest.raises(RuntimeError, match="not an ancestor"):
+        bundle_mod._verify_immutable_prefix_source_identity(off_branch)
 
 
 # --------------------------------------------------------------------------- #
@@ -424,3 +451,9 @@ def test_qc_project_workspace_scaffolding():
     assert (qc / "phase0q_cloud_leg.ipynb").is_file()
     # the notebook copy must match the package notebook byte-for-byte.
     assert (qc / "phase0q_cloud_leg.ipynb").read_bytes() == NOTEBOOK.read_bytes()
+    committed_manifest = json.loads(
+        (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
+    )
+    assert (qc / "object_store_manifest_key.txt").read_text(
+        encoding="utf-8"
+    ).strip() == committed_manifest["object_store_manifest_key"]

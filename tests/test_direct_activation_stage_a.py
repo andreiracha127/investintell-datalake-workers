@@ -393,6 +393,7 @@ def test_snapshot_manifest_equals_full_reconstruction() -> None:
     two file pins."""
     from harness.direct_activation import export_snapshot as es
     from harness.direct_activation import live_validation as lv
+    from scripts.p1_export import export_p1_sources as p1
 
     manifest = _load_strict(SNAPSHOT / "snapshot_manifest.json")
 
@@ -410,6 +411,13 @@ def test_snapshot_manifest_equals_full_reconstruction() -> None:
     assert manifest == expected
 
     assert manifest["pack_v2_sha256"] == lv.PACK_SHA256_PIN
+    assert manifest["provenance"] == {
+        "source": "production datalake (read-only)",
+        "db_service_id": p1.DB_SOURCE,
+        "db_name": "market",
+        "db_schema": "public",
+        "tables": ["eod_prices", "macro_observation_vintage"],
+    }
 
     # deterministic manifest: no wall-clock generation timestamp anywhere
     manifest_keys = {key for key, _ in _walk(manifest)}
@@ -534,43 +542,42 @@ def test_overlap_completeness_gate_rejects_a_delta_missing_an_overlap_bar() -> N
         lv.overlap_completeness_gate(pack_prices, holed)
 
 
-# --- 5b. DSN pin is a parsed-hostname check, not a substring check ----------------
+# --- 5b. DSN pin structurally binds the current GCloud production DB ---------------
 
-def test_dsn_pin_parses_hostname_and_rejects_lookalikes() -> None:
+def test_dsn_pin_accepts_only_gcloud_market_and_rejects_lookalikes() -> None:
     from harness.direct_activation import export_snapshot as es
+    from scripts.p1_export import export_p1_sources as p1
 
-    svc = es.PINNED_DB_SERVICE_ID
-    # the real prod shape: <service>.<project>.tsdb.cloud.timescale.com
+    host = p1.PINNED_GCLOUD_NLB_HOST
+    # The post-cutover production shape used by the P1 _002 exporter.
     es._assert_pinned_db_source(
-        f"postgresql://u:p@{svc}.proj1.tsdb.cloud.timescale.com:32648/tsdb")
-    # keyword-form DSN with the pinned host also passes (psycopg conninfo parse)
+        f"postgresql://u:p@{host}:5432/market")
+    # Keyword-form DSNs are parsed through libpq too; they are not URL-only.
     es._assert_pinned_db_source(
-        f"host={svc}.proj1.tsdb.cloud.timescale.com dbname=tsdb user=u")
+        f"host={host} dbname=market user=u")
 
-    # the service id anywhere EXCEPT the first hostname label must NOT satisfy the pin
+    # The GCloud pin anywhere except the effective single host must not pass. The
+    # legacy Tiger source is rejected after the production cutover.
     for bad in (
-        f"postgresql://{svc}:p@staging.example.com/tsdb",        # ...as username
-        f"postgresql://u:{svc}@staging.example.com/tsdb",        # ...as password
-        f"postgresql://u:p@staging.example.com/{svc}",           # ...as dbname
-        f"postgresql://u:p@evil.{svc}.example.com/tsdb",         # ...as later label
-        f"postgresql://u:p@{svc}evil.tsdb.cloud.timescale.com/tsdb",  # prefix-only
-        f"postgresql://u:p@{svc}.staging.example.com/tsdb",      # right 1st label, wrong domain
-        f"postgresql://u:p@{svc}.tsdb.cloud.timescale.com.evil.com/tsdb",  # suffix not at end
-        "postgresql://u:p@localhost/tsdb",                       # plain foreign host
-        f"dbname={svc}",                                         # hostless keyword DSN
+        "postgresql://u:p@t83f4np6x4.proj1.tsdb.cloud.timescale.com:32648/tsdb",
+        f"postgresql://{host}:p@staging.example.com/market",      # pin as username
+        f"postgresql://u:{host}@staging.example.com/market",      # pin as password
+        f"postgresql://u:p@staging.example.com/{host}",           # pin as dbname
+        f"postgresql://u:p@{host}.example.com/market",            # suffix lookalike
+        "postgresql://u:p@localhost/market",                      # foreign host
+        f"dbname={host}",                                        # hostless keyword DSN
         # comma-separated host LIST: libpq connects to the FIRST reachable host, so a
-        # staging host smuggled ahead of the pinned one must be refused (the whole list
-        # otherwise passes: first label matches, string ends with the pinned suffix)
-        f"host={svc}.staging.example.com,{svc}.proj1.tsdb.cloud.timescale.com dbname=tsdb",
+        # staging host smuggled alongside the pin must be refused.
+        f"host=staging.example.com,{host} dbname=market",
         # hostaddr override: libpq connects to that address regardless of the pinned
-        # host (host then only names the server for TLS), so it must be refused
-        f"host={svc}.proj1.tsdb.cloud.timescale.com hostaddr=203.0.113.7 dbname=tsdb",
-        # RIGHT host, WRONG database: a same-host scratch/staging DB must not pass, in
-        # URL form and keyword form...
-        f"postgresql://u:p@{svc}.proj1.tsdb.cloud.timescale.com/scratch",
-        f"host={svc}.proj1.tsdb.cloud.timescale.com dbname=scratch user=u",
+        # host, so any override is refused even when one side carries the pin.
+        f"host={host} hostaddr=203.0.113.7 dbname=market",
+        f"host=staging.example.com hostaddr={host} dbname=market",
+        # Right host, wrong database: GCloud's app and scratch DBs must not pass.
+        f"postgresql://u:p@{host}:5432/app",
+        f"host={host} dbname=investintell_alloc user=u",
         # ...and an OMITTED dbname (libpq would default it to the username) is refused
-        f"host={svc}.proj1.tsdb.cloud.timescale.com user=u",
+        f"host={host} user=u",
     ):
         with pytest.raises(es.SnapshotExportError):
             es._assert_pinned_db_source(bad)

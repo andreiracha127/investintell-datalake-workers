@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.phase0q import grid, runner, sleeve
+from harness.phase0q import generate_compression_grid, grid, runner, sleeve
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK_DIR = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
@@ -423,6 +423,31 @@ def test_manifest_governance_pins_and_provenance():
     assert prov["input_pack_sha256"] == grid.PACK_SHA256
     assert prov["contract_bundle_sha256"] == grid.CONTRACT_BUNDLE_V2_SHA256
     assert re.fullmatch(r"[0-9a-f]{7,40}", prov["harness_commit"])
+
+
+def test_generator_passes_verified_pack_id_to_manifest(monkeypatch, tmp_path):
+    verified_pack_id = runner.load_and_verify_pack(PACK_DIR).input_pack_id
+    monkeypatch.setattr(
+        generate_compression_grid,
+        "measure_all",
+        lambda _pack_dir: {
+            "input_pack_id": verified_pack_id,
+            "grid": {},
+            "oos": {},
+        },
+    )
+    monkeypatch.setattr(grid, "build_grid_results_payload", lambda *_args: {})
+    monkeypatch.setattr(grid, "build_oos_fold_report_payload", lambda *_args: {})
+    monkeypatch.setattr(
+        generate_compression_grid,
+        "build_tradeoff_summary_md",
+        lambda *_args: "",
+    )
+
+    generate_compression_grid.generate(PACK_DIR, "d1a35b7", tmp_path)
+
+    manifest = _json(tmp_path / "compression_grid_manifest.json")
+    assert manifest["provenance"]["input_pack_id"] == verified_pack_id
 
 
 def test_manifest_harness_commit_is_ancestor_of_head():

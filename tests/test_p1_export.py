@@ -143,9 +143,9 @@ def test_source_json_provenance_complete(tmp_path):
     conn, out_dir, _ = _run_export(tmp_path)
     source = _load(out_dir, "SOURCE.json")
 
-    assert source["export_id"] == "open_macro_v03_p1_sources_001"
+    assert source["export_id"] == "open_macro_v03_p1_sources_002"
     assert source["exported_at"] == "2026-07-01T12:00:00+00:00"
-    assert source["db_source"] == "tiger_t83f4np6x4"
+    assert source["db_source"] == "gcloud_timescale_sp_35.247.237.1"
     assert source["as_of"] == "2026-06-30"
     assert source["runtime_activation"] is False
     assert source["A5"] == "blocked"
@@ -221,6 +221,68 @@ def test_as_of_filter_params_passed(tmp_path):
     assert eod_params["as_of"] == "2026-06-30"
 
 
+def test_export_id_002_rejects_explicit_date_after_certified_cut_before_writing(tmp_path):
+    conn = FakeConn(macro_rows=_macro_rows(), eod_rows=_eod_rows())
+    out_dir = tmp_path / "after-cut"
+
+    with pytest.raises(ValueError, match="corrected export .*_002.*2026-06-30"):
+        p1.export_p1_sources(
+            conn,
+            out_dir,
+            as_of=dt.date(2026, 7, 15),
+            now=NOW,
+        )
+
+    assert conn.executed == []
+    assert not out_dir.exists()
+
+
+def test_cli_default_after_certified_cut_is_rejected_before_db_resolution(
+    monkeypatch, tmp_path, capsys
+):
+    from src import db
+
+    class AfterCutDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 15, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(p1.dt, "datetime", AfterCutDatetime)
+
+    def _must_not_resolve_dsn():  # pragma: no cover - reaching this is the failure
+        raise AssertionError("DSN resolution must not run for an invalid certified cut")
+
+    monkeypatch.setattr(db, "resolve_dsn", _must_not_resolve_dsn)
+
+    with pytest.raises(SystemExit):
+        p1.main(["--out", str(tmp_path / "default-after-cut")])
+
+    error = capsys.readouterr().err
+    assert "corrected export" in error
+    assert "2026-06-30" in error
+
+
+def test_cli_explicit_date_after_certified_cut_is_rejected_before_db_resolution(
+    monkeypatch, tmp_path, capsys
+):
+    from src import db
+
+    def _must_not_resolve_dsn():  # pragma: no cover - reaching this is the failure
+        raise AssertionError("DSN resolution must not run for an invalid certified cut")
+
+    monkeypatch.setattr(db, "resolve_dsn", _must_not_resolve_dsn)
+
+    with pytest.raises(SystemExit):
+        p1.main([
+            "--out", str(tmp_path / "explicit-after-cut"),
+            "--as-of", "2026-07-15",
+        ])
+
+    error = capsys.readouterr().err
+    assert "corrected export" in error
+    assert "2026-06-30" in error
+
+
 # -- (6) SEED_SOURCES import + sleeve tickers pinned --------------------------
 
 def test_seed_series_ids_come_from_seed_sources(tmp_path):
@@ -277,14 +339,86 @@ def test_eod_sql_selects_only_real_schema_columns():
     assert "adj_close AS adjusted_close" in EOD_PRICES_SQL
 
 
-def test_assert_pinned_db_source_accepts_tiger_service_dsn():
-    """SOURCE.json provenance must only ever be stamped after verifying the DSN
-    actually references the pinned Tiger service (regression: db_source was an
-    unconditional constant, so a staging/local export would carry prod provenance)."""
+def test_assert_pinned_db_source_accepts_gcloud_nlb_dsn():
+    """The corrected _002 export is certified only against the GCloud source."""
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = "postgresql://user:secret@35.247.237.1:5432/investintell_alloc"
+    assert assert_pinned_db_source(dsn) == "gcloud_timescale_sp_35.247.237.1"
+
+
+def test_assert_pinned_db_source_rejects_legacy_tiger_dsn():
     from scripts.p1_export.export_p1_sources import assert_pinned_db_source
 
     dsn = "postgresql://user:secret@t83f4np6x4.abc123.tsdb.cloud.timescale.com:32648/tsdb"
-    assert assert_pinned_db_source(dsn) == "tiger_t83f4np6x4"
+    with pytest.raises(SystemExit, match="corrected export .*_002.*GCloud"):
+        assert_pinned_db_source(dsn)
+
+
+def test_export_id_002_rejects_legacy_tiger_provenance_before_writing(tmp_path):
+    conn = FakeConn(macro_rows=_macro_rows(), eod_rows=_eod_rows())
+    out_dir = tmp_path / "legacy-tiger"
+
+    with pytest.raises(ValueError, match="corrected export .*_002.*GCloud"):
+        p1.export_p1_sources(
+            conn,
+            out_dir,
+            as_of=AS_OF,
+            now=NOW,
+            db_source="tiger_t83f4np6x4",
+        )
+
+    assert conn.executed == []
+    assert not out_dir.exists()
+
+
+def test_assert_pinned_db_source_accepts_gcloud_host():
+    from scripts.p1_export.export_p1_sources import (
+        PINNED_GCLOUD_NLB_HOST,
+        assert_pinned_db_source,
+    )
+
+    dsn = f"postgresql://user:secret@{PINNED_GCLOUD_NLB_HOST}:5432/investintell"
+    assert assert_pinned_db_source(dsn) == f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+
+
+def test_assert_pinned_db_source_rejects_multi_host_dsn():
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = (
+        "postgresql://user:secret@35.247.237.1:5432,"
+        "staging.example.com:5432/investintell"
+    )
+    with pytest.raises(SystemExit, match="multi-host"):
+        assert_pinned_db_source(dsn)
+
+
+def test_assert_pinned_db_source_rejects_hostaddr_override():
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = (
+        "postgresql://user:secret@35.247.237.1:5432/investintell"
+        "?hostaddr=203.0.113.7"
+    )
+    with pytest.raises(SystemExit, match="hostaddr"):
+        assert_pinned_db_source(dsn)
+
+
+def test_assert_pinned_db_source_rejects_gcloud_pin_outside_host():
+    import pytest as _pytest
+
+    from scripts.p1_export.export_p1_sources import (
+        PINNED_GCLOUD_NLB_HOST,
+        assert_pinned_db_source,
+    )
+
+    dsns = (
+        f"postgresql://user:{PINNED_GCLOUD_NLB_HOST}@staging.example.com:5432/investintell",
+        f"postgresql://user:secret@staging.example.com:5432/investintell?target={PINNED_GCLOUD_NLB_HOST}",
+    )
+    for dsn in dsns:
+        with _pytest.raises(SystemExit, match="pinned GCloud NLB"):
+            assert_pinned_db_source(dsn)
 
 
 def test_assert_pinned_db_source_rejects_foreign_dsn():
@@ -292,7 +426,7 @@ def test_assert_pinned_db_source_rejects_foreign_dsn():
 
     from scripts.p1_export.export_p1_sources import assert_pinned_db_source
 
-    with _pytest.raises(SystemExit, match="t83f4np6x4"):
+    with _pytest.raises(SystemExit, match="35.247.237.1"):
         assert_pinned_db_source("postgresql://user:secret@localhost:5434/investintell_alloc")
 
 
@@ -309,5 +443,5 @@ def test_cli_refuses_to_connect_when_dsn_is_not_pinned(monkeypatch, tmp_path):
 
     monkeypatch.setattr(db, "connect", _must_not_connect)
 
-    with _pytest.raises(SystemExit, match="t83f4np6x4"):
-        mod.main(["--out", str(tmp_path)])
+    with _pytest.raises(SystemExit, match="35.247.237.1"):
+        mod.main(["--out", str(tmp_path), "--as-of", "2026-06-30"])

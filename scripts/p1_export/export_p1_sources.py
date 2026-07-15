@@ -33,21 +33,57 @@ from typing import Any, Mapping, Sequence
 from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
 
-EXPORT_ID = "open_macro_v03_p1_sources_001"
-PINNED_DB_SERVICE_ID = "t83f4np6x4"
-DB_SOURCE = f"tiger_{PINNED_DB_SERVICE_ID}"
+EXPORT_ID = "open_macro_v03_p1_sources_002"
+CERTIFIED_CUT_DATE = dt.date(2026, 6, 30)
+# Post-cutover (Plano 2c, executado 2026-07-14) o data-lake de produção é o
+# TimescaleDB no VM gcloud timescale-sp atrás do NLB mTLS. A recertificação
+# _002 corrige vintages pré-cut e, portanto, só é válida para essa origem.
+PINNED_GCLOUD_NLB_HOST = "35.247.237.1"
+DB_SOURCE = f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+
+
+def assert_certified_cut(as_of: dt.date) -> dt.date:
+    """Bind the corrected export identity to its one certified cut date."""
+    if as_of != CERTIFIED_CUT_DATE:
+        raise ValueError(
+            f"refusing corrected export {EXPORT_ID}: as_of must equal the "
+            f"certified cut {CERTIFIED_CUT_DATE.isoformat()}, got {as_of.isoformat()}"
+        )
+    return as_of
 
 
 def assert_pinned_db_source(dsn: str) -> str:
-    """Refuse to stamp prod provenance unless the DSN references the pinned
-    Tiger service. A staging/local export must never be indistinguishable
-    from a prod export in SOURCE.json."""
-    if PINNED_DB_SERVICE_ID not in dsn:
+    """Refuse to stamp the corrected export unless libpq targets its GCloud source."""
+    from psycopg import conninfo
+
+    try:
+        parsed = conninfo.conninfo_to_dict(dsn)
+    except Exception as exc:
         raise SystemExit(
-            "refusing export: DSN does not reference pinned Tiger service "
-            f"{PINNED_DB_SERVICE_ID}; SOURCE.json provenance would be false"
+            f"refusing corrected export {EXPORT_ID}: DSN cannot be parsed as a "
+            f"connection to the pinned GCloud NLB {PINNED_GCLOUD_NLB_HOST}; "
+            "SOURCE.json provenance would be false"
+        ) from exc
+
+    host = str(parsed.get("host") or "")
+    if "," in host:
+        raise SystemExit(
+            f"refusing corrected export {EXPORT_ID}: DSN host {host!r} is a "
+            "multi-host list; exactly one pinned GCloud NLB is required"
         )
-    return DB_SOURCE
+    hostaddr = parsed.get("hostaddr")
+    if hostaddr:
+        raise SystemExit(
+            f"refusing corrected export {EXPORT_ID}: DSN sets "
+            f"hostaddr={hostaddr!r}; connection provenance cannot be trusted"
+        )
+    if host == PINNED_GCLOUD_NLB_HOST:
+        return DB_SOURCE
+    raise SystemExit(
+        f"refusing corrected export {EXPORT_ID}: DSN does not reference "
+        f"the pinned GCloud NLB {PINNED_GCLOUD_NLB_HOST}; SOURCE.json "
+        "provenance would be false"
+    )
 SCHEMA_VERSION = 1
 
 # Reference sleeve tickers pinned by
@@ -171,12 +207,19 @@ def _table_provenance(*, table: str, file_bytes: bytes, rows: Sequence[Mapping[s
 
 
 def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
-                      now: dt.datetime) -> dict[str, Any]:
+                      now: dt.datetime, db_source: str = DB_SOURCE) -> dict[str, Any]:
     """Export the P1 source snapshots into ``out_dir`` and return SOURCE.json.
 
     ``conn`` is any connection-like object exposing ``cursor()`` (psycopg in
     the CLI path, a fake in tests). Only SELECT statements are ever issued.
     """
+    assert_certified_cut(as_of)
+    if db_source != DB_SOURCE:
+        raise ValueError(
+            f"refusing corrected export {EXPORT_ID}: db_source must be the "
+            f"certified GCloud source {DB_SOURCE}, got {db_source!r}"
+        )
+
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -200,7 +243,7 @@ def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
     source = {
         "export_id": EXPORT_ID,
         "exported_at": _utc_iso(now),
-        "db_source": DB_SOURCE,
+        "db_source": db_source,
         "as_of": as_of.isoformat(),
         "runtime_activation": False,
         "A5": "blocked",
@@ -233,18 +276,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                              "defaults to the real current time")
     args = parser.parse_args(argv)
 
-    as_of = (dt.date.fromisoformat(args.as_of) if args.as_of
-             else dt.datetime.now(dt.timezone.utc).date())
+    try:
+        as_of = (dt.date.fromisoformat(args.as_of) if args.as_of
+                 else dt.datetime.now(dt.timezone.utc).date())
+        assert_certified_cut(as_of)
+    except ValueError as exc:
+        parser.error(str(exc))
     now = (dt.datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now
            else dt.datetime.now(dt.timezone.utc))
 
     from src import db
 
     dsn = db.resolve_dsn()
-    assert_pinned_db_source(dsn)
+    db_source = assert_pinned_db_source(dsn)
     conn = db.connect(dsn)
     try:
-        source = export_p1_sources(conn, Path(args.out), as_of=as_of, now=now)
+        source = export_p1_sources(conn, Path(args.out), as_of=as_of, now=now,
+                                   db_source=db_source)
     finally:
         conn.close()
 

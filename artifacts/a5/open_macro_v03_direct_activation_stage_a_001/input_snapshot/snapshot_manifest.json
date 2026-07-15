@@ -11,9 +11,11 @@
    "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"
   }
  },
- "pack_v2_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
+ "pack_v2_sha256": "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804",
  "provenance": {
-  "db_service_id": "t83f4np6x4",
+  "db_name": "market",
+  "db_schema": "public",
+  "db_service_id": "gcloud_timescale_sp_35.247.237.1",
   "source": "production datalake (read-only)",
   "tables": [
    "eod_prices",

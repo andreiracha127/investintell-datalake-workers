@@ -6,11 +6,13 @@ real-pack coverage / governance / hash-tree / determinism / verify tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from harness.p1_pack import build as p1_build
@@ -18,13 +20,46 @@ from harness.p1_pack import verifier as p1_verifier
 from harness.p1_pack.contract import P1_TABLE_SPECS, P1_TABLES_BY_NAME
 
 ROOT = Path(__file__).resolve().parents[1]
-P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03"
-REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
+P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03_002"
+REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
+CERTIFIED_PACK_IDENTITIES = (
+    ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
+    ("open_macro_v03_certified_input_pack_003", "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"),
+)
 
 
 def _read(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _builder_code_sha256_at_commit(commit: str) -> str:
+    from src.input_packs.hashing import canonical_json_sha256
+
+    paths = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commit, "--", "harness/p1_pack"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    files = []
+    builder_paths = (
+        path
+        for path in paths
+        if Path(path).parent.as_posix() == "harness/p1_pack" and path.endswith(".py")
+    )
+    for path in sorted(builder_paths):
+        content = subprocess.run(
+            ["git", "show", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").replace("\r\n", "\n")
+        files.append(
+            {"path": path, "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+        )
+    return canonical_json_sha256({"builder_name": p1_build.BUILDER_NAME, "files": files})
 
 
 # ---------------------------------------------------------------------------
@@ -57,17 +92,28 @@ def _tiny_sources(tmp_path: Path) -> Path:
         {"ticker": "DBC", "date": "2006-02-06", "close": 24.2, "adjusted_close": 19.1, "volume": 500},
         {"ticker": "SPY", "date": "2026-07-15", "close": 500.0, "adjusted_close": 500.0, "volume": 900},
     ]
-    (src / "macro_observation_vintage.json").write_text(json.dumps(macro), encoding="utf-8")
-    (src / "eod_prices.json").write_text(json.dumps(eod), encoding="utf-8")
+    table_rows = {
+        "macro_observation_vintage": macro,
+        "eod_prices": eod,
+    }
+    for table, rows in table_rows.items():
+        (src / f"{table}.json").write_text(json.dumps(rows), encoding="utf-8")
     (src / "SOURCE.json").write_text(
         json.dumps(
             {
                 "as_of": "2026-06-30",
-                "export_id": "tiny_export_001",
+                "export_id": "open_macro_v03_p1_sources_002",
                 "source_commit": "abcdef1234567890abcdef1234567890abcdef12",
-                "db_source": "tiger_test",
+                "db_source": "gcloud_timescale_sp_35.247.237.1",
                 "schema_version": 1,
-                "tables": [],
+                "tables": [
+                    {
+                        "table": table,
+                        "sha256": hashlib.sha256((src / f"{table}.json").read_bytes()).hexdigest(),
+                        "row_count": len(rows),
+                    }
+                    for table, rows in table_rows.items()
+                ],
             }
         ),
         encoding="utf-8",
@@ -81,6 +127,60 @@ def test_contract_declares_two_p1_tables():
     mov = P1_TABLES_BY_NAME["macro_observation_vintage"]
     assert mov.key_columns == ("series_id", "observation_period", "vintage_date")
     assert P1_TABLES_BY_NAME["eod_prices"].key_columns == ("ticker", "date")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("export_id", "open_macro_v03_p1_sources_001", "corrected source export"),
+        ("db_source", "tiger_t83f4np6x4", "GCloud source"),
+    ],
+)
+def test_builder_rejects_legacy_source_export_identity(
+    tmp_path, field, value, message
+):
+    src = _tiny_sources(tmp_path)
+    source = _read(src / "SOURCE.json")
+    source[field] = value
+    (src / "SOURCE.json").write_text(json.dumps(source), encoding="utf-8")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=message):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
+
+
+def test_builder_rejects_source_table_edited_after_export(tmp_path):
+    src = _tiny_sources(tmp_path)
+    table = src / "macro_observation_vintage.json"
+    table.write_bytes(table.read_bytes() + b"\n")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=r"macro_observation_vintage.*sha256"):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sha256", "0" * 64),
+        ("row_count", 0),
+    ],
+)
+def test_builder_rejects_stale_source_table_pins(tmp_path, field, value):
+    src = _tiny_sources(tmp_path)
+    source = _read(src / "SOURCE.json")
+    source["tables"][0][field] = value
+    (src / "SOURCE.json").write_text(json.dumps(source), encoding="utf-8")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=rf"macro_observation_vintage.*{field}"):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
 
 
 def test_builder_filters_post_as_of_and_sorts(tmp_path):
@@ -123,8 +223,8 @@ def test_builder_pins_v2_bundle_and_governance(tmp_path):
     result = p1_build.build_pack(sources=src, out=out)
     manifest = _read(out / "manifest.json")
     assert manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
-    assert manifest["input_pack_version"] == 2
-    assert manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
+    assert manifest["input_pack_version"] == 3
+    assert manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
     assert manifest["A5"] == "blocked"
     assert manifest["runtime_activation"] is False
     assert manifest["activation_allowed"] is False
@@ -132,7 +232,7 @@ def test_builder_pins_v2_bundle_and_governance(tmp_path):
     assert manifest["allocator_publish"] is False
     assert manifest["db_write_mode"] == "none"
     assert manifest["classification"] == "metric_evidence_only"
-    assert manifest["source_export_id"] == "tiny_export_001"
+    assert manifest["source_export_id"] == "open_macro_v03_p1_sources_002"
     assert result["input_pack_sha256"] == manifest["input_pack_sha256"]
 
 
@@ -141,8 +241,66 @@ def test_builder_carries_p1_export_provenance(tmp_path):
     out = tmp_path / "pack"
     p1_build.build_pack(sources=src, out=out)
     source = _read(out / "SOURCE.json")
-    assert source["p1_export"]["export_id"] == "tiny_export_001"
+    assert source["p1_export"]["export_id"] == "open_macro_v03_p1_sources_002"
     assert source["builder_name"] == "certified-input-pack-builder-p1"
+    assert source["source_commit"] == "abcdef1234567890abcdef1234567890abcdef12"
+    assert source["builder_commit"] == p1_build.BUILDER_COMMIT
+
+
+def test_builder_provenance_pins_reachable_source_and_builder_commits():
+    pins = (
+        (p1_build.SNAPSHOT_SOURCE_COMMIT, "fixtures/p1_sources/open_macro_v03_002/SOURCE.json"),
+        (p1_build.BUILDER_COMMIT, "harness/p1_pack/build.py"),
+    )
+    for commit, path in pins:
+        subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
+            cwd=ROOT,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=True,
+        )
+
+    builder_source = subprocess.run(
+        ["git", "show", f"{p1_build.BUILDER_COMMIT}:harness/p1_pack/build.py"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert 'INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"' in builder_source
+
+
+def test_real_pack_builder_hash_matches_declared_builder_commit():
+    manifest = _read(REAL_PACK / "manifest.json")
+    source = _read(REAL_PACK / "SOURCE.json")
+
+    expected = _builder_code_sha256_at_commit(manifest["builder_commit"])
+    assert manifest["builder_code_sha256"] == expected
+    assert source["builder_commit"] == manifest["builder_commit"]
+    assert source["builder_code_sha256"] == expected
+
+
+def test_builder_keeps_snapshot_fallback_separate_from_builder_commit(tmp_path):
+    src = _tiny_sources(tmp_path)
+    export = _read(src / "SOURCE.json")
+    del export["source_commit"]
+    (src / "SOURCE.json").write_text(json.dumps(export), encoding="utf-8")
+
+    out = tmp_path / "pack"
+    p1_build.build_pack(sources=src, out=out)
+
+    source = _read(out / "SOURCE.json")
+    manifest = _read(out / "manifest.json")
+    provenance = _read(out / "provenance.json")
+    assert source["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert manifest["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert provenance["sources"][0]["source_commit"] == p1_build.SNAPSHOT_SOURCE_COMMIT
+    assert source["builder_commit"] == p1_build.BUILDER_COMMIT
+    assert manifest["builder_commit"] == p1_build.BUILDER_COMMIT
 
 
 def test_builder_output_verifies(tmp_path):
@@ -210,9 +368,24 @@ def test_real_pack_verifies():
     assert result["input_pack_sha256_match"] is True
 
 
+def test_real_pack_manifest_satisfies_embedded_schema():
+    jsonschema.validate(
+        _read(REAL_PACK / "manifest.json"),
+        _read(REAL_PACK / "schemas" / "input_pack_manifest.schema.json"),
+    )
+
+
+@pytest.mark.parametrize(("pack_id", "pack_sha256"), CERTIFIED_PACK_IDENTITIES)
+def test_verifier_reports_verified_pack_identity(pack_id, pack_sha256):
+    result = p1_verifier.verify_pack(ROOT / "fixtures" / "p1_packs" / pack_id)
+
+    assert result["ok"], json.dumps(result, indent=2)
+    assert (result["input_pack_id"], result["actual_input_pack_sha256"]) == (pack_id, pack_sha256)
+
+
 def test_real_pack_governance_pins(real_manifest):
-    assert real_manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
-    assert real_manifest["input_pack_version"] == 2
+    assert real_manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
+    assert real_manifest["input_pack_version"] == 3
     assert real_manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
     assert real_manifest["A5"] == "blocked"
     assert real_manifest["runtime_activation"] is False
@@ -369,5 +542,5 @@ def test_cli_builds_pack(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["input_pack_id"] == "open_macro_v03_certified_input_pack_002"
+    assert payload["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
     assert p1_verifier.verify_pack(out)["ok"]

@@ -579,6 +579,51 @@ def _predrift_check_all_sources() -> None:
         read_source_with_drift_refusal(rel)
 
 
+def _verify_immutable_prefix_source_identity(harness_commit: str) -> None:
+    """Require a reachable ancestor whose shipped source bytes match ``HEAD``."""
+    quant_core_rels = [f"{QUANT_CORE_SRC_ROOT}/{rel}" for rel in QUANT_CORE_SOURCE_FILES]
+    shipped_sources = (
+        *HARNESS_SOURCE_FILES,
+        *SRC_SOURCE_FILES,
+        *quant_core_rels,
+        *POLICY_ARTIFACT_FILES,
+    )
+    try:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", harness_commit, "HEAD"],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if ancestry.returncode == 1:
+            raise RuntimeError(
+                "immutable prefix refusal: harness_commit is not an ancestor of git HEAD"
+            )
+        if ancestry.returncode != 0:
+            raise RuntimeError(
+                "immutable prefix refusal: cannot verify harness_commit ancestry: "
+                f"{ancestry.stderr.strip()}"
+            )
+        changed = subprocess.check_output(
+            ["git", "diff", "--name-only", harness_commit, "HEAD", "--", *shipped_sources],
+            cwd=REPO_ROOT,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).splitlines()
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        raise RuntimeError(
+            f"immutable prefix refusal: cannot compare harness_commit {harness_commit} "
+            "with git HEAD"
+        ) from exc
+    if changed:
+        raise RuntimeError(
+            "immutable prefix refusal: harness_commit does not identify the shipped "
+            f"git HEAD source bytes; changed paths: {', '.join(changed)}"
+        )
+
+
 def _object_files_manifest(
     bundle_dir: Path, prefix: str, relative_paths: list[str]
 ) -> dict[str, dict[str, Any]]:
@@ -606,7 +651,8 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
 
     NO network. NO lean. NO upload. Writes only ``bundle_dir`` (cleared first for a
     byte-identical rebuild). ``harness_commit`` is the 40-char SHA that produced the
-    committed local-leg evidence; the immutable prefix pins it.
+    committed local-leg evidence and the shipped source bytes; the immutable prefix
+    pins it.
     """
     if len(harness_commit) != 40 or not all(c in "0123456789abcdef" for c in harness_commit):
         raise ValueError(f"harness_commit must be a 40-char lowercase hex SHA: {harness_commit!r}")
@@ -617,6 +663,7 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
     # Drift refusal FIRST — before the (expensive) live harness run — so a tampered
     # source aborts immediately instead of after a full grid computation.
     _predrift_check_all_sources()
+    _verify_immutable_prefix_source_identity(harness_commit)
 
     expected = read_local_leg_expected_hashes(harness_commit)
     pack_sha = expected["input_pack_sha256"]

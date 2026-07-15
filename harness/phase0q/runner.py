@@ -85,7 +85,6 @@ OOS_TEST_MONTHS = 12
 OOS_STEP_MONTHS = 12
 
 CONTRACT_BUNDLE_SHA256 = pack_verifier.CONTRACT_BUNDLE_SHA256
-INPUT_PACK_ID = pack_verifier.INPUT_PACK_ID
 
 # Tranche W2: the regime-timeline gate policy — RATIFIED by the quant_owner
 # (Andrei Rachadel) on 2026-07-11 with the bounds exactly as proposed. A ratified
@@ -214,13 +213,14 @@ GOVERNANCE_PINS = {
 @dataclass(frozen=True)
 class LoadedPack:
     root: Path
+    input_pack_id: str
     input_pack_sha256: str
     macro_rows: list[dict[str, Any]]
     eod_rows: list[dict[str, Any]]
 
 
 def load_and_verify_pack(pack_dir: str | Path) -> LoadedPack:
-    """Verify the pack v2 offline and load its two source tables. Refuse on mismatch."""
+    """Verify a certified P1 pack offline and load its two source tables."""
     root = Path(pack_dir)
     report = pack_verifier.verify_pack(root)
     if not report.get("ok"):
@@ -231,6 +231,7 @@ def load_and_verify_pack(pack_dir: str | Path) -> LoadedPack:
     eod_rows = _load_table(root, "eod_prices")
     return LoadedPack(
         root=root,
+        input_pack_id=report["input_pack_id"],
         input_pack_sha256=report["actual_input_pack_sha256"],
         macro_rows=macro_rows,
         eod_rows=eod_rows,
@@ -875,7 +876,7 @@ def build_gate_report(pack, config, cells, folds, timeline=None) -> dict[str, An
         "execution_legs": {"local_python_pure": "complete", "qc_research_object_store": "pending"},
         "governance": GOVERNANCE_PINS,
         "provenance": {
-            "input_pack_id": INPUT_PACK_ID,
+            "input_pack_id": pack.input_pack_id,
             "input_pack_sha256": pack.input_pack_sha256,
             "contract_bundle_sha256": CONTRACT_BUNDLE_SHA256,
             "harness_commit": config.harness_commit,
