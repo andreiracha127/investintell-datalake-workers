@@ -221,6 +221,68 @@ def test_as_of_filter_params_passed(tmp_path):
     assert eod_params["as_of"] == "2026-06-30"
 
 
+def test_export_id_002_rejects_explicit_date_after_certified_cut_before_writing(tmp_path):
+    conn = FakeConn(macro_rows=_macro_rows(), eod_rows=_eod_rows())
+    out_dir = tmp_path / "after-cut"
+
+    with pytest.raises(ValueError, match="corrected export .*_002.*2026-06-30"):
+        p1.export_p1_sources(
+            conn,
+            out_dir,
+            as_of=dt.date(2026, 7, 15),
+            now=NOW,
+        )
+
+    assert conn.executed == []
+    assert not out_dir.exists()
+
+
+def test_cli_default_after_certified_cut_is_rejected_before_db_resolution(
+    monkeypatch, tmp_path, capsys
+):
+    from src import db
+
+    class AfterCutDatetime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 15, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(p1.dt, "datetime", AfterCutDatetime)
+
+    def _must_not_resolve_dsn():  # pragma: no cover - reaching this is the failure
+        raise AssertionError("DSN resolution must not run for an invalid certified cut")
+
+    monkeypatch.setattr(db, "resolve_dsn", _must_not_resolve_dsn)
+
+    with pytest.raises(SystemExit):
+        p1.main(["--out", str(tmp_path / "default-after-cut")])
+
+    error = capsys.readouterr().err
+    assert "corrected export" in error
+    assert "2026-06-30" in error
+
+
+def test_cli_explicit_date_after_certified_cut_is_rejected_before_db_resolution(
+    monkeypatch, tmp_path, capsys
+):
+    from src import db
+
+    def _must_not_resolve_dsn():  # pragma: no cover - reaching this is the failure
+        raise AssertionError("DSN resolution must not run for an invalid certified cut")
+
+    monkeypatch.setattr(db, "resolve_dsn", _must_not_resolve_dsn)
+
+    with pytest.raises(SystemExit):
+        p1.main([
+            "--out", str(tmp_path / "explicit-after-cut"),
+            "--as-of", "2026-07-15",
+        ])
+
+    error = capsys.readouterr().err
+    assert "corrected export" in error
+    assert "2026-06-30" in error
+
+
 # -- (6) SEED_SOURCES import + sleeve tickers pinned --------------------------
 
 def test_seed_series_ids_come_from_seed_sources(tmp_path):
@@ -382,4 +444,4 @@ def test_cli_refuses_to_connect_when_dsn_is_not_pinned(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "connect", _must_not_connect)
 
     with _pytest.raises(SystemExit, match="35.247.237.1"):
-        mod.main(["--out", str(tmp_path)])
+        mod.main(["--out", str(tmp_path), "--as-of", "2026-06-30"])

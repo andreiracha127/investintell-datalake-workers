@@ -34,11 +34,22 @@ from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
 
 EXPORT_ID = "open_macro_v03_p1_sources_002"
+CERTIFIED_CUT_DATE = dt.date(2026, 6, 30)
 # Post-cutover (Plano 2c, executado 2026-07-14) o data-lake de produção é o
 # TimescaleDB no VM gcloud timescale-sp atrás do NLB mTLS. A recertificação
 # _002 corrige vintages pré-cut e, portanto, só é válida para essa origem.
 PINNED_GCLOUD_NLB_HOST = "35.247.237.1"
 DB_SOURCE = f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
+
+
+def assert_certified_cut(as_of: dt.date) -> dt.date:
+    """Bind the corrected export identity to its one certified cut date."""
+    if as_of != CERTIFIED_CUT_DATE:
+        raise ValueError(
+            f"refusing corrected export {EXPORT_ID}: as_of must equal the "
+            f"certified cut {CERTIFIED_CUT_DATE.isoformat()}, got {as_of.isoformat()}"
+        )
+    return as_of
 
 
 def assert_pinned_db_source(dsn: str) -> str:
@@ -202,6 +213,7 @@ def export_p1_sources(conn: Any, out_dir: Path | str, *, as_of: dt.date,
     ``conn`` is any connection-like object exposing ``cursor()`` (psycopg in
     the CLI path, a fake in tests). Only SELECT statements are ever issued.
     """
+    assert_certified_cut(as_of)
     if db_source != DB_SOURCE:
         raise ValueError(
             f"refusing corrected export {EXPORT_ID}: db_source must be the "
@@ -264,8 +276,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                              "defaults to the real current time")
     args = parser.parse_args(argv)
 
-    as_of = (dt.date.fromisoformat(args.as_of) if args.as_of
-             else dt.datetime.now(dt.timezone.utc).date())
+    try:
+        as_of = (dt.date.fromisoformat(args.as_of) if args.as_of
+                 else dt.datetime.now(dt.timezone.utc).date())
+        assert_certified_cut(as_of)
+    except ValueError as exc:
+        parser.error(str(exc))
     now = (dt.datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now
            else dt.datetime.now(dt.timezone.utc))
 
