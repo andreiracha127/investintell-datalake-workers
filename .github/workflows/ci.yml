@@ -5,7 +5,10 @@ on:
   push:
     branches:
       - main
-      - feat/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -28,21 +31,80 @@ jobs:
         with:
           python-version: "3.13"
 
+      - name: Detect changed paths
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: >-
+          python scripts/ci/classify_changes.py
+          --base "$BASE_SHA"
+          --head "$HEAD_SHA"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Record documentation-only validation
+        if: >-
+          steps.changes.outputs.nport_changed == 'false' &&
+          steps.changes.outputs.quant_changed == 'false'
+        run: echo "No governed N-PORT or quant compute surface changed."
+
       - name: Install dependencies
+        if: >-
+          steps.changes.outputs.nport_changed == 'true' ||
+          steps.changes.outputs.quant_changed == 'true'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.quant-engine.lock pytest
+          python -m pip install -r requirements.quant-engine.lock pytest ruff==0.15.9
+
+      - name: Verify Stage A binding
+        if: steps.changes.outputs.quant_changed == 'true'
+        run: >-
+          python -m pytest
+          tests/test_direct_activation_stage_a.py::test_reproducibility_record_pins_a_clean_16_run_reproduction
+          -q
+
+      - name: Run focused N-PORT tests
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: >-
+          python -m pytest
+          tests/test_nport_lookthrough.py
+          tests/test_nport_cusip_enrichment.py
+          tests/test_load_nport_fund_flows.py
+          -q
+
+      - name: Lint N-PORT modules
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: >-
+          ruff check
+          src/workers/nport_lookthrough.py
+          src/workers/nport_cusip_enrichment.py
+          scripts/load_nport_fund_flows.py
+          tests/test_nport_lookthrough.py
+          tests/test_nport_cusip_enrichment.py
+          tests/test_load_nport_fund_flows.py
+
+      - name: Compile N-PORT modules
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: >-
+          python -m compileall -q
+          src/workers/nport_lookthrough.py
+          src/workers/nport_cusip_enrichment.py
+          scripts/load_nport_fund_flows.py
 
       - name: Verify certified input pack
+        if: steps.changes.outputs.quant_changed == 'true'
         run: python docker/railway-ci/verify_input_pack.py
 
       - name: Verify contract bundle
+        if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/contract_bundle.py verify
 
       - name: Verify contract bundle v2
+        if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/contract_bundle.py verify --bundle-dir contracts/quant-engine/v2
 
       - name: Run governance and quant-engine tests
+        if: steps.changes.outputs.quant_changed == 'true'
         run: >-
           python -m pytest
           tests/input_packs
@@ -66,6 +128,8 @@ jobs:
           tests/test_contract_metric_backtest.py
           tests/test_p1_pack.py
           tests/test_remote_ci_runner.py
+          tests/test_ci_path_scope.py
+          tests/test_stage_a_compute_manifest.py
           tests/test_phase0q_harness.py
           tests/test_phase0q_gate_amendments.py
           tests/test_compression_grid.py
@@ -80,6 +144,7 @@ jobs:
           -q
 
       - name: Compile Python modules
+        if: steps.changes.outputs.quant_changed == 'true'
         run: >-
           python -m compileall
           src/calibration_candidate.py
@@ -91,4 +156,5 @@ jobs:
           harness/phase0q_cloud/run_cloud_backtest.py
 
       - name: Verify calibration artifacts
+        if: steps.changes.outputs.quant_changed == 'true'
         run: python docker/railway-ci/verify_calibration_artifacts.py
