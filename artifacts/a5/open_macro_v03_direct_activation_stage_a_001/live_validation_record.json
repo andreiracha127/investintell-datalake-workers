@@ -59,14 +59,14 @@
   "delta_price_rows": 30,
   "delta_vintage_rows": 0,
   "delta_vintages_note": "legitimately EMPTY: the monthly basket's max available_at (2026-06-15, INDPRO) predates the pack cut (2026-06-30); July releases are not out yet and MICH sits inside its documented publication lag",
-  "pack_v2_sha256": "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad"
+  "pack_v2_sha256": "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
  },
  "provenance": {
   "modules": [
    "harness.phase0q.decision",
    "harness.phase0q.sleeve"
   ],
-  "worker_commit": "6f122bdaded5d2b8456719c4b6f37281f82fd92c"
+  "worker_commit": "782d9835098a08bb82f722feb5bd3e7903dfa103"
  },
  "schema_version": 1,
  "stage": "A",
