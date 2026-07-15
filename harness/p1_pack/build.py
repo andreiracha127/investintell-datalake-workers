@@ -34,6 +34,7 @@ import datetime as dt
 import hashlib
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -65,7 +66,7 @@ CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da106
 # commits. Keep their identities distinct instead of presenting the snapshot
 # fallback as the builder commit.
 SNAPSHOT_SOURCE_COMMIT = "e76d4822f09e8780eafed838bfdaf51c0b9750fc"
-BUILDER_COMMIT = "15b201c248f070873039e397412d2790548558e6"
+BUILDER_COMMIT = "3eab2bc6c10d6bf9d09a4028d203edd41f4de58d"
 
 GOVERNANCE_PINS: dict[str, Any] = {
     "A5": "blocked",
@@ -158,17 +159,37 @@ def canonical_text_file_sha256(path: Path) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def builder_code_sha256() -> str:
-    """Deterministic content hash of the P1 builder package source files."""
+def builder_code_sha256(commit: str = BUILDER_COMMIT) -> str:
+    """Hash the committed P1 builder package identified by ``commit``."""
     root = repo_root()
-    files = sorted((root / "harness" / "p1_pack").glob("*.py"))
+    paths = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commit, "--", "harness/p1_pack"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    files = sorted(
+        path
+        for path in paths
+        if Path(path).parent.as_posix() == "harness/p1_pack" and path.endswith(".py")
+    )
+    if not files:
+        raise ValueError(f"builder commit {commit!r} contains no P1 builder package files")
     return canonical_json_sha256(
         {
             "builder_name": BUILDER_NAME,
             "files": [
                 {
-                    "path": path.relative_to(root).as_posix(),
-                    "sha256": canonical_text_file_sha256(path),
+                    "path": path,
+                    "sha256": hashlib.sha256(
+                        subprocess.run(
+                            ["git", "show", f"{commit}:{path}"],
+                            cwd=root,
+                            check=True,
+                            capture_output=True,
+                        ).stdout.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+                    ).hexdigest(),
                 }
                 for path in files
             ],

@@ -28,7 +28,7 @@ PACK_DIR = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack
 EVIDENCE_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_metric_evidence_001"
 CERTIFIED_PACK_IDENTITIES = (
     ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
-    ("open_macro_v03_certified_input_pack_003", "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad"),
+    ("open_macro_v03_certified_input_pack_003", "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"),
 )
 
 

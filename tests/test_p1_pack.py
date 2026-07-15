@@ -6,6 +6,7 @@ real-pack coverage / governance / hash-tree / determinism / verify tests.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -24,12 +25,41 @@ REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pac
 CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
 CERTIFIED_PACK_IDENTITIES = (
     ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
-    ("open_macro_v03_certified_input_pack_003", "caa78716aa641823cdb04482b23e2251c34c69d2ec7368eb78f411b570434bad"),
+    ("open_macro_v03_certified_input_pack_003", "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"),
 )
 
 
 def _read(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _builder_code_sha256_at_commit(commit: str) -> str:
+    from src.input_packs.hashing import canonical_json_sha256
+
+    paths = subprocess.run(
+        ["git", "ls-tree", "-r", "--name-only", commit, "--", "harness/p1_pack"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    files = []
+    builder_paths = (
+        path
+        for path in paths
+        if Path(path).parent.as_posix() == "harness/p1_pack" and path.endswith(".py")
+    )
+    for path in sorted(builder_paths):
+        content = subprocess.run(
+            ["git", "show", f"{commit}:{path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout.decode("utf-8").replace("\r\n", "\n")
+        files.append(
+            {"path": path, "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()}
+        )
+    return canonical_json_sha256({"builder_name": p1_build.BUILDER_NAME, "files": files})
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +207,16 @@ def test_builder_provenance_pins_reachable_source_and_builder_commits():
         text=True,
     ).stdout
     assert 'INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"' in builder_source
+
+
+def test_real_pack_builder_hash_matches_declared_builder_commit():
+    manifest = _read(REAL_PACK / "manifest.json")
+    source = _read(REAL_PACK / "SOURCE.json")
+
+    expected = _builder_code_sha256_at_commit(manifest["builder_commit"])
+    assert manifest["builder_code_sha256"] == expected
+    assert source["builder_commit"] == manifest["builder_commit"]
+    assert source["builder_code_sha256"] == expected
 
 
 def test_builder_keeps_snapshot_fallback_separate_from_builder_commit(tmp_path):
