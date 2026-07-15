@@ -320,6 +320,28 @@ def test_assert_pinned_db_source_accepts_gcloud_host():
     assert assert_pinned_db_source(dsn) == f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
 
 
+def test_assert_pinned_db_source_rejects_multi_host_dsn():
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = (
+        "postgresql://user:secret@35.247.237.1:5432,"
+        "staging.example.com:5432/investintell"
+    )
+    with pytest.raises(SystemExit, match="multi-host"):
+        assert_pinned_db_source(dsn)
+
+
+def test_assert_pinned_db_source_rejects_hostaddr_override():
+    from scripts.p1_export.export_p1_sources import assert_pinned_db_source
+
+    dsn = (
+        "postgresql://user:secret@35.247.237.1:5432/investintell"
+        "?hostaddr=203.0.113.7"
+    )
+    with pytest.raises(SystemExit, match="hostaddr"):
+        assert_pinned_db_source(dsn)
+
+
 def test_assert_pinned_db_source_rejects_gcloud_pin_outside_host():
     import pytest as _pytest
 

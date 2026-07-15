@@ -29,7 +29,6 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlsplit
 
 from src.input_packs.p0_contract import normalize_date, normalize_number
 from src.macro_sources import SEED_SOURCES
@@ -43,12 +42,31 @@ DB_SOURCE = f"gcloud_timescale_sp_{PINNED_GCLOUD_NLB_HOST}"
 
 
 def assert_pinned_db_source(dsn: str) -> str:
-    """Refuse to stamp the corrected export unless the DSN is its GCloud source."""
+    """Refuse to stamp the corrected export unless libpq targets its GCloud source."""
+    from psycopg import conninfo
+
     try:
-        dsn_host = urlsplit(dsn).hostname
-    except ValueError:
-        dsn_host = None
-    if dsn_host == PINNED_GCLOUD_NLB_HOST:
+        parsed = conninfo.conninfo_to_dict(dsn)
+    except Exception as exc:
+        raise SystemExit(
+            f"refusing corrected export {EXPORT_ID}: DSN cannot be parsed as a "
+            f"connection to the pinned GCloud NLB {PINNED_GCLOUD_NLB_HOST}; "
+            "SOURCE.json provenance would be false"
+        ) from exc
+
+    host = str(parsed.get("host") or "")
+    if "," in host:
+        raise SystemExit(
+            f"refusing corrected export {EXPORT_ID}: DSN host {host!r} is a "
+            "multi-host list; exactly one pinned GCloud NLB is required"
+        )
+    hostaddr = parsed.get("hostaddr")
+    if hostaddr:
+        raise SystemExit(
+            f"refusing corrected export {EXPORT_ID}: DSN sets "
+            f"hostaddr={hostaddr!r}; connection provenance cannot be trusted"
+        )
+    if host == PINNED_GCLOUD_NLB_HOST:
         return DB_SOURCE
     raise SystemExit(
         f"refusing corrected export {EXPORT_ID}: DSN does not reference "
