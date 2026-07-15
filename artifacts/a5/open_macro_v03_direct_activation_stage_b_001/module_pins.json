@@ -1,12 +1,12 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "623978d8ddd9b4f0ecb87301b9b0007b9cb56f5ebe5d223ccfc73a957b55cb7d",
+ "module_pins_sha256": "5bf69efff2d5486a242af84fc4c3be23a7cd536ddbe0c97fab699a27104aa527",
  "modules": {
   "harness/direct_activation/live_validation.py": "c8a532c73507648a4d07f6f85549cca34f87bd56b16f245d9a7e849e48052208",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
-  "scripts/p1_export/export_p1_sources.py": "a90b09cb566b5ed3a447b2d7e68a47a9414e602b6b1a1a76979c1cb3dcda422d",
+  "scripts/p1_export/export_p1_sources.py": "a787738913cadb66f801ad26ef1ed28d608335403a0cbbe5166a0a9256aaecfb",
   "src/input_packs/hashing.py": "44b72054e17662dcb27299b24d5b07736f6ae7f6e66e68a9317be593c8d29064",
   "src/input_packs/manifest.py": "03430d868cc8d32f519796d40ccaa22b0cdc3d3dba3c4ed29f6312e5ff0552c0",
   "src/input_packs/p0_contract.py": "0b6402ccad8cbcbcebc777b07f96ad6d06b4fd2288edde3f88d350d2eec112dc",
