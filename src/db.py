@@ -164,6 +164,10 @@ LOCK_FUND_FACTORS = 900_214
 # (900_207 is the known SCREENER/REGIME_GATE double-assignment, left untouched).
 LOCK_OPEN_MACRO_V03 = 900_215
 LOCK_IPCA_FACTOR_PACK = 900_216
+# 900_216 was taken by the IPCA factor pack while this branch sat unmerged; two
+# workers sharing an advisory lock id block each other silently, so this takes
+# the next free id in the band instead.
+LOCK_MARKET_OVERVIEW_SNAPSHOT = 900_217
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211
