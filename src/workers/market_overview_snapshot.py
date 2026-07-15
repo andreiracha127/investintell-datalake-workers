@@ -8,7 +8,7 @@ import statistics
 import time
 from collections import defaultdict
 from dataclasses import asdict, dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NoReturn, Sequence
 
 from psycopg.types.json import Jsonb
 
@@ -344,6 +344,91 @@ def _publish_snapshot(
             )
 
 
+def _validate_payload(payload: dict[str, Any], as_of: dt.date) -> None:
+    """Fail closed before replacing the last known-good API snapshot."""
+
+    def fail(message: str) -> NoReturn:
+        raise ValueError(f"invalid market overview payload contract: {message}")
+
+    def number(value: object, field: str) -> None:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            fail(f"{field} must be numeric")
+        if not math.isfinite(float(value)):
+            fail(f"{field} must be finite")
+
+    def integer(value: object, field: str, *, minimum: int = 0) -> None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            fail(f"{field} must be an integer >= {minimum}")
+
+    required = {
+        "as_of", "universe_size", "indices", "most_active", "gainers",
+        "losers", "highs_52w", "lows_52w", "sectors", "breadth",
+    }
+    if not required.issubset(payload):
+        fail(f"missing fields {sorted(required - payload.keys())}")
+    if payload["as_of"] != as_of.isoformat():
+        fail("as_of does not match the source watermark")
+    integer(payload["universe_size"], "universe_size")
+
+    indices = payload["indices"]
+    if not isinstance(indices, list):
+        fail("indices must be a list")
+    for index, card in enumerate(indices):
+        if not isinstance(card, dict):
+            fail(f"indices[{index}] must be an object")
+        for field in ("ticker", "name"):
+            if not isinstance(card.get(field), str) or not card[field]:
+                fail(f"indices[{index}].{field} must be a non-empty string")
+        for field in ("last", "change_pct"):
+            number(card.get(field), f"indices[{index}].{field}")
+        spark = card.get("spark")
+        if not isinstance(spark, list):
+            fail(f"indices[{index}].spark must be a list")
+        for point_index, point in enumerate(spark):
+            number(point, f"indices[{index}].spark[{point_index}]")
+
+    leader_fields = ("most_active", "gainers", "losers", "highs_52w", "lows_52w")
+    for collection in leader_fields:
+        rows = payload[collection]
+        if not isinstance(rows, list) or len(rows) > TOP_N:
+            fail(f"{collection} must be a list capped at {TOP_N}")
+        for index, row in enumerate(rows):
+            if not isinstance(row, dict):
+                fail(f"{collection}[{index}] must be an object")
+            if not isinstance(row.get("ticker"), str) or not row["ticker"]:
+                fail(f"{collection}[{index}].ticker must be a non-empty string")
+            for field in ("name", "sector"):
+                if row.get(field) is not None and not isinstance(row[field], str):
+                    fail(f"{collection}[{index}].{field} must be a string or null")
+            for field in ("last", "change", "change_pct", "high_52w", "low_52w"):
+                number(row.get(field), f"{collection}[{index}].{field}")
+            integer(row.get("volume"), f"{collection}[{index}].volume")
+
+    sectors = payload["sectors"]
+    if not isinstance(sectors, list):
+        fail("sectors must be a list")
+    for index, sector in enumerate(sectors):
+        if not isinstance(sector, dict) or not isinstance(sector.get("sector"), str):
+            fail(f"sectors[{index}] must contain a sector string")
+        number(sector.get("change_pct_median"), f"sectors[{index}].change_pct_median")
+        integer(sector.get("n"), f"sectors[{index}].n", minimum=1)
+
+    breadth = payload["breadth"]
+    if not isinstance(breadth, dict):
+        fail("breadth must be an object")
+    for field in (
+        "tracked", "advancing", "declining", "unchanged",
+        "new_highs_52w", "new_lows_52w",
+    ):
+        integer(breadth.get(field), f"breadth.{field}")
+    if breadth["tracked"] != breadth["advancing"] + breadth["declining"] + breadth["unchanged"]:
+        fail("breadth.tracked must equal advancing + declining + unchanged")
+    number(breadth.get("advance_decline_ratio"), "breadth.advance_decline_ratio")
+    number(breadth.get("up_volume_share"), "breadth.up_volume_share")
+    if not 0 <= float(breadth["up_volume_share"]) <= 1:
+        fail("breadth.up_volume_share must be between 0 and 1")
+
+
 def run(dsn: str, *, now: dt.datetime | None = None) -> dict[str, object]:
     """Build and atomically publish the current complete overview snapshot."""
     started = time.perf_counter()
@@ -354,12 +439,13 @@ def run(dsn: str, *, now: dt.datetime | None = None) -> dict[str, object]:
     with connect(dsn, autocommit=True) as read_conn:
         with advisory_lock(read_conn, LOCK_MARKET_OVERVIEW_SNAPSHOT) as got_lock:
             if not got_lock:
-                return {"published": 0, "skipped": "lock_busy"}
+                raise RuntimeError("market overview snapshot lock is busy")
 
             as_of = _fetch_watermark(read_conn)
             rows = _fetch_overview_rows(read_conn, as_of)
             index_closes = _fetch_index_closes(read_conn, as_of)
             payload = build_payload(as_of, rows, index_closes)
+            _validate_payload(payload, as_of)
             _publish_snapshot(
                 dsn,
                 as_of=as_of,

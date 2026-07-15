@@ -51,6 +51,8 @@ def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
                 return {"refreshed": [], "refreshed_datalake": [], "skipped": "lock_busy"}
             refreshed = _refresh_all(dsn, _APP_MVS)
             snapshot_stats = market_overview_snapshot.run(dsn)
+            if snapshot_stats.get("published") != 1:
+                raise RuntimeError("market overview snapshot did not publish")
             refreshed_datalake: list[str] = []
             if datalake_dsn:
                 refreshed_datalake = _refresh_all(datalake_dsn, _DATALAKE_MVS)

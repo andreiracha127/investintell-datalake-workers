@@ -137,3 +137,26 @@ def test_snapshot_failure_propagates_before_datalake_refresh(monkeypatch):
         raise AssertionError("snapshot failure must propagate")
 
     assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])
+
+
+def test_unpublished_snapshot_fails_before_datalake_refresh(monkeypatch):
+    sink: dict = {}
+
+    def _fake_connect(dsn=None, *, autocommit=False):
+        return _FakeConn(sink, dsn)
+
+    monkeypatch.setattr(mr, "connect", _fake_connect)
+    monkeypatch.setattr(
+        mr.market_overview_snapshot,
+        "run",
+        lambda dsn: {"published": 0, "skipped": "lock_busy"},
+    )
+
+    try:
+        mr.run("postgres://app", datalake_dsn="postgres://lake")
+    except RuntimeError as exc:
+        assert "did not publish" in str(exc)
+    else:
+        raise AssertionError("unpublished snapshot must fail")
+
+    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])

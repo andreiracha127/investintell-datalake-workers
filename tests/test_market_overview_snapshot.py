@@ -277,13 +277,30 @@ def test_run_rejects_missing_mv_watermark_without_publication(
     assert not any(sql.startswith("insert into") for sql, _params in sink["queries"])
 
 
-def test_run_skips_when_dedicated_lock_is_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_fails_when_dedicated_lock_is_busy(monkeypatch: pytest.MonkeyPatch) -> None:
     sink: dict[str, Any] = {"got_lock": False}
     _install_fake_db(monkeypatch, sink)
 
-    assert snapshot.run("postgres://app") == {
-        "published": 0,
-        "skipped": "lock_busy",
-    }
+    with pytest.raises(RuntimeError, match="lock is busy"):
+        snapshot.run("postgres://app")
+
     assert sink["entered"] == [True]
     assert sink.get("queries", []) == []
+
+
+def test_run_rejects_invalid_payload_shape_before_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink: dict[str, Any] = {}
+    _install_fake_db(monkeypatch, sink)
+    monkeypatch.setattr(
+        snapshot,
+        "build_payload",
+        lambda *_args: {"as_of": AS_OF.isoformat(), "indices": "invalid"},
+    )
+
+    with pytest.raises(ValueError, match="payload contract"):
+        snapshot.run("postgres://app")
+
+    assert sink["entered"] == [True]
+    assert not any(sql.startswith("insert into") for sql, _params in sink["queries"])
