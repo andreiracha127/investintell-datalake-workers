@@ -1,12 +1,9 @@
-"""Refresca os read-model MVs do Light.
+"""Refresh Light read models and publish the complete Stocks overview.
 
-App DB (price_latest_mv / nav_latest_mv, Grupo D) e datalake DB
-(stock_institutional_holders_mv / stock_fund_holders_mv /
-holding_reverse_lookup_mv, Grupo B). Nenhum tem worker computacional próprio;
-este worker apenas dá REFRESH ... CONCURRENTLY em cada um, num cron, em conexão
-autocommit (CONCURRENTLY não roda em bloco de transação) e exige os índices
-UNIQUE definidos nos DDLs em backend/db/ddl/. O advisory lock evita refreshes
-concorrentes do mesmo conjunto entre execuções.
+The locked run refreshes app MVs first, publishes market_overview_snapshot from
+those fresh inputs, then refreshes the datalake relationship MVs. MV refreshes
+use autocommit because REFRESH ... CONCURRENTLY cannot run in a transaction and
+require the UNIQUE indexes versioned in the Light DDLs.
 """
 from __future__ import annotations
 
