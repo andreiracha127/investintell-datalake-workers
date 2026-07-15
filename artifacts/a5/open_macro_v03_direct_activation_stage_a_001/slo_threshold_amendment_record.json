@@ -72,7 +72,7 @@
  },
  "measured_round": {
   "p95_ms": 105835.135,
-  "reproducibility_record_sha256": "6dea1789ceb9104bf22811dc01c7063d1014aa78b268bd9cd4ba41c3d7a5349b",
+  "reproducibility_record_sha256": "99eabca78737f1486cddb8488dc432d78b6aab6805998633a7b4d06d47517e16",
   "runs_total": 16
  },
  "rationale": "Workload identity, not a regression: the Phase 1 latency threshold (37826 ms) was derived from the quant-engine a3_qc_parity job (measured p95 25217.177 ms per that record's own derivation), a DIFFERENT workload from the Stage A executor, which reconstitutes the full 148-month latched decision chain in live_validation.compute() (measured worst-leg p95 105835.135 ms in the round this amendment pins). This amendment reapplies the SAME derivation rule — ceil(1.5 x measured p95), worst leg of the host+container matrix — to the correct workload; it is never an ad hoc bump to make a round pass.",

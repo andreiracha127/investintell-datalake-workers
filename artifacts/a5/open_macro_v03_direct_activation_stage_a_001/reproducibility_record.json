@@ -163,7 +163,7 @@
    ]
   }
  },
- "live_validation_record_sha256": "7b229d51f558a0dd078407fbed1de28982997c6632d4ad0e9526782bb64f2a9c",
+ "live_validation_record_sha256": "0f28d17ab1f97464bc59f0295e409da7e3bb53d399c5d8de59c3f15f7dde99b2",
  "logical_output_hash": "faed042a4226c77040dcd871153b0c01ef1a256acb40ceb2538f7764dc5be62e",
  "mismatch_count": 0,
  "runs_per_leg": 8,
