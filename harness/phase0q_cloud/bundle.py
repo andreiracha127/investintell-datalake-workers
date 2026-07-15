@@ -580,7 +580,7 @@ def _predrift_check_all_sources() -> None:
 
 
 def _verify_immutable_prefix_source_identity(harness_commit: str) -> None:
-    """Refuse to publish HEAD source bytes under a commit that contains other bytes."""
+    """Require a reachable ancestor whose shipped source bytes match ``HEAD``."""
     quant_core_rels = [f"{QUANT_CORE_SRC_ROOT}/{rel}" for rel in QUANT_CORE_SOURCE_FILES]
     shipped_sources = (
         *HARNESS_SOURCE_FILES,
@@ -589,6 +589,23 @@ def _verify_immutable_prefix_source_identity(harness_commit: str) -> None:
         *POLICY_ARTIFACT_FILES,
     )
     try:
+        ancestry = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", harness_commit, "HEAD"],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if ancestry.returncode == 1:
+            raise RuntimeError(
+                "immutable prefix refusal: harness_commit is not an ancestor of git HEAD"
+            )
+        if ancestry.returncode != 0:
+            raise RuntimeError(
+                "immutable prefix refusal: cannot verify harness_commit ancestry: "
+                f"{ancestry.stderr.strip()}"
+            )
         changed = subprocess.check_output(
             ["git", "diff", "--name-only", harness_commit, "HEAD", "--", *shipped_sources],
             cwd=REPO_ROOT,

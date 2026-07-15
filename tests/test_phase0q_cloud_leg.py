@@ -95,6 +95,27 @@ def test_bundle_rejects_harness_commit_with_different_shipped_sources(tmp_path):
         bundle_mod.build_bundle(tmp_path / "stale-prefix", STALE_HARNESS_COMMIT)
 
 
+def test_bundle_rejects_non_ancestor_commit_with_identical_sources(monkeypatch, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    (repo / "marker.txt").write_text("same tree\n", encoding="utf-8")
+    subprocess.run(["git", "add", "marker.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "head"], cwd=repo, check=True)
+    tree = subprocess.check_output(
+        ["git", "rev-parse", "HEAD^{tree}"], cwd=repo, text=True
+    ).strip()
+    off_branch = subprocess.check_output(
+        ["git", "commit-tree", tree, "-m", "off branch"], cwd=repo, text=True
+    ).strip()
+
+    monkeypatch.setattr(bundle_mod, "REPO_ROOT", repo)
+    with pytest.raises(RuntimeError, match="not an ancestor"):
+        bundle_mod._verify_immutable_prefix_source_identity(off_branch)
+
+
 # --------------------------------------------------------------------------- #
 # Drift refusal                                                               #
 # --------------------------------------------------------------------------- #
