@@ -8,7 +8,7 @@
   },
   "latency_slo": {
    "amended_threshold": 141286,
-   "amendment_sha256": "12ad67eea630b62dfb4b8c0f72f5710ca3b5e751f9298c572864c5855a3ffafc",
+   "amendment_sha256": "7ea723dcfcddecf97f26bd74256b73bf7b8bc3368953f6330965f6f1526aad00",
    "measured_p95_ms": 94190.183,
    "phase1_threshold": 37826,
    "status": "pass_amended"
@@ -56,7 +56,7 @@
   },
   {
    "path": "artifacts/a5/open_macro_v03_direct_activation_stage_a_001/slo_threshold_amendment_record.json",
-   "sha256": "12ad67eea630b62dfb4b8c0f72f5710ca3b5e751f9298c572864c5855a3ffafc"
+   "sha256": "7ea723dcfcddecf97f26bd74256b73bf7b8bc3368953f6330965f6f1526aad00"
   }
  ],
  "verdict": "conform"
