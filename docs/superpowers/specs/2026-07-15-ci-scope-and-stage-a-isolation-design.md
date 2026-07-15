@@ -190,6 +190,8 @@ Generating evidence before the compute surface stabilizes wastes time and create
 - A decision-compute source change does change the Stage A compute hash.
 - A newly reachable project-local decision dependency omitted from the manifest causes a focused test failure.
 - A stale Stage A binding fails before the expensive quant/governance suite starts.
-- Local focused gates and the full local quant/governance gate pass before evidence generation.
+- Local focused gates and every quant/governance test not dependent on the new
+  evidence binding pass before evidence generation; the complete suite passes after
+  the final evidence is generated.
 - Stage A completes its required full reproduction count once against the final compute manifest.
 - The final push produces one green CI run, zero unresolved review threads, and no unrelated committed changes.
