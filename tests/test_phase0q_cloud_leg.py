@@ -430,3 +430,9 @@ def test_qc_project_workspace_scaffolding():
     assert (qc / "phase0q_cloud_leg.ipynb").is_file()
     # the notebook copy must match the package notebook byte-for-byte.
     assert (qc / "phase0q_cloud_leg.ipynb").read_bytes() == NOTEBOOK.read_bytes()
+    committed_manifest = json.loads(
+        (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
+    )
+    assert (qc / "object_store_manifest_key.txt").read_text(
+        encoding="utf-8"
+    ).strip() == committed_manifest["object_store_manifest_key"]
