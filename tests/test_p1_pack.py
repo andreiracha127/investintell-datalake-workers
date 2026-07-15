@@ -98,9 +98,9 @@ def _tiny_sources(tmp_path: Path) -> Path:
         json.dumps(
             {
                 "as_of": "2026-06-30",
-                "export_id": "tiny_export_001",
+                "export_id": "open_macro_v03_p1_sources_002",
                 "source_commit": "abcdef1234567890abcdef1234567890abcdef12",
-                "db_source": "tiger_test",
+                "db_source": "gcloud_timescale_sp_35.247.237.1",
                 "schema_version": 1,
                 "tables": [],
             }
@@ -116,6 +116,28 @@ def test_contract_declares_two_p1_tables():
     mov = P1_TABLES_BY_NAME["macro_observation_vintage"]
     assert mov.key_columns == ("series_id", "observation_period", "vintage_date")
     assert P1_TABLES_BY_NAME["eod_prices"].key_columns == ("ticker", "date")
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("export_id", "open_macro_v03_p1_sources_001", "corrected source export"),
+        ("db_source", "tiger_t83f4np6x4", "GCloud source"),
+    ],
+)
+def test_builder_rejects_legacy_source_export_identity(
+    tmp_path, field, value, message
+):
+    src = _tiny_sources(tmp_path)
+    source = _read(src / "SOURCE.json")
+    source[field] = value
+    (src / "SOURCE.json").write_text(json.dumps(source), encoding="utf-8")
+    out = tmp_path / "pack"
+
+    with pytest.raises(ValueError, match=message):
+        p1_build.build_pack(sources=src, out=out)
+
+    assert not out.exists()
 
 
 def test_builder_filters_post_as_of_and_sorts(tmp_path):
@@ -167,7 +189,7 @@ def test_builder_pins_v2_bundle_and_governance(tmp_path):
     assert manifest["allocator_publish"] is False
     assert manifest["db_write_mode"] == "none"
     assert manifest["classification"] == "metric_evidence_only"
-    assert manifest["source_export_id"] == "tiny_export_001"
+    assert manifest["source_export_id"] == "open_macro_v03_p1_sources_002"
     assert result["input_pack_sha256"] == manifest["input_pack_sha256"]
 
 
@@ -176,7 +198,7 @@ def test_builder_carries_p1_export_provenance(tmp_path):
     out = tmp_path / "pack"
     p1_build.build_pack(sources=src, out=out)
     source = _read(out / "SOURCE.json")
-    assert source["p1_export"]["export_id"] == "tiny_export_001"
+    assert source["p1_export"]["export_id"] == "open_macro_v03_p1_sources_002"
     assert source["builder_name"] == "certified-input-pack-builder-p1"
     assert source["source_commit"] == "abcdef1234567890abcdef1234567890abcdef12"
     assert source["builder_commit"] == p1_build.BUILDER_COMMIT

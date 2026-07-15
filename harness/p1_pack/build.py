@@ -57,6 +57,8 @@ SCHEMA_VERSION = "v2"
 SOURCE_REPO = "investintell-datalake-workers"
 BUILDER_NAME = "certified-input-pack-builder-p1"
 DATASET_NAMESPACE = "lake://certified-input-packs/open_macro_v03/p1"
+REQUIRED_SOURCE_EXPORT_ID = "open_macro_v03_p1_sources_002"
+REQUIRED_DB_SOURCE = "gcloud_timescale_sp_35.247.237.1"
 
 # The contract bundle v2 sha (bundle_sha256 in contracts/quant-engine/v2/manifest.json),
 # recomputed live at build time and cross-checked against this pin.
@@ -249,6 +251,21 @@ def _source_export(source_dir: Path) -> dict[str, Any]:
     return export
 
 
+def _validate_source_export_identity(export: Mapping[str, Any]) -> None:
+    export_id = str(export.get("export_id") or "")
+    if export_id != REQUIRED_SOURCE_EXPORT_ID:
+        raise ValueError(
+            "pack 003 requires the corrected source export "
+            f"{REQUIRED_SOURCE_EXPORT_ID!r}; got {export_id!r}"
+        )
+    db_source = str(export.get("db_source") or "")
+    if db_source != REQUIRED_DB_SOURCE:
+        raise ValueError(
+            f"pack 003 requires the GCloud source {REQUIRED_DB_SOURCE!r}; "
+            f"got {db_source!r}"
+        )
+
+
 def build_pack(
     *,
     sources: str | Path,
@@ -258,6 +275,7 @@ def build_pack(
     output_dir = Path(out)
 
     export = _source_export(source_dir)
+    _validate_source_export_identity(export)
     as_of_str = str(export["as_of"])
     as_of_date = dt.date.fromisoformat(as_of_str)
     export_id = str(export["export_id"])
