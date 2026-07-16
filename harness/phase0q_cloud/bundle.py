@@ -285,7 +285,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _run_head_harness(harness_commit: str) -> dict[str, Any]:
+def _run_head_harness(harness_commit: str, pack_dir: Path = PACK_DIR) -> dict[str, Any]:
     """Run the (drift-checked HEAD) harness locally to derive the expected hashes the
     cloud leg — which ships the SAME sources — must reproduce.
 
@@ -306,7 +306,7 @@ def _run_head_harness(harness_commit: str) -> dict[str, Any]:
         finished_at="2026-07-02T00:00:00+00:00",
         harness_commit=harness_commit,
     )
-    run = runner.run_harness(PACK_DIR, config)
+    run = runner.run_harness(pack_dir, config)
     result = run["result"]
     return {
         "input_pack_sha256": run["input_pack_sha256"],
@@ -318,7 +318,10 @@ def _run_head_harness(harness_commit: str) -> dict[str, Any]:
     }
 
 
-def read_local_leg_expected_hashes(harness_commit: str) -> dict[str, Any]:
+def read_local_leg_expected_hashes(
+    harness_commit: str,
+    pack_dir: Path = PACK_DIR,
+) -> dict[str, Any]:
     """Expected local-leg hashes for the cloud leg to reproduce.
 
     Computed LIVE from the drift-checked HEAD harness (the exact sources shipped in the
@@ -327,7 +330,7 @@ def read_local_leg_expected_hashes(harness_commit: str) -> dict[str, Any]:
     (turnover / drawdown / volatility / stress) vs which evolved with the harness
     (metrics_canonical / out_of_sample / run_fingerprint / leg hash).
     """
-    live = _run_head_harness(harness_commit)
+    live = _run_head_harness(harness_commit, pack_dir)
     committed = _read_json(EVIDENCE_001_DIR / "metric_backtest_result.json")
     grid_manifest = _read_json(COMPRESSION_GRID_DIR / "compression_grid_manifest.json")
     grid_prov = grid_manifest.get("provenance", {})
@@ -390,7 +393,12 @@ def read_local_leg_expected_hashes(harness_commit: str) -> dict[str, Any]:
 # Scenario / config payload                                                   #
 # --------------------------------------------------------------------------- #
 
-def build_scenario_config(harness_commit: str) -> dict[str, Any]:
+def build_scenario_config(
+    harness_commit: str,
+    *,
+    input_pack_id: str = PACK_ID,
+    input_pack_sha256: str | None = None,
+) -> dict[str, Any]:
     """The injected, deterministic RunConfig the cloud leg must reproduce.
 
     Imports the module-level pins from the shipped runner so config and code cannot
@@ -448,8 +456,8 @@ def build_scenario_config(harness_commit: str) -> dict[str, Any]:
             ),
         },
         "provenance": {
-            "input_pack_id": PACK_ID,
-            "input_pack_sha256": grid_prov.get("input_pack_sha256"),
+            "input_pack_id": input_pack_id,
+            "input_pack_sha256": input_pack_sha256 or grid_prov.get("input_pack_sha256"),
             "contract_bundle_sha256": grid_prov.get("contract_bundle_sha256"),
             "harness_commit": harness_commit,
         },
@@ -461,7 +469,12 @@ def build_scenario_config(harness_commit: str) -> dict[str, Any]:
 # Bundle build                                                                #
 # --------------------------------------------------------------------------- #
 
-def _copy_pack_tree(bundle_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
+def _copy_pack_tree(
+    bundle_dir: Path,
+    *,
+    pack_dir: Path = PACK_DIR,
+    pack_rel_root: str = PACK_REL_ROOT,
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Copy the FULL pack v2 tree into the bundle under ``pack/`` (byte-identical,
     with git HEAD drift refusal on each file).
 
@@ -470,15 +483,15 @@ def _copy_pack_tree(bundle_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
     canonical-table entries are surfaced separately for the reviewer.
     """
     pack_files = sorted(
-        p for p in PACK_DIR.rglob("*") if p.is_file()
+        p for p in pack_dir.rglob("*") if p.is_file()
     )
     if not pack_files:
-        raise FileNotFoundError(f"pack v2 tree is empty: {PACK_DIR}")
+        raise FileNotFoundError(f"pack v2 tree is empty: {pack_dir}")
 
     all_relpaths: list[str] = []
     for src in pack_files:
-        pack_rel = src.relative_to(PACK_DIR).as_posix()
-        head_rel = f"{PACK_REL_ROOT}/{pack_rel}"
+        pack_rel = src.relative_to(pack_dir).as_posix()
+        head_rel = f"{pack_rel_root}/{pack_rel}"
         # Drift refusal: the shipped pack bytes must equal the committed git HEAD blob.
         data = read_source_with_drift_refusal(head_rel)
         bundle_rel = f"pack/{pack_rel}"
@@ -562,7 +575,11 @@ def _write_gzipped_policy_artifacts(bundle_dir: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _predrift_check_all_sources() -> None:
+def _predrift_check_all_sources(
+    *,
+    pack_dir: Path = PACK_DIR,
+    pack_rel_root: str = PACK_REL_ROOT,
+) -> None:
     """Evaluate git HEAD drift refusal for every shipped source up front.
 
     Ships no bytes; only raises if any shipped harness/src/quant_core/pack file (each
@@ -570,8 +587,8 @@ def _predrift_check_all_sources() -> None:
     live harness so a tamper aborts fast.
     """
     pack_rels = [
-        f"{PACK_REL_ROOT}/{p.relative_to(PACK_DIR).as_posix()}"
-        for p in PACK_DIR.rglob("*") if p.is_file()
+        f"{pack_rel_root}/{p.relative_to(pack_dir).as_posix()}"
+        for p in pack_dir.rglob("*") if p.is_file()
     ]
     quant_core_rels = [f"{QUANT_CORE_SRC_ROOT}/{rel}" for rel in QUANT_CORE_SOURCE_FILES]
     for rel in (*HARNESS_SOURCE_FILES, *SRC_SOURCE_FILES, *quant_core_rels,
@@ -646,7 +663,12 @@ def _object_files_manifest(
     return files
 
 
-def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
+def build_bundle(
+    bundle_dir: str | Path,
+    harness_commit: str,
+    *,
+    pack_id: str = PACK_ID,
+) -> dict[str, Any]:
     """Build the deterministic LOCAL bundle. Returns a summary dict.
 
     NO network. NO lean. NO upload. Writes only ``bundle_dir`` (cleared first for a
@@ -657,23 +679,38 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
     if len(harness_commit) != 40 or not all(c in "0123456789abcdef" for c in harness_commit):
         raise ValueError(f"harness_commit must be a 40-char lowercase hex SHA: {harness_commit!r}")
 
+    from harness.p1_pack.verifier import CERTIFIED_PACK_VERSIONS
+
+    if pack_id not in CERTIFIED_PACK_VERSIONS:
+        raise ValueError(f"pack_id is not in the certified pack registry: {pack_id!r}")
+    pack_dir = REPO_ROOT / "fixtures" / "p1_packs" / pack_id
+    pack_rel_root = f"fixtures/p1_packs/{pack_id}"
+
     bundle_dir = Path(bundle_dir)
     _reset_dir(bundle_dir)
 
     # Drift refusal FIRST — before the (expensive) live harness run — so a tampered
     # source aborts immediately instead of after a full grid computation.
-    _predrift_check_all_sources()
+    _predrift_check_all_sources(pack_dir=pack_dir, pack_rel_root=pack_rel_root)
     _verify_immutable_prefix_source_identity(harness_commit)
 
-    expected = read_local_leg_expected_hashes(harness_commit)
+    expected = read_local_leg_expected_hashes(harness_commit, pack_dir)
     pack_sha = expected["input_pack_sha256"]
     prefix = immutable_prefix(harness_commit, pack_sha)
 
-    pack_entries, pack_relpaths = _copy_pack_tree(bundle_dir)
+    pack_entries, pack_relpaths = _copy_pack_tree(
+        bundle_dir,
+        pack_dir=pack_dir,
+        pack_rel_root=pack_rel_root,
+    )
     harness_entries, src_entries, quant_core_entries = _write_gzipped_sources(bundle_dir)
     policy_entries = _write_gzipped_policy_artifacts(bundle_dir)
 
-    scenario = build_scenario_config(harness_commit)
+    scenario = build_scenario_config(
+        harness_commit,
+        input_pack_id=pack_id,
+        input_pack_sha256=pack_sha,
+    )
     write_json(bundle_dir / "scenario_config.json", scenario)
     write_json(bundle_dir / "expected_results_manifest.json", _expected_results_manifest(expected, harness_commit))
 
@@ -690,6 +727,7 @@ def build_bundle(bundle_dir: str | Path, harness_commit: str) -> dict[str, Any]:
 
     manifest = _object_store_manifest(
         harness_commit=harness_commit,
+        input_pack_id=pack_id,
         pack_sha=pack_sha,
         prefix=prefix,
         expected=expected,
@@ -731,6 +769,7 @@ def _expected_results_manifest(expected: dict[str, Any], harness_commit: str) ->
 def _object_store_manifest(
     *,
     harness_commit: str,
+    input_pack_id: str,
     pack_sha: str,
     prefix: str,
     expected: dict[str, Any],
@@ -749,7 +788,7 @@ def _object_store_manifest(
         "qc_project_id": QC_PROJECT_ID,
         "qc_project_name": QC_PROJECT_NAME,
         "harness_commit": harness_commit,
-        "input_pack_id": PACK_ID,
+        "input_pack_id": input_pack_id,
         "input_pack_sha256": pack_sha,
         "contract_bundle_sha256": expected["contract_bundle_sha256"],
         "object_store_base_prefix": OBJECT_STORE_BASE_PREFIX,
@@ -820,12 +859,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=str(DEFAULT_BUNDLE_DIR),
         help=f"LOCAL output directory (default: {DEFAULT_BUNDLE_DIR}).",
     )
+    parser.add_argument(
+        "--pack-id",
+        default=PACK_ID,
+        help=f"Certified input pack id (default: {PACK_ID}).",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
-    summary = build_bundle(args.bundle_dir, args.harness_commit)
+    summary = build_bundle(args.bundle_dir, args.harness_commit, pack_id=args.pack_id)
     print(json.dumps(summary, sort_keys=True, indent=2))
     return 0
 
