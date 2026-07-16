@@ -86,7 +86,7 @@ def test_github_actions_workflow_runs_quant_engine_gate() -> None:
 def test_github_actions_workflow_runs_focused_nport_gate() -> None:
     _, steps = _steps_by_name()
     nport_steps = (
-        "Install Railway dependencies",
+        "Validate Railway dependencies",
         "Run focused N-PORT tests",
         "Lint N-PORT modules",
         "Compile N-PORT modules",
@@ -94,7 +94,10 @@ def test_github_actions_workflow_runs_focused_nport_gate() -> None:
 
     for name in nport_steps:
         assert "nport_changed == 'true'" in steps[name]["if"], name
-    assert "-r requirements.txt" in steps["Install Railway dependencies"]["run"]
+    railway_command = steps["Validate Railway dependencies"]["run"]
+    assert "--dry-run" in railway_command
+    assert "--ignore-installed" in railway_command
+    assert "-r requirements.txt" in railway_command
     command = steps["Run focused N-PORT tests"]["run"]
     assert "tests/test_nport_lookthrough.py" in command
     assert "tests/test_nport_cusip_enrichment.py" in command

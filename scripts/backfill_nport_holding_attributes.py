@@ -78,13 +78,15 @@ class HoldingWeight:
     cusip: str
     signed_pct_of_nav: float
     source_quarter: str
+    gross_pct_of_nav: float | None = None
 
-    def as_tuple(self) -> tuple[dt.date, str, str, float, str]:
+    def as_tuple(self) -> tuple[dt.date, str, str, float, float | None, str]:
         return (
             self.report_date,
             self.series_id,
             self.cusip,
             self.signed_pct_of_nav,
+            self.gross_pct_of_nav,
             self.source_quarter,
         )
 
@@ -173,7 +175,7 @@ def build_equity_rollups(
         key: [Decimal(0), Decimal(0)] for key in selected.values()
     }
     country_totals: dict[tuple[dt.date, str, str], Decimal] = {}
-    holding_totals: dict[tuple[dt.date, str, str], Decimal] = {}
+    holding_totals: dict[tuple[dt.date, str, str], list[Decimal]] = {}
 
     for row in _rows(dataset_dir / "FUND_REPORTED_HOLDING.tsv"):
         accession = _value(row.get("ACCESSION_NUMBER"))
@@ -206,9 +208,11 @@ def build_equity_rollups(
         cusip = _holding_key(row, identifier_isins)
         if cusip is not None:
             holding_key = (report_date, series_id, cusip)
-            holding_totals[holding_key] = (
-                holding_totals.get(holding_key, Decimal(0)) + signed_pct
+            holding_values = holding_totals.setdefault(
+                holding_key, [Decimal(0), Decimal(0)]
             )
+            holding_values[0] += signed_pct
+            holding_values[1] += abs(signed_pct)
 
     source_quarter = dataset_dir.name
     summaries = [
@@ -220,8 +224,15 @@ def build_equity_rollups(
         for (report_date, series_id, country), value in sorted(country_totals.items())
     ]
     weights = [
-        HoldingWeight(report_date, series_id, cusip, float(value), source_quarter)
-        for (report_date, series_id, cusip), value in sorted(holding_totals.items())
+        HoldingWeight(
+            report_date,
+            series_id,
+            cusip,
+            float(values[0]),
+            source_quarter,
+            float(values[1]),
+        )
+        for (report_date, series_id, cusip), values in sorted(holding_totals.items())
     ]
     return summaries, countries, weights
 
@@ -252,7 +263,8 @@ def copy_rollups(
     weight_count = 0
     with cur.copy(
         "COPY tmp_nport_equity_holding_weights "
-        "(report_date, series_id, cusip, signed_pct_of_nav, source_quarter) FROM STDIN"
+        "(report_date, series_id, cusip, signed_pct_of_nav, gross_pct_of_nav, "
+        "source_quarter) FROM STDIN"
     ) as stream:
         for row in weights:
             stream.write_row(row.as_tuple())
@@ -289,6 +301,7 @@ def _prepare_stage(cur) -> None:
             series_id text NOT NULL,
             cusip text NOT NULL,
             signed_pct_of_nav numeric(14,6) NOT NULL,
+            gross_pct_of_nav numeric(14,6) NOT NULL,
             source_quarter text NOT NULL
         ) ON COMMIT DROP;
         """
@@ -357,8 +370,10 @@ def _upsert_rollups(cur) -> tuple[int, int, int]:
     cur.execute(
         """
         INSERT INTO nport_equity_holding_weights
-            (report_date, series_id, cusip, signed_pct_of_nav, source_quarter)
-        SELECT report_date, series_id, cusip, signed_pct_of_nav, source_quarter
+            (report_date, series_id, cusip, signed_pct_of_nav, gross_pct_of_nav,
+             source_quarter)
+        SELECT report_date, series_id, cusip, signed_pct_of_nav, gross_pct_of_nav,
+               source_quarter
         FROM tmp_nport_equity_holding_weights
         """
     )

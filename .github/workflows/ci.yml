@@ -56,9 +56,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.quant-engine.lock pytest pytest-xdist==3.8.0 ruff==0.15.9
 
-      - name: Install Railway dependencies
+      - name: Validate Railway dependencies
         if: steps.changes.outputs.nport_changed == 'true'
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install --dry-run --ignore-installed -r requirements.txt
 
       - name: Verify Stage A binding
         if: steps.changes.outputs.quant_changed == 'true'

@@ -366,6 +366,7 @@ def test_exact_rollup_preserves_collapsed_non_wrapper_equities() -> None:
             100.0,
             {"CA": -10.0, "US": 110.0},
             {"037833100": 60.0, "111111111": 40.0},
+            {"037833100": 80.0, "111111111": 40.0},
         ),
         ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
     }
@@ -408,9 +409,52 @@ def test_exact_rollup_preserves_direct_equities_for_isin_only_wrapper() -> None:
     rollups = {
         ("S1", D_ROOT): lt.EquityInputs(
             120.0,
+            20.0,
+            {"CA": -10.0, "US": 30.0},
+            {"037833100": 60.0, f"IS:{wrapper_isin}": -40.0},
+            {"037833100": 80.0, f"IS:{wrapper_isin}": 40.0},
+        ),
+        ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
+    }
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        fund_map,
+        get_equity_inputs=lambda sid, report_date: rollups.get((sid, report_date)),
+    )
+
+    assert exposures[("country", "US")]["direct_pct"] == pytest.approx(70.0)
+    assert exposures[("country", "CA")]["direct_pct"] == pytest.approx(-10.0)
+    assert exposures[("country", "GB")]["indirect_pct"] == pytest.approx(-40.0)
+    assert summary["gross_equity_pct"] == pytest.approx(120.0)
+    assert summary["net_equity_pct"] == pytest.approx(20.0)
+
+
+def test_exact_rollup_subtracts_offsetting_wrapper_lot_gross() -> None:
+    fund_map = {"cusip": {"111111111": "S_CHILD"}, "isin": {}}
+    data = {
+        "S1": (
+            D_ROOT,
+            [
+                H(cusip="111111111", isin="US4642872000", asset="EC", pct=40.0),
+                H(cusip="037833100", isin="US0378331005", asset="EC", pct=60.0),
+            ],
+        ),
+        "S_CHILD": (
+            D_CHILD,
+            [H(cusip="G1151C101", isin="GB00B03MLX29", asset="EC", pct=100.0)],
+        ),
+    }
+    rollups = {
+        # Wrapper lots +60/-20 contribute gross 80 and net 40. The direct
+        # equity contributes gross 80 and net 60 after cloud-PK collapse.
+        ("S1", D_ROOT): lt.EquityInputs(
+            160.0,
             100.0,
             {"CA": -10.0, "US": 110.0},
-            {"037833100": 60.0, f"IS:{wrapper_isin}": 40.0},
+            {"037833100": 60.0, "111111111": 40.0},
+            {"037833100": 80.0, "111111111": 80.0},
         ),
         ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
     }
@@ -444,11 +488,13 @@ def test_equity_input_getter_reads_summary_and_country_sidecars():
             self.query = query
 
         def fetchone(self):
+            if "to_regclass" in self.query:
+                return ("nport_equity_holding_weights", True)
             return (110.0, 50.0)
 
         def fetchall(self):
             if "nport_equity_holding_weights" in self.query:
-                return [("30231G102", -30.0)]
+                return [("30231G102", -30.0, 30.0)]
             return [("GB", 80.0), ("JP", -30.0)]
 
     class Connection:
@@ -462,6 +508,7 @@ def test_equity_input_getter_reads_summary_and_country_sidecars():
         net_equity_pct=50.0,
         country_exposures_pct={"GB": 80.0, "JP": -30.0},
         signed_holding_weights_pct={"30231G102": -30.0},
+        gross_holding_weights_pct={"30231G102": 30.0},
     )
 
 
@@ -483,7 +530,7 @@ def test_equity_input_getter_tolerates_weight_sidecar_not_yet_provisioned() -> N
 
         def fetchone(self):
             if "to_regclass" in self.query:
-                return (None,)
+                return (None, False)
             return (30.0, -30.0)
 
         def fetchall(self):

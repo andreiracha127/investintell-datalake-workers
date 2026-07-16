@@ -65,6 +65,7 @@ class EquityInputs:
     net_equity_pct: float
     country_exposures_pct: dict[str, float]
     signed_holding_weights_pct: dict[str, float] = field(default_factory=dict)
+    gross_holding_weights_pct: dict[str, float] = field(default_factory=dict)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -344,6 +345,13 @@ def expand_series(
             return None
 
         equity_inputs = get_equity_inputs(sid, rd) if get_equity_inputs else None
+
+        def equity_input_key(holding: dict) -> str:
+            holding_key = (holding.get("cusip") or "").strip().upper()
+            if not holding_key and (holding_isin := (holding.get("isin") or "").strip().upper()):
+                return f"IS:{holding_isin}"
+            return holding_key
+
         expanded_equity_wrappers = [
             holding
             for holding in holdings
@@ -358,14 +366,17 @@ def expand_series(
         )
         seen_wrapper_keys: set[str] = set()
         for wrapper in expanded_equity_wrappers:
-            holding_key = (wrapper.get("cusip") or "").strip().upper()
-            if not holding_key and (wrapper_isin := (wrapper.get("isin") or "").strip().upper()):
-                holding_key = f"IS:{wrapper_isin}"
+            holding_key = equity_input_key(wrapper)
             if holding_key in seen_wrapper_keys:
                 continue
             seen_wrapper_keys.add(holding_key)
             exact_pct = (
                 equity_inputs.signed_holding_weights_pct.get(holding_key)
+                if equity_inputs is not None
+                else None
+            )
+            exact_gross = (
+                equity_inputs.gross_holding_weights_pct.get(holding_key)
                 if equity_inputs is not None
                 else None
             )
@@ -375,10 +386,10 @@ def expand_series(
                 wrapper.get("cusip"),
                 wrapper.get("investment_country"),
             )
-            if exact_pct is None or country not in rollup_countries:
+            if exact_pct is None or exact_gross is None or country not in rollup_countries:
                 use_equity_rollup = False
                 break
-            rollup_gross -= abs(exact_pct)
+            rollup_gross -= exact_gross
             rollup_net -= exact_pct
             rollup_countries[country] -= exact_pct
         if use_equity_rollup:
@@ -397,7 +408,7 @@ def expand_series(
             raw_pct = holding.get("pct_of_nav")
             if raw_pct is None:
                 continue  # sem peso reportado: nada a inventar
-            holding_key = (holding.get("cusip") or "").strip().upper()
+            holding_key = equity_input_key(holding)
             exact_pct = (
                 equity_inputs.signed_holding_weights_pct.get(holding_key)
                 if equity_inputs is not None
@@ -575,8 +586,19 @@ def make_db_get_equity_inputs(
     """Memoized reader for exact, uncollapsed equity classification inputs."""
 
     with conn.cursor() as cur:
-        cur.execute("SELECT to_regclass('public.nport_equity_holding_weights')")
-        holding_weights_available = cur.fetchone()[0] is not None
+        cur.execute(
+            """SELECT to_regclass('public.nport_equity_holding_weights'),
+                      EXISTS (
+                          SELECT 1
+                          FROM pg_attribute
+                          WHERE attrelid = to_regclass('public.nport_equity_holding_weights')
+                            AND attname = 'gross_pct_of_nav'
+                            AND NOT attisdropped
+                      )"""
+        )
+        sidecar_state = cur.fetchone()
+        holding_weights_available = sidecar_state[0] is not None
+        holding_gross_available = len(sidecar_state) > 1 and bool(sidecar_state[1])
 
     memo: dict[tuple[str, _dt.date], EquityInputs | None] = (
         cache if cache is not None else {}
@@ -607,23 +629,43 @@ def make_db_get_equity_inputs(
             )
             countries = {str(country): float(value) for country, value in cur.fetchall()}
         holding_weights: dict[str, float] = {}
+        holding_gross: dict[str, float] = {}
         if holding_weights_available:
             with conn.cursor() as cur:
-                cur.execute(
-                    """SELECT cusip, signed_pct_of_nav
+                if holding_gross_available:
+                    cur.execute(
+                        """SELECT cusip, signed_pct_of_nav, gross_pct_of_nav
+                           FROM nport_equity_holding_weights
+                           WHERE series_id = %s AND report_date = %s
+                           ORDER BY cusip""",
+                        key,
+                    )
+                    rows = cur.fetchall()
+                    holding_weights = {
+                        str(cusip): float(signed) for cusip, signed, _gross in rows
+                    }
+                    holding_gross = {
+                        str(cusip): float(gross)
+                        for cusip, _signed, gross in rows
+                        if gross is not None
+                    }
+                else:
+                    cur.execute(
+                        """SELECT cusip, signed_pct_of_nav
                        FROM nport_equity_holding_weights
                        WHERE series_id = %s AND report_date = %s
                        ORDER BY cusip""",
-                    key,
-                )
-                holding_weights = {
-                    str(cusip): float(value) for cusip, value in cur.fetchall()
-                }
+                        key,
+                    )
+                    holding_weights = {
+                        str(cusip): float(value) for cusip, value in cur.fetchall()
+                    }
         result = EquityInputs(
             gross_equity_pct=float(summary_row[0]),
             net_equity_pct=float(summary_row[1]),
             country_exposures_pct=countries,
             signed_holding_weights_pct=holding_weights,
+            gross_holding_weights_pct=holding_gross,
         )
         memo[key] = result
         return result
