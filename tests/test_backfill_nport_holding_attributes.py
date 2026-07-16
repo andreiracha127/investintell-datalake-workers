@@ -38,7 +38,7 @@ def test_build_equity_rollups_preserves_lots_collapsed_by_cloud_pk(tmp_path: Pat
         ],
         [
             [accession, "H1", "037833100", "Long", "GB", "EC", "80"],
-            [accession, "H2", "594918104", "Short", "JP", "EC", "30"],
+            [accession, "H2", "037833100", "Short", "JP", "EC", "30"],
             [accession, "H3", "912810TM0", "Long", "US", "DBT", "40"],
         ],
     )
@@ -60,12 +60,11 @@ def test_build_equity_rollups_preserves_lots_collapsed_by_cloud_pk(tmp_path: Pat
     ]
     assert weights == [
         backfill.HoldingWeight(
-            dt.date(2026, 1, 31), "S000001234", "037833100", 80.0, tmp_path.name
-        ),
-        backfill.HoldingWeight(
-            dt.date(2026, 1, 31), "S000001234", "594918104", -30.0, tmp_path.name
+            dt.date(2026, 1, 31), "S000001234", "037833100", 50.0,
+            tmp_path.name, 110.0
         ),
     ]
+    assert getattr(weights[0], "gross_pct_of_nav", None) == 110.0
 
 
 def test_build_equity_rollups_uses_latest_filing_per_series_report(tmp_path: Path) -> None:
@@ -144,6 +143,48 @@ def test_build_equity_rollups_routes_non_iso_country_to_unknown(tmp_path: Path) 
     ]
 
 
+def test_build_equity_rollups_recovers_blank_country_from_valid_isin(
+    tmp_path: Path,
+) -> None:
+    accession = "0000000000-26-000020"
+    _write_tsv(
+        tmp_path / "SUBMISSION.tsv",
+        ["ACCESSION_NUMBER", "REPORT_DATE"],
+        [[accession, "31-JAN-2026"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_INFO.tsv",
+        ["ACCESSION_NUMBER", "SERIES_ID"],
+        [[accession, "S000001234"]],
+    )
+    _write_tsv(
+        tmp_path / "IDENTIFIERS.tsv",
+        ["HOLDING_ID", "IDENTIFIER_ISIN"],
+        [["H1", "IE00B4L5Y983"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_HOLDING.tsv",
+        [
+            "ACCESSION_NUMBER",
+            "HOLDING_ID",
+            "ISSUER_CUSIP",
+            "PAYOFF_PROFILE",
+            "INVESTMENT_COUNTRY",
+            "ASSET_CAT",
+            "PERCENTAGE",
+        ],
+        [[accession, "H1", "", "Long", "N/A", "EC", "20"]],
+    )
+
+    _summaries, countries, _weights = backfill.build_equity_rollups(tmp_path)
+
+    assert countries == [
+        backfill.CountryExposure(
+            dt.date(2026, 1, 31), "S000001234", "IE", 20.0, tmp_path.name
+        )
+    ]
+
+
 def test_build_equity_rollups_uses_synthetic_isin_key_for_cusipless_short(
     tmp_path: Path,
 ) -> None:
@@ -186,6 +227,7 @@ def test_build_equity_rollups_uses_synthetic_isin_key_for_cusipless_short(
             "IS:IE00B4L5Y983",
             -10.0,
             tmp_path.name,
+            10.0,
         )
     ]
 
@@ -260,6 +302,7 @@ def test_backfill_schema_is_additive() -> None:
     assert "CREATE TABLE IF NOT EXISTS nport_equity_exposure_summary" in schema
     assert "CREATE TABLE IF NOT EXISTS nport_equity_country_exposures" in schema
     assert "CREATE TABLE IF NOT EXISTS nport_equity_holding_weights" in schema
+    assert "gross_pct_of_nav" in schema
     assert "ALTER TABLE sec_nport_holdings" not in schema
     assert "DROP COLUMN" not in schema.upper()
 
@@ -297,7 +340,8 @@ def test_copy_rollups_sends_only_compact_classification_inputs() -> None:
         dt.date(2026, 1, 31), "S000001234", "GB", 80.0, "2026q1_nport"
     )
     weight = backfill.HoldingWeight(
-        dt.date(2026, 1, 31), "S000001234", "037833100", 80.0, "2026q1_nport"
+        dt.date(2026, 1, 31), "S000001234", "037833100", 80.0,
+        "2026q1_nport", 80.0
     )
 
     counts = backfill.copy_rollups(cursor, [summary], [country], [weight])

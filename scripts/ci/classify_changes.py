@@ -24,6 +24,7 @@ ALL_LANES = {
     "scripts/ci/classify_changes.py",
 }
 NPORT_PATTERNS = (
+    "requirements.txt",
     "src/workers/nport_*.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
@@ -37,7 +38,9 @@ NPORT_PATTERNS = (
     "tests/test_load_nport_*.py",
 )
 SHARED_PATHS = {"src/db.py"}
+QUANT_PATHS = {"requirements.quant-engine.in"}
 QUANT_PREFIXES = (
+    "contracts/quant-engine/",
     "docker/quant-engine/",
     "harness/",
     "packages/",
@@ -86,7 +89,8 @@ def classify_paths(paths: Iterable[str]) -> Scope:
             nport = True
             continue
         if (
-            path in stage_a_paths
+            path in QUANT_PATHS
+            or path in stage_a_paths
             or path.startswith(QUANT_PREFIXES)
             or (path.startswith("src/") and not path.startswith("src/workers/nport_"))
             or (

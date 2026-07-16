@@ -55,6 +55,27 @@ def test_quant_docker_context_selects_quant_only(path: str) -> None:
     assert classify_paths([path]) == Scope(nport_changed=False, quant_changed=True)
 
 
+def test_railway_requirements_select_nport_only() -> None:
+    assert classify_paths(["requirements.txt"]) == Scope(
+        nport_changed=True,
+        quant_changed=False,
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "requirements.quant-engine.in",
+        "contracts/quant-engine/v1/CHANGELOG.md",
+    ],
+)
+def test_quant_inputs_and_contract_bundle_docs_select_quant_only(path: str) -> None:
+    assert classify_paths([path]) == Scope(
+        nport_changed=False,
+        quant_changed=True,
+    )
+
+
 def test_shared_db_and_nport_input_fixture_select_both() -> None:
     assert classify_paths(["src/db.py"]) == Scope(True, True)
     assert classify_paths(
