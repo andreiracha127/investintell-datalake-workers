@@ -56,12 +56,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.quant-engine.lock pytest pytest-xdist==3.8.0 ruff==0.15.9
 
+      - name: Install Railway dependencies
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: python -m pip install -r requirements.txt
+
       - name: Verify Stage A binding
         if: steps.changes.outputs.quant_changed == 'true'
         run: >-
           python -m pytest
           tests/test_direct_activation_stage_a.py::test_reproducibility_record_pins_a_clean_16_run_reproduction
           -q
+
+      - name: Verify quant requirements lock
+        if: steps.changes.outputs.quant_changed == 'true'
+        run: python scripts/ci/verify_quant_requirements.py
 
       - name: Run focused N-PORT tests
         if: steps.changes.outputs.nport_changed == 'true'
@@ -139,6 +147,7 @@ jobs:
           tests/test_macro_ingestion.py
           tests/test_contract_metric_backtest.py
           tests/test_p1_pack.py
+          tests/test_quant_requirements_sync.py
           tests/test_remote_ci_runner.py
           tests/test_ci_path_scope.py
           tests/test_stage_a_compute_manifest.py
@@ -167,6 +176,7 @@ jobs:
           src/calibration_candidate.py
           src/shadow_pilot.py
           src/input_packs
+          scripts/ci/verify_quant_requirements.py
           services/quant_engine
           packages/investintell_quant_core
           harness/phase0q_cloud/backtest_main.py

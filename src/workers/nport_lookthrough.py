@@ -359,6 +359,8 @@ def expand_series(
         seen_wrapper_keys: set[str] = set()
         for wrapper in expanded_equity_wrappers:
             holding_key = (wrapper.get("cusip") or "").strip().upper()
+            if not holding_key and (wrapper_isin := (wrapper.get("isin") or "").strip().upper()):
+                holding_key = f"IS:{wrapper_isin}"
             if holding_key in seen_wrapper_keys:
                 continue
             seen_wrapper_keys.add(holding_key)

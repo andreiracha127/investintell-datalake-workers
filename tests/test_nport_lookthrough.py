@@ -384,6 +384,51 @@ def test_exact_rollup_preserves_collapsed_non_wrapper_equities() -> None:
     assert summary["net_equity_pct"] == pytest.approx(100.0)
 
 
+def test_exact_rollup_preserves_direct_equities_for_isin_only_wrapper() -> None:
+    wrapper_isin = "US4642872000"
+    fund_map = {"cusip": {}, "isin": {wrapper_isin: "S_CHILD"}}
+    data = {
+        "S1": (
+            D_ROOT,
+            [
+                H(isin=wrapper_isin, issuer="Equity ETF", asset="EC", pct=40.0),
+                H(
+                    cusip="037833100",
+                    isin="US0378331005",
+                    asset="EC",
+                    pct=60.0,
+                ),
+            ],
+        ),
+        "S_CHILD": (
+            D_CHILD,
+            [H(cusip="G1151C101", isin="GB00B03MLX29", asset="EC", pct=100.0)],
+        ),
+    }
+    rollups = {
+        ("S1", D_ROOT): lt.EquityInputs(
+            120.0,
+            100.0,
+            {"CA": -10.0, "US": 110.0},
+            {"037833100": 60.0, f"IS:{wrapper_isin}": 40.0},
+        ),
+        ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
+    }
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        fund_map,
+        get_equity_inputs=lambda sid, report_date: rollups.get((sid, report_date)),
+    )
+
+    assert exposures[("country", "US")]["direct_pct"] == pytest.approx(70.0)
+    assert exposures[("country", "CA")]["direct_pct"] == pytest.approx(-10.0)
+    assert exposures[("country", "GB")]["indirect_pct"] == pytest.approx(40.0)
+    assert summary["gross_equity_pct"] == pytest.approx(120.0)
+    assert summary["net_equity_pct"] == pytest.approx(100.0)
+
+
 def test_equity_input_getter_reads_summary_and_country_sidecars():
     class Cursor:
         def __init__(self):
