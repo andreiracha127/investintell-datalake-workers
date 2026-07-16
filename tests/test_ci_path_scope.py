@@ -22,11 +22,35 @@ def test_nport_only_paths_select_only_nport() -> None:
     ) == Scope(nport_changed=True, quant_changed=False)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/workers/_openfigi.py",
+        "src/workers/_yahoo_sector.py",
+        "tests/test_openfigi.py",
+        "tests/test_yahoo_sector.py",
+    ],
+)
+def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
+
+
 def test_stage_a_compute_path_selects_quant_only() -> None:
     assert classify_paths(["src/quadrant_score.py"]) == Scope(
         nport_changed=False,
         quant_changed=True,
     )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "docker/quant-engine/Dockerfile",
+        "docker/quant-engine/entrypoint.sh",
+    ],
+)
+def test_quant_docker_context_selects_quant_only(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=False, quant_changed=True)
 
 
 def test_shared_db_and_nport_input_fixture_select_both() -> None:
@@ -59,6 +83,45 @@ def test_windows_paths_are_normalized() -> None:
 def test_changed_paths_rejects_an_all_zero_revision() -> None:
     with pytest.raises(ValueError, match="invalid Git revision"):
         changed_paths("0" * 40, "a" * 40, root=ROOT)
+
+
+def test_changed_paths_includes_deleted_files(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "ci-scope@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "CI Scope Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    governed = tmp_path / "src" / "quadrant_score.py"
+    governed.parent.mkdir(parents=True)
+    governed.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "add governed file"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    governed.unlink()
+    subprocess.run(["git", "add", "-u"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "delete governed file"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert changed_paths(base, head, root=tmp_path) == ["src/quadrant_score.py"]
 
 
 def test_cli_writes_both_github_outputs(tmp_path: Path) -> None:

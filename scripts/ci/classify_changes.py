@@ -25,13 +25,18 @@ ALL_LANES = {
 }
 NPORT_PATTERNS = (
     "src/workers/nport_*.py",
+    "src/workers/_openfigi.py",
+    "src/workers/_yahoo_sector.py",
     "scripts/load_nport_fund_flows.py",
     "schemas/nport_*.sql",
     "tests/test_nport_*.py",
+    "tests/test_openfigi.py",
+    "tests/test_yahoo_sector.py",
     "tests/test_load_nport_*.py",
 )
 SHARED_PATHS = {"src/db.py"}
 QUANT_PREFIXES = (
+    "docker/quant-engine/",
     "harness/",
     "packages/",
     "services/",
@@ -108,7 +113,7 @@ def changed_paths(base: str, head: str, *, root: Path) -> list[str]:
             check=True,
         )
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACMRT", base, head],
+        ["git", "diff", "--name-only", "--diff-filter=ACDMRT", base, head],
         cwd=root,
         capture_output=True,
         text=True,

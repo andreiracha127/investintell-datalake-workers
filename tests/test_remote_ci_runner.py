@@ -89,10 +89,18 @@ def test_github_actions_workflow_runs_focused_nport_gate() -> None:
     command = steps["Run focused N-PORT tests"]["run"]
     assert "tests/test_nport_lookthrough.py" in command
     assert "tests/test_nport_cusip_enrichment.py" in command
+    assert "tests/test_openfigi.py" in command
+    assert "tests/test_yahoo_sector.py" in command
     assert "tests/test_load_nport_fund_flows.py" in command
     assert "ruff==0.15.9" in steps["Install dependencies"]["run"]
-    assert "ruff check" in steps["Lint N-PORT modules"]["run"]
-    assert "python -m compileall" in steps["Compile N-PORT modules"]["run"]
+    lint_command = steps["Lint N-PORT modules"]["run"]
+    assert "ruff check" in lint_command
+    assert "src/workers/_openfigi.py" in lint_command
+    assert "src/workers/_yahoo_sector.py" in lint_command
+    compile_command = steps["Compile N-PORT modules"]["run"]
+    assert "python -m compileall" in compile_command
+    assert "src/workers/_openfigi.py" in compile_command
+    assert "src/workers/_yahoo_sector.py" in compile_command
 
 
 def test_quant_suite_uses_all_runner_cpus_without_parallelizing_nport() -> None:
