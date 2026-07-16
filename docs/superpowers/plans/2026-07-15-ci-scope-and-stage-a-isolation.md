@@ -682,7 +682,7 @@ Run: `python -m pytest tests/test_direct_activation_stage_a.py -q`
 
 Expected: all Stage A tests pass, including the HEAD blob binding and blocked-governance assertions.
 
-- [ ] **Step 4: Commit only generated evidence**
+- [x] **Step 4: Commit only generated evidence**
 
 ```powershell
 git add artifacts/a5/open_macro_v03_direct_activation_stage_a_001
@@ -698,25 +698,25 @@ git commit -m "test(a5): rebind Stage A to scoped compute manifest"
 **Interfaces:**
 - Produces: fresh local evidence for every acceptance criterion before any remote push.
 
-- [ ] **Step 1: Run the exact N-PORT lane**
+- [x] **Step 1: Run the exact N-PORT lane**
 
 Run the three commands from Task 2 Step 5.
 
 Expected: pytest, Ruff, and compileall all exit 0.
 
-- [ ] **Step 2: Run the workflow, classifier, and manifest contracts**
+- [x] **Step 2: Run the workflow, classifier, and manifest contracts**
 
 Run: `python -m pytest tests/test_remote_ci_runner.py tests/test_ci_path_scope.py tests/test_stage_a_compute_manifest.py -q`
 
 Expected: all tests pass.
 
-- [ ] **Step 3: Run the complete quant/governance CI command locally**
+- [x] **Step 3: Run the complete quant/governance CI command locally**
 
 Run the exact pytest path list from `.github/workflows/ci.yml`, followed by its compileall command and both artifact verifier commands.
 
 Expected: zero failures; Stage A binding passes before and inside the complete suite.
 
-- [ ] **Step 4: Verify repository and commit scope**
+- [x] **Step 4: Verify repository and commit scope**
 
 ```powershell
 git diff --check origin/feat/nport-equity-geography...HEAD
