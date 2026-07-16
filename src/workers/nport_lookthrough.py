@@ -37,6 +37,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
@@ -56,6 +57,13 @@ DIMENSIONS = ("issuer", "asset_class", "sector", "currency", "country")
 
 HOLDING_COLS = ("cusip", "isin", "issuer_name", "asset_class", "sector",
                 "currency", "pct_of_nav")
+
+
+@dataclass(frozen=True)
+class EquityInputs:
+    gross_equity_pct: float
+    net_equity_pct: float
+    country_exposures_pct: dict[str, float]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -155,6 +163,7 @@ def equity_country_key(
     isin: str | None,
     asset_class: str | None,
     cusip: str | None = None,
+    investment_country: str | None = None,
 ) -> str | None:
     """Return a validated ISIN country prefix for equity holdings only.
 
@@ -164,6 +173,9 @@ def equity_country_key(
     """
     if (asset_class or "") not in _EQUITY_CATS:
         return None
+    explicit_country = (investment_country or "").strip().upper()
+    if explicit_country:
+        return explicit_country if explicit_country in _ISO_3166_ALPHA2 else "UNKNOWN"
     candidates = [(isin or "").strip().upper()]
     synthetic = (cusip or "").strip().upper()
     if synthetic.startswith("IS:"):
@@ -240,6 +252,7 @@ def expand_series(
     fund_map: dict,
     *,
     sector_map: dict[str, str] | None = None,
+    get_equity_inputs: Callable[[str, _dt.date], EquityInputs | None] | None = None,
     max_depth: int = MAX_DEPTH,
 ) -> tuple[dict, dict]:
     """Recursive look-through of one series. Pure computation over a fetcher.
@@ -267,13 +280,17 @@ def expand_series(
         "nondecomposable_fund_pct": 0.0,
         "derivatives_gross_pct": 0.0,
         "derivatives_net_pct": 0.0,
+        "gross_equity_pct": 0.0,
+        "net_equity_pct": 0.0,
         "unidentified_pct": 0.0,
         "n_holdings": len(root_holdings),
         "n_children_expanded": 0,
     }
     expanded_children: set[str] = set()
 
-    def _accumulate(holding: dict, pct: float, depth: int) -> None:
+    def _accumulate(
+        holding: dict, pct: float, depth: int, *, has_equity_rollup: bool
+    ) -> None:
         side = "direct_pct" if depth == 0 else "indirect_pct"
         keys = [
             ("issuer", issuer_key(holding.get("cusip"), holding.get("isin")),
@@ -282,13 +299,15 @@ def expand_series(
             ("sector", sector_label(holding, sector_map), None),
             ("currency", holding.get("currency") or "UNKNOWN", None),
         ]
-        country = equity_country_key(
-            holding.get("isin"),
-            holding.get("asset_class"),
-            holding.get("cusip"),
-        )
-        if country is not None:
-            keys.append(("country", country, None))
+        if not has_equity_rollup:
+            country = equity_country_key(
+                holding.get("isin"),
+                holding.get("asset_class"),
+                holding.get("cusip"),
+                holding.get("investment_country"),
+            )
+            if country is not None:
+                keys.append(("country", country, None))
         for dimension, key, label in keys:
             cell = exposures.setdefault(
                 (dimension, key),
@@ -301,6 +320,9 @@ def expand_series(
         if (holding.get("asset_class") or "") in DERIVATIVE_CLASSES:
             summary["derivatives_gross_pct"] += abs(pct)
             summary["derivatives_net_pct"] += pct
+        if not has_equity_rollup and (holding.get("asset_class") or "") in _EQUITY_CATS:
+            summary["gross_equity_pct"] += abs(pct)
+            summary["net_equity_pct"] += pct
         if (holding.get("cusip") or "").startswith(UNIDENTIFIED_PREFIXES):
             summary["unidentified_pct"] += abs(pct)
 
@@ -308,11 +330,28 @@ def expand_series(
         rd, holdings = get_holdings(sid)  # guaranteed by caller
         if rd < summary["oldest_report_date"]:
             summary["oldest_report_date"] = rd
+        equity_inputs = get_equity_inputs(sid, rd) if get_equity_inputs else None
+        if equity_inputs is not None:
+            side = "direct_pct" if depth == 0 else "indirect_pct"
+            summary["gross_equity_pct"] += equity_inputs.gross_equity_pct * abs(weight)
+            summary["net_equity_pct"] += equity_inputs.net_equity_pct * weight
+            for country, country_pct in equity_inputs.country_exposures_pct.items():
+                cell = exposures.setdefault(
+                    ("country", country),
+                    {"label": None, "direct_pct": 0.0, "indirect_pct": 0.0},
+                )
+                cell[side] += country_pct * weight
         for holding in holdings:
             raw_pct = holding.get("pct_of_nav")
             if raw_pct is None:
                 continue  # sem peso reportado: nada a inventar
-            pct = float(raw_pct) * weight
+            profile = (holding.get("payoff_profile") or "").strip().upper()
+            local_pct = float(raw_pct)
+            if profile == "SHORT":
+                local_pct = -abs(local_pct)
+            elif profile == "LONG":
+                local_pct = abs(local_pct)
+            pct = local_pct * weight
             child = match_fund(holding, fund_map)
             if (
                 child is not None
@@ -323,10 +362,15 @@ def expand_series(
                 if depth == 0:
                     summary["expanded_fund_pct"] += pct
                 expanded_children.add(child)
-                _walk(child, weight * float(raw_pct) / 100.0, depth + 1,
+                _walk(child, weight * local_pct / 100.0, depth + 1,
                       ancestors | {sid})
             else:
-                _accumulate(holding, pct, depth)
+                _accumulate(
+                    holding,
+                    pct,
+                    depth,
+                    has_equity_rollup=equity_inputs is not None,
+                )
                 if child is not None:
                     summary["nondecomposable_fund_pct"] += abs(pct)
 
@@ -470,6 +514,50 @@ def make_db_get_holdings(
     return get_holdings
 
 
+def make_db_get_equity_inputs(
+    conn, cache: dict | None = None
+) -> Callable[[str, _dt.date], EquityInputs | None]:
+    """Memoized reader for exact, uncollapsed equity classification inputs."""
+
+    memo: dict[tuple[str, _dt.date], EquityInputs | None] = (
+        cache if cache is not None else {}
+    )
+
+    def get_equity_inputs(series_id: str, report_date: _dt.date) -> EquityInputs | None:
+        key = (series_id, report_date)
+        if key in memo:
+            return memo[key]
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT gross_equity_pct, net_equity_pct
+                   FROM nport_equity_exposure_summary
+                   WHERE series_id = %s AND report_date = %s""",
+                key,
+            )
+            summary_row = cur.fetchone()
+        if summary_row is None:
+            memo[key] = None
+            return None
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT country, direct_pct
+                   FROM nport_equity_country_exposures
+                   WHERE series_id = %s AND report_date = %s
+                   ORDER BY country""",
+                key,
+            )
+            countries = {str(country): float(value) for country, value in cur.fetchall()}
+        result = EquityInputs(
+            gross_equity_pct=float(summary_row[0]),
+            net_equity_pct=float(summary_row[1]),
+            country_exposures_pct=countries,
+        )
+        memo[key] = result
+        return result
+
+    return get_equity_inputs
+
+
 def _list_parents(conn, calc_date: _dt.date, limit: int | None) -> list[str]:
     """All series with a report ≤ calc_date, biggest (latest n_holdings) first."""
     sql = """
@@ -505,8 +593,9 @@ def _coverage_pct(conn, series_id: str, report_date: _dt.date) -> float | None:
 _SUMMARY_COLS = (
     "series_id", "report_date", "sum_pct_total", "direct_pct", "indirect_pct",
     "expanded_fund_pct", "nondecomposable_fund_pct", "derivatives_gross_pct",
-    "derivatives_net_pct", "unidentified_pct", "coverage_pct", "n_holdings",
-    "n_children_expanded", "oldest_report_date",
+    "derivatives_net_pct", "gross_equity_pct", "net_equity_pct",
+    "unidentified_pct", "coverage_pct", "n_holdings", "n_children_expanded",
+    "oldest_report_date",
 )
 
 
@@ -530,6 +619,8 @@ def _upsert_series(conn, series_id: str, exposures: dict, summary: dict,
         _clip6(summary["nondecomposable_fund_pct"]),
         _clip6(summary["derivatives_gross_pct"]),
         _clip6(summary["derivatives_net_pct"]),
+        _clip6(summary["gross_equity_pct"]),
+        _clip6(summary["net_equity_pct"]),
         _clip6(summary["unidentified_pct"]),
         coverage_pct, summary["n_holdings"], summary["n_children_expanded"],
         summary["oldest_report_date"],
@@ -561,15 +652,17 @@ def _upsert_series(conn, series_id: str, exposures: dict, summary: dict,
 
 
 def ensure_schema(conn) -> None:
-    """Apply the idempotent DDL (schemas/nport_lookthrough.sql)."""
-    sql_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "schemas", "nport_lookthrough.sql",
+    """Apply idempotent look-through and exact-equity input DDL."""
+    schema_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "schemas"
     )
-    with open(sql_path, encoding="utf-8") as fh:
-        ddl = fh.read()
     with conn.cursor() as cur:
-        cur.execute(ddl)
+        for filename in (
+            "nport_equity_classification_inputs.sql",
+            "nport_lookthrough.sql",
+        ):
+            with open(os.path.join(schema_dir, filename), encoding="utf-8") as fh:
+                cur.execute(fh.read())
     conn.commit()
 
 
@@ -589,9 +682,14 @@ def _process_shard(
     processed = upserted = exposure_rows = 0
     with connect(dsn) as conn:
         get_holdings = make_db_get_holdings(conn, calc_date)
+        get_equity_inputs = make_db_get_equity_inputs(conn)
         for series_id in series_ids:
             exposures, summary = expand_series(
-                series_id, get_holdings, fund_map, sector_map=sector_map
+                series_id,
+                get_holdings,
+                fund_map,
+                sector_map=sector_map,
+                get_equity_inputs=get_equity_inputs,
             )
             coverage = _coverage_pct(conn, series_id, summary["report_date"])
             exposure_rows += _upsert_series(conn, series_id, exposures, summary,

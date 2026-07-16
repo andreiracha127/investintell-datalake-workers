@@ -37,11 +37,12 @@ D_GRAND = _dt.date(2025, 9, 30)
 
 
 def H(cusip=None, isin=None, issuer="Issuer", asset="EC", sector="Tech",
-      currency="USD", pct=0.0):
+      currency="USD", pct=0.0, payoff_profile=None, investment_country=None):
     return {
         "cusip": cusip, "isin": isin, "issuer_name": issuer,
         "asset_class": asset, "sector": sector, "currency": currency,
-        "pct_of_nav": pct,
+        "pct_of_nav": pct, "payoff_profile": payoff_profile,
+        "investment_country": investment_country,
     }
 
 
@@ -197,6 +198,90 @@ def test_equity_country_dimension_uses_isin_and_keeps_unknown_explicit():
     assert country["UNKNOWN"]["direct_pct"] == pytest.approx(10.0)
     assert "XX" not in country
     assert sum(cell["direct_pct"] for cell in country.values()) == pytest.approx(100.0)
+
+
+def test_explicit_country_and_payoff_drive_gross_and_net_equity():
+    data = {"S1": (D_ROOT, [
+        H(cusip="111111111", isin="US0378331005", pct=80.0,
+          payoff_profile="Long", investment_country="GB"),
+        H(cusip="222222222", isin="US5949181045", pct=30.0,
+          payoff_profile="Short", investment_country="JP"),
+    ])}
+
+    exposures, summary = lt.expand_series("S1", make_get_holdings(data), EMPTY_MAP)
+
+    assert exposures[("country", "GB")]["direct_pct"] == pytest.approx(80.0)
+    assert exposures[("country", "JP")]["direct_pct"] == pytest.approx(-30.0)
+    assert summary["gross_equity_pct"] == pytest.approx(110.0)
+    assert summary["net_equity_pct"] == pytest.approx(50.0)
+
+
+def test_exact_equity_rollup_overrides_collapsed_holding_evidence():
+    data = {"S1": (D_ROOT, [
+        H(cusip="LE:N/A", isin=None, pct=50.0),
+    ])}
+    rollup = lt.EquityInputs(
+        gross_equity_pct=110.0,
+        net_equity_pct=50.0,
+        country_exposures_pct={"GB": 80.0, "JP": -30.0},
+    )
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        EMPTY_MAP,
+        get_equity_inputs=lambda _series_id, _report_date: rollup,
+    )
+
+    assert exposures[("country", "GB")]["direct_pct"] == pytest.approx(80.0)
+    assert exposures[("country", "JP")]["direct_pct"] == pytest.approx(-30.0)
+    assert ("country", "UNKNOWN") not in exposures
+    assert summary["gross_equity_pct"] == pytest.approx(110.0)
+    assert summary["net_equity_pct"] == pytest.approx(50.0)
+
+
+def test_equity_input_getter_reads_summary_and_country_sidecars():
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, query, _params):
+            self.query = query
+
+        def fetchone(self):
+            return (110.0, 50.0)
+
+        def fetchall(self):
+            return [("GB", 80.0), ("JP", -30.0)]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    getter = lt.make_db_get_equity_inputs(Connection())
+
+    assert getter("S1", D_ROOT) == lt.EquityInputs(
+        gross_equity_pct=110.0,
+        net_equity_pct=50.0,
+        country_exposures_pct={"GB": 80.0, "JP": -30.0},
+    )
+
+
+def test_summary_contract_persists_gross_and_net_equity():
+    schema = (
+        pathlib.Path(__file__).resolve().parents[1] / "schemas" / "nport_lookthrough.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "gross_equity_pct" in lt._SUMMARY_COLS
+    assert "net_equity_pct" in lt._SUMMARY_COLS
+    assert "gross_equity_pct" in schema
+    assert "net_equity_pct" in schema
 
 
 def test_equity_country_dimension_preserves_indirect_lookthrough_weight():
