@@ -68,7 +68,7 @@ from harness.direct_activation.live_validation import (
     staleness_report,
 )
 from harness.direct_activation import carry_decay
-from harness.phase0q import decision as decision_mod
+from harness.phase0q import decision_v3 as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import (
     EOD_MIN_DATE,
@@ -123,7 +123,7 @@ BOOK = "compressed_50"
 # carry publishes — the mandate-tilted centroid of the compressed_50 family, the
 # same token carry_decay.evaluate emits and the migration DDL admits.
 CENTER_BOOK = "center_50"
-JUDGMENT_REF = "open_macro_v03_dark_launch_readiness_001:go_candidate"
+JUDGMENT_REF = "open_macro_v03_confidence_v3_evidence_001:go"
 THRESHOLD_REF = "open_macro_v03_threshold_signoff_001"
 
 DB_WRITE_MODE = "open_macro_v03_new_tables_only"
@@ -330,8 +330,15 @@ EXPECTED_PINNED_MODULES = (
     "src/quadrant_assemble.py",
     "src/quadrant_snapshot.py",
     "src/quadrant_staleness.py",
+    # macro_quadrant_us_v3 (owner-approved switch 2026-07-16): the fused decision
+    # path's own closure — confidence_v2.0 policy, v2 assembler, the market
+    # observation builder, and the v3 chain engine itself.
+    "src/quadrant_confidence_v2.py",
+    "src/quadrant_assemble_v2.py",
+    "src/quadrant_market_observation.py",
     "harness/direct_activation/live_validation.py",
     "harness/phase0q/decision.py",
+    "harness/phase0q/decision_v3.py",
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
     "scripts/p1_export/export_p1_sources.py",
@@ -1280,8 +1287,15 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                         "reason": report["breaches"], "run_id": run_id,
                         "wall_ms": int((time.monotonic() - t0) * 1000)}
 
-            # Gate 9 — decision chain + consumable position.
-            chain = decision_mod.run_decision_series(vintage_rows, CHAIN_START, as_of_date)
+            # Gate 9 — decision chain + consumable position. The GO candidate
+            # macro_quadrant_us_v3 (docs/calibration/
+            # open_macro_v03_confidence_v3_evidence_001.md — every ratified gate GO,
+            # owner-approved model switch 2026-07-16): the market-fused v3 chain
+            # consumes the SAME composed macro vintages plus the composed eod
+            # prices (the market growth sensor reads PIT off the same price
+            # surface the staleness gate and the allocator already verify).
+            chain = decision_mod.run_decision_series_v3(
+                vintage_rows, price_rows, CHAIN_START, as_of_date)
             last, validity, seed_as_of = consumable_today(chain, as_of_date)
 
             # carry_decay_v1 (phase0q_005, RATIFIED 2026-07-11; CARRY_DECAY_V1_ACTIVE

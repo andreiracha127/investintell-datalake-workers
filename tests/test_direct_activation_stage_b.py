@@ -31,8 +31,13 @@ DECISION_CHAIN_MODULES = (
     "src/quadrant_assemble.py",
     "src/quadrant_snapshot.py",
     "src/quadrant_staleness.py",
+    # macro_quadrant_us_v3 (owner-approved switch 2026-07-16): the fused path.
+    "src/quadrant_confidence_v2.py",
+    "src/quadrant_assemble_v2.py",
+    "src/quadrant_market_observation.py",
     "harness/direct_activation/live_validation.py",
     "harness/phase0q/decision.py",
+    "harness/phase0q/decision_v3.py",
     "harness/phase0q/pit.py",
     "harness/phase0q/sleeve.py",
 )
@@ -47,6 +52,9 @@ PINNED_SRC_MODULES = {
     "src.quadrant_score", "src.macro_transforms", "src.macro_sources",
     "src.quadrant_confidence", "src.quadrant_hysteresis", "src.quadrant_assemble",
     "src.quadrant_snapshot", "src.quadrant_staleness",
+    # macro_quadrant_us_v3 (owner-approved switch 2026-07-16): the fused path.
+    "src.quadrant_confidence_v2", "src.quadrant_assemble_v2",
+    "src.quadrant_market_observation",
 }
 # Infra allowlist: quadrant_assemble re-exports LOCK_REGIME_QUADRANT from src.db, an
 # infrastructure (locks/connection) module that carries no decision-formula value and

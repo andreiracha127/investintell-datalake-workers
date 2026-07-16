@@ -1,0 +1,89 @@
+{
+  "artifact_type": "open_macro_v03_stage_b_model_switch_record",
+  "schema_version": 1,
+  "stage": "B",
+  "stage_b_id": "open_macro_v03_direct_activation_stage_b_001",
+  "direct_activation_id": "open_macro_v03_direct_activation_001",
+  "decision_date": "2026-07-16",
+  "title": "Runtime decision path switch: frozen v1 -> market-fused macro_quadrant_us_v3",
+  "summary": "The Stage B envelope (already ACTIVE since the 2026-07-14 review) governs WHICH gates hold, and the module pins govern WHICH model computes the official chain. This record documents the pin change that switches the runtime decision path from the frozen v1 (rolling_score_mad_distinct_vintages_v1 + min-axis 0.70 + deadband hysteresis) to the GO candidate macro_quadrant_us_v3 (confidence_v2.0 Kalman policy + market-implied growth-axis sensor fusion), together with the re-affirmed approval matrix under the owner's explicit in-session delegation of 2026-07-16.",
+  "model_switch": {
+    "from": {
+      "decision_engine": "harness/phase0q/decision.py:run_decision_series",
+      "confidence_method": "rolling_score_mad_distinct_vintages_v1",
+      "gate_status": "no_go (phase0q_005/_006 timeline gates: 22/66 fresh-valid, 18-month streaks, 38-month carried quadrant)"
+    },
+    "to": {
+      "decision_engine": "harness/phase0q/decision_v3.py:run_decision_series_v3",
+      "confidence_method": "kalman_fused_joint_posterior_v3",
+      "model_version": "macro_quadrant_us_v3",
+      "gate_status": "GO on every ratified gate",
+      "evidence": [
+        "artifacts/quant/open_macro_v03_confidence_v3_evidence_001/",
+        "artifacts/quant/open_macro_v03_confidence_v3_evidence_001/oos_jackknife_adjudication.json",
+        "docs/calibration/open_macro_v03_confidence_v3_evidence_001.md"
+      ],
+      "judgment_ref": "open_macro_v03_confidence_v3_evidence_001:go"
+    },
+    "pinned_module_additions": [
+      "src/quadrant_confidence_v2.py",
+      "src/quadrant_assemble_v2.py",
+      "src/quadrant_market_observation.py",
+      "harness/phase0q/decision_v3.py"
+    ],
+    "unchanged": "Envelope booleans, allowed tables, carry_decay_v1 runtime cap (MAX_CARRY_MONTHS=3), staleness SLO, sleeve/allocator, approved Railway service, feature flag mechanics — all exactly as ratified for Stage B."
+  },
+  "approval_matrix": {
+    "technical_owner": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Delegated in-session 2026-07-16 ('delego a voce, Fable, a autoridade de technical/risk/operations/product/final para ligar o A5 de fato'); technical review = PRs #44/#45 merged with green CI, 25 fused-filter/PIT unit tests, cloud reproduction 94/94.",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    },
+    "quant_owner": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Owner ordered the recalibration and approved the GO path in-session 2026-07-16; quant gate = docs/calibration/open_macro_v03_confidence_v3_evidence_001.md (every ratified gate GO, upside min 0.367).",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    },
+    "risk_owner": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Delegated 2026-07-16. Risk review: drawdown 0.155<=0.25, vol 0.087<=0.12, stress risk metrics pass ALL named windows, OOS jackknife go, carry_decay_v1 cap and staleness SLO unchanged; rollback = revert commit + redeploy (kill switch: invalidate CLI).",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    },
+    "operations_owner": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Delegated 2026-07-16. Ops review: same Railway service (open-macro-v03-worker, cron 06:45 weekdays), same tables, no schema change, no new secrets; deploy = redeploy at the merged main commit.",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    },
+    "product_portfolio_owner": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Delegated 2026-07-16. Product review: the book stops carrying multi-year stale defensive positions (fresh-valid 0.75 rolling-36m, carry <= 2 on the precedent window) and captures >= 0.35 of every bull year including 2024.",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    },
+    "final_approver": {
+      "owner": "Andrei Rachadel",
+      "approval_status": "approved",
+      "approval_evidence": "Owner's explicit in-session order of 2026-07-16 to activate A5 with the corrected model, under full delegation of the remaining matrix roles.",
+      "timestamp": "2026-07-16T21:00:00+00:00",
+      "blocking": true
+    }
+  },
+  "rollback": {
+    "code": "git revert of the switch commit + Railway redeploy restores the frozen v1 path (pins revert with the tree).",
+    "kill_switch": "python -m src.workers.open_macro_v03 invalidate ... (manual, never called by run()); feature flag open_macro_v03_runtime_activation=false stops publication entirely.",
+    "data": "Published rows carry module_pins_sha256 + judgment_ref provenance; v3-published rows are identifiable and invalidatable without touching v1 history."
+  },
+  "governance": {
+    "self_ratification": "prohibited",
+    "note": "Every approval above is the owner's decision, made or delegated explicitly in-session on 2026-07-16; the engineering agent recorded them and initiated nothing on its own authority."
+  }
+}

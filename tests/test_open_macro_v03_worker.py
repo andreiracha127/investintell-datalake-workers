@@ -857,8 +857,8 @@ def _run_to_publish(monkeypatch, chain, state):
     monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: _fresh_inputs())
     monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
     monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
-    monkeypatch.setattr(w.decision_mod, "run_decision_series",
-                        lambda rows, start, end: chain)
+    monkeypatch.setattr(w.decision_mod, "run_decision_series_v3",
+                        lambda rows, prices, start, end: chain)
     conn = _FakeConn(_lock_responder(_publish_capture_responder(state)))
     monkeypatch.setattr(w, "connect", lambda dsn: conn)
     return w.run("dsn", as_of="2026-07-06")
