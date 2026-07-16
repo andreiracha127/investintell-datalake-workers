@@ -625,6 +625,8 @@ def _assert_manifest_governance(manifest: dict) -> None:
 
 try:  # pragma: no cover - QC cloud runtime only
     from AlgorithmImports import *  # noqa: F401,F403
+    if "QCAlgorithm" not in globals():
+        raise ImportError("AlgorithmImports does not expose QCAlgorithm")
 
     class OpenMacroV03Phase0QCloudBacktest(QCAlgorithm):  # noqa: F405
         """Runs the phase0q reproducibility check as a headless-triggerable backtest."""

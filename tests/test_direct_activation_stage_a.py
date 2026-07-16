@@ -614,14 +614,13 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
     assert job["clean_tree"] is True  # bool, not the string "true"
     assert re.fullmatch(r"[0-9a-f]{40}", job["worker_commit"])
 
-    # HARD evidence-to-branch binding: every pinned compute-surface hash must equal
-    # the git object of that surface at the CURRENT HEAD (the tree being merged).
-    # Any post-measurement commit touching a compute surface (harness/, src/, ...)
-    # changes `git rev-parse HEAD:<surface>` and fails CI, so the measured evidence
-    # can never silently certify a different tree than the one merging. Works for
-    # directory surfaces (tree hash) and file surfaces like qc_a3_core.py (blob hash).
-    expected_surfaces = {"harness", "packages", "services", "scripts", "src",
-                         "qc_a3_core.py"}
+    # HARD evidence-to-branch binding: every exact Stage A compute-file hash must equal
+    # the git blob at CURRENT HEAD (the tree being merged). An unrelated worker file is
+    # outside this manifest; a post-measurement decision/measurement change is inside it
+    # and therefore fails CI until Stage A is recertified.
+    from harness.direct_activation.compute_manifest import STAGE_A_COMPUTE_PATHS
+
+    expected_surfaces = set(STAGE_A_COMPUTE_PATHS)
     assert set(job["tree_hashes"]) == expected_surfaces
     worker_commit = job["worker_commit"]
     # The AUTHORITATIVE, shallow-safe binding is tree_hashes == HEAD:<surface> (the

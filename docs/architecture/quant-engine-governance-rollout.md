@@ -28,9 +28,19 @@ Governance invariants held throughout: A3 `open_macro_v03`, A4
 
 GitHub Actions is the required remote status check source for this repository.
 The pre-push remote Docker/Railway SSH runner is retired and must not block local
-pushes. PR and branch pushes are gated by `.github/workflows/ci.yml`, which runs
-the quant-engine checks directly on GitHub-hosted runners without building the
-Railway CI Dockerfile.
+pushes. PR commits and `main` pushes are gated by `.github/workflows/ci.yml`,
+which selects focused N-PORT checks or the quant-engine governance gate from the
+changed paths and runs them directly on GitHub-hosted runners without building
+the Railway CI Dockerfile.
+
+The full quant/governance pytest lane uses `pytest-xdist==3.8.0` with
+`-p xdist.plugin -n auto --dist loadscope --color=no`. Plugin loading is explicit
+because CI disables pytest plugin autoload. For this repository on the 16-core / 32-thread
+Windows development host, use `-n 8 --dist loadscope --color=no`: that stable profile
+reduced the complete non-binding suite from 28m43s serial to 6m38s. Small focused suites,
+including N-PORT, stay serial because worker startup costs more than the tests. Official
+Stage A host/container measurement also stays serial because concurrent runs would
+contaminate its latency and peak-memory evidence.
 
 Checks covered by the GitHub Actions gate:
 
