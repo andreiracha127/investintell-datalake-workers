@@ -16,6 +16,7 @@ import numpy as np
 from src.db import LOCK_FUND_FACTORS, advisory_lock, connect
 
 _SIG = ((2.58, "***"), (1.96, "**"), (1.65, "*"))
+_NUMERIC_14_8_MAX = 999_999.99999999
 
 
 def _significance(t_stat: float | None) -> str | None:
@@ -26,6 +27,25 @@ def _significance(t_stat: float | None) -> str | None:
         if level >= threshold:
             return mark
     return None
+
+
+def _numeric_14_8(value: float | None) -> float | None:
+    """Normalize a value for the fund_factor_exposures NUMERIC(14,8) contract."""
+    if value is None:
+        return None
+    normalized = float(value)
+    if not math.isfinite(normalized):
+        return None
+    normalized = round(normalized, 8)
+    if abs(normalized) > _NUMERIC_14_8_MAX:
+        return None
+    return normalized
+
+
+def _storage_values(row: dict) -> tuple[float | None, float | None, str | None]:
+    beta = _numeric_14_8(row["beta"])
+    t_stat = _numeric_14_8(row["t_stat"]) if beta is not None else None
+    return beta, t_stat, _significance(t_stat)
 
 
 def ols_factor_exposures(y: np.ndarray, x: np.ndarray) -> list[dict]:
@@ -145,16 +165,18 @@ def run(dsn: str, *, as_of: str | None = None, limit: int | None = None) -> dict
             if fdates and fmatrix.size:
                 for iid in _fund_ids(conn, limit):
                     y = _fund_monthly_returns(conn, iid, fdates)
-                    mask = ~np.isnan(y)
+                    mask = np.isfinite(y) & np.isfinite(fmatrix).all(axis=1)
                     if mask.sum() < max(10, fmatrix.shape[1] + 2):
                         continue
                     processed += 1
                     rows = ols_factor_exposures(y[mask], fmatrix[mask])
                     for r in rows:
+                        beta, t_stat, significance = _storage_values(r)
                         with conn.cursor() as cur:
                             cur.execute(_UPSERT, {
                                 "iid": iid, "factor": r["factor"], "as_of": out_date,
-                                "beta": r["beta"], "t_stat": r["t_stat"], "sig": r["significance"],
+                                "beta": beta, "t_stat": t_stat,
+                                "sig": significance,
                             })
                         upserted += 1
                 conn.commit()

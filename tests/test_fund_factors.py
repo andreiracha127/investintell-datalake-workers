@@ -1,5 +1,6 @@
 # tests/test_fund_factors.py
 import numpy as np
+import pytest
 
 import src.workers.fund_factors as ff
 
@@ -19,6 +20,39 @@ def test_ols_factor_exposures_recovers_known_betas():
 
 def test_ols_short_series_returns_empty():
     assert ff.ols_factor_exposures(np.zeros(3), np.zeros((3, 2))) == []
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        (float("nan"), None),
+        (float("inf"), None),
+        (float("-inf"), None),
+        (999_999.99999999, 999_999.99999999),
+        (-999_999.99999999, -999_999.99999999),
+        (1_000_000.0, None),
+        (-1_000_000.0, None),
+        (0.123456789, 0.12345679),
+    ],
+)
+def test_numeric_14_8_normalizes_storage_values(value, expected):
+    assert ff._numeric_14_8(value) == expected
+
+
+def test_near_perfect_fit_t_stat_is_not_persistable():
+    rng = np.random.default_rng(0)
+    n = 120
+    f1 = rng.normal(size=n)
+    f2 = rng.normal(size=n)
+    y = 0.3 * f1 - 0.5 * f2 + rng.normal(scale=1e-6, size=n)
+
+    out = ff.ols_factor_exposures(y, np.column_stack([f1, f2]))
+
+    stored = [ff._storage_values(row) for row in out]
+    assert all(beta is not None for beta, _, _ in stored)
+    assert all(t_stat is None for _, t_stat, _ in stored)
+    assert all(significance is None for _, _, significance in stored)
 
 
 class _FakeCursor:
