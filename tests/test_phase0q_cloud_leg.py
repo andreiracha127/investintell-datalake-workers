@@ -196,14 +196,14 @@ def test_shipped_gzip_sources_match_git_head(built_bundle, bundle_manifest):
 
 
 def test_policy_artifact_shipped_and_drift_checked(built_bundle, bundle_manifest):
-    """phase0q_005 ratification: run_harness now READS the ratified timeline gate
+    """phase0q_006 ratification (amends _005): run_harness READS the ratified timeline gate
     policy artifact at runtime (runner.TIMELINE_GATE_POLICY_PATH), so the artifact is
     part of the shipped runtime closure. Without it the materialized cloud leg would
     judge policy_absent, drop the blocking `timeline` entry from
     gates_overall_base_cost and fail to reproduce the local leg hash."""
     entries = bundle_manifest["policy_artifact_sources"]
     assert {e["source_path"] for e in entries} == {
-        "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json"}
+        "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json"}
     for entry in entries:
         # materialized at the repo-relative path the runner resolves.
         assert entry["target_path"] == entry["source_path"]
