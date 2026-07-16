@@ -33,7 +33,7 @@ ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
 # The clean source commit used for this prepared upload namespace.
-HARNESS_COMMIT = "130b754bdbf06ab92f80075933e8b9784bba3a27"
+HARNESS_COMMIT = "0b4d8c2e19e7b887d649a85e98027382e2e0fe77"
 STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 PACK_003_ID = "open_macro_v03_certified_input_pack_003"
 PACK_003_SHA = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
@@ -196,14 +196,14 @@ def test_shipped_gzip_sources_match_git_head(built_bundle, bundle_manifest):
 
 
 def test_policy_artifact_shipped_and_drift_checked(built_bundle, bundle_manifest):
-    """phase0q_005 ratification: run_harness now READS the ratified timeline gate
+    """phase0q_006 ratification (amends _005): run_harness READS the ratified timeline gate
     policy artifact at runtime (runner.TIMELINE_GATE_POLICY_PATH), so the artifact is
     part of the shipped runtime closure. Without it the materialized cloud leg would
     judge policy_absent, drop the blocking `timeline` entry from
     gates_overall_base_cost and fail to reproduce the local leg hash."""
     entries = bundle_manifest["policy_artifact_sources"]
     assert {e["source_path"] for e in entries} == {
-        "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json"}
+        "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json"}
     for entry in entries:
         # materialized at the repo-relative path the runner resolves.
         assert entry["target_path"] == entry["source_path"]

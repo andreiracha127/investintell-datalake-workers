@@ -25,11 +25,18 @@ from harness.phase0q import runner
 
 ROOT = Path(__file__).resolve().parents[1]
 PACK_DIR = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_002"
-POLICY_PATH = (ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
+# phase0q_006 (2026-07-16) amends phase0q_005: same five bounds, the
+# same-quadrant-run gate scoped to LOW fresh-density runs only.
+POLICY_PATH = (ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_006"
                / "timeline_gate_policy.json")
+SUPERSEDED_POLICY_PATH = (ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
+                          / "timeline_gate_policy.json")
 
 
-def _block(rolling_36m, abstention, carry_age, same_run, upside=None):
+def _block(rolling_36m, abstention, carry_age, same_run, upside=None,
+           low_density_run=None):
+    """A timeline block; ``low_density_run`` (the amended judged metric) defaults to
+    ``same_run`` so bound-direction tests drive the amended gate directly."""
     return {
         "regime_timeline_metrics": {
             "fresh_valid_rate": {"global": rolling_36m, "rolling_12m": rolling_36m,
@@ -37,6 +44,9 @@ def _block(rolling_36m, abstention, carry_age, same_run, upside=None):
             "max_abstention_streak_months": abstention,
             "max_carry_age_months": carry_age,
             "max_same_quadrant_run_months": same_run,
+            "same_quadrant_run_low_density_threshold": 0.50,
+            "max_low_density_same_quadrant_run_months": (
+                same_run if low_density_run is None else low_density_run),
         },
         "upside_capture_by_calendar_year": upside or {},
     }
@@ -54,12 +64,14 @@ def test_policy_artifact_is_ratified_by_quant_owner():
     assert policy["status"] == "ratified"
     assert policy["ratified_by"] == "quant_owner"
     assert policy["ratified_by_name"] == "Andrei Rachadel"
-    assert policy["decision_date"] == "2026-07-11"
-    # the self-ratification BAN stays on record: ratification came from the owner.
+    assert policy["decision_date"] == "2026-07-16"
+    # the self-ratification BAN stays on record: the decision was the owner's
+    # (amendment approved verbatim), recorded under explicit delegation.
     assert policy["governance"]["self_ratification"] == "prohibited"
     assert policy["governance"]["A5"] == "blocked"
     assert policy["governance"]["runtime_activation"] is False
-    # the five gate bounds are EXACTLY as proposed (ratified unchanged).
+    # the five gate BOUNDS are EXACTLY the phase0q_005 bounds (amendment changes
+    # only the same-quadrant-run judging scope).
     assert policy["gates"] == {
         "min_fresh_valid_rate_36m": 0.40,
         "max_abstention_streak_months": 6,
@@ -68,8 +80,18 @@ def test_policy_artifact_is_ratified_by_quant_owner():
         "min_upside_capture_bull_year": 0.35,
     }
     assert policy["gate_parameters"]["bull_year_spy_return_threshold"] == 0.15
-    # it amends the phase0q_003 stress-gate amendment.
-    assert "phase0q_003" in policy["amends"]["target"]
+    assert policy["gate_parameters"]["same_quadrant_run_min_fresh_density"] == 0.50
+    # it amends the phase0q_005 timeline-gate policy.
+    assert "phase0q_005" in policy["amends"]["target"]
+
+
+def test_superseded_phase0q_005_artifact_is_intact_but_never_gates_again():
+    """The 005 artifact stays on disk unmodified (history), but the validator now
+    binds to 006: a stale artifact can never gate."""
+    old = json.loads(SUPERSEDED_POLICY_PATH.read_text(encoding="utf-8"))
+    assert old["phase0q_id"] == "open_macro_v03_phase0q_005"
+    assert old["decision_date"] == "2026-07-11"
+    assert runner.validate_ratified_policy(old) != []
 
 
 def test_policy_loads_via_runner_default_path():
@@ -337,7 +359,7 @@ def test_ratified_policy_makes_timeline_a_blocking_overall_gate(fast_run):
     tl_gate = report["gates_overall_base_cost"]["timeline"]
     assert tl_gate["go_no_go"] == ("go" if judgment["overall_go"] else "no_go")
     assert tl_gate["policy_status"] == "ratified"
-    assert tl_gate["phase0q_id"] == "open_macro_v03_phase0q_005"
+    assert tl_gate["phase0q_id"] == "open_macro_v03_phase0q_006"
     # per-gate judgments carry measured values (an honest no_go, not a crash).
     for gate, entry in judgment["per_gate"].items():
         assert "measured" in entry and "bound" in entry and "go" in entry

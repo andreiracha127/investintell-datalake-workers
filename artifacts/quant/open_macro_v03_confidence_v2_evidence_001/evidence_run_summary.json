@@ -1,0 +1,182 @@
+{
+  "decision_model": "v2",
+  "evidence_files": [
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\baseline_current__0bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\baseline_current__5bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\baseline_current__10bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\baseline_current__25bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\growth_plus_2pp__0bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\growth_plus_2pp__5bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\growth_plus_2pp__10bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\growth_plus_2pp__25bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\inflation_plus_2pp__0bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\inflation_plus_2pp__5bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\inflation_plus_2pp__10bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\inflation_plus_2pp__25bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_plus_1pp__0bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_plus_1pp__5bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_plus_1pp__10bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_plus_1pp__25bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_minus_1pp__0bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_minus_1pp__5bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_minus_1pp__10bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\cells\\risk_tilt_minus_1pp__25bps.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\quantitative_gate_report.measured.json",
+    "E:\\investintell-datalake-workers-phase0q-pack003\\artifacts\\quant\\open_macro_v03_confidence_v2_evidence_001\\metric_backtest_result.json"
+  ],
+  "gates_overall_base_cost": {
+    "drawdown": "go",
+    "out_of_sample": "no_go",
+    "stress_windows": "no_go",
+    "timeline": "no_go",
+    "turnover": "no_go",
+    "volatility": "go"
+  },
+  "harness_commit": "0b4d8c2e19e7b887d649a85e98027382e2e0fe77",
+  "input_pack_sha256": "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804",
+  "policy": "open_macro_v03_phase0q_006",
+  "regime_timeline_metrics": {
+    "fresh_valid_rate": {
+      "global": 0.5466666666666666,
+      "rolling_12m": 0.9166666666666666,
+      "rolling_24m": 0.9166666666666666,
+      "rolling_36m": 0.8333333333333334
+    },
+    "max_abstention_streak_months": 76,
+    "max_carry_age_months": 5,
+    "max_low_density_same_quadrant_run_months": 0,
+    "max_same_quadrant_run_months": 19,
+    "n_months": 225,
+    "n_valid": 123,
+    "quadrant_mix": {
+      "contraction": 38,
+      "expansion": 37,
+      "recovery": 29,
+      "slowdown": 19
+    }
+  },
+  "run_id": "phase0q-v2-evidence-20260716170911",
+  "timeline_per_gate": {
+    "max_abstention_streak_months": {
+      "bound": 6,
+      "go": false,
+      "measured": 76
+    },
+    "max_carry_age_months": {
+      "bound": 3,
+      "go": false,
+      "measured": 5
+    },
+    "max_same_quadrant_run_months": {
+      "bound": 12,
+      "go": true,
+      "measured": 0
+    },
+    "min_fresh_valid_rate_36m": {
+      "bound": 0.4,
+      "go": true,
+      "measured": 0.8333333333333334
+    },
+    "min_upside_capture_bull_year": {
+      "bound": 0.35,
+      "go": false,
+      "measured": 0.22569979936046058
+    }
+  },
+  "upside_capture_by_calendar_year": {
+    "2014": {
+      "full_year_coverage": false,
+      "spy_return": 0.13284250157411726,
+      "upside_capture": null
+    },
+    "2015": {
+      "full_year_coverage": true,
+      "spy_return": 0.01306499452665566,
+      "upside_capture": -3.2685690649543395
+    },
+    "2016": {
+      "full_year_coverage": true,
+      "spy_return": 0.13589222478572704,
+      "upside_capture": 0.5289218236965026
+    },
+    "2017": {
+      "full_year_coverage": true,
+      "spy_return": 0.20776397091304677,
+      "upside_capture": 0.5683236131090539
+    },
+    "2018": {
+      "full_year_coverage": true,
+      "spy_return": -0.05235327659930222,
+      "upside_capture": null
+    },
+    "2019": {
+      "full_year_coverage": true,
+      "spy_return": 0.3108535572754072,
+      "upside_capture": 0.7521062637152893
+    },
+    "2020": {
+      "full_year_coverage": true,
+      "spy_return": 0.17276449282188655,
+      "upside_capture": 1.049421460463984
+    },
+    "2021": {
+      "full_year_coverage": true,
+      "spy_return": 0.30521147845084307,
+      "upside_capture": 0.6546664076365996
+    },
+    "2022": {
+      "full_year_coverage": true,
+      "spy_return": -0.1864274000522328,
+      "upside_capture": null
+    },
+    "2023": {
+      "full_year_coverage": true,
+      "spy_return": 0.2672304461223627,
+      "upside_capture": 0.5950149577119407
+    },
+    "2024": {
+      "full_year_coverage": true,
+      "spy_return": 0.2558798374034936,
+      "upside_capture": 0.22569979936046058
+    },
+    "2025": {
+      "full_year_coverage": true,
+      "spy_return": 0.18004991995930686,
+      "upside_capture": 0.8096721981834264
+    },
+    "2026": {
+      "full_year_coverage": false,
+      "spy_return": 0.09612407257899847,
+      "upside_capture": null
+    }
+  },
+  "windowed_timeline_addenda": {
+    "full_union_chain": {
+      "fresh_valid_rate_36m": 0.8333333333333334,
+      "max_abstention_streak_months": 76,
+      "max_carry_age_months": 5,
+      "max_low_density_same_quadrant_run_months": 0,
+      "max_same_quadrant_run_months": 19,
+      "n_months": 225,
+      "n_valid": 123
+    },
+    "precedent_2021_01": {
+      "fresh_valid_rate_36m": 0.8333333333333334,
+      "max_abstention_streak_months": 3,
+      "max_carry_age_months": 3,
+      "max_low_density_same_quadrant_run_months": 0,
+      "max_same_quadrant_run_months": 16,
+      "n_months": 66,
+      "n_valid": 58
+    },
+    "runtime_chain_2014_03": {
+      "fresh_valid_rate_36m": 0.8333333333333334,
+      "max_abstention_streak_months": 5,
+      "max_carry_age_months": 5,
+      "max_low_density_same_quadrant_run_months": 0,
+      "max_same_quadrant_run_months": 19,
+      "n_months": 148,
+      "n_valid": 122
+    }
+  }
+}

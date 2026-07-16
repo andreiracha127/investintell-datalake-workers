@@ -385,7 +385,14 @@ def _sorted_decisions(decisions: Sequence[Any]) -> list[Any]:
     return ordered
 
 
-def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
+SAME_QUADRANT_RUN_LOW_DENSITY_THRESHOLD = 0.50
+
+
+def regime_timeline_metrics(
+    decisions: Sequence[Any],
+    *,
+    low_density_threshold: float = SAME_QUADRANT_RUN_LOW_DENSITY_THRESHOLD,
+) -> dict[str, Any]:
     """Timeline health of the monthly latched decision chain (Tranche W1).
 
     ``decisions`` is the monthly :class:`~harness.phase0q.decision.DecisionRow`-shaped
@@ -431,7 +438,10 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
         return {"n_months": 0, "n_decision_rows": 0, "n_valid": 0,
                 "n_low_confidence": 0, "fresh_valid_rate": zero_rate,
                 "max_abstention_streak_months": 0, "max_carry_age_months": 0,
-                "max_same_quadrant_run_months": 0, "quadrant_mix": quadrant_mix,
+                "max_same_quadrant_run_months": 0,
+                "same_quadrant_run_low_density_threshold": low_density_threshold,
+                "max_low_density_same_quadrant_run_months": 0,
+                "quadrant_mix": quadrant_mix,
                 "first_as_of": None, "last_as_of": None}
 
     m0 = _month_index(ordered[0].as_of)
@@ -449,6 +459,10 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
 
     # single calendar-month sweep: abstention streak, carry age (distance from the
     # last valid month), and the same-quadrant run over the carry-filled consumable.
+    # Each maximal same-quadrant run also tracks how many of its months carried a
+    # FRESH valid decision (its fresh-valid density): the phase0q_006 amendment
+    # judges the run bound ONLY on low-density runs (a carry/latch anchor — the
+    # original intent of the gate), never on a fresh persistent regime.
     max_abstention = 0
     streak = 0
     max_carry_age = 0
@@ -457,8 +471,12 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
     same_run = 0
     consumable_prev: str | None = None
     consumable: str | None = None
+    runs: list[tuple[int, int]] = []   # (length, fresh_months) per maximal run
+    run_len = 0
+    run_fresh = 0
     for mi in range(m0, m1 + 1):
-        if mi in valid_months:
+        fresh = mi in valid_months
+        if fresh:
             streak = 0
             last_valid_mi = mi
             consumable = row_by_month[mi].quadrant
@@ -471,14 +489,30 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
                 if age > max_carry_age:
                     max_carry_age = age
         if consumable is None:
+            if run_len:
+                runs.append((run_len, run_fresh))
+                run_len = run_fresh = 0
             same_run = 0
         elif consumable == consumable_prev:
             same_run += 1
+            run_len += 1
+            run_fresh += int(fresh)
         else:
+            if run_len:
+                runs.append((run_len, run_fresh))
             same_run = 1
+            run_len = 1
+            run_fresh = int(fresh)
         consumable_prev = consumable
         if same_run > max_same_run:
             max_same_run = same_run
+    if run_len:
+        runs.append((run_len, run_fresh))
+
+    max_low_density_run = max(
+        (length for length, fresh_n in runs
+         if (fresh_n / length) < low_density_threshold),
+        default=0)
 
     return {
         "n_months": n_months,
@@ -494,6 +528,8 @@ def regime_timeline_metrics(decisions: Sequence[Any]) -> dict[str, Any]:
         "max_abstention_streak_months": max_abstention,
         "max_carry_age_months": max_carry_age,
         "max_same_quadrant_run_months": max_same_run,
+        "same_quadrant_run_low_density_threshold": low_density_threshold,
+        "max_low_density_same_quadrant_run_months": max_low_density_run,
         "quadrant_mix": quadrant_mix,
         "first_as_of": ordered[0].as_of.isoformat(),
         "last_as_of": ordered[-1].as_of.isoformat(),
