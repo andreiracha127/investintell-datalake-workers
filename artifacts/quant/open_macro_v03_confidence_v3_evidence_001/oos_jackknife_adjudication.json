@@ -1,0 +1,60 @@
+{
+  "absolute_bounds": {
+    "eligible_fold_count": 8,
+    "max_fold_MDD": 0.105218792019,
+    "max_fold_volatility": 0.100833645107,
+    "mdd_bound": 0.25,
+    "mdd_pass": true,
+    "vol_bound": 0.12,
+    "vol_pass": true
+  },
+  "applied_rule": "stress-overlap jackknife max-dev-from-median (phase0q_004 amendment); bounds UNCHANGED",
+  "artifact_type": "phase0q_oos_jackknife_adjudication",
+  "candidate_id": "baseline_current",
+  "cost_bps": 5,
+  "evidence_dir": "artifacts\\quant\\open_macro_v03_confidence_v3_evidence_001",
+  "generated_at": "2026-07-16T19:58:04.347458+00:00",
+  "mdd_stability": {
+    "all_folds": {
+      "argmax_fold_index": 5,
+      "max_dev_from_median": 0.081805091134,
+      "median": 0.077676625558
+    },
+    "dev_bound": 0.08,
+    "eligible_folds": {
+      "count": 8,
+      "max_dev_from_median": 0.036118140688,
+      "median": 0.069100651331
+    },
+    "excluded_fold": {
+      "MDD": 0.159481716692,
+      "fold_index": 5,
+      "stress_overlap": [
+        "INFLATION_SHOCK_2022"
+      ]
+    },
+    "pass": true
+  },
+  "verdict": "go",
+  "volatility_stability": {
+    "all_folds": {
+      "argmax_fold_index": 5,
+      "max_dev_from_median": 0.06572441274999999,
+      "median": 0.088020688432
+    },
+    "dev_bound": 0.05,
+    "eligible_folds": {
+      "count": 8,
+      "max_dev_from_median": 0.03340248321349999,
+      "median": 0.0869069563205
+    },
+    "excluded_fold": {
+      "fold_index": 5,
+      "sigma_annual": 0.153745101182,
+      "stress_overlap": [
+        "INFLATION_SHOCK_2022"
+      ]
+    },
+    "pass": true
+  }
+}

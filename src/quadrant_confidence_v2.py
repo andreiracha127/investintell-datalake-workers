@@ -149,6 +149,92 @@ def kalman_filter_series(
     return out
 
 
+CONFIDENCE_METHOD_V3_FUSED = "kalman_fused_joint_posterior_v3"
+
+
+def kalman_fused_filter_series(
+    primary: Sequence[tuple[float | None, float | None]],
+    auxiliary: Sequence[tuple[float | None, float | None]],
+    lam: float = KALMAN_LAMBDA,
+    *,
+    r_window: int = KALMAN_R_WINDOW,
+    min_diffs: int = KALMAN_MIN_DIFFS,
+) -> list[tuple[float | None, float | None, float | None]]:
+    """Dual-sensor local-level Kalman filter: the PRIMARY (macro-release) and an
+    AUXILIARY (market-implied) observation of the same latent axis state.
+
+    Sensor-fusion discipline (freeze scope §1: market-implied is NEVER a fallback):
+      * the auxiliary sensor updates ONLY on months where the primary observed —
+        a missing macro month is predict-only even if the market printed, so the
+        market can sharpen the state but can never substitute for macro data;
+      * each sensor carries its OWN measurement noise R, estimated with the same
+        robust MAD-of-first-differences estimator (same floor, same warmup, same
+        quality inflation) — the fusion weight is therefore DATA-ESTIMATED, never
+        a calibrated blend parameter (no new knob enters the frozen policy);
+      * the process noise keys off the primary sensor (Q = lam * R_primary), so
+        the state dynamics are unchanged from the single-sensor v2 filter.
+
+    Returns ``[(m_t, P_t, R_primary_t)]`` aligned to the input.
+    """
+    if len(primary) != len(auxiliary):
+        raise ValueError("primary/auxiliary observation series must align")
+
+    def _noise_tracker():
+        return {"diffs": [], "prev": None}
+
+    def _r_base(tracker, value):
+        if tracker["prev"] is not None:
+            tracker["diffs"].append(value - tracker["prev"])
+        tracker["prev"] = value
+        window = tracker["diffs"][-r_window:]
+        if len(window) >= min_diffs:
+            med = statistics.median(window)
+            mad = statistics.median([abs(d - med) for d in window])
+            base = (_MAD_SCALE * mad) ** 2 / (2.0 + lam)
+        else:
+            base = KALMAN_WARMUP_MAD ** 2 / (2.0 + lam)
+        return max(base, KALMAN_R_FLOOR)
+
+    def _inflate(base, q_data):
+        quality = max(q_data if q_data is not None else 0.0, Q_DATA_FLOOR)
+        return base / (quality ** 2)
+
+    p_noise = _noise_tracker()
+    a_noise = _noise_tracker()
+    m: float | None = None
+    P: float | None = None
+    last_q = 0.0
+    out: list[tuple[float | None, float | None, float | None]] = []
+    for (p_score, p_q), (a_score, a_q) in zip(primary, auxiliary):
+        # the auxiliary noise tracker follows the auxiliary series wherever it
+        # prints, so its R estimate is well-formed when fusion happens.
+        a_R: float | None = None
+        if a_score is not None:
+            a_R = _inflate(_r_base(a_noise, a_score), a_q)
+        if p_score is None:
+            if m is not None and P is not None:
+                P = P + last_q
+            out.append((m, P, None))
+            p_noise["prev"] = None
+            continue
+        R = _inflate(_r_base(p_noise, p_score), p_q)
+        Q = lam * R
+        last_q = Q
+        if m is None or P is None:
+            m, P = p_score, R
+        else:
+            P_pred = P + Q
+            gain = P_pred / (P_pred + R)
+            m = m + gain * (p_score - m)
+            P = (1.0 - gain) * P_pred
+        if a_score is not None and a_R is not None:
+            gain = P / (P + a_R)
+            m = m + gain * (a_score - m)
+            P = (1.0 - gain) * P
+        out.append((m, P, R))
+    return out
+
+
 def axis_sign_probability(m: float, P: float) -> float:
     """P(axis state > 0 | observations) = Phi(m / sqrt(P))."""
     if P <= 0.0:

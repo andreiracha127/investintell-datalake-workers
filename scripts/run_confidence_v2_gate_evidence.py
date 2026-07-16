@@ -37,20 +37,22 @@ def main(argv=None) -> int:
     ap.add_argument("--pack", default=str(PACK))
     ap.add_argument("--out", default=str(DEFAULT_OUT))
     ap.add_argument("--run-id", default=None)
+    ap.add_argument("--decision-model", default="v2", choices=("v1", "v2", "v3"))
     args = ap.parse_args(argv)
 
     commit = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True,
         check=True).stdout.strip()
     now = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0)
-    run_id = args.run_id or f"phase0q-v2-evidence-{now:%Y%m%d%H%M%S}"
+    run_id = args.run_id or (
+        f"phase0q-{args.decision_model}-evidence-{now:%Y%m%d%H%M%S}")
 
     config = runner.RunConfig(
         run_id=run_id,
         started_at=now.isoformat(),
         finished_at=now.isoformat(),
         harness_commit=commit,
-        decision_model="v2",
+        decision_model=args.decision_model,
     )
     run = runner.run_harness(args.pack, config)
     out = Path(args.out)
@@ -88,7 +90,7 @@ def main(argv=None) -> int:
     summary = {
         "run_id": run_id,
         "harness_commit": commit,
-        "decision_model": "v2",
+        "decision_model": args.decision_model,
         "input_pack_sha256": run["input_pack_sha256"],
         "policy": judgment.get("phase0q_id"),
         "gates_overall_base_cost": {
