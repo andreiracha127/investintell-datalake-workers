@@ -118,16 +118,16 @@ QUANT_CORE_SOURCE_FILES = (
 )
 
 # Committed DATA artifacts run_harness READS at runtime (target == source path). The
-# phase0q_005 timeline gate policy (RATIFIED 2026-07-11) is loaded by the runner
-# (``runner.TIMELINE_GATE_POLICY_PATH``, resolved repo-root-relative) to judge the
-# blocking ``timeline`` entry of ``gates_overall_base_cost``; the local leg hash covers
-# that entry, so a cloud leg materialized WITHOUT the artifact would judge
+# phase0q_006 timeline gate policy (RATIFIED 2026-07-16; amends phase0q_005) is loaded
+# by the runner (``runner.TIMELINE_GATE_POLICY_PATH``, resolved repo-root-relative) to
+# judge the blocking ``timeline`` entry of ``gates_overall_base_cost``; the local leg
+# hash covers that entry, so a cloud leg materialized WITHOUT the artifact would judge
 # ``policy_absent``, drop the entry and structurally fail to reproduce the local hash.
 # Shipped verbatim (gzipped + drift-checked against git HEAD) exactly like the code
 # closure: the bundle invariant is the COMPLETENESS of run_harness's runtime read
 # surface, not just its import closure.
 POLICY_ARTIFACT_FILES = (
-    "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json",
+    "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json",
 )
 
 # Fail-loud offline DB stub materialized in Research in place of src/db.py. It
