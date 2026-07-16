@@ -71,6 +71,7 @@ jobs:
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
+          tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
           -q
 
@@ -82,11 +83,13 @@ jobs:
           src/workers/nport_cusip_enrichment.py
           src/workers/_openfigi.py
           src/workers/_yahoo_sector.py
+          scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
           tests/test_nport_lookthrough.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
+          tests/test_backfill_nport_holding_attributes.py
           tests/test_load_nport_fund_flows.py
 
       - name: Compile N-PORT modules
@@ -97,6 +100,7 @@ jobs:
           src/workers/nport_cusip_enrichment.py
           src/workers/_openfigi.py
           src/workers/_yahoo_sector.py
+          scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
 
       - name: Verify certified input pack

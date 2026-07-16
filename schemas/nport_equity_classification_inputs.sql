@@ -24,3 +24,16 @@ CREATE TABLE IF NOT EXISTS nport_equity_country_exposures (
 
 CREATE INDEX IF NOT EXISTS nport_equity_country_exposures_series_idx
     ON nport_equity_country_exposures (series_id, report_date DESC);
+
+CREATE TABLE IF NOT EXISTS nport_equity_holding_weights (
+    report_date       date          NOT NULL,
+    series_id         text          NOT NULL,
+    cusip             text          NOT NULL,
+    signed_pct_of_nav numeric(14,6) NOT NULL,
+    source_quarter    text          NOT NULL,
+    computed_at       timestamptz   NOT NULL DEFAULT now(),
+    PRIMARY KEY (report_date, series_id, cusip)
+);
+
+CREATE INDEX IF NOT EXISTS nport_equity_holding_weights_series_idx
+    ON nport_equity_holding_weights (series_id, report_date DESC);

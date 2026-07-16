@@ -240,6 +240,92 @@ def test_exact_equity_rollup_overrides_collapsed_holding_evidence():
     assert summary["net_equity_pct"] == pytest.approx(50.0)
 
 
+def test_exact_holding_weight_applies_short_sign_to_db_holding_dimensions() -> None:
+    data = {
+        "S1": (
+            D_ROOT,
+            [
+                H(
+                    cusip="30231G102",
+                    isin="US30231G1022",
+                    asset="EC",
+                    pct=30.0,
+                )
+            ],
+        )
+    }
+    rollup = lt.EquityInputs(
+        gross_equity_pct=30.0,
+        net_equity_pct=-30.0,
+        country_exposures_pct={"US": -30.0},
+        signed_holding_weights_pct={"30231G102": -30.0},
+    )
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        EMPTY_MAP,
+        get_equity_inputs=lambda _series_id, _report_date: rollup,
+    )
+
+    assert exposures[("issuer", "30231G")]["direct_pct"] == pytest.approx(-30.0)
+    assert exposures[("asset_class", "EC")]["direct_pct"] == pytest.approx(-30.0)
+    assert exposures[("country", "US")]["direct_pct"] == pytest.approx(-30.0)
+    assert summary["gross_equity_pct"] == pytest.approx(30.0)
+    assert summary["net_equity_pct"] == pytest.approx(-30.0)
+
+
+def test_exact_rollup_does_not_count_an_expanded_equity_wrapper() -> None:
+    fund_map = {"cusip": {"111111111": "S_CHILD"}, "isin": {}}
+    data = {
+        "S1": (
+            D_ROOT,
+            [
+                H(
+                    cusip="111111111",
+                    isin="US4642872000",
+                    issuer="Equity ETF",
+                    asset="EC",
+                    pct=40.0,
+                ),
+                H(
+                    cusip="037833100",
+                    isin="US0378331005",
+                    asset="EC",
+                    pct=60.0,
+                ),
+            ],
+        ),
+        "S_CHILD": (
+            D_CHILD,
+            [
+                H(
+                    cusip="G1151C101",
+                    isin="GB00B03MLX29",
+                    asset="EC",
+                    pct=100.0,
+                )
+            ],
+        ),
+    }
+    rollups = {
+        ("S1", D_ROOT): lt.EquityInputs(100.0, 100.0, {"US": 100.0}),
+        ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
+    }
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        fund_map,
+        get_equity_inputs=lambda sid, report_date: rollups.get((sid, report_date)),
+    )
+
+    assert exposures[("country", "US")]["direct_pct"] == pytest.approx(60.0)
+    assert exposures[("country", "GB")]["indirect_pct"] == pytest.approx(40.0)
+    assert summary["gross_equity_pct"] == pytest.approx(100.0)
+    assert summary["net_equity_pct"] == pytest.approx(100.0)
+
+
 def test_equity_input_getter_reads_summary_and_country_sidecars():
     class Cursor:
         def __init__(self):
@@ -251,13 +337,15 @@ def test_equity_input_getter_reads_summary_and_country_sidecars():
         def __exit__(self, *_args):
             return None
 
-        def execute(self, query, _params):
+        def execute(self, query, _params=None):
             self.query = query
 
         def fetchone(self):
             return (110.0, 50.0)
 
         def fetchall(self):
+            if "nport_equity_holding_weights" in self.query:
+                return [("30231G102", -30.0)]
             return [("GB", 80.0), ("JP", -30.0)]
 
     class Connection:
@@ -270,6 +358,44 @@ def test_equity_input_getter_reads_summary_and_country_sidecars():
         gross_equity_pct=110.0,
         net_equity_pct=50.0,
         country_exposures_pct={"GB": 80.0, "JP": -30.0},
+        signed_holding_weights_pct={"30231G102": -30.0},
+    )
+
+
+def test_equity_input_getter_tolerates_weight_sidecar_not_yet_provisioned() -> None:
+    class Cursor:
+        def __init__(self):
+            self.query = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, query, _params=None):
+            self.query = query
+            if "FROM nport_equity_holding_weights" in query:
+                raise AssertionError("missing sidecar must not be queried")
+
+        def fetchone(self):
+            if "to_regclass" in self.query:
+                return (None,)
+            return (30.0, -30.0)
+
+        def fetchall(self):
+            return [("US", -30.0)]
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+    getter = lt.make_db_get_equity_inputs(Connection())
+
+    assert getter("S1", D_ROOT) == lt.EquityInputs(
+        gross_equity_pct=30.0,
+        net_equity_pct=-30.0,
+        country_exposures_pct={"US": -30.0},
     )
 
 

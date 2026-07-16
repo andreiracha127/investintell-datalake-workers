@@ -37,7 +37,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
@@ -64,6 +64,7 @@ class EquityInputs:
     gross_equity_pct: float
     net_equity_pct: float
     country_exposures_pct: dict[str, float]
+    signed_holding_weights_pct: dict[str, float] = field(default_factory=dict)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -132,7 +133,7 @@ def issuer_key(cusip: str | None, isin: str | None) -> str:
     return "UNKNOWN"
 
 
-_ISO_3166_ALPHA2 = frozenset("""
+ISO_3166_ALPHA2 = frozenset("""
 AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM
 BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX
 CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG
@@ -147,7 +148,7 @@ WS YE YT ZA ZM ZW
 
 
 def _valid_isin(value: str) -> bool:
-    if len(value) != 12 or not value.isalnum() or value[:2] not in _ISO_3166_ALPHA2:
+    if len(value) != 12 or not value.isalnum() or value[:2] not in ISO_3166_ALPHA2:
         return False
     digits = "".join(char if char.isdigit() else str(ord(char) - 55) for char in value)
     total = 0
@@ -175,7 +176,7 @@ def equity_country_key(
         return None
     explicit_country = (investment_country or "").strip().upper()
     if explicit_country:
-        return explicit_country if explicit_country in _ISO_3166_ALPHA2 else "UNKNOWN"
+        return explicit_country if explicit_country in ISO_3166_ALPHA2 else "UNKNOWN"
     candidates = [(isin or "").strip().upper()]
     synthetic = (cusip or "").strip().upper()
     if synthetic.startswith("IS:"):
@@ -330,8 +331,26 @@ def expand_series(
         rd, holdings = get_holdings(sid)  # guaranteed by caller
         if rd < summary["oldest_report_date"]:
             summary["oldest_report_date"] = rd
+
+        def expandable_child(holding: dict) -> str | None:
+            child = match_fund(holding, fund_map)
+            if (
+                child is not None
+                and child not in ancestors
+                and depth < max_depth
+                and get_holdings(child) is not None
+            ):
+                return child
+            return None
+
         equity_inputs = get_equity_inputs(sid, rd) if get_equity_inputs else None
-        if equity_inputs is not None:
+        has_expanded_equity_wrapper = any(
+            (holding.get("asset_class") or "").strip().upper() in _EQUITY_CATS
+            and expandable_child(holding) is not None
+            for holding in holdings
+        )
+        use_equity_rollup = equity_inputs is not None and not has_expanded_equity_wrapper
+        if use_equity_rollup:
             side = "direct_pct" if depth == 0 else "indirect_pct"
             summary["gross_equity_pct"] += equity_inputs.gross_equity_pct * abs(weight)
             summary["net_equity_pct"] += equity_inputs.net_equity_pct * weight
@@ -345,31 +364,34 @@ def expand_series(
             raw_pct = holding.get("pct_of_nav")
             if raw_pct is None:
                 continue  # sem peso reportado: nada a inventar
-            profile = (holding.get("payoff_profile") or "").strip().upper()
-            local_pct = float(raw_pct)
-            if profile == "SHORT":
-                local_pct = -abs(local_pct)
-            elif profile == "LONG":
-                local_pct = abs(local_pct)
+            holding_key = (holding.get("cusip") or "").strip().upper()
+            exact_pct = (
+                equity_inputs.signed_holding_weights_pct.get(holding_key)
+                if equity_inputs is not None
+                else None
+            )
+            local_pct = float(exact_pct) if exact_pct is not None else float(raw_pct)
+            if exact_pct is None:
+                profile = (holding.get("payoff_profile") or "").strip().upper()
+                if profile == "SHORT":
+                    local_pct = -abs(local_pct)
+                elif profile == "LONG":
+                    local_pct = abs(local_pct)
             pct = local_pct * weight
             child = match_fund(holding, fund_map)
-            if (
-                child is not None
-                and child not in ancestors
-                and depth < max_depth
-                and get_holdings(child) is not None
-            ):
+            expanded_child = expandable_child(holding)
+            if expanded_child is not None:
                 if depth == 0:
                     summary["expanded_fund_pct"] += pct
-                expanded_children.add(child)
-                _walk(child, weight * local_pct / 100.0, depth + 1,
+                expanded_children.add(expanded_child)
+                _walk(expanded_child, weight * local_pct / 100.0, depth + 1,
                       ancestors | {sid})
             else:
                 _accumulate(
                     holding,
                     pct,
                     depth,
-                    has_equity_rollup=equity_inputs is not None,
+                    has_equity_rollup=use_equity_rollup,
                 )
                 if child is not None:
                     summary["nondecomposable_fund_pct"] += abs(pct)
@@ -519,6 +541,10 @@ def make_db_get_equity_inputs(
 ) -> Callable[[str, _dt.date], EquityInputs | None]:
     """Memoized reader for exact, uncollapsed equity classification inputs."""
 
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass('public.nport_equity_holding_weights')")
+        holding_weights_available = cur.fetchone()[0] is not None
+
     memo: dict[tuple[str, _dt.date], EquityInputs | None] = (
         cache if cache is not None else {}
     )
@@ -547,10 +573,24 @@ def make_db_get_equity_inputs(
                 key,
             )
             countries = {str(country): float(value) for country, value in cur.fetchall()}
+        holding_weights: dict[str, float] = {}
+        if holding_weights_available:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT cusip, signed_pct_of_nav
+                       FROM nport_equity_holding_weights
+                       WHERE series_id = %s AND report_date = %s
+                       ORDER BY cusip""",
+                    key,
+                )
+                holding_weights = {
+                    str(cusip): float(value) for cusip, value in cur.fetchall()
+                }
         result = EquityInputs(
             gross_equity_pct=float(summary_row[0]),
             net_equity_pct=float(summary_row[1]),
             country_exposures_pct=countries,
+            signed_holding_weights_pct=holding_weights,
         )
         memo[key] = result
         return result

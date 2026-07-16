@@ -27,8 +27,10 @@ def test_nport_only_paths_select_only_nport() -> None:
     [
         "src/workers/_openfigi.py",
         "src/workers/_yahoo_sector.py",
+        "scripts/backfill_nport_holding_attributes.py",
         "tests/test_openfigi.py",
         "tests/test_yahoo_sector.py",
+        "tests/test_backfill_nport_holding_attributes.py",
     ],
 )
 def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
@@ -122,6 +124,53 @@ def test_changed_paths_includes_deleted_files(tmp_path: Path) -> None:
     ).stdout.strip()
 
     assert changed_paths(base, head, root=tmp_path) == ["src/quadrant_score.py"]
+
+
+def test_changed_paths_includes_both_sides_of_a_rename(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "ci-scope@example.invalid"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "CI Scope Test"],
+        cwd=tmp_path,
+        check=True,
+    )
+    governed = tmp_path / "src" / "quadrant_score.py"
+    governed.parent.mkdir(parents=True)
+    governed.write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "add governed file"], cwd=tmp_path, check=True)
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    destination = tmp_path / "docs" / "quadrant_score.py"
+    destination.parent.mkdir(parents=True)
+    subprocess.run(
+        ["git", "mv", "src/quadrant_score.py", "docs/quadrant_score.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "commit", "-qm", "move governed file"], cwd=tmp_path, check=True)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    assert changed_paths(base, head, root=tmp_path) == [
+        "src/quadrant_score.py",
+        "docs/quadrant_score.py",
+    ]
 
 
 def test_cli_writes_both_github_outputs(tmp_path: Path) -> None:

@@ -27,11 +27,13 @@ NPORT_PATTERNS = (
     "src/workers/nport_*.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
+    "scripts/backfill_nport_holding_attributes.py",
     "scripts/load_nport_fund_flows.py",
     "schemas/nport_*.sql",
     "tests/test_nport_*.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",
+    "tests/test_backfill_nport_holding_attributes.py",
     "tests/test_load_nport_*.py",
 )
 SHARED_PATHS = {"src/db.py"}
@@ -113,13 +115,30 @@ def changed_paths(base: str, head: str, *, root: Path) -> list[str]:
             check=True,
         )
     result = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=ACDMRT", base, head],
+        [
+            "git",
+            "diff",
+            "--name-status",
+            "-z",
+            "--diff-filter=ACDMRT",
+            base,
+            head,
+        ],
         cwd=root,
         capture_output=True,
         text=True,
         check=True,
     )
-    return [line for line in result.stdout.splitlines() if line]
+    tokens = [token for token in result.stdout.split("\0") if token]
+    paths: list[str] = []
+    index = 0
+    while index < len(tokens):
+        status = tokens[index]
+        index += 1
+        path_count = 2 if status.startswith(("R", "C")) else 1
+        paths.extend(tokens[index : index + path_count])
+        index += path_count
+    return paths
 
 
 def main(argv: list[str] | None = None) -> int:

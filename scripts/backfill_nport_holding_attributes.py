@@ -27,6 +27,7 @@ from scripts.load_nport_fund_flows import (  # noqa: E402
     parse_sec_date,
 )
 from src.db import connect  # noqa: E402
+from src.workers.nport_lookthrough import ISO_3166_ALPHA2  # noqa: E402
 
 DEFAULT_MINIMUM_MATCH_RATE = 0.99
 
@@ -67,6 +68,24 @@ class CountryExposure:
         )
 
 
+@dataclass(frozen=True)
+class HoldingWeight:
+    report_date: dt.date
+    series_id: str
+    cusip: str
+    signed_pct_of_nav: float
+    source_quarter: str
+
+    def as_tuple(self) -> tuple[dt.date, str, str, float, str]:
+        return (
+            self.report_date,
+            self.series_id,
+            self.cusip,
+            self.signed_pct_of_nav,
+            self.source_quarter,
+        )
+
+
 def _value(value: str | None) -> str | None:
     normalized = (value or "").strip().upper()
     if normalized in {"", "N/A", "NA", "NULL", "NONE"}:
@@ -88,6 +107,37 @@ def _accession_map(path: Path, value_column: str) -> dict[str, str]:
         if (accession := _value(row.get("ACCESSION_NUMBER")))
         and (value := _value(row.get(value_column)))
     }
+
+
+def _identifier_isins(dataset_dir: Path) -> dict[str, str]:
+    path = dataset_dir / "IDENTIFIERS.tsv"
+    if not path.exists():
+        return {}
+    return {
+        holding_id: isin
+        for row in _rows(path)
+        if (holding_id := _value(row.get("HOLDING_ID")))
+        and (isin := _value(row.get("IDENTIFIER_ISIN")))
+    }
+
+
+def _holding_key(row: dict[str, str], identifier_isins: dict[str, str]) -> str | None:
+    cusip = _value(row.get("ISSUER_CUSIP"))
+    if (
+        cusip is not None
+        and len(cusip) == 9
+        and cusip.isalnum()
+        and cusip != "000000000"
+    ):
+        return cusip
+    holding_id = _value(row.get("HOLDING_ID"))
+    isin = identifier_isins.get(holding_id or "")
+    if isin:
+        return f"IS:{isin}"
+    issuer_lei = _value(row.get("ISSUER_LEI"))
+    if issuer_lei:
+        return f"LE:{issuer_lei}"
+    return f"H:{holding_id}" if holding_id else None
 
 
 def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]]:
@@ -112,11 +162,15 @@ def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]
 
 def build_equity_rollups(
     dataset_dir: Path,
-) -> tuple[list[EquitySummary], list[CountryExposure]]:
+) -> tuple[list[EquitySummary], list[CountryExposure], list[HoldingWeight]]:
     dataset_dir = dataset_dir.resolve()
     selected = _selected_series_reports(dataset_dir)
-    totals: dict[tuple[dt.date, str], list[Decimal]] = {}
+    identifier_isins = _identifier_isins(dataset_dir)
+    totals: dict[tuple[dt.date, str], list[Decimal]] = {
+        key: [Decimal(0), Decimal(0)] for key in selected.values()
+    }
     country_totals: dict[tuple[dt.date, str, str], Decimal] = {}
+    holding_totals: dict[tuple[dt.date, str, str], Decimal] = {}
 
     for row in _rows(dataset_dir / "FUND_REPORTED_HOLDING.tsv"):
         accession = _value(row.get("ACCESSION_NUMBER"))
@@ -134,10 +188,16 @@ def build_equity_rollups(
         summary[0] += abs(signed_pct)
         summary[1] += signed_pct
         country = _value(row.get("INVESTMENT_COUNTRY"))
-        if country is None or len(country) != 2 or not country.isalpha():
+        if country not in ISO_3166_ALPHA2:
             country = "UNKNOWN"
         key = (report_date, series_id, country)
         country_totals[key] = country_totals.get(key, Decimal(0)) + signed_pct
+        cusip = _holding_key(row, identifier_isins)
+        if cusip is not None:
+            holding_key = (report_date, series_id, cusip)
+            holding_totals[holding_key] = (
+                holding_totals.get(holding_key, Decimal(0)) + signed_pct
+            )
 
     source_quarter = dataset_dir.name
     summaries = [
@@ -148,14 +208,19 @@ def build_equity_rollups(
         CountryExposure(report_date, series_id, country, float(value), source_quarter)
         for (report_date, series_id, country), value in sorted(country_totals.items())
     ]
-    return summaries, countries
+    weights = [
+        HoldingWeight(report_date, series_id, cusip, float(value), source_quarter)
+        for (report_date, series_id, cusip), value in sorted(holding_totals.items())
+    ]
+    return summaries, countries, weights
 
 
 def copy_rollups(
     cur,
     summaries: Iterable[EquitySummary],
     countries: Iterable[CountryExposure],
-) -> tuple[int, int]:
+    weights: Iterable[HoldingWeight],
+) -> tuple[int, int, int]:
     summary_count = 0
     with cur.copy(
         "COPY tmp_nport_equity_exposure_summary "
@@ -173,7 +238,15 @@ def copy_rollups(
         for row in countries:
             stream.write_row(row.as_tuple())
             country_count += 1
-    return summary_count, country_count
+    weight_count = 0
+    with cur.copy(
+        "COPY tmp_nport_equity_holding_weights "
+        "(report_date, series_id, cusip, signed_pct_of_nav, source_quarter) FROM STDIN"
+    ) as stream:
+        for row in weights:
+            stream.write_row(row.as_tuple())
+            weight_count += 1
+    return summary_count, country_count, weight_count
 
 
 def apply_schema(conn) -> None:
@@ -200,6 +273,13 @@ def _prepare_stage(cur) -> None:
             direct_pct numeric(14,6) NOT NULL,
             source_quarter text NOT NULL
         ) ON COMMIT DROP;
+        CREATE TEMP TABLE tmp_nport_equity_holding_weights (
+            report_date date NOT NULL,
+            series_id text NOT NULL,
+            cusip text NOT NULL,
+            signed_pct_of_nav numeric(14,6) NOT NULL,
+            source_quarter text NOT NULL
+        ) ON COMMIT DROP;
         """
     )
 
@@ -223,7 +303,7 @@ def _match_stats(cur) -> tuple[int, int, float]:
     return summary_rows, matched_rows, match_rate
 
 
-def _upsert_rollups(cur) -> tuple[int, int]:
+def _upsert_rollups(cur) -> tuple[int, int, int]:
     cur.execute(
         """
         INSERT INTO nport_equity_exposure_summary
@@ -254,7 +334,24 @@ def _upsert_rollups(cur) -> tuple[int, int]:
         FROM tmp_nport_equity_country_exposures
         """
     )
-    return summary_changes, cur.rowcount
+    country_changes = cur.rowcount
+    cur.execute(
+        """
+        DELETE FROM nport_equity_holding_weights AS target
+        USING tmp_nport_equity_exposure_summary AS source
+        WHERE target.report_date = source.report_date
+          AND target.series_id = source.series_id
+        """
+    )
+    cur.execute(
+        """
+        INSERT INTO nport_equity_holding_weights
+            (report_date, series_id, cusip, signed_pct_of_nav, source_quarter)
+        SELECT report_date, series_id, cusip, signed_pct_of_nav, source_quarter
+        FROM tmp_nport_equity_holding_weights
+        """
+    )
+    return summary_changes, country_changes, cur.rowcount
 
 
 def load_directory(
@@ -264,11 +361,13 @@ def load_directory(
     apply: bool,
     minimum_match_rate: float = DEFAULT_MINIMUM_MATCH_RATE,
 ) -> dict[str, int | float | str | bool]:
-    summaries, countries = build_equity_rollups(dataset_dir)
+    summaries, countries, weights = build_equity_rollups(dataset_dir)
     try:
         with conn.cursor() as cur:
             _prepare_stage(cur)
-            summary_rows, country_rows = copy_rollups(cur, summaries, countries)
+            summary_rows, country_rows, weight_rows = copy_rollups(
+                cur, summaries, countries, weights
+            )
             matched_rows, _matched_again, match_rate = _match_stats(cur)
             if matched_rows != summary_rows:
                 raise RuntimeError("staging row count changed unexpectedly")
@@ -277,7 +376,9 @@ def load_directory(
                     f"series/report match rate {match_rate:.6f} is below "
                     f"{minimum_match_rate:.6f}"
                 )
-            summary_changes, country_changes = _upsert_rollups(cur) if apply else (0, 0)
+            summary_changes, country_changes, weight_changes = (
+                _upsert_rollups(cur) if apply else (0, 0, 0)
+            )
         conn.commit() if apply else conn.rollback()
     except Exception:
         conn.rollback()
@@ -286,10 +387,12 @@ def load_directory(
         "directory": str(dataset_dir.resolve()),
         "summary_rows": summary_rows,
         "country_rows": country_rows,
+        "weight_rows": weight_rows,
         "matched_rows": _matched_again,
         "match_rate": match_rate,
         "summary_changes": summary_changes,
         "country_changes": country_changes,
+        "weight_changes": weight_changes,
         "applied": apply,
     }
 
@@ -346,8 +449,10 @@ def main() -> None:
                 "directories": len(results),
                 "summary_rows": sum(int(item["summary_rows"]) for item in results),
                 "country_rows": sum(int(item["country_rows"]) for item in results),
+                "weight_rows": sum(int(item["weight_rows"]) for item in results),
                 "summary_changes": sum(int(item["summary_changes"]) for item in results),
                 "country_changes": sum(int(item["country_changes"]) for item in results),
+                "weight_changes": sum(int(item["weight_changes"]) for item in results),
                 "applied": args.apply,
             },
             sort_keys=True,
