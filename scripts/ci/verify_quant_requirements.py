@@ -38,12 +38,8 @@ def verify(input_path: Path, lock_path: Path) -> None:
 
     for name in sorted(inputs.keys() - locks.keys()):
         errors.append(f"missing lock pin for {inputs[name]}")
-    for name in sorted(locks.keys() - inputs.keys()):
-        errors.append(f"lock contains undeclared requirement {locks[name]}")
-
-    for name in sorted(inputs.keys() & locks.keys()):
-        source = inputs[name]
-        locked = locks[name]
+    locked_versions: dict[str, Version] = {}
+    for name, locked in sorted(locks.items()):
         specifiers = list(locked.specifier)
         if (
             len(specifiers) != 1
@@ -52,13 +48,19 @@ def verify(input_path: Path, lock_path: Path) -> None:
         ):
             errors.append(f"lock requirement must use one exact pin: {locked}")
             continue
-        if source.extras != locked.extras:
-            errors.append(f"lock extras differ: {locked} vs {source}")
-            continue
         try:
             version = Version(specifiers[0].version)
         except InvalidVersion:
             errors.append(f"invalid locked version: {locked}")
+            continue
+        locked_versions[name] = version
+
+    for name in sorted(inputs.keys() & locked_versions.keys()):
+        source = inputs[name]
+        locked = locks[name]
+        version = locked_versions[name]
+        if source.extras != locked.extras:
+            errors.append(f"lock extras differ: {locked} vs {source}")
             continue
         if version not in source.specifier:
             errors.append(f"{locked} does not satisfy {source}")

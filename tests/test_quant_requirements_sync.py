@@ -30,7 +30,7 @@ def test_verifier_accepts_synced_lock_and_rejects_stale_lock(tmp_path: Path) -> 
     input_path = tmp_path / "requirements.in"
     lock_path = tmp_path / "requirements.lock"
     input_path.write_text("alpha>=1\nbeta>=2\n", encoding="utf-8")
-    lock_path.write_text("alpha==1.5\nbeta==2.1\n", encoding="utf-8")
+    lock_path.write_text("alpha==1.5\nbeta==2.1\ngamma==3.0\n", encoding="utf-8")
 
     synced = _run_verifier(input_path, lock_path)
     assert synced.returncode == 0, synced.stderr

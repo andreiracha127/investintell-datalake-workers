@@ -392,7 +392,13 @@ def test_exact_rollup_preserves_direct_equities_for_isin_only_wrapper() -> None:
         "S1": (
             D_ROOT,
             [
-                H(isin=wrapper_isin, issuer="Equity ETF", asset="EC", pct=40.0),
+                H(
+                    cusip="N/A",
+                    isin=wrapper_isin,
+                    issuer="Equity ETF",
+                    asset="EC",
+                    pct=40.0,
+                ),
                 H(
                     cusip="037833100",
                     isin="US0378331005",

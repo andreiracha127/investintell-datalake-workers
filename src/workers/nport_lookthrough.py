@@ -348,7 +348,16 @@ def expand_series(
 
         def equity_input_key(holding: dict) -> str:
             holding_key = (holding.get("cusip") or "").strip().upper()
-            if not holding_key and (holding_isin := (holding.get("isin") or "").strip().upper()):
+            if (
+                holding_key.startswith(SYNTHETIC_PREFIXES)
+                or (
+                    len(holding_key) == 9
+                    and holding_key.isalnum()
+                    and set(holding_key) != {"0"}
+                )
+            ):
+                return holding_key
+            if holding_isin := (holding.get("isin") or "").strip().upper():
                 return f"IS:{holding_isin}"
             return holding_key
 
