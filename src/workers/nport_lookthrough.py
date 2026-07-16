@@ -344,17 +344,48 @@ def expand_series(
             return None
 
         equity_inputs = get_equity_inputs(sid, rd) if get_equity_inputs else None
-        has_expanded_equity_wrapper = any(
-            (holding.get("asset_class") or "").strip().upper() in _EQUITY_CATS
-            and expandable_child(holding) is not None
+        expanded_equity_wrappers = [
+            holding
             for holding in holdings
+            if (holding.get("asset_class") or "").strip().upper() in _EQUITY_CATS
+            and expandable_child(holding) is not None
+        ]
+        use_equity_rollup = equity_inputs is not None
+        rollup_gross = equity_inputs.gross_equity_pct if equity_inputs else 0.0
+        rollup_net = equity_inputs.net_equity_pct if equity_inputs else 0.0
+        rollup_countries = (
+            dict(equity_inputs.country_exposures_pct) if equity_inputs else {}
         )
-        use_equity_rollup = equity_inputs is not None and not has_expanded_equity_wrapper
+        seen_wrapper_keys: set[str] = set()
+        for wrapper in expanded_equity_wrappers:
+            holding_key = (wrapper.get("cusip") or "").strip().upper()
+            if holding_key in seen_wrapper_keys:
+                continue
+            seen_wrapper_keys.add(holding_key)
+            exact_pct = (
+                equity_inputs.signed_holding_weights_pct.get(holding_key)
+                if equity_inputs is not None
+                else None
+            )
+            country = equity_country_key(
+                wrapper.get("isin"),
+                wrapper.get("asset_class"),
+                wrapper.get("cusip"),
+                wrapper.get("investment_country"),
+            )
+            if exact_pct is None or country not in rollup_countries:
+                use_equity_rollup = False
+                break
+            rollup_gross -= abs(exact_pct)
+            rollup_net -= exact_pct
+            rollup_countries[country] -= exact_pct
         if use_equity_rollup:
             side = "direct_pct" if depth == 0 else "indirect_pct"
-            summary["gross_equity_pct"] += equity_inputs.gross_equity_pct * abs(weight)
-            summary["net_equity_pct"] += equity_inputs.net_equity_pct * weight
-            for country, country_pct in equity_inputs.country_exposures_pct.items():
+            summary["gross_equity_pct"] += rollup_gross * abs(weight)
+            summary["net_equity_pct"] += rollup_net * weight
+            for country, country_pct in rollup_countries.items():
+                if abs(country_pct) < 1e-12:
+                    continue
                 cell = exposures.setdefault(
                     ("country", country),
                     {"label": None, "direct_pct": 0.0, "indirect_pct": 0.0},

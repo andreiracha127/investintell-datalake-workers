@@ -326,6 +326,64 @@ def test_exact_rollup_does_not_count_an_expanded_equity_wrapper() -> None:
     assert summary["net_equity_pct"] == pytest.approx(100.0)
 
 
+def test_exact_rollup_preserves_collapsed_non_wrapper_equities() -> None:
+    fund_map = {"cusip": {"111111111": "S_CHILD"}, "isin": {}}
+    data = {
+        "S1": (
+            D_ROOT,
+            [
+                H(
+                    cusip="111111111",
+                    isin="US4642872000",
+                    issuer="Equity ETF",
+                    asset="EC",
+                    pct=40.0,
+                ),
+                # The cloud PK collapsed a US +70 and CA -10 pair to net +60.
+                H(
+                    cusip="037833100",
+                    isin="US0378331005",
+                    asset="EC",
+                    pct=60.0,
+                ),
+            ],
+        ),
+        "S_CHILD": (
+            D_CHILD,
+            [
+                H(
+                    cusip="G1151C101",
+                    isin="GB00B03MLX29",
+                    asset="EC",
+                    pct=100.0,
+                )
+            ],
+        ),
+    }
+    rollups = {
+        ("S1", D_ROOT): lt.EquityInputs(
+            120.0,
+            100.0,
+            {"CA": -10.0, "US": 110.0},
+            {"037833100": 60.0, "111111111": 40.0},
+        ),
+        ("S_CHILD", D_CHILD): lt.EquityInputs(100.0, 100.0, {"GB": 100.0}),
+    }
+
+    exposures, summary = lt.expand_series(
+        "S1",
+        make_get_holdings(data),
+        fund_map,
+        get_equity_inputs=lambda sid, report_date: rollups.get((sid, report_date)),
+    )
+
+    assert exposures[("country", "US")]["direct_pct"] == pytest.approx(70.0)
+    assert exposures[("country", "CA")]["direct_pct"] == pytest.approx(-10.0)
+    assert exposures[("country", "GB")]["indirect_pct"] == pytest.approx(40.0)
+    assert summary["gross_equity_pct"] == pytest.approx(120.0)
+    assert summary["net_equity_pct"] == pytest.approx(100.0)
+
+
 def test_equity_input_getter_reads_summary_and_country_sidecars():
     class Cursor:
         def __init__(self):

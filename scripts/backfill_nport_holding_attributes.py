@@ -27,7 +27,10 @@ from scripts.load_nport_fund_flows import (  # noqa: E402
     parse_sec_date,
 )
 from src.db import connect  # noqa: E402
-from src.workers.nport_lookthrough import ISO_3166_ALPHA2  # noqa: E402
+from src.workers.nport_lookthrough import (  # noqa: E402
+    ISO_3166_ALPHA2,
+    equity_country_key,
+)
 
 DEFAULT_MINIMUM_MATCH_RATE = 0.99
 
@@ -188,8 +191,16 @@ def build_equity_rollups(
         summary[0] += abs(signed_pct)
         summary[1] += signed_pct
         country = _value(row.get("INVESTMENT_COUNTRY"))
-        if country not in ISO_3166_ALPHA2:
+        if country is None:
+            holding_id = _value(row.get("HOLDING_ID"))
+            country = equity_country_key(
+                identifier_isins.get(holding_id or ""),
+                _value(row.get("ASSET_CAT")),
+                _holding_key(row, identifier_isins),
+            )
+        elif country not in ISO_3166_ALPHA2:
             country = "UNKNOWN"
+        country = country or "UNKNOWN"
         key = (report_date, series_id, country)
         country_totals[key] = country_totals.get(key, Decimal(0)) + signed_pct
         cusip = _holding_key(row, identifier_isins)

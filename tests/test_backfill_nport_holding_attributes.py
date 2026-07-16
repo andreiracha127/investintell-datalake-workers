@@ -144,6 +144,48 @@ def test_build_equity_rollups_routes_non_iso_country_to_unknown(tmp_path: Path) 
     ]
 
 
+def test_build_equity_rollups_recovers_blank_country_from_valid_isin(
+    tmp_path: Path,
+) -> None:
+    accession = "0000000000-26-000020"
+    _write_tsv(
+        tmp_path / "SUBMISSION.tsv",
+        ["ACCESSION_NUMBER", "REPORT_DATE"],
+        [[accession, "31-JAN-2026"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_INFO.tsv",
+        ["ACCESSION_NUMBER", "SERIES_ID"],
+        [[accession, "S000001234"]],
+    )
+    _write_tsv(
+        tmp_path / "IDENTIFIERS.tsv",
+        ["HOLDING_ID", "IDENTIFIER_ISIN"],
+        [["H1", "IE00B4L5Y983"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_HOLDING.tsv",
+        [
+            "ACCESSION_NUMBER",
+            "HOLDING_ID",
+            "ISSUER_CUSIP",
+            "PAYOFF_PROFILE",
+            "INVESTMENT_COUNTRY",
+            "ASSET_CAT",
+            "PERCENTAGE",
+        ],
+        [[accession, "H1", "", "Long", "N/A", "EC", "20"]],
+    )
+
+    _summaries, countries, _weights = backfill.build_equity_rollups(tmp_path)
+
+    assert countries == [
+        backfill.CountryExposure(
+            dt.date(2026, 1, 31), "S000001234", "IE", 20.0, tmp_path.name
+        )
+    ]
+
+
 def test_build_equity_rollups_uses_synthetic_isin_key_for_cusipless_short(
     tmp_path: Path,
 ) -> None:
