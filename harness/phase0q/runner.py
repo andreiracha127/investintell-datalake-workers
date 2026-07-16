@@ -276,7 +276,11 @@ def build_decision_series(
     if decision_model == "v2":
         from . import decision_v2
         return decision_v2.run_decision_series_v2(index, start, end)
-    raise ValueError(f"unknown decision_model {decision_model!r} (expected 'v1'|'v2')")
+    if decision_model == "v3":
+        from . import decision_v3
+        return decision_v3.run_decision_series_v3(index, pack.eod_rows, start, end)
+    raise ValueError(
+        f"unknown decision_model {decision_model!r} (expected 'v1'|'v2'|'v3')")
 
 
 def _decisions_in(series: Sequence[decision.DecisionRow], start: _dt.date, end: _dt.date):

@@ -66,9 +66,17 @@ def classify_axis_v2(
     coverage: float,
     freshness: float,
     source_health: float,
+    auxiliary_observations: list[tuple[float | None, float | None]] | None = None,
 ) -> tuple[AxisDiagnostics, bool, str | None, float | None]:
     """Filter one axis' chronological (score, q_data) observations (current month
     LAST) and derive the v2 diagnostics.
+
+    ``auxiliary_observations`` (optional, aligned to ``observations``) is a second
+    SENSOR of the same latent state — the market-implied standardized score. When
+    provided the axis runs the dual-sensor fused filter
+    (:func:`quadrant_confidence_v2.kalman_fused_filter_series`); the market can
+    sharpen the state but never substitutes for macro (a missing macro month stays
+    unpublishable). Omitted/None -> the single-sensor v2 path, byte-identical.
 
     Returns (diagnostics, filter_available, reason, p_sign_positive).
     ``filter_available`` is False when the current score is missing or fewer than
@@ -83,7 +91,11 @@ def classify_axis_v2(
     if n_obs < _c2.MIN_FILTER_OBSERVATIONS:
         return (AxisDiagnostics(current_score, None, None, None, None, None, None),
                 False, "insufficient_vintages", None)
-    filtered = _c2.kalman_filter_series(observations)
+    if auxiliary_observations is not None:
+        filtered = _c2.kalman_fused_filter_series(observations,
+                                                  auxiliary_observations)
+    else:
+        filtered = _c2.kalman_filter_series(observations)
     m, P, R = filtered[-1]
     if m is None or P is None or P <= 0.0:
         return (AxisDiagnostics(current_score, None, None, None, None, None, None),
@@ -120,16 +132,23 @@ def build_snapshot_v2(
     model_version: str,
     source_vintage_hash: str,
     critical_structural_failure: bool = False,
+    growth_auxiliary_observations: list[tuple[float | None, float | None]] | None = None,
+    inflation_auxiliary_observations: list[tuple[float | None, float | None]] | None = None,
+    confidence_method: str = _c2.CONFIDENCE_METHOD_V2,
 ) -> QuadrantSnapshot:
     """Assemble the v2 QuadrantSnapshot. Observations are chronological monthly
     (score, q_data) pairs with the CURRENT month last (the worker's trailing
-    V2_FILTER_HISTORY_MONTHS recompute window)."""
+    V2_FILTER_HISTORY_MONTHS recompute window). Optional per-axis auxiliary
+    (market-implied) observation streams engage the dual-sensor fused filter;
+    omitted -> single-sensor v2, byte-identical."""
     g_diag, g_ok, g_reason, g_p = classify_axis_v2(
         observations=growth_observations, coverage=growth_coverage,
-        freshness=growth_freshness, source_health=growth_health)
+        freshness=growth_freshness, source_health=growth_health,
+        auxiliary_observations=growth_auxiliary_observations)
     i_diag, i_ok, i_reason, i_p = classify_axis_v2(
         observations=inflation_observations, coverage=inflation_coverage,
-        freshness=inflation_freshness, source_health=inflation_health)
+        freshness=inflation_freshness, source_health=inflation_health,
+        auxiliary_observations=inflation_auxiliary_observations)
 
     filter_available = g_ok and i_ok
     transition_pending = not filter_available
@@ -201,7 +220,7 @@ def build_snapshot_v2(
         status_at_compute=status,
         model_version=model_version,
         confidence_model_version=_c2.CONFIDENCE_MODEL_VERSION_V2,
-        confidence_method=_c2.CONFIDENCE_METHOD_V2,
+        confidence_method=confidence_method,
         source_vintage_hash=source_vintage_hash,
     )
 
