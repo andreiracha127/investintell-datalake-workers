@@ -6,7 +6,7 @@
 
 **Architecture:** A pure-Python change classifier owns CI lane routing and is called by the always-present `quant-engine` GitHub Actions job. Stage A gets a separate explicit file manifest, while the shared provenance helpers accept an optional surface list so Phase 1 retains its existing broad-tree contract. The Stage A binding test becomes the fast precheck and final evidence is regenerated once after all code is committed.
 
-**Tech Stack:** Python 3.13, pytest, Ruff 0.15.9, GitHub Actions YAML, Git object hashes, Docker-based Stage A measurement.
+**Tech Stack:** Python 3.13, pytest, pytest-xdist 3.8.0, Ruff 0.15.9, GitHub Actions YAML, Git object hashes, Docker-based Stage A measurement.
 
 ## Global Constraints
 
@@ -15,6 +15,9 @@
 - N-PORT CI uses no live database, network service, Docker build, deployment credential, or production data.
 - Unknown code/config paths fail closed by selecting both lanes; documentation-only changes may no-op green.
 - The expensive quant suite runs only after the Stage A binding precheck succeeds.
+- The GitHub full-quant pytest step uses `-p xdist.plugin -n auto --dist loadscope --color=no`;
+  local full-suite verification uses the proven-stable `-n 8` profile, while the small
+  N-PORT lane and the official Stage A measurement stay serial.
 - Phase 1 keeps its existing broad `COMPUTE_TREES`; only Stage A receives the explicit compute-file manifest.
 - Stage A remains measurement-only: A5 is blocked, `freeze_ready=false`, and `runtime_activation=false`.
 - Do not push intermediate commits. Perform one remote push only after local code gates and final evidence verification.
@@ -27,6 +30,8 @@
 - Create `tests/test_ci_path_scope.py`: behavioral routing tests for N-PORT, quant, shared, ambiguous, and documentation paths.
 - Modify `.github/workflows/ci.yml`: single-run triggers, concurrency cancellation, conditional N-PORT and quant lanes, and fast binding precheck.
 - Modify `tests/test_remote_ci_runner.py`: parsed workflow contract covering triggers, conditions, ordering, and stable job identity.
+- Create `tests/test_cloud_backtest_import_guard.py`: make a partial local
+  `AlgorithmImports` namespace behave like an absent LEAN runtime during collection.
 - Create `harness/direct_activation/compute_manifest.py`: Stage A entry points and exact compute-file manifest.
 - Create `tests/test_stage_a_compute_manifest.py`: manifest integrity, project-import closure, and N-PORT exclusion tests.
 - Modify `harness/dark_launch/measure_observability.py`: parameterize provenance helpers without changing Phase 1 defaults.
@@ -659,19 +664,19 @@ Verify `git status --short` is empty before official measurement.
 - Consumes: final clean code commit and `STAGE_A_COMPUTE_PATHS`.
 - Produces: 8 host + 8 container identical runs bound to that commit's exact file blobs.
 
-- [ ] **Step 1: Regenerate the live-validation record at the clean code HEAD**
+- [x] **Step 1: Regenerate the live-validation record at the clean code HEAD**
 
 Run: `python -m harness.direct_activation.live_validation`
 
 Expected: exit 0, decision/allocation summary printed, and `A5 blocked; Stage A validates only` retained.
 
-- [ ] **Step 2: Run the official Stage A measurement once**
+- [x] **Step 2: Run the official Stage A measurement once**
 
 Run: `python -m harness.direct_activation.measure_stage_a --amend-latency`
 
 Expected: 8 successful host runs plus 8 successful container runs, `mismatch_count=0`, all hard SLOs conforming, latency either conforming directly or through the signed amendment, and records written to the committed Stage A directory.
 
-- [ ] **Step 3: Verify generated evidence before committing**
+- [x] **Step 3: Verify generated evidence before committing**
 
 Run: `python -m pytest tests/test_direct_activation_stage_a.py -q`
 

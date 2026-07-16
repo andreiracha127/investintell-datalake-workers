@@ -95,6 +95,18 @@ def test_github_actions_workflow_runs_focused_nport_gate() -> None:
     assert "python -m compileall" in steps["Compile N-PORT modules"]["run"]
 
 
+def test_quant_suite_uses_all_runner_cpus_without_parallelizing_nport() -> None:
+    _, steps = _steps_by_name()
+
+    assert "pytest-xdist==3.8.0" in steps["Install dependencies"]["run"]
+    quant_command = steps["Run governance and quant-engine tests"]["run"]
+    assert "-p xdist.plugin" in quant_command
+    assert "-n auto" in quant_command
+    assert "--dist loadscope" in quant_command
+    assert "--color=no" in quant_command
+    assert "-n auto" not in steps["Run focused N-PORT tests"]["run"]
+
+
 def test_github_actions_workflow_does_not_use_remote_docker_ci() -> None:
     text = _workflow_text()
 

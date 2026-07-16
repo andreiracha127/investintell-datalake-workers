@@ -54,7 +54,7 @@ jobs:
           steps.changes.outputs.quant_changed == 'true'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.quant-engine.lock pytest ruff==0.15.9
+          python -m pip install -r requirements.quant-engine.lock pytest pytest-xdist==3.8.0 ruff==0.15.9
 
       - name: Verify Stage A binding
         if: steps.changes.outputs.quant_changed == 'true'
@@ -134,6 +134,7 @@ jobs:
           tests/test_phase0q_gate_amendments.py
           tests/test_compression_grid.py
           tests/test_phase0q_cloud_leg.py
+          tests/test_cloud_backtest_import_guard.py
           tests/test_cloud_backtest_runner.py
           tests/test_phase0q_reproducibility_evidence.py
           tests/test_phase0q_004_amendments.py
@@ -141,6 +142,10 @@ jobs:
           tests/test_dark_launch_readiness.py
           tests/test_direct_activation_plan.py
           tests/test_direct_activation_stage_a.py
+          -p xdist.plugin
+          -n auto
+          --dist loadscope
+          --color=no
           -q
 
       - name: Compile Python modules

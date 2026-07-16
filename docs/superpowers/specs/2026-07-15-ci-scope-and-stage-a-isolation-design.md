@@ -127,6 +127,15 @@ For each PR commit:
 7. The full quant/governance suite runs only if the binding precheck succeeds.
 8. The single required check reports the combined result.
 
+The full quant/governance pytest step uses `pytest-xdist` with all CPUs exposed by
+the GitHub runner and module-scoped distribution. Because plugin autoload is disabled,
+the command explicitly loads `xdist.plugin`; `--color=no` keeps worker-transferred
+assertion messages free of ANSI control bytes. Local verification uses 8 workers on
+the 16-core / 32-thread development host, the largest profile proven stable with the
+QuantConnect/CLR dependencies. The focused N-PORT lane stays serial because
+process-startup overhead exceeds the work in that small suite. Official Stage A
+measurement stays serial so its latency and memory evidence remains comparable.
+
 ## Failure behavior
 
 - Invalid or ambiguous path-detector output fails closed; it must not silently skip validation.
