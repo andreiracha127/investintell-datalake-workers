@@ -35,6 +35,8 @@ NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 # The clean source commit used for this prepared upload namespace.
 HARNESS_COMMIT = "130b754bdbf06ab92f80075933e8b9784bba3a27"
 STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
+PACK_003_ID = "open_macro_v03_certified_input_pack_003"
+PACK_003_SHA = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +85,22 @@ def test_bundle_manifest_prefix_and_key(bundle_manifest):
     )
     assert bundle_manifest["object_store_manifest_key"] == f"{prefix}/object_store_manifest.json"
     assert bundle_manifest["qc_project_id"] == 33679769
+
+
+def test_bundle_accepts_explicit_certified_pack_003(tmp_path):
+    bundle_dir = tmp_path / "pack-003"
+    summary = bundle_mod.build_bundle(
+        bundle_dir,
+        HARNESS_COMMIT,
+        pack_id=PACK_003_ID,
+    )
+    manifest = json.loads(
+        (bundle_dir / "object_store_manifest.json").read_text(encoding="utf-8")
+    )
+
+    assert summary["input_pack_sha256"] == PACK_003_SHA
+    assert manifest["input_pack_id"] == PACK_003_ID
+    assert manifest["input_pack_sha256"] == PACK_003_SHA
 
 
 def test_bundle_build_invalid_commit_rejected(tmp_path):
