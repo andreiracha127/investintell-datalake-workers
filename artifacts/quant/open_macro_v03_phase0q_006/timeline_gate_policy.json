@@ -1,0 +1,52 @@
+{
+  "artifact_type": "phase0q_timeline_gate_policy",
+  "schema_version": 2,
+  "phase0q_id": "open_macro_v03_phase0q_006",
+  "status": "ratified",
+  "ratified_by": "quant_owner",
+  "ratified_by_name": "Andrei Rachadel",
+  "delegated_execution": "Recorded by Claude (Fable 5) under the quant_owner's explicit delegation of authority granted 2026-07-16 in-session; the amendment below was approved verbatim by the owner ('Emenda aprovada') in the same session before this artifact was authored. The self-ratification ban stands: the ratification decision is the owner's, the recording is delegated.",
+  "decision_date": "2026-07-16",
+  "title": "Regime-timeline blocking gates — same-quadrant-run semantics amendment (fresh-density scope)",
+  "summary": "AMENDS open_macro_v03_phase0q_005: the max_same_quadrant_run_months gate is judged ONLY over same-quadrant runs whose fresh-valid density is BELOW same_quadrant_run_min_fresh_density (0.50) — i.e. carry/latch anchors, the gate's original target. A run sustained by fresh month-by-month revalidation is genuine macro persistence (evidence: the 2021-01..2022-05 expansion, 17 months at carry <= 1, which every confidence-v2 candidate cell reproduces) and is surfaced as a diagnostic (raw_max_same_quadrant_run_months), never a failure. All five gate BOUNDS are unchanged from phase0q_005. Staleness remains independently bounded by max_carry_age_months <= 3.",
+  "gates": {
+    "min_fresh_valid_rate_36m": 0.40,
+    "max_abstention_streak_months": 6,
+    "max_carry_age_months": 3,
+    "max_same_quadrant_run_months": 12,
+    "min_upside_capture_bull_year": 0.35
+  },
+  "gate_semantics": {
+    "min_fresh_valid_rate_36m": "At least this fraction of the trailing 36 calendar months must carry a FRESH-VALID decision (a real, non-carried consumable decision). Judged on regime_timeline_metrics.fresh_valid_rate.rolling_36m. Unchanged from phase0q_005.",
+    "max_abstention_streak_months": "The longest run of consecutive calendar months without a fresh valid decision must not exceed this. Judged on regime_timeline_metrics.max_abstention_streak_months. Unchanged from phase0q_005.",
+    "max_carry_age_months": "The greatest calendar-month distance a carried position reaches from its last valid seed must not exceed this — the SAME bound the carry_decay_v1 runtime cap enforces (MAX_CARRY_MONTHS = 3). Judged on regime_timeline_metrics.max_carry_age_months. Unchanged from phase0q_005.",
+    "max_same_quadrant_run_months": "AMENDED (this artifact): the longest run of calendar months in the SAME consumable quadrant, judged ONLY over runs whose fresh-valid density (fresh valid months / run length) is strictly below same_quadrant_run_min_fresh_density. Judged on regime_timeline_metrics.max_low_density_same_quadrant_run_months; the unscoped run length stays reported as raw_max_same_quadrant_run_months (diagnostic). Rationale: with carry age independently capped at 3, an unscoped bound of 12 punishes fresh persistent regimes — no honest model should flip artificially to break a regime that genuinely lasted longer.",
+    "min_upside_capture_bull_year": "In every BULL calendar year (SPY total return > bull_year_spy_return_threshold over a FULL calendar year of common sessions), the strategy must capture at least this fraction of SPY's return; partial-coverage years are excluded, down/flat years out of scope. Judged on upside_capture_by_calendar_year. Unchanged from phase0q_005."
+  },
+  "gate_parameters": {
+    "fresh_valid_rate_window_months": 36,
+    "bull_year_spy_return_threshold": 0.15,
+    "same_quadrant_run_min_fresh_density": 0.50
+  },
+  "rationale": "The phase0q_005 rationale scoped the same-quadrant gate to 'the 2023-02 -> 2026 contraction anchor the audit flagged' — a CARRY artifact: one stale seed latched and carried for years. The confidence-v2 recalibration evidence (PR #43, docs/calibration/open_macro_v03_confidence_v2_experiment_001.md) showed every candidate cell passing fresh-valid density, abstention and carry gates by wide margins while 'failing' the unscoped run bound solely on the fresh 2021-01..2022-05 expansion — 17 consecutive months in which all but one month carried a FRESH valid decision. That is regime persistence measured month-by-month, not staleness. This amendment restores the gate to its ratified intent (bounding carry anchors) by scoping it to low fresh-density runs, keeping the bound value 12 and every other bound exactly as ratified in phase0q_005. Consistent with the freeze rule, the amendment was motivated and evidenced ONLY by abstention/coverage/stability behaviour, never CAGR/Sharpe.",
+  "amends": {
+    "target": "artifacts/quant/open_macro_v03_phase0q_005/timeline_gate_policy.json",
+    "target_artifact_type": "phase0q_timeline_gate_policy",
+    "effect_when_ratified": "IN FORCE since decision_date 2026-07-16: supersedes phase0q_005 as the policy the harness judge enforces (runner.TIMELINE_GATE_POLICY_PATH + the code-reviewed canonical content pin move to this artifact in the same change). All five bounds unchanged; only the same-quadrant-run judging scope is amended as specified in gate_semantics.",
+    "does_not_amend": "The other four gates' semantics, every bound value, the carry_decay_v1 runtime cap, and the phase0q_003 stress-gate semantics remain exactly as previously ratified."
+  },
+  "activation": {
+    "ratification": "SATISFIED: amendment approved verbatim by the quant_owner (Andrei Rachadel) on 2026-07-16, with execution delegated in the same session; bounds unchanged from phase0q_005.",
+    "in_force": "The harness judge (runner.judge_timeline_gates) is GATING for this artifact: every run reports a blocking timeline go/no_go under the amended semantics."
+  },
+  "governance": {
+    "A5": "blocked",
+    "activation_allowed": false,
+    "allocator_publish": false,
+    "db_write_mode": "none",
+    "official_result": false,
+    "runtime_activation": false,
+    "self_ratification": "prohibited",
+    "note": "These pins describe THIS ARTIFACT's own side effects (a policy record writes nothing and activates nothing by itself); runtime activation remains governed by the Stage B activation envelope and its approval matrix. The ratification decision was the owner's, recorded under explicit delegation; it was not initiated by the engineering agent."
+  }
+}

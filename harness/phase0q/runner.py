@@ -95,9 +95,12 @@ CONTRACT_BUNDLE_SHA256 = pack_verifier.CONTRACT_BUNDLE_SHA256
 # these gates on the certified 2021-2026 timeline — the resulting no_go is the
 # intended honest outcome until recalibration lands, never a crash.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+# phase0q_006 (ratified 2026-07-16) AMENDS phase0q_005: same five bounds, the
+# same-quadrant-run gate scoped to LOW fresh-density runs (carry anchors) only.
 TIMELINE_GATE_POLICY_PATH = (
-    _REPO_ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_005"
+    _REPO_ROOT / "artifacts" / "quant" / "open_macro_v03_phase0q_006"
     / "timeline_gate_policy.json")
+RATIFIED_TIMELINE_GATE_POLICY_PHASE0Q_ID = "open_macro_v03_phase0q_006"
 
 # The code-reviewed content pin of the RATIFIED policy (repo pin culture): sha256 of
 # the canonical JSON (sort_keys, compact separators — key-order/whitespace/CRLF
@@ -107,7 +110,7 @@ TIMELINE_GATE_POLICY_PATH = (
 # demotes the claim to a fail-closed no_go (see validate_ratified_policy /
 # timeline_overall_gate_entry) — one status string can never forge ratification.
 RATIFIED_TIMELINE_GATE_POLICY_CANONICAL_SHA256 = (
-    "fb3dde69f1165192eb4c99fc242f215508a2b46decf510c65dcf3a73204d8524")
+    "15ec2f8112f6f7fd805e4a097dda40fd582e9e1234a8e228894f943f1124ca03")
 
 # The COMPLETE ratified gate set: a claimed-ratified policy missing a key (a silently
 # weakened policy) or carrying an extra one is invalid as a whole — never a partial
@@ -142,9 +145,10 @@ def validate_ratified_policy(policy: Mapping[str, Any]) -> list[str]:
     if policy.get("artifact_type") != "phase0q_timeline_gate_policy":
         violations.append(
             f"artifact_type {policy.get('artifact_type')!r} != 'phase0q_timeline_gate_policy'")
-    if policy.get("phase0q_id") != "open_macro_v03_phase0q_005":
+    if policy.get("phase0q_id") != RATIFIED_TIMELINE_GATE_POLICY_PHASE0Q_ID:
         violations.append(
-            f"phase0q_id {policy.get('phase0q_id')!r} != 'open_macro_v03_phase0q_005'")
+            f"phase0q_id {policy.get('phase0q_id')!r} != "
+            f"{RATIFIED_TIMELINE_GATE_POLICY_PHASE0Q_ID!r}")
     if policy.get("ratified_by") != "quant_owner":
         violations.append(
             f"ratified_by {policy.get('ratified_by')!r} != 'quant_owner'")
@@ -255,10 +259,24 @@ def _union_window(windows: Sequence[tuple[_dt.date, _dt.date]]) -> tuple[_dt.dat
 
 def build_decision_series(
     pack: LoadedPack, windows: Sequence[tuple[_dt.date, _dt.date]],
+    decision_model: str = "v1",
 ) -> list[decision.DecisionRow]:
+    """The monthly latched decision series for the configured model stream.
+
+    ``decision_model`` selects the frozen v1 path (``decision.run_decision_series``,
+    macro_quadrant_us_v1 — the default, byte-stable for every certified run) or the
+    confidence-v2 path (``decision_v2.run_decision_series_v2``,
+    macro_quadrant_us_v2). Both emit the same DecisionRow projection, so every
+    downstream consumer is model-agnostic.
+    """
     start, end = _union_window(windows)
     index = decision.PitIndex(pack.macro_rows)
-    return decision.run_decision_series(index, start, end)
+    if decision_model == "v1":
+        return decision.run_decision_series(index, start, end)
+    if decision_model == "v2":
+        from . import decision_v2
+        return decision_v2.run_decision_series_v2(index, start, end)
+    raise ValueError(f"unknown decision_model {decision_model!r} (expected 'v1'|'v2')")
 
 
 def _decisions_in(series: Sequence[decision.DecisionRow], start: _dt.date, end: _dt.date):
@@ -309,20 +327,29 @@ def build_timeline_block(
                             BASE_COST_BPS)
     strategy_nav = list(zip(strat_res.dates, strat_res.nav))
     spy_nav = _spy_buy_hold_nav(prices, config.primary_window)
+    # the policy is loaded FIRST so the amended same-quadrant-run semantics
+    # (phase0q_006: judged only on LOW fresh-density runs) computes the metric at
+    # the policy's own density threshold — judge and metric can never disagree.
+    policy = load_timeline_gate_policy()
+    density = metrics.SAME_QUADRANT_RUN_LOW_DENSITY_THRESHOLD
+    if policy is not None:
+        density = policy.get("gate_parameters", {}).get(
+            "same_quadrant_run_min_fresh_density", density)
     block: dict[str, Any] = {
         "reference_candidate_id": base_params.candidate_id,
+        "decision_model": getattr(config, "decision_model", "v1"),
         "primary_window": {
             "start": config.primary_window[0].isoformat(),
             "end": config.primary_window[1].isoformat(),
         },
-        "regime_timeline_metrics": metrics.regime_timeline_metrics(decisions),
+        "regime_timeline_metrics": metrics.regime_timeline_metrics(
+            decisions, low_density_threshold=density),
         "upside_capture_by_calendar_year": metrics.upside_capture_by_calendar_year(
             strategy_nav, spy_nav),
     }
     # Tranche W2: attach the timeline-gate judgment. GATING for the committed
     # ratified policy (a blocking 'timeline' entry lands in gates_overall_base_cost);
     # an unratified policy stays advisory and blocks nothing.
-    policy = load_timeline_gate_policy()
     block["gate_judgment"] = judge_timeline_gates(block, policy)
     return block
 
@@ -403,13 +430,36 @@ def judge_timeline_gates(
             "measured": measured, "bound": bound, "direction": "min",
             "go": measured >= bound}
 
-    for key in ("max_abstention_streak_months", "max_carry_age_months",
-                "max_same_quadrant_run_months"):
+    for key in ("max_abstention_streak_months", "max_carry_age_months"):
         if key in gates:
             measured = m[key]
             bound = gates[key]
             per_gate[key] = {"measured": measured, "bound": bound,
                              "direction": "max", "go": measured <= bound}
+
+    if "max_same_quadrant_run_months" in gates:
+        bound = gates["max_same_quadrant_run_months"]
+        density = params.get("same_quadrant_run_min_fresh_density")
+        if density is not None:
+            # phase0q_006 amended semantics: the bound binds only on runs whose
+            # fresh-valid density is BELOW the policy threshold (a carry/latch
+            # anchor — the gate's original 2023-02..2026 target); a fresh
+            # persistent regime is genuine signal and is surfaced as a diagnostic,
+            # never a failure. build_timeline_block computed the metric at this
+            # same threshold, so judge and metric agree by construction.
+            measured = m["max_low_density_same_quadrant_run_months"]
+            per_gate["max_same_quadrant_run_months"] = {
+                "measured": measured, "bound": bound, "direction": "max",
+                "semantics": "low_fresh_density_runs_only",
+                "min_fresh_density": density,
+                "raw_max_same_quadrant_run_months":
+                    m["max_same_quadrant_run_months"],
+                "go": measured <= bound}
+        else:
+            measured = m["max_same_quadrant_run_months"]
+            per_gate["max_same_quadrant_run_months"] = {
+                "measured": measured, "bound": bound, "direction": "max",
+                "go": measured <= bound}
 
     if "min_upside_capture_bull_year" in gates:
         bound = gates["min_upside_capture_bull_year"]
@@ -743,6 +793,7 @@ class RunConfig:
     cost_grid: tuple[int, ...] = COST_GRID_BPS
     primary_window: tuple[_dt.date, _dt.date] = PRIMARY_WINDOW
     stress_windows: tuple[dict[str, Any], ...] = STRESS_WINDOWS
+    decision_model: str = "v1"   # "v1" (frozen, default) | "v2" (confidence_v2.0)
 
 
 def run_harness(pack_dir: str | Path, config: RunConfig) -> dict[str, Any]:
@@ -755,7 +806,7 @@ def run_harness(pack_dir: str | Path, config: RunConfig) -> dict[str, Any]:
 
     all_windows: list[tuple[_dt.date, _dt.date]] = [config.primary_window]
     all_windows += [(w["start"], w["end"]) for w in config.stress_windows]
-    decisions = build_decision_series(pack, all_windows)
+    decisions = build_decision_series(pack, all_windows, config.decision_model)
     folds = oos_folds(config.primary_window)
 
     cells: list[dict[str, Any]] = []
@@ -784,6 +835,7 @@ def _cell_provenance(pack, config, params, cost_bps) -> dict[str, Any]:
         "finished_at": config.finished_at,
         "candidate_id": params.candidate_id,
         "cost_bps": cost_bps,
+        "decision_model": config.decision_model,
         "log_path": f"logs/{config.run_id}/{params.candidate_id}_{cost_bps}bps.log",
         "execution_leg": "local_python_pure",
     }
