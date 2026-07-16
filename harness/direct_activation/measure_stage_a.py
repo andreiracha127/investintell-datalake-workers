@@ -14,9 +14,10 @@ signed thresholds (``artifacts/a5/open_macro_v03_dark_launch_001/monitoring_thre
 — breach = STOP and investigate, NEVER recalibrate.
 
 This reuses the Phase 1 clean-tree / worker-commit / tree-hash / image-id provenance
-directly from ``harness.dark_launch.measure_observability`` and the hardened container
-profile from ``scripts/repeatability_matrix.py`` (same profile, same image), so the two
-stages certify identical job identity by construction. Unlike the Phase 1 job (the heavy
+mechanism from ``harness.dark_launch.measure_observability`` and the hardened container
+profile from ``scripts/repeatability_matrix.py`` (same profile, same image). Stage A
+binds that mechanism to its explicit decision-compute manifest rather than Phase 1's
+broader quant-engine trees. Unlike the Phase 1 job (the heavy
 ``a3_qc_parity`` quant-engine compute), the Stage A compute is the pure
 ``live_validation.compute()`` over committed pack v2 + the pinned delta snapshot, so the
 container leg mounts the REPO read-only (harness/, src/, fixtures/, the pinned snapshot)
@@ -49,6 +50,7 @@ from typing import Any
 
 from harness.dark_launch import measure_observability as mo
 from harness.direct_activation import build_stage_a_amendment as amendment_builder
+from harness.direct_activation.compute_manifest import STAGE_A_COMPUTE_PATHS
 from harness.direct_activation.measure_stage_a_child import SENTINEL, canonical_hash
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -149,7 +151,8 @@ def _run_container(rm, index: int, worker_commit: str, image: str,
 def measure(runs_per_leg: int, *, skip_container: bool, image: str,
             repo: Path, worker_commit_override: str | None = None) -> dict[str, Any]:
     rm = mo._load_repeatability_module()
-    # Phase 1 provenance, enforced identically: HEAD ONLY from a clean compute tree.
+    # Phase 1 provenance mechanism, scoped to the explicit Stage A compute manifest:
+    # HEAD ONLY from clean decision/measurement files.
     # ``worker_commit_override`` (the sibling repeatability_matrix.py --worker-commit
     # escape hatch) BYPASSES the clean-tree gate for a smoke run on a known-good
     # checkout; the default (real) path enforces the gate and records clean_tree=True.
@@ -157,9 +160,9 @@ def measure(runs_per_leg: int, *, skip_container: bool, image: str,
         worker_commit = worker_commit_override
         clean_tree = False
     else:
-        worker_commit = mo._worker_commit()
+        worker_commit = mo._worker_commit(STAGE_A_COMPUTE_PATHS)
         clean_tree = True
-    tree_hashes = mo._compute_tree_hashes(worker_commit)
+    tree_hashes = mo._compute_tree_hashes(worker_commit, STAGE_A_COMPUTE_PATHS)
     image_id = None if skip_container else _image_id_for(image)
 
     legs: dict[str, list[dict[str, Any]]] = {}

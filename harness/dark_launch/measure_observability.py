@@ -52,7 +52,7 @@ def _load_repeatability_module():
 COMPUTE_TREES = ("harness/", "packages/", "services/", "scripts/", "qc_a3_core.py", "src/")
 
 
-def _worker_commit() -> str:
+def _worker_commit(compute_paths: tuple[str, ...] = COMPUTE_TREES) -> str:
     """HEAD, but ONLY from a clean compute tree — a dirty worktree would pin the
     measurement to a commit that did not contain the code that actually ran."""
     status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT,
@@ -61,10 +61,13 @@ def _worker_commit() -> str:
     for line in status.splitlines():
         # a rename/copy line carries BOTH paths ("R  old -> new"); a rename INTO a
         # compute tree must count as dirty, so test every path on the line.
-        paths = line[3:].split(" -> ")
-        if any(p.strip('"').replace("\\", "/").startswith(COMPUTE_TREES)
-               for p in paths):
-            dirty.append(line)
+        paths = [p.strip('"').replace("\\", "/")
+                 for p in line[3:].split(" -> ")]
+        for path in paths:
+            if any(path.startswith(surface) if surface.endswith("/")
+                   else path == surface for surface in compute_paths):
+                dirty.append(line)
+                break
     if dirty:
         raise RuntimeError(
             "refusing to measure from a dirty compute tree (worker_commit would be "
@@ -73,11 +76,14 @@ def _worker_commit() -> str:
                           text=True, check=True).stdout.strip()
 
 
-def _compute_tree_hashes(commit: str) -> dict[str, str]:
+def _compute_tree_hashes(
+    commit: str,
+    compute_paths: tuple[str, ...] = COMPUTE_TREES,
+) -> dict[str, str]:
     """Git tree/blob hashes of the compute surfaces at the measured commit — reachable
     provenance even if the measuring commit itself later falls out of ancestry."""
     hashes = {}
-    for tree in COMPUTE_TREES:
+    for tree in compute_paths:
         rel = tree.rstrip("/")
         obj = subprocess.run(["git", "rev-parse", f"{commit}:{rel}"], cwd=ROOT,
                              capture_output=True, text=True, check=True).stdout.strip()

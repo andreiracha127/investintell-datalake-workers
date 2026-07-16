@@ -47,7 +47,7 @@
 - Produces: CLI `python scripts/ci/classify_changes.py --base <sha> --head <sha> --github-output <path>`.
 - Produces GitHub outputs `nport_changed=true|false` and `quant_changed=true|false`.
 
-- [ ] **Step 1: Write failing classifier tests**
+- [x] **Step 1: Write failing classifier tests**
 
 ```python
 from scripts.ci.classify_changes import Scope, classify_paths
@@ -83,13 +83,13 @@ def test_documentation_only_change_selects_no_lane() -> None:
     assert classify_paths(["docs/architecture/decision.md"]) == Scope(False, False)
 ```
 
-- [ ] **Step 2: Run the tests and verify RED**
+- [x] **Step 2: Run the tests and verify RED**
 
 Run: `python -m pytest tests/test_ci_path_scope.py -q`
 
 Expected: collection error `ModuleNotFoundError: No module named 'scripts.ci.classify_changes'`.
 
-- [ ] **Step 3: Implement the classifier and fail-closed CLI**
+- [x] **Step 3: Implement the classifier and fail-closed CLI**
 
 ```python
 from __future__ import annotations
@@ -210,17 +210,17 @@ This runs `git diff --name-only --diff-filter=ACMRT <base> <head>` with
 selected scope, and appends both lowercase boolean outputs to the exact GitHub
 output file.
 
-- [ ] **Step 4: Extend tests for the CLI output and invalid revisions**
+- [x] **Step 4: Extend tests for the CLI output and invalid revisions**
 
 Use a temporary GitHub output file and invoke `main()` with the current repository `HEAD^` and `HEAD`; assert both output keys exist. Monkeypatch only the subprocess boundary for the invalid-revision case and assert `SystemExit` is non-zero rather than silently selecting no lanes.
 
-- [ ] **Step 5: Run classifier tests and verify GREEN**
+- [x] **Step 5: Run classifier tests and verify GREEN**
 
 Run: `python -m pytest tests/test_ci_path_scope.py -q`
 
 Expected: all classifier tests pass.
 
-- [ ] **Step 6: Commit the classifier slice**
+- [x] **Step 6: Commit the classifier slice**
 
 ```powershell
 git add scripts/ci/classify_changes.py tests/test_ci_path_scope.py
@@ -238,7 +238,7 @@ git commit -m "feat(ci): classify changed paths into scoped lanes"
 - Preserves: workflow job id and display name `quant-engine`.
 - Produces: `nport_changed` and `quant_changed` step outputs used by all conditional steps.
 
-- [ ] **Step 1: Replace text-only workflow assertions with parsed contract tests**
+- [x] **Step 1: Replace text-only workflow assertions with parsed contract tests**
 
 Load the YAML using `yaml.load(text, Loader=yaml.BaseLoader)` so YAML 1.1 does not coerce the `on` key to a boolean. Add assertions that:
 
@@ -261,13 +261,13 @@ assert names.index("Verify Stage A binding") < names.index(
 
 Also assert the N-PORT pytest command names all three focused test files, Ruff is pinned to `0.15.9`, and every expensive quant verification/compile/artifact step has the quant condition.
 
-- [ ] **Step 2: Run the workflow contract and verify RED**
+- [x] **Step 2: Run the workflow contract and verify RED**
 
 Run: `python -m pytest tests/test_remote_ci_runner.py -q`
 
 Expected: failure because `feat/**` is still a push branch and `concurrency`, path detection, and conditional lanes do not exist.
 
-- [ ] **Step 3: Implement the workflow structure**
+- [x] **Step 3: Implement the workflow structure**
 
 Use this step order in `.github/workflows/ci.yml`:
 
@@ -308,13 +308,13 @@ jobs:
 
 Install dependencies only when either output is true. Run the three N-PORT tests, Ruff, and compileall only when `nport_changed == 'true'`. Run the single Stage A binding test immediately after dependency installation when `quant_changed == 'true'`; condition every existing quant verification, full pytest, compilation, and artifact step on the same output. Add a no-op summary step when both outputs are false.
 
-- [ ] **Step 4: Run workflow and classifier contracts and verify GREEN**
+- [x] **Step 4: Run workflow and classifier contracts and verify GREEN**
 
 Run: `python -m pytest tests/test_remote_ci_runner.py tests/test_ci_path_scope.py -q`
 
 Expected: all tests pass.
 
-- [ ] **Step 5: Run the exact local N-PORT lane**
+- [x] **Step 5: Run the exact local N-PORT lane**
 
 ```powershell
 python -m pytest tests/test_nport_lookthrough.py tests/test_nport_cusip_enrichment.py tests/test_load_nport_fund_flows.py -q
@@ -324,7 +324,7 @@ python -m compileall -q src/workers/nport_lookthrough.py src/workers/nport_cusip
 
 Expected: pytest passes with only the existing environment-dependent skips; Ruff and compileall exit 0.
 
-- [ ] **Step 6: Commit the workflow slice**
+- [x] **Step 6: Commit the workflow slice**
 
 ```powershell
 git add .github/workflows/ci.yml tests/test_remote_ci_runner.py
@@ -350,7 +350,7 @@ git commit -m "ci: scope PR validation and cancel superseded runs"
 - Extends: `_compute_tree_hashes(commit: str, compute_paths: tuple[str, ...] = COMPUTE_TREES) -> dict[str, str]`.
 - Preserves: no-argument behavior for all Phase 1 callers.
 
-- [ ] **Step 1: Write failing manifest and provenance tests**
+- [x] **Step 1: Write failing manifest and provenance tests**
 
 Use this AST helper in the test file so the contract follows real project imports
 without importing application modules:
@@ -495,13 +495,13 @@ def test_stage_a_measure_uses_explicit_compute_manifest(monkeypatch) -> None:
     assert received == [STAGE_A_COMPUTE_PATHS, STAGE_A_COMPUTE_PATHS]
 ```
 
-- [ ] **Step 2: Run the manifest tests and verify RED**
+- [x] **Step 2: Run the manifest tests and verify RED**
 
 Run: `python -m pytest tests/test_stage_a_compute_manifest.py -q`
 
 Expected: collection error because `harness.direct_activation.compute_manifest` does not exist.
 
-- [ ] **Step 3: Add the manifest and parameterize provenance helpers**
+- [x] **Step 3: Add the manifest and parameterize provenance helpers**
 
 Create this explicit sorted manifest; if the RED closure output identifies another
 real project import, add that exact file before making the test green:
@@ -513,6 +513,7 @@ STAGE_A_ENTRYPOINTS = (
 )
 
 STAGE_A_COMPUTE_PATHS = tuple(sorted((
+    "harness/__init__.py",
     "harness/dark_launch/__init__.py",
     "harness/dark_launch/measure_observability.py",
     "harness/direct_activation/__init__.py",
@@ -528,14 +529,20 @@ STAGE_A_COMPUTE_PATHS = tuple(sorted((
     "scripts/p1_export/__init__.py",
     "scripts/p1_export/export_p1_sources.py",
     "scripts/repeatability_matrix.py",
+    "scripts/__init__.py",
     "services/quant_engine/src/investintell_quant_engine/__init__.py",
     "services/quant_engine/src/investintell_quant_engine/comparator.py",
     "services/quant_engine/src/investintell_quant_engine/outputs_manifest.py",
     "services/quant_engine/src/investintell_quant_engine/repeatability.py",
+    "services/quant_engine/src/investintell_quant_engine/version.py",
     "src/__init__.py",
     "src/db.py",
     "src/input_packs/__init__.py",
+    "src/input_packs/hashing.py",
+    "src/input_packs/manifest.py",
     "src/input_packs/p0_contract.py",
+    "src/input_packs/p0_derived.py",
+    "src/input_packs/verifier.py",
     "src/macro_sources.py",
     "src/macro_transforms.py",
     "src/quadrant_assemble.py",
@@ -615,23 +622,23 @@ def test_every_stage_a_compute_path_selects_quant() -> None:
         assert classify_paths([path]).quant_changed, path
 ```
 
-- [ ] **Step 4: Update the committed-evidence binding contract**
+- [x] **Step 4: Update the committed-evidence binding contract**
 
 In `test_reproducibility_record_pins_a_clean_16_run_reproduction`, replace the hard-coded broad directory set with `set(STAGE_A_COMPUTE_PATHS)`. Keep the existing HEAD and present-worker-commit Git object comparisons for every path. Update comments/docstrings to say Stage A reuses the provenance mechanism but certifies its own explicit compute closure.
 
-- [ ] **Step 5: Run manifest/provenance tests and close any import-closure gaps**
+- [x] **Step 5: Run manifest/provenance tests and close any import-closure gaps**
 
 Run: `python -m pytest tests/test_stage_a_compute_manifest.py tests/test_ci_path_scope.py tests/test_direct_activation_stage_a.py -q`
 
 Expected before recertification: manifest/provenance unit tests pass; the committed reproduction binding test is the only expected failure because the artifact still contains the old broad surfaces. Any missing import listed by the closure test is added to the explicit manifest before proceeding.
 
-- [ ] **Step 6: Run all non-evidence local gates**
+- [x] **Step 6: Run all non-evidence local gates**
 
 Run the workflow/classifier tests, N-PORT lane, Ruff over changed Python files, compileall over changed Python files, and the governance/quant command excluding only `test_reproducibility_record_pins_a_clean_16_run_reproduction`.
 
 Expected: all executed checks pass; the excluded binding test remains deliberately red until Task 4.
 
-- [ ] **Step 7: Commit the final code surface before measuring**
+- [x] **Step 7: Commit the final code surface before measuring**
 
 ```powershell
 git add .github/workflows/ci.yml scripts/ci tests/test_ci_path_scope.py tests/test_remote_ci_runner.py harness/direct_activation/compute_manifest.py harness/direct_activation/measure_stage_a.py harness/dark_launch/measure_observability.py tests/test_stage_a_compute_manifest.py tests/test_direct_activation_stage_a.py docs/superpowers

@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from harness.direct_activation.compute_manifest import STAGE_A_COMPUTE_PATHS
+
 
 @dataclass(frozen=True)
 class Scope:
@@ -60,6 +62,7 @@ def classify_paths(paths: Iterable[str]) -> Scope:
     """Return the lanes required by ``paths``, failing closed for unknown code."""
     nport = False
     quant = False
+    stage_a_paths = set(STAGE_A_COMPUTE_PATHS)
     for raw_path in paths:
         path = _normalize_path(raw_path)
         if not path:
@@ -76,7 +79,8 @@ def classify_paths(paths: Iterable[str]) -> Scope:
             nport = True
             continue
         if (
-            path.startswith(QUANT_PREFIXES)
+            path in stage_a_paths
+            or path.startswith(QUANT_PREFIXES)
             or (path.startswith("src/") and not path.startswith("src/workers/nport_"))
             or (
                 path.startswith("tests/")
