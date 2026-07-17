@@ -11,6 +11,7 @@ __pycache__/
 .serena/
 .remember/
 .pytest_cache/
+.claude/worktrees/
 
 # Lean CLI local state
 lean.json
@@ -30,3 +31,10 @@ _smoke_*
 # phase0q cloud-leg LOCAL bundle output (never committed)
 build/
 _phase0q_cloud_bundle/
+
+# reproducible local certification/backfill outputs
+artifacts/input_packs/
+artifacts/quant_engine/
+artifacts/*backfill*.csv
+artifacts/*smoke*.csv
+phase0q_cloud_verdict.json

@@ -158,6 +158,22 @@ Para **100% de acurácia**: mesma NAV até `calc_date`, GARCH(1,1) quando aplic�
 
 ## Deploy (Railway)
 
-Um serviço por worker, comando `python -m src.run <worker>`, agendado por cron.
-`railway.toml` e o runner `src/run.py` definem o ponto de entrada. Segredos via
-variáveis de ambiente do Railway (`DATABASE_URL`). Nunca commitar credenciais.
+Um serviço por worker, comando `python -m src.run_worker`, agendado por cron.
+`railway.toml` e o runner `src/run_worker.py` definem o ponto de entrada. Cada
+serviço seleciona o worker por `WORKER=<nome>`. Segredos via variáveis de
+ambiente do Railway (`DATABASE_URL`). Nunca commitar credenciais.
+
+### Rebuild de métricas certificadas
+
+Para uma manutenção one-shot da superfície derivada de métricas/read-models:
+
+```bash
+DATABASE_URL=<dsn> python -m scripts.rebuild_certified_metric_pack
+```
+
+O orquestrador executa, em ordem, `factor_model`, `fund_factors`,
+`risk_metrics`, `active_share_metrics`, `momentum_metrics`,
+`screener_metrics` e `matview_refresh`. Ele resolve o DSN uma vez, emite JSON
+Lines e falha imediatamente em resultados incompletos, locks ocupados ou
+refreshes de MV malsucedidos. Esse fluxo reconstrói tabelas derivadas; ele não
+cria nem promove um certified input pack.
