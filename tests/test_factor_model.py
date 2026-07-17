@@ -127,6 +127,36 @@ def test_dimensions():
     np.testing.assert_allclose(fit["gamma"].T @ fit["gamma"], np.eye(K), atol=1e-8)
 
 
+def test_panel_sql_uses_lagged_characteristics_and_close_to_close_returns():
+    sql = " ".join(fm._PANEL_SQL_CLOUD.split()).lower()
+    assert "lag(close_nav)" in sql
+    assert "interval '1 month'" in sql
+    assert "previous_month + interval '1 month'" in sql
+    assert "nav_date < date_trunc('month'" in sql
+    assert "first(nav" not in sql
+
+
+def test_specific_variances_are_monthly_residual_sample_variances():
+    chars, returns, _ = _make_synthetic(L=4, K=2, T=60, N=20, noise=0.01)
+    fit = fm.fit_ipca(chars, returns, K=2)
+    rows = fm._specific_variances(chars, returns, fit)
+
+    assert len(rows) == 20
+    assert all(row["n_observations"] == 60 for row in rows)
+    assert all(row["variance_monthly"] >= 0.0 for row in rows)
+
+
+def test_instrument_exposures_persist_exact_latest_ranked_cross_section():
+    chars, returns, _ = _make_synthetic(L=4, K=2, T=12, N=10, noise=0.01)
+    fit = fm.fit_ipca(chars, returns, K=2)
+    rows = fm._instrument_exposures(chars, fit)
+
+    assert len(rows) == 10
+    assert all(len(row["ranked_characteristics"]) == 4 for row in rows)
+    assert all(len(row["factor_exposures"]) == 2 for row in rows)
+    assert {row["as_of"] for row in rows} == {"2010-12-31"}
+
+
 # --------------------------------------------------------------------------- #
 # 4. Passo-Gamma vetorizado == solução ingênua empilhada
 # --------------------------------------------------------------------------- #

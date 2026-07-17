@@ -60,6 +60,10 @@ def ols_factor_exposures(y: np.ndarray, x: np.ndarray) -> list[dict]:
     x_design = np.column_stack([np.ones(len(x)), x])
     beta, *_ = np.linalg.lstsq(x_design, y, rcond=None)
     residuals = y - x_design @ beta
+    ss_res = float(residuals @ residuals)
+    centered = y - float(np.mean(y))
+    ss_tot = float(centered @ centered)
+    r_squared = 1.0 - ss_res / ss_tot if ss_tot > 0.0 else None
     dof = len(y) - x_design.shape[1]
     if dof <= 0:
         t_stats = np.full(beta.shape, np.nan)
@@ -74,20 +78,36 @@ def ols_factor_exposures(y: np.ndarray, x: np.ndarray) -> list[dict]:
         t = None if math.isnan(t) else t
         out.append({
             "factor": f"Factor {idx}",
+            "factor_index": idx,
             "beta": float(beta[idx]),
             "t_stat": t,
             "significance": _significance(t),
+            "n_observations": int(len(y)),
+            "r_squared": r_squared,
         })
     return out
 
 
 _UPSERT = """
 INSERT INTO fund_factor_exposures
-    (instrument_id, factor, as_of, beta, t_stat, significance, organization_id)
-VALUES (%(iid)s, %(factor)s, %(as_of)s, %(beta)s, %(t_stat)s, %(sig)s, NULL)
+    (instrument_id, factor, factor_index, as_of, fit_id, beta, t_stat,
+     significance, n_observations, r_squared, organization_id)
+VALUES (%(iid)s, %(factor)s, %(factor_index)s, %(as_of)s, %(fit_id)s,
+        %(beta)s, %(t_stat)s, %(sig)s, %(n_observations)s, %(r_squared)s, NULL)
 ON CONFLICT (instrument_id, factor, as_of, organization_id) DO UPDATE SET
+    factor_index = EXCLUDED.factor_index, fit_id = EXCLUDED.fit_id,
     beta = EXCLUDED.beta, t_stat = EXCLUDED.t_stat,
-    significance = EXCLUDED.significance, computed_at = now()
+    significance = EXCLUDED.significance,
+    n_observations = EXCLUDED.n_observations,
+    r_squared = EXCLUDED.r_squared, computed_at = now()
+"""
+
+_DELETE_STALE_FIT = """
+DELETE FROM fund_factor_exposures
+WHERE instrument_id = %(iid)s
+  AND as_of = %(as_of)s
+  AND organization_id IS NULL
+  AND fit_id IS DISTINCT FROM %(fit_id)s
 """
 
 
@@ -99,23 +119,55 @@ def _refresh_latest_mv(dsn: str) -> None:
             )
 
 
-def _latest_factor_matrix(conn) -> tuple[_dt.date | None, list[_dt.date], np.ndarray]:
+def _latest_factor_matrix(
+    conn,
+    calc_date: _dt.date | None = None,
+) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT fit_date, factor_returns FROM factor_model_fits "
-            "WHERE engine = 'ipca' ORDER BY fit_date DESC, created_at DESC LIMIT 1"
+            """
+            SELECT fit_id, fit_date, sample_start, sample_end, k_factors,
+                   factor_returns
+            FROM factor_model_fits
+            WHERE engine = 'ipca'
+              AND asset_class = 'Equity'
+              AND converged IS TRUE
+              AND degraded IS FALSE
+              AND production_fit IS TRUE
+              AND (%s::date IS NULL OR fit_date <= %s::date)
+            ORDER BY fit_date DESC, created_at DESC
+            LIMIT 1
+            """,
+            (calc_date, calc_date),
         )
         row = cur.fetchone()
-    if row is None or not isinstance(row[1], dict):
-        return None, [], np.empty((0, 0))
-    fit_date, payload = row
-    dates = [_dt.date.fromisoformat(d[:10]) for d in payload.get("dates", [])]
+    if row is None or not isinstance(row[5], dict):
+        return None
+    fit_id, fit_date, sample_start, sample_end, k_factors, payload = row
+    try:
+        dates = [_dt.date.fromisoformat(d[:10]) for d in payload.get("dates", [])]
+    except (TypeError, ValueError):
+        return None
     values = payload.get("values", [])
-    if not dates or not values:
-        return fit_date, [], np.empty((0, 0))
-    cols = [np.asarray(v, dtype=float) for v in values if len(v) == len(dates)]
-    matrix = np.column_stack(cols) if cols else np.empty((len(dates), 0))
-    return fit_date, dates, matrix
+    if (
+        not dates
+        or len(values) != int(k_factors)
+        or dates != sorted(set(dates))
+        or any(not isinstance(value, list) or len(value) != len(dates) for value in values)
+    ):
+        return None
+    matrix = np.asarray(values, dtype=float).T
+    if matrix.shape != (len(dates), int(k_factors)) or not np.isfinite(matrix).all():
+        return None
+    return {
+        "fit_id": fit_id,
+        "fit_date": fit_date,
+        "sample_start": sample_start or dates[0],
+        "sample_end": sample_end or dates[-1],
+        "k_factors": int(k_factors),
+        "dates": dates,
+        "matrix": matrix,
+    }
 
 
 def _fund_monthly_returns(conn, iid, factor_dates: list[_dt.date]) -> np.ndarray:
@@ -133,7 +185,11 @@ def _fund_monthly_returns(conn, iid, factor_dates: list[_dt.date]) -> np.ndarray
     months = sorted(by_month)
     rets: dict[_dt.date, float] = {}
     for prev, cur_m in zip(months, months[1:]):
-        if by_month[prev]:
+        is_consecutive = (
+            cur_m.year * 12 + cur_m.month
+            == prev.year * 12 + prev.month + 1
+        )
+        if is_consecutive and by_month[prev]:
             rets[cur_m] = by_month[cur_m] / by_month[prev] - 1.0
     aligned = []
     for d in factor_dates:
@@ -152,17 +208,30 @@ def _fund_ids(conn, limit) -> list:
         return [r[0] for r in cur.fetchall()]
 
 
-def run(dsn: str, *, as_of: str | None = None, limit: int | None = None) -> dict:
+def run(
+    dsn: str,
+    *,
+    calc_date: str | None = None,
+    limit: int | None = None,
+    as_of: str | None = None,
+) -> dict:
     processed = upserted = 0
-    fit_date: _dt.date | None = None
     out_date: _dt.date | None = None
+    cutoff = _dt.date.fromisoformat(calc_date) if calc_date else None
+    fit: dict | None = None
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_FUND_FACTORS) as got:
             if not got:
                 return {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
-            fit_date, fdates, fmatrix = _latest_factor_matrix(conn)
-            out_date = _dt.date.fromisoformat(as_of) if as_of else (fit_date or _dt.date.today())
-            if fdates and fmatrix.size:
+            fit = _latest_factor_matrix(conn, cutoff)
+            out_date = (
+                _dt.date.fromisoformat(as_of)
+                if as_of
+                else (fit["sample_end"] if fit else None)
+            )
+            if fit is not None and out_date is not None:
+                fdates = fit["dates"]
+                fmatrix = fit["matrix"]
                 for iid in _fund_ids(conn, limit):
                     y = _fund_monthly_returns(conn, iid, fdates)
                     mask = np.isfinite(y) & np.isfinite(fmatrix).all(axis=1)
@@ -170,18 +239,43 @@ def run(dsn: str, *, as_of: str | None = None, limit: int | None = None) -> dict
                         continue
                     processed += 1
                     rows = ols_factor_exposures(y[mask], fmatrix[mask])
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            _DELETE_STALE_FIT,
+                            {
+                                "iid": iid,
+                                "as_of": out_date,
+                                "fit_id": fit["fit_id"],
+                            },
+                        )
                     for r in rows:
                         beta, t_stat, significance = _storage_values(r)
                         with conn.cursor() as cur:
                             cur.execute(_UPSERT, {
-                                "iid": iid, "factor": r["factor"], "as_of": out_date,
-                                "beta": beta, "t_stat": t_stat,
+                                "iid": iid,
+                                "factor": r["factor"],
+                                "factor_index": r["factor_index"],
+                                "as_of": out_date,
+                                "fit_id": fit["fit_id"],
+                                "beta": beta,
+                                "t_stat": t_stat,
                                 "sig": significance,
+                                "n_observations": r["n_observations"],
+                                "r_squared": r["r_squared"],
                             })
                         upserted += 1
                 conn.commit()
-    result = {"processed": processed, "upserted": upserted,
-              "as_of": (out_date.isoformat() if (fit_date or as_of) and out_date else None)}
+    result = {
+        "processed": processed,
+        "upserted": upserted,
+        "as_of": out_date.isoformat() if out_date else None,
+        "fit_id": str(fit["fit_id"]) if fit else None,
+        "k_factors": fit["k_factors"] if fit else None,
+    }
+    if limit is not None:
+        result["mv_refreshed"] = False
+        result["mv_refresh_reason"] = "limited_run"
+        return result
     try:
         _refresh_latest_mv(dsn)
         result["mv_refreshed"] = True

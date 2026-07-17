@@ -1,4 +1,6 @@
 # tests/test_fund_factors.py
+import datetime as dt
+
 import numpy as np
 import pytest
 
@@ -16,6 +18,9 @@ def test_ols_factor_exposures_recovers_known_betas():
     assert abs(betas["Factor 1"] - 0.3) < 1e-3
     assert abs(betas["Factor 2"] + 0.5) < 1e-3
     assert all(row["significance"] == "***" for row in out)  # |t| enorme
+    assert [row["factor_index"] for row in out] == [1, 2]
+    assert all(row["n_observations"] == n for row in out)
+    assert all(row["r_squared"] > 0.999 for row in out)
 
 
 def test_ols_short_series_returns_empty():
@@ -53,6 +58,30 @@ def test_near_perfect_fit_t_stat_is_not_persistable():
     assert all(beta is not None for beta, _, _ in stored)
     assert all(t_stat is None for _, t_stat, _ in stored)
     assert all(significance is None for _, _, significance in stored)
+
+
+def test_monthly_returns_reject_gap_in_nav_months():
+    class _Cursor:
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def execute(self, *_args): return None
+        def fetchall(self):
+            return [
+                (dt.date(2026, 1, 1), 100.0),
+                (dt.date(2026, 3, 1), 121.0),
+                (dt.date(2026, 4, 1), 133.1),
+            ]
+
+    class _Conn:
+        def cursor(self): return _Cursor()
+
+    result = ff._fund_monthly_returns(
+        _Conn(),
+        "fund-id",
+        [dt.date(2026, 3, 1), dt.date(2026, 4, 1)],
+    )
+    assert np.isnan(result[0])
+    np.testing.assert_allclose(result[1], 0.1)
 
 
 class _FakeCursor:

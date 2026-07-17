@@ -3,8 +3,8 @@
 Tabela destino : factor_model_fits  (GLOBAL, sem RLS)
 Advisory lock  : LOCK_FACTOR_MODEL (900_203)
 Frequência     : trimestral / on-demand
-Idempotente    : sim — upsert por chave natural
-                 (engine, asset_class, universe_hash, fit_date).
+Idempotente    : sim — rerun de conteúdo idêntico reutiliza o fit_id;
+                 conteúdo diferente cria uma versão imutável.
 
 ==============================================================================
 MODELO IPCA (Kelly, Pruitt & Su 2019) — implementação STANDALONE
@@ -260,10 +260,14 @@ def fit_ipca(
         "converged": converged,
         "n_iterations": n_iter,
         "T": T,
+        "n_observations": int(sum(len(r) for r in rs)),
+        "n_instruments": int(
+            chars.index.get_level_values("instrument_id").nunique()
+        ),
     }
 
 
-def oos_r_squared(
+def _oos_fold_scores(
     chars: pd.DataFrame,
     returns: pd.Series,
     K: int,
@@ -271,17 +275,17 @@ def oos_r_squared(
     min_train: int = 24,
     test_window: int = 12,
     max_iter: int = 100,
-) -> float | None:
-    """R² out-of-sample por walk-forward expansível.
+) -> list[float]:
+    """R² por fold walk-forward, descartando fits que não convergiram.
 
     Treina Gamma em [0, i); estima f_t por corte transversal NO teste usando o
     Gamma de treino (fatores reestimados, não vazados) e mede R² fora-da-amostra.
-    Retorna a média das janelas, ou None se não houver dados suficientes.
+    Retorna apenas folds numericamente válidos e convergentes.
     """
     all_dates = sorted(chars.index.get_level_values("month").unique())
     n = len(all_dates)
     if n < min_train + test_window:
-        return None
+        return []
 
     scores: list[float] = []
     i = min_train
@@ -297,6 +301,9 @@ def oos_r_squared(
             continue
 
         fit = fit_ipca(tr_chars, tr_ret, K, max_iter=max_iter)
+        if not fit["converged"]:
+            i += test_window
+            continue
         gamma = fit["gamma"]
 
         ss_res = 0.0
@@ -315,6 +322,27 @@ def oos_r_squared(
             scores.append(1.0 - ss_res / ss_tot)
         i += test_window
 
+    return scores
+
+
+def oos_r_squared(
+    chars: pd.DataFrame,
+    returns: pd.Series,
+    K: int,
+    *,
+    min_train: int = 24,
+    test_window: int = 12,
+    max_iter: int = 100,
+) -> float | None:
+    """Média do R² OOS nos folds walk-forward convergentes."""
+    scores = _oos_fold_scores(
+        chars,
+        returns,
+        K,
+        min_train=min_train,
+        test_window=test_window,
+        max_iter=max_iter,
+    )
     return float(np.mean(scores)) if scores else None
 
 
@@ -322,42 +350,81 @@ def oos_r_squared(
 # Carregamento do painel
 # --------------------------------------------------------------------------- #
 _PANEL_SQL = """
+WITH monthly_lagged AS (
+    SELECT
+        instrument_id,
+        month,
+        nav_close,
+        lag(month) OVER (PARTITION BY instrument_id ORDER BY month) AS previous_month,
+        lag(nav_close) OVER (PARTITION BY instrument_id ORDER BY month) AS previous_close
+    FROM nav_monthly_returns_agg
+    WHERE month < date_trunc('month', CAST(%(asof)s AS date))
+),
+monthly AS (
+    SELECT
+        instrument_id,
+        month,
+        CASE
+            WHEN month = (previous_month + interval '1 month')::date
+            THEN nav_close / NULLIF(previous_close, 0) - 1.0
+        END AS monthly_return
+    FROM monthly_lagged
+)
 SELECT
     e.instrument_id::text AS instrument_id,
-    date_trunc('month', e.as_of)::date AS month,
+    (date_trunc('month', e.as_of) + interval '1 month')::date AS month,
     e.size_log_mkt_cap, e.book_to_market, e.mom_12_1,
     e.quality_roa, e.investment_growth, e.profitability_gross,
-    -- retorno mensal composto a partir do NAV bruto (nav_open -> nav_close)
-    (m.nav_close / NULLIF(m.nav_open, 0) - 1.0) AS monthly_return
+    m.monthly_return
 FROM equity_characteristics_monthly e
-JOIN nav_monthly_returns_agg m
+JOIN monthly m
   ON m.instrument_id = e.instrument_id
- AND m.month = date_trunc('month', e.as_of)::date
+ AND m.month = (date_trunc('month', e.as_of) + interval '1 month')::date
 WHERE e.as_of <= %(asof)s
 """
 
 # Versão cloud-canônica (quando as tabelas recalculadas existirem): retornos
 # direto de nav_timeseries (NAV bruto), características da versão recalculada.
 _PANEL_SQL_CLOUD = """
-WITH monthly AS (
+WITH monthly_levels AS (
     SELECT
         instrument_id,
         date_trunc('month', nav_date)::date AS month,
-        (last(nav, nav_date) / NULLIF(first(nav, nav_date), 0) - 1.0) AS monthly_return
+        last(nav, nav_date) AS close_nav
     FROM nav_timeseries
-    WHERE nav_date <= %(asof)s
+    WHERE nav_date < date_trunc('month', CAST(%(asof)s AS date))
+      AND nav IS NOT NULL
     GROUP BY instrument_id, date_trunc('month', nav_date)
+),
+monthly_lagged AS (
+    SELECT
+        instrument_id,
+        month,
+        close_nav,
+        lag(month) OVER (PARTITION BY instrument_id ORDER BY month) AS previous_month,
+        lag(close_nav) OVER (PARTITION BY instrument_id ORDER BY month) AS previous_close
+    FROM monthly_levels
+),
+monthly AS (
+    SELECT
+        instrument_id,
+        month,
+        CASE
+            WHEN month = (previous_month + interval '1 month')::date
+            THEN close_nav / NULLIF(previous_close, 0) - 1.0
+        END AS monthly_return
+    FROM monthly_lagged
 )
 SELECT
     e.instrument_id::text AS instrument_id,
-    date_trunc('month', e.as_of)::date AS month,
+    (date_trunc('month', e.as_of) + interval '1 month')::date AS month,
     e.size_log_mkt_cap, e.book_to_market, e.mom_12_1,
     e.quality_roa, e.investment_growth, e.profitability_gross,
     mo.monthly_return
 FROM equity_characteristics_monthly e
 JOIN monthly mo
   ON mo.instrument_id = e.instrument_id
- AND mo.month = date_trunc('month', e.as_of)::date
+ AND mo.month = (date_trunc('month', e.as_of) + interval '1 month')::date
 WHERE e.as_of <= %(asof)s
 """
 
@@ -415,6 +482,68 @@ def _universe_hash(chars: pd.DataFrame) -> str:
     return hashlib.md5(",".join(ids).encode()).hexdigest()[:16]
 
 
+def _specific_variances(
+    chars: pd.DataFrame,
+    returns: pd.Series,
+    fit: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Estima a variância residual mensal por instrumento no fit final."""
+    factor_dates = [pd.Timestamp(value) for value in fit["dates"]]
+    date_positions = {value: idx for idx, value in enumerate(factor_dates)}
+    gamma = np.asarray(fit["gamma"], dtype=float)
+    factors = np.asarray(fit["factor_returns"], dtype=float)
+    residuals: dict[str, list[float]] = {}
+
+    for month, sub in chars.groupby(level="month"):
+        position = date_positions.get(pd.Timestamp(month))
+        if position is None:
+            continue
+        index = sub.index
+        observed = returns.loc[index].to_numpy(dtype=float)
+        predicted = (sub.to_numpy(dtype=float) @ gamma) @ factors[:, position]
+        instrument_ids = index.get_level_values("instrument_id")
+        for instrument_id, residual in zip(instrument_ids, observed - predicted):
+            if np.isfinite(residual):
+                residuals.setdefault(str(instrument_id), []).append(float(residual))
+
+    output: list[dict[str, Any]] = []
+    for instrument_id, values in residuals.items():
+        if len(values) < 2:
+            continue
+        variance = float(np.var(np.asarray(values, dtype=float), ddof=1))
+        if np.isfinite(variance) and variance >= 0.0:
+            output.append(
+                {
+                    "instrument_id": instrument_id,
+                    "variance_monthly": variance,
+                    "n_observations": len(values),
+                }
+            )
+    return output
+
+
+def _instrument_exposures(
+    chars: pd.DataFrame,
+    fit: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Materializa z rankeado e beta=z·Gamma no último corte do fit."""
+    latest_month = max(chars.index.get_level_values("month"))
+    latest = chars[chars.index.get_level_values("month") == latest_month]
+    gamma = np.asarray(fit["gamma"], dtype=float)
+    betas = latest.to_numpy(dtype=float) @ gamma
+    output: list[dict[str, Any]] = []
+    for position, (instrument_id, month) in enumerate(latest.index):
+        output.append(
+            {
+                "instrument_id": str(instrument_id),
+                "as_of": pd.Timestamp(month).date().isoformat(),
+                "ranked_characteristics": latest.iloc[position].tolist(),
+                "factor_exposures": betas[position].tolist(),
+            }
+        )
+    return output
+
+
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -423,7 +552,7 @@ def run(
     *,
     calc_date: str | None = None,
     limit: int | None = None,
-    k_factors: int = 1,
+    k_factors: int | None = None,
     min_panel_dates: int = 12,
 ) -> dict[str, Any]:
     """Recalcula o fit IPCA e faz upsert idempotente em factor_model_fits.
@@ -432,7 +561,8 @@ def run(
         dsn: DSN do cloud (destino + fonte canônica).
         calc_date: data de cálculo (YYYY-MM-DD); default = hoje. Determinística.
         limit: nº máx. de instrumentos no universo (amostragem p/ runs leves).
-        k_factors: K do IPCA (default 1, como o legado).
+        k_factors: override explícito de K. Quando omitido, seleciona K por
+            validação walk-forward com gate mínimo de folds.
         min_panel_dates: nº mín. de meses distintos p/ ajustar.
 
     Returns:
@@ -460,22 +590,74 @@ def run(
 
             n_dates = chars.index.get_level_values("month").nunique()
             n_inst = chars.index.get_level_values("instrument_id").nunique()
-            if n_dates < min_panel_dates:
+            required_dates = max(min_panel_dates, 36) if k_factors is None else min_panel_dates
+            if n_dates < required_dates:
                 return {
                     "status": "skipped",
-                    "reason": "panel_too_small",
+                    "reason": (
+                        "panel_too_small_for_k_selection"
+                        if k_factors is None
+                        else "panel_too_small"
+                    ),
+                    "required_dates": int(required_dates),
                     "n_dates": int(n_dates),
                     "n_instruments": int(n_inst),
                     "processed": int(len(chars)),
                     "upserted": 0,
                 }
 
-            fit = fit_ipca(chars, returns, k_factors)
-            oos = oos_r_squared(chars, returns, k_factors)
-            uhash = _universe_hash(chars)
+            if k_factors is None:
+                selection = select_k(chars, returns, max_k=len(CHARS_COLS))
+                selection["selection_method"] = "walk_forward"
+                selected_k = int(selection["best_k"])
+                oos = float(selection["best_oos_r_squared"])
+            else:
+                if not 1 <= k_factors <= len(CHARS_COLS):
+                    raise ValueError(
+                        f"k_factors must be in [1, {len(CHARS_COLS)}], got {k_factors}"
+                    )
+                selected_k = k_factors
+                oos = oos_r_squared(chars, returns, selected_k)
+                selection = {
+                    "selection_method": "fixed_override",
+                    "best_k": selected_k,
+                    "best_oos_r_squared": oos,
+                    "n_folds": _count_oos_folds(
+                        n_dates, min_train=24, test_window=12
+                    ),
+                    "k_scores": ({selected_k: oos} if oos is not None else {}),
+                    "degraded": oos is None or oos <= 0.0,
+                    "insufficient_folds": False,
+                    "degraded_reason": (
+                        "oos_r2_unavailable_or_nonpositive"
+                        if oos is None or oos <= 0.0
+                        else None
+                    ),
+                }
 
-            _upsert(conn, asof, uhash, fit, oos)
+            fit = fit_ipca(chars, returns, selected_k)
+            if not fit["converged"]:
+                selection["degraded"] = True
+                selection["degraded_reason"] = "final_fit_did_not_converge"
+            uhash = _universe_hash(chars)
+            specific_variances = _specific_variances(chars, returns, fit)
+            instrument_exposures = _instrument_exposures(chars, fit)
+
+            fit_id = _upsert(
+                conn,
+                asof,
+                uhash,
+                fit,
+                oos,
+                selection,
+                specific_variances,
+                instrument_exposures,
+                production_fit=limit is None,
+            )
             conn.commit()
+
+            sample_start = pd.Timestamp(fit["dates"][0]).date()
+            sample_end = pd.Timestamp(fit["dates"][-1]).date()
 
             return {
                 "status": "succeeded",
@@ -489,11 +671,31 @@ def run(
                 "converged": fit["converged"],
                 "n_iterations": fit["n_iterations"],
                 "universe_hash": uhash,
+                "fit_id": fit_id,
+                "sample_start": sample_start.isoformat(),
+                "sample_end": sample_end.isoformat(),
+                "degraded": bool(selection["degraded"]),
+                "degraded_reason": selection["degraded_reason"],
+                "selection": selection,
+                "specific_variances": len(specific_variances),
+                "instrument_exposures": len(instrument_exposures),
+                "production_fit": limit is None,
             }
 
 
-def _upsert(conn: Any, asof: date, uhash: str, fit: dict[str, Any], oos: float | None) -> None:
-    """Upsert idempotente por chave natural (engine, asset_class, hash, date)."""
+def _upsert(
+    conn: Any,
+    asof: date,
+    uhash: str,
+    fit: dict[str, Any],
+    oos: float | None,
+    selection: dict[str, Any],
+    specific_variances: list[dict[str, Any]],
+    instrument_exposures: list[dict[str, Any]],
+    *,
+    production_fit: bool,
+) -> str:
+    """Upsert idempotente do fit e de D_i por chave natural."""
     gamma_loadings = fit["gamma"].tolist()  # L x K
     dates_str = [
         (d.date() if isinstance(d, datetime) else pd.Timestamp(d).date()).isoformat()
@@ -502,26 +704,53 @@ def _upsert(conn: Any, asof: date, uhash: str, fit: dict[str, Any], oos: float |
     factor_returns_json = {
         "dates": dates_str,
         "values": fit["factor_returns"].tolist(),  # K x T
+        "frequency": "monthly",
+        "annualization_factor": 12,
+        "return_convention": "simple_close_to_close",
+        "characteristic_lag_months": 1,
+        "feature_names": CHARS_COLS,
     }
+    sample_start = dates_str[0]
+    sample_end = dates_str[-1]
+    n_instruments = int(fit["n_instruments"])
+    content_hash = hashlib.sha256(
+        json.dumps(
+            {
+                "gamma": gamma_loadings,
+                "factor_returns": factor_returns_json,
+                "in_sample_r_squared": fit["r_squared"],
+                "oos_r_squared": oos,
+                "selection": selection,
+                "converged": fit["converged"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO factor_model_fits (
                 fit_id, engine, fit_date, universe_hash, asset_class, k_factors,
-                gamma_loadings, factor_returns, oos_r_squared, converged, n_iterations
+                gamma_loadings, factor_returns, in_sample_r_squared,
+                oos_r_squared, converged, n_iterations, sample_start, sample_end,
+                n_observations, n_instruments, feature_names, selection_metadata,
+                degraded, degraded_reason, content_hash, production_fit
             ) VALUES (
                 gen_random_uuid(), %(engine)s, %(fit_date)s, %(hash)s, %(asset_class)s,
-                %(k)s, %(gamma)s::jsonb, %(f_returns)s::jsonb, %(oos)s, %(conv)s, %(n_iter)s
+                %(k)s, %(gamma)s::jsonb, %(f_returns)s::jsonb, %(in_r2)s,
+                %(oos)s, %(conv)s, %(n_iter)s, %(sample_start)s, %(sample_end)s,
+                %(n_obs)s, %(n_inst)s, %(feature_names)s::jsonb,
+                %(selection)s::jsonb, %(degraded)s, %(degraded_reason)s,
+                %(content_hash)s, %(production_fit)s
             )
-            ON CONFLICT (engine, asset_class, universe_hash, fit_date)
+            ON CONFLICT (
+                engine, asset_class, universe_hash, fit_date, content_hash
+            )
             DO UPDATE SET
-                k_factors      = EXCLUDED.k_factors,
-                gamma_loadings = EXCLUDED.gamma_loadings,
-                factor_returns = EXCLUDED.factor_returns,
-                oos_r_squared  = EXCLUDED.oos_r_squared,
-                converged      = EXCLUDED.converged,
-                n_iterations   = EXCLUDED.n_iterations,
                 created_at     = now()
+            RETURNING fit_id
             """,
             {
                 "engine": ENGINE,
@@ -531,11 +760,95 @@ def _upsert(conn: Any, asof: date, uhash: str, fit: dict[str, Any], oos: float |
                 "k": fit["K"],
                 "gamma": json.dumps(gamma_loadings),
                 "f_returns": json.dumps(factor_returns_json),
+                "in_r2": float(fit["r_squared"]),
                 "oos": float(oos) if oos is not None else None,
                 "conv": bool(fit["converged"]),
                 "n_iter": int(fit["n_iterations"]),
+                "sample_start": sample_start,
+                "sample_end": sample_end,
+                "n_obs": int(fit["n_observations"]),
+                "n_inst": n_instruments,
+                "feature_names": json.dumps(CHARS_COLS),
+                "selection": json.dumps(selection),
+                "degraded": bool(selection["degraded"]),
+                "degraded_reason": selection["degraded_reason"],
+                "content_hash": content_hash,
+                "production_fit": production_fit,
             },
         )
+        fit_id = str(cur.fetchone()[0])
+
+        for row in specific_variances:
+            cur.execute(
+                """
+                INSERT INTO factor_model_specific_variances (
+                    fit_id, instrument_id, variance_monthly, n_observations
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (fit_id, instrument_id) DO UPDATE SET
+                    variance_monthly = EXCLUDED.variance_monthly,
+                    n_observations = EXCLUDED.n_observations,
+                    computed_at = now()
+                """,
+                (
+                    fit_id,
+                    row["instrument_id"],
+                    row["variance_monthly"],
+                    row["n_observations"],
+                ),
+            )
+
+        keep_ids = [row["instrument_id"] for row in specific_variances]
+        if keep_ids:
+            cur.execute(
+                """
+                DELETE FROM factor_model_specific_variances
+                WHERE fit_id = %s AND NOT (instrument_id = ANY(%s::uuid[]))
+                """,
+                (fit_id, keep_ids),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM factor_model_specific_variances WHERE fit_id = %s",
+                (fit_id,),
+            )
+
+        for row in instrument_exposures:
+            cur.execute(
+                """
+                INSERT INTO factor_model_instrument_exposures (
+                    fit_id, instrument_id, as_of, ranked_characteristics,
+                    factor_exposures
+                ) VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                ON CONFLICT (fit_id, instrument_id) DO UPDATE SET
+                    as_of = EXCLUDED.as_of,
+                    ranked_characteristics = EXCLUDED.ranked_characteristics,
+                    factor_exposures = EXCLUDED.factor_exposures,
+                    computed_at = now()
+                """,
+                (
+                    fit_id,
+                    row["instrument_id"],
+                    row["as_of"],
+                    json.dumps(row["ranked_characteristics"]),
+                    json.dumps(row["factor_exposures"]),
+                ),
+            )
+
+        exposure_ids = [row["instrument_id"] for row in instrument_exposures]
+        if exposure_ids:
+            cur.execute(
+                """
+                DELETE FROM factor_model_instrument_exposures
+                WHERE fit_id = %s AND NOT (instrument_id = ANY(%s::uuid[]))
+                """,
+                (fit_id, exposure_ids),
+            )
+        else:
+            cur.execute(
+                "DELETE FROM factor_model_instrument_exposures WHERE fit_id = %s",
+                (fit_id,),
+            )
+    return fit_id
 
 
 # --------------------------------------------------------------------------- #
@@ -582,16 +895,16 @@ def select_k(
         raise ValueError(f"select_k: no characteristics to fit (L={L})")
 
     n_dates = chars.index.get_level_values("month").nunique()
-    n_folds = _count_oos_folds(n_dates, min_train=min_train, test_window=test_window)
-
     k_scores: dict[int, float] = {}
+    k_fold_counts: dict[int, int] = {}
     for k in range(1, grid_top + 1):
-        score = oos_r_squared(
+        scores = _oos_fold_scores(
             chars, returns, k,
             min_train=min_train, test_window=test_window, max_iter=max_iter,
         )
-        if score is not None:
-            k_scores[k] = float(score)
+        if scores:
+            k_scores[k] = float(np.mean(scores))
+            k_fold_counts[k] = len(scores)
 
     if not k_scores:
         raise ValueError(
@@ -599,12 +912,20 @@ def select_k(
             "no fold produced an OOS score (panel too short or numerically unstable)"
         )
 
-    if n_folds >= MIN_FOLDS_FOR_K_SELECTION:
+    reliable = {
+        k: score
+        for k, score in k_scores.items()
+        if k_fold_counts[k] >= MIN_FOLDS_FOR_K_SELECTION
+    }
+    if reliable:
         # Parsimony tie-break: among K whose mean OOS R^2 is within
         # _K_PARSIMONY_TOL of the maximum, choose the SMALLEST K. Recovers the
         # true factor count when extra factors add only negligible OOS R^2.
-        best_score = max(k_scores.values())
-        best_k = min(k for k, s in k_scores.items() if s >= best_score - _K_PARSIMONY_TOL)
+        best_score = max(reliable.values())
+        best_k = min(
+            k for k, score in reliable.items()
+            if score >= best_score - _K_PARSIMONY_TOL
+        )
         insufficient_folds = False
         degraded_reason: str | None = None
     else:
@@ -613,6 +934,7 @@ def select_k(
         degraded_reason = "ipca_k_selection_insufficient_folds"
 
     best_oos = k_scores[best_k]
+    n_folds = k_fold_counts[best_k]
     degraded = insufficient_folds or best_oos <= 0.0
     if degraded_reason is None and best_oos <= 0.0:
         degraded_reason = "oos_r2_negative_useless_fit"
@@ -622,6 +944,7 @@ def select_k(
         "best_oos_r_squared": float(best_oos),
         "n_folds": int(n_folds),
         "k_scores": k_scores,
+        "k_fold_counts": k_fold_counts,
         "degraded": bool(degraded),
         "insufficient_folds": bool(insufficient_folds),
         "degraded_reason": degraded_reason,
