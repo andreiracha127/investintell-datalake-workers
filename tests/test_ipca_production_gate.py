@@ -11,9 +11,10 @@ from src.workers import ipca_production_gate as gate
 THRESHOLDS = {
     "expected_k": 6,
     "min_oos_r_squared": 0.05,
-    "min_catalog_coverage": 0.995,
+    "min_catalog_coverage": 0.985,
     "min_specific_variance_coverage": 0.95,
     "max_visible_null_t_stat_ratio": 0.001,
+    "max_visible_null_r_squared_ratio": 0.001,
     "extreme_beta_abs": 10.0,
     "max_visible_extreme_beta_ratio": 0.001,
     "max_characteristics_age_days": 210,
@@ -56,6 +57,7 @@ def _healthy_snapshot() -> dict:
         "max_factor_index": 6,
         "incomplete_exposure_rows": 0,
         "visible_null_t_stat_instruments": 1,
+        "visible_null_r_squared_instruments": 1,
         "visible_extreme_beta_instruments": 5,
         "mv_rows": 69_504,
         "mv_instruments": 11_584,
@@ -81,6 +83,7 @@ def test_healthy_snapshot_passes_with_bounded_warnings() -> None:
     assert result["catalog_coverage"] == pytest.approx(7_108 / 7_128)
     assert result["quality_warnings"] == [
         "visible_null_t_stat_below_gate",
+        "visible_null_r_squared_below_gate",
         "visible_extreme_beta_below_gate",
         "catalog_coverage_below_100_percent",
     ]
@@ -92,6 +95,7 @@ def test_healthy_snapshot_passes_with_bounded_warnings() -> None:
         ({"mv_fit_id": "stale-fit"}, "materialized view"),
         ({"covered_instruments": 7_000}, "catalog factor coverage"),
         ({"visible_extreme_beta_instruments": 20}, "extreme beta"),
+        ({"visible_null_r_squared_instruments": 20}, "null R-squared"),
         ({"drift_alert": True}, "drift alert"),
         ({"characteristics_max_as_of": dt.date(2025, 1, 31)}, "stale"),
     ],

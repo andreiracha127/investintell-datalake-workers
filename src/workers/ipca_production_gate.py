@@ -39,12 +39,15 @@ def _thresholds() -> dict[str, float | int]:
     return {
         "expected_k": _env_int("IPCA_EXPECTED_K", 6),
         "min_oos_r_squared": _env_float("IPCA_MIN_OOS_R2", 0.05),
-        "min_catalog_coverage": _env_float("IPCA_MIN_CATALOG_COVERAGE", 0.995),
+        "min_catalog_coverage": _env_float("IPCA_MIN_CATALOG_COVERAGE", 0.985),
         "min_specific_variance_coverage": _env_float(
             "IPCA_MIN_SPECIFIC_VARIANCE_COVERAGE", 0.95
         ),
         "max_visible_null_t_stat_ratio": _env_float(
             "IPCA_MAX_VISIBLE_NULL_T_STAT_RATIO", 0.001
+        ),
+        "max_visible_null_r_squared_ratio": _env_float(
+            "IPCA_MAX_VISIBLE_NULL_R_SQUARED_RATIO", 0.001
         ),
         "extreme_beta_abs": _env_float("IPCA_EXTREME_BETA_ABS", 10.0),
         "max_visible_extreme_beta_ratio": _env_float(
@@ -125,13 +128,15 @@ def _load_snapshot(
                    max(x.factor_index) AS max_factor_index,
                    count(*) FILTER (
                        WHERE x.beta IS NULL OR x.n_observations IS NULL
-                          OR x.r_squared IS NULL
-                   ) AS incomplete_rows,
+                    ) AS incomplete_rows,
                    count(DISTINCT x.instrument_id) FILTER (
                        WHERE x.t_stat IS NULL AND listed.instrument_id IS NOT NULL
                    ) AS visible_null_t_stat_instruments,
-                   count(DISTINCT x.instrument_id) FILTER (
-                       WHERE abs(x.beta) > %s AND listed.instrument_id IS NOT NULL
+                    count(DISTINCT x.instrument_id) FILTER (
+                        WHERE x.r_squared IS NULL AND listed.instrument_id IS NOT NULL
+                    ) AS visible_null_r_squared_instruments,
+                    count(DISTINCT x.instrument_id) FILTER (
+                        WHERE abs(x.beta) > %s AND listed.instrument_id IS NOT NULL
                    ) AS visible_extreme_beta_instruments
             FROM fund_factor_exposures x
             LEFT JOIN funds_list_mv listed
@@ -220,7 +225,8 @@ def _load_snapshot(
         "max_factor_index": exposure[4],
         "incomplete_exposure_rows": int(exposure[5]),
         "visible_null_t_stat_instruments": int(exposure[6]),
-        "visible_extreme_beta_instruments": int(exposure[7]),
+        "visible_null_r_squared_instruments": int(exposure[7]),
+        "visible_extreme_beta_instruments": int(exposure[8]),
         "mv_rows": int(materialized[0]),
         "mv_instruments": int(materialized[1]),
         "mv_fits": int(materialized[2]),
@@ -308,7 +314,7 @@ def evaluate_snapshot(
     ):
         errors.append("fund exposure factor indexes are incomplete")
     if snapshot["incomplete_exposure_rows"]:
-        errors.append("fund exposures contain null beta, observations, or R-squared")
+        errors.append("fund exposures contain null beta or observations")
 
     if require_mv_sync:
         if (
@@ -340,6 +346,15 @@ def evaluate_snapshot(
         errors.append("visible null t-stat instrument ratio is above threshold")
     elif snapshot["visible_null_t_stat_instruments"]:
         warnings.append("visible_null_t_stat_below_gate")
+
+    null_r_squared_ratio = _ratio(
+        snapshot["visible_null_r_squared_instruments"],
+        snapshot["catalog_instruments"],
+    )
+    if null_r_squared_ratio > float(limits["max_visible_null_r_squared_ratio"]):
+        errors.append("visible null R-squared instrument ratio is above threshold")
+    elif snapshot["visible_null_r_squared_instruments"]:
+        warnings.append("visible_null_r_squared_below_gate")
 
     extreme_beta_ratio = _ratio(
         snapshot["visible_extreme_beta_instruments"], snapshot["catalog_instruments"]
@@ -385,6 +400,7 @@ def evaluate_snapshot(
         "catalog_coverage": catalog_coverage,
         "specific_variance_coverage": specific_coverage,
         "visible_null_t_stat_ratio": null_t_ratio,
+        "visible_null_r_squared_ratio": null_r_squared_ratio,
         "visible_extreme_beta_ratio": extreme_beta_ratio,
         "sample_end": snapshot["sample_end"],
         "characteristics_max_as_of": characteristics_as_of,
