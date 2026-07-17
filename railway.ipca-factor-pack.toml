@@ -1,0 +1,8 @@
+# Railway config for the sequenced IPCA production rebuild.
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m scripts.rebuild_ipca_factor_pack"
+restartPolicyType = "never"
+cronSchedule = "0 6 2 * *"

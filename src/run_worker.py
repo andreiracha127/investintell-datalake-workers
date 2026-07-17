@@ -28,7 +28,7 @@ def main() -> None:
             "|screener_metrics|fund_factors|fund_institutional_reveal"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics|open_macro_v03"
-            "|open_macro_v03_monitor)"
+            "|open_macro_v03_monitor|gamma_drift|ipca_production_gate)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
     stats = mod.run(resolve_dsn())

@@ -89,13 +89,66 @@ def _fetch_latest_two_gammas(
             SELECT gamma_loadings
             FROM factor_model_fits
             WHERE engine = %s AND asset_class = %s AND universe_hash = %s
-            ORDER BY fit_date DESC
+              AND converged IS TRUE
+              AND degraded IS FALSE
+              AND production_fit IS TRUE
+            ORDER BY fit_date DESC, created_at DESC
             LIMIT 2
             """,
             (engine, asset_class, universe_hash),
         )
         rows = cur.fetchall()
     return [np.asarray(r[0], dtype=np.float64) for r in rows]
+
+
+def _fetch_target_and_baseline(
+    conn: Any,
+    *,
+    target_fit_id: str,
+) -> tuple[str, np.ndarray, str, np.ndarray] | None:
+    """Load an explicit candidate and its latest compatible production predecessor."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT fit_id, engine, asset_class, k_factors, gamma_loadings
+            FROM factor_model_fits
+            WHERE fit_id = %s::uuid
+              AND converged IS TRUE
+              AND degraded IS FALSE
+            """,
+            (target_fit_id,),
+        )
+        target = cur.fetchone()
+        if target is None:
+            raise ValueError(f"eligible target IPCA fit not found: {target_fit_id}")
+        target_id, engine, asset_class, k_factors, target_gamma = target
+
+        cur.execute(
+            """
+            SELECT fit_id, gamma_loadings
+            FROM factor_model_fits
+            WHERE engine = %s
+              AND asset_class = %s
+              AND k_factors = %s
+              AND fit_id <> %s::uuid
+              AND converged IS TRUE
+              AND degraded IS FALSE
+              AND production_fit IS TRUE
+            ORDER BY fit_date DESC, created_at DESC
+            LIMIT 1
+            """,
+            (engine, asset_class, k_factors, target_fit_id),
+        )
+        baseline = cur.fetchone()
+    if baseline is None:
+        return None
+    baseline_id, baseline_gamma = baseline
+    return (
+        str(target_id),
+        np.asarray(target_gamma, dtype=np.float64),
+        str(baseline_id),
+        np.asarray(baseline_gamma, dtype=np.float64),
+    )
 
 
 def monitor_gamma_drift(
@@ -139,17 +192,41 @@ def _persist_drift(
             WHERE fit_id = (
                 SELECT fit_id FROM factor_model_fits
                 WHERE engine = %s AND asset_class = %s AND universe_hash = %s
-                ORDER BY fit_date DESC LIMIT 1
+                  AND converged IS TRUE
+                  AND degraded IS FALSE
+                  AND production_fit IS TRUE
+                ORDER BY fit_date DESC, created_at DESC LIMIT 1
             )
             """,
             (drift, alert, engine, asset_class, universe_hash),
         )
 
 
+def _persist_drift_for_fit(
+    conn: Any,
+    *,
+    fit_id: str,
+    drift: float,
+    alert: bool,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE factor_model_fits
+            SET gamma_drift_vs_prior = %s, drift_alert = %s
+            WHERE fit_id = %s::uuid
+            """,
+            (drift, alert, fit_id),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError(f"failed to persist gamma drift for fit {fit_id}")
+
+
 def run(
     dsn: str,
     *,
     universe_hash: str | None = None,
+    target_fit_id: str | None = None,
     engine: str = ENGINE,
     asset_class: str = ASSET_CLASS,
 ) -> dict[str, Any]:
@@ -164,6 +241,39 @@ def run(
             if not got:
                 return {"status": "skipped", "reason": "lock_held", "monitored": 0}
 
+            if target_fit_id is not None:
+                target = _fetch_target_and_baseline(
+                    conn,
+                    target_fit_id=target_fit_id,
+                )
+                if target is None:
+                    return {
+                        "status": "skipped",
+                        "reason": "no_compatible_production_baseline",
+                        "monitored": 0,
+                        "alerts": 0,
+                        "target_fit_id": target_fit_id,
+                    }
+                target_id, gamma_new, baseline_id, gamma_old = target
+                drift = compute_gamma_drift(gamma_old, gamma_new)
+                alert = drift > DRIFT_THRESHOLD
+                _persist_drift_for_fit(
+                    conn,
+                    fit_id=target_id,
+                    drift=drift,
+                    alert=alert,
+                )
+                conn.commit()
+                return {
+                    "status": "succeeded",
+                    "monitored": 1,
+                    "alerts": int(alert),
+                    "target_fit_id": target_id,
+                    "baseline_fit_id": baseline_id,
+                    "drift": drift,
+                    "threshold": DRIFT_THRESHOLD,
+                }
+
             if universe_hash is not None:
                 hashes = [universe_hash]
             else:
@@ -173,6 +283,9 @@ def run(
                         SELECT universe_hash
                         FROM factor_model_fits
                         WHERE engine = %s AND asset_class = %s
+                          AND converged IS TRUE
+                          AND degraded IS FALSE
+                          AND production_fit IS TRUE
                         GROUP BY universe_hash
                         HAVING count(*) >= 2
                         """,

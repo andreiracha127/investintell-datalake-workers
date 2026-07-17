@@ -6,8 +6,9 @@
 #   DATABASE_URL=<cloud DSN>                                (shared)
 # and its own Cron Schedule (set per-service in dashboard/CLI):
 #   risk_metrics      -> daily   (NAV is daily)
-#   characteristics   -> monthly (XBRL is quarterly)
-#   factor_model      -> monthly (after characteristics)
+#   characteristics/factor_model/fund_factors -> sequenced monthly by
+#                           scripts.rebuild_ipca_factor_pack; do not schedule
+#                           these three services independently.
 #   nport_lookthrough -> weekly  (N-PORT é mensal/trimestral; dom 04:00 UTC)
 #   credit_regime     -> daily 06:30 UTC (2 req Tiingo; precisa TIINGO_API_KEY)
 #   regime_composite  -> daily ~06:40 UTC (after credit_regime; needs FRED_API_KEY + Tiingo)
@@ -41,5 +42,5 @@ builder = "nixpacks"
 startCommand = "python -m src.run_worker"
 restartPolicyType = "never"
 # Per-service schedule: edit this value and `railway up --service <svc>` to apply.
-# risk-metrics: daily 07:00 UTC | characteristics & factor-model: monthly (day 2, 06:00 UTC)
+# risk-metrics: daily 07:00 UTC. IPCA uses railway.ipca-factor-pack.toml.
 cronSchedule = "0 7 * * *"

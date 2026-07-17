@@ -113,6 +113,11 @@ def test_oos_none_when_insufficient():
     assert fm.oos_r_squared(chars, returns, K=2, min_train=36, test_window=12) is None
 
 
+def test_worker_cannot_activate_fit_directly():
+    with pytest.raises(ValueError, match="activated by ipca_production_gate"):
+        fm.run("postgresql://unused", limit=1, production_fit=True)
+
+
 # --------------------------------------------------------------------------- #
 # 3. Dimensões coerentes
 # --------------------------------------------------------------------------- #
@@ -170,7 +175,9 @@ def test_kron_gamma_step():
         Z = rng.standard_normal((N, L))
         r = rng.standard_normal(N)
         f = rng.standard_normal(K)
-        Zs.append(Z); rs.append(r); fs.append(f)
+        Zs.append(Z)
+        rs.append(r)
+        fs.append(f)
         # Forma ingênua: para cada obs, x = kron(z_i, f) (L*K), prevê r_i.
         for i in range(N):
             rows_X.append(np.kron(Z[i], f))

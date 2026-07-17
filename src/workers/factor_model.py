@@ -554,6 +554,7 @@ def run(
     limit: int | None = None,
     k_factors: int | None = None,
     min_panel_dates: int = 12,
+    production_fit: bool | None = None,
 ) -> dict[str, Any]:
     """Recalcula o fit IPCA e faz upsert idempotente em factor_model_fits.
 
@@ -564,6 +565,8 @@ def run(
         k_factors: override explícito de K. Quando omitido, seleciona K por
             validação walk-forward com gate mínimo de folds.
         min_panel_dates: nº mín. de meses distintos p/ ajustar.
+        production_fit: override de ativacao. O runner governado usa False e
+            ativa o fit somente depois dos gates downstream.
 
     Returns:
         {processed, upserted, ...stats}.
@@ -571,6 +574,11 @@ def run(
     asof = (
         datetime.strptime(calc_date, "%Y-%m-%d").date() if calc_date else date.today()
     )
+    is_production_fit = False if production_fit is None else production_fit
+    if is_production_fit:
+        raise ValueError(
+            "factor-model fits must be activated by ipca_production_gate"
+        )
 
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_FACTOR_MODEL) as got:
@@ -652,7 +660,7 @@ def run(
                 selection,
                 specific_variances,
                 instrument_exposures,
-                production_fit=limit is None,
+                production_fit=is_production_fit,
             )
             conn.commit()
 
@@ -679,7 +687,7 @@ def run(
                 "selection": selection,
                 "specific_variances": len(specific_variances),
                 "instrument_exposures": len(instrument_exposures),
-                "production_fit": limit is None,
+                "production_fit": is_production_fit,
             }
 
 
@@ -894,7 +902,6 @@ def select_k(
     if grid_top < 1:
         raise ValueError(f"select_k: no characteristics to fit (L={L})")
 
-    n_dates = chars.index.get_level_values("month").nunique()
     k_scores: dict[int, float] = {}
     k_fold_counts: dict[int, int] = {}
     for k in range(1, grid_top + 1):

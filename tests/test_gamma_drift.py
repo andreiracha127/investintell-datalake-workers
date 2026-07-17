@@ -13,6 +13,7 @@ import pytest
 
 from src.workers.gamma_drift import (
     DRIFT_THRESHOLD,
+    _fetch_target_and_baseline,
     compute_gamma_drift,
     monitor_gamma_drift,
 )
@@ -115,3 +116,42 @@ def test_monitor_no_alert_on_small_drift():
     assert out is not None
     assert out["drift"] < DRIFT_THRESHOLD
     assert out["alert"] is False
+
+
+def test_explicit_target_uses_latest_compatible_production_predecessor():
+    class _Cursor:
+        def __init__(self):
+            self.rows = [
+                ("target", "ipca", "Equity", 2, [[1.0, 0.0], [0.0, 1.0]]),
+                ("baseline", [[1.0, 0.0], [0.0, 1.0]]),
+            ]
+            self.sql = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, sql, _params=None):
+            self.sql.append(" ".join(sql.split()))
+
+        def fetchone(self):
+            return self.rows.pop(0)
+
+    class _Connection:
+        def __init__(self):
+            self.cur = _Cursor()
+
+        def cursor(self):
+            return self.cur
+
+    conn = _Connection()
+    result = _fetch_target_and_baseline(conn, target_fit_id="target")
+    assert result is not None
+    target_id, target_gamma, baseline_id, baseline_gamma = result
+    assert target_id == "target"
+    assert baseline_id == "baseline"
+    np.testing.assert_array_equal(target_gamma, baseline_gamma)
+    assert "production_fit IS TRUE" in conn.cur.sql[1]
+    assert "universe_hash" not in conn.cur.sql[1]

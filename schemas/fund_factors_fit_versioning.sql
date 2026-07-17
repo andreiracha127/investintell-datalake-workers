@@ -1,36 +1,6 @@
--- schemas/fund_factors.sql
--- A1 — exposições de fatores por fundo (OLS de retornos mensais do NAV vs
--- factor_model_fits.factor_returns). GLOBAL (organization_id NULL). Upsert por
--- (instrument_id, factor, as_of, fit_id). Aplicar schemas/factor_model.sql primeiro,
--- pois fit_id referencia factor_model_fits.
-CREATE TABLE IF NOT EXISTS fund_factor_exposures (
-    instrument_id    uuid    NOT NULL,
-    factor           text    NOT NULL,
-    factor_index     integer,
-    as_of            date    NOT NULL,
-    fit_id            uuid REFERENCES factor_model_fits(fit_id) ON DELETE CASCADE,
-    beta             numeric(14, 8),
-    t_stat           numeric(14, 8),
-    significance     text,
-    n_observations   integer,
-    r_squared        numeric,
-    organization_id  uuid,
-    computed_at      timestamptz NOT NULL DEFAULT now(),
-    CONSTRAINT ux_fund_factor_exposures_pk
-        UNIQUE NULLS NOT DISTINCT (
-            instrument_id, factor, as_of, organization_id, fit_id
-        )
-);
-
-CREATE INDEX IF NOT EXISTS fund_factor_exposures_iid_idx
-    ON fund_factor_exposures (instrument_id, as_of DESC);
-
-ALTER TABLE fund_factor_exposures
-    ADD COLUMN IF NOT EXISTS factor_index INTEGER,
-    ADD COLUMN IF NOT EXISTS fit_id UUID REFERENCES factor_model_fits(fit_id)
-        ON DELETE CASCADE,
-    ADD COLUMN IF NOT EXISTS n_observations INTEGER,
-    ADD COLUMN IF NOT EXISTS r_squared NUMERIC;
+-- Transactional production migration for fit-versioned IPCA fund exposures.
+-- Existing readers either see the old MV or the fully rebuilt replacement.
+BEGIN;
 
 ALTER TABLE fund_factor_exposures
     DROP CONSTRAINT IF EXISTS ux_fund_factor_exposures_pk;
@@ -40,10 +10,9 @@ ALTER TABLE fund_factor_exposures
         instrument_id, factor, as_of, organization_id, fit_id
     );
 
-CREATE INDEX IF NOT EXISTS fund_factor_exposures_fit_idx
-    ON fund_factor_exposures (fit_id, instrument_id, factor_index);
+DROP MATERIALIZED VIEW IF EXISTS fund_factor_exposures_latest_mv;
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS fund_factor_exposures_latest_mv AS
+CREATE MATERIALIZED VIEW fund_factor_exposures_latest_mv AS
 WITH latest_materialized_fit AS (
     SELECT exposures.fit_id
     FROM fund_factor_exposures exposures
@@ -84,10 +53,11 @@ SELECT exposures.instrument_id,
 FROM fund_factor_exposures exposures
 JOIN latest_materialized_fit latest ON latest.fit_id = exposures.fit_id
 JOIN factor_model_fits fits ON fits.fit_id = exposures.fit_id
-WHERE exposures.organization_id IS NULL
-WITH NO DATA;
+WHERE exposures.organization_id IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS fund_factor_exposures_latest_mv_pk
+CREATE UNIQUE INDEX fund_factor_exposures_latest_mv_pk
     ON fund_factor_exposures_latest_mv (instrument_id, factor);
 
 GRANT MAINTAIN ON TABLE fund_factor_exposures_latest_mv TO worker_writer;
+
+COMMIT;

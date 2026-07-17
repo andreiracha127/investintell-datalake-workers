@@ -94,22 +94,13 @@ INSERT INTO fund_factor_exposures
      significance, n_observations, r_squared, organization_id)
 VALUES (%(iid)s, %(factor)s, %(factor_index)s, %(as_of)s, %(fit_id)s,
         %(beta)s, %(t_stat)s, %(sig)s, %(n_observations)s, %(r_squared)s, NULL)
-ON CONFLICT (instrument_id, factor, as_of, organization_id) DO UPDATE SET
+ON CONFLICT (instrument_id, factor, as_of, organization_id, fit_id) DO UPDATE SET
     factor_index = EXCLUDED.factor_index, fit_id = EXCLUDED.fit_id,
     beta = EXCLUDED.beta, t_stat = EXCLUDED.t_stat,
     significance = EXCLUDED.significance,
     n_observations = EXCLUDED.n_observations,
     r_squared = EXCLUDED.r_squared, computed_at = now()
 """
-
-_DELETE_STALE_FIT = """
-DELETE FROM fund_factor_exposures
-WHERE instrument_id = %(iid)s
-  AND as_of = %(as_of)s
-  AND organization_id IS NULL
-  AND fit_id IS DISTINCT FROM %(fit_id)s
-"""
-
 
 def _refresh_latest_mv(dsn: str) -> None:
     with connect(dsn, autocommit=True) as conn:
@@ -122,6 +113,7 @@ def _refresh_latest_mv(dsn: str) -> None:
 def _latest_factor_matrix(
     conn,
     calc_date: _dt.date | None = None,
+    fit_id: str | None = None,
 ) -> dict | None:
     with conn.cursor() as cur:
         cur.execute(
@@ -133,12 +125,15 @@ def _latest_factor_matrix(
               AND asset_class = 'Equity'
               AND converged IS TRUE
               AND degraded IS FALSE
-              AND production_fit IS TRUE
+              AND (
+                    (%s::uuid IS NOT NULL AND fit_id = %s::uuid)
+                    OR (%s::uuid IS NULL AND production_fit IS TRUE)
+                  )
               AND (%s::date IS NULL OR fit_date <= %s::date)
             ORDER BY fit_date DESC, created_at DESC
             LIMIT 1
             """,
-            (calc_date, calc_date),
+            (fit_id, fit_id, fit_id, calc_date, calc_date),
         )
         row = cur.fetchone()
     if row is None or not isinstance(row[5], dict):
@@ -288,6 +283,8 @@ def run(
     calc_date: str | None = None,
     limit: int | None = None,
     as_of: str | None = None,
+    fit_id: str | None = None,
+    refresh_mv: bool = True,
 ) -> dict:
     processed = upserted = 0
     out_date: _dt.date | None = None
@@ -297,7 +294,7 @@ def run(
         with advisory_lock(conn, LOCK_FUND_FACTORS) as got:
             if not got:
                 return {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
-            fit = _latest_factor_matrix(conn, cutoff)
+            fit = _latest_factor_matrix(conn, cutoff, fit_id)
             out_date = (
                 _dt.date.fromisoformat(as_of)
                 if as_of
@@ -310,7 +307,6 @@ def run(
                 returns_by_instrument = _fund_monthly_returns_bulk(
                     conn, instrument_ids, fdates
                 )
-                stale_params: list[dict] = []
                 upsert_params: list[dict] = []
                 for iid in instrument_ids:
                     y = returns_by_instrument.get(iid)
@@ -321,13 +317,6 @@ def run(
                         continue
                     processed += 1
                     rows = ols_factor_exposures(y[mask], fmatrix[mask])
-                    stale_params.append(
-                        {
-                            "iid": iid,
-                            "as_of": out_date,
-                            "fit_id": fit["fit_id"],
-                        }
-                    )
                     for r in rows:
                         beta, t_stat, significance = _storage_values(r)
                         upsert_params.append(
@@ -345,8 +334,6 @@ def run(
                         )
                         upserted += 1
                 with conn.cursor() as cur:
-                    if stale_params:
-                        cur.executemany(_DELETE_STALE_FIT, stale_params)
                     if upsert_params:
                         cur.executemany(_UPSERT, upsert_params)
                 conn.commit()
@@ -357,9 +344,11 @@ def run(
         "fit_id": str(fit["fit_id"]) if fit else None,
         "k_factors": fit["k_factors"] if fit else None,
     }
-    if limit is not None:
+    if limit is not None or not refresh_mv:
         result["mv_refreshed"] = False
-        result["mv_refresh_reason"] = "limited_run"
+        result["mv_refresh_reason"] = (
+            "limited_run" if limit is not None else "deferred_until_activation"
+        )
         return result
     try:
         _refresh_latest_mv(dsn)
