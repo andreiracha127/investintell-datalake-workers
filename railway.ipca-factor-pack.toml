@@ -1,4 +1,6 @@
-# Railway config for the sequenced IPCA production rebuild.
+# Railway config for the governed IPCA production rebuild. The characteristics
+# service runs upstream at 05:00 UTC; this pack starts at 06:00 UTC and fails
+# closed unless that upstream computed_at is recent.
 [build]
 builder = "nixpacks"
 

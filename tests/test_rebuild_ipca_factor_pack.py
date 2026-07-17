@@ -79,9 +79,9 @@ def test_runs_ipca_steps_in_dependency_order(monkeypatch) -> None:
 
     monkeypatch.setattr(rebuild.importlib, "import_module", import_module)
 
-    result = rebuild.run_pack("dsn")
+    result = rebuild.run_pack("dsn", include_characteristics=True)
 
-    assert [worker for worker, _ in calls] == list(rebuild.STEPS)
+    assert [worker for worker, _ in calls] == ["characteristics", *rebuild.STEPS]
     assert calls[1][1] == {"production_fit": False}
     assert calls[2][1] == {"target_fit_id": "fit-6"}
     assert calls[3][1] == {"fit_id": "fit-6", "refresh_mv": False}
@@ -94,6 +94,27 @@ def test_runs_ipca_steps_in_dependency_order(monkeypatch) -> None:
         "steps": 5,
         "quality_warnings": ["bounded"],
     }
+
+
+def test_default_run_requires_recent_upstream_without_rebuilding_it(monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    def import_module(name: str):
+        worker = name.removeprefix("src.workers.")
+
+        def run(_dsn, **kwargs):
+            calls.append((worker, kwargs))
+            return _healthy(worker)
+
+        return SimpleNamespace(run=run)
+
+    monkeypatch.setattr(rebuild.importlib, "import_module", import_module)
+    result = rebuild.run_pack("dsn")
+
+    assert [worker for worker, _ in calls] == list(rebuild.STEPS)
+    assert calls[-1][0] == "ipca_production_gate"
+    assert "min_characteristics_computed_at" in calls[-1][1]
+    assert result["steps"] == 4
 
 
 def test_stops_when_fund_factors_publish_stale_fit(monkeypatch) -> None:

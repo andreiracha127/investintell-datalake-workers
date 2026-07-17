@@ -5,18 +5,25 @@ from __future__ import annotations
 import importlib
 import json
 import math
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from src.db import LOCK_IPCA_FACTOR_PACK, advisory_lock, connect, resolve_dsn
 
 STEPS = (
-    "characteristics",
     "factor_model",
     "gamma_drift",
     "fund_factors",
     "ipca_production_gate",
 )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _emit(worker: str, result: dict[str, Any]) -> None:
@@ -33,20 +40,50 @@ def _require_complete(worker: str, result: dict[str, Any]) -> None:
         raise RuntimeError(f"IPCA rebuild incomplete at {worker}: {result}")
 
 
-def run_pack(dsn: str) -> dict[str, Any]:
+def run_pack(
+    dsn: str,
+    *,
+    include_characteristics: bool | None = None,
+) -> dict[str, Any]:
     started_at = datetime.now(UTC)
+    include_upstream = (
+        _env_bool("IPCA_RUN_CHARACTERISTICS")
+        if include_characteristics is None
+        else include_characteristics
+    )
+    if include_upstream:
+        characteristics_floor = started_at
+    else:
+        max_age_minutes = int(
+            os.getenv("IPCA_MAX_UPSTREAM_CHARACTERISTICS_AGE_MINUTES", "180")
+        )
+        if max_age_minutes <= 0:
+            raise ValueError(
+                "IPCA_MAX_UPSTREAM_CHARACTERISTICS_AGE_MINUTES must be positive"
+            )
+        characteristics_floor = started_at - timedelta(minutes=max_age_minutes)
     with connect(dsn) as lock_conn:
         with advisory_lock(lock_conn, LOCK_IPCA_FACTOR_PACK) as acquired:
             if not acquired:
                 raise RuntimeError("IPCA factor pack rebuild already running")
-            return _run_steps(dsn, started_at=started_at)
+            return _run_steps(
+                dsn,
+                characteristics_floor=characteristics_floor,
+                include_characteristics=include_upstream,
+            )
 
 
-def _run_steps(dsn: str, *, started_at: datetime) -> dict[str, Any]:
+def _run_steps(
+    dsn: str,
+    *,
+    characteristics_floor: datetime,
+    include_characteristics: bool,
+) -> dict[str, Any]:
     results: dict[str, dict[str, Any]] = {}
     fit_id: str | None = None
+    steps = (("characteristics",) + STEPS) if include_characteristics else STEPS
 
-    for worker in STEPS:
+    for worker in steps:
         module = importlib.import_module(f"src.workers.{worker}")
         if worker == "factor_model":
             result = module.run(dsn, production_fit=False) or {}
@@ -59,7 +96,7 @@ def _run_steps(dsn: str, *, started_at: datetime) -> dict[str, Any]:
                 dsn,
                 expected_fit_id=fit_id,
                 activate=True,
-                min_characteristics_computed_at=started_at,
+                min_characteristics_computed_at=characteristics_floor,
             ) or {}
         else:
             result = module.run(dsn) or {}
@@ -112,7 +149,7 @@ def _run_steps(dsn: str, *, started_at: datetime) -> dict[str, Any]:
     return {
         "status": "succeeded",
         "fit_id": fit_id,
-        "steps": len(STEPS),
+        "steps": len(steps),
         "quality_warnings": results["ipca_production_gate"].get(
             "quality_warnings", []
         ),
