@@ -84,6 +84,11 @@ def test_monthly_returns_reject_gap_in_nav_months():
     np.testing.assert_allclose(result[1], 0.1)
 
 
+def test_month_helpers_cross_year_boundaries():
+    assert ff._previous_month(dt.date(2026, 1, 15)) == dt.date(2025, 12, 1)
+    assert ff._next_month(dt.date(2026, 12, 15)) == dt.date(2027, 1, 1)
+
+
 class _FakeCursor:
     def __init__(self, sink): self._sink = sink
     def __enter__(self): return self

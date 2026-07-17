@@ -198,6 +198,80 @@ def _fund_monthly_returns(conn, iid, factor_dates: list[_dt.date]) -> np.ndarray
     return np.asarray(aligned, dtype=float)
 
 
+def _previous_month(value: _dt.date) -> _dt.date:
+    if value.month == 1:
+        return _dt.date(value.year - 1, 12, 1)
+    return _dt.date(value.year, value.month - 1, 1)
+
+
+def _next_month(value: _dt.date) -> _dt.date:
+    if value.month == 12:
+        return _dt.date(value.year + 1, 1, 1)
+    return _dt.date(value.year, value.month + 1, 1)
+
+
+def _fund_monthly_returns_bulk(
+    conn,
+    instrument_ids: list,
+    factor_dates: list[_dt.date],
+) -> dict[object, np.ndarray]:
+    """Load all aligned close-to-close fund returns in one database query."""
+    if not instrument_ids or not factor_dates:
+        return {}
+    months = [value.replace(day=1) for value in factor_dates]
+    positions = {value: index for index, value in enumerate(months)}
+    start = _previous_month(min(months))
+    end = _next_month(max(months))
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH monthly AS (
+                SELECT
+                    instrument_id,
+                    date_trunc('month', nav_date)::date AS month,
+                    (array_agg(nav ORDER BY nav_date DESC))[1] AS close_nav
+                FROM nav_timeseries
+                WHERE instrument_id = ANY(%s::uuid[])
+                  AND nav_date >= %s
+                  AND nav_date < %s
+                  AND nav IS NOT NULL
+                GROUP BY instrument_id, date_trunc('month', nav_date)
+            ), lagged AS (
+                SELECT
+                    instrument_id,
+                    month,
+                    close_nav,
+                    lag(month) OVER (
+                        PARTITION BY instrument_id ORDER BY month
+                    ) AS previous_month,
+                    lag(close_nav) OVER (
+                        PARTITION BY instrument_id ORDER BY month
+                    ) AS previous_close
+                FROM monthly
+            )
+            SELECT
+                instrument_id,
+                month,
+                close_nav / NULLIF(previous_close, 0) - 1.0 AS monthly_return
+            FROM lagged
+            WHERE month = ANY(%s::date[])
+              AND month = (previous_month + interval '1 month')::date
+            ORDER BY instrument_id, month
+            """,
+            (instrument_ids, start, end, months),
+        )
+        rows = cur.fetchall()
+
+    output: dict[object, np.ndarray] = {}
+    for instrument_id, month, monthly_return in rows:
+        values = output.setdefault(
+            instrument_id,
+            np.full(len(months), np.nan, dtype=float),
+        )
+        values[positions[month]] = float(monthly_return)
+    return output
+
+
 def _fund_ids(conn, limit) -> list:
     with conn.cursor() as cur:
         cur.execute(
@@ -232,28 +306,33 @@ def run(
             if fit is not None and out_date is not None:
                 fdates = fit["dates"]
                 fmatrix = fit["matrix"]
-                for iid in _fund_ids(conn, limit):
-                    y = _fund_monthly_returns(conn, iid, fdates)
+                instrument_ids = _fund_ids(conn, limit)
+                returns_by_instrument = _fund_monthly_returns_bulk(
+                    conn, instrument_ids, fdates
+                )
+                stale_params: list[dict] = []
+                upsert_params: list[dict] = []
+                for iid in instrument_ids:
+                    y = returns_by_instrument.get(iid)
+                    if y is None:
+                        continue
                     mask = np.isfinite(y) & np.isfinite(fmatrix).all(axis=1)
                     if mask.sum() < max(10, fmatrix.shape[1] + 2):
                         continue
                     processed += 1
                     rows = ols_factor_exposures(y[mask], fmatrix[mask])
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            _DELETE_STALE_FIT,
-                            {
-                                "iid": iid,
-                                "as_of": out_date,
-                                "fit_id": fit["fit_id"],
-                            },
-                        )
+                    stale_params.append(
+                        {
+                            "iid": iid,
+                            "as_of": out_date,
+                            "fit_id": fit["fit_id"],
+                        }
+                    )
                     for r in rows:
                         beta, t_stat, significance = _storage_values(r)
-                        with conn.cursor() as cur:
-                            cur.execute(_UPSERT, {
-                                "iid": iid,
-                                "factor": r["factor"],
+                        upsert_params.append(
+                            {
+                                "iid": iid, "factor": r["factor"],
                                 "factor_index": r["factor_index"],
                                 "as_of": out_date,
                                 "fit_id": fit["fit_id"],
@@ -262,8 +341,14 @@ def run(
                                 "sig": significance,
                                 "n_observations": r["n_observations"],
                                 "r_squared": r["r_squared"],
-                            })
+                            }
+                        )
                         upserted += 1
+                with conn.cursor() as cur:
+                    if stale_params:
+                        cur.executemany(_DELETE_STALE_FIT, stale_params)
+                    if upsert_params:
+                        cur.executemany(_UPSERT, upsert_params)
                 conn.commit()
     result = {
         "processed": processed,
