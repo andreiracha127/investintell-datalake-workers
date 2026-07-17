@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from harness.phase0q import decision as decision_mod
+from harness.phase0q import decision_v3 as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import DB_SOURCE as P1_DB_SOURCE
 from src.macro_sources import SEED_SOURCES
@@ -428,7 +428,11 @@ def compute(worker_commit_override: str | None = None) -> dict[str, Any]:
 
     staleness = staleness_gate(vintage_rows, price_rows)
 
-    chain = decision_mod.run_decision_series(vintage_rows, CHAIN_START, VALIDATION_AS_OF)
+    # macro_quadrant_us_v3 (owner-approved switch 2026-07-16): the validation chain
+    # runs the SAME fused engine the runtime worker runs, over the same composed
+    # macro + price surfaces.
+    chain = decision_mod.run_decision_series_v3(
+        vintage_rows, price_rows, CHAIN_START, VALIDATION_AS_OF)
     last, validity, seed_as_of = consumable_today(chain)
 
     # allocation: today's consumable compressed_50 target — the product

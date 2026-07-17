@@ -26,6 +26,9 @@ STAGE_A_COMPUTE_PATHS = tuple(
             "harness/direct_activation/measure_stage_a_child.py",
             "harness/phase0q/__init__.py",
             "harness/phase0q/decision.py",
+            # macro_quadrant_us_v3 (owner-approved switch 2026-07-16): the fused
+            # decision path live_validation now runs is measured compute surface.
+            "harness/phase0q/decision_v3.py",
             "harness/phase0q/pit.py",
             "harness/phase0q/sleeve.py",
             "scripts/p1_export/__init__.py",
@@ -48,8 +51,11 @@ STAGE_A_COMPUTE_PATHS = tuple(
             "src/macro_sources.py",
             "src/macro_transforms.py",
             "src/quadrant_assemble.py",
+            "src/quadrant_assemble_v2.py",
             "src/quadrant_confidence.py",
+            "src/quadrant_confidence_v2.py",
             "src/quadrant_hysteresis.py",
+            "src/quadrant_market_observation.py",
             "src/quadrant_score.py",
             "src/quadrant_snapshot.py",
             "src/quadrant_staleness.py",

@@ -1,9 +1,10 @@
 {
  "artifact_type": "open_macro_v03_stage_b_module_pins",
- "module_pins_sha256": "5bf69efff2d5486a242af84fc4c3be23a7cd536ddbe0c97fab699a27104aa527",
+ "module_pins_sha256": "c85ac10708559c0f872b4c5578cfd72056bc73641d274a712d47af83e0523b29",
  "modules": {
-  "harness/direct_activation/live_validation.py": "c8a532c73507648a4d07f6f85549cca34f87bd56b16f245d9a7e849e48052208",
+  "harness/direct_activation/live_validation.py": "06dd511cf26f47cd2189e220df43c3d39cde970db39d26707566ee3444c7c7b4",
   "harness/phase0q/decision.py": "d65606428be7296cd478a5325aa8f776649532eb5c5d6b67ee9ad798401eb0af",
+  "harness/phase0q/decision_v3.py": "4c31049252369bda9fe7581820c3d4fc89599c4fd8db9d6d1f936a29aac84948",
   "harness/phase0q/pit.py": "1782c22bc2c941f9f68669f25dcd704244842698a06c7936bd81af6dedfdc16f",
   "harness/phase0q/sleeve.py": "6ce5f79a901307671eb3b4c952f43d21f785a1b1fb4668707925f4b19948dc84",
   "scripts/p1_export/export_p1_sources.py": "a787738913cadb66f801ad26ef1ed28d608335403a0cbbe5166a0a9256aaecfb",
@@ -13,8 +14,11 @@
   "src/macro_sources.py": "e6c325bd768a36f80293258a333a07e1cd976f252c4bfaa6e9fa1a3904acb11e",
   "src/macro_transforms.py": "c05bf2dda9fa9b155c0121be6e4db4eb21336a2a1961558b4831adca9ab3d2fd",
   "src/quadrant_assemble.py": "77da41b08cec1fffdd26e0747dbac63b646ae39ecb7767348144236568fe20a2",
+  "src/quadrant_assemble_v2.py": "1e153b20e783cc1851a8fc196236433de43a061b4c4c05708c8ed6c34058cb79",
   "src/quadrant_confidence.py": "5343316ef744ffce0d051e297d7ea4e3b7fdc4212b44459b3b26a440dcf31443",
+  "src/quadrant_confidence_v2.py": "031f6ade8c3356fabcf87e966f85ddec808b17c71a95967a399fc9ef9137796d",
   "src/quadrant_hysteresis.py": "c5d4bf12324261a3244138b2ad8d1e20d3c99a1575d1f8e11019916ec8bbe37d",
+  "src/quadrant_market_observation.py": "89b941e36b90a9a349e1d6e66a03c87df5181107bd789cb5a581942e38659066",
   "src/quadrant_score.py": "e0563a33ab98f2b64f5105b7fa29ade3811704a6772bdce8e0d41d25aa6dae15",
   "src/quadrant_snapshot.py": "fe81a4c4263f2d5af80d0f496cfbe7faaa056f869675fd887c812ec39e155055",
   "src/quadrant_staleness.py": "7283a06932c551c4a06d2bde776a70cd658b2beb2231c6dadee3100e87077caa"
