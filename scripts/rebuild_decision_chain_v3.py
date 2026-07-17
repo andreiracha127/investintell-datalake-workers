@@ -63,6 +63,13 @@ KNOWN_COLUMNS = {
     "quadrant": "required",
     "candidate_confidence": "required",
     "status": "required",
+    # live DDL (inspected 2026-07-17): NOT-NULL provenance the loader stamps.
+    "basis": "required",              # 'certified_chain'
+    "chain_start": "required",        # CHAIN_START
+    "pack_sha256": "required",        # certified pack input_pack_sha256
+    "loaded_at": "required",          # load timestamp
+    "transition_pending": "required",
+    "code_commit": "required",
     "growth_score": "optional",
     "inflation_score": "optional",
     "coverage_quality": "optional",
@@ -71,9 +78,15 @@ KNOWN_COLUMNS = {
     "confidence_method": "optional-provenance",
     "judgment_ref": "optional-provenance",
     "run_id": "optional-provenance",
-    "code_commit": "optional-provenance",
     "rebuilt_at": "optional-provenance",
 }
+
+BASIS = "certified_chain"
+
+
+def pack_sha256() -> str:
+    manifest = json.loads((PACK / "manifest.json").read_text(encoding="utf-8"))
+    return manifest["input_pack_sha256"]
 
 
 def compute_v3_series() -> list[dict[str, Any]]:
@@ -88,6 +101,7 @@ def compute_v3_series() -> list[dict[str, Any]]:
         (PACK / "data" / "canonical" / "eod_prices.json").read_text(encoding="utf-8"))
     series = decision_v3.run_decision_series_v3(
         macro_rows, eod_rows, CHAIN_START, CHAIN_END)
+    pack_hash = pack_sha256()
     rows: list[dict[str, Any]] = []
     for r in series:
         rows.append({
@@ -95,6 +109,10 @@ def compute_v3_series() -> list[dict[str, Any]]:
             "quadrant": r.quadrant,
             "candidate_confidence": r.candidate_confidence,
             "status": r.status,
+            "basis": BASIS,
+            "chain_start": CHAIN_START,
+            "pack_sha256": pack_hash,
+            "transition_pending": r.transition_pending,
             "growth_score": r.growth_score,
             "inflation_score": r.inflation_score,
             "coverage_quality": r.coverage_quality,
@@ -242,6 +260,8 @@ def cmd_apply(args) -> int:
                 params = {c: row.get(c) for c in write_cols}
                 if "code_commit" in write_cols:
                     params["code_commit"] = code_commit
+                if "loaded_at" in write_cols:
+                    params["loaded_at"] = now
                 if "rebuilt_at" in write_cols:
                     params["rebuilt_at"] = now
                 cur.execute(insert_sql, params)
