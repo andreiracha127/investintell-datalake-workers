@@ -154,3 +154,43 @@ class TiingoClient:
         Used by ``eod_prices_warmer`` to refresh the API's ``eod_prices`` table
         (every column NOT NULL). ``[]`` on 404/no data."""
         return self._get_bars(ticker, start_date, end_date)
+
+    def fetch_meta(self, ticker: str) -> dict | None:
+        """Tiingo end-of-day metadata for one ticker; ``None`` on 404/unknown.
+
+        ``GET https://api.tiingo.com/tiingo/daily/{ticker}`` returns a single JSON
+        object ``{ticker, name, description, startDate, endDate, exchangeCode}``.
+        Used by ``tiingo_fund_meta`` for the fund catalog's descriptive prose and
+        inception (startDate). Paced by the same token bucket and protected by the
+        same 30×429 breaker as ``_get_bars``. Returns ``None`` for an unknown
+        ticker (404) or any error/non-object body so the caller can record
+        ``source_status='not_found'`` without crashing the sweep."""
+        url = f"{TIINGO_BASE_URL}/tiingo/daily/{ticker}"
+        for sleep_s in _RETRY_SLEEPS:
+            self._bucket.acquire()
+            self.requests_made += 1
+            try:
+                resp = self._client.get(url)
+            except Exception:
+                time.sleep(sleep_s)
+                continue
+            if resp.status_code == 429:
+                self.consecutive_429 += 1
+                if self.consecutive_429 >= MAX_CONSECUTIVE_429:
+                    raise TiingoBudgetExceeded(
+                        f"{self.consecutive_429} consecutive 429s — aborting cleanly")
+                time.sleep(sleep_s)
+                continue
+            self.consecutive_429 = 0
+            if resp.status_code == 404:
+                return None
+            if resp.status_code >= 500:
+                time.sleep(sleep_s)
+                continue
+            if resp.status_code >= 400:
+                return None
+            payload = resp.json()
+            if not isinstance(payload, dict):  # error body, e.g. unknown ticker
+                return None
+            return payload
+        return None

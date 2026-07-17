@@ -132,3 +132,7 @@ LOCK_FORM345_INGESTION = 900_306
 LOCK_NPORT_CUSIP_ENRICHMENT = 900_308
 LOCK_SEC_COMPANY_TICKERS_MF = 900_309
 LOCK_EOD_PRICES_WARMER = 900_335
+# tiingo_fund_meta ingestion worker (fund catalog descriptive prose + startDate).
+# 900_336 is the next free id in the market/identity ingestion band (900_3xx),
+# immediately after eod_prices_warmer's 900_335; no collision with any worker above.
+LOCK_TIINGO_FUND_META = 900_336
