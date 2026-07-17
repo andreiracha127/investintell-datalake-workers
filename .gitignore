@@ -12,6 +12,7 @@ __pycache__/
 .remember/
 .pytest_cache/
 .claude/worktrees/
+.codex/environments/
 
 # Lean CLI local state
 lean.json
