@@ -32,6 +32,15 @@
 #                           fields from eod_prices and fundamentals directly from
 #                           company_characteristics_monthly, then refreshes
 #                           screener_equity_snapshot_mv for the Light API.
+#   open_macro_v03       -> daily 08:30 UTC. DEPOIS do eod_prices_warmer (06:15,
+#                           ~55 min): o staleness gate lê eod_prices dos 6 ETFs
+#                           do book (SLO 3 dias úteis). Com ambos às 07:00 o
+#                           worker leu preços velhos e 2026-07-17 ficou sem
+#                           decisão publicada (builder sem sinal). Margem até o
+#                           valid_until do par anterior (14:00 UTC): 5h30.
+#   open_macro_v03_monitor -> daily 09:30 UTC, DEPOIS da janela de publicação
+#                           do worker, para alertar missing_output_slo no
+#                           mesmo dia (às 07:00 avaliava antes do worker rodar).
 #
 # nixpacks auto-detects Python via requirements.txt.
 
