@@ -242,6 +242,33 @@ def test_explicit_stale_recovery_rotates_lease_once_and_invalidates_old_owner(wo
     assert current.lease_token == recovered.lease_token
 
 
+def test_stale_recovery_uses_statement_time_when_recoverer_transaction_started_first(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as setup:
+        unit = _create(setup, run_id, unit_key="old-transaction-recovery")
+        setup.commit()
+
+    with _connection(dsn, schema) as old_transaction, _connection(dsn, schema) as claimant:
+        with old_transaction.cursor() as cur:
+            cur.execute("SELECT now()")
+            old_transaction_started_at = cur.fetchone()[0]
+
+        claimed = claim_work_unit(claimant, work_unit_id=unit.work_unit_id)
+        claimant.commit()
+        assert old_transaction_started_at < claimed.started_at
+
+        recovered = recover_stale_work_unit(
+            old_transaction,
+            work_unit_id=unit.work_unit_id,
+            stale_before=claimed.heartbeat_at + timedelta(microseconds=1),
+        )
+        old_transaction.commit()
+
+    assert recovered.lease_token != claimed.lease_token
+    assert recovered.started_at >= claimed.started_at
+    assert recovered.heartbeat_at >= claimed.heartbeat_at
+
+
 def test_completion_is_idempotent_only_for_identical_evidence(work_database) -> None:
     dsn, schema, run_id = work_database
     with _connection(dsn, schema) as conn:

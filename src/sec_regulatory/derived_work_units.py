@@ -167,8 +167,9 @@ def claim_work_unit(conn: psycopg.Connection, *, work_unit_id: UUID) -> DerivedW
             """
             UPDATE sec_derived_work_units
             SET state = 'running', attempt_count = attempt_count + 1,
-                lease_token = %s, started_at = now(), heartbeat_at = now(),
-                failure_code = NULL, failure_detail = NULL, updated_at = now()
+                lease_token = %s, started_at = statement_timestamp(),
+                heartbeat_at = statement_timestamp(), failure_code = NULL,
+                failure_detail = NULL, updated_at = statement_timestamp()
             WHERE work_unit_id = %s AND state IN ('pending', 'failed')
             """,
             (lease_token, work_unit_id),
@@ -186,7 +187,7 @@ def heartbeat_work_unit(
         cur.execute(
             """
             UPDATE sec_derived_work_units
-            SET heartbeat_at = now(), updated_at = now()
+            SET heartbeat_at = statement_timestamp(), updated_at = statement_timestamp()
             WHERE work_unit_id = %s AND state = 'running' AND lease_token = %s
             """,
             (work_unit_id, lease_token),
@@ -217,7 +218,8 @@ def recover_stale_work_unit(
             """
             UPDATE sec_derived_work_units
             SET attempt_count = attempt_count + 1, lease_token = %s,
-                started_at = now(), heartbeat_at = now(), updated_at = now()
+                started_at = statement_timestamp(), heartbeat_at = statement_timestamp(),
+                updated_at = statement_timestamp()
             WHERE work_unit_id = %s AND state = 'running'
               AND lease_token = %s AND heartbeat_at < %s
             """,
@@ -251,8 +253,8 @@ def complete_work_unit(
             """
             UPDATE sec_derived_work_units
             SET state = 'completed', lease_token = NULL, started_at = NULL, heartbeat_at = NULL,
-                completed_at = now(), output_fingerprint = %s, evidence = %s::jsonb,
-                updated_at = now()
+                completed_at = statement_timestamp(), output_fingerprint = %s,
+                evidence = %s::jsonb, updated_at = statement_timestamp()
             WHERE work_unit_id = %s AND state = 'running' AND lease_token = %s
             """,
             (output_fingerprint, _json(evidence), work_unit_id, lease_token),
@@ -278,7 +280,7 @@ def fail_work_unit(
             """
             UPDATE sec_derived_work_units
             SET state = 'failed', lease_token = NULL, started_at = NULL, heartbeat_at = NULL,
-                failure_code = %s, failure_detail = %s, updated_at = now()
+                failure_code = %s, failure_detail = %s, updated_at = statement_timestamp()
             WHERE work_unit_id = %s AND state = 'running' AND lease_token = %s
             """,
             (failure_code, failure_detail, work_unit_id, lease_token),
