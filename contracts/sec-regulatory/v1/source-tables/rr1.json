@@ -1394,8 +1394,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -1476,7 +1479,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -1494,7 +1497,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -1512,7 +1515,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -1530,7 +1533,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -1548,7 +1551,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -3160,8 +3163,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -3242,7 +3248,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -3260,7 +3266,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -3278,7 +3284,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -3296,7 +3302,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -3314,7 +3320,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -4935,8 +4941,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -5017,7 +5026,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -5035,7 +5044,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -5053,7 +5062,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -5071,7 +5080,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -5089,7 +5098,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -6701,8 +6710,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -6783,7 +6795,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -6801,7 +6813,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -6819,7 +6831,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -6837,7 +6849,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -6855,7 +6867,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -8488,8 +8500,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -8570,7 +8585,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -8588,7 +8603,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -8606,7 +8621,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -8624,7 +8639,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -8642,7 +8657,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -10254,8 +10269,11 @@
             "tag",
             "version",
             "ddate",
-            "qtrs",
-            "dimh",
+            "series",
+            "class",
+            "measure",
+            "document",
+            "otherdims",
             "iprx"
           ],
           "columns": [
@@ -10336,7 +10354,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -10354,7 +10372,7 @@
             },
             {
               "analytical_use": "identity_and_lineage",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -10372,7 +10390,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 10
@@ -10390,7 +10408,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256
@@ -10408,7 +10426,7 @@
             },
             {
               "analytical_use": "disclosures_and_xbrl_context",
-              "candidate_key": false,
+              "candidate_key": true,
               "datatype": {
                 "base": "string",
                 "maxLength": 256

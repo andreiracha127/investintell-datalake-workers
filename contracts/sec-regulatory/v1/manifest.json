@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "sha256:8d4fdd7a8ef3892ee4c8933eca150704bd00d9eaad02977ef567a1bb63d94d9d",
+  "bundle_sha256": "sha256:80b0d45cd1e5b0829788f266e9bb02854068e44870a729e817cac8f6f6cc3572",
   "contract_version": "1.0.0",
   "files": [
     {
@@ -91,6 +91,10 @@
       "sha256": "ec8e6bc6398408ba57932a9baea30e60a67161608e6d8bb27566ae3e092bbd13"
     },
     {
+      "path": "rr1-txt-key-correction-evidence.json",
+      "sha256": "8f130362dc1b25081dfc2528419fe0e6243787b4b84a47232da6196d8875b866"
+    },
+    {
       "path": "sec-code-dictionaries.json",
       "sha256": "15060f81e71c9c7a54a3cce53d585cd5447e7a697e797028cf9a6a1c448d39ad"
     },
@@ -100,7 +104,7 @@
     },
     {
       "path": "sec-field-mapping.csv",
-      "sha256": "97e312365ba642283b0160bb3c2f0cc336c0bb783c33432c8c4cfff537a28235"
+      "sha256": "7f8294ddc6838a5b8875c8b350b91ce60ed686562cc578e0988d273ebf6aa55c"
     },
     {
       "path": "sec-quality-gate-registry.yaml",
@@ -124,7 +128,7 @@
     },
     {
       "path": "source-tables/rr1.json",
-      "sha256": "106924970d848bdb032706621963e921abf998a7407be99eb3341d36a0974e22"
+      "sha256": "27c339f6c23d1ded187fb20c8fef9abc97b10cb4d776b8e85b44cb1d4229efbb"
     },
     {
       "path": "SOURCE.json",

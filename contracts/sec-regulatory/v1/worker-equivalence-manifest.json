@@ -2,7 +2,8 @@
   "schema_version": 1,
   "contract_version": "v1",
   "source_repository": "andreiracha127/investintell-light",
-  "source_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
+  "phase0_base_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
+  "source_commit": "24d7732a38f438a523ba2f09986086e961c2165b",
   "source_path": "backend/contracts/sec-regulatory/v1",
   "target_path": "contracts/sec-regulatory/v1",
   "worker_only_files": [
@@ -128,7 +129,12 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/manifest.json",
       "worker_path": "contracts/sec-regulatory/v1/manifest.json",
-      "sha256": "4a26700f985e90b869fbee477fd4c0be0da73d79320409fa86cd308596800261"
+      "sha256": "46bb87831c571639ba9edacddfd8e5ed4aac6140ab41e583ec1fbca94516d8df"
+    },
+    {
+      "source_path": "backend/contracts/sec-regulatory/v1/rr1-txt-key-correction-evidence.json",
+      "worker_path": "contracts/sec-regulatory/v1/rr1-txt-key-correction-evidence.json",
+      "sha256": "8f130362dc1b25081dfc2528419fe0e6243787b4b84a47232da6196d8875b866"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/sec-code-dictionaries.json",
@@ -143,7 +149,7 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/sec-field-mapping.csv",
       "worker_path": "contracts/sec-regulatory/v1/sec-field-mapping.csv",
-      "sha256": "97e312365ba642283b0160bb3c2f0cc336c0bb783c33432c8c4cfff537a28235"
+      "sha256": "7f8294ddc6838a5b8875c8b350b91ce60ed686562cc578e0988d273ebf6aa55c"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/sec-quality-gate-registry.yaml",
@@ -173,7 +179,7 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/source-tables/rr1.json",
       "worker_path": "contracts/sec-regulatory/v1/source-tables/rr1.json",
-      "sha256": "106924970d848bdb032706621963e921abf998a7407be99eb3341d36a0974e22"
+      "sha256": "27c339f6c23d1ded187fb20c8fef9abc97b10cb4d776b8e85b44cb1d4229efbb"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/SOURCE.json",

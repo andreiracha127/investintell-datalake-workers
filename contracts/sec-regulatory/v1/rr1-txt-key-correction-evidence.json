@@ -1,0 +1,32 @@
+{
+  "affected_contract": "source-tables/rr1.json",
+  "correction_id": "rr1-txt-figure-7-key-2026q2",
+  "immutable_source": {
+    "figure": "Figure 7",
+    "key_columns": [
+      "adsh",
+      "tag",
+      "version",
+      "ddate",
+      "series",
+      "class",
+      "measure",
+      "document",
+      "otherdims",
+      "iprx"
+    ],
+    "readme_path_identity": "local-sec-bulk/rr1/2026q2_rr1/readme.htm",
+    "readme_sha256": "4e3cc90b429333eb9959da3809ae3eb561f10364762ac9751b0baa6ad40aff98",
+    "table": "TXT"
+  },
+  "original_base_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
+  "semantic_rules": {
+    "candidate_key_flags": "true exactly for key_columns",
+    "forbidden_txt_columns": [
+      "qtrs",
+      "dimh"
+    ],
+    "lang": "declared non-key column",
+    "schema_variant_count": 6
+  }
+}

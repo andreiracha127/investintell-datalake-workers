@@ -21,17 +21,22 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BUNDLE_ROOT = ROOT / "contracts" / "sec-regulatory" / "v1"
 
 SOURCE_REPOSITORY = "andreiracha127/investintell-light"
-SOURCE_COMMIT = "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3"
+PHASE0_BASE_COMMIT = "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3"
+SOURCE_COMMIT = "24d7732a38f438a523ba2f09986086e961c2165b"
 SOURCE_PATH = "backend/contracts/sec-regulatory/v1"
 TARGET_PATH = "contracts/sec-regulatory/v1"
 CONTRACT_VERSION = "v1"
 WORKER_BASE_COMMIT = "8636c14f08aa8d27b0f8e1d627a65072bf9772bf"
-EXPECTED_MIRROR_FILE_COUNT = 34
+EXPECTED_MIRROR_FILE_COUNT = 35
 WORKER_ONLY_FILES = (
     "worker-equivalence-manifest.json",
     "worker-provenance.json",
 )
 SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+RR1_TXT_PRIMARY_KEY = [
+    "adsh", "tag", "version", "ddate", "series", "class",
+    "measure", "document", "otherdims", "iprx",
+]
 
 
 class ContractVerificationError(Exception):
@@ -109,6 +114,53 @@ def _verify_gate_registry(bundle_root: Path) -> None:
         raise ContractVerificationError("SRC-RR1-DATE-QUARANTINE must retain its frozen pending status")
 
 
+def _verify_source_table_semantics(bundle_root: Path) -> None:
+    """Fail closed when table keys, flags, or logical parents drift internally."""
+    for path in sorted((bundle_root / "source-tables").glob("*.json")):
+        contract = _read_json(path)
+        variants = contract.get("schema_variants")
+        if not isinstance(variants, list) or not variants:
+            raise ContractVerificationError(f"{path.name} has no schema variants")
+        for variant_index, variant in enumerate(variants):
+            tables = variant.get("tables") if isinstance(variant, dict) else None
+            if not isinstance(tables, list) or not tables:
+                raise ContractVerificationError(f"{path.name} variant {variant_index} has no tables")
+            table_names = {
+                table.get("source_file") for table in tables if isinstance(table, dict)
+            }
+            for table in tables:
+                if not isinstance(table, dict):
+                    raise ContractVerificationError(f"{path.name} variant {variant_index} has malformed table")
+                source_file = table.get("source_file")
+                columns = table.get("columns")
+                key = table.get("candidate_primary_key")
+                parents = table.get("logical_parents")
+                if not isinstance(columns, list) or not isinstance(key, list) or not isinstance(parents, list):
+                    raise ContractVerificationError(f"{path.name} {source_file} has malformed semantics")
+                names = [column.get("name") for column in columns if isinstance(column, dict)]
+                flagged = [
+                    column.get("name") for column in columns
+                    if isinstance(column, dict) and column.get("candidate_key") is True
+                ]
+                if len(names) != len(columns) or len(set(names)) != len(names):
+                    raise ContractVerificationError(f"{path.name} {source_file} has invalid columns")
+                if len(set(key)) != len(key) or any(item not in names for item in key):
+                    raise ContractVerificationError(f"{path.name} {source_file} has invalid candidate key")
+                if set(flagged) != set(key):
+                    raise ContractVerificationError(f"{path.name} {source_file} key flags drifted")
+                if any(parent not in table_names or parent == source_file for parent in parents):
+                    raise ContractVerificationError(f"{path.name} {source_file} logical parents drifted")
+        if contract.get("family") == "rr1":
+            txt_tables = [
+                [table for table in variant["tables"] if table.get("source_file") == "txt.tsv"]
+                for variant in variants
+            ]
+            if len(variants) != 6 or any(len(tables) != 1 for tables in txt_tables):
+                raise ContractVerificationError("rr1.json must contain one TXT table in each of six variants")
+            if any(tables[0].get("candidate_primary_key") != RR1_TXT_PRIMARY_KEY for tables in txt_tables):
+                raise ContractVerificationError("rr1.json TXT key differs from merged Figure 7 correction")
+
+
 def verify_contract(bundle_root: Path = DEFAULT_BUNDLE_ROOT) -> int:
     """Verify the complete frozen mirror, returning its mirrored file count."""
     bundle_root = bundle_root.resolve()
@@ -120,6 +172,7 @@ def verify_contract(bundle_root: Path = DEFAULT_BUNDLE_ROOT) -> int:
         "schema_version": 1,
         "contract_version": CONTRACT_VERSION,
         "source_repository": SOURCE_REPOSITORY,
+        "phase0_base_commit": PHASE0_BASE_COMMIT,
         "source_commit": SOURCE_COMMIT,
         "source_path": SOURCE_PATH,
         "target_path": TARGET_PATH,
@@ -133,6 +186,7 @@ def verify_contract(bundle_root: Path = DEFAULT_BUNDLE_ROOT) -> int:
         "schema_version": 1,
         "contract_version": CONTRACT_VERSION,
         "source_repository": SOURCE_REPOSITORY,
+        "phase0_base_commit": PHASE0_BASE_COMMIT,
         "source_commit": SOURCE_COMMIT,
         "source_path": SOURCE_PATH,
         "target_path": TARGET_PATH,
@@ -197,6 +251,7 @@ def verify_contract(bundle_root: Path = DEFAULT_BUNDLE_ROOT) -> int:
             )
 
     _verify_gate_registry(bundle_root)
+    _verify_source_table_semantics(bundle_root)
     return len(files)
 
 
