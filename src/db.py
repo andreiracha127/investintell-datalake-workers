@@ -130,6 +130,13 @@ LOCK_BENCHMARK_INGEST = 900_332
 LOCK_SEC_13F_INGESTION = 900_305
 LOCK_FORM345_INGESTION = 900_306
 LOCK_NPORT_CUSIP_ENRICHMENT = 900_308
+LOCK_NPORT_INGESTION = 900_307
+# N-CEN V2 raw/shadow landing owns its package-level worker lock.  Deliberately
+# distinct from N-PORT and the 13F/Form345 SEC ingestion lanes.
+LOCK_NCEN_INGESTION = 900_310
+# RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
+# and 900_312 remain reserved by the ESMA workers.
+LOCK_RR1_INGESTION = 900_313
 LOCK_SEC_COMPANY_TICKERS_MF = 900_309
 LOCK_EOD_PRICES_WARMER = 900_335
 # tiingo_fund_meta ingestion worker (fund catalog descriptive prose + startDate).

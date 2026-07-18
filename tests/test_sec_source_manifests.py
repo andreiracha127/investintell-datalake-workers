@@ -97,7 +97,9 @@ def _run(conn, *, parser_version: str = "p1"):
 
     return create_or_resume_run(
         conn,
-        source_family="nport",
+        # Shared lifecycle tests intentionally use no installed family overlay.
+        # N-PORT runs are validated end-to-end in test_nport_ingestion.py.
+        source_family="manifest-test",
         package_sha256="a" * 64,
         parser_version=parser_version,
         source_quarter="2026Q2",
@@ -394,7 +396,7 @@ def test_real_db_idempotent_run_rejects_conflicting_business_metadata(db_conn) -
     with pytest.raises(ManifestStateError, match="metadados"):
         create_or_resume_run(
             db_conn,
-            source_family="nport",
+            source_family="manifest-test",
             package_sha256="a" * 64,
             parser_version="p1",
             source_quarter="2026Q1",
@@ -768,6 +770,9 @@ def test_real_db_multiple_issue_details_count_once_and_mixed_dispositions_fail(d
                  typed_error_code="invalid_date", status="quarantined")
     record_issue(db_conn, source_file_id=good_file, source_row_number=7, issue_sequence=2,
                  typed_error_code="invalid_timezone", status="quarantined")
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pg_locks WHERE pid = pg_backend_pid() AND locktype = 'advisory'")
+        assert cur.fetchone()[0] == 1
     assert validate_raw_run(db_conn, run_id=good.run_id).current_state == "raw_validated"
 
     mixed = _loading_run(db_conn, parser_version="p4")

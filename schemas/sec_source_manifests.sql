@@ -328,11 +328,22 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 DECLARE existing_status text;
+        issue_run_id uuid;
 BEGIN
     IF NEW.status NOT IN ('quarantined', 'rejected') THEN
         RETURN NEW;
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(NEW.source_file_id::text || ':' || NEW.source_row_number::text, 0));
+    -- Serialize dispositions once per ingestion run, not once per physical
+    -- row.  The former exhausted max_locks_per_transaction on large COPY
+    -- batches; the run-scoped lock is bounded to one lock per transaction
+    -- while preserving the concurrent opposite-status invariant.
+    SELECT run_id INTO issue_run_id
+    FROM sec_source_files
+    WHERE source_file_id = NEW.source_file_id;
+    IF issue_run_id IS NULL THEN
+        RAISE EXCEPTION 'unknown source file %', NEW.source_file_id;
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended('sec:issues:' || issue_run_id::text, 0));
     SELECT status INTO existing_status FROM sec_row_issues
     WHERE source_file_id = NEW.source_file_id
       AND source_row_number = NEW.source_row_number
@@ -430,9 +441,10 @@ VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-DECLARE validated_at timestamptz;
+DECLARE validated_at timestamptz; source_family_value text; family_reconciles boolean; family_label text;
 BEGIN
-    PERFORM 1 FROM sec_ingestion_runs WHERE run_id = target_run_id FOR UPDATE;
+    SELECT source_family INTO source_family_value
+    FROM sec_ingestion_runs WHERE run_id = target_run_id FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC run %', target_run_id; END IF;
     IF (SELECT current_state FROM sec_ingestion_runs WHERE run_id = target_run_id) <> 'loading' THEN
         RAISE EXCEPTION 'raw validation requires loading state';
@@ -441,6 +453,31 @@ BEGIN
     -- after any writer that held the same lineage lock has committed.
     IF NOT sec_raw_run_reconciles(target_run_id) THEN
         RAISE EXCEPTION 'raw reconciliation failed for run %', target_run_id;
+    END IF;
+    -- Family overlays remain separate DDL units.  Their presence activates a
+    -- fail-closed hook without letting a later reinstall of this shared schema
+    -- overwrite or bypass a family-specific validator.
+    IF source_family_value = 'nport' THEN
+        IF to_regprocedure('public.nport_raw_run_reconciles(uuid)') IS NULL THEN
+            RAISE EXCEPTION 'required N-PORT raw reconciler is absent';
+        END IF;
+        EXECUTE 'SELECT public.nport_raw_run_reconciles($1)' INTO family_reconciles USING target_run_id;
+    ELSIF source_family_value = 'ncen' THEN
+        IF to_regprocedure('public.ncen_raw_run_reconciles(uuid)') IS NULL THEN
+            RAISE EXCEPTION 'required NCEN raw reconciler is absent';
+        END IF;
+        EXECUTE 'SELECT public.ncen_raw_run_reconciles($1)' INTO family_reconciles USING target_run_id;
+    ELSIF source_family_value = 'rr1' THEN
+        IF to_regprocedure('public.rr1_raw_run_reconciles(uuid)') IS NULL THEN
+            RAISE EXCEPTION 'required RR1 raw reconciler is absent';
+        END IF;
+        EXECUTE 'SELECT public.rr1_raw_run_reconciles($1)' INTO family_reconciles USING target_run_id;
+    ELSE
+        family_reconciles := true;
+    END IF;
+    IF family_reconciles IS NOT TRUE THEN
+        family_label := CASE source_family_value WHEN 'nport' THEN 'N-PORT' ELSE upper(source_family_value) END;
+        RAISE EXCEPTION '% raw validation failed for run %', family_label, target_run_id;
     END IF;
     INSERT INTO sec_raw_validation_tokens (run_id, backend_pid)
     VALUES (target_run_id, pg_backend_pid());

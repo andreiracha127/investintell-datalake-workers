@@ -9,6 +9,13 @@ from src.ncen.schema import load_ncen_contract, parse_row, verify_package
 from src.sec_regulatory.contracts import ContractError
 
 
+def test_ncen_worker_lock_is_registered_and_unique() -> None:
+    import src.db as db
+    assert db.LOCK_NCEN_INGESTION == 900_310
+    ids = [value for name, value in vars(db).items() if name.startswith("LOCK_") and isinstance(value, int)]
+    assert ids.count(db.LOCK_NCEN_INGESTION) == 1
+
+
 def test_real_frozen_packages_select_both_metadata_variants() -> None:
     root = Path(r"E:\Edgard\ncen")
     hashes = {verify_package(root / name).metadata_sha256 for name in ("2021q3_ncen", "2024q1_ncen_0")}
