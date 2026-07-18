@@ -59,6 +59,55 @@ WHERE r.ingestion_run_id = %(run_id)s
   )
 """.strip()
 
+PUBLICATION_SQL = "SELECT nport_raw_run_reconciles(%(run_id)s)"
+
+
+def _disk_evidence(local_data_volume_path: str | None) -> dict[str, Any]:
+    if local_data_volume_path is None:
+        return {
+            "status": "not_checked",
+            "path": None,
+            "reason": "pass --local-data-volume-path when the server volume is mounted locally",
+        }
+    disk = shutil.disk_usage(local_data_volume_path)
+    evidence = {
+        "status": "checked",
+        "path": local_data_volume_path,
+        "total_bytes": disk.total,
+        "free_bytes": disk.free,
+        "free_fraction": disk.free / disk.total,
+    }
+    if evidence["free_fraction"] < 0.25:
+        raise RuntimeError("benchmark requires at least 25% free space on the data volume")
+    return evidence
+
+
+def _benchmark_exit_code(evidence: dict[str, Any]) -> int:
+    gates = evidence.get("gates")
+    if evidence.get("status") != "measured" or not isinstance(gates, dict) or not gates:
+        return 1
+    if gates.get("publication_reconciles") is not True:
+        return 1
+    return 0 if all(value is True for value in gates.values()) else 1
+
+
+def _assert_quiescent_cluster(cur: psycopg.Cursor[Any]) -> None:
+    cur.execute(
+        """SELECT pid, backend_type, COALESCE(datname, ''), COALESCE(state, '')
+           FROM pg_stat_activity
+           WHERE pid <> pg_backend_pid()
+             AND ((backend_type = 'client backend' AND state IS DISTINCT FROM 'idle')
+                  OR backend_type IN ('autovacuum worker', 'logical replication worker',
+                                      'parallel worker'))
+           ORDER BY pid"""
+    )
+    active = cur.fetchall()
+    if active:
+        raise RuntimeError(
+            "benchmark I/O deltas require a quiescent cluster; "
+            f"found {len(active)} other active backend(s)"
+        )
+
 
 def _io_counters(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
     cur.execute("SELECT pg_stat_clear_snapshot()")
@@ -71,21 +120,35 @@ def _io_counters(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
 
 
 def _timed(cur: psycopg.Cursor[Any], sql: str, params: dict[str, Any]) -> dict[str, Any]:
+    _assert_quiescent_cluster(cur)
     before = _io_counters(cur)
     started = time.perf_counter()
     cur.execute(sql, params)
-    count = int(cur.fetchone()[0])
+    result = cur.fetchone()[0]
     elapsed = time.perf_counter() - started
     after = _io_counters(cur)
+    _assert_quiescent_cluster(cur)
     cur.execute("SELECT pg_wal_lsn_diff(%s::pg_lsn, %s::pg_lsn)", (after["wal_lsn"], before["wal_lsn"]))
     wal_bytes = int(cur.fetchone()[0])
     return {
         "elapsed_seconds": elapsed,
-        "mismatches": count,
-        "temp_files_delta": after["temp_files"] - before["temp_files"],
-        "temp_bytes_delta": after["temp_bytes"] - before["temp_bytes"],
-        "wal_bytes_delta": wal_bytes,
+        "result": result,
+        "database_temp_files_delta": after["temp_files"] - before["temp_files"],
+        "database_temp_bytes_delta": after["temp_bytes"] - before["temp_bytes"],
+        "cluster_wal_bytes_delta": wal_bytes,
     }
+
+
+def _timed_count(cur: psycopg.Cursor[Any], sql: str, params: dict[str, Any]) -> dict[str, Any]:
+    measured = _timed(cur, sql, params)
+    measured["mismatches"] = int(measured.pop("result"))
+    return measured
+
+
+def _timed_publication(cur: psycopg.Cursor[Any], run_id: str) -> dict[str, Any]:
+    measured = _timed(cur, PUBLICATION_SQL, {"run_id": run_id})
+    measured["reconciles"] = bool(measured.pop("result"))
+    return measured
 
 
 def _relation_scans(plan: Any, relation: str) -> list[dict[str, Any]]:
@@ -109,7 +172,7 @@ def _relation_scans(plan: Any, relation: str) -> list[dict[str, Any]]:
     return found
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--database-url", required=True)
     parser.add_argument("--run-id", required=True)
@@ -117,6 +180,7 @@ def main() -> None:
     parser.add_argument("--work-mem-mb", type=int)
     parser.add_argument("--max-parallel-workers-per-gather", type=int)
     parser.add_argument("--temp-file-limit-mb", type=int, default=20_480)
+    parser.add_argument("--local-data-volume-path")
     args = parser.parse_args()
 
     evidence: dict[str, Any] = {
@@ -143,6 +207,12 @@ def main() -> None:
             "work_mem_mb": args.work_mem_mb,
             "max_parallel_workers_per_gather": args.max_parallel_workers_per_gather,
             "temp_file_limit_mb": args.temp_file_limit_mb,
+            "local_data_volume_path": args.local_data_volume_path,
+        },
+        "io_counter_scope": {
+            "database_temp_files_delta": "pg_stat_database, database-wide; quiescent cluster required",
+            "database_temp_bytes_delta": "pg_stat_database, database-wide; quiescent cluster required",
+            "cluster_wal_bytes_delta": "WAL LSN, cluster-wide; quiescent cluster required",
         },
     }
 
@@ -165,17 +235,7 @@ def main() -> None:
                 "max_locks_per_transaction": locks,
                 "max_connections": connections,
             }
-            cur.execute("SHOW data_directory")
-            data_directory = cur.fetchone()[0]
-            disk = shutil.disk_usage(data_directory)
-            evidence["data_directory_disk"] = {
-                "path": data_directory,
-                "total_bytes": disk.total,
-                "free_bytes": disk.free,
-                "free_fraction": disk.free / disk.total,
-            }
-            if disk.free / disk.total < 0.25:
-                raise RuntimeError("benchmark requires at least 25% free space on the data volume")
+            evidence["local_data_volume_disk"] = _disk_evidence(args.local_data_volume_path)
             cur.execute(
                 """SELECT name, setting, unit FROM pg_settings WHERE name = ANY(%s)
                    ORDER BY name""",
@@ -229,18 +289,18 @@ def main() -> None:
             try:
                 for fraction in (25, 50, 100):
                     params = {"run_id": args.run_id, "cutoff": boundaries[fraction]}
-                    unsafe_warmup = _timed(cur, UNSAFE_SQL, params)
-                    safe_warmup = _timed(cur, SAFE_SQL, params)
+                    unsafe_warmup = _timed_count(cur, UNSAFE_SQL, params)
+                    safe_warmup = _timed_count(cur, SAFE_SQL, params)
                     unsafe_count = unsafe_warmup["mismatches"]
                     safe_count = safe_warmup["mismatches"]
                     unsafe_trials: list[dict[str, Any]] = []
                     safe_trials: list[dict[str, Any]] = []
                     for _ in range(3):
-                        trial = _timed(cur, UNSAFE_SQL, params)
+                        trial = _timed_count(cur, UNSAFE_SQL, params)
                         if trial["mismatches"] != unsafe_count:
                             raise RuntimeError("unsafe result changed inside repeatable-read snapshot")
                         unsafe_trials.append(trial)
-                        trial = _timed(cur, SAFE_SQL, params)
+                        trial = _timed_count(cur, SAFE_SQL, params)
                         if trial["mismatches"] != safe_count:
                             raise RuntimeError("safe result changed inside repeatable-read snapshot")
                         safe_trials.append(trial)
@@ -263,6 +323,7 @@ def main() -> None:
                             "mismatches": safe_count,
                         },
                     }
+                evidence["publication_validation"] = _timed_publication(cur, args.run_id)
             except psycopg.errors.QueryCanceled as error:
                 evidence["status"] = "blocked_timeout"
                 evidence["timeout_error"] = str(error)
@@ -284,9 +345,11 @@ def main() -> None:
                     "T50_over_T25": ratios["T50_over_T25"] <= 2.5,
                     "T100_over_T50": ratios["T100_over_T50"] <= 2.5,
                     "safe100_over_unsafe100": ratios["safe100_over_unsafe100"] <= 2.0,
+                    "publication_reconciles": evidence["publication_validation"]["reconciles"],
                 }
     print(json.dumps(evidence, indent=2, sort_keys=True, default=str))
+    return _benchmark_exit_code(evidence)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

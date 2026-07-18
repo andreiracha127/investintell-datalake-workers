@@ -10,6 +10,35 @@ from pathlib import Path
 import pytest
 
 
+def test_nport_benchmark_exit_code_is_fail_closed() -> None:
+    from tests.fixtures.run_nport_w1_benchmark import PUBLICATION_SQL, _benchmark_exit_code
+
+    assert _benchmark_exit_code({"status": "blocked_timeout"}) == 1
+    assert _benchmark_exit_code({"status": "measured", "gates": {"publication_reconciles": False}}) == 1
+    assert _benchmark_exit_code({"status": "measured", "gates": {"scaling": True}}) == 1
+    assert _benchmark_exit_code({
+        "status": "measured", "gates": {"scaling": True, "publication_reconciles": True},
+    }) == 0
+    assert "nport_raw_run_reconciles" in PUBLICATION_SQL
+
+
+def test_nport_benchmark_disk_guard_uses_only_explicit_local_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from collections import namedtuple
+    from tests.fixtures import run_nport_w1_benchmark as benchmark
+
+    assert benchmark._disk_evidence(None)["status"] == "not_checked"
+    usage = namedtuple("usage", "total used free")(100, 70, 30)
+    monkeypatch.setattr(benchmark.shutil, "disk_usage", lambda path: usage)
+    assert benchmark._disk_evidence("mounted-data")["free_fraction"] == 0.3
+
+    low_space = namedtuple("usage", "total used free")(100, 80, 20)
+    monkeypatch.setattr(benchmark.shutil, "disk_usage", lambda path: low_space)
+    with pytest.raises(RuntimeError, match="at least 25% free space"):
+        benchmark._disk_evidence("mounted-data")
+
+
 @pytest.fixture(autouse=True)
 def _isolated_nport_database() -> None:
     """O banco SEC descartável não deixa runs/pacotes N-PORT entre casos."""
