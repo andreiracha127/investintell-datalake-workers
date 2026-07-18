@@ -188,3 +188,61 @@ def test_rr1_fee_profile_validation_and_current_pointer_require_a_closed_build()
         with pytest.raises(psycopg.Error, match="requires a closed pinned build"):
             cur.execute("SELECT sec_set_current_derived_publication('rr1_fee_profile_v1',%s)", (publication_id,))
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_rr1_fee_profile_ddl_upgrades_legacy_integer_occurrence_idempotently():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema = f"rr1_fee_profile_legacy_{uuid4().hex}"
+        run_id, package_id, publication_id = uuid4(), uuid4(), uuid4()
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
+        cur.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid NOT NULL)")
+        cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
+        cur.execute("""CREATE TABLE rr1_effective_facts(
+            raw_row_id bigint, ingestion_run_id uuid, source_table text, accession_number text,
+            tag text, version text, data_date date, series_id text, class_id text, measure_id text,
+            document_id text, dimensions text, occurrence text, fact_typed_projection jsonb,
+            effective_date date, accepted_at timestamptz, filed_date date, form text)""")
+        cur.execute((ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8"))
+        # Exact pre-e838e80 shape differed only by the integer occurrence/grain default.
+        cur.execute("""CREATE TABLE rr1_fee_profiles (
+            publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            source_run_id uuid NOT NULL, accession_number text NOT NULL, series_id text NOT NULL, class_id text NOT NULL,
+            data_date date NOT NULL, measure_id text NOT NULL DEFAULT '', document_id text NOT NULL DEFAULT '',
+            dimensions text NOT NULL DEFAULT '', occurrence integer NOT NULL DEFAULT 0, effective_date date NOT NULL,
+            filed_date date NOT NULL, form text NOT NULL,
+            canonical_concept text NOT NULL CHECK (canonical_concept IN (
+                'management_fee','distribution_12b1','acquired_fund_expense','other_expense',
+                'gross_expense','waiver_reimbursement','net_expense')),
+            original_tag text, original_version text, value_numeric numeric,
+            status text NOT NULL CHECK (status IN ('available','degraded','unavailable','not_applicable')), reason_code text,
+            methodology_version text NOT NULL DEFAULT 'rr1_fee_profile_v1', provenance jsonb NOT NULL,
+            coverage jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (publication_id,source_run_id,accession_number,series_id,class_id,data_date,
+                         measure_id,document_id,dimensions,occurrence,canonical_concept),
+            CHECK (methodology_version = 'rr1_fee_profile_v1'),
+            CHECK (jsonb_typeof(provenance) = 'object'), CHECK (jsonb_typeof(coverage) = 'object'),
+            CHECK ((status = 'available') = (value_numeric IS NOT NULL AND original_tag IS NOT NULL AND original_version IS NOT NULL)),
+            CHECK ((status = 'available') = (reason_code IS NULL)),
+            CHECK ((status = 'unavailable') = (original_tag IS NULL AND original_version IS NULL AND value_numeric IS NULL)))""")
+        ddl = (ROOT / "schemas" / "rr1_fee_profiles.sql").read_text(encoding="utf-8")
+        cur.execute(ddl)
+        cur.execute(ddl)
+        cur.execute("""SELECT data_type,is_nullable,column_default
+                       FROM information_schema.columns
+                       WHERE table_schema=current_schema() AND table_name='rr1_fee_profiles' AND column_name='occurrence'""")
+        data_type, nullable, default = cur.fetchone()
+        assert data_type == "text"
+        assert nullable == "NO"
+        assert "''::text" in default
+        cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
+        cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
+        cur.execute("""INSERT INTO sec_derived_publications
+            (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+            VALUES(%s,'rr1_fee_profile_v1',1,%s,%s,%s)""", (publication_id, run_id, package_id, "b" * 64))
+        _fact(cur, run_id, "ManagementFeesOverAssets", "0.10", occurrence="01")
+        assert cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,)).fetchone() == (7,)
+        assert cur.execute("SELECT rr1_fee_profile_build_is_closed(%s)", (publication_id,)).fetchone() == (True,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

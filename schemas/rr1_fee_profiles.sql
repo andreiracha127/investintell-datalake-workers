@@ -52,6 +52,27 @@ CREATE TABLE IF NOT EXISTS rr1_fee_profiles (
     CHECK ((status = 'unavailable') = (original_tag IS NULL AND original_version IS NULL AND value_numeric IS NULL))
 );
 
+-- Pre-e838e80 installations persisted RR1 iprx as an integer.  iprx is lexical
+-- in the effective contract, so upgrade it without collapsing representations
+-- such as "01" in all future writes.
+DO $$
+DECLARE occurrence_type regtype;
+BEGIN
+    SELECT a.atttypid::regtype INTO occurrence_type
+    FROM pg_attribute a
+    WHERE a.attrelid = 'rr1_fee_profiles'::regclass
+      AND a.attname = 'occurrence'
+      AND NOT a.attisdropped;
+    IF occurrence_type = 'integer'::regtype THEN
+        ALTER TABLE rr1_fee_profiles ALTER COLUMN occurrence DROP DEFAULT;
+        ALTER TABLE rr1_fee_profiles ALTER COLUMN occurrence TYPE text USING occurrence::text;
+    ELSIF occurrence_type IS DISTINCT FROM 'text'::regtype THEN
+        RAISE EXCEPTION 'RR1 fee-profile occurrence must be text, found %', occurrence_type;
+    END IF;
+END $$;
+ALTER TABLE rr1_fee_profiles ALTER COLUMN occurrence SET NOT NULL;
+ALTER TABLE rr1_fee_profiles ALTER COLUMN occurrence SET DEFAULT ''::text;
+
 CREATE TABLE IF NOT EXISTS rr1_fee_profile_builds (
     publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     input_fingerprint char(64) NOT NULL CHECK (input_fingerprint ~ '^[0-9a-f]{64}$'),
