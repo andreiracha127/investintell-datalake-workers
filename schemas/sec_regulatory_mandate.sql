@@ -36,13 +36,59 @@ CREATE TABLE IF NOT EXISTS sec_regulatory_mandate_profiles (
     CHECK ((principal_risks_state='available') = (principal_risks_reason_code IS NULL))
 );
 
-CREATE OR REPLACE FUNCTION sec_regulatory_mandate_guard() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    IF TG_OP='INSERT' AND sec_derived_publication_is_validated(NEW.publication_id, 'regulatory_mandate') THEN
-        RETURN NEW;
+CREATE OR REPLACE FUNCTION sec_regulatory_mandate_field_is_valid(
+    field_state text, field_text text, reason_code text, source_date date, provenance jsonb
+) RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE field_state
+        WHEN 'available' THEN NULLIF(btrim(field_text),'') IS NOT NULL
+                              AND reason_code IS NULL
+                              AND source_date IS NOT NULL AND provenance IS NOT NULL
+        WHEN 'degraded' THEN NULLIF(btrim(field_text),'') IS NOT NULL
+                             AND NULLIF(btrim(reason_code),'') IS NOT NULL
+                             AND source_date IS NOT NULL AND provenance IS NOT NULL
+        WHEN 'unavailable' THEN field_text IS NULL AND source_date IS NULL AND provenance IS NULL
+                                AND NULLIF(btrim(reason_code),'') IS NOT NULL
+        WHEN 'not_applicable' THEN field_text IS NULL AND source_date IS NULL AND provenance IS NULL
+                                   AND NULLIF(btrim(reason_code),'') IS NOT NULL
+        ELSE false
+    END
+$$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sec_mandate_objective_payload_ck'
+                   AND conrelid='sec_regulatory_mandate_profiles'::regclass) THEN
+        ALTER TABLE sec_regulatory_mandate_profiles ADD CONSTRAINT sec_mandate_objective_payload_ck
+        CHECK (sec_regulatory_mandate_field_is_valid(objective_state,objective_text,objective_reason_code,objective_source_date,objective_provenance));
     END IF;
-    IF TG_OP='INSERT' THEN RAISE EXCEPTION 'mandate profile requires a validated mandate publication'; END IF;
-    RAISE EXCEPTION 'regulatory mandate profile is immutable';
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sec_mandate_strategy_payload_ck'
+                   AND conrelid='sec_regulatory_mandate_profiles'::regclass) THEN
+        ALTER TABLE sec_regulatory_mandate_profiles ADD CONSTRAINT sec_mandate_strategy_payload_ck
+        CHECK (sec_regulatory_mandate_field_is_valid(strategy_state,strategy_text,strategy_reason_code,strategy_source_date,strategy_provenance));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sec_mandate_concentration_payload_ck'
+                   AND conrelid='sec_regulatory_mandate_profiles'::regclass) THEN
+        ALTER TABLE sec_regulatory_mandate_profiles ADD CONSTRAINT sec_mandate_concentration_payload_ck
+        CHECK (sec_regulatory_mandate_field_is_valid(concentration_policy_state,concentration_policy_text,concentration_policy_reason_code,concentration_policy_source_date,concentration_policy_provenance));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='sec_mandate_principal_risks_payload_ck'
+                   AND conrelid='sec_regulatory_mandate_profiles'::regclass) THEN
+        ALTER TABLE sec_regulatory_mandate_profiles ADD CONSTRAINT sec_mandate_principal_risks_payload_ck
+        CHECK (sec_regulatory_mandate_field_is_valid(principal_risks_state,principal_risks_text,principal_risks_reason_code,principal_risks_source_date,principal_risks_provenance));
+    END IF;
+END $$;
+
+CREATE OR REPLACE FUNCTION sec_regulatory_mandate_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE parent_state text;
+BEGIN
+    IF TG_OP<>'INSERT' THEN
+        RAISE EXCEPTION 'regulatory mandate profile is immutable';
+    END IF;
+    SELECT lifecycle_state INTO parent_state
+    FROM sec_derived_publications
+    WHERE publication_id=NEW.publication_id AND product='regulatory_mandate'
+    FOR UPDATE;
+    IF parent_state='prepared' THEN RETURN NEW; END IF;
+    RAISE EXCEPTION 'mandate profile requires a prepared mandate publication';
 END $$;
 DROP TRIGGER IF EXISTS sec_regulatory_mandate_guard ON sec_regulatory_mandate_profiles;
 CREATE TRIGGER sec_regulatory_mandate_guard BEFORE INSERT OR UPDATE OR DELETE ON sec_regulatory_mandate_profiles

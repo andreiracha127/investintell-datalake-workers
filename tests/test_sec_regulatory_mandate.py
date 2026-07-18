@@ -34,13 +34,13 @@ def test_mandate_product_has_independent_fields_with_stable_states_and_provenanc
     assert "rr1_raw_v2_rows" not in ddl
 
 
-def test_mandate_product_requires_validated_derived_publication() -> None:
+def test_mandate_product_requires_prepared_derived_publication() -> None:
     ddl = (ROOT / "schemas" / "sec_regulatory_mandate.sql").read_text(encoding="utf-8")
-    assert "sec_derived_publication_is_validated" in ddl
-    assert "mandate profile requires a validated mandate publication" in ddl
+    assert "FOR UPDATE" in ddl
+    assert "mandate profile requires a prepared mandate publication" in ddl
 
 
-def test_mandate_profile_accepts_missing_and_not_applicable_but_is_immutable() -> None:
+def test_mandate_profile_builds_while_prepared_then_freezes_at_validation() -> None:
     import psycopg
 
     schema = f"mandate_fixture_{uuid4().hex}"
@@ -57,16 +57,44 @@ def test_mandate_profile_accepts_missing_and_not_applicable_but_is_immutable() -
             cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
             cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
             cur.execute("""INSERT INTO sec_derived_publications VALUES(%s,'regulatory_mandate',1,%s,%s,%s,now(),NULL,'prepared')""", (publication_id, run_id, package_id, "a" * 64))
-            cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
+            invalid_fields = (
+                ("available", " ", None, "2024-01-01", '{"accession":"A"}'),
+                ("degraded", "partial", "partial_coverage", None, '{"accession":"A"}'),
+                ("unavailable", "unexpected", "not_reported", None, None),
+                ("not_applicable", None, "not_applicable", None, '{"accession":"A"}'),
+            )
+            for index, (state, text, reason, source_date, provenance) in enumerate(invalid_fields):
+                with pytest.raises(psycopg.errors.CheckViolation):
+                    cur.execute("""INSERT INTO sec_regulatory_mandate_profiles(
+                        publication_id,series_id,objective_text,objective_state,objective_reason_code,
+                        objective_source_date,objective_provenance,strategy_state,strategy_reason_code,
+                        concentration_policy_state,concentration_policy_reason_code,principal_risks_state,principal_risks_reason_code)
+                        VALUES(%s,%s,%s,%s,%s,%s,%s::jsonb,'unavailable','not_reported',
+                               'unavailable','not_reported','unavailable','not_reported')""",
+                        (publication_id, f"INVALID-{index}", text, state, reason, source_date, provenance))
             cur.execute("""INSERT INTO sec_regulatory_mandate_profiles(
                 publication_id,series_id,objective_state,objective_reason_code,strategy_state,strategy_reason_code,
                 concentration_policy_state,concentration_policy_reason_code,principal_risks_state,principal_risks_reason_code)
                 VALUES(%s,'S','unavailable','objective_not_reported','not_applicable','strategy_not_applicable',
                        'unavailable','concentration_not_reported','unavailable','principal_risks_not_reported')""", (publication_id,))
+            cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
+            cur.execute("SELECT sec_set_current_derived_publication('regulatory_mandate',%s)", (publication_id,))
+            cur.execute("SELECT series_id FROM sec_current_regulatory_mandate_profiles")
+            assert cur.fetchone()[0] == "S"
+            with pytest.raises(psycopg.Error, match="prepared mandate publication"):
+                cur.execute("""INSERT INTO sec_regulatory_mandate_profiles(
+                    publication_id,series_id,objective_state,objective_reason_code,strategy_state,strategy_reason_code,
+                    concentration_policy_state,concentration_policy_reason_code,principal_risks_state,principal_risks_reason_code)
+                    VALUES(%s,'LATE','unavailable','not_reported','unavailable','not_reported',
+                           'unavailable','not_reported','unavailable','not_reported')""", (publication_id,))
             with pytest.raises(psycopg.Error, match="regulatory mandate profile is immutable"):
                 cur.execute("UPDATE sec_regulatory_mandate_profiles SET objective_state='available' WHERE publication_id=%s", (publication_id,))
+            with pytest.raises(psycopg.Error, match="current pointer is managed"):
+                cur.execute("UPDATE sec_derived_current_pointers SET set_at=now() WHERE product='regulatory_mandate'")
             conn.rollback()
             cur.execute(f'SET search_path TO "{schema}"')
             cur.execute("SELECT objective_state,strategy_state FROM sec_regulatory_mandate_profiles")
             assert cur.fetchone() == ("unavailable", "not_applicable")
+            cur.execute("SELECT publication_id FROM sec_derived_current_pointers WHERE product='regulatory_mandate'")
+            assert cur.fetchone()[0] == publication_id
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

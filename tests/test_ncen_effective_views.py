@@ -43,6 +43,10 @@ def test_ncen_effective_selection_prefers_amendment_excludes_unvalidated_and_mar
         (invalid, {"ACCESSION_NUMBER": "BAD", "CIK": "C1", "SUBMISSION_TYPE": "N-CEN/A", "FILING_DATE": "2025-01-01", "REPORT_ENDING_PERIOD": "2023-12-31"}),
         (run_a, {"ACCESSION_NUMBER": "T1", "CIK": "C2", "SUBMISSION_TYPE": "N-CEN", "FILING_DATE": "2024-01-10", "REPORT_ENDING_PERIOD": "2023-12-31"}),
         (run_b, {"ACCESSION_NUMBER": "T2", "CIK": "C2", "SUBMISSION_TYPE": "N-CEN", "FILING_DATE": "2024-01-10", "REPORT_ENDING_PERIOD": "2023-12-31"}),
+        (run_a, {"ACCESSION_NUMBER": "M0", "CIK": "C3", "SUBMISSION_TYPE": "N-CEN", "FILING_DATE": "2024-01-01", "REPORT_ENDING_PERIOD": "2023-12-31"}),
+        (run_b, {"ACCESSION_NUMBER": "M1", "CIK": "C3", "SUBMISSION_TYPE": "N-CEN", "FILING_DATE": "2024-01-02", "REPORT_ENDING_PERIOD": "2023-12-31"}),
+        (run_b, {"ACCESSION_NUMBER": "MA", "CIK": "C3", "SUBMISSION_TYPE": "N-CEN/A", "FILING_DATE": "2024-02-01", "REPORT_ENDING_PERIOD": "2023-12-31"}),
+        (run_a, {"ACCESSION_NUMBER": "OA", "CIK": "C4", "SUBMISSION_TYPE": "N-CEN/A", "FILING_DATE": "2024-02-01", "REPORT_ENDING_PERIOD": "2023-12-31"}),
     ]
     with psycopg.connect(dsn, autocommit=True) as conn:
         with conn.cursor() as cur:
@@ -60,4 +64,9 @@ def test_ncen_effective_selection_prefers_amendment_excludes_unvalidated_and_mar
             assert cur.fetchone()[0] == 0
             cur.execute("SELECT count(*) FROM ncen_effective_filing_selection WHERE registrant_cik='C2' AND selection_state='ambiguous'")
             assert cur.fetchone()[0] == 2
+            cur.execute("SELECT count(*) FROM ncen_effective_filings WHERE registrant_cik IN ('C3','C4')")
+            assert cur.fetchone()[0] == 0
+            cur.execute("""SELECT registrant_cik,base_accession_count,amends_accession_number,selection_state
+                FROM ncen_effective_filing_selection WHERE accession_number IN ('MA','OA') ORDER BY registrant_cik""")
+            assert cur.fetchall() == [("C3", 2, None, "ambiguous"), ("C4", 0, None, "ambiguous")]
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
