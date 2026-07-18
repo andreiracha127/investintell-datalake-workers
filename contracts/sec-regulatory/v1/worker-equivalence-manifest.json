@@ -3,7 +3,7 @@
   "contract_version": "v1",
   "source_repository": "andreiracha127/investintell-light",
   "phase0_base_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
-  "source_commit": "24d7732a38f438a523ba2f09986086e961c2165b",
+  "source_commit": "d75ed29dfb4ca94d6ac48fbb0d6de00cb2312801",
   "source_path": "backend/contracts/sec-regulatory/v1",
   "target_path": "contracts/sec-regulatory/v1",
   "worker_only_files": [
@@ -129,7 +129,12 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/manifest.json",
       "worker_path": "contracts/sec-regulatory/v1/manifest.json",
-      "sha256": "46bb87831c571639ba9edacddfd8e5ed4aac6140ab41e583ec1fbca94516d8df"
+      "sha256": "80763a88fb019f40137833aad46e74750bd735f16054ba05a11513630c18227c"
+    },
+    {
+      "source_path": "backend/contracts/sec-regulatory/v1/rr1-sub-header-order-evidence.json",
+      "worker_path": "contracts/sec-regulatory/v1/rr1-sub-header-order-evidence.json",
+      "sha256": "b8f57084f2c9735b2082ae27dcfb7ee95f3bac8af91b444c57f9de9629c017fa"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/rr1-txt-key-correction-evidence.json",
@@ -159,7 +164,7 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/sec-source-inventory.json",
       "worker_path": "contracts/sec-regulatory/v1/sec-source-inventory.json",
-      "sha256": "28d3579ad7dfe8b1ce45ef4f920963ad9d01c87b1dbf74653c289eea173dba69"
+      "sha256": "50a3ed4ae481d465dfd05e3f8cb6a7c9a2726407eb0c60bfa32bfb01d5dae175"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/source-tables/13f.json",
@@ -179,7 +184,7 @@
     {
       "source_path": "backend/contracts/sec-regulatory/v1/source-tables/rr1.json",
       "worker_path": "contracts/sec-regulatory/v1/source-tables/rr1.json",
-      "sha256": "27c339f6c23d1ded187fb20c8fef9abc97b10cb4d776b8e85b44cb1d4229efbb"
+      "sha256": "b27bda9db57ad351b89bd024e5faa2e42dcaa9a16b8ebff0372f2e9e80cda330"
     },
     {
       "source_path": "backend/contracts/sec-regulatory/v1/SOURCE.json",

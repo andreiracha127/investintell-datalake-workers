@@ -38,7 +38,7 @@ def test_verifier_accepts_the_pinned_worker_contract_bundle() -> None:
     result = _verify(BUNDLE)
 
     assert result.returncode == 0, result.stderr
-    assert "verified 35 mirrored files" in result.stdout
+    assert "verified 36 mirrored files" in result.stdout
 
 
 @pytest.mark.parametrize(

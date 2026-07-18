@@ -3,7 +3,7 @@
   "contract_version": "v1",
   "source_repository": "andreiracha127/investintell-light",
   "phase0_base_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
-  "source_commit": "24d7732a38f438a523ba2f09986086e961c2165b",
+  "source_commit": "d75ed29dfb4ca94d6ac48fbb0d6de00cb2312801",
   "source_path": "backend/contracts/sec-regulatory/v1",
   "target_path": "contracts/sec-regulatory/v1",
   "worker_only_files": [

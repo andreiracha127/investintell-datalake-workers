@@ -1090,28 +1090,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -1132,6 +1125,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -1148,7 +1154,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -1167,6 +1206,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",
@@ -2859,28 +2908,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -2901,6 +2943,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -2917,7 +2972,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -2936,6 +3024,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",
@@ -4637,28 +4735,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -4679,6 +4770,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -4695,7 +4799,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -4714,6 +4851,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",
@@ -6406,28 +6553,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -6448,6 +6588,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -6464,7 +6617,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -6483,6 +6669,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",
@@ -8196,28 +8392,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -8238,6 +8427,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -8254,7 +8456,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -8273,6 +8508,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",
@@ -9965,28 +10210,21 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
-                "maxLength": 20
-              },
-              "description": "The submission type of the registrant's filing.",
-              "disposition": "raw_and_typed_projection",
-              "name": "form",
-              "parsing_policy": "text_preserve_lexical",
-              "raw_target": "rr1_sub_raw",
-              "reconciliation_rule": "source_rows_equal_raw_rows",
-              "required": false,
-              "title": [
-                "Submission Type",
-                "Filing Type",
-                "EDGAR Form Type"
-              ]
-            },
-            {
-              "analytical_use": "source_specific",
-              "candidate_key": false,
-              "datatype": {
-                "base": "string",
                 "maxLength": 8,
                 "minLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the prospectus.",
               "disposition": "raw_and_typed_projection",
@@ -10007,6 +10245,19 @@
                 "maxLength": 8,
                 "minLength": 8
               },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
+              },
               "description": "The effective date of the prospectus or amendment.",
               "disposition": "raw_and_typed_projection",
               "name": "effdate",
@@ -10023,7 +10274,40 @@
               "candidate_key": false,
               "datatype": {
                 "base": "string",
+                "maxLength": 20
+              },
+              "description": "The submission type of the registrant's filing.",
+              "disposition": "raw_and_typed_projection",
+              "name": "form",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "rr1_sub_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": [
+                "Submission Type",
+                "Filing Type",
+                "EDGAR Form Type"
+              ]
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
                 "maxLength": 8
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d",
+                  "%d-%b-%Y",
+                  "%Y%m%d",
+                  "%d%m%Y"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "date-only",
+                "typed_current_candidate_eligible": false
               },
               "description": "The date of the registrant's filing with the Commission.",
               "disposition": "raw_and_typed_projection",
@@ -10042,6 +10326,16 @@
               "datatype": {
                 "base": "date",
                 "format": "YYYYMMDD HH:MM:SS.S"
+              },
+              "date_validation": {
+                "accepted_formats": [
+                  "%Y-%m-%d %H:%M:%S.%f"
+                ],
+                "invalid_value_action": "preserve_lexical_and_quarantine",
+                "reasonable_year_max": 2027,
+                "reasonable_year_min": 1900,
+                "source_value_shape": "YYYY-MM-DD HH:MM:SS.<fractional>",
+                "typed_current_candidate_eligible": false
               },
               "description": "The acceptance date and time of the registrant's filing with the Commission. Filings accepted after 5:30pm EST are considered filed on the following business day.",
               "disposition": "raw_and_typed_projection",

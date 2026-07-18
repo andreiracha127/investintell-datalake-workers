@@ -22,12 +22,12 @@ DEFAULT_BUNDLE_ROOT = ROOT / "contracts" / "sec-regulatory" / "v1"
 
 SOURCE_REPOSITORY = "andreiracha127/investintell-light"
 PHASE0_BASE_COMMIT = "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3"
-SOURCE_COMMIT = "24d7732a38f438a523ba2f09986086e961c2165b"
+SOURCE_COMMIT = "d75ed29dfb4ca94d6ac48fbb0d6de00cb2312801"
 SOURCE_PATH = "backend/contracts/sec-regulatory/v1"
 TARGET_PATH = "contracts/sec-regulatory/v1"
 CONTRACT_VERSION = "v1"
 WORKER_BASE_COMMIT = "8636c14f08aa8d27b0f8e1d627a65072bf9772bf"
-EXPECTED_MIRROR_FILE_COUNT = 35
+EXPECTED_MIRROR_FILE_COUNT = 36
 WORKER_ONLY_FILES = (
     "worker-equivalence-manifest.json",
     "worker-provenance.json",
