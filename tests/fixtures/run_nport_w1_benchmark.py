@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import platform
+import shutil
 import statistics
 import time
 from typing import Any
@@ -43,27 +44,48 @@ SAFE_SQL = """
 SELECT count(*)
 FROM nport_raw_rows r
 JOIN nport_contract_tables c ON c.source_table = r.source_table
-CROSS JOIN LATERAL (
-  SELECT nport_expected_row(r.original_lexical_row, c.column_specs) AS row
-) expected
+CROSS JOIN LATERAL jsonb_to_record(nport_expected_row(
+  r.original_lexical_row, c.column_specs
+)) AS expected(typed_projection jsonb, parse_errors jsonb, parse_status text)
 WHERE r.ingestion_run_id = %(run_id)s
   AND r.raw_row_id <= %(cutoff)s
   AND (
     jsonb_typeof(r.original_lexical_row) <> 'object'
     OR jsonb_typeof(r.typed_projection) <> 'object'
-    OR expected.row IS NULL
-    OR r.typed_projection IS DISTINCT FROM expected.row->'typed_projection'
-    OR r.parse_errors IS DISTINCT FROM expected.row->'parse_errors'
-    OR r.parse_status IS DISTINCT FROM expected.row->>'parse_status'
+    OR expected.typed_projection IS NULL
+    OR r.typed_projection IS DISTINCT FROM expected.typed_projection
+    OR r.parse_errors IS DISTINCT FROM expected.parse_errors
+    OR r.parse_status IS DISTINCT FROM expected.parse_status
   )
 """.strip()
 
 
-def _timed(cur: psycopg.Cursor[Any], sql: str, params: dict[str, Any]) -> tuple[float, int]:
+def _io_counters(cur: psycopg.Cursor[Any]) -> dict[str, Any]:
+    cur.execute("SELECT pg_stat_clear_snapshot()")
+    cur.execute(
+        """SELECT temp_files, temp_bytes, pg_current_wal_lsn()::text
+           FROM pg_stat_database WHERE datname=current_database()"""
+    )
+    temp_files, temp_bytes, wal_lsn = cur.fetchone()
+    return {"temp_files": int(temp_files), "temp_bytes": int(temp_bytes), "wal_lsn": wal_lsn}
+
+
+def _timed(cur: psycopg.Cursor[Any], sql: str, params: dict[str, Any]) -> dict[str, Any]:
+    before = _io_counters(cur)
     started = time.perf_counter()
     cur.execute(sql, params)
     count = int(cur.fetchone()[0])
-    return time.perf_counter() - started, count
+    elapsed = time.perf_counter() - started
+    after = _io_counters(cur)
+    cur.execute("SELECT pg_wal_lsn_diff(%s::pg_lsn, %s::pg_lsn)", (after["wal_lsn"], before["wal_lsn"]))
+    wal_bytes = int(cur.fetchone()[0])
+    return {
+        "elapsed_seconds": elapsed,
+        "mismatches": count,
+        "temp_files_delta": after["temp_files"] - before["temp_files"],
+        "temp_bytes_delta": after["temp_bytes"] - before["temp_bytes"],
+        "wal_bytes_delta": wal_bytes,
+    }
 
 
 def _relation_scans(plan: Any, relation: str) -> list[dict[str, Any]]:
@@ -92,6 +114,9 @@ def main() -> None:
     parser.add_argument("--database-url", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--statement-timeout-ms", type=int, default=1_800_000)
+    parser.add_argument("--work-mem-mb", type=int)
+    parser.add_argument("--max-parallel-workers-per-gather", type=int)
+    parser.add_argument("--temp-file-limit-mb", type=int, default=20_480)
     args = parser.parse_args()
 
     evidence: dict[str, Any] = {
@@ -114,18 +139,52 @@ def main() -> None:
         "host": {"python": platform.python_version(), "platform": platform.platform()},
         "run_id": args.run_id,
         "statement_timeout_ms": args.statement_timeout_ms,
+        "requested_tuning": {
+            "work_mem_mb": args.work_mem_mb,
+            "max_parallel_workers_per_gather": args.max_parallel_workers_per_gather,
+            "temp_file_limit_mb": args.temp_file_limit_mb,
+        },
     }
 
     with psycopg.connect(args.database_url) as conn:
         conn.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('statement_timeout', %s, true)", (str(args.statement_timeout_ms),))
+            cur.execute("SELECT set_config('temp_file_limit', %s, true)", (f"{args.temp_file_limit_mb}MB",))
+            if args.work_mem_mb is not None:
+                cur.execute("SELECT set_config('work_mem', %s, true)", (f"{args.work_mem_mb}MB",))
+            if args.max_parallel_workers_per_gather is not None:
+                cur.execute(
+                    "SELECT set_config('max_parallel_workers_per_gather', %s, true)",
+                    (str(args.max_parallel_workers_per_gather),),
+                )
             cur.execute("SELECT version(), current_setting('max_locks_per_transaction'), current_setting('max_connections')")
             version, locks, connections = cur.fetchone()
             evidence["database"] = {
                 "version": version,
                 "max_locks_per_transaction": locks,
                 "max_connections": connections,
+            }
+            cur.execute("SHOW data_directory")
+            data_directory = cur.fetchone()[0]
+            disk = shutil.disk_usage(data_directory)
+            evidence["data_directory_disk"] = {
+                "path": data_directory,
+                "total_bytes": disk.total,
+                "free_bytes": disk.free,
+                "free_fraction": disk.free / disk.total,
+            }
+            if disk.free / disk.total < 0.25:
+                raise RuntimeError("benchmark requires at least 25% free space on the data volume")
+            cur.execute(
+                """SELECT name, setting, unit FROM pg_settings WHERE name = ANY(%s)
+                   ORDER BY name""",
+                (["work_mem", "hash_mem_multiplier", "temp_file_limit",
+                  "max_parallel_workers_per_gather", "jit"],),
+            )
+            evidence["effective_settings"] = {
+                name: {"setting": setting, "unit": unit}
+                for name, setting, unit in cur.fetchall()
             }
             cur.execute(
                 """SELECT count(*), min(raw_row_id), max(raw_row_id)
@@ -172,31 +231,37 @@ def main() -> None:
             try:
                 for fraction in (25, 50, 100):
                     params = {"run_id": args.run_id, "cutoff": boundaries[fraction]}
-                    unsafe_warmup, unsafe_count = _timed(cur, UNSAFE_SQL, params)
-                    safe_warmup, safe_count = _timed(cur, SAFE_SQL, params)
-                    unsafe_trials: list[float] = []
-                    safe_trials: list[float] = []
+                    unsafe_warmup = _timed(cur, UNSAFE_SQL, params)
+                    safe_warmup = _timed(cur, SAFE_SQL, params)
+                    unsafe_count = unsafe_warmup["mismatches"]
+                    safe_count = safe_warmup["mismatches"]
+                    unsafe_trials: list[dict[str, Any]] = []
+                    safe_trials: list[dict[str, Any]] = []
                     for _ in range(3):
-                        elapsed, count = _timed(cur, UNSAFE_SQL, params)
-                        if count != unsafe_count:
+                        trial = _timed(cur, UNSAFE_SQL, params)
+                        if trial["mismatches"] != unsafe_count:
                             raise RuntimeError("unsafe result changed inside repeatable-read snapshot")
-                        unsafe_trials.append(elapsed)
-                        elapsed, count = _timed(cur, SAFE_SQL, params)
-                        if count != safe_count:
+                        unsafe_trials.append(trial)
+                        trial = _timed(cur, SAFE_SQL, params)
+                        if trial["mismatches"] != safe_count:
                             raise RuntimeError("safe result changed inside repeatable-read snapshot")
-                        safe_trials.append(elapsed)
+                        safe_trials.append(trial)
                     results[str(fraction)] = {
                         "rows": sizes[fraction],
                         "unsafe": {
-                            "warmup_seconds": unsafe_warmup,
-                            "trials_seconds": unsafe_trials,
-                            "median_seconds": statistics.median(unsafe_trials),
+                            "warmup": unsafe_warmup,
+                            "trials": unsafe_trials,
+                            "median_seconds": statistics.median(
+                                trial["elapsed_seconds"] for trial in unsafe_trials
+                            ),
                             "mismatches": unsafe_count,
                         },
                         "safe": {
-                            "warmup_seconds": safe_warmup,
-                            "trials_seconds": safe_trials,
-                            "median_seconds": statistics.median(safe_trials),
+                            "warmup": safe_warmup,
+                            "trials": safe_trials,
+                            "median_seconds": statistics.median(
+                                trial["elapsed_seconds"] for trial in safe_trials
+                            ),
                             "mismatches": safe_count,
                         },
                     }

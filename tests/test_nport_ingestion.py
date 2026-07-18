@@ -184,6 +184,22 @@ def test_copy_and_tsv_code_paths_are_bounded_streaming_primitives() -> None:
     assert ".read_text" not in inspect.getsource(verify_package)
 
 
+def test_publication_reconciler_uses_run_wide_summaries_and_one_semantic_scan() -> None:
+    """The publication gate must not return to the 40m-row correlated plan."""
+    ddl = Path("schemas/nport_raw.sql").read_text(encoding="utf-8")
+    body = ddl.split(
+        "CREATE OR REPLACE FUNCTION nport_raw_run_reconciles(target_run_id uuid)", 1,
+    )[1].split("DROP TRIGGER IF EXISTS nport_raw_publication_gate", 1)[0]
+
+    assert "LEFT JOIN LATERAL (\n      SELECT count(DISTINCT r.raw_row_id)" not in body
+    assert "issue_rows AS MATERIALIZED" in body
+    assert "raw_actuals AS MATERIALIZED" in body
+    assert "semantic_and_disposition" in body
+    assert body.count("nport_expected_row(") == 1
+    assert "jsonb_to_record(nport_expected_row(" in body
+    assert "holding_rows AS MATERIALIZED" in body
+
+
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
 def test_real_db_zero_tables_are_accounted_and_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import psycopg
@@ -236,6 +252,15 @@ def test_real_db_orphan_holding_id_fails_bundle(tmp_path: Path, monkeypatch: pyt
             conn.commit()
             assert result["state"] == "failed"
             assert "órfão" in str(result["reason"])
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT current_state, raw_validated_at,
+                              (SELECT count(*) FROM nport_holding_accession_map
+                               WHERE ingestion_run_id=sec_ingestion_runs.run_id)
+                       FROM sec_ingestion_runs WHERE run_id=%s""",
+                    (result["run_id"],),
+                )
+                assert cur.fetchone() == ("failed", None, 0)
     finally:
         monkeypatch.setattr(ingestion, "load_nport_contract", old)
 
@@ -255,6 +280,9 @@ def test_real_db_ambiguous_holding_id_fails_bundle(tmp_path: Path, monkeypatch: 
     with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
         result = ingestion.ingest_package(conn, package=package, source_root=tmp_path, parser_version="nport-test-ambig-v1")
         conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_state, raw_validated_at FROM sec_ingestion_runs WHERE run_id=%s", (result["run_id"],))
+            assert cur.fetchone() == ("failed", None)
     assert result["state"] == "failed"
     assert "ambíguo" in str(result["reason"])
 
@@ -271,6 +299,9 @@ def test_real_db_accession_orphan_fails_bundle(tmp_path: Path, monkeypatch: pyte
     with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
         result = ingestion.ingest_package(conn, package=package, source_root=tmp_path, parser_version="nport-test-accession-v1")
         conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_state, raw_validated_at FROM sec_ingestion_runs WHERE run_id=%s", (result["run_id"],))
+            assert cur.fetchone() == ("failed", None)
     assert result["state"] == "failed"
     assert "ACCESSION_NUMBER órfão" in str(result["reason"])
 
@@ -590,6 +621,78 @@ def test_publication_rejects_typed_projection_that_contradicts_lexical_source() 
         register_table_reconciliation(
             conn, run_id=run.run_id, source_file_id=source_file_id, table_name="SUBMISSION.tsv",
             expected_count=1, source_count=1, lexical_count=1, typed_success_count=1, state="accounted",
+        )
+        with pytest.raises(psycopg.Error, match="N-PORT raw validation failed"):
+            validate_raw_run(conn, run_id=run.run_id)
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_publication_rejects_forged_required_blank_as_typed() -> None:
+    """Required-blank derivation stays fail-closed inside the fused row scan."""
+    import psycopg
+    from src.nport.schema import json_typed_projection, load_nport_contract, parse_row
+    from src.sec_regulatory.manifests import register_file, register_table_reconciliation, validate_raw_run
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        run, _ = _seed_zero_row_contract_run(conn, suffix="required-blank-forgery")
+        table = load_nport_contract().table_for_filename("DEBT_SECURITY.tsv")
+        parsed = parse_row(table.columns, tuple("" for _ in table.columns))
+        file_id = register_file(
+            conn, run_id=run.run_id, relative_path=table.source_file, sha256="c" * 64,
+            byte_size=0, expected_count=1, data_count=1, lexical_count=1,
+            typed_success_count=1, state="accounted",
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE sec_table_reconciliations
+                   SET source_file_id=%s, expected_count=1, source_count=1,
+                       lexical_count=1, typed_success_count=1
+                   WHERE run_id=%s AND table_name=%s""",
+                (file_id, run.run_id, table.source_file),
+            )
+            cur.execute(
+                """INSERT INTO nport_raw_rows (
+                       ingestion_run_id,source_file_id,source_row_number,source_sha256,
+                       parser_version,source_table,original_lexical_row,typed_projection,
+                       parse_status,parse_errors,candidate_key_evidence
+                   ) VALUES (%s,%s,2,%s,%s,%s,%s,%s,'typed','[]',%s)""",
+                (run.run_id, file_id, "c" * 64, "zero-required-blank-forgery",
+                 table.source_file, json.dumps(parsed.lexical),
+                 json.dumps(json_typed_projection(parsed.typed)),
+                 json.dumps(parsed.candidate_key_evidence)),
+            )
+        with pytest.raises(psycopg.Error, match="N-PORT raw validation failed"):
+            validate_raw_run(conn, run_id=run.run_id)
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_publication_rejects_duplicate_candidate_key_in_one_grouped_scan() -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import register_file, register_table_reconciliation, validate_raw_run
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        run, file_id = _seed_zero_row_contract_run(conn, suffix="duplicate-candidate")
+        lexical, typed, evidence = _valid_submission_evidence()
+        with conn.cursor() as cur:
+            for row_number in (2, 3):
+                cur.execute(
+                    """INSERT INTO nport_raw_rows (
+                           ingestion_run_id,source_file_id,source_row_number,source_sha256,
+                           parser_version,source_table,original_lexical_row,typed_projection,
+                           parse_status,parse_errors,candidate_key_evidence,accession_number
+                       ) VALUES (%s,%s,%s,%s,%s,'SUBMISSION.tsv',%s,%s,'typed','[]',%s,'a')""",
+                    (run.run_id, file_id, row_number, "a" * 64, "zero-duplicate-candidate",
+                     lexical, typed, evidence),
+                )
+        register_file(
+            conn, run_id=run.run_id, relative_path="SUBMISSION.tsv", sha256="a" * 64,
+            byte_size=0, expected_count=2, data_count=2, lexical_count=2,
+            typed_success_count=2, state="accounted", source_file_id=file_id,
+        )
+        register_table_reconciliation(
+            conn, run_id=run.run_id, source_file_id=file_id, table_name="SUBMISSION.tsv",
+            expected_count=2, source_count=2, lexical_count=2,
+            typed_success_count=2, state="accounted",
         )
         with pytest.raises(psycopg.Error, match="N-PORT raw validation failed"):
             validate_raw_run(conn, run_id=run.run_id)
@@ -949,6 +1052,41 @@ def test_issue_on_last_row_of_full_copy_batch_reconciles_at_publication(
                 (result["run_id"],),
             )
             assert cur.fetchone() == (999, 1)
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_multiple_issues_on_one_row_count_as_one_quarantine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue preaggregation must not multiply raw reconciliation counts."""
+    import psycopg
+    import src.nport.ingestion as ingestion
+
+    contract, package = _package(tmp_path, "2030q2_nport", accession="TWO-ISSUES")
+    submission = contract.table_for_filename("SUBMISSION.tsv")
+    _write_row(package / submission.source_file, submission.headers, {
+        "ACCESSION_NUMBER": "TWO-ISSUES", "FILING_DATE": "bad-date",
+        "SUB_TYPE": "NPORT-P", "REPORT_ENDING_PERIOD": "31-DEC-2025",
+        "REPORT_DATE": "also-bad", "IS_LAST_FILING": "N",
+    })
+    monkeypatch.setattr(ingestion, "load_nport_contract", lambda: contract)
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        result = ingestion.ingest_package(
+            conn, package=package, source_root=tmp_path, parser_version="two-issues-v1",
+        )
+        conn.commit()
+        assert result["state"] == "raw_validated"
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT f.lexical_count, f.quarantine_count, count(i.issue_id)
+                   FROM sec_source_files f
+                   LEFT JOIN sec_row_issues i ON i.source_file_id=f.source_file_id
+                   WHERE f.run_id=%s AND f.relative_path='SUBMISSION.tsv'
+                   GROUP BY f.source_file_id""",
+                (result["run_id"],),
+            )
+            assert cur.fetchone() == (1, 1, 2)
 
 
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")

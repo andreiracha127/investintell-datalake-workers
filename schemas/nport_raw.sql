@@ -350,178 +350,232 @@ BEGIN
       AND t.table_name <> f.relative_path
   ) THEN RETURN false; END IF;
 
-  -- Reconciliations, physical raw rows, and actual issue rows must describe
-  -- the same facts; supplied counters are never trusted on their own.
+  -- Issues are reduced once at exact source-row grain.  The run-wide raw
+  -- summary replaces the former per-contract correlated aggregate, while the
+  -- semantic_and_disposition branch evaluates nport_expected_row once per raw
+  -- row and reuses its three outputs without materializing the 40m-row result.
   IF EXISTS (
-    SELECT 1
-    FROM nport_contract_tables c
-    LEFT JOIN sec_table_reconciliations t ON t.run_id = target_run_id AND t.table_name = c.source_table
-    LEFT JOIN sec_source_files f ON f.run_id = target_run_id AND f.source_file_id = t.source_file_id
-    LEFT JOIN LATERAL (
-      SELECT count(DISTINCT r.raw_row_id) AS physical_count,
-             count(DISTINCT r.raw_row_id) FILTER (WHERE r.parse_status = 'typed') AS typed_count,
-             count(DISTINCT r.source_row_number) FILTER (WHERE i.status = 'quarantined') AS quarantined_count,
-             count(DISTINCT r.source_row_number) FILTER (WHERE i.status = 'rejected') AS rejected_count
+    WITH issue_rows AS MATERIALIZED (
+      SELECT i.source_file_id,
+             i.source_row_number,
+             count(*) AS issue_count,
+             count(*) FILTER (WHERE i.status = 'quarantined') AS quarantined_issue_count,
+             count(*) FILTER (WHERE i.status = 'rejected') AS rejected_issue_count,
+             count(*) FILTER (WHERE i.status = 'resolved') AS resolved_issue_count,
+             COALESCE(jsonb_agg(
+               jsonb_build_object(
+                 'column_name', i.column_name,
+                 'code', i.typed_error_code,
+                 'raw_value', i.raw_lexical_value,
+                 'detail', i.typed_error_detail
+               ) ORDER BY i.issue_sequence
+             ) FILTER (WHERE i.status = 'quarantined'), '[]'::jsonb) AS quarantined_errors,
+             COALESCE(jsonb_agg(
+               jsonb_build_object(
+                 'column_name', i.column_name,
+                 'code', i.typed_error_code,
+                 'raw_value', i.raw_lexical_value,
+                 'detail', i.typed_error_detail
+               ) ORDER BY i.issue_sequence
+             ) FILTER (WHERE i.status = 'rejected'), '[]'::jsonb) AS rejected_errors
+      FROM sec_row_issues i
+      JOIN sec_source_files issue_file ON issue_file.source_file_id = i.source_file_id
+      WHERE issue_file.run_id = target_run_id
+      GROUP BY i.source_file_id, i.source_row_number
+    ),
+    raw_actuals AS MATERIALIZED (
+      SELECT r.source_table,
+             count(*) AS physical_count,
+             count(*) FILTER (WHERE r.parse_status = 'typed') AS typed_count,
+             count(*) FILTER (WHERE COALESCE(i.quarantined_issue_count, 0) > 0) AS quarantined_count,
+             count(*) FILTER (WHERE COALESCE(i.rejected_issue_count, 0) > 0) AS rejected_count
       FROM nport_raw_rows r
-      LEFT JOIN sec_row_issues i ON i.source_file_id = r.source_file_id
+      LEFT JOIN issue_rows i ON i.source_file_id = r.source_file_id
         AND i.source_row_number = r.source_row_number
-      WHERE r.ingestion_run_id = target_run_id AND r.source_table = c.source_table
-    ) actual ON true
-    WHERE f.source_file_id IS NULL OR t.reconciliation_id IS NULL
-      OR f.state <> 'accounted' OR t.state <> 'accounted'
-      OR ((actual.physical_count > 0 OR c.source_table = 'SUBMISSION.tsv') AND f.relative_path <> c.source_table)
-      OR (f.relative_path = c.source_table AND (f.expected_count <> actual.physical_count OR f.data_count <> actual.physical_count
-          OR f.lexical_count <> actual.physical_count OR f.typed_success_count <> actual.typed_count
-          OR f.quarantine_count <> actual.quarantined_count OR f.reject_count <> actual.rejected_count))
-      OR t.expected_count <> actual.physical_count OR t.source_count <> actual.physical_count
-      OR t.lexical_count <> actual.physical_count OR t.typed_success_count <> actual.typed_count
-      OR t.quarantine_count <> actual.quarantined_count OR t.reject_count <> actual.rejected_count
-  ) THEN RETURN false; END IF;
-
-  -- Every raw row remains tied to the run's declared source file and frozen contract.
-  IF EXISTS (
-    SELECT 1 FROM nport_raw_rows r
-    LEFT JOIN sec_source_files f ON (f.run_id, f.source_file_id) = (r.ingestion_run_id, r.source_file_id)
-    LEFT JOIN sec_ingestion_runs run ON run.run_id = r.ingestion_run_id
-    LEFT JOIN nport_contract_tables c ON c.source_table = r.source_table
-    WHERE r.ingestion_run_id = target_run_id AND (f.source_file_id IS NULL OR c.source_table IS NULL
-      OR run.source_family <> 'nport' OR r.source_sha256 <> f.sha256 OR r.parser_version <> run.parser_version
-      OR r.source_table <> f.relative_path)
-  ) THEN RETURN false; END IF;
-
-  -- The typed projection is a governed derivation, never caller-supplied
-  -- evidence. Validate every persisted value against its lexical source.
-  IF EXISTS (
-    SELECT 1 FROM nport_raw_rows r
-    JOIN nport_contract_tables c ON c.source_table = r.source_table
-    CROSS JOIN LATERAL (SELECT nport_expected_row(r.original_lexical_row, c.column_specs) AS row) expected
-    WHERE r.ingestion_run_id = target_run_id
-      AND (c.column_specs IS NULL
-           OR jsonb_array_length(c.column_specs) <> cardinality(c.columns)
-           OR expected.row IS NULL
-           OR r.typed_projection IS DISTINCT FROM expected.row->'typed_projection'
-           OR r.parse_errors IS DISTINCT FROM expected.row->'parse_errors'
-           OR r.parse_status IS DISTINCT FROM expected.row->>'parse_status')
-  ) THEN RETURN false; END IF;
-
-  -- Disposition is checked only at publication, after COPY and issue rows have
-  -- both landed. This avoids an ordering dependency inside a bounded batch.
-  IF EXISTS (
-    SELECT 1
-    FROM nport_raw_rows r
-    JOIN nport_contract_tables c ON c.source_table = r.source_table
-    WHERE r.ingestion_run_id = target_run_id
-      AND (
-        (r.parse_status = 'typed' AND (
-          r.parse_errors <> '[]'::jsonb OR EXISTS (
-            SELECT 1 FROM sec_row_issues i
-            WHERE i.source_file_id = r.source_file_id
-              AND i.source_row_number = r.source_row_number
-          )
+      WHERE r.ingestion_run_id = target_run_id
+      GROUP BY r.source_table
+    ),
+    invalid_counters AS (
+      SELECT 1
+      FROM nport_contract_tables c
+      LEFT JOIN sec_table_reconciliations t
+        ON t.run_id = target_run_id AND t.table_name = c.source_table
+      LEFT JOIN sec_source_files f
+        ON f.run_id = target_run_id AND f.source_file_id = t.source_file_id
+      LEFT JOIN raw_actuals actual ON actual.source_table = c.source_table
+      WHERE f.source_file_id IS NULL OR t.reconciliation_id IS NULL
+        OR f.state <> 'accounted' OR t.state <> 'accounted'
+        OR ((COALESCE(actual.physical_count, 0) > 0 OR c.source_table = 'SUBMISSION.tsv')
+            AND f.relative_path <> c.source_table)
+        OR (f.relative_path = c.source_table AND (
+             f.expected_count <> COALESCE(actual.physical_count, 0)
+             OR f.data_count <> COALESCE(actual.physical_count, 0)
+             OR f.lexical_count <> COALESCE(actual.physical_count, 0)
+             OR f.typed_success_count <> COALESCE(actual.typed_count, 0)
+             OR f.quarantine_count <> COALESCE(actual.quarantined_count, 0)
+             OR f.reject_count <> COALESCE(actual.rejected_count, 0)
         ))
-        OR (r.parse_status IN ('quarantined', 'rejected') AND (
-          r.parse_errors = '[]'::jsonb
-          OR NOT EXISTS (
-            SELECT 1 FROM sec_row_issues i
-            WHERE i.source_file_id = r.source_file_id
-              AND i.source_row_number = r.source_row_number
-              AND i.status = r.parse_status
+        OR t.expected_count <> COALESCE(actual.physical_count, 0)
+        OR t.source_count <> COALESCE(actual.physical_count, 0)
+        OR t.lexical_count <> COALESCE(actual.physical_count, 0)
+        OR t.typed_success_count <> COALESCE(actual.typed_count, 0)
+        OR t.quarantine_count <> COALESCE(actual.quarantined_count, 0)
+        OR t.reject_count <> COALESCE(actual.rejected_count, 0)
+      LIMIT 1
+    ),
+    semantic_and_disposition AS (
+      SELECT 1
+      FROM nport_raw_rows r
+      LEFT JOIN sec_source_files f
+        ON (f.run_id, f.source_file_id) = (r.ingestion_run_id, r.source_file_id)
+      LEFT JOIN sec_ingestion_runs ingestion ON ingestion.run_id = r.ingestion_run_id
+      LEFT JOIN nport_contract_tables c ON c.source_table = r.source_table
+      LEFT JOIN issue_rows i ON i.source_file_id = r.source_file_id
+        AND i.source_row_number = r.source_row_number
+      LEFT JOIN LATERAL jsonb_to_record(nport_expected_row(
+        r.original_lexical_row, c.column_specs
+      )) AS expected(typed_projection jsonb, parse_errors jsonb, parse_status text) ON true
+      WHERE r.ingestion_run_id = target_run_id
+        AND (
+          f.source_file_id IS NULL OR c.source_table IS NULL
+          OR ingestion.source_family <> 'nport'
+          OR r.source_sha256 <> f.sha256
+          OR r.parser_version <> ingestion.parser_version
+          OR r.source_table <> f.relative_path
+          OR c.column_specs IS NULL
+          OR jsonb_array_length(c.column_specs) <> cardinality(c.columns)
+          OR expected.typed_projection IS NULL
+          OR r.typed_projection IS DISTINCT FROM expected.typed_projection
+          OR r.parse_errors IS DISTINCT FROM expected.parse_errors
+          OR r.parse_status IS DISTINCT FROM expected.parse_status
+          OR (r.parse_status = 'typed' AND (
+               r.parse_errors <> '[]'::jsonb OR COALESCE(i.issue_count, 0) <> 0
+          ))
+          OR (r.parse_status = 'quarantined' AND (
+               r.parse_errors = '[]'::jsonb
+               OR COALESCE(i.quarantined_issue_count, 0) = 0
+               OR COALESCE(i.issue_count, 0) <> COALESCE(i.quarantined_issue_count, 0)
+               OR r.parse_errors IS DISTINCT FROM COALESCE(i.quarantined_errors, '[]'::jsonb)
+          ))
+          OR (r.parse_status = 'rejected' AND (
+               r.parse_errors = '[]'::jsonb
+               OR COALESCE(i.rejected_issue_count, 0) = 0
+               OR COALESCE(i.issue_count, 0) <> COALESCE(i.rejected_issue_count, 0)
+               OR r.parse_errors IS DISTINCT FROM COALESCE(i.rejected_errors, '[]'::jsonb)
+          ))
+          OR (r.parse_status IN ('quarantined', 'rejected') AND EXISTS (
+               SELECT 1 FROM jsonb_array_elements(r.parse_errors) error
+               WHERE r.typed_projection->(error->>'column_name') <> 'null'::jsonb
+          ))
+          OR EXISTS (
+            SELECT 1 FROM unnest(c.required_columns) required_column
+            WHERE COALESCE(r.original_lexical_row->>required_column, '') = ''
+              AND NOT EXISTS (
+                SELECT 1 FROM jsonb_array_elements(r.parse_errors) error
+                WHERE error->>'column_name' = required_column
+                  AND error->>'code' = 'required_blank'
+              )
           )
           OR EXISTS (
-            SELECT 1 FROM sec_row_issues i
-            WHERE i.source_file_id = r.source_file_id
-              AND i.source_row_number = r.source_row_number
-              AND i.status <> r.parse_status
+            SELECT 1 FROM jsonb_array_elements(r.parse_errors) error
+            WHERE error->>'code' = 'required_blank'
+              AND COALESCE(r.original_lexical_row->>(error->>'column_name'), '') <> ''
           )
-          OR EXISTS (
-            SELECT 1 FROM jsonb_array_elements(r.parse_errors) e
-            WHERE r.typed_projection->(e->>'column_name') <> 'null'::jsonb
-          )
-          OR r.parse_errors IS DISTINCT FROM COALESCE((
-            SELECT jsonb_agg(
-              jsonb_build_object(
-                'column_name', i.column_name,
-                'code', i.typed_error_code,
-                'raw_value', i.raw_lexical_value,
-                'detail', i.typed_error_detail
-              ) ORDER BY i.issue_sequence
-            )
-            FROM sec_row_issues i
-            WHERE i.source_file_id = r.source_file_id
-              AND i.source_row_number = r.source_row_number
-              AND i.status = r.parse_status
-          ), '[]'::jsonb)
-        ))
-        OR EXISTS (
-          SELECT 1 FROM unnest(c.required_columns) required_column
-          WHERE COALESCE(r.original_lexical_row->>required_column, '') = ''
-            AND NOT EXISTS (
-              SELECT 1 FROM jsonb_array_elements(r.parse_errors) e
-              WHERE e->>'column_name' = required_column
-                AND e->>'code' = 'required_blank'
-            )
         )
-        OR EXISTS (
-          SELECT 1 FROM jsonb_array_elements(r.parse_errors) e
-          WHERE e->>'code' = 'required_blank'
-            AND COALESCE(r.original_lexical_row->>(e->>'column_name'), '') <> ''
-        )
-      )
+      LIMIT 1
+    )
+    SELECT 1 FROM invalid_counters
+    UNION ALL
+    SELECT 1 FROM semantic_and_disposition
+    LIMIT 1
   ) THEN RETURN false; END IF;
 
   -- Candidate keys are required only where the frozen contract declares one;
   -- their evidence shape and uniqueness are both checked inside the database.
   IF EXISTS (
-    SELECT 1 FROM nport_raw_rows r JOIN nport_contract_tables c ON c.source_table = r.source_table
-    WHERE r.ingestion_run_id = target_run_id AND cardinality(c.candidate_key) > 0
-      AND (r.candidate_key_evidence->'columns' <> to_jsonb(c.candidate_key)
-           OR COALESCE((r.candidate_key_evidence->>'complete')::boolean, false) IS NOT TRUE
-           OR jsonb_array_length(COALESCE(r.candidate_key_evidence->'values', '[]'::jsonb)) <> cardinality(c.candidate_key))
-  ) OR EXISTS (
-    SELECT 1 FROM nport_raw_rows r JOIN nport_contract_tables c ON c.source_table = r.source_table
+    SELECT 1
+    FROM nport_raw_rows r
+    JOIN nport_contract_tables c ON c.source_table = r.source_table
     WHERE r.ingestion_run_id = target_run_id AND cardinality(c.candidate_key) > 0
     GROUP BY r.source_table, r.candidate_key_evidence->'values'
     HAVING count(*) > 1
+       OR bool_or(
+            r.candidate_key_evidence->'columns' <> to_jsonb(c.candidate_key)
+            OR COALESCE((r.candidate_key_evidence->>'complete')::boolean, false) IS NOT TRUE
+            OR jsonb_array_length(COALESCE(
+                 r.candidate_key_evidence->'values', '[]'::jsonb
+               )) <> cardinality(c.candidate_key)
+          )
+    LIMIT 1
   ) THEN RETURN false; END IF;
 
-  -- SUBMISSION is the unique root; all declared children must resolve to it.
+  -- The minimal holding projection is materialized once (well below the
+  -- bounded temp budget), then reused for ambiguity, bidirectional map
+  -- equality, and child-parent checks.  SUBMISSION and holding children share
+  -- one raw-row scan.
   IF EXISTS (
-    SELECT 1 FROM nport_raw_rows r JOIN nport_contract_tables c ON c.source_table = r.source_table
-    LEFT JOIN (
-      SELECT accession_number, count(*) AS n FROM nport_raw_rows
-      WHERE ingestion_run_id = target_run_id AND source_table = 'SUBMISSION.tsv'
+    WITH holding_rows AS MATERIALIZED (
+      SELECT holding_id, accession_number, source_file_id, source_row_number
+      FROM nport_raw_rows
+      WHERE ingestion_run_id = target_run_id
+        AND source_table = 'FUND_REPORTED_HOLDING.tsv'
+        AND holding_id IS NOT NULL
+    ),
+    submission_rows AS MATERIALIZED (
+      SELECT accession_number, count(*) AS n
+      FROM nport_raw_rows
+      WHERE ingestion_run_id = target_run_id
+        AND source_table = 'SUBMISSION.tsv'
         AND typed_projection->>'ACCESSION_NUMBER' IS NOT NULL
       GROUP BY accession_number
-    ) s ON s.accession_number = r.accession_number
-    WHERE r.ingestion_run_id = target_run_id AND 'SUBMISSION.tsv' = ANY(c.logical_parents)
-      AND (r.accession_number IS NULL OR s.n IS DISTINCT FROM 1)
-  ) THEN RETURN false; END IF;
-
-  -- The holding map is the sole parent resolution table and must be an exact,
-  -- one-to-one projection of FUND_REPORTED_HOLDING rows.
-  IF EXISTS (
-    SELECT holding_id FROM nport_raw_rows
-    WHERE ingestion_run_id = target_run_id AND source_table = 'FUND_REPORTED_HOLDING.tsv'
-      AND holding_id IS NOT NULL
-    GROUP BY holding_id HAVING count(DISTINCT accession_number) <> 1
-  ) OR EXISTS (
-    (SELECT holding_id, accession_number, source_file_id, source_row_number FROM nport_raw_rows
-     WHERE ingestion_run_id = target_run_id AND source_table = 'FUND_REPORTED_HOLDING.tsv'
-       AND holding_id IS NOT NULL AND accession_number IS NOT NULL
-     EXCEPT
-     SELECT holding_id, accession_number, source_file_id, source_row_number FROM nport_holding_accession_map
-     WHERE ingestion_run_id = target_run_id)
+    ),
+    invalid_holding_identity AS (
+      SELECT 1
+      FROM holding_rows
+      GROUP BY holding_id
+      HAVING count(DISTINCT accession_number) <> 1
+      LIMIT 1
+    ),
+    map_difference AS (
+      (SELECT holding_id, accession_number, source_file_id, source_row_number
+       FROM holding_rows WHERE accession_number IS NOT NULL
+       EXCEPT
+       SELECT holding_id, accession_number, source_file_id, source_row_number
+       FROM nport_holding_accession_map WHERE ingestion_run_id = target_run_id)
+      UNION ALL
+      (SELECT holding_id, accession_number, source_file_id, source_row_number
+       FROM nport_holding_accession_map WHERE ingestion_run_id = target_run_id
+       EXCEPT
+       SELECT holding_id, accession_number, source_file_id, source_row_number
+       FROM holding_rows WHERE accession_number IS NOT NULL)
+    ),
+    invalid_child_parent AS (
+      SELECT 1
+      FROM nport_raw_rows r
+      JOIN nport_contract_tables c ON c.source_table = r.source_table
+      LEFT JOIN submission_rows submission
+        ON submission.accession_number = r.accession_number
+      LEFT JOIN nport_holding_accession_map holding
+        ON holding.ingestion_run_id = r.ingestion_run_id
+       AND holding.holding_id = r.holding_id
+      WHERE r.ingestion_run_id = target_run_id
+        AND (
+          ('SUBMISSION.tsv' = ANY(c.logical_parents) AND (
+             r.accession_number IS NULL OR submission.n IS DISTINCT FROM 1
+          ))
+          OR ('FUND_REPORTED_HOLDING.tsv' = ANY(c.logical_parents) AND (
+             r.holding_id IS NULL OR holding.holding_id IS NULL
+             OR r.accession_number IS DISTINCT FROM holding.accession_number
+          ))
+        )
+      LIMIT 1
+    )
+    SELECT 1 FROM invalid_holding_identity
     UNION ALL
-    (SELECT holding_id, accession_number, source_file_id, source_row_number FROM nport_holding_accession_map
-     WHERE ingestion_run_id = target_run_id
-     EXCEPT
-     SELECT holding_id, accession_number, source_file_id, source_row_number FROM nport_raw_rows
-     WHERE ingestion_run_id = target_run_id AND source_table = 'FUND_REPORTED_HOLDING.tsv')
-  ) OR EXISTS (
-    SELECT 1 FROM nport_raw_rows r JOIN nport_contract_tables c ON c.source_table = r.source_table
-    LEFT JOIN nport_holding_accession_map m ON m.ingestion_run_id = r.ingestion_run_id AND m.holding_id = r.holding_id
-    WHERE r.ingestion_run_id = target_run_id AND 'FUND_REPORTED_HOLDING.tsv' = ANY(c.logical_parents)
-      AND (r.holding_id IS NULL OR m.holding_id IS NULL OR r.accession_number IS DISTINCT FROM m.accession_number)
+    SELECT 1 FROM map_difference
+    UNION ALL
+    SELECT 1 FROM invalid_child_parent
+    LIMIT 1
   ) THEN RETURN false; END IF;
   RETURN true;
 END $$;
