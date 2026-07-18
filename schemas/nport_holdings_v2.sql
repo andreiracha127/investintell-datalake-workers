@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS sec_nport_holdings_v2_publication_report_idx
 CREATE OR REPLACE FUNCTION sec_nport_holdings_v2_write_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent_product text;
-DECLARE parent_state text;
+        parent_state text;
 BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION '% is immutable after insert', TG_TABLE_NAME;
