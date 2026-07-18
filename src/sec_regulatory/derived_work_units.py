@@ -112,7 +112,7 @@ def create_or_resume_work_unit(
             SELECT %s, r.run_id, %s, %s, %s, %s
             FROM sec_validated_raw_runs AS r
             WHERE r.run_id = %s
-            ON CONFLICT (run_id, product, publication_version, unit_key, input_fingerprint) DO NOTHING
+            ON CONFLICT (run_id, product, publication_version, unit_key) DO NOTHING
             """,
             (candidate_id, product, publication_version, unit_key, input_fingerprint, run_id),
         )
@@ -122,9 +122,10 @@ def create_or_resume_work_unit(
         product=product,
         publication_version=publication_version,
         unit_key=unit_key,
-        input_fingerprint=input_fingerprint,
         lock=True,
     )
+    if status.input_fingerprint != input_fingerprint:
+        raise DerivedWorkUnitError("conflicting input fingerprint for work-unit business identity")
     return status
 
 
@@ -135,7 +136,6 @@ def _require_status_by_identity(
     product: str,
     publication_version: int,
     unit_key: str,
-    input_fingerprint: str,
     lock: bool = False,
 ) -> DerivedWorkUnitStatus:
     lock_clause = " FOR UPDATE OF w" if lock else ""
@@ -146,9 +146,9 @@ def _require_status_by_identity(
             FROM sec_derived_work_units AS w
             JOIN sec_validated_raw_runs AS r ON r.run_id = w.run_id
             WHERE w.run_id = %s AND w.product = %s AND w.publication_version = %s
-              AND w.unit_key = %s AND w.input_fingerprint = %s{lock_clause}
+              AND w.unit_key = %s{lock_clause}
             """,
-            (run_id, product, publication_version, unit_key, input_fingerprint),
+            (run_id, product, publication_version, unit_key),
         )
         row = cur.fetchone()
     if row is None:
@@ -193,6 +193,38 @@ def heartbeat_work_unit(
         )
         if cur.rowcount != 1:
             raise DerivedWorkUnitError("heartbeat requires the active work-unit lease")
+    return _require_status(conn, work_unit_id)
+
+
+def recover_stale_work_unit(
+    conn: psycopg.Connection,
+    *,
+    work_unit_id: UUID,
+    stale_before: datetime,
+) -> DerivedWorkUnitStatus:
+    """Explicitly replace a lease whose persisted heartbeat predates the caller's cutoff."""
+    status = _require_status(conn, work_unit_id, lock=True)
+    if (
+        status.state != "running"
+        or status.heartbeat_at is None
+        or status.heartbeat_at >= stale_before
+    ):
+        raise DerivedWorkUnitError("running work unit is not stale at the supplied cutoff")
+
+    replacement_lease = uuid4()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE sec_derived_work_units
+            SET attempt_count = attempt_count + 1, lease_token = %s,
+                started_at = now(), heartbeat_at = now(), updated_at = now()
+            WHERE work_unit_id = %s AND state = 'running'
+              AND lease_token = %s AND heartbeat_at < %s
+            """,
+            (replacement_lease, work_unit_id, status.lease_token, stale_before),
+        )
+        if cur.rowcount != 1:
+            raise DerivedWorkUnitError("stale work-unit recovery lost to another worker")
     return _require_status(conn, work_unit_id)
 
 
