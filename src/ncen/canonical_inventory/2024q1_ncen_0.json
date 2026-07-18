@@ -1,0 +1,277 @@
+{
+  "explicit_zero_tables": [
+    "DIVIDENDS_IN_ARREAR.tsv",
+    "LONGTERM_DEBT_DEFAULT.tsv"
+  ],
+  "files": {
+    "ADMIN.tsv": {
+      "byte_size": 988015,
+      "row_count": 9051,
+      "sha256": "9a7517d96a66221b0c9f9a27c87fb5ead06c7b3a4f7bdada9168b07589562f41"
+    },
+    "ADVISER.tsv": {
+      "byte_size": 1925445,
+      "row_count": 13263,
+      "sha256": "88c6856a7592db635b750242a3257b8d04474852e714adef459e6d9730e7f9ee"
+    },
+    "AUTHORIZED_PARTICIPANT.tsv": {
+      "byte_size": 2415364,
+      "row_count": 20959,
+      "sha256": "bd6fe4d7f995b33e904fb646c0930469391a30eeac40ad2ec943a29366bb4b1d"
+    },
+    "BROKER.tsv": {
+      "byte_size": 4844617,
+      "row_count": 39881,
+      "sha256": "d0ed401262e1ea57dd035391790d1bd852c17e0297406785ccdbb4eec2baf843"
+    },
+    "BROKER_DEALER.tsv": {
+      "byte_size": 3010243,
+      "row_count": 26348,
+      "sha256": "a3d3b497304150495895eba54404399945bd5081f54727c6a8ab72d41be02e8e"
+    },
+    "CCO_EMPLOYER.tsv": {
+      "byte_size": 72721,
+      "row_count": 2083,
+      "sha256": "5aebd1038a4574e7f177d90ca3145c512677b60fb30228a6edd44751d1e9e414"
+    },
+    "CHIEF_COMPLIANCE_OFFICER.tsv": {
+      "byte_size": 205801,
+      "row_count": 2067,
+      "sha256": "3cc1b536012bb2854aee5bbc1d8996c656d2de7603563d1071ff60c24f9024fe"
+    },
+    "COLLATERAL_MANAGER.tsv": {
+      "byte_size": 250112,
+      "row_count": 2630,
+      "sha256": "070abdba159dc9a86751aad73afc4704e61435f3a3d1fad7b4638ad6a523871d"
+    },
+    "CONTRACT_SECURITY.tsv": {
+      "byte_size": 437060,
+      "row_count": 3979,
+      "sha256": "bda4afc108db53955a69101b65363edca4d0c5b6804f8fe4a0f4d5ce4299232e"
+    },
+    "CREDIT_USER.tsv": {
+      "byte_size": 145477138,
+      "row_count": 1572359,
+      "sha256": "93859662b9f471984dbb20745359a78f033b62fbf08a048bd675b0d03fa9635d"
+    },
+    "CUSTODIAN.tsv": {
+      "byte_size": 15569361,
+      "row_count": 95144,
+      "sha256": "73c4f76e3f8ea8a41d0f497c7df2de28dbc455679a12e4faf5a9171100b6cf3b"
+    },
+    "DEPOSITOR.tsv": {
+      "byte_size": 90828,
+      "row_count": 763,
+      "sha256": "2f30a27e21f1e260b81deec43a0f153b9cc3b02133dccd819c1f8bd16e404955"
+    },
+    "DIRECTOR.tsv": {
+      "byte_size": 494361,
+      "row_count": 10454,
+      "sha256": "c96f06de8c8590844fc6dd272ba30689f02f8487f5c7e6b732da3af082efb9ad"
+    },
+    "DIRECTOR_FILE_NUMBER.tsv": {
+      "byte_size": 2541520,
+      "row_count": 10454,
+      "sha256": "b3d03fcfccf402bc951e842a7abae7b9b9e850f2915853793519e85148b3f24b"
+    },
+    "DIVESTMENT.tsv": {
+      "byte_size": 395,
+      "row_count": 6,
+      "sha256": "cbf4f61e73939f279bc214177caff462e86221a8e48428ead36ee10833aba9b2"
+    },
+    "ETF.tsv": {
+      "byte_size": 253004,
+      "row_count": 1292,
+      "sha256": "c4cdf8fb7e913f6cfbe08923d08aa9d2f7b785783a2a32f126a8706c60ea9e64"
+    },
+    "FEEDER_FUNDS.tsv": {
+      "byte_size": 14942,
+      "row_count": 115,
+      "sha256": "c898f4139fecd36ebb307dd9948dc6fcde4cc7070d22f6ad63fa7a9aa594b3e4"
+    },
+    "FOREIGN_INVESTMENT.tsv": {
+      "byte_size": 24240,
+      "row_count": 272,
+      "sha256": "186f1a0bc99eb28abda0a5b44c4240a86e919fd3e7be9c689cfa1dcf1e90a49b"
+    },
+    "FUND_REPORTED_INFO.tsv": {
+      "byte_size": 2200216,
+      "row_count": 7171,
+      "sha256": "cf6f27843c5d3130aece311a9edbbb0ea692f6a2a97dae82929643e039a451cb"
+    },
+    "INTER_FUND_BORROWING_DETAIL.tsv": {
+      "byte_size": 99425,
+      "row_count": 1870,
+      "sha256": "ce8cc7ecfea8373b9448768159f568fea7256085b01a2b0f5983af954c0ac710"
+    },
+    "INTER_FUND_LENDING_DETAIL.tsv": {
+      "byte_size": 72797,
+      "row_count": 1359,
+      "sha256": "8642601ecb2132418c428012eca6b6fd45c9c0b40423e794d00c64d1a28367d6"
+    },
+    "LINE_OF_CREDIT_DETAIL.tsv": {
+      "byte_size": 521125,
+      "row_count": 6677,
+      "sha256": "bf03e0f720742d3c7f39f9745dfdbff8c6b5ee78cf8059c9ee048d25cae8a499"
+    },
+    "LINE_OF_CREDIT_INSTITUTION.tsv": {
+      "byte_size": 1568574,
+      "row_count": 22165,
+      "sha256": "ed38f289440b6a1728dc8001fb3379dfb9df377242a3a95548dc7cfc7cb81c59"
+    },
+    "LOCATION_BOOKS_RECORD.tsv": {
+      "byte_size": 1497393,
+      "row_count": 7471,
+      "sha256": "d9f833dc9ccbcea22165022c61f276d7a5bc36791f6bf7b6f75bafcfb8bff078"
+    },
+    "MASTER_FUNDS.tsv": {
+      "byte_size": 15169,
+      "row_count": 130,
+      "sha256": "1a203fb6d97c75def413fc0cd013e639359e51a40748d81372c0bada0b9dadd2"
+    },
+    "PRICING_SERVICE.tsv": {
+      "byte_size": 2758634,
+      "row_count": 28270,
+      "sha256": "75eb2e60827d880c7d5c4d4f9564bcfc49ee7447a36b05b39a951f4fd27ec40a"
+    },
+    "PRINCIPAL_TRANSACTION.tsv": {
+      "byte_size": 4237201,
+      "row_count": 33545,
+      "sha256": "19e8df90431677efd0d46ed78ef0de0f0881bda058ed2ef1bb9d474ed77d3f91"
+    },
+    "PRINCIPAL_UNDERWRITER.tsv": {
+      "byte_size": 174204,
+      "row_count": 1939,
+      "sha256": "338ca66eead71f504c3dbddf4e8dfc5db764282848bdc7c7bc03d9685a65f648"
+    },
+    "PUBLIC_ACCOUNTANT.tsv": {
+      "byte_size": 143768,
+      "row_count": 2130,
+      "sha256": "adddf92c31646bba8e2c1cc0e0bdda57c750e2fe26eaf4f59aa4ebe9f71e44ce"
+    },
+    "REGISTRANT.tsv": {
+      "byte_size": 466948,
+      "row_count": 2060,
+      "sha256": "5919a6a6bd8e737cababddc654afa0e2a721767153e3f629e170557201c1b21e"
+    },
+    "REGISTRANT_HELDS_SECURITY.tsv": {
+      "byte_size": 233,
+      "row_count": 6,
+      "sha256": "661ac6c37014e62408850dfb002e1f52b3ab25597175cdc847d4a1c2a0a84155"
+    },
+    "REGISTRANT_REPORTING_SERIES.tsv": {
+      "byte_size": 143503,
+      "row_count": 1803,
+      "sha256": "995341fba1b2a1b9f43abb0d4a0cacf2e9f715bb161d01b859bafe7c08359b0a"
+    },
+    "REGISTRANT_WEBSITE.tsv": {
+      "byte_size": 108047,
+      "row_count": 2530,
+      "sha256": "7b374de14a42ca9e5232cda12cf8c354146ee84e95cd0f6e7c6a9ad9496bdbfc"
+    },
+    "RELEASE_NUMBER.tsv": {
+      "byte_size": 65393,
+      "row_count": 2183,
+      "sha256": "88f17d4ec6c75637cf8bcb53d2037dea822e1749411cd818e74b97a966f07227"
+    },
+    "RIGHTS_OFFERING_FUND.tsv": {
+      "byte_size": 335,
+      "row_count": 3,
+      "sha256": "aa5f38f35c09d38fdab884012e5abba685fdba54f9d998257762f0cd56491ffd"
+    },
+    "SECURITY_EXCHANGE.tsv": {
+      "byte_size": 68867,
+      "row_count": 1304,
+      "sha256": "cf1361d41084224e88959686bd4f4857cc47d32571d2c35478e110f986f2b7db"
+    },
+    "SECURITY_LENDING.tsv": {
+      "byte_size": 429315,
+      "row_count": 4275,
+      "sha256": "89d421b9de1193d44aaf46217a343c7f1ca5beea553adfbfaa5ae7ff68ca27eb"
+    },
+    "SECURITY_RELATED_ITEM.tsv": {
+      "byte_size": 53036,
+      "row_count": 603,
+      "sha256": "dee49b3d620b21997e859f37535fda48cccc0decfe43ea49bb7a6e6d977401cf"
+    },
+    "SEC_LENDING_IDEMNITY_PROVIDER.tsv": {
+      "byte_size": 501704,
+      "row_count": 7323,
+      "sha256": "2694b68e1d6cdcf7e4f2b4199cbeffa7535cc96a7fbe37108fcae658d3ba5831"
+    },
+    "SERIES_CIK.tsv": {
+      "byte_size": 110556,
+      "row_count": 3454,
+      "sha256": "ced0360470106e07d92a11da900d5dd33cafd76399b16e98b1236bd6c4531a3a"
+    },
+    "SHAREHOLDER_SERVICING_AGENT.tsv": {
+      "byte_size": 7988984,
+      "row_count": 73490,
+      "sha256": "ba49f0b56c2b9ea63c1c224a4b5620a9d3e48849d6dc6cf1d9699aacfd75ef2a"
+    },
+    "SHARES_OUTSTANDING.tsv": {
+      "byte_size": 1328889,
+      "row_count": 16880,
+      "sha256": "66c6e143d56bee6e5b24c51d1f894bded8fb9010a9d9d6ad93a22be62a8df230"
+    },
+    "SPONSOR.tsv": {
+      "byte_size": 4280,
+      "row_count": 48,
+      "sha256": "f29ec08872fc2c382d0b8dc1204ae6164c8e4760a5a220abe42869a7cdf2e95d"
+    },
+    "SUBMISSION.tsv": {
+      "byte_size": 377190,
+      "row_count": 2060,
+      "sha256": "5c458d291844c14935594914d4b005ec41912f352f6f99af0ea6284a36d8cd9f"
+    },
+    "TERMINATED_ORGANIZATION.tsv": {
+      "byte_size": 32128,
+      "row_count": 375,
+      "sha256": "daefa923f90271d6c30c7dd39d13b8d599545b250903982fd4ed0f9658fd5b53"
+    },
+    "TRANSFER_AGENT.tsv": {
+      "byte_size": 980513,
+      "row_count": 8281,
+      "sha256": "4856a4dae8f544e2de8d45384d534057e75f04c0934ed39048a9047019ec2be1"
+    },
+    "TRUSTEE.tsv": {
+      "byte_size": 2882,
+      "row_count": 49,
+      "sha256": "656d7d1c3c5519b53cc11eae4b43dac3d1ccc6e45f810c9cefba5d562fa9a7b3"
+    },
+    "UIT.tsv": {
+      "byte_size": 91677,
+      "row_count": 2060,
+      "sha256": "b13d446d7c5e10a9443e04591d0041cd4dec6ec3f048e57e2acbc63aaf8ebaf5"
+    },
+    "UIT_ADMIN.tsv": {
+      "byte_size": 93519,
+      "row_count": 1173,
+      "sha256": "03e225099dddbc488ab43375735d366d46111028a3016cd68e323f247367d6fd"
+    },
+    "VALUATION_METHOD_CHANGE.tsv": {
+      "byte_size": 5588,
+      "row_count": 17,
+      "sha256": "354bbd95033b00e4a952e7048f54feaf638f68a077e2f47aa8a40920cf722dcd"
+    },
+    "VALUATION_METHOD_CHANGE_SERIES.tsv": {
+      "byte_size": 2489,
+      "row_count": 36,
+      "sha256": "21974e6500d4d766e95557f86bf80dacbc321834a070b9cd7710202c881ad245"
+    },
+    "ncen_metadata.json": {
+      "byte_size": 235135,
+      "row_count": 0,
+      "sha256": "e9ea96c869370e6618093f18afd0b30ccc1736ee39d53c6309336081e041af92"
+    },
+    "ncen_readme.htm": {
+      "byte_size": 699590,
+      "row_count": 0,
+      "sha256": "ed109297ed1f05dd15904a0ef3d626cfc077f355db689a74037a511222703db1"
+    }
+  },
+  "inventory_digest": "432cd07c494d81495204116f5991788777fd450e43a33a966b7bf04404e82328",
+  "metadata_sha256": "e9ea96c869370e6618093f18afd0b30ccc1736ee39d53c6309336081e041af92",
+  "package_sha256": "c5683b6289065ee5057fb8d18024190b63e8eddc215d919c1ebf2e5950e83d21"
+}
+
