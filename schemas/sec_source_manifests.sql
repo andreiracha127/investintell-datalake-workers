@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS sec_source_packages (
     package_state text NOT NULL CHECK (package_state IN (
         'discovered', 'loaded', 'duplicate', 'unsupported', 'quarantined', 'failed'
     )),
+    retry_count integer NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
     reason text,
     run_id uuid REFERENCES sec_ingestion_runs(run_id) ON DELETE RESTRICT,
     duplicate_of_package_id uuid REFERENCES sec_source_packages(package_id) ON DELETE RESTRICT,
@@ -59,6 +60,17 @@ CREATE TABLE IF NOT EXISTS sec_source_packages (
     CHECK (duplicate_of_package_id IS NULL OR duplicate_of_package_id <> package_id),
     CHECK (package_state <> 'loaded' OR run_id IS NOT NULL)
 );
+
+ALTER TABLE sec_source_packages
+    ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sec_packages_retry_count_nonnegative_ck') THEN
+        ALTER TABLE sec_source_packages
+            ADD CONSTRAINT sec_packages_retry_count_nonnegative_ck CHECK (retry_count >= 0);
+    END IF;
+END;
+$$;
 
 CREATE TABLE IF NOT EXISTS sec_source_files (
     source_file_id uuid PRIMARY KEY,
@@ -83,6 +95,16 @@ CREATE TABLE IF NOT EXISTS sec_source_files (
     updated_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (run_id, relative_path),
     UNIQUE (run_id, source_file_id)
+);
+
+CREATE TABLE IF NOT EXISTS sec_source_package_transitions (
+    package_transition_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    package_id uuid NOT NULL REFERENCES sec_source_packages(package_id) ON DELETE RESTRICT,
+    from_state text,
+    to_state text NOT NULL,
+    retry_count integer NOT NULL CHECK (retry_count >= 0),
+    terminal_reason text,
+    occurred_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- A instalação pode retomar um banco descartável que recebeu a primeira
@@ -203,6 +225,8 @@ CREATE INDEX IF NOT EXISTS sec_source_packages_family_quarter_idx
 CREATE INDEX IF NOT EXISTS sec_source_packages_hash_idx
     ON sec_source_packages (source_family, package_sha256) WHERE package_sha256 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS sec_source_files_run_idx ON sec_source_files (run_id);
+CREATE INDEX IF NOT EXISTS sec_source_package_transitions_package_idx
+    ON sec_source_package_transitions (package_id, occurred_at);
 CREATE INDEX IF NOT EXISTS sec_table_reconciliations_run_idx ON sec_table_reconciliations (run_id, source_file_id);
 CREATE INDEX IF NOT EXISTS sec_row_issues_file_row_idx ON sec_row_issues (source_file_id, source_row_number);
 CREATE INDEX IF NOT EXISTS sec_run_transitions_run_idx ON sec_run_transitions (run_id, occurred_at);
@@ -445,17 +469,62 @@ BEGIN
        OR (OLD.package_sha256 IS NOT NULL AND NEW.package_sha256 IS DISTINCT FROM OLD.package_sha256)
        OR (OLD.metadata_sha256 IS NOT NULL AND NEW.metadata_sha256 IS DISTINCT FROM OLD.metadata_sha256)
        OR (OLD.readme_sha256 IS NOT NULL AND NEW.readme_sha256 IS DISTINCT FROM OLD.readme_sha256)
-       OR (OLD.run_id IS NOT NULL AND NEW.run_id IS DISTINCT FROM OLD.run_id)
+       OR (OLD.run_id IS NOT NULL AND NEW.run_id IS DISTINCT FROM OLD.run_id
+           AND NOT (
+               OLD.package_state IN ('failed', 'quarantined', 'unsupported')
+               AND NEW.package_state = 'discovered'
+               AND NEW.retry_count = OLD.retry_count + 1
+               AND NEW.run_id IS NULL
+           ))
        OR (OLD.duplicate_of_package_id IS NOT NULL AND NEW.duplicate_of_package_id IS DISTINCT FROM OLD.duplicate_of_package_id)
-       OR (OLD.reason IS NOT NULL AND NEW.reason IS DISTINCT FROM OLD.reason) THEN
+       OR (OLD.reason IS NOT NULL AND NEW.reason IS DISTINCT FROM OLD.reason
+           AND NOT (
+               OLD.package_state IN ('failed', 'quarantined', 'unsupported')
+               AND NEW.package_state = 'discovered'
+               AND NEW.retry_count = OLD.retry_count + 1
+               AND NEW.reason IS NULL
+           )) THEN
         RAISE EXCEPTION 'package discovery immutable metadata conflict';
     END IF;
-    IF NEW.package_state = OLD.package_state THEN RETURN NEW; END IF;
+    IF NEW.package_state = OLD.package_state THEN
+        IF NEW.retry_count <> OLD.retry_count THEN
+            RAISE EXCEPTION 'package retry count can change only through an explicit retry';
+        END IF;
+        RETURN NEW;
+    END IF;
     IF OLD.package_state = 'discovered'
-       AND NEW.package_state IN ('loaded', 'duplicate', 'unsupported', 'quarantined', 'failed') THEN
+       AND NEW.package_state IN ('loaded', 'duplicate', 'unsupported', 'quarantined', 'failed')
+       AND NEW.retry_count = OLD.retry_count THEN
+        RETURN NEW;
+    END IF;
+    IF OLD.package_state IN ('failed', 'quarantined', 'unsupported')
+       AND NEW.package_state = 'discovered'
+       AND NEW.retry_count = OLD.retry_count + 1
+       AND NEW.reason IS NULL THEN
         RETURN NEW;
     END IF;
     RAISE EXCEPTION 'invalid package discovery transition % -> %', OLD.package_state, NEW.package_state;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION sec_audit_package_discovery()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        INSERT INTO sec_source_package_transitions
+            (package_id, from_state, to_state, retry_count, terminal_reason)
+        VALUES (NEW.package_id, NULL, NEW.package_state, NEW.retry_count, NEW.reason);
+    ELSIF NEW.package_state IS DISTINCT FROM OLD.package_state THEN
+        INSERT INTO sec_source_package_transitions
+            (package_id, from_state, to_state, retry_count, terminal_reason)
+        VALUES (NEW.package_id, OLD.package_state, NEW.package_state, NEW.retry_count,
+                CASE WHEN NEW.package_state = 'discovered' THEN OLD.reason ELSE NEW.reason END);
+    END IF;
+    RETURN NEW;
 END;
 $$;
 
@@ -531,6 +600,9 @@ FOR EACH ROW EXECUTE FUNCTION sec_lock_manifest_run_lineage();
 DROP TRIGGER IF EXISTS sec_source_packages_discovery_guard ON sec_source_packages;
 CREATE TRIGGER sec_source_packages_discovery_guard BEFORE UPDATE ON sec_source_packages
 FOR EACH ROW EXECUTE FUNCTION sec_package_discovery_guard();
+DROP TRIGGER IF EXISTS sec_source_packages_discovery_audit ON sec_source_packages;
+CREATE TRIGGER sec_source_packages_discovery_audit AFTER INSERT OR UPDATE ON sec_source_packages
+FOR EACH ROW EXECUTE FUNCTION sec_audit_package_discovery();
 DROP TRIGGER IF EXISTS sec_table_reconciliations_raw_immutable ON sec_table_reconciliations;
 CREATE TRIGGER sec_table_reconciliations_raw_immutable BEFORE INSERT OR UPDATE OR DELETE ON sec_table_reconciliations
 FOR EACH ROW EXECUTE FUNCTION sec_lock_manifest_run_lineage();
@@ -545,6 +617,9 @@ CREATE TRIGGER sec_row_issues_append_only BEFORE UPDATE OR DELETE ON sec_row_iss
 FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
 DROP TRIGGER IF EXISTS sec_run_transitions_append_only ON sec_run_transitions;
 CREATE TRIGGER sec_run_transitions_append_only BEFORE UPDATE OR DELETE ON sec_run_transitions
+FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
+DROP TRIGGER IF EXISTS sec_source_package_transitions_append_only ON sec_source_package_transitions;
+CREATE TRIGGER sec_source_package_transitions_append_only BEFORE UPDATE OR DELETE ON sec_source_package_transitions
 FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
 DROP TRIGGER IF EXISTS sec_validated_raw_visibility_eligible ON sec_validated_raw_visibility;
 CREATE TRIGGER sec_validated_raw_visibility_eligible BEFORE INSERT OR UPDATE ON sec_validated_raw_visibility

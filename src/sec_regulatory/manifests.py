@@ -35,6 +35,7 @@ class PackageStatus:
     package_relative_path: str
     package_sha256: str | None
     package_state: str
+    retry_count: int
     reason: str | None
     run_id: UUID | None
     duplicate_of_package_id: UUID | None
@@ -159,12 +160,38 @@ def register_package_discovery(
                 duplicate_of_package_id = COALESCE(EXCLUDED.duplicate_of_package_id, sec_source_packages.duplicate_of_package_id),
                 updated_at = now()
             RETURNING package_id, source_family, source_quarter, package_relative_path, package_sha256,
-                      package_state, reason, run_id, duplicate_of_package_id
+                      package_state, retry_count, reason, run_id, duplicate_of_package_id
             """,
             (candidate_id, source_family, source_quarter, package_relative_path, package_sha256,
              metadata_sha256, readme_sha256, package_state, reason, run_id, duplicate_of_package_id),
         )
         row = cur.fetchone()
+    return PackageStatus(*row)
+
+
+def retry_package_discovery(
+    conn: psycopg.Connection,
+    *,
+    source_family: str,
+    package_relative_path: str,
+) -> PackageStatus:
+    """Abre uma nova tentativa auditável sem apagar a proveniência do pacote."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE sec_source_packages
+            SET package_state = 'discovered', reason = NULL, run_id = NULL,
+                retry_count = retry_count + 1, updated_at = now()
+            WHERE source_family = %s AND package_relative_path = %s
+              AND package_state IN ('failed', 'quarantined', 'unsupported')
+            RETURNING package_id, source_family, source_quarter, package_relative_path, package_sha256,
+                      package_state, retry_count, reason, run_id, duplicate_of_package_id
+            """,
+            (source_family, package_relative_path),
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise ManifestStateError("somente pacote failed/quarantined/unsupported pode ser retomado")
     return PackageStatus(*row)
 
 

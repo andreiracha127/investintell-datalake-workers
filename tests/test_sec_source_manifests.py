@@ -34,6 +34,7 @@ def test_sec_source_manifest_api_is_importable() -> None:
         "install_schema",
         "create_or_resume_run",
         "register_package_discovery",
+        "retry_package_discovery",
         "register_file",
         "register_table_reconciliation",
         "record_issue",
@@ -82,7 +83,8 @@ def db_conn():
         install_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
-                "TRUNCATE sec_row_issues, sec_table_reconciliations, sec_source_files, "
+                "TRUNCATE sec_source_package_transitions, sec_source_packages, "
+                "sec_row_issues, sec_table_reconciliations, sec_source_files, "
                 "sec_validated_raw_visibility, sec_run_transitions, sec_ingestion_runs CASCADE"
             )
         conn.commit()
@@ -524,6 +526,82 @@ def test_real_db_package_terminal_reason_and_duplicate_link_are_immutable(db_con
         )
     db_conn.rollback()
     assert duplicate.duplicate_of_package_id == original.package_id
+
+
+def test_real_db_explicit_package_retry_retains_evidence_and_loaded_remains_terminal(db_conn) -> None:
+    from src.sec_regulatory.manifests import (
+        get_run_status,
+        retry_package_discovery,
+        register_package_discovery,
+    )
+
+    old_run = _run(db_conn, parser_version="old-retry-package")
+    failed = register_package_discovery(
+        db_conn, source_family="nport", source_quarter="2026Q2",
+        package_relative_path="packages/retryable", package_state="failed",
+        package_sha256="a" * 64, metadata_sha256="b" * 64, reason="parser defect", run_id=old_run.run_id,
+    )
+    db_conn.commit()
+    with pytest.raises(Exception, match="invalid package discovery transition"):
+        register_package_discovery(
+            db_conn, source_family="nport", source_quarter="2026Q2",
+            package_relative_path="packages/retryable", package_state="discovered",
+        )
+    db_conn.rollback()
+    retried = retry_package_discovery(
+        db_conn, source_family="nport", package_relative_path="packages/retryable"
+    )
+    assert retried.package_state == "discovered"
+    assert retried.retry_count == 1
+    assert retried.package_sha256 == failed.package_sha256
+    assert retried.reason is None
+    assert retried.run_id is None
+    assert get_run_status(db_conn, run_id=old_run.run_id) is not None
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """SELECT from_state, to_state, terminal_reason FROM sec_source_package_transitions
+               WHERE package_id = %s ORDER BY package_transition_id DESC LIMIT 1""",
+            (failed.package_id,),
+        )
+        assert cur.fetchone() == ("failed", "discovered", "parser defect")
+    run = _run(db_conn, parser_version="retry-package")
+    loaded = register_package_discovery(
+        db_conn, source_family="nport", source_quarter="2026Q2",
+        package_relative_path="packages/retryable", package_state="loaded", run_id=run.run_id,
+    )
+    assert loaded.retry_count == 1
+    assert loaded.run_id == run.run_id
+    db_conn.commit()
+    with pytest.raises(Exception, match="somente pacote"):
+        retry_package_discovery(
+            db_conn, source_family="nport", package_relative_path="packages/retryable"
+        )
+
+
+def test_real_db_concurrent_package_retry_cannot_double_increment(db_conn) -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import retry_package_discovery, register_package_discovery
+
+    register_package_discovery(
+        db_conn, source_family="nport", source_quarter="2026Q2",
+        package_relative_path="packages/retry-race", package_state="quarantined",
+        package_sha256="c" * 64, reason="bad date",
+    )
+    db_conn.commit()
+    with psycopg.connect(_test_dsn()) as first, psycopg.connect(_test_dsn()) as second:
+        retry_package_discovery(first, source_family="nport", package_relative_path="packages/retry-race")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(
+                retry_package_discovery, second,
+                source_family="nport", package_relative_path="packages/retry-race",
+            )
+            first.commit()
+            with pytest.raises(Exception, match="somente pacote"):
+                pending.result(timeout=5)
+        second.rollback()
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT package_state, retry_count FROM sec_source_packages WHERE package_relative_path = 'packages/retry-race'")
+        assert cur.fetchone() == ("discovered", 1)
 
 
 def test_real_db_table_issue_counts_are_reconciled_per_declared_table(db_conn) -> None:
