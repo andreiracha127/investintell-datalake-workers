@@ -119,7 +119,7 @@ def main() -> None:
     with psycopg.connect(args.database_url) as conn:
         conn.execute("BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
         with conn.cursor() as cur:
-            cur.execute("SET LOCAL statement_timeout = %s", (args.statement_timeout_ms,))
+            cur.execute("SELECT set_config('statement_timeout', %s, true)", (str(args.statement_timeout_ms),))
             cur.execute("SELECT version(), current_setting('max_locks_per_transaction'), current_setting('max_connections')")
             version, locks, connections = cur.fetchone()
             evidence["database"] = {
