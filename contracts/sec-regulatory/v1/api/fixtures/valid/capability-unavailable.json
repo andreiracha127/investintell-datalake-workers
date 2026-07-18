@@ -1,0 +1,9 @@
+{
+  "state": "unavailable",
+  "source_applicable": true,
+  "as_of": null,
+  "coverage_pct": null,
+  "source": "rr1",
+  "reason_code": "source_filing_unavailable",
+  "methodology_version": null
+}

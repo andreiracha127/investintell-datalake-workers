@@ -1,0 +1,39 @@
+{
+  "governance_version": "sec-phase0-governance-v1",
+  "canonical_producer_repository": "andreiracha127/investintell-datalake-workers",
+  "producer_commit": "e9cb812a9c22a88dc86e9a7d71742f5f9ad18b62",
+  "owner_decisions_approved_at": "2026-07-17",
+  "runtime_activation": false,
+  "database_mutation": false,
+  "deployment_authorized": false,
+  "phase_1_readiness": "blocked_pending_worker_contract",
+  "phase_1_blockers": [
+    "canonical_worker_sec_regulatory_contract_not_yet_published"
+  ],
+  "phase_1_publication_blockers": [
+    "rr1_implausible_date_quarantine_not_implemented"
+  ],
+  "source_packages_verified_at": "2026-07-18T01:14:27Z",
+  "source_publication_policy": "preserve_original_sec_bundle_bytes_and_explicit_conditional_absence",
+  "compatibility_window": {
+    "minimum_successful_releases": 2,
+    "minimum_days": 30,
+    "rule": "whichever_is_longer"
+  },
+  "storage_recovery_profile": {
+    "platform": "gcs",
+    "location": "southamerica-east1",
+    "dedicated_bucket_required": true,
+    "object_versioning": true,
+    "automatic_deletion": false,
+    "nearline_after_days": 90,
+    "coldline_after_days": 365,
+    "database_backup_frequency_hours": 24,
+    "database_backup_retention_days": 30,
+    "rpo_hours": 24,
+    "rto_hours": 8,
+    "provisioning_authorized": false
+  },
+  "classification_policy_during_parity": "portfolio-composition-v3",
+  "phase_10_enrichment": "deferred"
+}

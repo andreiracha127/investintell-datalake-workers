@@ -1,0 +1,23 @@
+{
+  "schema_version": "sec-fund-family-baseline/v1",
+  "fixture_id": "fund-alternatives-interval-v1",
+  "instrument_id": "00000000-0000-4000-8000-000000000004",
+  "series_id": "S000000004",
+  "class_id": "C000000004",
+  "asset_family": "alternatives",
+  "vehicle": "interval_fund",
+  "classification_policy_version": "portfolio-composition-v3",
+  "source_dates": {"nport": "2026-01-31", "ncen": "2025-04-30", "rr1": "2026-02-28", "nav": "2026-07-16"},
+  "capabilities": {
+    "holdings": {"state": "degraded", "source_applicable": true, "as_of": "2026-01-31", "coverage_pct": 73.0, "source": "nport", "reason_code": "nondecomposable_positions", "methodology_version": "holdings-v2"},
+    "equity_style": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "fixed_income_profile": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "multi_asset_allocation": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "alternatives_profile": {"state": "degraded", "source_applicable": true, "as_of": "2026-01-31", "coverage_pct": 73.0, "source": "nport+nav", "reason_code": "strategy_subtype_partial", "methodology_version": "alternatives-profile-v1"},
+    "cash_profile": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "fees_and_share_classes": {"state": "available", "source_applicable": true, "as_of": "2026-02-28", "coverage_pct": 100.0, "source": "rr1", "reason_code": null, "methodology_version": "rr1-fees-v1"},
+    "prospectus_disclosures": {"state": "available", "source_applicable": true, "as_of": "2026-02-28", "coverage_pct": 100.0, "source": "rr1", "reason_code": null, "methodology_version": "rr1-disclosures-v1"},
+    "prospectus_performance": {"state": "unavailable", "source_applicable": true, "as_of": null, "coverage_pct": null, "source": "rr1", "reason_code": "performance_context_unavailable", "methodology_version": null},
+    "operating_profile": {"state": "available", "source_applicable": true, "as_of": "2025-04-30", "coverage_pct": 100.0, "source": "ncen", "reason_code": null, "methodology_version": "ncen-operating-v1"}
+  }
+}

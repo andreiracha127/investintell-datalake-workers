@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "contract_version": "v1",
+  "source_repository": "andreiracha127/investintell-light",
+  "source_commit": "a5c6823e7e2c5b2c54aecf4f855528d0e4b716c3",
+  "source_path": "backend/contracts/sec-regulatory/v1",
+  "target_path": "contracts/sec-regulatory/v1",
+  "worker_base_commit": "8636c14f08aa8d27b0f8e1d627a65072bf9772bf",
+  "worker_only_files": [
+    "worker-equivalence-manifest.json",
+    "worker-provenance.json"
+  ]
+}

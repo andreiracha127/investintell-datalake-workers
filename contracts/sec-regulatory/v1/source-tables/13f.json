@@ -1,0 +1,2295 @@
+{
+  "contract_version": "sec-source-tables-v1",
+  "family": "13f",
+  "schema_variants": [
+    {
+      "metadata_sha256": "03d7f86bd18d3a203f92514da974544289522313bea3d28f368122cb6c44da9b",
+      "packages": [
+        "13f/2022q1"
+      ],
+      "tables": [
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Report for the calendar year of quater ended in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "REPORTCALENDARORQUARTER",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "REPORTCALENDARORQUARTER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Check here if amendment",
+              "disposition": "raw_and_typed_projection",
+              "name": "ISAMENDMENT",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ISAMENDMENT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 2
+              },
+              "description": "Amendment number",
+              "disposition": "raw_and_typed_projection",
+              "name": "AMENDMENTNO",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "AMENDMENTNO"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 20
+              },
+              "description": "Amendment type is a restatement or adds new holdings entries",
+              "disposition": "raw_and_typed_projection",
+              "name": "AMENDMENTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "AMENDMENTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Whether confidential treatment request is denied or expired",
+              "disposition": "raw_and_typed_projection",
+              "name": "CONFDENIEDEXPIRED",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CONFDENIEDEXPIRED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Pursuant to a request for confidential tretment and for which confidential treatment expired or denied in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "DATEDENIEDEXPIRED",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "DATEDENIEDEXPIRED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Date securities holdings reported pursuant to a request for confidential treatment in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "DATEREPORTED",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "DATEREPORTED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Reason for non-confidentiality: denied or confidential treatment expired",
+              "disposition": "raw_and_typed_projection",
+              "name": "REASONFORNONCONFIDENTIALITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "REASONFORNONCONFIDENTIALITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Filing manager name",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "FILINGMANAGER NAME"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Filing manager address street name - first line",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STREET1",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STREET1"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Filing manager address street name - second line",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STREET2",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STREET2"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Filing manager primary city",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_CITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER CITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 2
+              },
+              "description": "Filing manager state or country name",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STATEORCOUNTRY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STATEORCOUNTRY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Filing manager zipcode",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_ZIPCODE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER ZIPCODE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Report Type:13F holdings report; 13F notice; 13F combination report",
+              "disposition": "raw_and_typed_projection",
+              "name": "REPORTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "REPORTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F filenumber",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Do you wish to provide information pursuant to instuction 5?",
+              "disposition": "raw_and_typed_projection",
+              "name": "PROVIDEINFOFORINSTRUCTION5",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "PROVIDEINFOFORINSTRUCTION5"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 4000
+              },
+              "description": "Additional information",
+              "disposition": "raw_and_typed_projection",
+              "name": "ADDITIONALINFORMATION",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ADDITIONALINFORMATION"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "COVERPAGE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER",
+            "INFOTABLE_SK"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": true,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 38
+              },
+              "description": "Info table surrogate key",
+              "disposition": "raw_and_typed_projection",
+              "name": "INFOTABLE_SK",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "INFOTABLE SK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 200
+              },
+              "description": "Name of issuer",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAMEOFISSUER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAMEOFISSUER"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Title of class",
+              "disposition": "raw_and_typed_projection",
+              "name": "TITLEOFCLASS",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "TITLEOFCLASS"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 9
+              },
+              "description": "CUSIP number of security",
+              "disposition": "raw_and_typed_projection",
+              "name": "CUSIP",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CUSIP"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 12
+              },
+              "description": "Market value (x$1000)",
+              "disposition": "raw_and_typed_projection",
+              "name": "VALUE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VALUE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Number of Shares or principal amount",
+              "disposition": "raw_and_typed_projection",
+              "name": "SSHPRNAMT",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SSHPRNAMT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Shares (SH) or principal amount (PRN) type SH/PRN",
+              "disposition": "raw_and_typed_projection",
+              "name": "SSHPRNAMTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SSHPRNAMTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "PUT/CALL",
+              "disposition": "raw_and_typed_projection",
+              "name": "PUTCALL",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "PUTCALL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Investment discretion",
+              "disposition": "raw_and_typed_projection",
+              "name": "INVESTMENTDISCRETION",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "INVESTMENTDISCRETION"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 100
+              },
+              "description": "Sequence number of other manager included in report with whom discretion is shared",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERMANAGER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "OTHERMANAGER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority sole",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_SOLE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH SOLE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority shared",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_SHARED",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH SHARED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority none",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_NONE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH NONE"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "INFOTABLE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER",
+            "OTHERMANAGER_SK"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": true,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 38
+              },
+              "description": "Other manager surrogate key",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERMANAGER_SK",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "OTHERMANAGER SK"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Central index key",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F File Number",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Other Manager Name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "OTHERMANAGER.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 3
+              },
+              "description": "Sequence number",
+              "disposition": "raw_and_typed_projection",
+              "name": "SEQUENCENUMBER",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SEQUENCENUMBER"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Central index key",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F FILE NUMBER",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Other manager2 Name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "OTHERMANAGER2.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Signatory name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 60
+              },
+              "description": "Signatory title",
+              "disposition": "raw_and_typed_projection",
+              "name": "TITLE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "TITLE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 20
+              },
+              "description": "Signatory phone",
+              "disposition": "raw_and_typed_projection",
+              "name": "PHONE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "PHONE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Signatory signature",
+              "disposition": "raw_and_typed_projection",
+              "name": "SIGNATURE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SIGNATURE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Signatory City name",
+              "disposition": "raw_and_typed_projection",
+              "name": "CITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 2
+              },
+              "description": "Signatory state or country",
+              "disposition": "raw_and_typed_projection",
+              "name": "STATEORCOUNTRY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "STATEORCOUNTRY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Signature date in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "SIGNATUREDATE",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SIGNATUREDATE"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "SIGNATURE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Filing date with the Commission; sourced from EDGAR in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILING_DATE",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "FILING DATE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Submission type is either an initial quarterly form 13F holdings Report, notice Report or the amendment",
+              "disposition": "raw_and_typed_projection",
+              "name": "SUBMISSIONTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SUBMISSIONTYPE"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Filer CIK (Central index key)",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "File Number",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Period Of Report in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "PERIODOFREPORT",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "PERIODOFREPORT"
+            }
+          ],
+          "logical_parents": [],
+          "source_file": "SUBMISSION.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 3
+              },
+              "description": "Number of other included managers",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERINCLUDEDMANAGERSCOUNT",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "OTHERINCLUDEDMANAGERSCOUNT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 6
+              },
+              "description": "Table entry total",
+              "disposition": "raw_and_typed_projection",
+              "name": "TABLEENTRYTOTAL",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "TABLEENTRYTOTAL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 13
+              },
+              "description": "Table value total",
+              "disposition": "raw_and_typed_projection",
+              "name": "TABLEVALUETOTAL",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "TABLEVALUETOTAL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Is confidential omitted",
+              "disposition": "raw_and_typed_projection",
+              "name": "ISCONFIDENTIALOMITTED",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ISCONFIDENTIALOMITTED"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "SUMMARYPAGE.tsv"
+        }
+      ]
+    },
+    {
+      "metadata_sha256": "42a43366dcee0fe70399db36825cdce18ecba74d95b5a4e18406cf0f0b43ca01",
+      "packages": [
+        "13f/01dec2024-28feb2025",
+        "13f/01dec2025-28feb2026",
+        "13f/01jan2024-29feb2024",
+        "13f/01jun2024-31aug2024",
+        "13f/01jun2025-31aug2025",
+        "13f/01mar2024-31may2024",
+        "13f/01mar2025-31may2025",
+        "13f/01mar2026-31may2026",
+        "13f/01sep2024-30nov2024",
+        "13f/01sep2025-30nov2025",
+        "13f/2013q2",
+        "13f/2013q3",
+        "13f/2013q4",
+        "13f/2014q1",
+        "13f/2014q2",
+        "13f/2014q3",
+        "13f/2014q4",
+        "13f/2015q1",
+        "13f/2015q2",
+        "13f/2015q3",
+        "13f/2015q4",
+        "13f/2016q1",
+        "13f/2016q2",
+        "13f/2016q3",
+        "13f/2016q4",
+        "13f/2017q1",
+        "13f/2017q2",
+        "13f/2017q3",
+        "13f/2017q4",
+        "13f/2018q1",
+        "13f/2018q2",
+        "13f/2018q3",
+        "13f/2018q4",
+        "13f/2019q1",
+        "13f/2019q2",
+        "13f/2019q3",
+        "13f/2019q4",
+        "13f/2020q1",
+        "13f/2020q2",
+        "13f/2020q3",
+        "13f/2020q4",
+        "13f/2021q1",
+        "13f/2021q2",
+        "13f/2021q3",
+        "13f/2021q4",
+        "13f/2022q2",
+        "13f/2022q3",
+        "13f/2022q4",
+        "13f/2023q1",
+        "13f/2023q2",
+        "13f/2023q3",
+        "13f/2023q4"
+      ],
+      "tables": [
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Report for the calendar year of quater ended in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "REPORTCALENDARORQUARTER",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "REPORTCALENDARORQUARTER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Check here if amendment",
+              "disposition": "raw_and_typed_projection",
+              "name": "ISAMENDMENT",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ISAMENDMENT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 2
+              },
+              "description": "Amendment number",
+              "disposition": "raw_and_typed_projection",
+              "name": "AMENDMENTNO",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "AMENDMENTNO"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 20
+              },
+              "description": "Amendment type is a restatement or adds new holdings entries",
+              "disposition": "raw_and_typed_projection",
+              "name": "AMENDMENTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "AMENDMENTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Whether confidential treatment request is denied or expired",
+              "disposition": "raw_and_typed_projection",
+              "name": "CONFDENIEDEXPIRED",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CONFDENIEDEXPIRED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Pursuant to a request for confidential tretment and for which confidential treatment expired or denied in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "DATEDENIEDEXPIRED",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "DATEDENIEDEXPIRED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Date securities holdings reported pursuant to a request for confidential treatment in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "DATEREPORTED",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "DATEREPORTED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Reason for non-confidentiality: denied or confidential treatment expired",
+              "disposition": "raw_and_typed_projection",
+              "name": "REASONFORNONCONFIDENTIALITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "REASONFORNONCONFIDENTIALITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Filing manager name",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "FILINGMANAGER NAME"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Filing manager address street name - first line",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STREET1",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STREET1"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 40
+              },
+              "description": "Filing manager address street name - second line",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STREET2",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STREET2"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Filing manager primary city",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_CITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER CITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 2
+              },
+              "description": "Filing manager state or country name",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_STATEORCOUNTRY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER STATEORCOUNTRY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Filing manager zipcode",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILINGMANAGER_ZIPCODE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FILINGMANAGER ZIPCODE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Report Type:13F holdings report; 13F notice; 13F combination report",
+              "disposition": "raw_and_typed_projection",
+              "name": "REPORTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "REPORTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F filenumber",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 9
+              },
+              "description": "CRD Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "CRDNUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CRDNUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "SEC File Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "SECFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "SECFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Do you wish to provide information pursuant to instuction 5?",
+              "disposition": "raw_and_typed_projection",
+              "name": "PROVIDEINFOFORINSTRUCTION5",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "PROVIDEINFOFORINSTRUCTION5"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 4000
+              },
+              "description": "Additional information",
+              "disposition": "raw_and_typed_projection",
+              "name": "ADDITIONALINFORMATION",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_coverpage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ADDITIONALINFORMATION"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "COVERPAGE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER",
+            "INFOTABLE_SK"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": true,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 38
+              },
+              "description": "Info table surrogate key",
+              "disposition": "raw_and_typed_projection",
+              "name": "INFOTABLE_SK",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "INFOTABLE SK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 200
+              },
+              "description": "Name of issuer",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAMEOFISSUER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAMEOFISSUER"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Title of class",
+              "disposition": "raw_and_typed_projection",
+              "name": "TITLEOFCLASS",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "TITLEOFCLASS"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 9
+              },
+              "description": "CUSIP number of security",
+              "disposition": "raw_and_typed_projection",
+              "name": "CUSIP",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CUSIP"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 12
+              },
+              "description": "Financial Instrument Global Identifier (FIGI)",
+              "disposition": "raw_and_typed_projection",
+              "name": "FIGI",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FIGI"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Market value. Starting on January 3, 2023, market value is reported rounded to the nearest dollar.  Previously, market value was reported in thousands.",
+              "disposition": "raw_and_typed_projection",
+              "name": "VALUE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VALUE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Number of Shares or principal amount",
+              "disposition": "raw_and_typed_projection",
+              "name": "SSHPRNAMT",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SSHPRNAMT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Shares (SH) or principal amount (PRN) type SH/PRN",
+              "disposition": "raw_and_typed_projection",
+              "name": "SSHPRNAMTTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SSHPRNAMTTYPE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "PUT/CALL",
+              "disposition": "raw_and_typed_projection",
+              "name": "PUTCALL",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "PUTCALL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Investment discretion",
+              "disposition": "raw_and_typed_projection",
+              "name": "INVESTMENTDISCRETION",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "INVESTMENTDISCRETION"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 100
+              },
+              "description": "Sequence number of other manager included in report with whom discretion is shared",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERMANAGER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "OTHERMANAGER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority sole",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_SOLE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH SOLE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority shared",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_SHARED",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH SHARED"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Voting authority none",
+              "disposition": "raw_and_typed_projection",
+              "name": "VOTING_AUTH_NONE",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_infotable_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "VOTING AUTH NONE"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "INFOTABLE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER",
+            "OTHERMANAGER_SK"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": true,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 38
+              },
+              "description": "Other manager surrogate key",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERMANAGER_SK",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "OTHERMANAGER SK"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Central index key",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F File Number",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 9
+              },
+              "description": "CRD Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "CRDNUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CRDNUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "SEC File Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "SECFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "SECFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Other Manager Name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "OTHERMANAGER.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 3
+              },
+              "description": "Sequence number",
+              "disposition": "raw_and_typed_projection",
+              "name": "SEQUENCENUMBER",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SEQUENCENUMBER"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Central index key",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "FORM 13F FILE NUMBER",
+              "disposition": "raw_and_typed_projection",
+              "name": "FORM13FFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "FORM13FFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 9
+              },
+              "description": "CRD Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "CRDNUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "CRDNUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 17
+              },
+              "description": "SEC File Number (if applicable)",
+              "disposition": "raw_and_typed_projection",
+              "name": "SECFILENUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "SECFILENUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Other manager2 Name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_othermanager2_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "OTHERMANAGER2.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Signatory name",
+              "disposition": "raw_and_typed_projection",
+              "name": "NAME",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "NAME"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 60
+              },
+              "description": "Signatory title",
+              "disposition": "raw_and_typed_projection",
+              "name": "TITLE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "TITLE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 20
+              },
+              "description": "Signatory phone",
+              "disposition": "raw_and_typed_projection",
+              "name": "PHONE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "PHONE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 150
+              },
+              "description": "Signatory signature",
+              "disposition": "raw_and_typed_projection",
+              "name": "SIGNATURE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SIGNATURE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 30
+              },
+              "description": "Signatory City name",
+              "disposition": "raw_and_typed_projection",
+              "name": "CITY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CITY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 2
+              },
+              "description": "Signatory state or country",
+              "disposition": "raw_and_typed_projection",
+              "name": "STATEORCOUNTRY",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "STATEORCOUNTRY"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Signature date in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "SIGNATUREDATE",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_signature_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SIGNATUREDATE"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "SIGNATURE.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Filing date with the Commission; sourced from EDGAR in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "FILING_DATE",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "FILING DATE"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Submission type is either an initial quarterly form 13F holdings Report, notice Report or the amendment",
+              "disposition": "raw_and_typed_projection",
+              "name": "SUBMISSIONTYPE",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "SUBMISSIONTYPE"
+            },
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 10
+              },
+              "description": "Filer CIK (Central index key)",
+              "disposition": "raw_and_typed_projection",
+              "name": "CIK",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "CIK"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "date"
+              },
+              "description": "Period Of Report in (DD-MON-YYYY) format",
+              "disposition": "raw_and_typed_projection",
+              "name": "PERIODOFREPORT",
+              "parsing_policy": "date_field_specific_fail_preserve_lexical",
+              "raw_target": "sec_13f_submission_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "PERIODOFREPORT"
+            }
+          ],
+          "logical_parents": [],
+          "source_file": "SUBMISSION.tsv"
+        },
+        {
+          "candidate_primary_key": [
+            "ACCESSION_NUMBER"
+          ],
+          "columns": [
+            {
+              "analytical_use": "identity_and_lineage",
+              "candidate_key": true,
+              "datatype": {
+                "base": "string",
+                "maxLength": 25
+              },
+              "description": "Unique identifier assigned by the SEC to each EDGAR submission",
+              "disposition": "raw_and_typed_projection",
+              "name": "ACCESSION_NUMBER",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": true,
+              "title": "ACCESSION NUMBER"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 3
+              },
+              "description": "Number of other included managers",
+              "disposition": "raw_and_typed_projection",
+              "name": "OTHERINCLUDEDMANAGERSCOUNT",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "OTHERINCLUDEDMANAGERSCOUNT"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 6
+              },
+              "description": "Table entry total",
+              "disposition": "raw_and_typed_projection",
+              "name": "TABLEENTRYTOTAL",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "TABLEENTRYTOTAL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "NUMBER",
+                "maxLength": 16
+              },
+              "description": "Table value total",
+              "disposition": "raw_and_typed_projection",
+              "name": "TABLEVALUETOTAL",
+              "parsing_policy": "decimal_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "TABLEVALUETOTAL"
+            },
+            {
+              "analytical_use": "source_specific",
+              "candidate_key": false,
+              "datatype": {
+                "base": "string",
+                "maxLength": 1
+              },
+              "description": "Is confidential omitted",
+              "disposition": "raw_and_typed_projection",
+              "name": "ISCONFIDENTIALOMITTED",
+              "parsing_policy": "text_preserve_lexical",
+              "raw_target": "sec_13f_summarypage_raw",
+              "reconciliation_rule": "source_rows_equal_raw_rows",
+              "required": false,
+              "title": "ISCONFIDENTIALOMITTED"
+            }
+          ],
+          "logical_parents": [
+            "SUBMISSION.tsv"
+          ],
+          "source_file": "SUMMARYPAGE.tsv"
+        }
+      ]
+    }
+  ]
+}

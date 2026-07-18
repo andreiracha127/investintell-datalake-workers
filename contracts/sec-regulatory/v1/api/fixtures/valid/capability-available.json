@@ -1,0 +1,9 @@
+{
+  "state": "available",
+  "source_applicable": true,
+  "as_of": "2026-01-31",
+  "coverage_pct": 98.5,
+  "source": "nport",
+  "reason_code": null,
+  "methodology_version": "native-v1"
+}
