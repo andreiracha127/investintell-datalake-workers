@@ -361,7 +361,6 @@ BEGIN
              count(*) AS issue_count,
              count(*) FILTER (WHERE i.status = 'quarantined') AS quarantined_issue_count,
              count(*) FILTER (WHERE i.status = 'rejected') AS rejected_issue_count,
-             count(*) FILTER (WHERE i.status = 'resolved') AS resolved_issue_count,
              COALESCE(jsonb_agg(
                jsonb_build_object(
                  'column_name', i.column_name,

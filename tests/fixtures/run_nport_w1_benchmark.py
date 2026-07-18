@@ -198,22 +198,20 @@ def main() -> None:
                 raise RuntimeError(f"expected {expected_total} rows, found {total}")
 
             sizes = {25: total // 4, 50: total // 2, 100: total}
-            boundaries: dict[int, int] = {}
-            for fraction, count in sizes.items():
-                cur.execute(
-                    """SELECT raw_row_id FROM nport_raw_rows
-                       WHERE ingestion_run_id=%s ORDER BY raw_row_id OFFSET %s LIMIT 1""",
-                    (args.run_id, count - 1),
-                )
-                boundaries[fraction] = int(cur.fetchone()[0])
-                cur.execute(
-                    """SELECT count(*) FROM nport_raw_rows
-                       WHERE ingestion_run_id=%s AND raw_row_id<=%s""",
-                    (args.run_id, boundaries[fraction]),
-                )
-                actual = int(cur.fetchone()[0])
-                if actual != count:
-                    raise RuntimeError(f"{fraction}% boundary contains {actual}, expected {count}")
+            cur.execute(
+                """WITH ranked AS (
+                       SELECT raw_row_id, row_number() OVER (ORDER BY raw_row_id) AS position
+                       FROM nport_raw_rows WHERE ingestion_run_id=%s
+                   )
+                   SELECT max(raw_row_id) FILTER (WHERE position=%s),
+                          max(raw_row_id) FILTER (WHERE position=%s)
+                   FROM ranked WHERE position IN (%s, %s)""",
+                (args.run_id, sizes[25], sizes[50], sizes[25], sizes[50]),
+            )
+            boundary_25, boundary_50 = cur.fetchone()
+            if boundary_25 is None or boundary_50 is None:
+                raise RuntimeError("could not resolve exact 25%/50% row-prefix boundaries")
+            boundaries = {25: int(boundary_25), 50: int(boundary_50), 100: maximum}
             evidence["boundaries"] = {
                 str(fraction): {"rows": sizes[fraction], "raw_row_id_lte": boundaries[fraction]}
                 for fraction in sizes
