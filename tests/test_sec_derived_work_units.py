@@ -1,0 +1,224 @@
+"""Transactional contract tests for restartable derived SEC work units."""
+
+from __future__ import annotations
+
+import os
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlparse
+from uuid import UUID, uuid4
+
+import pytest
+
+from src.sec_regulatory.derived_work_units import (
+    DerivedWorkUnitError,
+    claim_work_unit,
+    complete_work_unit,
+    create_or_resume_work_unit,
+    fail_work_unit,
+    heartbeat_work_unit,
+    install_schema,
+    list_resumable_work_units,
+)
+from src.sec_regulatory.manifests import install_schema as install_manifest_schema
+
+
+ROOT = Path(__file__).resolve().parents[1]
+_LOCAL_TEST_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _safe_test_dsn() -> str | None:
+    """Only an explicitly configured local disposable database is eligible."""
+    dsn = os.getenv("SEC_TEST_DATABASE_URL")
+    if not dsn:
+        return None
+    parsed = urlparse(dsn)
+    if parsed.hostname not in _LOCAL_TEST_HOSTS:
+        raise RuntimeError("SEC_TEST_DATABASE_URL must target a local disposable database")
+    return dsn
+
+
+@pytest.fixture
+def work_database() -> tuple[str, str, UUID]:
+    dsn = _safe_test_dsn()
+    if dsn is None:
+        pytest.skip("SEC_TEST_DATABASE_URL ausente")
+
+    import psycopg
+
+    schema = f"derived_work_units_{uuid4().hex}"
+    run_id = uuid4()
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f'CREATE SCHEMA "{schema}"')
+            cur.execute(f'SET search_path TO "{schema}"')
+            install_manifest_schema(conn)
+            install_schema(conn)
+            install_schema(conn)
+            cur.execute((ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8"))
+            cur.execute(
+                """INSERT INTO sec_ingestion_runs
+                    (run_id, source_family, package_sha256, parser_version, source_quarter,
+                     package_relative_path, current_state, raw_validated_at)
+                   VALUES (%s, 'nport', %s, 'test-v1', '2024Q1', 'fixtures/nport',
+                           'raw_validated', now())""",
+                (run_id, "a" * 64),
+            )
+            cur.execute(
+                "INSERT INTO sec_validated_raw_visibility(run_id, raw_validated_at) VALUES (%s, now())",
+                (run_id,),
+            )
+    try:
+        yield dsn, schema, run_id
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as conn:
+            with conn.cursor() as cur:
+                cur.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+@contextmanager
+def _connection(dsn: str, schema: str):
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(f'SET search_path TO "{schema}"')
+        yield conn
+
+
+def _create(conn, run_id: UUID, *, unit_key: str = "2024Q1"):
+    return create_or_resume_work_unit(
+        conn,
+        run_id=run_id,
+        product="sec_nport_holdings_v2",
+        publication_version=1,
+        unit_key=unit_key,
+        input_fingerprint="b" * 64,
+    )
+
+
+def test_refuses_remote_test_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SEC_TEST_DATABASE_URL", "postgresql://user:pw@db.example.com/test")
+    with pytest.raises(RuntimeError, match="local disposable"):
+        _safe_test_dsn()
+
+
+def test_creation_requires_validated_raw_run_and_reads_source_metadata(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as conn:
+        status = _create(conn, run_id)
+        repeated = _create(conn, run_id)
+        with pytest.raises(DerivedWorkUnitError, match="validated raw"):
+            _create(conn, uuid4())
+        conn.commit()
+
+    assert repeated.work_unit_id == status.work_unit_id
+    assert (status.source_family, status.source_quarter, status.state, status.attempt_count) == (
+        "nport", "2024Q1", "pending", 0,
+    )
+
+
+def test_only_one_claimant_can_hold_a_work_unit(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as conn:
+        unit = _create(conn, run_id)
+        conn.commit()
+
+    with _connection(dsn, schema) as first, _connection(dsn, schema) as second:
+        claimed = claim_work_unit(first, work_unit_id=unit.work_unit_id)
+        first.commit()
+        with pytest.raises(DerivedWorkUnitError, match="pending or failed"):
+            claim_work_unit(second, work_unit_id=unit.work_unit_id)
+        second.rollback()
+
+    assert claimed.state == "running"
+    assert claimed.lease_token is not None
+    assert claimed.attempt_count == 1
+
+
+def test_failed_work_resumes_with_a_new_attempt_and_lease(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as conn:
+        unit = _create(conn, run_id)
+        claimed = claim_work_unit(conn, work_unit_id=unit.work_unit_id)
+        heartbeat = heartbeat_work_unit(conn, work_unit_id=unit.work_unit_id, lease_token=claimed.lease_token)
+        failed = fail_work_unit(
+            conn,
+            work_unit_id=unit.work_unit_id,
+            lease_token=claimed.lease_token,
+            failure_code="worker_crash",
+            failure_detail="synthetic interruption",
+        )
+        resumed = claim_work_unit(conn, work_unit_id=unit.work_unit_id)
+        conn.commit()
+
+    assert heartbeat.heartbeat_at is not None
+    assert (failed.state, failed.failure_code, failed.attempt_count) == ("failed", "worker_crash", 1)
+    assert resumed.state == "running"
+    assert resumed.attempt_count == 2
+    assert resumed.lease_token != claimed.lease_token
+
+
+def test_completion_is_idempotent_only_for_identical_evidence(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as conn:
+        unit = _create(conn, run_id)
+        claimed = claim_work_unit(conn, work_unit_id=unit.work_unit_id)
+        completed = complete_work_unit(
+            conn,
+            work_unit_id=unit.work_unit_id,
+            lease_token=claimed.lease_token,
+            output_fingerprint="c" * 64,
+            evidence={"rows": 1, "checkpoint": "synthetic"},
+        )
+        repeated = complete_work_unit(
+            conn,
+            work_unit_id=unit.work_unit_id,
+            lease_token=claimed.lease_token,
+            output_fingerprint="c" * 64,
+            evidence={"checkpoint": "synthetic", "rows": 1},
+        )
+        with pytest.raises(DerivedWorkUnitError, match="conflicting completion"):
+            complete_work_unit(
+                conn,
+                work_unit_id=unit.work_unit_id,
+                lease_token=claimed.lease_token,
+                output_fingerprint="d" * 64,
+                evidence={"rows": 2},
+            )
+        conn.commit()
+
+    assert completed == repeated
+    assert completed.state == "completed"
+    assert completed.evidence == {"rows": 1, "checkpoint": "synthetic"}
+
+
+def test_resumable_listing_excludes_completed_and_completion_mutates_no_raw_or_pointer(work_database) -> None:
+    dsn, schema, run_id = work_database
+    with _connection(dsn, schema) as conn:
+        pending = _create(conn, run_id, unit_key="pending")
+        complete = _create(conn, run_id, unit_key="complete")
+        claimed = claim_work_unit(conn, work_unit_id=complete.work_unit_id)
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_state, raw_validated_at FROM sec_ingestion_runs WHERE run_id=%s", (run_id,))
+            raw_before = cur.fetchone()
+            cur.execute("SELECT count(*) FROM sec_derived_current_pointers")
+            pointer_count_before = cur.fetchone()[0]
+        complete_work_unit(
+            conn,
+            work_unit_id=complete.work_unit_id,
+            lease_token=claimed.lease_token,
+            output_fingerprint="e" * 64,
+            evidence={"rows": 0},
+        )
+        resumable = list_resumable_work_units(conn, run_id=run_id)
+        with conn.cursor() as cur:
+            cur.execute("SELECT current_state, raw_validated_at FROM sec_ingestion_runs WHERE run_id=%s", (run_id,))
+            raw_after = cur.fetchone()
+            cur.execute("SELECT count(*) FROM sec_derived_current_pointers")
+            pointer_count_after = cur.fetchone()[0]
+        conn.commit()
+
+    assert [item.work_unit_id for item in resumable] == [pending.work_unit_id]
+    assert raw_after == raw_before
+    assert pointer_count_after == pointer_count_before == 0
