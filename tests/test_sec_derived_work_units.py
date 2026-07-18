@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
@@ -20,10 +19,8 @@ from src.sec_regulatory.derived_work_units import (
     install_schema,
     list_resumable_work_units,
 )
-from src.sec_regulatory.manifests import install_schema as install_manifest_schema
 
 
-ROOT = Path(__file__).resolve().parents[1]
 _LOCAL_TEST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -52,20 +49,33 @@ def work_database() -> tuple[str, str, UUID]:
         with conn.cursor() as cur:
             cur.execute(f'CREATE SCHEMA "{schema}"')
             cur.execute(f'SET search_path TO "{schema}"')
-            install_manifest_schema(conn)
-            install_schema(conn)
-            install_schema(conn)
-            cur.execute((ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8"))
             cur.execute(
-                """INSERT INTO sec_ingestion_runs
-                    (run_id, source_family, package_sha256, parser_version, source_quarter,
-                     package_relative_path, current_state, raw_validated_at)
-                   VALUES (%s, 'nport', %s, 'test-v1', '2024Q1', 'fixtures/nport',
-                           'raw_validated', now())""",
-                (run_id, "a" * 64),
+                """CREATE TABLE sec_ingestion_runs (
+                    run_id uuid PRIMARY KEY,
+                    source_family text NOT NULL,
+                    source_quarter text NOT NULL,
+                    current_state text NOT NULL,
+                    raw_validated_at timestamptz
+                )"""
             )
             cur.execute(
-                "INSERT INTO sec_validated_raw_visibility(run_id, raw_validated_at) VALUES (%s, now())",
+                """CREATE VIEW sec_validated_raw_runs AS
+                    SELECT run_id, source_family, source_quarter, raw_validated_at
+                    FROM sec_ingestion_runs
+                    WHERE raw_validated_at IS NOT NULL"""
+            )
+            cur.execute(
+                """CREATE TABLE sec_derived_current_pointers (
+                    product text PRIMARY KEY,
+                    publication_id uuid NOT NULL
+                )"""
+            )
+            install_schema(conn)
+            install_schema(conn)
+            cur.execute(
+                """INSERT INTO sec_ingestion_runs
+                    (run_id, source_family, source_quarter, current_state, raw_validated_at)
+                   VALUES (%s, 'nport', '2024Q1', 'raw_validated', now())""",
                 (run_id,),
             )
     try:
