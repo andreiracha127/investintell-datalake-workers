@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -92,7 +93,7 @@ def test_fixed_income_features_builds_complete_degraded_insufficient_and_unavail
         assert rows["STALE"][0] == "insufficient" and "report_age_exceeds_180_days" in rows["STALE"][8]
         assert rows["UNAV"][0] == "unavailable"
         assert rows["UNAV"][1:8] == (None, None, None, None, None, None, None)
-        assert rows["UNAV"][8] == ["no_explicit_dbt_positions", "coupon_not_fully_reported", "maturity_not_fully_reported"]
+        assert rows["UNAV"][8] == ["no_explicit_dbt_positions"]
         assert rows["CERT"][9]["debt_market_value"] == 1
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
@@ -125,8 +126,105 @@ def test_fixed_income_features_preserves_missing_coupon_and_maturity_as_unavaila
             cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
         with pytest.raises(psycopg.Error, match="feature row is immutable"):
             cur.execute("UPDATE nport_fixed_income_features SET status='degraded' WHERE publication_id=%s", (features_id,))
+        with pytest.raises(psycopg.Error, match="build identity is immutable"):
+            cur.execute("UPDATE nport_fixed_income_feature_builds SET as_of_date='2026-07-01' WHERE publication_id=%s", (features_id,))
         cur.execute("SELECT series_id,status FROM sec_current_nport_fixed_income_features")
         assert cur.fetchone() == ("MISS", "certified")
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_fixed_income_build_pins_one_source_publication_and_as_of_date():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "P1", "PINNED", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"2","MATURITY_DATE":"2027-01-31"}}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (1,)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (0,)
+        with pytest.raises(psycopg.Error, match="already pinned to as_of_date"):
+            cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-07-01')", (features_id,))
+
+        second_holdings_id = uuid4()
+        cur.execute("""INSERT INTO sec_derived_publications
+            (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+            VALUES(%s,'sec_nport_holdings_v2',2,%s,%s,%s)""",
+            (second_holdings_id, run_id, package_id, "c" * 64))
+        _holding(cur, second_holdings_id, run_id, "P2", "PINNED", "2026-02-28", 200,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"3","MATURITY_DATE":"2028-02-28"}}')
+        _publish_holdings(cur, second_holdings_id)
+        with pytest.raises(psycopg.Error, match="already pinned to source publication"):
+            cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT source_holdings_publication_id,as_of_date,count(*) OVER ()
+                       FROM nport_fixed_income_feature_builds WHERE publication_id=%s""", (features_id,))
+        assert cur.fetchone() == (holdings_id, date(2026, 6, 30), 1)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_unknown_market_value_zero_extension_and_invalid_maturity_fail_closed():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "N1", "NULL_MV", "2026-01-31", None,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"4","MATURITY_DATE":"2027-01-31"}}')
+        _holding(cur, holdings_id, run_id, "Z1", "ZERO_EXT", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT"}')
+        _holding(cur, holdings_id, run_id, "B1", "BAD_DATE", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"4","MATURITY_DATE":"2026-02-30"}}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (3,)
+        cur.execute("""SELECT series_id,status,unknown_debt_market_value_position_count,
+                              debt_gross_market_value,debt_market_value_coverage,
+                              maturity_market_value_coverage,reason_codes
+                       FROM nport_fixed_income_features ORDER BY series_id""")
+        rows = {row[0]: row[1:] for row in cur.fetchall()}
+        assert rows["NULL_MV"][0:5] == ("insufficient", 1, None, None, None)
+        assert "unknown_debt_market_value" in rows["NULL_MV"][5]
+        assert rows["ZERO_EXT"][0] == "unavailable"
+        assert rows["ZERO_EXT"][1] == 0
+        assert "debt_extension_evidence_absent" in rows["ZERO_EXT"][5]
+        assert "no_explicit_dbt_positions" not in rows["ZERO_EXT"][5]
+        assert rows["BAD_DATE"][0] == "certified"
+        assert rows["BAD_DATE"][4] == 0
+        assert "maturity_not_fully_reported" in rows["BAD_DATE"][5]
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_quality_threshold_boundaries_are_inclusive_and_age_is_pinned():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        for series, report_date, covered, uncovered in (
+            ("COV_70", "2026-01-31", 70, 30),
+            ("COV_90", "2026-01-31", 90, 10),
+            ("AGE_180", "2026-01-01", 100, 0),
+            ("AGE_181", "2025-12-31", 100, 0),
+        ):
+            _holding(cur, holdings_id, run_id, f"{series}-E", series, report_date, covered,
+                     '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"2","MATURITY_DATE":"2028-01-01"}}')
+            if uncovered:
+                _holding(cur, holdings_id, run_id, f"{series}-N", series, report_date, uncovered,
+                         '{"ASSET_CAT":"DBT"}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (4,)
+        cur.execute("SELECT series_id,status,report_age_days FROM nport_fixed_income_features")
+        rows = {series: (status, age) for series, status, age in cur.fetchall()}
+        assert rows == {
+            "COV_70": ("degraded", 150),
+            "COV_90": ("certified", 150),
+            "AGE_180": ("certified", 180),
+            "AGE_181": ("insufficient", 181),
+        }
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -137,3 +235,6 @@ def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics(
     for phase_10_metric in ("rating_distribution", "ytm", "ytw", "current_yield", "oas", "z_spread", "effective_duration"):
         assert phase_10_metric not in ddl
     assert "sec_w1_nport_real" not in ddl
+    assert "sec_nport_holdings_v2_current h" not in ddl
+    assert "for share of c" in ddl
+    assert "from sec_nport_holdings_v2 h" in ddl
