@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS ncen_operating_profile_builds (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- The frozen SEC code dictionary authorizes only literal `Y` as a
+-- conditional-positive fund-type marker.  `N`, blank, mutual exclusivity,
+-- and general CHAR(1) business flags have no governed negative semantics.
+CREATE OR REPLACE FUNCTION ncen_conditional_positive_flag(lexical_value text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE WHEN lexical_value = 'Y' THEN true ELSE NULL END
+$$;
+
 CREATE OR REPLACE FUNCTION ncen_operating_profile_build_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent_state text;
@@ -248,46 +256,84 @@ BEGIN
            CASE WHEN jsonb_array_length(providers.children)>0 THEN 'available' ELSE 'unavailable' END,
            CASE WHEN jsonb_array_length(providers.children)>0 THEN NULL ELSE 'service_provider_not_reported' END,
            providers.children,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'IS_SEC_LENDING_AUTHORIZED'),'') IS NOT NULL THEN 'available' ELSE 'unavailable' END,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'IS_SEC_LENDING_AUTHORIZED'),'') IS NOT NULL THEN NULL ELSE 'securities_lending_not_reported' END,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'IS_SEC_LENDING_AUTHORIZED'),'') IS NOT NULL THEN
+           CASE WHEN jsonb_array_length(lending.children)>0 THEN 'available' ELSE 'unavailable' END,
+           CASE WHEN jsonb_array_length(lending.children)>0 THEN NULL ELSE 'securities_lending_evidence_not_reported' END,
+           CASE WHEN jsonb_array_length(lending.children)>0 THEN
                 jsonb_build_object('fund_evidence',jsonb_build_object(
                     'IS_SEC_LENDING_AUTHORIZED',s.fund_evidence->'IS_SEC_LENDING_AUTHORIZED',
                     'DID_LEND_SECURITIES',s.fund_evidence->'DID_LEND_SECURITIES',
                     'AVG_VALUE_SEC_LOAN',s.fund_evidence->'AVG_VALUE_SEC_LOAN',
                     'NET_INCOME_SEC_LENDING',s.fund_evidence->'NET_INCOME_SEC_LENDING'
                 ),'indemnity_provider_children',lending.children) END,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'HAS_LINE_OF_CREDIT'),'') IS NOT NULL THEN 'available' ELSE 'unavailable' END,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'HAS_LINE_OF_CREDIT'),'') IS NOT NULL THEN NULL ELSE 'liquidity_backstop_not_reported' END,
-           CASE WHEN NULLIF(btrim(s.fund_evidence->>'HAS_LINE_OF_CREDIT'),'') IS NOT NULL THEN
+           CASE WHEN jsonb_array_length(credit.children)>0 THEN 'available' ELSE 'unavailable' END,
+           CASE WHEN jsonb_array_length(credit.children)>0 THEN NULL ELSE 'liquidity_backstop_evidence_not_reported' END,
+           CASE WHEN jsonb_array_length(credit.children)>0 THEN
                 jsonb_build_object('fund_evidence',jsonb_build_object('HAS_LINE_OF_CREDIT',s.fund_evidence->'HAS_LINE_OF_CREDIT'),
                                    'credit_facilities',credit.children,'credit_institutions',institutions.children) END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND NOT (s.fund_evidence->>'IS_ETF')::boolean THEN 'not_applicable'
-                WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND (s.fund_evidence->>'IS_ETF')::boolean
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
                      AND jsonb_array_length(etf.children)>0 THEN 'available'
                 ELSE 'unavailable' END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND (s.fund_evidence->>'IS_ETF')::boolean
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
                      AND jsonb_array_length(etf.children)>0 THEN NULL
-                WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND NOT (s.fund_evidence->>'IS_ETF')::boolean THEN 'fund_not_reported_as_etf'
-                WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND (s.fund_evidence->>'IS_ETF')::boolean THEN 'etf_primary_market_not_reported'
-                ELSE 'etf_status_not_reported' END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean' AND (s.fund_evidence->>'IS_ETF')::boolean
+                WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true THEN 'etf_primary_market_not_reported'
+                WHEN NULLIF(s.fund_evidence->>'IS_ETF','') IS NULL THEN 'etf_status_not_reported'
+                ELSE 'unsupported_etf_flag_lexical' END,
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
                      AND jsonb_array_length(etf.children)>0 THEN
-                jsonb_build_object('etf_children',etf.children,'authorized_participants',participants.children) END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_INTERVAL')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_SECONDARY_COMMON')='boolean' THEN 'available' ELSE 'unavailable' END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_INTERVAL')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_SECONDARY_COMMON')='boolean' THEN NULL ELSE 'fund_structure_not_reported' END,
-           CASE WHEN jsonb_typeof(s.fund_evidence->'IS_ETF')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_INTERVAL')='boolean'
-                      OR jsonb_typeof(s.fund_evidence->'IS_SECONDARY_COMMON')='boolean' THEN
-                jsonb_build_object('IS_ETF',s.fund_evidence->'IS_ETF','IS_ETMF',s.fund_evidence->'IS_ETMF',
-                                   'IS_INTERVAL',s.fund_evidence->'IS_INTERVAL','IS_FUND_OF_FUND',s.fund_evidence->'IS_FUND_OF_FUND',
-                                   'IS_MASTER_FEEDER',s.fund_evidence->'IS_MASTER_FEEDER','IS_MONEY_MARKET',s.fund_evidence->'IS_MONEY_MARKET',
-                                   'IS_SECONDARY_COMMON',s.fund_evidence->'IS_SECONDARY_COMMON',
-                                   'IS_SECONDARY_PREFERRED',s.fund_evidence->'IS_SECONDARY_PREFERRED') END,
+                jsonb_build_object('is_etf',true,'etf_children',etf.children,'authorized_participants',participants.children) END,
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETMF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MULTI_INVERSE_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INTERVAL') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_OF_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MASTER_FEEDER') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MONEY_MARKET') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_TARGET_DATE') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_UNDERLYING_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_TYPE_NA') IS true THEN 'available' ELSE 'unavailable' END,
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETMF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MULTI_INVERSE_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INTERVAL') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_OF_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MASTER_FEEDER') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MONEY_MARKET') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_TARGET_DATE') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_UNDERLYING_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_TYPE_NA') IS true THEN NULL ELSE 'fund_structure_not_reported' END,
+           CASE WHEN ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETMF') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MULTI_INVERSE_INDEX') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_INTERVAL') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_OF_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MASTER_FEEDER') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_MONEY_MARKET') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_TARGET_DATE') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_UNDERLYING_FUND') IS true
+                      OR ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_TYPE_NA') IS true THEN
+                jsonb_build_object(
+                    'normalized',jsonb_strip_nulls(jsonb_build_object(
+                        'IS_ETF',ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETF'),
+                        'IS_ETMF',ncen_conditional_positive_flag(s.fund_evidence->>'IS_ETMF'),
+                        'IS_INDEX',ncen_conditional_positive_flag(s.fund_evidence->>'IS_INDEX'),
+                        'IS_MULTI_INVERSE_INDEX',ncen_conditional_positive_flag(s.fund_evidence->>'IS_MULTI_INVERSE_INDEX'),
+                        'IS_INTERVAL',ncen_conditional_positive_flag(s.fund_evidence->>'IS_INTERVAL'),
+                        'IS_FUND_OF_FUND',ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_OF_FUND'),
+                        'IS_MASTER_FEEDER',ncen_conditional_positive_flag(s.fund_evidence->>'IS_MASTER_FEEDER'),
+                        'IS_MONEY_MARKET',ncen_conditional_positive_flag(s.fund_evidence->>'IS_MONEY_MARKET'),
+                        'IS_TARGET_DATE',ncen_conditional_positive_flag(s.fund_evidence->>'IS_TARGET_DATE'),
+                        'IS_UNDERLYING_FUND',ncen_conditional_positive_flag(s.fund_evidence->>'IS_UNDERLYING_FUND'),
+                        'IS_FUND_TYPE_NA',ncen_conditional_positive_flag(s.fund_evidence->>'IS_FUND_TYPE_NA'))),
+                    'source_lexical',jsonb_build_object(
+                        'IS_ETF',s.fund_evidence->'IS_ETF','IS_ETMF',s.fund_evidence->'IS_ETMF',
+                        'IS_INDEX',s.fund_evidence->'IS_INDEX','IS_MULTI_INVERSE_INDEX',s.fund_evidence->'IS_MULTI_INVERSE_INDEX',
+                        'IS_INTERVAL',s.fund_evidence->'IS_INTERVAL','IS_FUND_OF_FUND',s.fund_evidence->'IS_FUND_OF_FUND',
+                        'IS_MASTER_FEEDER',s.fund_evidence->'IS_MASTER_FEEDER','IS_MONEY_MARKET',s.fund_evidence->'IS_MONEY_MARKET',
+                        'IS_TARGET_DATE',s.fund_evidence->'IS_TARGET_DATE','IS_UNDERLYING_FUND',s.fund_evidence->'IS_UNDERLYING_FUND',
+                        'IS_FUND_TYPE_NA',s.fund_evidence->'IS_FUND_TYPE_NA')) END,
            jsonb_build_object('effective_selection_view','ncen_effective_filings','effective_raw_row_id',s.effective_raw_row_id,
                               'registrant_cik',s.registrant_cik,'source_run_id',s.source_run_id,'accession_number',s.accession_number,
                               'fund_source_table','FUND_REPORTED_INFO.tsv'),

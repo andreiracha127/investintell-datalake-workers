@@ -7,9 +7,12 @@ from uuid import uuid4
 
 import pytest
 
+from src.ncen.schema import json_typed_projection, load_ncen_contract, parse_row
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
+NCEN_METADATA_SHA = "fb55228ca976c43955c9a49bccf2bc21c8b70d3c7194f936f13289f06acca737"
 
 
 def _fixture(cur):
@@ -50,7 +53,12 @@ def _submission(cur, run_id, accession, cik="C1", form="N-CEN", filing_date="202
 
 
 def _fund(cur, run_id, accession, fund_id, series_id, **fields):
-    body = {"ACCESSION_NUMBER": accession, "FUND_ID": fund_id, "SERIES_ID": series_id, **fields}
+    table = load_ncen_contract(NCEN_METADATA_SHA).table_for_filename("FUND_REPORTED_INFO.tsv")
+    lexical = {name: "" for name in table.headers}
+    lexical.update({"ACCESSION_NUMBER": accession, "FUND_ID": fund_id, "SERIES_ID": series_id, **fields})
+    parsed = parse_row(table.columns, tuple(lexical[name] for name in table.headers))
+    assert parsed.parse_status == "typed"
+    body = json_typed_projection(parsed.typed)
     _raw(cur, run_id, "FUND_REPORTED_INFO.tsv", body, accession=accession, fund_id=fund_id)
 
 
@@ -69,15 +77,15 @@ def test_ncen_operating_profile_inherits_amendment_winner_and_preserves_provider
         amended_run = _prepare_second_run(cur)
         _submission(cur, base_run, "BASE", filing_date="2026-01-10")
         _submission(cur, amended_run, "AMEND", form="N-CEN/A", filing_date="2026-02-10")
-        _fund(cur, amended_run, "AMEND", "F1", "S1", IS_SEC_LENDING_AUTHORIZED=True,
-              HAS_LINE_OF_CREDIT=True, IS_ETF=True, IS_SECONDARY_COMMON=False)
+        _fund(cur, amended_run, "AMEND", "F1", "S1", IS_SEC_LENDING_AUTHORIZED="Y",
+              HAS_LINE_OF_CREDIT="Y", IS_ETF="Y")
         _raw(cur, amended_run, "ADVISER.tsv", {"FUND_ID": "F1", "ADVISER_NAME": "Alpha", "ADVISER_LEI": "L1"}, fund_id="F1")
         _raw(cur, amended_run, "ADVISER.tsv", {"FUND_ID": "F1", "ADVISER_NAME": "Beta", "ADVISER_LEI": "L2"}, fund_id="F1")
         _raw(cur, amended_run, "ADMIN.tsv", {"FUND_ID": "F1", "ADMIN_NAME": "Admin"}, fund_id="F1")
         _raw(cur, amended_run, "SEC_LENDING_IDEMNITY_PROVIDER.tsv", {"FUND_ID": "F1", "INDEMNITY_PROVIDER_NAME": "Indemnity"}, fund_id="F1")
         _raw(cur, amended_run, "LINE_OF_CREDIT_DETAIL.tsv", {"FUND_ID": "F1", "LINE_OF_CREDIT_SEQNUM": "1", "CREDIT_TYPE": "bank"}, fund_id="F1")
         _raw(cur, amended_run, "LINE_OF_CREDIT_INSTITUTION.tsv", {"FUND_ID": "F1", "LINE_OF_CREDIT_SEQNUM": "1", "CREDIT_INSTITUTION_NAME": "Bank"}, fund_id="F1")
-        _raw(cur, amended_run, "ETF.tsv", {"FUND_ID": "F1", "SERIES_ID": "S1", "IS_FUND_IN_KIND_ETF": True}, fund_id="F1")
+        _raw(cur, amended_run, "ETF.tsv", {"FUND_ID": "F1", "SERIES_ID": "S1", "IS_FUND_IN_KIND_ETF": "Y"}, fund_id="F1")
         _raw(cur, amended_run, "AUTHORIZED_PARTICIPANT.tsv", {"FUND_ID": "F1", "PARTICIPANT_NAME": "AP"}, fund_id="F1")
         cur.execute("SELECT build_ncen_operating_profiles(%s,'2026-06-30')", (publication_id,))
         assert cur.fetchone() == (1,)
@@ -91,20 +99,45 @@ def test_ncen_operating_profile_inherits_amendment_winner_and_preserves_provider
         assert {child["evidence"]["ADVISER_NAME"] for child in row[7] if child["source_table"] == "ADVISER.tsv"} == {"Alpha", "Beta"}
         assert row[8]["credit_facilities"][0]["evidence"]["CREDIT_TYPE"] == "bank"
         assert row[9]["authorized_participants"][0]["evidence"]["PARTICIPANT_NAME"] == "AP"
+        assert row[9]["is_etf"] is True
+        cur.execute("SELECT fund_structure FROM ncen_operating_profiles")
+        assert cur.fetchone()[0]["normalized"] == {"IS_ETF": True}
+        cur.execute("SELECT ncen_conditional_positive_flag('Y'),ncen_conditional_positive_flag('N'),ncen_conditional_positive_flag('X'),ncen_conditional_positive_flag(NULL)")
+        assert cur.fetchone() == (True, None, None, None)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
-def test_ncen_operating_profile_marks_applicable_missing_evidence_unavailable_and_false_etf_not_applicable():
+def test_ncen_operating_profile_requires_exact_positive_etf_literal_and_child_evidence():
     import psycopg
 
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
         schema, run_id, _, publication_id = _fixture(cur)
         _submission(cur, run_id, "A1")
-        _fund(cur, run_id, "A1", "ETF-MISSING", "S1", IS_ETF=True)
-        _fund(cur, run_id, "A1", "NON-ETF", "S2", IS_ETF=False)
+        _fund(cur, run_id, "A1", "ETF-MISSING", "S1", IS_ETF="Y")
+        _fund(cur, run_id, "A1", "UNDECLARED-NEGATIVE", "S2", IS_ETF="N")
         cur.execute("SELECT build_ncen_operating_profiles(%s,'2026-06-30')", (publication_id,))
-        cur.execute("SELECT fund_id,etf_primary_market_state,service_providers_state FROM ncen_operating_profiles ORDER BY fund_id")
-        assert cur.fetchall() == [("ETF-MISSING", "unavailable", "unavailable"), ("NON-ETF", "not_applicable", "unavailable")]
+        cur.execute("SELECT fund_id,etf_primary_market_state,fund_structure_state FROM ncen_operating_profiles ORDER BY fund_id")
+        assert cur.fetchall() == [("ETF-MISSING", "unavailable", "available"), ("UNDECLARED-NEGATIVE", "unavailable", "unavailable")]
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_ncen_operating_profile_rejects_unexpected_etf_code_even_when_children_exist():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _, publication_id = _fixture(cur)
+        _submission(cur, run_id, "A1")
+        _fund(cur, run_id, "A1", "BAD-FLAG", "S1", IS_ETF="X", IS_INTERVAL="X", IS_SECONDARY_COMMON="X")
+        _raw(cur, run_id, "ETF.tsv", {"FUND_ID": "BAD-FLAG", "SERIES_ID": "S1"}, fund_id="BAD-FLAG")
+        _raw(cur, run_id, "AUTHORIZED_PARTICIPANT.tsv", {"FUND_ID": "BAD-FLAG", "PARTICIPANT_NAME": "AP"}, fund_id="BAD-FLAG")
+        cur.execute("SELECT build_ncen_operating_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute("""SELECT etf_primary_market_state,etf_primary_market_reason_code,etf_primary_market,
+                              fund_structure_state,fund_structure_reason_code,fund_structure
+                       FROM ncen_operating_profiles""")
+        assert cur.fetchone() == (
+            "unavailable", "unsupported_etf_flag_lexical", None,
+            "unavailable", "fund_structure_not_reported", None,
+        )
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -116,7 +149,7 @@ def test_ncen_operating_profile_fails_closed_on_missing_or_ambiguous_fund_identi
         _submission(cur, run_id, "A1")
         with pytest.raises(psycopg.Error, match="missing N-CEN fund identity"):
             cur.execute("SELECT build_ncen_operating_profiles(%s,'2026-06-30')", (publication_id,))
-        _fund(cur, run_id, "A1", "F1", "S1", HAS_LINE_OF_CREDIT=True)
+        _fund(cur, run_id, "A1", "F1", "S1", HAS_LINE_OF_CREDIT="Y")
         _raw(cur, run_id, "LINE_OF_CREDIT_DETAIL.tsv", {"FUND_ID": "F1", "LINE_OF_CREDIT_SEQNUM": "1"}, fund_id="F1")
         _raw(cur, run_id, "LINE_OF_CREDIT_DETAIL.tsv", {"FUND_ID": "F1", "LINE_OF_CREDIT_SEQNUM": "1", "CREDIT_TYPE": "other"}, fund_id="F1")
         with pytest.raises(psycopg.Error, match="conflicting N-CEN credit-facility child key"):
@@ -143,7 +176,7 @@ def test_ncen_operating_profile_is_immutable_after_validation_and_current_view_n
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
         schema, run_id, _, publication_id = _fixture(cur)
         _submission(cur, run_id, "A1")
-        _fund(cur, run_id, "A1", "F1", "S1", IS_ETF=False)
+        _fund(cur, run_id, "A1", "F1", "S1")
         cur.execute("SELECT build_ncen_operating_profiles(%s,'2026-06-30')", (publication_id,))
         cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
         cur.execute("SELECT sec_set_current_derived_publication('ncen_operating_profile_v1',%s)", (publication_id,))
@@ -183,9 +216,11 @@ def test_ncen_operating_profile_ddl_is_ncen_native_and_current_view_is_derived_o
     ddl = (ROOT / "schemas" / "ncen_operating_profiles.sql").read_text(encoding="utf-8")
     lower = ddl.lower()
     for token in ("ncen_operating_profile_v1", "ncen_effective_filings", "input_fingerprint", "provider_children",
-                  "sec_derived_current_pointers", "IS_SEC_LENDING_AUTHORIZED", "HAS_LINE_OF_CREDIT", "IS_ETF"):
+                  "sec_derived_current_pointers", "IS_SEC_LENDING_AUTHORIZED", "HAS_LINE_OF_CREDIT", "IS_ETF",
+                  "ncen_conditional_positive_flag", "lexical_value = 'Y'"):
         assert token in ddl
     assert "sec_w1_nport_real" not in lower
     assert "cik:" not in lower
+    assert "jsonb_typeof(s.fund_evidence->'is_etf')='boolean'" not in lower
     current_view = lower.split("create or replace view sec_current_ncen_operating_profiles", 1)[1]
     assert "ncen_raw_v2_rows" not in current_view
