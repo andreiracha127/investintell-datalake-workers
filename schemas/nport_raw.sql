@@ -497,10 +497,11 @@ BEGIN
     JOIN nport_contract_tables c ON c.source_table = r.source_table
     WHERE r.ingestion_run_id = target_run_id AND cardinality(c.candidate_key) > 0
     GROUP BY r.source_table, r.candidate_key_evidence->'values'
-    HAVING count(*) > 1
+    HAVING count(*) FILTER (
+            WHERE COALESCE((r.candidate_key_evidence->>'complete')::boolean, false) IS TRUE
+          ) > 1
        OR bool_or(
             r.candidate_key_evidence->'columns' <> to_jsonb(c.candidate_key)
-            OR COALESCE((r.candidate_key_evidence->>'complete')::boolean, false) IS NOT TRUE
             OR jsonb_array_length(COALESCE(
                  r.candidate_key_evidence->'values', '[]'::jsonb
                )) <> cardinality(c.candidate_key)

@@ -258,6 +258,72 @@ def test_real_db_zero_tables_are_accounted_and_validated(tmp_path: Path, monkeyp
 
 
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_real_db_incomplete_optional_candidate_key_reconciles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import psycopg
+    import src.nport.ingestion as ingestion
+    from src.nport.storage import install_schema as install_nport_schema
+    from src.sec_regulatory.manifests import install_schema as install_manifest_schema
+
+    accession = "NPORT-INCOMPLETE"
+    contract, package = _package(tmp_path, "2026q3_nport", accession=accession)
+    monthly_return = contract.table_for_filename("MONTHLY_RETURN_CAT_INSTRUMENT.tsv")
+    _write_row(package / monthly_return.source_file, monthly_return.headers, {
+        "ACCESSION_NUMBER": accession,
+        "ASSET_CAT": "OTHER",
+        "NET_REALIZED_GAIN_MON1": "0",
+    })
+    old = ingestion.load_nport_contract
+    monkeypatch.setattr(ingestion, "load_nport_contract", lambda: contract)
+    try:
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+            install_manifest_schema(conn)
+            install_nport_schema(conn)
+            result = ingestion.ingest_package(
+                conn, package=package, source_root=tmp_path, parser_version="nport-test-incomplete-candidate-v1",
+            )
+            conn.commit()
+            assert result["state"] == "raw_validated", result
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT parse_status, candidate_key_evidence
+                       FROM nport_raw_rows
+                       WHERE ingestion_run_id=%s AND source_table='MONTHLY_RETURN_CAT_INSTRUMENT.tsv'""",
+                    (result["run_id"],),
+                )
+                assert cur.fetchone() == (
+                    "typed",
+                    {
+                        "columns": ["ACCESSION_NUMBER", "ASSET_CAT", "INSTRUMENT_KIND"],
+                        "values": [accession, "OTHER", ""],
+                        "complete": False,
+                    },
+                )
+                cur.execute(
+                    """SELECT expected_count, data_count, lexical_count, typed_success_count, quarantine_count
+                       FROM sec_source_files
+                       WHERE run_id=%s AND relative_path='MONTHLY_RETURN_CAT_INSTRUMENT.tsv'""",
+                    (result["run_id"],),
+                )
+                assert cur.fetchone() == (1, 1, 1, 1, 0)
+                cur.execute(
+                    """SELECT expected_count, source_count, lexical_count, typed_success_count, quarantine_count, state
+                       FROM sec_table_reconciliations
+                       WHERE run_id=%s AND table_name='MONTHLY_RETURN_CAT_INSTRUMENT.tsv'""",
+                    (result["run_id"],),
+                )
+                assert cur.fetchone() == (1, 1, 1, 1, 0, "accounted")
+                cur.execute(
+                    """SELECT count(*)
+                       FROM nport_submission_raw
+                       WHERE ingestion_run_id=%s AND accession_number=%s""",
+                    (result["run_id"], accession),
+                )
+                assert cur.fetchone() == (1,)
+    finally:
+        monkeypatch.setattr(ingestion, "load_nport_contract", old)
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
 def test_real_db_orphan_holding_id_fails_bundle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import psycopg
     import src.nport.ingestion as ingestion
