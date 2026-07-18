@@ -14,7 +14,7 @@ WITH identifier_rows AS (
     JOIN sec_validated_raw_runs v ON v.run_id=i.ingestion_run_id
 ), normalized_identifier_rows AS (
     SELECT accession_number, holding_id, raw_isin, candidate_key_complete,
-           upper(regexp_replace(COALESCE(raw_isin, ''), '\\s+', '', 'g')) AS normalized_isin
+           upper(regexp_replace(COALESCE(raw_isin, ''), '[[:space:]]+', '', 'g')) AS normalized_isin
     FROM identifier_rows
 ), identifier_rollup AS (
     SELECT accession_number, holding_id,
@@ -24,13 +24,13 @@ WITH identifier_rows AS (
            ), NULL) AS normalized_isins,
            bool_or(NOT candidate_key_complete) AS incomplete_identifier_candidate_key_evidence,
            bool_or(raw_isin IS NOT NULL AND btrim(raw_isin) <> ''
-                   AND upper(btrim(raw_isin)) IN ('N/A','NA','NONE','NULL','UNKNOWN','-')) AS isin_placeholder
+                   AND normalized_isin IN ('N/A','NA','NONE','NULL','UNKNOWN','-')) AS isin_placeholder
     FROM normalized_identifier_rows
     GROUP BY accession_number, holding_id
 ), normalized_holdings AS (
     SELECT h.*,
-           upper(regexp_replace(COALESCE(h.raw_cusip, ''), '\\s+', '', 'g')) AS normalized_cusip_candidate,
-           upper(regexp_replace(COALESCE(h.raw_issuer_lei, ''), '\\s+', '', 'g')) AS normalized_lei_candidate
+           upper(regexp_replace(COALESCE(h.raw_cusip, ''), '[[:space:]]+', '', 'g')) AS normalized_cusip_candidate,
+           upper(regexp_replace(COALESCE(h.raw_issuer_lei, ''), '[[:space:]]+', '', 'g')) AS normalized_lei_candidate
     FROM nport_current_holdings h
 )
 SELECT h.accession_number, h.holding_id, h.ingestion_run_id, h.series_id,

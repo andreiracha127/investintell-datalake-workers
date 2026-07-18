@@ -49,11 +49,46 @@ CREATE TABLE IF NOT EXISTS sec_nport_holdings_v2 (
 
 ALTER TABLE sec_nport_holdings_v2
     ADD COLUMN IF NOT EXISTS issuer_category text;
-ALTER TABLE sec_nport_holdings_v2
-    ADD COLUMN IF NOT EXISTS source_typed_projection jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE INDEX IF NOT EXISTS sec_nport_holdings_v2_publication_report_idx
     ON sec_nport_holdings_v2 (publication_id, report_date DESC, source_series_id);
+
+-- Rows are append-only while the parent publication is prepared. Validation
+-- freezes the complete publication atomically.
+CREATE OR REPLACE FUNCTION sec_nport_holdings_v2_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE parent_product text;
+DECLARE parent_state text;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION '% is immutable after insert', TG_TABLE_NAME;
+    END IF;
+
+    SELECT product, lifecycle_state INTO parent_product, parent_state
+    FROM sec_derived_publications
+    WHERE publication_id=NEW.publication_id
+    FOR UPDATE;
+
+    IF parent_product IS NULL THEN
+        RAISE EXCEPTION 'N-PORT v2 row requires an existing parent publication';
+    END IF;
+    IF parent_product <> 'sec_nport_holdings_v2' OR parent_state <> 'prepared' THEN
+        RAISE EXCEPTION 'N-PORT v2 rows may only be inserted into a prepared sec_nport_holdings_v2 publication';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS sec_nport_instrument_class_bridge_write_guard
+    ON sec_nport_instrument_class_bridge;
+CREATE TRIGGER sec_nport_instrument_class_bridge_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON sec_nport_instrument_class_bridge
+FOR EACH ROW EXECUTE FUNCTION sec_nport_holdings_v2_write_guard();
+
+DROP TRIGGER IF EXISTS sec_nport_holdings_v2_write_guard
+    ON sec_nport_holdings_v2;
+CREATE TRIGGER sec_nport_holdings_v2_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON sec_nport_holdings_v2
+FOR EACH ROW EXECUTE FUNCTION sec_nport_holdings_v2_write_guard();
 
 -- Unresolved bridge rows remain inspectable here, but are deliberately absent
 -- from the current publishable view below.

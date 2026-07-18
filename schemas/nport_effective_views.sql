@@ -53,7 +53,9 @@ SELECT raw_row_id, ingestion_run_id, accession_number, series_id, form, filing_d
        report_date, is_amendment, precedence_rank, deterministic_order,
        winning_candidate_count,
        CASE WHEN precedence_rank=1 AND winning_candidate_count=1
-            THEN 'publishable' ELSE 'ambiguous' END AS selection_state
+            THEN 'publishable'
+            WHEN precedence_rank=1 THEN 'ambiguous'
+            ELSE 'superseded' END AS selection_state
 FROM assessed;
 
 CREATE OR REPLACE VIEW nport_effective_filings AS

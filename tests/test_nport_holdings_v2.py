@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
@@ -26,8 +28,8 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
             cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
             cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
             cur.execute("""INSERT INTO sec_derived_publications
-                (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint,validated_at,lifecycle_state)
-                VALUES(%s,'sec_nport_holdings_v2',1,%s,%s,%s,now(),'validated')""",
+                (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+                VALUES(%s,'sec_nport_holdings_v2',1,%s,%s,%s)""",
                 (publication_id, run_id, package_id, "a" * 64))
             for holding, state, instrument, series, klass, start, end in (
                 ("H1", "resolved", "I1", "S1", "C1", "2024-01-01", None),
@@ -43,11 +45,49 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
                      issuer_name,issuer_category,cusip,signed_market_value,signed_pct_of_nav,payoff_profile,source_typed_projection)
                     VALUES(%s,'A1',%s,%s,'2024-01-31','2024-02-15','S-source',%s,'Corporate','037833100',%s,%s,'Long','{}')""",
                     (publication_id, holding, run_id, holding, 100 if holding == "H1" else -1, 10 if holding == "H1" else -1))
+            cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
+                (publication_id,accession_number,holding_id,instrument_id,valid_from,resolution_state)
+                VALUES(%s,'A1','H4','I4','2024-01-01','orphan')""", (publication_id,))
+            cur.execute("""SELECT column_default FROM information_schema.columns
+                WHERE table_schema=%s AND table_name='sec_nport_holdings_v2'
+                  AND column_name='source_typed_projection'""", (schema,))
+            assert cur.fetchone() == (None,)
+            with pytest.raises(psycopg.errors.NotNullViolation):
+                cur.execute("""INSERT INTO sec_nport_holdings_v2
+                    (publication_id,accession_number,holding_id,source_run_id,report_date,filing_date)
+                    VALUES(%s,'A1','H4',%s,'2024-01-31','2024-02-15')""",
+                    (publication_id, run_id))
+
+            cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
             cur.execute("SELECT sec_set_current_derived_publication('sec_nport_holdings_v2',%s)", (publication_id,))
             cur.execute("SELECT holding_id,series_id,class_id,instrument_id,issuer_category,signed_market_value,signed_pct_of_nav FROM sec_nport_holdings_v2_current")
             assert cur.fetchall() == [("H1", "S1", "C1", "I1", "Corporate", 100, 10)]
             cur.execute("SELECT resolution_state,count(*) FROM sec_nport_holdings_v2_bridge_status GROUP BY resolution_state ORDER BY resolution_state")
             assert cur.fetchall() == [("ambiguous", 1), ("orphan", 1), ("resolved", 1)]
+
+            with pytest.raises(psycopg.errors.RaiseException, match="prepared sec_nport_holdings_v2"):
+                cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
+                    (publication_id,accession_number,holding_id,instrument_id,valid_from,resolution_state)
+                    VALUES(%s,'A1','LATE-BRIDGE','I5','2024-01-01','orphan')""", (publication_id,))
+            with pytest.raises(psycopg.errors.RaiseException, match="prepared sec_nport_holdings_v2"):
+                cur.execute("""INSERT INTO sec_nport_holdings_v2
+                    (publication_id,accession_number,holding_id,source_run_id,report_date,filing_date,source_typed_projection)
+                    VALUES(%s,'A1','H4',%s,'2024-01-31','2024-02-15','{}')""",
+                    (publication_id, run_id))
+            for statement in (
+                "UPDATE sec_nport_holdings_v2 SET issuer_name='changed' WHERE holding_id='H1'",
+                "DELETE FROM sec_nport_holdings_v2 WHERE holding_id='H1'",
+                "UPDATE sec_nport_instrument_class_bridge SET instrument_id='changed' WHERE holding_id='H1'",
+                "DELETE FROM sec_nport_instrument_class_bridge WHERE holding_id='H1'",
+            ):
+                with pytest.raises(psycopg.errors.RaiseException, match="immutable after insert"):
+                    cur.execute(statement)
+            cur.execute("SELECT holding_id,issuer_name,instrument_id FROM sec_nport_holdings_v2_current")
+            assert cur.fetchall() == [("H1", "H1", "I1")]
+            cur.execute("SELECT count(*) FROM sec_nport_instrument_class_bridge")
+            assert cur.fetchone() == (4,)
+            cur.execute("SELECT count(*) FROM sec_nport_holdings_v2")
+            assert cur.fetchone() == (3,)
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -58,5 +98,6 @@ def test_holdings_v2_uses_versioned_publication_and_never_relabels_issuer_catego
     assert "resolution_state='resolved'" in ddl
     assert "issuer_category" in ddl
     assert "economic_sector" not in ddl
+    assert "source_typed_projection jsonb NOT NULL DEFAULT" not in ddl
     assert "UPDATE nport_raw_rows" not in ddl
     assert "DELETE FROM nport_raw_rows" not in ddl
