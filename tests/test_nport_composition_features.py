@@ -63,10 +63,12 @@ def test_composition_preserves_shorts_residual_unknowns_and_concentration():
         _holding(cur, holdings_id, run_id, "H3", "COMP", "2026-01-31", 70, issuer="ACME", category="Corporate", payoff="Long", cusip="111111111", nav=7)
         _holding(cur, holdings_id, run_id, "H4", "COMP", "2026-01-31", 10, issuer="GAMMA", category="Government", payoff="Long", nav=1)
         _holding(cur, holdings_id, run_id, "N1", "NULL_MV", "2026-01-31", None, issuer="MISSING", category="Corporate", payoff="Long", cusip="333333333", nav=1)
+        _holding(cur, holdings_id, run_id, "L1", "LEI_ONLY", "2026-01-31", 60, issuer="SAME ISSUER", category="Corporate", payoff="Long", lei="LEI-SAME", nav=6)
+        _holding(cur, holdings_id, run_id, "L2", "LEI_ONLY", "2026-01-31", 40, issuer="SAME ISSUER", category="Corporate", payoff="Long", lei="LEI-SAME", nav=4)
         _publish_holdings(cur, holdings_id)
         _prepare_features(cur, features_id, run_id, package_id)
         cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (features_id,))
-        assert cur.fetchone() == (2,)
+        assert cur.fetchone() == (3,)
         cur.execute("""SELECT status,position_count,signed_market_value,gross_market_value,
                               signed_nav_pct,gross_nav_pct,signed_nav_residual_pct,gross_nav_residual_pct,
                               top_5_gross_market_value_share,top_10_gross_market_value_share,
@@ -79,9 +81,9 @@ def test_composition_preserves_shorts_residual_unknowns_and_concentration():
         assert float(row[9]) == pytest.approx(1)
         assert float(row[10]) == pytest.approx(0.735)
         assert float(row[11]) == pytest.approx(1 / 0.735)
-        assert row[12] is None  # the fourth security is explicitly identifier-unavailable
+        assert float(row[12]) == pytest.approx((100 / 200) ** 2 + (20 / 200) ** 2 + (70 / 200) ** 2 + (10 / 200) ** 2)
         assert row[13] == 0
-        assert "security_identifier_coverage_incomplete" in row[14]
+        assert "security_identifier_coverage_incomplete" not in row[14]
         cur.execute("""SELECT dimension_type,dimension_key,signed_market_value,gross_market_value,gross_market_value_share
                        FROM nport_composition_dimension_features
                        WHERE publication_id=%s AND series_id='COMP' ORDER BY dimension_type,dimension_key""", (features_id,))
@@ -92,7 +94,20 @@ def test_composition_preserves_shorts_residual_unknowns_and_concentration():
         cur.execute("""SELECT status,signed_market_value,gross_market_value,top_5_gross_market_value_share,
                               issuer_hhi,reason_codes
                        FROM nport_composition_features WHERE series_id='NULL_MV'""")
-        assert cur.fetchone() == ("insufficient", None, None, None, None, ["unknown_market_value"])
+        null_mv = cur.fetchone()
+        assert null_mv[:5] == ("insufficient", None, None, None, None)
+        assert {"unknown_market_value", "identifier_coverage_unavailable",
+                "issuer_category_coverage_unavailable", "payoff_profile_coverage_unavailable",
+                "issuer_coverage_unavailable"} <= set(null_mv[5])
+        assert null_mv[5]
+        cur.execute("""SELECT security_hhi,security_effective_position_count,
+                              identifier_market_value_coverage,security_identity_market_value_coverage
+                       FROM nport_composition_features WHERE series_id='LEI_ONLY'""")
+        lei_hhi, lei_effective, identifier_coverage, identity_coverage = cur.fetchone()
+        assert float(lei_hhi) == pytest.approx(0.52)
+        assert float(lei_effective) == pytest.approx(1 / 0.52)
+        assert float(identifier_coverage) == pytest.approx(1)
+        assert float(identity_coverage) == pytest.approx(1)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -154,3 +169,63 @@ def test_composition_uses_only_v2_sidecar_fields_and_never_relabels_sector():
     assert "from sec_nport_holdings_v2 h" in ddl
     assert "from sec_nport_holdings_v2_current h" not in ddl
     assert "sec_current_nport_composition_features" in ddl
+
+
+def test_null_quality_coverages_have_explicit_reasons():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed(cur)
+        _holding(cur, holdings_id, run_id, "ZERO", "ZERO", "2026-01-31", 0,
+                 issuer="ZERO", category="Corporate", payoff="Long", cusip="000000000", nav=0)
+        _publish_holdings(cur, holdings_id)
+        _prepare_features(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("SELECT status,reason_codes FROM nport_composition_features WHERE series_id='ZERO'")
+        status, reasons = cur.fetchone()
+        assert status == "insufficient" and reasons
+        assert {"identifier_coverage_unavailable", "issuer_category_coverage_unavailable",
+                "payoff_profile_coverage_unavailable", "issuer_coverage_unavailable"} <= set(reasons)
+        cur.execute("""SELECT count(*) FROM nport_composition_features
+                       WHERE status='insufficient' AND reason_codes='[]'::jsonb""")
+        assert cur.fetchone() == (0,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_composition_rejects_wrong_product_lifecycle_and_covers_top_n_boundaries():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed(cur)
+        for value in range(1, 13):
+            _holding(cur, holdings_id, run_id, f"TOP-{value:02d}", "TOP", "2026-01-31", value,
+                     issuer=f"ISSUER-{value:02d}", category="Corporate", payoff="Long",
+                     cusip=f"{value:09d}", nav=value)
+        _publish_holdings(cur, holdings_id)
+        _prepare_features(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT top_5_gross_market_value_share,top_10_gross_market_value_share
+                       FROM nport_composition_features WHERE series_id='TOP'""")
+        top_5, top_10 = cur.fetchone()
+        assert float(top_5) == pytest.approx(50 / 78)
+        assert float(top_10) == pytest.approx(75 / 78)
+
+        wrong_builder_id, wrong_build_id, wrong_row_id = (uuid4() for _ in range(3))
+        for version, publication_id in enumerate((wrong_builder_id, wrong_build_id, wrong_row_id), start=1):
+            cur.execute("""INSERT INTO sec_derived_publications
+                (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+                VALUES(%s,'wrong_product',%s,%s,%s,%s)""",
+                (publication_id, version, run_id, package_id, f"{version + 3}" * 64))
+        with pytest.raises(psycopg.Error, match="prepared composition publication"):
+            cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (wrong_builder_id,))
+        with pytest.raises(psycopg.Error, match="prepared composition publication"):
+            cur.execute("""INSERT INTO nport_composition_feature_builds
+                (publication_id,source_holdings_publication_id,as_of_date) VALUES(%s,%s,'2026-06-30')""",
+                (wrong_build_id, holdings_id))
+        with pytest.raises(psycopg.Error, match="prepared composition publication"):
+            cur.execute("""INSERT INTO nport_composition_features
+                (publication_id,source_holdings_publication_id,series_id,report_date,measured_at,status,
+                 reason_codes,provenance,coverage,position_count,report_age_days)
+                VALUES(%s,%s,'WRONG','2026-01-31','2026-06-30','unavailable','[]','{}','{}',0,150)""",
+                (wrong_row_id, holdings_id))
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
