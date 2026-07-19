@@ -8,7 +8,7 @@ import pytest
 
 def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventory-v1") -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "stage": "phase4_historical_backfill",
         "code_sha": code_sha,
         "inventory_hash": inventory_hash,
@@ -31,6 +31,7 @@ def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventor
         "pointer_table_denylist": ["sec_current.provider_pointer"],
         "sanitized_command": ["historical-backfill", "start"],
         "run_directory": "E:/runs/fake",
+        "source_roots": {"nport": "E:/Edgard/nport", "ncen": "E:/Edgard/ncen", "rr1": "E:/Edgard/RR1"},
         "authorization_id": "auth-local-001",
         "stop_contract_hash": "a" * 64,
         "reconciliation_contract_hash": "b" * 64,
@@ -48,7 +49,7 @@ def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventor
 
 
 def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str, object]:
-    from src.sec_regulatory.historical_backfill import EXACT_WRITABLE_TABLES
+    from src.sec_regulatory.historical_backfill import EXACT_IDENTITY_SEQUENCES, EXACT_SECURITY_DEFINER_ROUTINES, EXACT_WRITABLE_TABLES
 
     return {
         "cluster_identity": cluster_identity,
@@ -57,17 +58,17 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         "fixed_memberships": ["sec_backfill_executor"],
         "role_capabilities": {
             "is_superuser": False, "owns_any_table": False, "can_create_role": False,
-            "can_create_database": False, "bypass_rls": False, "schema_create": False, "set_role": False,
+            "can_create_database": False, "bypass_rls": False, "schema_create": False, "set_role": False, "no_memberships": False,
         },
         "object_catalog_hash": "d" * 64,
         "object_identities": {
-            "relations": ["public.nport_raw_rows:100"], "columns": ["public.nport_raw_rows.id:1"],
-            "constraints": ["public.nport_raw_rows:pkey"], "indexes": ["public.nport_raw_rows_pkey"],
-            "triggers": [], "sequences": ["public.nport_raw_rows_id_seq:101"], "routines": ["public.sec_record_transition:102"],
+            "relations": sorted(f"{table}:{index}" for index, table in enumerate(EXACT_WRITABLE_TABLES)), "columns": ["public.nport_raw_rows.raw_row_id:1"],
+            "constraints": ["public.nport_raw_rows:nport_raw_rows_pkey:2"], "indexes": ["public.nport_raw_rows_pkey:3"],
+            "triggers": ["public.nport_raw_rows:nport_validate_raw_statement:4"], "sequences": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_IDENTITY_SEQUENCES)), "routines": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_SECURITY_DEFINER_ROUTINES)),
         },
         "table_privileges": {table: ["SELECT", "INSERT", "UPDATE", "DELETE"] for table in EXACT_WRITABLE_TABLES},
-        "sequence_privileges": {"public.nport_raw_rows_id_seq": ["USAGE"]},
-        "function_privileges": {"public.sec_record_transition": ["EXECUTE"]},
+        "sequence_privileges": {name: ["USAGE"] for name in EXACT_IDENTITY_SEQUENCES},
+        "function_privileges": {name: ["EXECUTE"] for name in EXACT_SECURITY_DEFINER_ROUTINES},
         "monitoring_privileges": {"pg_stat_activity": ["SELECT"]},
         "public_acl": [],
         "unsafe_security_definers": [],
@@ -86,6 +87,8 @@ def _production_authorization(inventory_hash: str) -> dict[str, object]:
         "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
     }
     artifact["writable_tables"] = sorted(EXACT_WRITABLE_TABLES)
+    artifact["source_roots"] = {"nport": "/srv/sec-corpus/nport", "ncen": "/srv/sec-corpus/ncen", "rr1": "/srv/sec-corpus/RR1"}
+    artifact["run_directory"] = "/var/lib/sec-backfill/run-1"
     artifact["preflight_attestation"] = _production_preflight()
     return artifact
 
@@ -342,6 +345,32 @@ def test_production_preflight_refuses_attestation_drift_before_dispatch(tmp_path
     executor.preflight_inspector = lambda _conn: _production_preflight(cluster_identity="drifted")
     with pytest.raises(backfill.BackfillSafetyError, match="preflight"):
         executor.preflight()
+
+
+def test_production_executor_uses_builtin_read_only_collector_without_injection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact["package_scope"] = [{"identity": inventory["packages"][0]["identity"], "package_sha256": inventory["packages"][0]["package_sha256"]}]
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    collected: list[object] = []
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_collect_production_preflight", lambda connection, authorization: collected.append(connection) or _production_preflight())
+
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: _Connection(),
+        target_inspector=lambda _conn: {
+            "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+            "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+        },
+    )
+
+    executor.preflight()
+
+    assert len(collected) == 1
 
 
 def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_matrix_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

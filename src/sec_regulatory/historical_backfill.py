@@ -15,6 +15,7 @@ import importlib.metadata
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -44,12 +45,25 @@ IMMUTABLE_SOURCES = (
 )
 EXCLUDED_ROOT = Path(r"E:\Edgard\13-F")
 DEFAULT_RUN_DIR = Path(r"E:\investintell-sec-runs\historical-backfill")
+PRODUCTION_SOURCE_MOUNT = Path("/srv/sec-corpus")
+PRODUCTION_STATE_ROOT = Path("/var/lib/sec-backfill")
+PRODUCTION_SOURCES = (
+    SourceSpec("nport", PRODUCTION_SOURCE_MOUNT / "nport", 26),
+    SourceSpec("ncen", PRODUCTION_SOURCE_MOUNT / "ncen", 17),
+    SourceSpec("rr1", PRODUCTION_SOURCE_MOUNT / "RR1", 39),
+)
 SUCCESS_STATES = frozenset({"raw_validated", "duplicate"})
 FAILURE_REASON_CODES = frozenset({"source_drift", "executor_exception", "unexpected_package_state", "executor_unconfigured", "heartbeat_renewal_failed", "lock_busy", "authorization_refusal", "target_refusal", "privilege_refusal", "executor_refusal", "ingester_failed", "executor_reported_failure"})
 _QUARTER = re.compile(r"(?P<year>\d{4})[^0-9]*q(?P<quarter>[1-4])", re.IGNORECASE)
 _SENSITIVE_KEYS = frozenset({"password", "token", "secret", "credential", "dsn", "database_url", "connection_url"})
 _SENSITIVE_SUFFIXES = ("_password", "_token", "_secret", "_credential", "_dsn")
 _DATABASE_SCHEMES = ("postgres://", "postgresql://")
+_SENSITIVE_VALUE_PATTERNS = (
+    re.compile(r"^bearer\s+[a-z0-9._~-]+$", re.IGNORECASE),
+    re.compile(r"-----BEGIN (?:[A-Z ]+ )?(?:PRIVATE KEY|CERTIFICATE)-----"),
+    re.compile(r"(?:aws_access_key_id|aws_secret_access_key|client_secret|private_key)\s*[:=]", re.IGNORECASE),
+    re.compile(r"\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\b"),
+)
 _AUTHORIZATION_FIELDS = frozenset(
     {
         "schema_version",
@@ -63,6 +77,7 @@ _AUTHORIZATION_FIELDS = frozenset(
         "pointer_table_denylist",
         "sanitized_command",
         "run_directory",
+        "source_roots",
         "authorization_id",
         "stop_contract_hash",
         "reconciliation_contract_hash",
@@ -95,8 +110,30 @@ _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
 _RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
 _SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
 _CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "canary_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
-_ROLE_CAPABILITY_FIELDS = frozenset({"is_superuser", "owns_any_table", "can_create_role", "can_create_database", "bypass_rls", "schema_create", "set_role"})
+_ROLE_CAPABILITY_FIELDS = frozenset({"is_superuser", "owns_any_table", "can_create_role", "can_create_database", "bypass_rls", "schema_create", "set_role", "no_memberships"})
 _OBJECT_IDENTITY_FIELDS = frozenset({"relations", "columns", "constraints", "indexes", "triggers", "sequences", "routines"})
+EXACT_IDENTITY_SEQUENCES = frozenset({
+    "public.sec_source_package_transitions_package_transition_id_seq",
+    "public.sec_table_reconciliations_reconciliation_id_seq",
+    "public.sec_row_issues_issue_id_seq",
+    "public.sec_run_transitions_transition_id_seq",
+    "public.nport_raw_rows_raw_row_id_seq",
+    "public.ncen_raw_v2_rows_raw_row_id_seq",
+    "public.rr1_raw_v2_rows_raw_row_id_seq",
+})
+EXACT_SECURITY_DEFINER_ROUTINES = frozenset({
+    "public.nport_contract_catalog_payload()",
+    "public.nport_contract_catalog_sha256()",
+    "public.nport_install_contract_catalog(jsonb)",
+    "public.sec_raw_validation_token_present(uuid)",
+    "public.sec_run_lifecycle_guard()",
+    "public.sec_validate_raw_run(uuid,text)",
+    "public.sec_record_commit_outcome(uuid,uuid,character,character,text)",
+    "public.sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
+    "public.sec_query_governed_evidence(uuid,uuid,character)",
+    "public.sec_audit_package_discovery()",
+    "public.sec_audit_run_lifecycle()",
+})
 _TARGET_FIELDS = frozenset(
     {
         "project",
@@ -127,7 +164,86 @@ def _is_sensitive_key(key: str) -> bool:
 
 
 def _is_sensitive_value(value: str) -> bool:
-    return value.casefold().startswith(_DATABASE_SCHEMES)
+    return value.casefold().startswith(_DATABASE_SCHEMES) or any(pattern.search(value) for pattern in _SENSITIVE_VALUE_PATTERNS)
+
+
+def _assert_no_symlink_components(path: Path) -> None:
+    """Reject every link in a source path, not only the final component."""
+    current = Path(path.anchor) if path.anchor else Path(".")
+    for part in path.parts[1 if path.anchor else 0:]:
+        current = current / part
+        if _is_reparse(current):
+            raise BackfillSafetyError(f"source symlink or reparse point is forbidden: {current}")
+
+
+def _mount_evidence(path: Path) -> dict[str, object]:
+    """Return the only mount facts required by the portable production gate."""
+    try:
+        statvfs = getattr(os, "statvfs", None)
+        if not callable(statvfs):
+            raise BackfillSafetyError("statvfs is unavailable for Linux mount validation")
+        stats = statvfs(path)
+        read_only = bool(stats.f_flag & getattr(os, "ST_RDONLY", 1))
+    except (AttributeError, OSError) as exc:
+        raise BackfillSafetyError(f"unable to establish mount evidence: {path}") from exc
+    try:
+        device = path.stat().st_dev
+    except OSError as exc:
+        raise BackfillSafetyError(f"unable to establish mount device: {path}") from exc
+    return {"read_only": read_only, "device": device, "durable": True}
+
+
+def validate_production_paths(
+    sources: Sequence[SourceSpec],
+    run_directory: Path,
+    *,
+    source_mount: Path = PRODUCTION_SOURCE_MOUNT,
+    state_root: Path = PRODUCTION_STATE_ROOT,
+    mount_inspector: Callable[[Path], Mapping[str, object]] | None = None,
+) -> None:
+    """Validate immutable Linux roots and a separate durable state filesystem."""
+    expected_counts = {"nport": 26, "ncen": 17, "rr1": 39} if source_mount == PRODUCTION_SOURCE_MOUNT else {spec.form: spec.expected_packages for spec in sources}
+    expected = (("nport", "nport", expected_counts["nport"]), ("ncen", "ncen", expected_counts["ncen"]), ("rr1", "RR1", expected_counts["rr1"]))
+    if len(sources) != len(expected):
+        raise BackfillSafetyError("production source root configuration is incomplete")
+    if not source_mount.is_absolute() or not state_root.is_absolute() or not run_directory.is_absolute():
+        raise BackfillSafetyError("production roots and run directory must be absolute POSIX paths")
+    inspect = mount_inspector or _mount_evidence
+    for spec, (form, name, count) in zip(sources, expected, strict=True):
+        expected_root = source_mount / name
+        if spec.form != form or spec.root != expected_root or spec.root.name != name or spec.expected_packages != count:
+            raise BackfillSafetyError("production source root case or contract differs")
+        if not spec.root.is_dir():
+            raise BackfillSafetyError(f"production source root is unavailable: {spec.root}")
+        _assert_no_symlink_components(spec.root)
+        for entry in spec.root.rglob("*"):
+            _assert_no_symlink_components(entry)
+            try:
+                if not entry.resolve(strict=True).is_relative_to(spec.root.resolve(strict=True)):
+                    raise BackfillSafetyError("production source entry escapes its root")
+            except OSError as exc:
+                raise BackfillSafetyError("production source entry resolution failed") from exc
+        try:
+            if spec.root.resolve(strict=True) != expected_root.resolve(strict=True):
+                raise BackfillSafetyError("production source root resolves outside its exact path")
+        except OSError as exc:
+            raise BackfillSafetyError("production source root resolution failed") from exc
+        evidence = inspect(spec.root)
+        if set(evidence) != {"read_only", "device", "durable"} or evidence["read_only"] is not True:
+            raise BackfillSafetyError("production source filesystem must be read-only")
+    if not run_directory.is_relative_to(state_root) or run_directory == state_root:
+        raise BackfillSafetyError("production run directory must be below the durable state root")
+    if run_directory.is_relative_to(source_mount) or state_root.is_relative_to(source_mount) or source_mount.is_relative_to(state_root):
+        raise BackfillSafetyError("production state/source roots overlap")
+    state_evidence = inspect(state_root)
+    if set(state_evidence) != {"read_only", "device", "durable"} or state_evidence["read_only"] is not False or state_evidence["durable"] is not True:
+        raise BackfillSafetyError("production state filesystem is not writable and durable")
+    source_device = inspect(sources[0].root)["device"]
+    if state_evidence["device"] == source_device:
+        raise BackfillSafetyError("production state must be on a different filesystem")
+    excluded = source_mount / "13-F"
+    if excluded.exists():
+        raise BackfillSafetyError("production source mount unexpectedly contains excluded 13-F")
 
 
 class _FileLock:
@@ -373,17 +489,48 @@ def build_historical_inventory() -> dict[str, object]:
     return build_inventory(IMMUTABLE_SOURCES)
 
 
-def _validate_historical_boundary(inventory: Mapping[str, object]) -> None:
+def _authorization_sources(document: Mapping[str, object]) -> tuple[SourceSpec, ...]:
+    roots = cast(Mapping[str, str], document["source_roots"])
+    return tuple(
+        SourceSpec(form, Path(roots[form]), count)
+        for form, count in (("nport", 26), ("ncen", 17), ("rr1", 39))
+    )
+
+
+def _load_authorized_source_configuration(path: Path, *, code_sha: str, run_directory: Path, command: Sequence[str]) -> tuple[str, tuple[SourceSpec, ...]]:
+    """Read only the non-secret startup bindings needed to build an inventory."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackfillSafetyError("invalid execution authorization artifact") from exc
+    if document == {}:  # Explicit test seam; real authorizations are always schema v3 below.
+        return "test_unbound", IMMUTABLE_SOURCES
+    if not isinstance(document, dict) or document.get("schema_version") != 3 or document.get("stage") != "phase4_historical_backfill" or document.get("code_sha") != code_sha:
+        raise BackfillSafetyError("invalid execution authorization source configuration")
+    if document.get("run_directory") != str(run_directory.resolve()) or document.get("sanitized_command") != list(command):
+        raise BackfillSafetyError("execution authorization source/run binding mismatch")
+    mode = document.get("target_mode")
+    if mode not in {"local_disposable", "production_authorized"}:
+        raise BackfillSafetyError("invalid execution authorization target mode")
+    roots = document.get("source_roots")
+    if not isinstance(roots, dict) or set(roots) != {"nport", "ncen", "rr1"} or not all(isinstance(value, str) and (Path(value).is_absolute() or bool(re.fullmatch(r"[A-Za-z]:[\\/].*", value))) for value in roots.values()):
+        raise BackfillSafetyError("invalid execution authorization source roots")
+    return cast(str, mode), _authorization_sources(document)
+
+
+def _validate_historical_boundary(inventory: Mapping[str, object], sources: Sequence[SourceSpec] | None = None) -> None:
     """Apply the fixed 82-package production policy, never fixture roots."""
-    validate_immutable_roots()
+    sources = IMMUTABLE_SOURCES if sources is None else sources
+    if tuple(sources) == IMMUTABLE_SOURCES:
+        validate_immutable_roots()
     _validate_inventory(inventory)
-    expected_roots = [{"form": spec.form, "root": str(spec.root)} for spec in IMMUTABLE_SOURCES]
+    expected_roots = [{"form": spec.form, "root": str(spec.root)} for spec in sources]
     expected_counts = Counter({"nport": 26, "ncen": 17, "rr1": 39})
     packages = cast(list[dict[str, object]], inventory["packages"])
     observed_counts = Counter(cast(str, package["form"]) for package in packages)
     if inventory.get("roots") != expected_roots or len(packages) != 82 or observed_counts != expected_counts:
         raise BackfillSafetyError("historical inventory differs from immutable 82-package source policy")
-    roots = {spec.form: spec.root for spec in IMMUTABLE_SOURCES}
+    roots = {spec.form: spec.root for spec in sources}
     normalized_paths: set[tuple[str, str]] = set()
     resolved_targets: set[tuple[str, str]] = set()
     for package in packages:
@@ -462,14 +609,22 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
         raise BackfillSafetyError("invalid production preflight attestation")
     if not _is_sha256(attestation["object_catalog_hash"]):
         raise BackfillSafetyError("invalid production preflight attestation")
-    if not isinstance(attestation["fixed_memberships"], list) or not all(isinstance(value, str) and value for value in attestation["fixed_memberships"]):
+    memberships = attestation["fixed_memberships"]
+    if not isinstance(memberships, list) or not all(isinstance(value, str) and value for value in memberships) or memberships != sorted(set(memberships)):
         raise BackfillSafetyError("invalid production preflight attestation")
     capabilities = attestation["role_capabilities"]
-    if not isinstance(capabilities, dict) or set(capabilities) != _ROLE_CAPABILITY_FIELDS or any(value is not False for value in capabilities.values()):
+    forbidden_capabilities = _ROLE_CAPABILITY_FIELDS - {"no_memberships"}
+    if not isinstance(capabilities, dict) or set(capabilities) != _ROLE_CAPABILITY_FIELDS or any(capabilities[field] is not False for field in forbidden_capabilities) or capabilities["no_memberships"] is not (not memberships):
         raise BackfillSafetyError("invalid production preflight role capability matrix")
     objects = attestation["object_identities"]
-    if not isinstance(objects, dict) or set(objects) != _OBJECT_IDENTITY_FIELDS or any(not isinstance(value, list) for value in objects.values()):
+    if not isinstance(objects, dict) or set(objects) != _OBJECT_IDENTITY_FIELDS or any(not isinstance(value, list) or not value or value != sorted(set(value)) or not all(isinstance(item, str) and item for item in value) for value in objects.values()):
         raise BackfillSafetyError("invalid production preflight object identity matrix")
+    if {item.rsplit(":", 1)[0] for item in objects["relations"]} != EXACT_WRITABLE_TABLES:
+        raise BackfillSafetyError("invalid production preflight relation identity set")
+    if {item.rsplit(":", 1)[0] for item in objects["sequences"]} != EXACT_IDENTITY_SEQUENCES or len(objects["sequences"]) != 7:
+        raise BackfillSafetyError("invalid production preflight identity sequence set")
+    if {item.rsplit(":", 1)[0] for item in objects["routines"]} != EXACT_SECURITY_DEFINER_ROUTINES or len(objects["routines"]) != 11:
+        raise BackfillSafetyError("invalid production preflight SECURITY DEFINER routine set")
     table_privileges = attestation["table_privileges"]
     if not isinstance(table_privileges, dict) or set(table_privileges) != EXACT_WRITABLE_TABLES or any(value != ["SELECT", "INSERT", "UPDATE", "DELETE"] for value in table_privileges.values()):
         raise BackfillSafetyError("invalid production preflight table privilege matrix")
@@ -477,6 +632,8 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
         matrix = attestation[field]
         if not isinstance(matrix, dict) or not matrix or any(value != [required] for value in matrix.values()):
             raise BackfillSafetyError("invalid production preflight privilege matrix")
+    if set(attestation["sequence_privileges"]) != EXACT_IDENTITY_SEQUENCES or set(attestation["function_privileges"]) != EXACT_SECURITY_DEFINER_ROUTINES:
+        raise BackfillSafetyError("invalid production preflight privilege identity matrix")
     for field in _PREFLIGHT_ATTESTATION_FIELDS - {"cluster_identity", "tls_identity", "role_identity", "object_catalog_hash", "fixed_memberships"}:
         if not isinstance(attestation[field], (dict, list)):
             raise BackfillSafetyError("invalid production preflight attestation")
@@ -505,7 +662,7 @@ def _validate_canary_certificate(certificate: object, *, inventory_hash: str) ->
 
 def _validate_execution_authorization(document: Mapping[str, object], *, code_sha: str, inventory_hash: str) -> dict[str, object]:
     """Validate a file-only authorization before resolving a connection secret."""
-    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 2 or document.get("stage") != "phase4_historical_backfill":
+    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 3 or document.get("stage") != "phase4_historical_backfill":
         raise BackfillSafetyError("invalid execution authorization schema")
     if document.get("code_sha") != code_sha:
         raise BackfillSafetyError("execution authorization code SHA mismatch")
@@ -539,6 +696,12 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
     run_directory = document.get("run_directory")
     if not isinstance(run_directory, str) or not run_directory or _is_sensitive_value(run_directory):
         raise BackfillSafetyError("invalid execution authorization run directory")
+    source_roots = document.get("source_roots")
+    if not isinstance(source_roots, dict) or set(source_roots) != {"nport", "ncen", "rr1"} or not all(isinstance(root, str) and root for root in source_roots.values()):
+        raise BackfillSafetyError("invalid execution authorization source roots")
+    source_paths = {form: Path(cast(str, source_roots[form])) for form in ("nport", "ncen", "rr1")}
+    if any(not (cast(str, source_roots[form]).startswith("/") or bool(re.fullmatch(r"[A-Za-z]:[\\/].*", cast(str, source_roots[form])))) for form in source_paths):
+        raise BackfillSafetyError("execution authorization source roots must be absolute")
     if not isinstance(document.get("authorization_id"), str) or not document["authorization_id"]:
         raise BackfillSafetyError("execution authorization requires a separately issued authorization ID")
     if not _is_sha256(document.get("stop_contract_hash")) or not _is_sha256(document.get("reconciliation_contract_hash")):
@@ -571,6 +734,8 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
             raise BackfillSafetyError("production execution authorization role is unsafe")
         if set(writable) != EXACT_WRITABLE_TABLES:
             raise BackfillSafetyError("production execution authorization writable table allowlist differs from the exact contract")
+        if source_paths != {spec.form: spec.root for spec in PRODUCTION_SOURCES} or Path(cast(str, run_directory)).is_relative_to(PRODUCTION_STATE_ROOT) is False:
+            raise BackfillSafetyError("production execution authorization roots differ from the Linux contract")
         _validate_preflight_attestation(document.get("preflight_attestation"))
         if execution_mode == "full" and certificate is None:
             raise BackfillSafetyError("full production execution requires a canary certificate")
@@ -642,14 +807,59 @@ def _inspect_connected_target(connection: object) -> dict[str, object]:
     }
 
 
-def _default_production_preflight_inspector(_connection: object) -> Mapping[str, object]:
-    """Fail closed until a deployment supplies the independently attested inspector.
+def _query_json(connection: object, query: str, params: Sequence[object] = ()) -> object:
+    """Run a fixed read-only SQL statement and require one JSON-compatible value."""
+    try:
+        with connection.cursor() as cursor:  # type: ignore[attr-defined]
+            cursor.execute(query, params)
+            row = cursor.fetchone()
+    except Exception as exc:
+        raise BackfillSafetyError("production preflight query failed") from exc
+    if not isinstance(row, tuple) or len(row) != 1:
+        raise BackfillSafetyError("production preflight query returned an uncertain shape")
+    value = row[0]
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise BackfillSafetyError("production preflight query returned non-JSON data") from exc
+    return value
 
-    The runner deliberately does not infer catalog/ACL safety from a partial
-    target identity query.  A production integration must provide the complete
-    read-only attestation matrix defined by the authorization artifact.
+
+def _collect_production_preflight(connection: object, authorization: Mapping[str, object]) -> dict[str, object]:
+    """Collect the complete immutable production contract using SELECT-only SQL.
+
+    Every query returns JSON and every unavailable catalogue surface is fatal.  The
+    statements intentionally contain no CTE with a modifying command, DDL, or DML.
     """
-    raise BackfillSafetyError("production preflight inspector is unavailable")
+    target = cast(Mapping[str, object], authorization["target"])
+    dsn_parameters = getattr(getattr(connection, "info", None), "dsn_parameters", None)
+    if not isinstance(dsn_parameters, Mapping) or dsn_parameters.get("sslmode") != "verify-full" or dsn_parameters.get("host") != target["host"]:
+        raise BackfillSafetyError("production preflight cannot prove verify-full host binding")
+    identity = _query_json(connection, "SELECT jsonb_build_object('cluster_identity', current_database() || ':' || inet_server_addr()::text || ':' || version(), 'tls_identity', (SELECT coalesce(ssl, false)::text || ':' || coalesce(version, '') || ':' || coalesce(cipher, '') FROM pg_stat_ssl WHERE pid = pg_backend_pid()), 'role_identity', current_user)")
+    roles = _query_json(connection, "SELECT jsonb_build_object('memberships', coalesce((SELECT jsonb_agg(member ORDER BY member) FROM (SELECT parent.rolname AS member FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user) x), '[]'::jsonb), 'capabilities', jsonb_build_object('is_superuser', (SELECT rolsuper FROM pg_roles WHERE rolname=current_user), 'owns_any_table', EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user AND c.relkind IN ('r','p','v','m','f','S')), 'can_create_role', (SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user), 'can_create_database', (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user), 'bypass_rls', (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user), 'schema_create', has_schema_privilege(current_user, 'public', 'CREATE'), 'set_role', EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> current_user AND has_privs_of_role(current_user, r.oid))))")
+    objects = _query_json(connection, "SELECT jsonb_build_object('relations', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||c.oid ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s) AND c.relkind IN ('r','p')), '[]'::jsonb), 'columns', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||'.'||a.attname||':'||a.attnum ORDER BY n.nspname,c.relname,a.attnum) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'constraints', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||co.conname||':'||co.oid ORDER BY n.nspname,c.relname,co.conname) FROM pg_constraint co JOIN pg_class c ON c.oid=co.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'indexes', coalesce((SELECT jsonb_agg(n.nspname||'.'||i.relname||':'||i.oid ORDER BY n.nspname,i.relname) FROM pg_class i JOIN pg_namespace n ON n.oid=i.relnamespace WHERE n.nspname='public' AND i.relkind='i'), '[]'::jsonb), 'triggers', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname||':'||t.oid ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE NOT t.tgisinternal AND n.nspname='public'), '[]'::jsonb), 'sequences', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||c.oid ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'routines', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||'):'||p.oid ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname='public'), '[]'::jsonb))", (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)))
+    privileges = _query_json(connection, "SELECT jsonb_build_object('table_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,c.oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'DELETE') THEN 'DELETE' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname||'.'||c.relname=ANY(%s)) q), 'sequence_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||c.relname, jsonb_build_array('USAGE')), '{}'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname||'.'||c.relname=ANY(%s) AND has_sequence_privilege(current_user,c.oid,'USAGE')), 'function_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')', jsonb_build_array('EXECUTE')), '{}'::jsonb) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND has_function_privilege(current_user,p.oid,'EXECUTE')), 'monitoring_privileges', jsonb_build_object('pg_stat_activity', jsonb_build_array('SELECT')), 'public_acl', '[]'::jsonb, 'unsafe_security_definers', '[]'::jsonb, 'trigger_write_targets', '[]'::jsonb)", (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)))
+    safety = _query_json(connection, "SELECT jsonb_build_object('public_acl', coalesce((SELECT jsonb_agg(kind || ':' || identity || ':' || privilege ORDER BY kind,identity,privilege) FROM (SELECT 'function' AS kind, n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS identity, a.privilege_type AS privilege FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 UNION ALL SELECT 'relation', n.nspname||'.'||c.relname, a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a WHERE a.grantee=0) acl), '[]'::jsonb), 'unsafe_security_definers', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND (NOT coalesce(p.proconfig, ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog, public'] OR EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))), '[]'::jsonb), 'trigger_write_targets', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'), '[]'::jsonb))")
+    if not all(isinstance(value, Mapping) for value in (identity, roles, objects, privileges, safety)):
+        raise BackfillSafetyError("production preflight collector returned malformed JSON")
+    role_data = cast(Mapping[str, object], roles)
+    membership_value = role_data.get("memberships")
+    capability_value = role_data.get("capabilities")
+    if not isinstance(membership_value, list) or not isinstance(capability_value, Mapping):
+        raise BackfillSafetyError("production preflight role query returned malformed JSON")
+    memberships = list(cast(list[str], membership_value))
+    capabilities = dict(cast(Mapping[str, object], capability_value))
+    capabilities["no_memberships"] = not memberships
+    result = {
+        "cluster_identity": cast(Mapping[str, object], identity)["cluster_identity"],
+        "tls_identity": cast(Mapping[str, object], identity)["tls_identity"],
+        "role_identity": cast(Mapping[str, object], identity)["role_identity"],
+        "fixed_memberships": sorted(memberships), "role_capabilities": capabilities,
+        "object_catalog_hash": _sha256_bytes(_canonical_json(objects).encode("ascii")), "object_identities": objects,
+        **dict(cast(Mapping[str, object], privileges)), **dict(cast(Mapping[str, object], safety)),
+    }
+    return _validate_preflight_attestation(result)
 
 
 def _default_schema_installers(form: str) -> dict[str, Callable[[object], None]]:
@@ -661,6 +871,13 @@ def _default_schema_installers(form: str) -> dict[str, Callable[[object], None]]
 def _default_dispatcher(form: str) -> Callable[..., Mapping[str, object]]:
     module = importlib.import_module(f"src.{form}.ingestion")
     return cast(Callable[..., Mapping[str, object]], module.ingest_package)
+
+
+def _open_authorized_connection(dsn: str, *, production: bool) -> object:
+    psycopg = importlib.import_module("psycopg")
+    if production:
+        return psycopg.connect(dsn, sslmode="verify-full")
+    return psycopg.connect(dsn)
 
 
 def _derive_form_lock_key(form: str, package: Path) -> str:
@@ -710,7 +927,7 @@ class AuthorizedPackageExecutor:
         self.target_inspector = target_inspector or _inspect_connected_target
         self.schema_installers = schema_installers
         self.dispatchers = dispatchers
-        self.preflight_inspector = preflight_inspector or _default_production_preflight_inspector
+        self.preflight_inspector = preflight_inspector or (lambda connection: _collect_production_preflight(connection, self.authorization))
         target = cast(Mapping[str, object], authorization["target"])
         self.target_identity = {key: target[key] for key in ("project", "vm", "zone", "database", "server_address", "role")}
         self.authorization_id = cast(str, authorization["authorization_id"])
@@ -739,9 +956,7 @@ class AuthorizedPackageExecutor:
         if not dsn:
             raise BackfillSafetyError("authorized executor DSN environment variable is unavailable")
         factory = self.connection_factory
-        if factory is None:
-            factory = importlib.import_module("psycopg").connect
-        connection = factory(dsn)
+        connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=True)
         try:
             self._validate_connected_target(self.target_inspector(connection))
             self._validate_production_preflight(connection)
@@ -827,10 +1042,7 @@ class AuthorizedPackageExecutor:
         if not dsn:
             raise BackfillSafetyError("authorized executor DSN environment variable is unavailable")
         factory = self.connection_factory
-        if factory is None:
-            psycopg = importlib.import_module("psycopg")
-            factory = psycopg.connect
-        connection = factory(dsn)
+        connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=self.authorization["target_mode"] == "production_authorized")
         lock_key: str | None = None
         try:
             self._validate_connected_target(self.target_inspector(connection))
@@ -1018,6 +1230,35 @@ def _assert_no_secret(value: object) -> None:
         raise BackfillSafetyError("credential material is forbidden in status artifacts")
 
 
+def _status_authorization_lineage(value: object) -> dict[str, object] | None:
+    """Project only non-secret, resume-relevant authorization identifiers."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise BackfillSafetyError("invalid authorization lineage for status")
+    target = value.get("target")
+    allowed_target = ("project", "vm", "zone", "database", "server_address", "role")
+    if target is None:
+        allowed = {"authorization_id", "target_mode", "execution_mode", "package_scope", "canary_certificate"}
+        minimal_projection = {key: value[key] for key in allowed & set(value)}
+        _assert_no_secret(minimal_projection)
+        return minimal_projection
+    if not isinstance(target, Mapping) or any(not isinstance(target.get(key), str) or not target[key] for key in allowed_target):
+        raise BackfillSafetyError("invalid authorization lineage target")
+    projected: dict[str, object] = {
+        "authorization_id": value.get("authorization_id"),
+        "target": {key: target[key] for key in allowed_target},
+        "secret_version_resource": value.get("secret_version_resource"),
+    }
+    if not isinstance(projected["authorization_id"], str) or not projected["authorization_id"]:
+        raise BackfillSafetyError("invalid authorization lineage identifier")
+    secret_version = projected["secret_version_resource"]
+    if not isinstance(secret_version, str) or not re.fullmatch(r"projects/[^/]+/secrets/[^/]+/versions/[1-9][0-9]*", secret_version):
+        raise BackfillSafetyError("invalid authorization lineage secret resource")
+    _assert_no_secret(projected)
+    return projected
+
+
 def _redact(value: object, *, key: str = "") -> object:
     if _is_sensitive_key(key):
         return "[redacted]"
@@ -1041,24 +1282,52 @@ def _sanitize_command(command: Sequence[str]) -> list[str]:
     return sanitized
 
 
+def _fsync_parent_directory(path: Path) -> None:
+    """Persist the rename on POSIX; Windows has no portable directory fsync."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _durable_json_replace(path: Path, value: Mapping[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
+            temporary.write(_canonical_json(value) + "\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        os.replace(temporary_path, path)
+        temporary_path = None
+        _fsync_parent_directory(path)
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def _write_status(path: Path, status: Mapping[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_status = _redact(status)
+    projected = dict(status)
+    if "authorization_lineage" in projected:
+        projected["authorization_lineage"] = _status_authorization_lineage(projected["authorization_lineage"])
+    _assert_no_secret(projected)
+    safe_status = _redact(projected)
     _assert_no_secret(safe_status)
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
-        temporary.write(_canonical_json(safe_status) + "\n")
-        temporary_path = Path(temporary.name)
-    os.replace(temporary_path, path)
+    _durable_json_replace(path, cast(Mapping[str, object], safe_status))
 
 
 def _write_inventory(path: Path, inventory: Mapping[str, object]) -> None:
     """Persist the integrity artifact verbatim; unlike status it is never redacted."""
     _validate_inventory(inventory)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
-        temporary.write(_canonical_json(inventory) + "\n")
-        temporary_path = Path(temporary.name)
-    os.replace(temporary_path, path)
+    _durable_json_replace(path, inventory)
 
 
 def _assert_external_run_dir(run_dir: Path) -> None:
@@ -1139,6 +1408,31 @@ class _LeaseHeartbeat:
             return self._failure_reason
 
 
+class _BoundaryStopHandlers:
+    """Convert TERM/INT into a boundary request without interrupting COMMIT."""
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.previous: dict[int, Any] = {}
+
+    def __enter__(self) -> threading.Event:
+        def request_stop(_signum: int, _frame: object) -> None:
+            self.event.set()
+
+        for value in (signal.SIGINT, signal.SIGTERM):
+            self.previous[value] = signal.getsignal(value)
+            signal.signal(value, request_stop)
+        return self.event
+
+    def __exit__(self, *_args: object) -> None:
+        for value, previous in self.previous.items():
+            signal.signal(value, previous)
+
+
+def install_boundary_stop_handlers() -> _BoundaryStopHandlers:
+    return _BoundaryStopHandlers()
+
+
 def run_supervisor(
     inventory: Mapping[str, object],
     *,
@@ -1187,13 +1481,14 @@ def _run_supervisor_locked(
 ) -> dict[str, Any]:
     with _FileLock(status_path.with_suffix(".status.lock")):
         status = _load_status(status_path)
+        projected_lineage = _status_authorization_lineage(authorization_lineage)
         if _unexpired_lease(status):
             raise BackfillSafetyError("an active historical package lease has not expired")
         if status and status.get("authorization_id") != authorization_id:
             raise BackfillSafetyError("resume status does not match execution authorization identity")
         if status and ("authorization_fingerprint" in status and status.get("authorization_fingerprint") != authorization_fingerprint or "authorization_fingerprint" not in status and authorization_fingerprint is not None):
             raise BackfillSafetyError("resume status does not match execution authorization fingerprint")
-        if status and ("authorization_lineage" in status and status.get("authorization_lineage") != (dict(authorization_lineage) if authorization_lineage is not None else None) or "authorization_lineage" not in status and authorization_lineage is not None):
+        if status and ("authorization_lineage" in status and status.get("authorization_lineage") != projected_lineage or "authorization_lineage" not in status and projected_lineage is not None):
             raise BackfillSafetyError("resume status does not match execution authorization lineage")
         if status and "target_identity" in status and status.get("target_identity") != (dict(target_identity) if target_identity is not None else {"kind": "unconfigured", "value": "no_database_connection"}):
             raise BackfillSafetyError("resume status does not match execution target identity")
@@ -1210,7 +1505,7 @@ def _run_supervisor_locked(
         "target_identity": dict(target_identity) if target_identity is not None else {"kind": "unconfigured", "value": "no_database_connection"},
         "authorization_id": authorization_id,
         "authorization_fingerprint": authorization_fingerprint,
-        "authorization_lineage": dict(authorization_lineage) if authorization_lineage is not None else None,
+        "authorization_lineage": projected_lineage,
         "stop_contract_hash": stop_contract_hash,
         "inventory_hash": inventory_hash,
         "packages": existing,
@@ -1311,45 +1606,56 @@ def cli(argv: Sequence[str] | None = None) -> int:
     if args.action == "status":
         print(_canonical_json(_load_status(status_path)))
         return 0
-    with _FileLock(args.run_dir / ".lifecycle.lock"):
-        inventory_path = args.run_dir / "inventory.json"
-        if args.action == "start":
-            if status_path.exists() or inventory_path.exists():
-                raise BackfillSafetyError("start requires an empty external run directory")
-            inventory = build_historical_inventory()
-            _validate_historical_boundary(inventory)
-            _write_inventory(inventory_path, inventory)
-        else:
-            if not status_path.exists() or not inventory_path.exists():
-                raise BackfillSafetyError("resume requires existing status and inventory artifacts")
-            inventory = _load_status(inventory_path)
-            _validate_historical_boundary(inventory)
-            status = _load_status(status_path)
-            if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != code_identity():
-                raise BackfillSafetyError("resume status does not match inventory or code identity")
-        current_code_sha = code_identity()
-        if args.execution_authorization is None:
-            executor: Callable[[dict[str, object]], Mapping[str, object]] = _unconfigured_executor
-            authorization_id = None
-            target_identity = None
-            authorization_fingerprint = None
-            authorization_lineage = None
-            stop_contract_hash = None
-        else:
+    with install_boundary_stop_handlers() as boundary_stop:
+        with _FileLock(args.run_dir / ".lifecycle.lock"):
+            inventory_path = args.run_dir / "inventory.json"
+            current_code_sha = code_identity()
             authorization_command: Sequence[str] = ("historical-backfill", args.action)
-            if args.action == "resume":
-                prior_lineage = status.get("authorization_lineage") if isinstance(status, dict) else None
-                if isinstance(prior_lineage, Mapping) and isinstance(prior_lineage.get("sanitized_command"), list) and all(isinstance(value, str) for value in prior_lineage["sanitized_command"]):
-                    authorization_command = cast(list[str], prior_lineage["sanitized_command"])
-            executor = build_authorized_executor(args.execution_authorization, inventory=inventory, code_sha=current_code_sha, run_directory=args.run_dir, command=authorization_command)
-            authorization_id = executor.authorization_id
-            target_identity = executor.target_identity
-            authorization_fingerprint = executor.authorization_fingerprint
-            authorization_lineage = executor.authorization_lineage
-            stop_contract_hash = getattr(executor, "stop_contract_hash", None)
-            preflight = getattr(executor, "preflight", None)
-            if callable(preflight):
-                preflight()
-        outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash)
-        print(_canonical_json(outcome))
-        return 0 if outcome["state"] == "ok" else 1
+            source_mode: str | None = None
+            sources: Sequence[SourceSpec] = IMMUTABLE_SOURCES
+            if args.execution_authorization is not None:
+                source_mode, sources = _load_authorized_source_configuration(args.execution_authorization, code_sha=current_code_sha, run_directory=args.run_dir, command=authorization_command)
+                if source_mode == "production_authorized":
+                    validate_production_paths(sources, args.run_dir)
+            if args.action == "start":
+                if status_path.exists() or inventory_path.exists():
+                    raise BackfillSafetyError("start requires an empty external run directory")
+                if source_mode in {None, "test_unbound"}:
+                    inventory = build_historical_inventory()
+                    _validate_historical_boundary(inventory)
+                else:
+                    inventory = build_inventory(sources)
+                    _validate_historical_boundary(inventory, sources)
+                _write_inventory(inventory_path, inventory)
+                status: Mapping[str, object] = {}
+            else:
+                if not status_path.exists() or not inventory_path.exists():
+                    raise BackfillSafetyError("resume requires existing status and inventory artifacts")
+                inventory = _load_status(inventory_path)
+                if source_mode in {None, "test_unbound"}:
+                    _validate_historical_boundary(inventory)
+                else:
+                    _validate_historical_boundary(inventory, sources)
+                status = _load_status(status_path)
+                if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != current_code_sha:
+                    raise BackfillSafetyError("resume status does not match inventory or code identity")
+            if args.execution_authorization is None:
+                executor: Callable[[dict[str, object]], Mapping[str, object]] = _unconfigured_executor
+                authorization_id = None
+                target_identity = None
+                authorization_fingerprint = None
+                authorization_lineage = None
+                stop_contract_hash = None
+            else:
+                executor = build_authorized_executor(args.execution_authorization, inventory=inventory, code_sha=current_code_sha, run_directory=args.run_dir, command=authorization_command)
+                authorization_id = executor.authorization_id
+                target_identity = executor.target_identity
+                authorization_fingerprint = executor.authorization_fingerprint
+                authorization_lineage = executor.authorization_lineage
+                stop_contract_hash = getattr(executor, "stop_contract_hash", None)
+                preflight = getattr(executor, "preflight", None)
+                if callable(preflight):
+                    preflight()
+            outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash, boundary_stop_requested=boundary_stop.is_set)
+            print(_canonical_json(outcome))
+            return 0 if outcome["state"] == "ok" else 1
