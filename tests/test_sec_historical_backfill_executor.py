@@ -219,6 +219,44 @@ def test_authorized_executor_uses_nonblocking_form_lock_before_schema_install(tm
     assert events == ["try_lock", "manifest", "form", "unlock"]
 
 
+def test_production_authorized_executor_never_runs_schema_installers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _authorization(inventory_hash=str(inventory["inventory_hash"]))
+    artifact["target_mode"] = "production_authorized"
+    artifact["target"] = {
+        **artifact["target"],
+        "project": "investintell-research-analisys",
+        "vm": "timescale-sp",
+        "zone": "southamerica-east1-a",
+        "database": "market",
+        "server_address": "10.0.0.1",
+        "role": "sec_backfill_runner",
+    }
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    installed: list[str] = []
+    connection = _LockConnection([])
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: "nport:fixed-digest")
+
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connection,
+        target_inspector=lambda _conn: {
+            "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+            "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
+            "is_superuser": False, "owns_any_table": False, "writable_tables": ["sec_raw.nport_filings"],
+        },
+        schema_installers={"manifest": lambda _conn: installed.append("manifest"), "nport": lambda _conn: installed.append("nport")},
+        dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 0, "run_id": "run-1"}},
+    )
+
+    executor(dict(inventory["packages"][0]))
+
+    assert installed == []
+
+
 def test_lock_busy_refuses_before_schema_or_dispatch_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import src.sec_regulatory.historical_backfill as backfill
 

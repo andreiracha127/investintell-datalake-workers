@@ -676,11 +676,12 @@ class AuthorizedPackageExecutor:
             if not _try_form_advisory_lock(connection, lock_key):
                 lock_key = None
                 raise BackfillSafetyError("lock_busy")
-            installers = self.schema_installers or _default_schema_installers(form)
-            if set(installers) != {"manifest", form}:
-                raise BackfillSafetyError("authorized executor schema installer boundary is invalid")
-            installers["manifest"](connection)
-            installers[form](connection)
+            if self.authorization["target_mode"] == "local_disposable":
+                installers = self.schema_installers or _default_schema_installers(form)
+                if set(installers) != {"manifest", form}:
+                    raise BackfillSafetyError("authorized executor schema installer boundary is invalid")
+                installers["manifest"](connection)
+                installers[form](connection)
             dispatcher = (self.dispatchers or {}).get(form) if self.dispatchers is not None else _default_dispatcher(form)
             if dispatcher is None:
                 raise BackfillSafetyError("authorized executor dispatcher is unavailable")
