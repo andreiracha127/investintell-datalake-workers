@@ -18,7 +18,7 @@ from .artifacts import canonical_json_bytes, commit_partial, partial_path, repla
 from .contracts import PilotError, SourceApproval, SourceCandidate
 from .debt_mapping import DebtMapping
 from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric, compute_cross_series_summary, compute_series_metrics
-from .nport import load_fixture_result
+from .nport import FixtureLoadResult, load_fixture_result
 from .panel import PanelBuildResult
 from .source_artifact import _path_lexists, _publish_directory_no_replace
 
@@ -154,15 +154,19 @@ def _valid_sha(value: object) -> bool:
     return isinstance(value, str) and _SHA256.fullmatch(value) is not None
 
 
-def _validate_nport_manifest(manifest: Mapping[str, object], match_count: int, metric_count: int) -> dict[str, object]:
+def _validate_nport_manifest(manifest: Mapping[str, object], match_count: int, metric_count: int) -> FixtureLoadResult:
     required = {"schema_version", "extraction_mode", "phase4_state", "representative_post_backfill", "db_reads", "db_writes", "fixture_path", "fixture_sha256", "row_count", "distinct_lot_count", "distinct_series_count", "distinct_accession_count", "lineage_fields_present"}
     if not isinstance(manifest, Mapping) or set(manifest) != required:
         raise PilotError("invalid_nport_manifest")
     valid = manifest.get("schema_version") == "nport-extract-manifest-v1" and manifest.get("extraction_mode") == "fixture" and manifest.get("phase4_state") == "pre_backfill" and manifest.get("representative_post_backfill") is False and manifest.get("db_reads") == 0 and manifest.get("db_writes") == 0 and isinstance(manifest.get("fixture_path"), str) and bool(manifest["fixture_path"]) and _valid_sha(manifest.get("fixture_sha256")) and manifest.get("lineage_fields_present") is True
     counts = [manifest.get(key) for key in ("row_count", "distinct_lot_count", "distinct_series_count", "distinct_accession_count")]
-    if not valid or any(not isinstance(count, int) or isinstance(count, bool) or count <= 0 or count > 10_000 for count in counts):
+    if not valid or any(not isinstance(count, int) or isinstance(count, bool) or count < 0 or count > 10_000 for count in counts):
         raise PilotError("invalid_nport_manifest")
-    if any(count > manifest["row_count"] for count in counts[1:]) or match_count > manifest["row_count"] or metric_count > manifest["distinct_series_count"]:
+    row_count = manifest["row_count"]
+    if row_count == 0:
+        if any(count != 0 for count in counts[1:]) or match_count != 0 or metric_count != 0:
+            raise PilotError("invalid_nport_manifest")
+    elif any(count <= 0 or count > row_count for count in counts[1:]) or match_count > row_count or metric_count > manifest["distinct_series_count"]:
         raise PilotError("invalid_nport_manifest")
     try:
         loaded = load_fixture_result(manifest["fixture_path"])
@@ -170,7 +174,25 @@ def _validate_nport_manifest(manifest: Mapping[str, object], match_count: int, m
         raise PilotError("invalid_nport_manifest") from exc
     if dict(manifest) != loaded.manifest():
         raise PilotError("invalid_nport_manifest")
-    return loaded.manifest()
+    return loaded
+
+
+def _fixture_lot_key(holding: object) -> tuple[object, ...]:
+    return tuple(getattr(holding, field) for field in ("publication_id", "accession_number", "holding_id", "source_run_id", "series_id", "instrument_id"))
+
+
+def _validate_fixture_coverage(matches: tuple[MatchResult, ...], fixture: FixtureLoadResult) -> None:
+    fixture_by_lot = {_fixture_lot_key(holding): holding for holding in fixture.holdings}
+    if len(fixture_by_lot) != fixture.row_count or len(matches) != fixture.row_count:
+        raise PilotError("report_fixture_mismatch")
+    match_by_lot: dict[tuple[object, ...], object] = {}
+    for match in matches:
+        lot = _fixture_lot_key(match.holding)
+        if lot in match_by_lot:
+            raise PilotError("report_fixture_mismatch")
+        match_by_lot[lot] = match.holding
+    if set(match_by_lot) != set(fixture_by_lot) or any(match_by_lot[key] != fixture_by_lot[key] for key in fixture_by_lot):
+        raise PilotError("report_fixture_mismatch")
 
 
 def _validate_mapping_provenance(value: Mapping[str, object], mapping: DebtMapping) -> dict[str, object]:
@@ -209,7 +231,9 @@ def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandi
     if not panel.is_file():
         raise PilotError("missing_panel", {"path": str(panel)})
     match_values, metric_values, latest_values = tuple(matches), tuple(series_metrics), tuple(latest_observations)
-    manifest = _validate_nport_manifest(nport_manifest, len(match_values), len(metric_values))
+    fixture = _validate_nport_manifest(nport_manifest, len(match_values), len(metric_values))
+    _validate_fixture_coverage(match_values, fixture)
+    manifest = fixture.manifest()
     provenance = _validate_mapping_provenance(mapping_provenance, debt_mapping)
     recomputed_metrics = compute_series_metrics(match_values)
     if metric_values != recomputed_metrics:

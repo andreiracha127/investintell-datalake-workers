@@ -156,11 +156,11 @@ def test_reports_write_explicit_schemas_internal_provenance_and_no_enum_repr(tmp
 
 
 def test_reports_empty_schemas_collision_and_nonfinite_json_rejection(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path / "fixture.json", [_row(weight=1.0)])
-    holding = load_fixture_holdings(fixture)[0]
+    fixture = _fixture(tmp_path / "fixture.json", [])
+    holdings = load_fixture_holdings(fixture)
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
-    common = dict(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
+    common = dict(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, holdings), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
     reports = write_internal_reports(**common)
     assert pq.read_table(reports["fund_asof_match"]).num_rows == 0
     assert pq.read_table(reports["fund_series_metrics"]).num_rows == 0
@@ -199,7 +199,7 @@ def test_reports_reject_unbound_source_approval_before_staging(tmp_path: Path, f
 
 
 def test_reports_validate_manifest_provenance_and_checkpoint_semantics(tmp_path: Path) -> None:
-    fixture = _fixture(tmp_path / "fixture.json", [_row()])
+    fixture = _fixture(tmp_path / "fixture.json", [])
     holdings = load_fixture_holdings(fixture)
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
@@ -249,7 +249,7 @@ def test_reports_bind_fixture_hash_mapping_hash_and_recomputed_metrics(tmp_path:
 
 
 def test_reports_publish_whole_run_or_leave_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fixture = _fixture(tmp_path / "fixture.json", [_row()])
+    fixture = _fixture(tmp_path / "fixture.json", [])
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
     args = dict(source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
@@ -270,7 +270,7 @@ def test_reports_publish_whole_run_or_leave_no_trace(tmp_path: Path, monkeypatch
 
 @pytest.mark.parametrize("with_contents", [False, True])
 def test_reports_preserve_preexisting_final_and_reject_panel_alias(tmp_path: Path, with_contents: bool) -> None:
-    fixture = _fixture(tmp_path / "fixture.json", [_row()])
+    fixture = _fixture(tmp_path / "fixture.json", [])
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
     args = dict(source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
@@ -287,3 +287,25 @@ def test_reports_preserve_preexisting_final_and_reject_panel_alias(tmp_path: Pat
     alias_existing.mkdir()
     with pytest.raises(PilotError, match="panel_path_inside_run_dir"):
         write_internal_reports(run_dir=alias_existing, panel_path=alias_existing / "bond-observed-daily.parquet", **args)
+
+
+def test_reports_require_exact_fixture_lot_coverage(tmp_path: Path) -> None:
+    fixture_a = _fixture(tmp_path / "fixture-a.json", [_row(holding_id="lot-1"), _row(holding_id="lot-2", instrument_id="instrument-2")])
+    fixture_b = _fixture(tmp_path / "fixture-b.json", [_row(holding_id="other-1"), _row(holding_id="other-2", instrument_id="other-instrument")])
+    holdings_a = load_fixture_holdings(fixture_a)
+    holdings_b = load_fixture_holdings(fixture_b)
+    panel_path = tmp_path / "panel.parquet"
+    pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
+    base = dict(source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture_a, holdings_a), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, latest_observations=(), calibration_report={})
+
+    def call(run_name: str, holdings: tuple[object, ...]) -> None:
+        matches = tuple(MatchResult(holding, MatchState.MATCHED, "123456789") for holding in holdings)
+        metrics = compute_series_metrics(matches)
+        write_internal_reports(run_dir=tmp_path / run_name, matches=matches, series_metrics=metrics, cross_series_summary=compute_cross_series_summary(metrics), **base)
+
+    with pytest.raises(PilotError, match="report_fixture_mismatch"):
+        call("cross-fixture", holdings_b)
+    with pytest.raises(PilotError, match="report_fixture_mismatch"):
+        call("missing", holdings_a[:1])
+    with pytest.raises(PilotError, match="report_fixture_mismatch"):
+        call("duplicate", (holdings_a[0], holdings_a[0]))
