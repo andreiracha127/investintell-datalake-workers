@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 import os
 from pathlib import Path
 import shutil
 from typing import Mapping, Sequence
 from uuid import uuid4
+from datetime import date, datetime
+from decimal import Decimal
 
+import psycopg
 from src.db import connect, resolve_dsn
 
-from .artifacts import canonical_json_bytes, write_checksums, write_json_once
+from .artifacts import write_checksums, write_json_once
 from .contracts import PilotError
 from .db_calibration import (
     load_phase4_v2_evidence,
     load_phase4_v2_evidence_approval,
     run_v2_calibration,
     validate_v2_request,
+    REQUIRED_COLUMNS,
 )
 from .debt_mapping import load_approved_debt_mapping, load_fixture_debt_mapping
 from .matching import ObservationIndex, compute_cross_series_summary, compute_series_metrics, match_holdings_asof
@@ -115,27 +121,71 @@ def _calibration_inputs(*, source_manifest: str | Path, source_approval: str | P
 
 
 def _calibration_provenance(candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str) -> dict[str, object]:
-    return {"internal_only": True, "source": {**candidate.to_json_mapping(), "approval": approval.to_json_mapping()}, "mapping": mapping.to_mapping(), "phase4": {"evidence_sha256": evidence.artifact_sha256, "approval_sha256": evidence_approval.artifact_sha256, "seam": evidence.values["seam"], "relation": evidence.values["relation"]}, "governed_request": {"mode": mode, "series_ids": list(series)}}
+    return {"internal_only": True, "source": {**candidate.to_json_mapping(), "approval": approval.to_json_mapping()}, "mapping": mapping.to_mapping(), "phase4": {"evidence_sha256": evidence.artifact_sha256, "approval_sha256": evidence_approval.artifact_sha256, "approval_authority_sha256": hashlib.sha256(str(evidence_approval.values["approved_by"]).encode("utf-8")).hexdigest(), "evidence": dict(evidence.values), "approval": dict(evidence_approval.values)}, "governed_request": {"mode": mode, "series_ids": list(series)}}
+
+
+_CHECKPOINT_FIELDS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
+
+
+def _checkpoint_metadata(checkpoint: Path) -> tuple[dict[str, object], str]:
+    try:
+        raw = checkpoint.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise PilotError("calibration_checkpoint_invalid") from exc
+    if not isinstance(payload, dict) or set(payload) != _CHECKPOINT_FIELDS or not isinstance(payload.get("output_hash"), str) or len(payload["output_hash"]) != 64 or any(character not in "0123456789abcdef" for character in payload["output_hash"]):
+        raise PilotError("calibration_checkpoint_invalid")
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def _row_scalar(value: object) -> object:
+    if value is None or isinstance(value, bool) or isinstance(value, str):
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise PilotError("calibration_row_serialization_failed")
+        return {"type": "decimal", "value": format(value, "f")}
+    if isinstance(value, datetime):
+        raise PilotError("calibration_row_serialization_failed")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise PilotError("calibration_row_serialization_failed")
+
+
+def _rows_payload(rows: object) -> dict[str, object]:
+    if not isinstance(rows, (tuple, list)):
+        raise PilotError("calibration_row_serialization_failed")
+    encoded: list[list[object]] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != set(REQUIRED_COLUMNS):
+            raise PilotError("calibration_row_serialization_failed")
+        encoded.append([_row_scalar(row[column]) for column in REQUIRED_COLUMNS])
+    return {"schema_version": "calibration-rows-v1", "columns": list(REQUIRED_COLUMNS), "rows": encoded}
 
 
 def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path) -> Mapping[str, object]:
     provenance = _calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, mode)
-    report: dict[str, object] = {"internal_only": True, "mode": mode, "rows_read": result.rows_read, "pages": result.pages, "partial": result.partial, "checkpoint_present": checkpoint.is_file(), "output_hash": (None if not checkpoint.is_file() else hashlib.sha256(checkpoint.read_bytes()).hexdigest())}
+    checkpoint_payload, checkpoint_sha256 = _checkpoint_metadata(checkpoint)
+    report: dict[str, object] = {"internal_only": True, "mode": mode, "rows_read": result.rows_read, "pages": result.pages, "partial": result.partial, "output_hash": checkpoint_payload["output_hash"], "checkpoint_sha256": checkpoint_sha256, "rows_artifact": "calibration-rows-v1.json"}
     try:
-        canonical_json_bytes(result.rows)
-        write_json_once(staging / "calibration-rows.json", list(result.rows))
-        report["rows_artifact"] = "calibration-rows.json"
-    except (TypeError, ValueError):
-        report["rows_artifact"] = "not_emitted_not_json_serializable"
-    write_json_once(staging / "calibration-provenance.json", provenance)
-    write_json_once(staging / "calibration-report.json", report)
-    write_checksums(staging)
+        write_json_once(staging / "calibration-rows-v1.json", _rows_payload(result.rows))
+        write_json_once(staging / "calibration-provenance.json", provenance)
+        write_json_once(staging / "calibration-report.json", report)
+        write_checksums(staging)
+    except PilotError:
+        raise
+    except (OSError, TypeError, ValueError) as exc:
+        raise PilotError("calibration_artifact_write_failed") from exc
     return report
 
 
 def _write_calibration_stop(staging: Path, error: PilotError, provenance: Mapping[str, object]) -> None:
     write_json_once(staging / "calibration-provenance.json", dict(provenance))
-    write_json_once(staging / "stop-report.json", {"internal_only": True, "status": "stopped", "code": error.code})
+    write_json_once(staging / "stop-report.json", {"internal_only": True, "status": "stopped", "code": error.code, "exception_class": error.__class__.__name__})
     write_checksums(staging)
 
 
@@ -154,12 +204,19 @@ def run_calibration(*, source_manifest: str | Path, source_approval: str | Path,
         checkpoint = staging / "checkpoint.json"
         try:
             dsn = resolve_dsn()
-            with connect(dsn) as connection:
+        except (RuntimeError, OSError, psycopg.Error) as exc:
+            raise PilotError("calibration_connection_failed") from exc
+        try:
+            connection = connect(dsn)
+        except (RuntimeError, OSError, psycopg.Error) as exc:
+            raise PilotError("calibration_connection_failed") from exc
+        try:
+            with connection:
                 result = run_v2_calibration(connection, evidence=phase4, approval=phase4_approval, series_ids=series, mode=mode, checkpoint_path=checkpoint, run_id=output.name)
         except PilotError:
             raise
-        except Exception as exc:
-            raise PilotError("calibration_connection_failed") from exc
+        except psycopg.Error as exc:
+            raise PilotError("calibration_database_failed") from exc
         report = _write_calibration_pack(staging, candidate=candidate, approval=approval, mapping=debt_mapping, evidence=phase4, evidence_approval=phase4_approval, series=series, mode=mode, result=result, checkpoint=checkpoint)
         _publish(staging, output)
         published = True

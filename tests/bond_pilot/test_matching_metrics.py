@@ -106,9 +106,14 @@ def test_real_mapping_requires_external_approved_hash_bound_files(tmp_path: Path
     approval_path.write_text(json.dumps(approval), encoding="utf-8")
     loaded = load_approved_debt_mapping(mapping_path, approval_path)
     assert loaded.classify("observed-value") is DebtState.DEBT_LIKE_ELIGIBLE
+    assert loaded.approval_sha256 == hashlib.sha256(approval_path.read_bytes()).hexdigest()
+    assert loaded.approval_manifest["approved_by"] == "reviewer"
+    assert loaded.approval_canonical_json == (json.dumps(approval, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    assert loaded.to_mapping()["approval"]["approved_at"] == "2024-01-01T12:00:00Z"
 
     approval["mapping_sha256"] = "0" * 64
     approval_path.write_text(json.dumps(approval), encoding="utf-8")
+    assert loaded.to_mapping()["approval"]["mapping_sha256"] != "0" * 64
     with pytest.raises(PilotError, match="debt_mapping_unapproved"):
         load_approved_debt_mapping(mapping_path, approval_path)
 

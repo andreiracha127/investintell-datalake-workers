@@ -63,6 +63,26 @@ def _categories(value: object) -> dict[str, str]:
     return dict(value)
 
 
+def _freeze(value: object) -> object:
+    if isinstance(value, Mapping):
+        return MappingProxyType({str(key): _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _thaw(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw(item) for item in value]
+    return value
+
+
+def _canonical_json(value: object) -> bytes:
+    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+
+
 @dataclass(frozen=True)
 class DebtMapping:
     """Exact category mapping; it intentionally performs no category normalization."""
@@ -73,6 +93,9 @@ class DebtMapping:
     categories: Mapping[str, str]
     observed_values_sha256: str | None = None
     mapping_sha256: str | None = None
+    approval_sha256: str | None = None
+    approval_manifest: Mapping[str, object] | None = None
+    approval_canonical_json: bytes | None = field(default=None, repr=False, compare=False)
     _validation_token: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -91,6 +114,17 @@ class DebtMapping:
         if not _sha256(self.mapping_sha256):
             raise _unapproved()
         object.__setattr__(self, "categories", MappingProxyType(_categories(self.categories)))
+        if self.schema_version == "debt-mapping-test-v1":
+            if any(value is not None for value in (self.approval_sha256, self.approval_manifest, self.approval_canonical_json)):
+                raise _unapproved()
+        elif not _sha256(self.approval_sha256) or not isinstance(self.approval_manifest, Mapping) or not isinstance(self.approval_canonical_json, bytes):
+            raise _unapproved()
+        else:
+            frozen = _freeze(self.approval_manifest)
+            canonical = _canonical_json(_thaw(frozen))
+            if canonical != self.approval_canonical_json:
+                raise _unapproved()
+            object.__setattr__(self, "approval_manifest", frozen)
 
     def classify(self, category: object) -> DebtState:
         if category is None or (isinstance(category, str) and not category.strip()):
@@ -110,6 +144,9 @@ class DebtMapping:
         }
         if self.observed_values_sha256 is not None:
             value["observed_values_sha256"] = self.observed_values_sha256
+        if self.approval_manifest is not None:
+            value["approval_sha256"] = self.approval_sha256
+            value["approval"] = _thaw(self.approval_manifest)
         return value
 
 
@@ -163,7 +200,7 @@ def _valid_timestamp(value: object) -> bool:
 def load_approved_debt_mapping(mapping_path: str | Path, approval_path: str | Path) -> DebtMapping:
     """Load a calibrated mapping only when a separate approval binds every input hash."""
     _, raw_mapping, mapping = _read_mapping(mapping_path)
-    _, _, approval = _read_mapping(approval_path)
+    _, raw_approval, approval = _read_mapping(approval_path)
     required_mapping = {"schema_version", "mapping_version", "observed_values_sha256", "categories"}
     required_approval = {
         "schema_version",
@@ -196,5 +233,8 @@ def load_approved_debt_mapping(mapping_path: str | Path, approval_path: str | Pa
         categories=_categories(mapping["categories"]),
         observed_values_sha256=mapping["observed_values_sha256"],
         mapping_sha256=hashlib.sha256(raw_mapping).hexdigest(),
+        approval_sha256=hashlib.sha256(raw_approval).hexdigest(),
+        approval_manifest=approval,
+        approval_canonical_json=_canonical_json(approval),
         _validation_token=_VALIDATION_TOKEN,
     )

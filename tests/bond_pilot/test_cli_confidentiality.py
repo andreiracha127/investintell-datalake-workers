@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import ast
+from datetime import date
+from decimal import Decimal
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import subprocess
 from types import SimpleNamespace
 
@@ -13,6 +16,7 @@ import pytest
 
 from scripts.run_bond_pilot import build_parser, main
 from src.bond_pilot.contracts import PilotError, SourceApproval
+from src.bond_pilot.db_calibration import REQUIRED_COLUMNS
 from src.bond_pilot.source_artifact import qualify_source
 from src.bond_pilot import workflow
 from src.bond_pilot.workflow import qualify, run_calibration, run_fixture
@@ -24,6 +28,23 @@ class _Connection:
 
     def __exit__(self, *_: object) -> None:
         return None
+
+
+def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64) -> bytes:
+    from src.bond_pilot import db_calibration as calibration
+
+    return calibration.canonical_json_bytes(calibration._checkpoint_payload(
+        run_id="calibration", evidence=values["evidence"], approval=values["approval"], mode=values["mode"],
+        series_ids=values["series_ids"], reports=(), last_key=None, pages=1, rows=len(values.get("rows", ())),
+        elapsed_seconds=1.0, output_hash=output_hash, output_state="complete", stop_reason=None,
+    ))
+
+
+def _calibration_row(**overrides: object) -> dict[str, object]:
+    row = {column: f"{column}-value" for column in REQUIRED_COLUMNS}
+    row.update({"report_date": date(2024, 3, 31), "filing_date": date(2024, 4, 15), "signed_market_value": Decimal("10.250"), "signed_pct_of_nav": 0.1})
+    row.update(overrides)
+    return row
 
 
 def _approval_for(candidate) -> SourceApproval:
@@ -165,7 +186,12 @@ def test_output_path_gate_precedes_source_or_dsn_and_recognizes_lexists(tmp_path
 
 
 _PUBLIC_KEYS = {"value", "values", "unit", "units", "date", "as_of_date", "freshness", "quality", "availability", "methodology_version", "is_144a"}
-_FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "row_id", "hash", "lineage", "license", "entitlement", "error", "trace", "finra", "osbap", "openbondassetpricing", "bonds-api", "bonds api", "wrds", "developer_finra"}
+_FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "row_id", "hash", "lineage", "license", "entitlement", "error"}
+_FORBIDDEN_TEXT = re.compile(r"\b(?:source|provider|vendor|upstream|lineage|license|entitlement|error|trace|finra|osbap|openbondassetpricing|bonds-api|bonds api|wrds|developer_finra|sec|n-?port)\b", re.IGNORECASE)
+_URI = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
+_FILE = re.compile(r"\.(?:csv|json|parquet|zip|sql|py|txt|xml|pdf)(?:$|[?#])", re.IGNORECASE)
+_HEX_DIGEST = re.compile(r"^(?:sha(?:256|512):)?[0-9a-f]{64}$", re.IGNORECASE)
+_BASE64_DIGEST = re.compile(r"^(?:sha(?:256|512):)?[A-Za-z0-9+/]{43}=$", re.IGNORECASE)
 
 
 def _assert_future_public(value: object) -> None:
@@ -184,9 +210,11 @@ def _assert_future_public(value: object) -> None:
     elif isinstance(value, str):
         lowered = value.casefold()
         assert not any(token in lowered for token in _FORBIDDEN)
-        assert "://" not in lowered and ":\\" not in lowered and "/" not in lowered and "\\" not in lowered
-        assert not any(lowered.endswith(extension) for extension in (".csv", ".json", ".parquet", ".zip", ".sql", ".py"))
-        assert len(lowered) != 64 or any(character not in "0123456789abcdef" for character in lowered)
+        assert _FORBIDDEN_TEXT.search(value) is None
+        assert _URI.match(value) is None
+        assert not any(marker in value for marker in ("/", "\\"))
+        assert _FILE.search(value) is None
+        assert _HEX_DIGEST.fullmatch(value) is None and _BASE64_DIGEST.fullmatch(value) is None
     elif value is None or isinstance(value, bool | int):
         return
     elif isinstance(value, float):
@@ -197,8 +225,8 @@ def _assert_future_public(value: object) -> None:
 
 
 def test_future_public_allowlist_rejects_nested_provenance_and_source_family_literals() -> None:
-    _assert_future_public({"values": [{"value": 1.0, "unit": "USD"}], "is_144a": True, "quality": {"freshness": "daily"}, "methodology_version": "bond-metrics-v1"})
-    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "trace-v1"}, {"value": "C:/secret/file.csv"}, {"value": "a" * 64}, {"value": ("not-json",)}, {"value": float("nan")}):
+    _assert_future_public({"values": [{"value": 1.0, "unit": "seconds"}], "is_144a": True, "quality": {"freshness": "daily"}, "methodology_version": "bond-metrics-v1"})
+    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "report.parquet?download=1"}, {"value": "sha256:" + "a" * 64}, {"value": "A" * 43 + "="}, {"value": ("not-json",)}, {"value": float("nan")}):
         with pytest.raises(AssertionError):
             _assert_future_public(value)
 
@@ -263,17 +291,27 @@ def test_calibration_success_pack_is_atomic_and_binds_internal_provenance(tmp_pa
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def succeed(_connection, **values):
-        values["checkpoint_path"].write_text('{"checkpoint":"complete"}', encoding="utf-8")
-        return SimpleNamespace(rows=({"holding": "internal"},), rows_read=1, pages=1, partial=False)
+        values["rows"] = (_calibration_row(),)
+        values["checkpoint_path"].write_bytes(_checkpoint(values))
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     report = run_calibration(**kwargs)
     final = kwargs["run_dir"]
-    assert report["rows_artifact"] == "calibration-rows.json"
+    assert report["rows_artifact"] == "calibration-rows-v1.json"
     provenance = json.loads((final / "calibration-provenance.json").read_text(encoding="utf-8"))
     assert provenance["internal_only"] is True
     assert provenance["source"]["approval"]["source_locator"]
     assert provenance["mapping"]["observed_values_sha256"] == "c" * 64
-    assert provenance["phase4"]["evidence_sha256"]
+    assert provenance["mapping"]["approval"]["approved_by"] == "reviewer"
+    assert provenance["phase4"]["evidence_sha256"] and provenance["phase4"]["approval_sha256"]
+    assert provenance["phase4"]["evidence"]["approved_by"] == "phase4 reviewer"
+    assert provenance["phase4"]["approval"]["approved_modes"] == ["calibration"]
+    checkpoint = json.loads((final / "checkpoint.json").read_text(encoding="utf-8"))
+    assert report["output_hash"] == checkpoint["output_hash"] == "f" * 64
+    assert report["checkpoint_sha256"] == hashlib.sha256((final / "checkpoint.json").read_bytes()).hexdigest()
+    rows = json.loads((final / "calibration-rows-v1.json").read_text(encoding="utf-8"))
+    assert rows["columns"] == list(REQUIRED_COLUMNS)
+    assert rows["rows"][0][REQUIRED_COLUMNS.index("signed_market_value")] == {"type": "decimal", "value": "10.250"}
     assert (final / "checkpoint.json").is_file() and (final / "checksums.sha256").is_file()
     assert not list(tmp_path.glob(".calibration.*.partial-dir"))
 
@@ -283,7 +321,8 @@ def test_calibration_late_write_failure_leaves_no_final_or_staging_and_retry_suc
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def succeed(_connection, **values):
-        values["checkpoint_path"].write_text("{}", encoding="utf-8")
+        values["rows"] = ()
+        values["checkpoint_path"].write_bytes(_checkpoint(values))
         return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     original = workflow.write_json_once
@@ -304,7 +343,8 @@ def test_publish_races_preserve_existing_winner_for_calibration_and_stop(tmp_pat
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def succeed(_connection, **values):
-        values["checkpoint_path"].write_text("{}", encoding="utf-8")
+        values["rows"] = ()
+        values["checkpoint_path"].write_bytes(_checkpoint(values))
         return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     def winner(_staging: Path, output: Path) -> None:
@@ -319,3 +359,28 @@ def test_publish_races_preserve_existing_winner_for_calibration_and_stop(tmp_pat
     workflow.write_stop_report(stop, PilotError("stopped"))
     assert (stop / "sentinel").read_text(encoding="utf-8") == "winner"
     assert not list(tmp_path.glob(".stop.*.partial-dir"))
+
+
+@pytest.mark.parametrize("bad", [object(), float("nan"), {"nested": "no"}])
+def test_calibration_row_serialization_fails_closed_with_typed_stop(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch, bad: object) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def succeed(_connection, **values):
+        values["rows"] = (_calibration_row(cusip=bad),)
+        values["checkpoint_path"].write_bytes(_checkpoint(values))
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False)
+    monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
+    with pytest.raises(PilotError, match="calibration_row_serialization_failed"):
+        run_calibration(**kwargs)
+    assert (kwargs["run_dir"] / "stop-report.json").is_file()
+    assert not (kwargs["run_dir"] / "calibration-report.json").exists()
+
+
+def test_calibration_maps_operational_failures_without_leaking_messages(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: (_ for _ in ()).throw(RuntimeError("postgres://secret")))
+    with pytest.raises(PilotError, match="calibration_connection_failed"):
+        run_calibration(**kwargs)
+    stop = json.loads((kwargs["run_dir"] / "stop-report.json").read_text(encoding="utf-8"))
+    assert "postgres" not in json.dumps(stop) and stop["exception_class"] == "PilotError"
