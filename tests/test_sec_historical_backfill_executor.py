@@ -416,7 +416,13 @@ def test_non_sec_inventory_collector_canonicalizes_multiple_side_effect_keywords
         "definition_sha256": "d" * 64, "side_effect_keywords": ["UPDATE", "CREATE", "INSERT"],
     }
     raw = {"relations": [], "sequences": [], "routines": [routine], "schemas": [], "public_acl": [], "monitoring": []}
-    monkeypatch.setattr(backfill, "_query_json", lambda *_args, **_kwargs: raw)
+    def query_json(_connection: object, query: str, params: tuple[object, ...]) -> object:
+        assert "LIKE 'search_path=%%'" in query
+        assert query.replace("%%", "").count("%") == 3
+        assert len(params) == 3
+        return raw
+
+    monkeypatch.setattr(backfill, "_query_json", query_json)
 
     observed = backfill._collect_non_sec_privilege_inventory(object())
     assert observed["non_sec_privilege_inventory"]["routines"][0]["side_effect_keywords"] == ["CREATE", "INSERT", "UPDATE"]
