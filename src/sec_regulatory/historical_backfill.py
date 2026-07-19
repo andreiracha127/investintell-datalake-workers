@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import hashlib
+import importlib
 import importlib.metadata
 import json
 import os
@@ -17,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -47,6 +49,45 @@ _QUARTER = re.compile(r"(?P<year>\d{4})[^0-9]*q(?P<quarter>[1-4])", re.IGNORECAS
 _SENSITIVE_KEYS = frozenset({"password", "token", "secret", "credential", "dsn", "database_url", "connection_url"})
 _SENSITIVE_SUFFIXES = ("_password", "_token", "_secret", "_credential", "_dsn")
 _DATABASE_SCHEMES = ("postgres://", "postgresql://")
+_AUTHORIZATION_FIELDS = frozenset(
+    {
+        "schema_version",
+        "stage",
+        "code_sha",
+        "inventory_hash",
+        "target_mode",
+        "dsn_env_var",
+        "target",
+        "writable_tables",
+        "pointer_table_denylist",
+        "sanitized_command",
+        "run_directory",
+        "authorization_id",
+        "stop_contract_hash",
+        "reconciliation_contract_hash",
+    }
+)
+_TARGET_FIELDS = frozenset(
+    {
+        "project",
+        "vm",
+        "zone",
+        "host",
+        "resolved_addresses",
+        "database",
+        "server_address",
+        "role",
+        "secret_source",
+        "postgresql_identity",
+        "timescaledb_identity",
+    }
+)
+_PRODUCTION_TARGET = {
+    "project": "investintell-research-analisys",
+    "vm": "timescale-sp",
+    "zone": "southamerica-east1-a",
+    "database": "market",
+}
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -342,6 +383,237 @@ def validate_canary_target(target: Mapping[str, object]) -> dict[str, object]:
     return dict(target)
 
 
+def _is_sha256(value: object) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
+
+
+def _validate_execution_authorization(document: Mapping[str, object], *, code_sha: str, inventory_hash: str) -> dict[str, object]:
+    """Validate a file-only authorization before resolving a connection secret."""
+    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 1 or document.get("stage") != "phase4_historical_backfill":
+        raise BackfillSafetyError("invalid execution authorization schema")
+    if document.get("code_sha") != code_sha:
+        raise BackfillSafetyError("execution authorization code SHA mismatch")
+    if document.get("inventory_hash") != inventory_hash:
+        raise BackfillSafetyError("execution authorization inventory hash mismatch")
+    mode = document.get("target_mode")
+    if mode not in {"local_disposable", "production_authorized"}:
+        raise BackfillSafetyError("invalid execution authorization target mode")
+    dsn_env_var = document.get("dsn_env_var")
+    if not isinstance(dsn_env_var, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", dsn_env_var):
+        raise BackfillSafetyError("execution authorization requires a DSN environment variable name")
+    target = document.get("target")
+    if not isinstance(target, dict) or set(target) != _TARGET_FIELDS:
+        raise BackfillSafetyError("invalid execution authorization target")
+    if not isinstance(target.get("resolved_addresses"), list) or not all(isinstance(value, str) and value for value in target["resolved_addresses"]):
+        raise BackfillSafetyError("invalid execution authorization target")
+    for field in _TARGET_FIELDS - {"resolved_addresses"}:
+        if not isinstance(target.get(field), str) or not target[field]:
+            raise BackfillSafetyError("invalid execution authorization target")
+    writable = document.get("writable_tables")
+    denied = document.get("pointer_table_denylist")
+    if not isinstance(writable, list) or not writable or not all(isinstance(value, str) and value for value in writable) or len(set(writable)) != len(writable):
+        raise BackfillSafetyError("invalid execution authorization writable table allowlist")
+    if not isinstance(denied, list) or not denied or not all(isinstance(value, str) and value for value in denied) or set(writable) & set(denied):
+        raise BackfillSafetyError("invalid execution authorization pointer table denylist")
+    sanitized_command = document.get("sanitized_command")
+    if not isinstance(sanitized_command, list) or not all(isinstance(value, str) and not _is_sensitive_value(value) for value in sanitized_command):
+        raise BackfillSafetyError("invalid execution authorization sanitized command")
+    run_directory = document.get("run_directory")
+    if not isinstance(run_directory, str) or not run_directory or _is_sensitive_value(run_directory):
+        raise BackfillSafetyError("invalid execution authorization run directory")
+    if not isinstance(document.get("authorization_id"), str) or not document["authorization_id"]:
+        raise BackfillSafetyError("execution authorization requires a separately issued authorization ID")
+    if not _is_sha256(document.get("stop_contract_hash")) or not _is_sha256(document.get("reconciliation_contract_hash")):
+        raise BackfillSafetyError("invalid execution authorization contract hash")
+    if mode == "local_disposable":
+        validate_canary_target(
+            {
+                "host": target["host"],
+                "resolved_addresses": target["resolved_addresses"],
+                "database": target["database"],
+                "role": target["role"],
+                "secret_source": target["secret_source"],
+            }
+        )
+        if target["server_address"] not in {"127.0.0.1", "::1"}:
+            raise BackfillSafetyError("local disposable server address must be loopback")
+    else:
+        if any(target[field] != expected for field, expected in _PRODUCTION_TARGET.items()):
+            raise BackfillSafetyError("invalid production execution authorization target")
+        if target["role"].casefold() in {"postgres", "owner", "superuser"}:
+            raise BackfillSafetyError("production execution authorization role is unsafe")
+    return dict(document)
+
+
+def load_execution_authorization(path: Path, *, code_sha: str, inventory_hash: str) -> dict[str, object]:
+    """Load the exact authorization artifact without resolving its secret reference."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackfillSafetyError("invalid execution authorization artifact") from exc
+    if not isinstance(document, dict):
+        raise BackfillSafetyError("invalid execution authorization artifact")
+    return _validate_execution_authorization(document, code_sha=code_sha, inventory_hash=inventory_hash)
+
+
+def _inspect_connected_target(connection: object) -> dict[str, object]:
+    """Query the connected server identity and effective write privileges."""
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT current_database(), inet_server_addr()::text, current_user, version(), "
+            "COALESCE((SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'), '')"
+        )
+        identity = cursor.fetchone()
+        cursor.execute(
+            "SELECT r.rolsuper, EXISTS (SELECT 1 FROM pg_class c WHERE c.relowner = r.oid AND c.relkind IN ('r', 'p', 'v', 'm', 'f')) "
+            "FROM pg_roles r WHERE r.rolname = current_user"
+        )
+        role_status = cursor.fetchone()
+        cursor.execute(
+            "SELECT n.nspname || '.' || c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') "
+            "AND has_table_privilege(current_user, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE') "
+            "ORDER BY n.nspname, c.relname"
+        )
+        writable = [row[0] for row in cursor.fetchall()]
+    if not isinstance(identity, tuple) or len(identity) != 5 or not isinstance(role_status, tuple) or len(role_status) != 2:
+        raise BackfillSafetyError("uncertain connected target identity")
+    return {
+        "database": identity[0],
+        "server_address": identity[1],
+        "role": identity[2],
+        "postgresql_identity": identity[3],
+        "timescaledb_identity": identity[4],
+        "is_superuser": role_status[0],
+        "owns_any_table": role_status[1],
+        "writable_tables": writable,
+    }
+
+
+def _default_schema_installers(form: str) -> dict[str, Callable[[object], None]]:
+    manifests = importlib.import_module("src.sec_regulatory.manifests")
+    storage = importlib.import_module(f"src.{form}.storage")
+    return {"manifest": manifests.install_schema, form: storage.install_schema}
+
+
+def _default_dispatcher(form: str) -> Callable[..., Mapping[str, object]]:
+    module = importlib.import_module(f"src.{form}.ingestion")
+    return cast(Callable[..., Mapping[str, object]], module.ingest_package)
+
+
+class AuthorizedPackageExecutor:
+    """One-package executor whose connection exists only after authorization validation."""
+
+    def __init__(
+        self,
+        authorization: Mapping[str, object],
+        inventory: Mapping[str, object],
+        connection_factory: Callable[[str], object] | None,
+        target_inspector: Callable[[object], Mapping[str, object]] | None,
+        schema_installers: Mapping[str, Callable[[object], None]] | None,
+        dispatchers: Mapping[str, Callable[..., Mapping[str, object]]] | None,
+    ) -> None:
+        self.authorization = dict(authorization)
+        self.inventory = inventory
+        self.connection_factory = connection_factory
+        self.target_inspector = target_inspector or _inspect_connected_target
+        self.schema_installers = schema_installers
+        self.dispatchers = dispatchers
+        target = cast(Mapping[str, object], authorization["target"])
+        self.target_identity = {key: target[key] for key in ("project", "vm", "zone", "database", "server_address", "role")}
+        self.authorization_id = cast(str, authorization["authorization_id"])
+
+    def _validate_connected_target(self, actual: Mapping[str, object]) -> None:
+        target = cast(Mapping[str, object], self.authorization["target"])
+        required = {"database", "server_address", "role", "postgresql_identity", "timescaledb_identity", "is_superuser", "owns_any_table", "writable_tables"}
+        if set(actual) != required:
+            raise BackfillSafetyError("uncertain connected target identity")
+        for field in ("database", "server_address", "role", "postgresql_identity", "timescaledb_identity"):
+            if actual[field] != target[field]:
+                raise BackfillSafetyError("connected target identity mismatch")
+        if actual["is_superuser"] is not False or actual["owns_any_table"] is not False:
+            raise BackfillSafetyError("connected target privilege is unsafe")
+        writable = actual["writable_tables"]
+        if not isinstance(writable, list) or not all(isinstance(value, str) for value in writable):
+            raise BackfillSafetyError("uncertain effective writable table set")
+        allowed = set(cast(list[str], self.authorization["writable_tables"]))
+        denied = set(cast(list[str], self.authorization["pointer_table_denylist"]))
+        if set(writable) != allowed or set(writable) & denied:
+            raise BackfillSafetyError("connected target writable table set is unsafe")
+
+    def __call__(self, package: dict[str, object]) -> Mapping[str, object]:
+        root_by_form = _validate_inventory(self.inventory)
+        identity = package.get("identity")
+        expected = next((candidate for candidate in cast(list[dict[str, object]], self.inventory["packages"]) if candidate["identity"] == identity), None)
+        if expected is None or any(package.get(key) != expected.get(key) for key in expected):
+            raise BackfillSafetyError("package is not bound to the validated inventory")
+        form = cast(str, expected["form"])
+        if form not in {"nport", "ncen", "rr1"}:
+            raise BackfillSafetyError("unsupported historical package form")
+        _verify_package_unchanged(expected, root_by_form)
+        dsn_env_var = cast(str, self.authorization["dsn_env_var"])
+        dsn = os.environ.get(dsn_env_var)
+        if not dsn:
+            raise BackfillSafetyError("authorized executor DSN environment variable is unavailable")
+        factory = self.connection_factory
+        if factory is None:
+            psycopg = importlib.import_module("psycopg")
+            factory = psycopg.connect
+        connection = factory(dsn)
+        try:
+            self._validate_connected_target(self.target_inspector(connection))
+            installers = self.schema_installers or _default_schema_installers(form)
+            if set(installers) != {"manifest", form}:
+                raise BackfillSafetyError("authorized executor schema installer boundary is invalid")
+            installers["manifest"](connection)
+            installers[form](connection)
+            dispatcher = (self.dispatchers or {}).get(form) if self.dispatchers is not None else _default_dispatcher(form)
+            if dispatcher is None:
+                raise BackfillSafetyError("authorized executor dispatcher is unavailable")
+            root = root_by_form[form]
+            result = dict(dispatcher(connection, package=root / Path(cast(str, expected["relative_package_path"])), source_root=root))
+            if result.get("package") != expected["relative_package_path"]:
+                raise BackfillSafetyError("ingester returned a mismatched package identity")
+            state = result.get("state")
+            if state not in SUCCESS_STATES and state != "failed":
+                raise BackfillSafetyError("ingester returned a nonterminal package state")
+            commit = getattr(connection, "commit", None)
+            if not callable(commit):
+                raise BackfillSafetyError("authorized executor connection cannot commit")
+            commit()
+            safe = {key: result[key] for key in ("state", "rows", "run_id", "reconciliation_hash", "reason_code") if key in result}
+            if state == "failed":
+                safe["reason_code"] = cast(str, result.get("reason_code", "ingester_reported_failure"))
+            return safe
+        except Exception:
+            rollback = getattr(connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            raise
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+
+def build_authorized_executor(
+    authorization_path: Path,
+    *,
+    inventory: Mapping[str, object],
+    code_sha: str,
+    connection_factory: Callable[[str], object] | None = None,
+    target_inspector: Callable[[object], Mapping[str, object]] | None = None,
+    schema_installers: Mapping[str, Callable[[object], None]] | None = None,
+    dispatchers: Mapping[str, Callable[..., Mapping[str, object]]] | None = None,
+) -> AuthorizedPackageExecutor:
+    """Bind an inert executor to an exact authorization and inventory artifact."""
+    inventory_hash = inventory.get("inventory_hash")
+    if not isinstance(inventory_hash, str):
+        raise BackfillSafetyError("invalid inventory for authorized executor")
+    authorization = load_execution_authorization(authorization_path, code_sha=code_sha, inventory_hash=inventory_hash)
+    return AuthorizedPackageExecutor(authorization, inventory, connection_factory, target_inspector, schema_installers, dispatchers)
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -426,8 +698,15 @@ def _assert_external_run_dir(run_dir: Path) -> None:
         raise BackfillSafetyError("run directory must be outside Git and SEC source roots")
 
 
-def _can_resume(record: Mapping[str, object] | None, package: Mapping[str, object], inventory_hash: str, code_sha: str) -> bool:
-    return bool(record and record.get("state") in SUCCESS_STATES and record.get("package_sha256") == package.get("package_sha256") and record.get("inventory_hash") == inventory_hash and record.get("code_sha") == code_sha)
+def _can_resume(record: Mapping[str, object] | None, package: Mapping[str, object], inventory_hash: str, code_sha: str, authorization_id: str | None) -> bool:
+    return bool(
+        record
+        and record.get("state") in SUCCESS_STATES
+        and record.get("package_sha256") == package.get("package_sha256")
+        and record.get("inventory_hash") == inventory_hash
+        and record.get("code_sha") == code_sha
+        and (authorization_id is None or record.get("authorization_id") == authorization_id)
+    )
 
 
 def _unexpired_lease(status: Mapping[str, object]) -> bool:
@@ -454,6 +733,32 @@ def heartbeat(status_path: Path, *, lease_owner: str, active_attempt: int, lease
         return status
 
 
+class _LeaseHeartbeat:
+    """A bounded in-process lease renewal loop for one active package attempt."""
+
+    def __init__(self, status_path: Path, lease_owner: str, active_attempt: int, interval_seconds: float) -> None:
+        self.status_path = status_path
+        self.lease_owner = lease_owner
+        self.active_attempt = active_attempt
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="historical-backfill-heartbeat", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=max(1.0, self.interval_seconds * 3))
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                heartbeat(self.status_path, lease_owner=self.lease_owner, active_attempt=self.active_attempt)
+            except BackfillSafetyError:
+                return
+
+
 def run_supervisor(
     inventory: Mapping[str, object],
     *,
@@ -462,16 +767,19 @@ def run_supervisor(
     execute_package: Callable[[dict[str, object]], Mapping[str, object]],
     lease_owner: str,
     command: Sequence[str] = ("historical-backfill",),
+    authorization_id: str | None = None,
+    target_identity: Mapping[str, object] | None = None,
+    heartbeat_interval_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Run one package at a time, recording a durable state after every attempt."""
     _assert_external_run_dir(status_path.parent)
-    if not code_sha or not lease_owner:
+    if not code_sha or not lease_owner or (heartbeat_interval_seconds is not None and heartbeat_interval_seconds <= 0):
         raise BackfillSafetyError("invalid inventory or supervisor identity")
     root_by_form = _validate_inventory(inventory)
     inventory_hash = cast(str, inventory["inventory_hash"])
     packages = cast(list[dict[str, object]], inventory["packages"])
     with _FileLock(status_path.with_suffix(".run.lock")):
-        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command)
+        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command, authorization_id, target_identity, heartbeat_interval_seconds)
 
 
 def _run_supervisor_locked(
@@ -483,11 +791,18 @@ def _run_supervisor_locked(
     execute_package: Callable[[dict[str, object]], Mapping[str, object]],
     lease_owner: str,
     command: Sequence[str],
+    authorization_id: str | None,
+    target_identity: Mapping[str, object] | None,
+    heartbeat_interval_seconds: float | None,
 ) -> dict[str, Any]:
     with _FileLock(status_path.with_suffix(".status.lock")):
         status = _load_status(status_path)
         if _unexpired_lease(status):
             raise BackfillSafetyError("an active historical package lease has not expired")
+        if authorization_id is not None and status and status.get("authorization_id") not in {None, authorization_id}:
+            raise BackfillSafetyError("resume status does not match execution authorization identity")
+        if target_identity is not None and status and status.get("target_identity") is not None and status.get("target_identity") != dict(target_identity):
+            raise BackfillSafetyError("resume status does not match execution target identity")
         existing_value = status.get("packages")
         existing: dict[str, Any] = dict(existing_value) if isinstance(existing_value, dict) else {}
     status = {
@@ -496,7 +811,8 @@ def _run_supervisor_locked(
         "code_sha": code_sha,
         "interpreter": sys.version.split()[0],
         "dependency_identity": {"python": sys.implementation.name, "psycopg": importlib.metadata.version("psycopg")},
-        "target_identity": {"kind": "unconfigured", "value": "no_database_connection"},
+        "target_identity": dict(target_identity) if target_identity is not None else {"kind": "unconfigured", "value": "no_database_connection"},
+        "authorization_id": authorization_id,
         "inventory_hash": inventory_hash,
         "packages": existing,
         "active_package": None,
@@ -508,7 +824,7 @@ def _run_supervisor_locked(
     for package in sorted(packages, key=lambda candidate: str(candidate["identity"])):
         identity = str(package["identity"])
         old_record = existing.get(identity)
-        if isinstance(old_record, dict) and _can_resume(old_record, package, inventory_hash, code_sha):
+        if isinstance(old_record, dict) and _can_resume(old_record, package, inventory_hash, code_sha, authorization_id):
             continue
         attempts = int(old_record.get("attempt", 0)) + 1 if isinstance(old_record, dict) else 1
         current = _now()
@@ -516,26 +832,33 @@ def _run_supervisor_locked(
         status["active_attempt"] = attempts
         status["lease"] = {"owner": lease_owner, "expires_at": _timestamp(current + timedelta(seconds=60))}
         status["heartbeat_at"] = _timestamp(current)
-        existing[identity] = {"state": "running", "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha}
+        existing[identity] = {"state": "running", "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id}
         with _FileLock(status_path.with_suffix(".status.lock")):
             _write_status(status_path, status)
+        pulse = _LeaseHeartbeat(status_path, lease_owner, attempts, heartbeat_interval_seconds) if heartbeat_interval_seconds is not None else None
+        if pulse is not None:
+            pulse.start()
         try:
-            _verify_package_unchanged(package, root_by_form)
-            result = dict(execute_package(package))
-            state = result.get("state")
-            _verify_package_unchanged(package, root_by_form)
-        except BackfillSafetyError:
-            result = {"state": "failed", "reason_code": "source_drift"}
-            state = "failed"
-        except Exception:  # executor boundaries must be recorded, never ignored
-            result = {"state": "failed", "reason_code": "executor_exception"}
-            state = "failed"
+            try:
+                _verify_package_unchanged(package, root_by_form)
+                result = dict(execute_package(package))
+                state = result.get("state")
+                _verify_package_unchanged(package, root_by_form)
+            except BackfillSafetyError:
+                result = {"state": "failed", "reason_code": "source_drift"}
+                state = "failed"
+            except Exception:  # executor boundaries must be recorded, never ignored
+                result = {"state": "failed", "reason_code": "executor_exception"}
+                state = "failed"
+        finally:
+            if pulse is not None:
+                pulse.stop()
         if state not in SUCCESS_STATES and state != "failed":
             result = {"state": "failed", "reason_code": "unexpected_package_state"}
             state = "failed"
         if state == "failed" and result.get("reason_code") not in {"source_drift", "executor_exception", "unexpected_package_state", "executor_unconfigured"}:
             result = {"state": "failed", "reason_code": "executor_reported_failure"}
-        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "result_state": result.get("state"), "reason_code": result.get("reason_code")}
+        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id, "result_state": result.get("state"), "reason_code": result.get("reason_code"), "rows": result.get("rows"), "run_id": result.get("run_id"), "reconciliation_hash": result.get("reconciliation_hash")}
         status["active_package"] = None
         status["active_attempt"] = None
         status["lease"] = None
@@ -569,6 +892,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.run historical-backfill")
     parser.add_argument("action", choices=("start", "status", "resume"))
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
+    parser.add_argument("--execution-authorization", type=Path)
     args = parser.parse_args(argv)
     _assert_external_run_dir(args.run_dir)
     status_path = args.run_dir / "status.json"
@@ -591,6 +915,15 @@ def cli(argv: Sequence[str] | None = None) -> int:
             status = _load_status(status_path)
             if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != code_identity():
                 raise BackfillSafetyError("resume status does not match inventory or code identity")
-        outcome = run_supervisor(inventory, status_path=status_path, code_sha=code_identity(), execute_package=_unconfigured_executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action))
+        current_code_sha = code_identity()
+        if args.execution_authorization is None:
+            executor: Callable[[dict[str, object]], Mapping[str, object]] = _unconfigured_executor
+            authorization_id = None
+            target_identity = None
+        else:
+            executor = build_authorized_executor(args.execution_authorization, inventory=inventory, code_sha=current_code_sha)
+            authorization_id = executor.authorization_id
+            target_identity = executor.target_identity
+        outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity)
         print(_canonical_json(outcome))
         return 0 if outcome["state"] == "ok" else 1
