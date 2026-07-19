@@ -415,6 +415,208 @@ def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> Non
             _validate_preflight_attestation(changed)
 
 
+def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.sec_regulatory import historical_backfill as backfill
+
+    expected = _production_preflight()
+    authorization = _production_authorization("a" * 64)
+    monkeypatch.setattr(
+        backfill,
+        "_connection_parameters",
+        lambda _connection: {"host": authorization["target"]["host"], "sslmode": "verify-full"},
+    )
+    monkeypatch.setattr(
+        backfill,
+        "_collect_nonrelation_object_identities",
+        lambda _connection: {**expected["object_identities"], "relations": []},
+    )
+    monkeypatch.setattr(
+        backfill,
+        "_collect_relation_security",
+        lambda _connection: {"relations": expected["object_identities"]["relations"]},
+    )
+    monkeypatch.setattr(
+        backfill,
+        "_collect_monitoring_privileges",
+        lambda _connection: {"monitoring_privileges": expected["monitoring_privileges"]},
+    )
+
+    def query_json(_connection: object, query: str, params: tuple[object, ...] = ()) -> object:
+        if "'cluster_identity'" in query:
+            return {field: expected[field] for field in ("cluster_identity", "tls_identity", "role_identity")}
+        if "'memberships'" in query:
+            return {"memberships": [], "capabilities": {**expected["role_capabilities"], "no_memberships": True}}
+        if "'table_privileges'" in query:
+            assert params == ()
+            assert query.count("n.nspname !~ '^pg_'") >= 3
+            assert query.count("n.nspname <> 'information_schema'") >= 3
+            assert "has_sequence_privilege(current_user,c.oid,'SELECT')" in query
+            assert "has_sequence_privilege(current_user,c.oid,'UPDATE')" in query
+            assert "has_sequence_privilege(current_user,c.oid,'USAGE')" in query
+            return {
+                field: expected[field]
+                for field in ("table_privileges", "sequence_privileges", "function_privileges")
+            }
+        if "'effective_writable_tables'" in query:
+            return {field: expected[field] for field in ("effective_writable_tables", "truncate_tables")}
+        if "'public_acl'" in query:
+            return {field: expected[field] for field in ("public_acl", "unsafe_security_definers", "trigger_write_targets")}
+        raise AssertionError("unexpected preflight query")
+
+    monkeypatch.setattr(backfill, "_query_json", query_json)
+    observed = backfill._collect_production_preflight(object(), authorization)
+    assert observed["table_privileges"] == expected["table_privileges"]
+    assert observed["sequence_privileges"] == expected["sequence_privileges"]
+    assert observed["function_privileges"] == expected["function_privileges"]
+
+
+@pytest.mark.parametrize(
+    ("grant_kind", "grant_verb"),
+    (
+        ("baseline", ""),
+        ("table", "SELECT"),
+        ("sequence", "USAGE"),
+        ("sequence", "SELECT"),
+        ("sequence", "UPDATE"),
+        ("routine", "EXECUTE"),
+    ),
+)
+def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runner_grant(grant_kind: str, grant_verb: str) -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from psycopg import sql
+
+    from src.ncen import storage as ncen_storage
+    from src.nport import storage as nport_storage
+    from src.rr1 import storage as rr1_storage
+    from src.sec_regulatory import manifests
+    from src.sec_regulatory.historical_backfill import (
+        BackfillSafetyError,
+        EXACT_DIRECT_EXECUTE_ROUTINES,
+        EXACT_DIRECT_TABLE_PRIVILEGES,
+        EXACT_DIRECT_USAGE_SEQUENCES,
+        EXACT_IDENTITY_SEQUENCES,
+        EXACT_MONITORED_RELATIONS,
+        EXACT_SECURITY_DEFINER_ROUTINES,
+        _collect_production_preflight,
+    )
+
+    suffix = uuid4().hex[:12]
+    role = f"runner_hidden_grant_{suffix}"
+    schema = f"runner_hidden_schema_{suffix}"
+    with psycopg.connect(dsn) as installer:
+        manifests.install_schema(installer)
+        nport_storage.install_schema(installer)
+        ncen_storage.install_schema(installer)
+        rr1_storage.install_schema(installer)
+        installer.commit()
+
+    admin = psycopg.connect(dsn, autocommit=True)
+    try:
+        with admin.cursor() as cursor:
+            cursor.execute(sql.SQL("CREATE ROLE {} NOLOGIN INHERIT").format(sql.Identifier(role)))
+            cursor.execute(
+                sql.SQL("GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE").format(sql.Identifier(role))
+            )
+            cursor.execute(sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role)))
+            for table, verbs in EXACT_DIRECT_TABLE_PRIVILEGES.items():
+                namespace, relation = table.split(".", 1)
+                cursor.execute(
+                    sql.SQL("GRANT {} ON TABLE {}.{} TO {}").format(
+                        sql.SQL(", ".join(verbs)),
+                        sql.Identifier(namespace),
+                        sql.Identifier(relation),
+                        sql.Identifier(role),
+                    )
+                )
+            for sequence in EXACT_DIRECT_USAGE_SEQUENCES:
+                namespace, relation = sequence.split(".", 1)
+                cursor.execute(
+                    sql.SQL("GRANT USAGE ON SEQUENCE {}.{} TO {}").format(
+                        sql.Identifier(namespace), sql.Identifier(relation), sql.Identifier(role)
+                    )
+                )
+            for routine in EXACT_DIRECT_EXECUTE_ROUTINES:
+                cursor.execute(
+                    sql.SQL("GRANT EXECUTE ON FUNCTION {} TO {}").format(
+                        sql.SQL(routine), sql.Identifier(role)
+                    )
+                )
+            cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+            cursor.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(role)))
+            cursor.execute(sql.SQL("CREATE TABLE {}.hidden_relation (id integer)").format(sql.Identifier(schema)))
+            cursor.execute(sql.SQL("CREATE SEQUENCE {}.hidden_sequence").format(sql.Identifier(schema)))
+            cursor.execute(
+                sql.SQL(
+                    "CREATE FUNCTION {}.hidden_security_definer() RETURNS integer LANGUAGE sql "
+                    "SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'"
+                ).format(sql.Identifier(schema))
+            )
+            cursor.execute(
+                sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_security_definer() FROM PUBLIC").format(
+                    sql.Identifier(schema)
+                )
+            )
+            if grant_kind == "table":
+                grant_target = sql.SQL("TABLE {}.hidden_relation").format(sql.Identifier(schema))
+            elif grant_kind == "sequence":
+                grant_target = sql.SQL("SEQUENCE {}.hidden_sequence").format(sql.Identifier(schema))
+            elif grant_kind == "routine":
+                grant_target = sql.SQL("FUNCTION {}.hidden_security_definer()").format(sql.Identifier(schema))
+            if grant_kind != "baseline":
+                cursor.execute(
+                    sql.SQL("GRANT {} ON {} TO {}").format(
+                        sql.SQL(grant_verb), grant_target, sql.Identifier(role)
+                    )
+                )
+
+        authorization = _production_authorization("a" * 64)
+        authorization["target"] = {**authorization["target"], "host": "127.0.0.1"}
+
+        class Info:
+            def get_parameters(self) -> dict[str, str]:
+                return {"host": "127.0.0.1", "sslmode": "verify-full"}
+
+        class Connection:
+            info = Info()
+
+            def __init__(self, raw: object) -> None:
+                self.raw = raw
+
+            def cursor(self) -> object:
+                return self.raw.cursor()  # type: ignore[no-any-return,union-attr]
+
+        with psycopg.connect(dsn) as runner:
+            with runner.cursor() as cursor:
+                cursor.execute(sql.SQL("SET SESSION AUTHORIZATION {}").format(sql.Identifier(role)))
+            if grant_kind == "baseline":
+                observed = _collect_production_preflight(Connection(runner), authorization)
+                object_identities = observed["object_identities"]
+                assert all(values == sorted(set(values)) for values in object_identities.values())
+                assert {
+                    item.split("|", 1)[0] for item in object_identities["relations"]
+                } == EXACT_MONITORED_RELATIONS
+                assert {
+                    item.rsplit(":", 1)[0] for item in object_identities["sequences"]
+                } == EXACT_IDENTITY_SEQUENCES
+                assert {
+                    item.split("|", 1)[0] for item in object_identities["routines"]
+                } == EXACT_SECURITY_DEFINER_ROUTINES
+                assert set(observed["function_privileges"]) == EXACT_DIRECT_EXECUTE_ROUTINES
+            else:
+                with pytest.raises(BackfillSafetyError, match="table privilege|privilege identity|privilege matrix"):
+                    _collect_production_preflight(Connection(runner), authorization)
+    finally:
+        with admin.cursor() as cursor:
+            cursor.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+            cursor.execute(sql.SQL("REVOKE pg_monitor FROM {}").format(sql.Identifier(role)))
+            cursor.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+            cursor.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+        admin.close()
+
+
 def test_preflight_requires_exact_security_definer_recovery_routine_set() -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, EXACT_SECURITY_DEFINER_ROUTINES, _validate_preflight_attestation
 
