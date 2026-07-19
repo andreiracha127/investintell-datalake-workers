@@ -336,8 +336,10 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
             "triggers": ["public.nport_raw_rows:nport_validate_raw_statement:4"], "sequences": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_IDENTITY_SEQUENCES)), "routines": sorted(f"{name}|oid={index}|owner=sec_backfill_owner|definition_sha256={'b' * 64}|proconfig_sha256={'c' * 64}" for index, name in enumerate(EXACT_SECURITY_DEFINER_ROUTINES)),
         },
         "table_privileges": {table: list(verbs) for table, verbs in EXACT_DIRECT_TABLE_PRIVILEGES.items()},
+        "column_privileges": [],
         "sequence_privileges": {name: ["USAGE"] for name in EXACT_DIRECT_USAGE_SEQUENCES},
         "function_privileges": {name: ["EXECUTE"] for name in EXACT_DIRECT_EXECUTE_ROUTINES},
+        "database_privileges": {"CONNECT": True, "CREATE": False, "TEMPORARY": False},
         "monitoring_privileges": {"pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"], "pg_monitor": ["DIRECT_MEMBER_NO_SET"], "pg_read_all_stats": ["INHERITED_USAGE"]},
         "effective_writable_tables": sorted(EXACT_DIRECT_WRITABLE_TABLES),
         "truncate_tables": [],
@@ -439,6 +441,8 @@ def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> Non
         {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "REFERENCES"]}},
         {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "TRIGGER"]}},
         {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "MAINTAIN"]}},
+        {**valid, "column_privileges": ["public.sec_ingestion_runs.run_id:SELECT:grantee=sec_backfill_runner"]},
+        {**valid, "database_privileges": {"CONNECT": True, "CREATE": False, "TEMPORARY": True}},
         {**valid, "table_privileges": {key: value for key, value in valid["table_privileges"].items() if key != "public.rr1_contract_tables"}},
         {**valid, "sequence_privileges": {key: value for key, value in valid["sequence_privileges"].items() if key != "public.rr1_raw_v2_rows_raw_row_id_seq"}},
         {**valid, "sequence_privileges": {**valid["sequence_privileges"], "public.sec_run_transitions_transition_id_seq": ["USAGE"]}},
@@ -446,7 +450,10 @@ def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> Non
         {**valid, "function_privileges": {**valid["function_privileges"], "public.sec_audit_run_lifecycle()": ["EXECUTE"]}},
         {**valid, "effective_writable_tables": [*valid["effective_writable_tables"], "public.unapproved"]},
     ):
-        with pytest.raises(BackfillSafetyError, match="table privilege|privilege identity|effective writable"):
+        with pytest.raises(
+            BackfillSafetyError,
+            match="table privilege|column privilege|database privilege|privilege identity|effective writable",
+        ):
             _validate_preflight_attestation(changed)
 
 
@@ -527,6 +534,14 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
                 field: expected[field]
                 for field in ("table_privileges", "sequence_privileges", "function_privileges")
             }
+        if "'column_privileges'" in query:
+            assert "aclexplode(a.attacl)" in query
+            assert "pg_has_role(current_user,acl.grantee,'USAGE')" in query
+            assert "acl.privilege_type IN ('SELECT','INSERT','UPDATE','REFERENCES')" in query
+            assert "has_database_privilege(current_user,current_database(),'CONNECT')" in query
+            assert "has_database_privilege(current_user,current_database(),'CREATE')" in query
+            assert "has_database_privilege(current_user,current_database(),'TEMPORARY')" in query
+            return {field: expected[field] for field in ("column_privileges", "database_privileges")}
         if "'effective_writable_tables'" in query:
             return {field: expected[field] for field in ("effective_writable_tables", "truncate_tables")}
         if "'public_acl'" in query:
@@ -537,8 +552,10 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
     monkeypatch.setattr(backfill, "_query_json", query_json)
     observed = backfill._collect_production_preflight(object(), authorization)
     assert observed["table_privileges"] == expected["table_privileges"]
+    assert observed["column_privileges"] == []
     assert observed["sequence_privileges"] == expected["sequence_privileges"]
     assert observed["function_privileges"] == expected["function_privileges"]
+    assert observed["database_privileges"] == {"CONNECT": True, "CREATE": False, "TEMPORARY": False}
 
 
 @pytest.mark.parametrize(
@@ -550,6 +567,16 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("table", "REFERENCES"),
         ("table", "TRIGGER"),
         ("table", "MAINTAIN"),
+        ("column_direct", "SELECT"),
+        ("column_direct", "INSERT"),
+        ("column_direct", "UPDATE"),
+        ("column_direct", "REFERENCES"),
+        ("column_inherited", "SELECT"),
+        ("column_public", "SELECT"),
+        ("column_redundant", "SELECT"),
+        ("database_temporary", "TEMPORARY"),
+        ("database_create", "CREATE"),
+        ("database_connect_missing", "CONNECT"),
         ("monitored_table", "TRUNCATE"),
         ("monitored_table", "REFERENCES"),
         ("monitored_table", "TRIGGER"),
@@ -595,6 +622,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
 
     suffix = uuid4().hex[:12]
     role = f"runner_hidden_grant_{suffix}"
+    inherited_role = f"runner_column_grant_{suffix}"
     schema = f"runner_hidden_schema_{suffix}"
     with psycopg.connect(dsn) as installer:
         manifests.install_schema(installer)
@@ -604,8 +632,14 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
         installer.commit()
 
     admin = psycopg.connect(dsn, autocommit=True)
+    database = admin.info.dbname
     try:
         with admin.cursor() as cursor:
+            cursor.execute(
+                sql.SQL("REVOKE TEMPORARY ON DATABASE {} FROM PUBLIC").format(
+                    sql.Identifier(database)
+                )
+            )
             cursor.execute(sql.SQL("CREATE ROLE {} NOLOGIN INHERIT").format(sql.Identifier(role)))
             cursor.execute(
                 sql.SQL("GRANT pg_monitor TO {} WITH INHERIT TRUE, SET FALSE").format(sql.Identifier(role))
@@ -729,6 +763,48 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                 grant_target = sql.SQL("FUNCTION {}.hidden_sum(integer)").format(sql.Identifier(schema))
             elif grant_kind == "window":
                 grant_target = sql.SQL("FUNCTION {}.hidden_row_number()").format(sql.Identifier(schema))
+            if grant_kind == "column_direct":
+                cursor.execute(
+                    sql.SQL("GRANT {} (id) ON TABLE {}.hidden_relation TO {}").format(
+                        sql.SQL(grant_verb), sql.Identifier(schema), sql.Identifier(role)
+                    )
+                )
+            elif grant_kind == "column_inherited":
+                cursor.execute(sql.SQL("CREATE ROLE {} NOLOGIN INHERIT").format(sql.Identifier(inherited_role)))
+                cursor.execute(
+                    sql.SQL("GRANT SELECT (id) ON TABLE {}.hidden_relation TO {}").format(
+                        sql.Identifier(schema), sql.Identifier(inherited_role)
+                    )
+                )
+                cursor.execute(
+                    sql.SQL("GRANT {} TO {} WITH INHERIT TRUE, SET FALSE").format(
+                        sql.Identifier(inherited_role), sql.Identifier(role)
+                    )
+                )
+            elif grant_kind == "column_public":
+                cursor.execute(
+                    sql.SQL("GRANT SELECT (id) ON TABLE {}.hidden_relation TO PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            elif grant_kind == "column_redundant":
+                cursor.execute(
+                    sql.SQL("GRANT SELECT (run_id) ON TABLE public.sec_ingestion_runs TO {}").format(
+                        sql.Identifier(role)
+                    )
+                )
+            if grant_kind in {"database_temporary", "database_create"}:
+                cursor.execute(
+                    sql.SQL("GRANT {} ON DATABASE {} TO {}").format(
+                        sql.SQL(grant_verb), sql.Identifier(database), sql.Identifier(role)
+                    )
+                )
+            elif grant_kind == "database_connect_missing":
+                cursor.execute(
+                    sql.SQL("REVOKE CONNECT ON DATABASE {} FROM PUBLIC").format(
+                        sql.Identifier(database)
+                    )
+                )
             if grant_kind == "schema":
                 cursor.execute(
                     sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
@@ -768,7 +844,11 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         "FOR EACH ROW EXECUTE FUNCTION public.sec_audit_run_lifecycle()"
                     ).format(sql.Identifier(schema))
                 )
-            elif grant_kind not in {"baseline", "public_acl_default"}:
+            elif grant_kind not in {
+                "baseline", "public_acl_default", "column_direct", "column_inherited",
+                "column_public", "column_redundant", "database_temporary", "database_create",
+                "database_connect_missing",
+            }:
                 cursor.execute(
                     sql.SQL("GRANT {} ON {} TO {}").format(
                         sql.SQL(grant_verb), grant_target, sql.Identifier(role)
@@ -808,21 +888,37 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     item.split("|", 1)[0] for item in object_identities["routines"]
                 } == EXACT_SECURITY_DEFINER_ROUTINES
                 assert set(observed["function_privileges"]) == EXACT_DIRECT_EXECUTE_ROUTINES
+                assert observed["column_privileges"] == []
+                assert observed["database_privileges"] == {"CONNECT": True, "CREATE": False, "TEMPORARY": False}
                 assert observed["public_acl"] == []
                 assert observed["unsafe_security_definers"] == []
                 assert set(observed["trigger_write_targets"]) == EXPECTED_TRIGGER_WRITE_TARGETS
             else:
                 with pytest.raises(
                     BackfillSafetyError,
-                    match="table privilege|privilege identity|privilege matrix|role capability|PUBLIC|SECURITY DEFINER|trigger write-target",
+                    match="table privilege|column privilege|database privilege|privilege identity|privilege matrix|role capability|PUBLIC|SECURITY DEFINER|trigger write-target",
                 ):
                     _collect_production_preflight(Connection(runner), authorization)
     finally:
         with admin.cursor() as cursor:
             cursor.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema)))
+            if grant_kind == "column_inherited":
+                cursor.execute(
+                    sql.SQL("REVOKE {} FROM {}").format(
+                        sql.Identifier(inherited_role), sql.Identifier(role)
+                    )
+                )
+                cursor.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(inherited_role)))
+                cursor.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(inherited_role)))
             cursor.execute(sql.SQL("REVOKE pg_monitor FROM {}").format(sql.Identifier(role)))
             cursor.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
             cursor.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
+            if grant_kind == "database_connect_missing":
+                cursor.execute(
+                    sql.SQL("GRANT CONNECT ON DATABASE {} TO PUBLIC").format(
+                        sql.Identifier(database)
+                    )
+                )
         admin.close()
         if grant_kind in {"trigger_missing", "trigger_retargeted"}:
             with psycopg.connect(dsn) as installer:
@@ -1256,7 +1352,8 @@ def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_
     dispatched: list[bool] = []
     for field in (
         "cluster_identity", "tls_identity", "role_identity", "fixed_memberships", "object_catalog_hash",
-        "object_identities", "table_privileges", "sequence_privileges", "function_privileges",
+        "object_identities", "table_privileges", "column_privileges", "sequence_privileges", "function_privileges",
+        "database_privileges",
         "monitoring_privileges", "public_acl", "unsafe_security_definers", "trigger_write_targets",
     ):
         actual = _production_preflight()
