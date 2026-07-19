@@ -72,6 +72,7 @@ class DebtMapping:
     scope: str
     categories: Mapping[str, str]
     observed_values_sha256: str | None = None
+    mapping_sha256: str | None = None
     _validation_token: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -86,6 +87,8 @@ class DebtMapping:
         if self.schema_version == "debt-mapping-v1" and self.scope != "approved_external":
             raise _unapproved()
         if self.schema_version == "debt-mapping-v1" and not _sha256(self.observed_values_sha256):
+            raise _unapproved()
+        if not _sha256(self.mapping_sha256):
             raise _unapproved()
         object.__setattr__(self, "categories", MappingProxyType(_categories(self.categories)))
 
@@ -103,6 +106,7 @@ class DebtMapping:
             "mapping_version": self.mapping_version,
             "scope": self.scope,
             "categories": dict(self.categories),
+            "mapping_sha256": self.mapping_sha256,
         }
         if self.observed_values_sha256 is not None:
             value["observed_values_sha256"] = self.observed_values_sha256
@@ -115,7 +119,7 @@ def _is_loader_validated(mapping: object) -> bool:
 
 def load_fixture_debt_mapping(mapping_path: str | Path) -> DebtMapping:
     """Load the one deliberately synthetic fixture mapping used by unit tests."""
-    _, _, value = _read_mapping(mapping_path)
+    _, raw, value = _read_mapping(mapping_path)
     expected = {
         "schema_version": "debt-mapping-test-v1",
         "mapping_version": "synthetic-test-v1",
@@ -128,7 +132,7 @@ def load_fixture_debt_mapping(mapping_path: str | Path) -> DebtMapping:
     }
     if value != expected:
         raise _unapproved()
-    return DebtMapping(**value, _validation_token=_VALIDATION_TOKEN)
+    return DebtMapping(**value, mapping_sha256=hashlib.sha256(raw).hexdigest(), _validation_token=_VALIDATION_TOKEN)
 
 
 def _valid_evidence(value: object) -> bool:
@@ -191,5 +195,6 @@ def load_approved_debt_mapping(mapping_path: str | Path, approval_path: str | Pa
         scope="approved_external",
         categories=_categories(mapping["categories"]),
         observed_values_sha256=mapping["observed_values_sha256"],
+        mapping_sha256=hashlib.sha256(raw_mapping).hexdigest(),
         _validation_token=_VALIDATION_TOKEN,
     )

@@ -17,7 +17,8 @@ import pyarrow.parquet as pq
 from .artifacts import canonical_json_bytes, commit_partial, partial_path, replace_checkpoint, write_checksums, write_json_once, write_text_once
 from .contracts import PilotError, SourceApproval, SourceCandidate
 from .debt_mapping import DebtMapping
-from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric
+from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric, compute_cross_series_summary, compute_series_metrics
+from .nport import load_fixture_result
 from .panel import PanelBuildResult
 from .source_artifact import _path_lexists, _publish_directory_no_replace
 
@@ -163,11 +164,17 @@ def _validate_nport_manifest(manifest: Mapping[str, object], match_count: int, m
         raise PilotError("invalid_nport_manifest")
     if any(count > manifest["row_count"] for count in counts[1:]) or match_count > manifest["row_count"] or metric_count > manifest["distinct_series_count"]:
         raise PilotError("invalid_nport_manifest")
-    return dict(manifest)
+    try:
+        loaded = load_fixture_result(manifest["fixture_path"])
+    except PilotError as exc:
+        raise PilotError("invalid_nport_manifest") from exc
+    if dict(manifest) != loaded.manifest():
+        raise PilotError("invalid_nport_manifest")
+    return loaded.manifest()
 
 
 def _validate_mapping_provenance(value: Mapping[str, object], mapping: DebtMapping) -> dict[str, object]:
-    if not isinstance(value, Mapping) or value.get("schema_version") != "mapping-provenance-v1" or value.get("mapping_version") != mapping.mapping_version or value.get("scope") != mapping.scope or not _valid_sha(value.get("mapping_sha256")):
+    if not isinstance(value, Mapping) or value.get("schema_version") != "mapping-provenance-v1" or value.get("mapping_version") != mapping.mapping_version or value.get("scope") != mapping.scope or value.get("mapping_sha256") != mapping.mapping_sha256:
         raise PilotError("invalid_mapping_provenance")
     if mapping.scope == "synthetic_fixture_only":
         expected = {"schema_version", "mapping_version", "scope", "mapping_sha256", "approval_state"}
@@ -204,6 +211,11 @@ def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandi
     match_values, metric_values, latest_values = tuple(matches), tuple(series_metrics), tuple(latest_observations)
     manifest = _validate_nport_manifest(nport_manifest, len(match_values), len(metric_values))
     provenance = _validate_mapping_provenance(mapping_provenance, debt_mapping)
+    recomputed_metrics = compute_series_metrics(match_values)
+    if metric_values != recomputed_metrics:
+        raise PilotError("report_metrics_mismatch")
+    if cross_series_summary != compute_cross_series_summary(recomputed_metrics):
+        raise PilotError("report_summary_mismatch")
     match_rows, metric_rows, latest_rows = _match_rows(match_values, debt_mapping), _metric_rows(metric_values), _latest_rows(latest_values)
     source_manifest = {**source_candidate.to_json_mapping(), "approval": source_approval.to_json_mapping(), "internal_only": True}
     calibration = {**dict(calibration_report), "status": "not_started", "phase4_state": "pre_backfill", "representative_post_backfill": False, "db_reads": 0, "db_writes": 0}
