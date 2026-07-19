@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
@@ -36,13 +37,37 @@ OPTIONAL_COLUMNS = (
     "db_type",
 )
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+_ZIP_DRIVE = re.compile(r"^[A-Za-z]:")
 
 
 class _HttpClient(Protocol):
     def stream(self, method: str, url: str): ...
 
 
-def _member_name_contains_backslash(archive_path: Path, info: ZipInfo) -> bool:
+@dataclass(frozen=True)
+class _CreatedOutput:
+    path: Path
+    identity: tuple[int, int, int, int]
+
+
+def _path_identity(path: Path) -> tuple[int, int, int, int]:
+    status = path.lstat()
+    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
+
+
+def _track_created(path: Path, created: list[_CreatedOutput]) -> None:
+    created.append(_CreatedOutput(path, _path_identity(path)))
+
+
+def _remove_if_owned(output: _CreatedOutput) -> None:
+    try:
+        if _path_identity(output.path) == output.identity:
+            output.path.unlink()
+    except OSError:
+        return
+
+
+def _raw_member_name(archive_path: Path, info: ZipInfo) -> str:
     with archive_path.open("rb") as archive:
         archive.seek(info.header_offset)
         header = archive.read(30)
@@ -53,19 +78,24 @@ def _member_name_contains_backslash(archive_path: Path, info: ZipInfo) -> bool:
         filename_length = fields[-2]
         if signature != 0x04034B50:
             raise PilotError("invalid_zip_archive")
-        return b"\\" in archive.read(filename_length)
+        encoded_name = archive.read(filename_length)
+    try:
+        return encoded_name.decode("utf-8" if info.flag_bits & 0x800 else "cp437")
+    except UnicodeDecodeError as exc:
+        raise PilotError("invalid_zip_member", {"member_name": info.filename}) from exc
 
 
 def _safe_member(archive_path: Path, info: ZipInfo) -> None:
-    name = info.filename
+    name = _raw_member_name(archive_path, info)
     mode = info.external_attr >> 16
+    file_type = stat.S_IFMT(mode)
     if (
         info.is_dir()
         or name.endswith("/")
-        or _member_name_contains_backslash(archive_path, info)
+        or "\\" in name
         or name.startswith("/")
-        or _WINDOWS_DRIVE.match(name)
-        or stat.S_ISLNK(mode)
+        or _ZIP_DRIVE.match(name)
+        or file_type not in (0, stat.S_IFREG)
         or not name.endswith(".parquet")
     ):
         raise PilotError("invalid_zip_member", {"member_name": name})
@@ -194,7 +224,7 @@ def qualify_source(
     run_dir.mkdir(parents=True, exist_ok=True)
     archive_final = run_dir / "source.zip"
     extracted_final = run_dir / "source.parquet"
-    created: list[Path] = []
+    created: list[_CreatedOutput] = []
     success = False
     default_client: httpx.Client | None = None
     try:
@@ -215,7 +245,7 @@ def qualify_source(
         except Exception:
             partial.unlink(missing_ok=True)
             raise
-        created.append(archive_final)
+        _track_created(archive_final, created)
 
         try:
             with ZipFile(archive_final) as archive:
@@ -236,7 +266,7 @@ def qualify_source(
                                 raise PilotError("member_size_exceeded", {"limit": limits.member_uncompressed_bytes})
                             output.write(chunk)
                     commit_partial(partial, extracted_final)
-                    created.append(extracted_final)
+                    _track_created(extracted_final, created)
                 except Exception:
                     partial.unlink(missing_ok=True)
                     raise
@@ -275,7 +305,7 @@ def qualify_source(
         manifest = run_dir / "source-manifest.json"
         report = run_dir / "qualification-report.json"
         write_json_once(manifest, candidate.to_json_mapping())
-        created.append(manifest)
+        _track_created(manifest, created)
         write_json_once(
             report,
             {
@@ -286,12 +316,12 @@ def qualify_source(
                 "human_approval_required": True,
             },
         )
-        created.append(report)
+        _track_created(report, created)
         success = True
         return candidate
     finally:
         if default_client is not None:
             default_client.close()
         if not success:
-            for path in reversed(created):
-                path.unlink(missing_ok=True)
+            for output in reversed(created):
+                _remove_if_owned(output)

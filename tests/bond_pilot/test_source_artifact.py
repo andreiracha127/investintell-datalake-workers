@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
 import pytest
 
 from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval
+from src.bond_pilot import source_artifact
 from src.bond_pilot.source_artifact import (
     load_candidate,
     load_source_approval,
@@ -87,6 +89,26 @@ def test_collision_keeps_existing_output_and_cleans_attempt_partial(make_source_
     assert not list(run_dir.glob("*.partial"))
 
 
+def test_cleanup_keeps_atomically_replaced_attempt_output(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "run"
+    original_write_json_once = source_artifact.write_json_once
+
+    def replace_output_then_fail(path: Path, value: object) -> Path:
+        if path.name == "qualification-report.json":
+            replacement = tmp_path / "replacement.parquet"
+            replacement.write_bytes(b"replacement")
+            os.replace(replacement, run_dir / "source.parquet")
+            raise RuntimeError("injected later failure")
+        return original_write_json_once(path, value)
+
+    monkeypatch.setattr(source_artifact, "write_json_once", replace_output_then_fail)
+
+    with pytest.raises(RuntimeError, match="injected later failure"):
+        qualify_source(str(make_source_zip()), run_dir)
+
+    assert (run_dir / "source.parquet").read_bytes() == b"replacement"
+
+
 def test_enforces_streaming_archive_and_member_caps(make_source_zip, tmp_path: Path) -> None:
     archive = make_source_zip()
 
@@ -102,11 +124,15 @@ def test_enforces_streaming_archive_and_member_caps(make_source_zip, tmp_path: P
         ("../source.parquet", 0),
         ("nested\\source.parquet", 0),
         ("C:/source.parquet", 0),
+        ("C:source.parquet", 0),
+        ("C:nested/source.parquet", 0),
         ("//server/share/source.parquet", 0),
         ("/source.parquet", 0),
         ("nested/", 0),
         ("nested/source.txt", 0),
         ("nested/source.parquet", stat.S_IFLNK << 16),
+        ("nested/source.parquet", stat.S_IFDIR << 16),
+        ("nested/source.parquet", stat.S_IFIFO << 16),
     ],
 )
 def test_rejects_unsafe_or_non_parquet_zip_members(make_source_zip, tmp_path: Path, member_name: str, attributes: int) -> None:
