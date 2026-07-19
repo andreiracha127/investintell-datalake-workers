@@ -25,10 +25,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence, cast
+from uuid import UUID, uuid4
+
+from . import manifests
 
 
 class BackfillSafetyError(RuntimeError):
     """A historical run cannot establish a safe, reproducible boundary."""
+
+
+class AmbiguousCommitError(BackfillSafetyError):
+    """COMMIT was issued but its definitive database outcome is unknown."""
 
 
 @dataclass(frozen=True)
@@ -36,6 +43,16 @@ class SourceSpec:
     form: str
     root: Path
     expected_packages: int
+
+
+@dataclass(frozen=True)
+class _RecoveryGovernedEvidence:
+    package_id: UUID
+    run_id: UUID
+    package_sha256: str
+    supervisor_run_id: UUID
+    authorization_fingerprint: str
+    commit_outcome: str
 
 
 IMMUTABLE_SOURCES = (
@@ -87,6 +104,7 @@ _AUTHORIZATION_FIELDS = frozenset(
         "execution_mode",
         "package_scope",
         "canary_certificate",
+        "supervisor_run_id",
     }
 )
 EXACT_WRITABLE_TABLES = frozenset(
@@ -109,7 +127,16 @@ _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
 )
 _RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
 _SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
-_CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "canary_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
+_CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "certificate_sha256", "canary_supervisor_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
+_LEGACY_CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "canary_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
+_CERTIFICATE_PACKAGE_FIELDS = frozenset({"identity", "package_sha256", "package_id", "ingestion_run_id", "reconciliation_sha256"})
+_RECOVERY_AUTHORIZATION_FIELDS = frozenset({
+    "schema_version", "stage", "code_sha", "inventory_hash", "status_path",
+    "original_authorization_fingerprint", "supervisor_run_id", "identity",
+    "package_id", "run_id", "package_sha256", "reconciliation_sha256",
+    "secret_version_resource", "recovery_authorization_id", "expected_outcome",
+    "recovery_evidence_sha256",
+})
 _ROLE_CAPABILITY_FIELDS = frozenset({"is_superuser", "owns_any_table", "can_create_role", "can_create_database", "bypass_rls", "schema_create", "set_role", "no_memberships"})
 _OBJECT_IDENTITY_FIELDS = frozenset({"relations", "columns", "constraints", "indexes", "triggers", "sequences", "routines"})
 EXACT_IDENTITY_SEQUENCES = frozenset({
@@ -157,6 +184,7 @@ _PRODUCTION_TARGET = {
     "database": "market",
 }
 AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_UNSET = object()
 
 
 def _is_sensitive_key(key: str) -> bool:
@@ -166,7 +194,7 @@ def _is_sensitive_key(key: str) -> bool:
 
 def _is_sensitive_value(value: str) -> bool:
     normalized = value.casefold()
-    conninfo_secret = re.search(r"(?:^|\s)(?:password|passfile|token|secret|private[_-]?key)\s*=\s*(?:'[^']*'|\"[^\"]*\"|\S+)", value, re.IGNORECASE)
+    conninfo_secret = re.search(r"(?:^|\s)(?:password|passfile|sslpassword|sslkey|sslcert|sslrootcert|sslcrl|sslcrldir|service|servicefile|token|secret|private[_-]?key)\s*=\s*(?:'[^']*'|\"[^\"]*\"|\S+)", value, re.IGNORECASE)
     return normalized.startswith(_DATABASE_SCHEMES) or bool(conninfo_secret) or any(pattern.search(value) for pattern in _SENSITIVE_VALUE_PATTERNS)
 
 
@@ -508,7 +536,7 @@ def _load_authorized_source_configuration(path: Path, *, code_sha: str, run_dire
         raise BackfillSafetyError("invalid execution authorization artifact") from exc
     if document == {}:  # Explicit test seam; real authorizations are always schema v3 below.
         return "test_unbound", IMMUTABLE_SOURCES
-    if not isinstance(document, dict) or document.get("schema_version") != 3 or document.get("stage") != "phase4_historical_backfill" or document.get("code_sha") != code_sha:
+    if not isinstance(document, dict) or document.get("schema_version") not in {3, 4} or document.get("stage") != "phase4_historical_backfill" or document.get("code_sha") != code_sha:
         raise BackfillSafetyError("invalid execution authorization source configuration")
     if document.get("run_directory") != str(run_directory.resolve()) or document.get("sanitized_command") != list(command):
         raise BackfillSafetyError("execution authorization source/run binding mismatch")
@@ -652,7 +680,7 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
     if set(attestation["sequence_privileges"]) != EXACT_IDENTITY_SEQUENCES or set(attestation["function_privileges"]) != EXACT_SECURITY_DEFINER_ROUTINES:
         raise BackfillSafetyError("invalid production preflight privilege identity matrix")
     monitoring = attestation["monitoring_privileges"]
-    if not isinstance(monitoring, dict) or set(monitoring) != {"pg_stat_activity", "pg_locks", "pg_monitor", "pg_read_all_stats"} or monitoring["pg_stat_activity"] != ["SELECT"] or monitoring["pg_locks"] != ["SELECT"] or monitoring["pg_monitor"] != ["MEMBER"] or monitoring["pg_read_all_stats"] != ["MEMBER"]:
+    if not isinstance(monitoring, dict) or set(monitoring) != {"pg_stat_activity", "pg_locks", "pg_monitor", "pg_read_all_stats"} or monitoring["pg_stat_activity"] != ["SELECT"] or monitoring["pg_locks"] != ["SELECT"] or monitoring["pg_monitor"] != ["DIRECT_MEMBER_NO_SET"] or monitoring["pg_read_all_stats"] != ["INHERITED_USAGE"]:
         raise BackfillSafetyError("invalid production preflight monitoring privilege matrix")
     for field in _PREFLIGHT_ATTESTATION_FIELDS - {"cluster_identity", "tls_identity", "role_identity", "object_catalog_hash", "fixed_memberships"}:
         if not isinstance(attestation[field], (dict, list)):
@@ -671,7 +699,7 @@ def _validate_runner_attestation(attestation: object) -> dict[str, str]:
 def _validate_canary_certificate(certificate: object, *, inventory_hash: str) -> dict[str, object] | None:
     if certificate is None:
         return None
-    if not isinstance(certificate, dict) or set(certificate) != _CANARY_CERTIFICATE_FIELDS:
+    if not isinstance(certificate, dict) or set(certificate) != _LEGACY_CANARY_CERTIFICATE_FIELDS:
         raise BackfillSafetyError("invalid canary certificate")
     if certificate.get("inventory_hash") != inventory_hash or not all(isinstance(certificate.get(field), str) and certificate[field] for field in ("certificate_id", "canary_run_id", "canary_authorization_fingerprint")) or not _is_sha256(certificate["canary_authorization_fingerprint"]):
         raise BackfillSafetyError("invalid canary certificate")
@@ -680,9 +708,50 @@ def _validate_canary_certificate(certificate: object, *, inventory_hash: str) ->
     return dict(certificate)
 
 
+def _validate_v4_canary_certificate(certificate: object, *, inventory_hash: str) -> dict[str, object]:
+    if not isinstance(certificate, dict) or set(certificate) != _CANARY_CERTIFICATE_FIELDS:
+        raise BackfillSafetyError("invalid typed canary certificate")
+    try:
+        UUID(cast(str, certificate.get("certificate_id")))
+        UUID(cast(str, certificate.get("canary_supervisor_run_id")))
+    except (TypeError, ValueError) as exc:
+        raise BackfillSafetyError("invalid typed canary certificate UUID") from exc
+    if certificate.get("inventory_hash") != inventory_hash or not _is_sha256(certificate.get("canary_authorization_fingerprint")) or not _is_sha256(certificate.get("certificate_sha256")):
+        raise BackfillSafetyError("invalid typed canary certificate lineage")
+    packages = certificate.get("packages")
+    if not isinstance(packages, list) or len(packages) != 3:
+        raise BackfillSafetyError("canary certificate must contain exactly three packages")
+    forms: set[str] = set()
+    identities: set[str] = set()
+    for item in packages:
+        if not isinstance(item, dict) or set(item) != _CERTIFICATE_PACKAGE_FIELDS:
+            raise BackfillSafetyError("invalid typed canary certificate package")
+        identity = item.get("identity")
+        if not isinstance(identity, str) or identity in identities or identity.split(":", 1)[0] not in {"nport", "ncen", "rr1"}:
+            raise BackfillSafetyError("invalid typed canary certificate package identity")
+        try:
+            UUID(cast(str, item.get("package_id")))
+            UUID(cast(str, item.get("ingestion_run_id")))
+        except (TypeError, ValueError) as exc:
+            raise BackfillSafetyError("invalid typed canary certificate package UUID") from exc
+        if not _is_sha256(item.get("package_sha256")) or not _is_sha256(item.get("reconciliation_sha256")):
+            raise BackfillSafetyError("invalid typed canary certificate package evidence")
+        identities.add(identity)
+        forms.add(identity.split(":", 1)[0])
+    if forms != {"nport", "ncen", "rr1"}:
+        raise BackfillSafetyError("canary certificate must contain one package per form")
+    unhashed = {key: value for key, value in certificate.items() if key != "certificate_sha256"}
+    if certificate["certificate_sha256"] != _sha256_bytes(_canonical_json(unhashed).encode("ascii")):
+        raise BackfillSafetyError("canary certificate SHA mismatch")
+    _assert_no_secret(certificate)
+    return dict(certificate)
+
+
 def _validate_execution_authorization(document: Mapping[str, object], *, code_sha: str, inventory_hash: str) -> dict[str, object]:
     """Validate a file-only authorization before resolving a connection secret."""
-    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 3 or document.get("stage") != "phase4_historical_backfill":
+    legacy_fields = _AUTHORIZATION_FIELDS - {"supervisor_run_id"}
+    schema_version = document.get("schema_version")
+    if set(document) not in {_AUTHORIZATION_FIELDS, legacy_fields} or schema_version not in {3, 4} or document.get("stage") != "phase4_historical_backfill" or (schema_version == 4 and set(document) != _AUTHORIZATION_FIELDS):
         raise BackfillSafetyError("invalid execution authorization schema")
     if document.get("code_sha") != code_sha:
         raise BackfillSafetyError("execution authorization code SHA mismatch")
@@ -724,6 +793,12 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
         raise BackfillSafetyError("execution authorization source roots must be absolute")
     if not isinstance(document.get("authorization_id"), str) or not document["authorization_id"]:
         raise BackfillSafetyError("execution authorization requires a separately issued authorization ID")
+    supervisor_run_id = document.get("supervisor_run_id")
+    if supervisor_run_id is not None:
+        try:
+            UUID(cast(str, supervisor_run_id))
+        except (TypeError, ValueError) as exc:
+            raise BackfillSafetyError("execution authorization requires a typed supervisor run UUID") from exc
     if not _is_sha256(document.get("stop_contract_hash")) or not _is_sha256(document.get("reconciliation_contract_hash")):
         raise BackfillSafetyError("invalid execution authorization contract hash")
     execution_mode = document.get("execution_mode")
@@ -734,7 +809,7 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
     secret_version_resource = document.get("secret_version_resource")
     if not isinstance(secret_version_resource, str) or not re.fullmatch(r"projects/[^/]+/secrets/[^/]+/versions/[1-9][0-9]*", secret_version_resource):
         raise BackfillSafetyError("invalid Secret Manager version resource")
-    certificate = _validate_canary_certificate(document.get("canary_certificate"), inventory_hash=inventory_hash)
+    certificate = _validate_v4_canary_certificate(document.get("canary_certificate"), inventory_hash=inventory_hash) if schema_version == 4 and document.get("canary_certificate") is not None else _validate_canary_certificate(document.get("canary_certificate"), inventory_hash=inventory_hash)
     if mode == "local_disposable":
         validate_canary_target(
             {
@@ -759,6 +834,14 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
         _validate_preflight_attestation(document.get("preflight_attestation"))
         if execution_mode == "full" and certificate is None:
             raise BackfillSafetyError("full production execution requires a canary certificate")
+        if schema_version == 4:
+            scope = cast(list[dict[str, str]], _validate_scope(document.get("package_scope"), inventory_hash=inventory_hash, label="authorization"))
+            if supervisor_run_id is None:
+                raise BackfillSafetyError("production execution requires a supervisor run UUID")
+            if execution_mode == "canary" and (len(scope) != 3 or {item["identity"].split(":", 1)[0] for item in scope} != {"nport", "ncen", "rr1"} or certificate is not None):
+                raise BackfillSafetyError("production canary scope must be exactly one package per form")
+            if execution_mode == "full" and len(scope) != 82:
+                raise BackfillSafetyError("production full scope must bind exactly 82 packages")
     if mode == "local_disposable" and document.get("preflight_attestation") is not None:
         raise BackfillSafetyError("local disposable authorization cannot carry production preflight attestation")
     return dict(document)
@@ -807,11 +890,11 @@ def _inspect_connected_target(connection: object) -> dict[str, object]:
         )
         role_status = cursor.fetchone()
         cursor.execute(
-            "SELECT n.nspname || '.' || c.relname, has_table_privilege(current_user, c.oid, 'TRUNCATE') "
+            "SELECT n.nspname || '.' || c.relname, c.relkind IN ('r', 'p') AND has_table_privilege(current_user, c.oid, 'TRUNCATE') "
             "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE c.relkind IN ('r', 'p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
+            "WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' "
             "AND (has_table_privilege(current_user, c.oid, 'INSERT') OR has_table_privilege(current_user, c.oid, 'UPDATE') "
-            "OR has_table_privilege(current_user, c.oid, 'DELETE') OR has_table_privilege(current_user, c.oid, 'TRUNCATE')) "
+            "OR has_table_privilege(current_user, c.oid, 'DELETE') OR (c.relkind IN ('r', 'p') AND has_table_privilege(current_user, c.oid, 'TRUNCATE'))) "
             "ORDER BY n.nspname, c.relname"
         )
         write_rows = cursor.fetchall()
@@ -861,9 +944,59 @@ def _connection_parameters(connection: object) -> dict[str, str]:
     if not isinstance(parameters, Mapping) or not all(isinstance(key, str) and isinstance(value, str) for key, value in parameters.items()):
         raise BackfillSafetyError("production preflight received invalid connection parameters")
     safe = dict(cast(Mapping[str, str], parameters))
-    if any(_is_sensitive_key(key) or key.casefold() in {"passfile", "service"} for key in safe):
+    libpq_sensitive = {"passfile", "password", "sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "sslcrldir", "service", "servicefile"}
+    if any(_is_sensitive_key(key) or key.casefold() in libpq_sensitive for key in safe):
         raise BackfillSafetyError("production preflight connection parameters contain credential material")
     return safe
+
+
+def _collect_relation_security(connection: object, tables: Sequence[str] | None = None) -> dict[str, object]:
+    relation_security = _query_json(
+        connection,
+        "SELECT jsonb_build_object('relations', coalesce((SELECT jsonb_agg("
+        "n.nspname||'.'||c.relname||'|oid='||c.oid||'|owner='||pg_get_userbyid(c.relowner)||'|relkind='||c.relkind::text||'|definition_sha256='||"
+        "encode(sha256(convert_to(jsonb_build_object("
+        "'relkind',c.relkind,'relpersistence',c.relpersistence,'relrowsecurity',c.relrowsecurity,'relforcerowsecurity',c.relforcerowsecurity,"
+        "'relispartition',c.relispartition,'relpartbound',coalesce(pg_get_expr(c.relpartbound,c.oid),''),'partition_key',coalesce(pg_get_partkeydef(c.oid),''),"
+        "'access_method',coalesce(am.amname,''),'reloptions',coalesce(to_jsonb(c.reloptions),'[]'::jsonb),"
+        "'view_definition',CASE WHEN c.relkind='v' THEN pg_get_viewdef(c.oid,true) ELSE NULL END,"
+        "'foreign_server',fs.srvname,'foreign_server_options',coalesce(to_jsonb(fs.srvoptions),'[]'::jsonb),'foreign_options',coalesce(to_jsonb(ft.ftoptions),'[]'::jsonb),"
+        "'policies',coalesce((SELECT jsonb_agg(jsonb_build_object('name',p.polname,'command',p.polcmd,'permissive',p.polpermissive,"
+        "'roles',coalesce((SELECT jsonb_agg(coalesce(r.rolname,'PUBLIC') ORDER BY coalesce(r.rolname,'PUBLIC')) FROM unnest(p.polroles) role_oid LEFT JOIN pg_roles r ON r.oid=role_oid),'[]'::jsonb),"
+        "'qual',coalesce(pg_get_expr(p.polqual,p.polrelid),''),'with_check',coalesce(pg_get_expr(p.polwithcheck,p.polrelid),'')) ORDER BY p.polname) FROM pg_policy p WHERE p.polrelid=c.oid),'[]'::jsonb))::text,'UTF8')),'hex') "
+        "ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_am am ON am.oid=c.relam "
+        "LEFT JOIN pg_foreign_table ft ON ft.ftrelid=c.oid LEFT JOIN pg_foreign_server fs ON fs.oid=ft.ftserver "
+        "WHERE n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s) AND c.relkind IN ('r','p','v','f')), '[]'::jsonb))",
+        (sorted(tables or EXACT_WRITABLE_TABLES),),
+    )
+    if not isinstance(relation_security, Mapping) or not isinstance(relation_security.get("relations"), list):
+        raise BackfillSafetyError("production preflight relation security query returned malformed JSON")
+    return dict(relation_security)
+
+
+def _collect_monitoring_privileges(connection: object) -> dict[str, object]:
+    value = _query_json(connection, "SELECT jsonb_build_object('monitoring_privileges', jsonb_build_object('pg_stat_activity', CASE WHEN has_table_privilege(current_user, 'pg_catalog.pg_stat_activity', 'SELECT') AND (SELECT count(*) >= 0 FROM pg_stat_activity) THEN jsonb_build_array('SELECT') ELSE '[]'::jsonb END, 'pg_locks', CASE WHEN has_table_privilege(current_user, 'pg_catalog.pg_locks', 'SELECT') AND (SELECT count(*) >= 0 FROM pg_locks) THEN jsonb_build_array('SELECT') ELSE '[]'::jsonb END, 'pg_monitor', CASE WHEN EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user AND parent.rolname='pg_monitor' AND NOT m.set_option) AND NOT pg_has_role(current_user, 'pg_monitor', 'SET') THEN jsonb_build_array('DIRECT_MEMBER_NO_SET') ELSE '[]'::jsonb END, 'pg_read_all_stats', CASE WHEN pg_has_role(current_user, 'pg_read_all_stats', 'USAGE') AND NOT EXISTS (SELECT 1 FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user AND parent.rolname='pg_read_all_stats') THEN jsonb_build_array('INHERITED_USAGE') ELSE '[]'::jsonb END))")
+    if not isinstance(value, Mapping) or not isinstance(value.get("monitoring_privileges"), Mapping):
+        raise BackfillSafetyError("production monitoring query returned malformed JSON")
+    return dict(value)
+
+
+def _collect_nonrelation_object_identities(connection: object) -> dict[str, object]:
+    value = _query_json(
+        connection,
+        "SELECT jsonb_build_object("
+        "'relations','[]'::jsonb,"
+        "'columns',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||'.'||a.attname||':'||a.attnum||':'||format_type(a.atttypid,a.atttypmod)||':'||a.attnotnull||':'||coalesce(pg_get_expr(ad.adbin,ad.adrelid),'') ORDER BY n.nspname,c.relname,a.attnum) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef ad ON ad.adrelid=a.attrelid AND ad.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND n.nspname||'.'||c.relname=ANY(%s)),'[]'::jsonb),"
+        "'constraints',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||co.conname||':'||co.oid||':'||pg_get_constraintdef(co.oid,true) ORDER BY n.nspname,c.relname,co.conname) FROM pg_constraint co JOIN pg_class c ON c.oid=co.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)),'[]'::jsonb),"
+        "'indexes',coalesce((SELECT jsonb_agg(n.nspname||'.'||i.relname||':'||i.oid||':'||pg_get_indexdef(i.oid)||':'||coalesce(pg_get_expr(ix.indpred,ix.indrelid),'')||':'||ix.indisunique ORDER BY n.nspname,i.relname) FROM pg_class i JOIN pg_namespace n ON n.oid=i.relnamespace JOIN pg_index ix ON ix.indexrelid=i.oid WHERE n.nspname='public' AND i.relkind='i'),'[]'::jsonb),"
+        "'triggers',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname||':'||t.oid||':'||pg_get_triggerdef(t.oid,true)||':'||p.oid ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname='public'),'[]'::jsonb),"
+        "'sequences',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||c.oid ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)),'[]'::jsonb),"
+        "'routines',coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')|oid='||p.oid||'|owner='||pg_get_userbyid(p.proowner)||'|definition_sha256='||encode(sha256(convert_to(pg_get_functiondef(p.oid),'UTF8')),'hex')||'|proconfig_sha256='||encode(sha256(convert_to(coalesce(array_to_string(p.proconfig,','),''),'UTF8')),'hex') ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname='public'),'[]'::jsonb))",
+        (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)),
+    )
+    if not isinstance(value, Mapping) or set(value) != _OBJECT_IDENTITY_FIELDS:
+        raise BackfillSafetyError("production object identity query returned malformed JSON")
+    return dict(value)
 
 
 def _collect_production_preflight(connection: object, authorization: Mapping[str, object]) -> dict[str, object]:
@@ -877,11 +1010,15 @@ def _collect_production_preflight(connection: object, authorization: Mapping[str
     if not isinstance(dsn_parameters, Mapping) or dsn_parameters.get("sslmode") != "verify-full" or dsn_parameters.get("host") != target["host"]:
         raise BackfillSafetyError("production preflight cannot prove verify-full host binding")
     identity = _query_json(connection, "SELECT jsonb_build_object('cluster_identity', current_database() || ':' || inet_server_addr()::text || ':' || version(), 'tls_identity', (SELECT coalesce(ssl, false)::text || ':' || coalesce(version, '') || ':' || coalesce(cipher, '') FROM pg_stat_ssl WHERE pid = pg_backend_pid()), 'role_identity', current_user)")
-    roles = _query_json(connection, "SELECT jsonb_build_object('memberships', coalesce((SELECT jsonb_agg(member ORDER BY member) FROM (SELECT parent.rolname AS member FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user) x), '[]'::jsonb), 'capabilities', jsonb_build_object('is_superuser', (SELECT rolsuper FROM pg_roles WHERE rolname=current_user), 'owns_any_table', EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user AND c.relkind IN ('r','p','v','m','f','S')), 'can_create_role', (SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user), 'can_create_database', (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user), 'bypass_rls', (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user), 'schema_create', has_schema_privilege(current_user, 'public', 'CREATE'), 'set_role', EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'MEMBER'))))")
-    objects = _query_json(connection, "SELECT jsonb_build_object('relations', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||'|oid='||c.oid||'|owner='||pg_get_userbyid(c.relowner)||'|relkind='||c.relkind::text||'|definition_sha256='||encode(sha256(convert_to(pg_get_viewdef(c.oid, true), 'UTF8')), 'hex') ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s) AND c.relkind IN ('r','p')), '[]'::jsonb), 'columns', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||'.'||a.attname||':'||a.attnum||':'||format_type(a.atttypid,a.atttypmod)||':'||a.attnotnull||':'||coalesce(pg_get_expr(ad.adbin,ad.adrelid),'') ORDER BY n.nspname,c.relname,a.attnum) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_attrdef ad ON ad.adrelid=a.attrelid AND ad.adnum=a.attnum WHERE n.nspname='public' AND a.attnum>0 AND NOT a.attisdropped AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'constraints', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||co.conname||':'||co.oid||':'||pg_get_constraintdef(co.oid,true) ORDER BY n.nspname,c.relname,co.conname) FROM pg_constraint co JOIN pg_class c ON c.oid=co.conrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'indexes', coalesce((SELECT jsonb_agg(n.nspname||'.'||i.relname||':'||i.oid||':'||pg_get_indexdef(i.oid)||':'||coalesce(pg_get_expr(ix.indpred,ix.indrelid),'')||':'||ix.indisunique ORDER BY n.nspname,i.relname) FROM pg_class i JOIN pg_namespace n ON n.oid=i.relnamespace JOIN pg_index ix ON ix.indexrelid=i.oid WHERE n.nspname='public' AND i.relkind='i'), '[]'::jsonb), 'triggers', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname||':'||t.oid||':'||pg_get_triggerdef(t.oid,true)||':'||p.oid ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname='public'), '[]'::jsonb), 'sequences', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||c.oid ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND n.nspname||'.'||c.relname = ANY(%s)), '[]'::jsonb), 'routines', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')|oid='||p.oid||'|owner='||pg_get_userbyid(p.proowner)||'|definition_sha256='||encode(sha256(convert_to(pg_get_functiondef(p.oid), 'UTF8')), 'hex')||'|proconfig_sha256='||encode(sha256(convert_to(coalesce(array_to_string(p.proconfig,','),''), 'UTF8')), 'hex') ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname='public'), '[]'::jsonb))", (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)))
+    roles = _query_json(connection, "SELECT jsonb_build_object('memberships', coalesce((SELECT jsonb_agg(member ORDER BY member) FROM (SELECT parent.rolname AS member FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user) x), '[]'::jsonb), 'capabilities', jsonb_build_object('is_superuser', (SELECT rolsuper FROM pg_roles WHERE rolname=current_user), 'owns_any_table', EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user AND c.relkind IN ('r','p','v','m','f','S')), 'can_create_role', (SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user), 'can_create_database', (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user), 'bypass_rls', (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user), 'schema_create', has_schema_privilege(current_user, 'public', 'CREATE'), 'set_role', EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'SET'))))")
+    objects = _collect_nonrelation_object_identities(connection)
+    relation_security = _collect_relation_security(connection)
+    if not isinstance(objects, Mapping) or not isinstance(relation_security, Mapping) or not isinstance(relation_security.get("relations"), list):
+        raise BackfillSafetyError("production preflight relation security query returned malformed JSON")
+    objects = {**dict(objects), "relations": relation_security["relations"]}
     privileges = _query_json(connection, "SELECT jsonb_build_object('table_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,c.oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'DELETE') THEN 'DELETE' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname||'.'||c.relname=ANY(%s)) q), 'sequence_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||c.relname, jsonb_build_array('USAGE')), '{}'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname||'.'||c.relname=ANY(%s) AND has_sequence_privilege(current_user,c.oid,'USAGE')), 'function_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')', jsonb_build_array('EXECUTE')), '{}'::jsonb) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND has_function_privilege(current_user,p.oid,'EXECUTE')), 'monitoring_privileges', jsonb_build_object('pg_stat_activity', jsonb_build_array('SELECT')), 'public_acl', '[]'::jsonb, 'unsafe_security_definers', '[]'::jsonb, 'trigger_write_targets', '[]'::jsonb)", (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)))
-    write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR has_table_privilege(current_user,c.oid,'TRUNCATE'))) writable), '[]'::jsonb), 'truncate_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) truncatable), '[]'::jsonb))")
-    monitoring = _query_json(connection, "SELECT jsonb_build_object('monitoring_privileges', jsonb_build_object('pg_stat_activity', CASE WHEN has_table_privilege(current_user, 'pg_catalog.pg_stat_activity', 'SELECT') AND (SELECT count(*) >= 0 FROM pg_stat_activity) THEN jsonb_build_array('SELECT') ELSE '[]'::jsonb END, 'pg_locks', CASE WHEN has_table_privilege(current_user, 'pg_catalog.pg_locks', 'SELECT') AND (SELECT count(*) >= 0 FROM pg_locks) THEN jsonb_build_array('SELECT') ELSE '[]'::jsonb END, 'pg_monitor', CASE WHEN pg_has_role(current_user, 'pg_monitor', 'MEMBER') THEN jsonb_build_array('MEMBER') ELSE '[]'::jsonb END, 'pg_read_all_stats', CASE WHEN pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER') THEN jsonb_build_array('MEMBER') ELSE '[]'::jsonb END))")
+    write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')))) writable), '[]'::jsonb), 'truncate_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) truncatable), '[]'::jsonb))")
+    monitoring = _collect_monitoring_privileges(connection)
     safety = _query_json(connection, "SELECT jsonb_build_object('public_acl', coalesce((SELECT jsonb_agg(kind || ':' || identity || ':' || privilege ORDER BY kind,identity,privilege) FROM (SELECT 'function' AS kind, n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS identity, a.privilege_type AS privilege FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 UNION ALL SELECT 'relation', n.nspname||'.'||c.relname, a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a WHERE a.grantee=0) acl), '[]'::jsonb), 'unsafe_security_definers', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND (NOT coalesce(p.proconfig, ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog, public'] OR EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))), '[]'::jsonb), 'trigger_write_targets', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'), '[]'::jsonb))")
     if not all(isinstance(value, Mapping) for value in (identity, roles, objects, privileges, write_surface, monitoring, safety)):
         raise BackfillSafetyError("production preflight collector returned malformed JSON")
@@ -950,6 +1087,97 @@ def _release_form_advisory_lock(connection: object, key: str) -> None:
         cursor.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (key,))
 
 
+def _governed_package_id(connection: object, *, run_id: UUID, form: str, package_sha256: str) -> UUID:
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT package_id FROM sec_source_packages WHERE run_id=%s AND source_family=%s AND package_sha256=%s ORDER BY package_id",
+            (run_id, form, package_sha256),
+        )
+        rows = cursor.fetchall()
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], tuple) or len(rows[0]) != 1 or not isinstance(rows[0][0], UUID):
+        raise BackfillSafetyError("protected commit cannot establish a unique governed package UUID")
+    return rows[0][0]
+
+
+def _governed_reconciliation_sha256(connection: object, *, run_id: UUID) -> str:
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT source_file_id::text, table_name, expected_count, source_count, lexical_count, typed_success_count, quarantine_count, reject_count, state "
+            "FROM sec_table_reconciliations WHERE run_id=%s ORDER BY source_file_id, table_name",
+            (run_id,),
+        )
+        rows = cursor.fetchall()
+    if not isinstance(rows, list) or not rows or any(not isinstance(row, tuple) or len(row) != 9 for row in rows):
+        raise BackfillSafetyError("protected commit cannot establish reconciliation evidence")
+    return _sha256_bytes(_canonical_json([list(row) for row in rows]).encode("ascii"))
+
+
+def _get_recovery_governed_evidence(
+    connection: object,
+    *,
+    package_id: UUID,
+    run_id: UUID,
+    authorization_fingerprint: str,
+) -> _RecoveryGovernedEvidence | None:
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT p.package_id, r.run_id, r.package_sha256, t.supervisor_run_id, t.authorization_fingerprint, t.commit_outcome "
+            "FROM sec_source_packages p JOIN sec_ingestion_runs r ON r.run_id=p.run_id "
+            "JOIN LATERAL (SELECT supervisor_run_id, authorization_fingerprint, commit_outcome FROM sec_run_transitions "
+            "WHERE run_id=r.run_id AND event_type='commit_outcome' AND authorization_fingerprint=%s ORDER BY transition_id LIMIT 1) t ON TRUE "
+            "WHERE p.package_id=%s AND r.run_id=%s",
+            (authorization_fingerprint, package_id, run_id),
+        )
+        rows = cursor.fetchall()
+    if not isinstance(rows, list) or len(rows) > 1 or any(not isinstance(row, tuple) or len(row) != 6 for row in rows):
+        raise BackfillSafetyError("recovery governed evidence is not unique")
+    return _RecoveryGovernedEvidence(*rows[0]) if rows else None
+
+
+def _get_recovery_zero_proof(connection: object, *, package_id: UUID, run_id: UUID) -> dict[str, int]:
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT "
+            "(SELECT count(*) FROM sec_source_packages WHERE package_id=%s OR run_id=%s),"
+            "(SELECT count(*) FROM sec_ingestion_runs WHERE run_id=%s),"
+            "(SELECT count(*) FROM sec_run_transitions WHERE run_id=%s),"
+            "(SELECT count(*) FROM sec_source_package_transitions WHERE package_id=%s OR ingestion_run_id=%s),"
+            "(SELECT count(*) FROM sec_validated_raw_visibility WHERE run_id=%s)",
+            (package_id, run_id, run_id, run_id, package_id, run_id, run_id),
+        )
+        row = cursor.fetchone()
+    if not isinstance(row, tuple) or len(row) != 5 or any(not isinstance(value, int) for value in row):
+        raise BackfillSafetyError("recovery zero-delta query returned uncertain evidence")
+    return dict(zip(("package_count", "run_count", "run_transition_count", "source_transition_count", "validated_visibility_count"), row, strict=True))
+
+
+def _snapshot_exact_write_counts(connection: object) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        for table in sorted(EXACT_WRITABLE_TABLES):
+            cursor.execute(f"SELECT count(*) FROM {table}")
+            row = cursor.fetchone()
+            if not isinstance(row, tuple) or len(row) != 1 or not isinstance(row[0], int):
+                raise BackfillSafetyError("rollback probe table count returned uncertain evidence")
+            counts[table] = row[0]
+    if set(counts) != EXACT_WRITABLE_TABLES:
+        raise BackfillSafetyError("rollback probe did not count the exact 16-table write surface")
+    return counts
+
+
+class _ProtectedTransactionConnection:
+    """Delegate a psycopg connection while suppressing ingester checkpoint commits."""
+
+    def __init__(self, connection: object) -> None:
+        self._connection = connection
+
+    def commit(self) -> None:
+        """Leave the sole durable COMMIT to AuthorizedPackageExecutor."""
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._connection, name)
+
+
 class AuthorizedPackageExecutor:
     """One-package executor whose connection exists only after authorization validation."""
 
@@ -975,6 +1203,7 @@ class AuthorizedPackageExecutor:
         self.authorization_id = cast(str, authorization["authorization_id"])
         self.authorization_fingerprint = cast(str, authorization["authorization_fingerprint"])
         self.stop_contract_hash = cast(str, authorization["stop_contract_hash"])
+        self.supervisor_run_id = cast(str | None, authorization.get("supervisor_run_id"))
         self.authorization_lineage = {key: value for key, value in authorization.items() if key != "authorization_fingerprint"}
 
     def _validate_production_preflight(self, connection: object) -> None:
@@ -1006,6 +1235,148 @@ class AuthorizedPackageExecutor:
             close = getattr(connection, "close", None)
             if callable(close):
                 close()
+
+    def promote_canary_certificate(self) -> dict[str, dict[str, object]]:
+        """Perform the full-run three-package promotion in one transaction."""
+        certificate = self.authorization.get("canary_certificate")
+        if self.authorization.get("execution_mode") != "full" or not isinstance(certificate, Mapping):
+            raise BackfillSafetyError("certified promotion is available only to a full authorization")
+        dsn = os.environ.get(cast(str, self.authorization["dsn_env_var"]))
+        if not dsn:
+            raise BackfillSafetyError("authorized executor DSN environment variable is unavailable")
+        factory = self.connection_factory
+        connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=self.authorization["target_mode"] == "production_authorized")
+        try:
+            self._validate_connected_target(self.target_inspector(connection))
+            self._validate_production_preflight(connection)
+            return promote_certified_canary_packages(connection, certificate=certificate, inventory=self.inventory)
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    def recover_ambiguous(
+        self,
+        *,
+        status_path: Path,
+        recovery_authorization: Mapping[str, object],
+        recovery_evidence: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Use a fresh governed connection to adjudicate one ambiguous fence."""
+        dsn = os.environ.get(cast(str, self.authorization["dsn_env_var"]))
+        if not dsn:
+            raise BackfillSafetyError("authorized recovery DSN environment variable is unavailable")
+        factory = self.connection_factory
+        read_connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=self.authorization["target_mode"] == "production_authorized")
+        try:
+            self._validate_connected_target(self.target_inspector(read_connection))
+            self._validate_production_preflight(read_connection)
+            with read_connection.cursor() as cursor:  # type: ignore[attr-defined]
+                cursor.execute("SET TRANSACTION READ ONLY")
+            governed = _get_recovery_governed_evidence(
+                read_connection,
+                package_id=UUID(cast(str, recovery_authorization["package_id"])),
+                run_id=UUID(cast(str, recovery_authorization["run_id"])),
+                authorization_fingerprint=cast(str, recovery_authorization["original_authorization_fingerprint"]),
+            )
+        finally:
+            rollback = getattr(read_connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            close = getattr(read_connection, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+        resolution_connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=self.authorization["target_mode"] == "production_authorized")
+        try:
+            self._validate_connected_target(self.target_inspector(resolution_connection))
+            self._validate_production_preflight(resolution_connection)
+            return recover_ambiguous_commit(resolution_connection, status_path=status_path, recovery_authorization=recovery_authorization, recovery_evidence=recovery_evidence, governed_evidence=governed)
+        finally:
+            close = getattr(resolution_connection, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    def run_rollback_probe(self, *, evidence_path: Path) -> dict[str, object]:
+        """Exercise the deterministic first canary package and prove zero durability."""
+        if self.authorization.get("target_mode") != "production_authorized" or self.authorization.get("execution_mode") != "canary" or self.authorization.get("schema_version") != 4:
+            raise BackfillSafetyError("rollback probe requires a production canary authorization")
+        scope = _validate_scope(self.authorization["package_scope"], inventory_hash=cast(str, self.inventory["inventory_hash"]), label="authorization")
+        if len(scope) != 3:
+            raise BackfillSafetyError("rollback probe requires the exact three-package canary scope")
+        selected_identity = sorted(item["identity"] for item in scope)[0]
+        package = next((item for item in cast(list[dict[str, object]], self.inventory["packages"]) if item["identity"] == selected_identity), None)
+        if package is None:
+            raise BackfillSafetyError("rollback probe package differs from inventory")
+        dsn = os.environ.get(cast(str, self.authorization["dsn_env_var"]))
+        if not dsn:
+            raise BackfillSafetyError("rollback probe DSN environment variable is unavailable")
+
+        def connect_checked() -> object:
+            connection = self.connection_factory(dsn) if self.connection_factory is not None else _open_authorized_connection(dsn, production=True)
+            self._validate_connected_target(self.target_inspector(connection))
+            self._validate_production_preflight(connection)
+            return connection
+
+        before_connection = connect_checked()
+        try:
+            before = _snapshot_exact_write_counts(before_connection)
+        finally:
+            before_connection.close()  # type: ignore[attr-defined]
+        transaction = connect_checked()
+        lock_key: str | None = None
+        try:
+            form = cast(str, package["form"])
+            root_by_form = _validate_inventory(self.inventory)
+            source_package = root_by_form[form] / Path(cast(str, package["relative_package_path"]))
+            _verify_package_unchanged(package, root_by_form)
+            lock_key = _derive_form_lock_key(form, source_package)
+            if not _try_form_advisory_lock(transaction, lock_key):
+                lock_key = None
+                raise BackfillSafetyError("lock_busy")
+            dispatcher = (self.dispatchers or {}).get(form) if self.dispatchers is not None else _default_dispatcher(form)
+            if dispatcher is None:
+                raise BackfillSafetyError("rollback probe dispatcher is unavailable")
+            result = dict(dispatcher(_ProtectedTransactionConnection(transaction), package=source_package, source_root=root_by_form[form]))
+            self._terminal_result(result, cast(str, package["relative_package_path"]))
+        finally:
+            rollback = getattr(transaction, "rollback", None)
+            if callable(rollback):
+                rollback()
+            if lock_key is not None:
+                try:
+                    _release_form_advisory_lock(transaction, lock_key)
+                except Exception:
+                    pass
+            transaction.close()  # type: ignore[attr-defined]
+        after_connection = connect_checked()
+        try:
+            after = _snapshot_exact_write_counts(after_connection)
+        finally:
+            after_connection.close()  # type: ignore[attr-defined]
+        deltas = {table: after[table] - before[table] for table in sorted(EXACT_WRITABLE_TABLES)}
+        if any(deltas.values()):
+            raise BackfillSafetyError("rollback probe detected a durable table delta")
+        evidence = {
+            "schema_version": 1,
+            "state": "ROLLBACK_PROBED",
+            "identity": selected_identity,
+            "package_sha256": package["package_sha256"],
+            "authorization_fingerprint": self.authorization_fingerprint,
+            "table_deltas": deltas,
+            "source_transition_delta": deltas["public.sec_source_package_transitions"],
+            "validated_visibility_delta": deltas["public.sec_validated_raw_visibility"],
+        }
+        _durable_json_replace(evidence_path, evidence)
+        return evidence
 
     def _validate_connected_target(self, actual: Mapping[str, object]) -> None:
         target = cast(Mapping[str, object], self.authorization["target"])
@@ -1067,6 +1438,22 @@ class AuthorizedPackageExecutor:
         return safe
 
     def __call__(self, package: dict[str, object]) -> Mapping[str, object]:
+        return self._execute(package, commit_fence=None)
+
+    def execute_with_fence(
+        self,
+        package: dict[str, object],
+        commit_fence: Callable[[str, Mapping[str, object]], None],
+    ) -> Mapping[str, object]:
+        """Execute with a supervisor-owned durable fence around the COMMIT call."""
+        return self._execute(package, commit_fence=commit_fence)
+
+    def _execute(
+        self,
+        package: dict[str, object],
+        *,
+        commit_fence: Callable[[str, Mapping[str, object]], None] | None,
+    ) -> Mapping[str, object]:
         root_by_form = _validate_inventory(self.inventory)
         identity = package.get("identity")
         expected = next((candidate for candidate in cast(list[dict[str, object]], self.inventory["packages"]) if candidate["identity"] == identity), None)
@@ -1090,6 +1477,8 @@ class AuthorizedPackageExecutor:
         factory = self.connection_factory
         connection = factory(dsn) if factory is not None else _open_authorized_connection(dsn, production=self.authorization["target_mode"] == "production_authorized")
         lock_key: str | None = None
+        commit_issued = False
+        commit_confirmed = False
         try:
             self._validate_connected_target(self.target_inspector(connection))
             self._validate_production_preflight(connection)
@@ -1108,17 +1497,78 @@ class AuthorizedPackageExecutor:
             if dispatcher is None:
                 raise BackfillSafetyError("authorized executor dispatcher is unavailable")
             root = root_by_form[form]
-            result = dict(dispatcher(connection, package=source_package, source_root=root))
+            dispatch_connection = _ProtectedTransactionConnection(connection) if commit_fence is not None else connection
+            result = dict(dispatcher(dispatch_connection, package=source_package, source_root=root))
             safe = self._terminal_result(result, cast(str, expected["relative_package_path"]))
             commit = getattr(connection, "commit", None)
             if not callable(commit):
                 raise BackfillSafetyError("authorized executor connection cannot commit")
-            commit()
+            if commit_fence is not None:
+                if self.supervisor_run_id is None:
+                    raise BackfillSafetyError("protected commit requires a supervisor run UUID")
+                try:
+                    run_id = UUID(cast(str, safe.get("run_id")))
+                    supervisor_run_id = UUID(self.supervisor_run_id)
+                except (TypeError, ValueError) as exc:
+                    raise BackfillSafetyError("protected commit requires typed ingestion and supervisor run UUIDs") from exc
+                reconciliation_hash = _governed_reconciliation_sha256(connection, run_id=run_id)
+                if safe.get("reconciliation_hash") is not None and safe["reconciliation_hash"] != reconciliation_hash:
+                    raise BackfillSafetyError("ingester reconciliation evidence differs from governed rows")
+                safe["reconciliation_hash"] = reconciliation_hash
+                if lock_key is None or not _is_sha256(lock_key.split(":", 1)[-1]):
+                    raise BackfillSafetyError("protected commit requires a governed package hash")
+                governed_package_sha256 = lock_key.split(":", 1)[-1]
+                package_id = _governed_package_id(connection, run_id=run_id, form=form, package_sha256=governed_package_sha256)
+                fence_evidence: dict[str, object] = {
+                    "identity": expected["identity"],
+                    "inventory_package_sha256": expected["package_sha256"],
+                    "package_sha256": governed_package_sha256,
+                    "package_id": str(package_id),
+                    "run_id": str(run_id),
+                    "supervisor_run_id": str(supervisor_run_id),
+                    "authorization_fingerprint": self.authorization_fingerprint,
+                    "reconciliation_hash": reconciliation_hash,
+                    "terminal_result": safe,
+                }
+                commit_fence("issued", fence_evidence)
+                manifests.record_commit_outcome(
+                    cast(Any, connection),
+                    run_id=run_id,
+                    supervisor_run_id=supervisor_run_id,
+                    authorization_fingerprint=self.authorization_fingerprint,
+                    package_sha256=governed_package_sha256,
+                    outcome="committed",
+                )
+                commit_issued = True
+                try:
+                    commit()
+                except Exception as exc:
+                    try:
+                        commit_fence("ambiguous", fence_evidence)
+                    except Exception:
+                        pass
+                    raise AmbiguousCommitError("COMMIT outcome is ambiguous; explicit recovery is required") from exc
+                commit_confirmed = True
+                try:
+                    commit_fence("confirmed", fence_evidence)
+                except Exception as exc:
+                    try:
+                        commit_fence("ambiguous", fence_evidence)
+                    except Exception:
+                        pass
+                    raise AmbiguousCommitError("committed transaction could not be durably confirmed") from exc
+            else:
+                commit()
+                commit_confirmed = True
             return safe
         except Exception:
-            rollback = getattr(connection, "rollback", None)
-            if callable(rollback):
-                rollback()
+            if not commit_issued:
+                rollback = getattr(connection, "rollback", None)
+                if callable(rollback):
+                    try:
+                        rollback()
+                    except Exception:
+                        pass
             raise
         finally:
             if lock_key is not None:
@@ -1128,7 +1578,11 @@ class AuthorizedPackageExecutor:
                     pass
             close = getattr(connection, "close", None)
             if callable(close):
-                close()
+                try:
+                    close()
+                except Exception:
+                    if not commit_confirmed:
+                        pass
 
 
 def build_authorized_executor(
@@ -1151,9 +1605,12 @@ def build_authorized_executor(
     authorization = load_execution_authorization(authorization_path, code_sha=code_sha, inventory_hash=inventory_hash, run_directory=run_directory, command=command)
     if authorization["target_mode"] == "production_authorized":
         inventory_scope = {item["identity"]: item["package_sha256"] for item in cast(list[dict[str, object]], inventory["packages"])}
-        for item in _validate_scope(authorization["package_scope"], inventory_hash=inventory_hash, label="authorization"):
+        authorized_scope = _validate_scope(authorization["package_scope"], inventory_hash=inventory_hash, label="authorization")
+        for item in authorized_scope:
             if inventory_scope.get(item["identity"]) != item["package_sha256"]:
                 raise BackfillSafetyError("production authorization package scope differs from inventory")
+        if authorization.get("schema_version") == 4 and authorization.get("execution_mode") == "full" and {item["identity"]: item["package_sha256"] for item in authorized_scope} != inventory_scope:
+            raise BackfillSafetyError("production full authorization does not bind the exact inventory")
     return AuthorizedPackageExecutor(authorization, inventory, connection_factory, target_inspector, schema_installers, dispatchers, preflight_inspector)
 
 
@@ -1194,6 +1651,134 @@ def validate_recovery_outcome(
     if not isinstance(terminal, Mapping) or terminal.get("state") not in SUCCESS_STATES:
         raise BackfillSafetyError("commit outcome is not a positive terminal result")
     return dict(terminal)
+
+
+def load_recovery_authorization(
+    path: Path,
+    *,
+    code_sha: str,
+    inventory_hash: str,
+    status_path: Path,
+    original_authorization_fingerprint: str,
+) -> dict[str, object]:
+    """Load a separately issued, exact-lineage recovery authorization."""
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BackfillSafetyError("invalid recovery authorization artifact") from exc
+    if not isinstance(document, dict) or set(document) != _RECOVERY_AUTHORIZATION_FIELDS or document.get("schema_version") != 1 or document.get("stage") != "phase4_ambiguous_commit_recovery":
+        raise BackfillSafetyError("invalid recovery authorization schema")
+    if document.get("code_sha") != code_sha or document.get("inventory_hash") != inventory_hash or document.get("status_path") != str(status_path.resolve()) or document.get("original_authorization_fingerprint") != original_authorization_fingerprint:
+        raise BackfillSafetyError("recovery authorization lineage mismatch")
+    for field in ("supervisor_run_id", "package_id", "run_id", "recovery_authorization_id"):
+        try:
+            UUID(cast(str, document.get(field)))
+        except (TypeError, ValueError) as exc:
+            raise BackfillSafetyError("recovery authorization requires typed UUID lineage") from exc
+    if document.get("expected_outcome") not in {"committed", "rolled_back"} or not all(_is_sha256(document.get(field)) for field in ("original_authorization_fingerprint", "package_sha256", "reconciliation_sha256", "recovery_evidence_sha256")):
+        raise BackfillSafetyError("invalid recovery authorization evidence")
+    secret_version = document.get("secret_version_resource")
+    if not isinstance(secret_version, str) or re.fullmatch(r"projects/[^/]+/secrets/[^/]+/versions/[1-9][0-9]*", secret_version) is None:
+        raise BackfillSafetyError("recovery authorization requires a numeric secret version")
+    if not isinstance(document.get("identity"), str) or not document["identity"]:
+        raise BackfillSafetyError("recovery authorization requires a package identity")
+    _assert_no_secret({key: value for key, value in document.items() if key != "secret_version_resource"})
+    validated = dict(document)
+    validated["recovery_authorization_fingerprint"] = authorization_fingerprint(validated)
+    if validated["recovery_authorization_fingerprint"] == original_authorization_fingerprint:
+        raise BackfillSafetyError("recovery authorization must be distinct from execution authorization")
+    return validated
+
+
+def recover_ambiguous_commit(
+    connection: object,
+    *,
+    status_path: Path,
+    recovery_authorization: Mapping[str, object],
+    recovery_evidence: Mapping[str, object],
+    governed_evidence: object = _UNSET,
+) -> dict[str, object]:
+    """Adjudicate one expired ambiguous fence from governed database evidence."""
+    status = _load_status(status_path)
+    if _unexpired_lease(status):
+        raise BackfillSafetyError("live lease blocks recovery")
+    identity = recovery_authorization.get("identity")
+    records = status.get("packages")
+    record = records.get(identity) if isinstance(records, Mapping) else None
+    exact = {
+        "authorization_fingerprint": "original_authorization_fingerprint",
+        "supervisor_run_id": "supervisor_run_id",
+        "package_id": "package_id",
+        "run_id": "run_id",
+        "governed_package_sha256": "package_sha256",
+        "reconciliation_hash": "reconciliation_sha256",
+    }
+    if not isinstance(record, Mapping) or record.get("state") != "ambiguous_commit" or status.get("active_package") != identity or status.get("authorization_fingerprint") != recovery_authorization.get("original_authorization_fingerprint") or any(record.get(left) != recovery_authorization.get(right) for left, right in exact.items()):
+        raise BackfillSafetyError("recovery authorization does not match the ambiguous fence")
+    evidence_hash = _sha256_bytes(_canonical_json(recovery_evidence).encode("ascii"))
+    if evidence_hash != recovery_authorization.get("recovery_evidence_sha256"):
+        raise BackfillSafetyError("recovery evidence SHA mismatch")
+    governed: Any = governed_evidence
+    if governed is _UNSET:
+        governed = _get_recovery_governed_evidence(
+            connection,
+            package_id=UUID(cast(str, recovery_authorization["package_id"])),
+            run_id=UUID(cast(str, recovery_authorization["run_id"])),
+            authorization_fingerprint=cast(str, recovery_authorization["original_authorization_fingerprint"]),
+        )
+    expected = cast(str, recovery_authorization["expected_outcome"])
+    if governed is not None and (str(governed.package_id) != recovery_authorization["package_id"] or str(governed.run_id) != recovery_authorization["run_id"] or governed.package_sha256 != recovery_authorization["package_sha256"] or str(governed.supervisor_run_id) != recovery_authorization["supervisor_run_id"] or governed.authorization_fingerprint != recovery_authorization["original_authorization_fingerprint"]):
+        raise BackfillSafetyError("governed recovery evidence lineage mismatch")
+    if governed is not None and governed.commit_outcome == "committed":
+        definitive = "committed"
+    elif governed is not None and governed.commit_outcome == "ambiguous":
+        definitive = expected
+        manifests.resolve_ambiguous_commit_outcome(
+            cast(Any, connection),
+            run_id=UUID(cast(str, recovery_authorization["run_id"])),
+            supervisor_run_id=UUID(cast(str, recovery_authorization["supervisor_run_id"])),
+            authorization_fingerprint=cast(str, recovery_authorization["original_authorization_fingerprint"]),
+            package_sha256=cast(str, recovery_authorization["package_sha256"]),
+            recovery_authorization_fingerprint=cast(str, recovery_authorization["recovery_authorization_fingerprint"]),
+            recovery_evidence_sha256=evidence_hash,
+            outcome=definitive,
+        )
+        commit = getattr(connection, "commit", None)
+        if not callable(commit):
+            raise BackfillSafetyError("recovery connection cannot commit a governed resolution")
+        commit()
+    elif governed is None and expected == "rolled_back":
+        zero_proof = _get_recovery_zero_proof(
+            connection,
+            package_id=UUID(cast(str, recovery_authorization["package_id"])),
+            run_id=UUID(cast(str, recovery_authorization["run_id"])),
+        )
+        if any(zero_proof.values()) or recovery_evidence != {"durable_table_delta": 0, **zero_proof}:
+            raise BackfillSafetyError("zero durable delta and source-transition absence were not proven")
+        definitive = "rolled_back"
+    else:
+        raise BackfillSafetyError("governed evidence cannot establish a definitive recovery outcome")
+    if definitive != expected:
+        raise BackfillSafetyError("governed outcome contradicts the authorized recovery decision")
+    updated_record = dict(record)
+    if definitive == "committed":
+        terminal = updated_record.get("terminal_result")
+        if not isinstance(terminal, Mapping) or terminal.get("state") not in SUCCESS_STATES:
+            raise BackfillSafetyError("committed recovery lacks a terminal result")
+        updated_record.update(dict(terminal))
+    else:
+        updated_record["state"] = "recovery_rolled_back"
+    updated_record["recovery_decision"] = definitive
+    updated_record["recovery_authorization_fingerprint"] = recovery_authorization["recovery_authorization_fingerprint"]
+    updated_record["recovery_evidence_sha256"] = evidence_hash
+    cast(dict[str, object], records)[cast(str, identity)] = updated_record
+    status["active_package"] = None
+    status["active_attempt"] = None
+    status["lease"] = None
+    status["final_exit_state"] = "recovered_committed" if definitive == "committed" else "recovered_rolled_back_requires_new_authorization"
+    with _FileLock(status_path.with_suffix(".status.lock")):
+        _write_status(status_path, status)
+    return {"state": "recovered", "outcome": definitive, "identity": identity, "status_path": str(status_path)}
 
 
 def promote_canary_packages(
@@ -1241,6 +1826,80 @@ def promote_canary_packages(
             append_transition(transition)
         transitions.append(transition)
     return transitions
+
+
+def promote_certified_canary_packages(
+    connection: object,
+    *,
+    certificate: Mapping[str, object],
+    inventory: Mapping[str, object],
+) -> dict[str, dict[str, object]]:
+    """Promote the three governed canaries atomically and return status seeds."""
+    inventory_hash = inventory.get("inventory_hash")
+    if not isinstance(inventory_hash, str):
+        raise BackfillSafetyError("invalid inventory for certified promotion")
+    valid = _validate_v4_canary_certificate(certificate, inventory_hash=inventory_hash)
+    inventory_entries = {cast(str, item["identity"]): item for item in cast(list[dict[str, object]], inventory.get("packages", []))}
+    root_by_form = _validate_inventory(inventory)
+    seeds: dict[str, dict[str, object]] = {}
+    try:
+        for item in cast(list[dict[str, object]], valid["packages"]):
+            identity = cast(str, item["identity"])
+            package_sha = cast(str, item["package_sha256"])
+            inventory_package = inventory_entries.get(identity)
+            if inventory_package is None:
+                raise BackfillSafetyError("certified canary differs from full inventory")
+            form = cast(str, inventory_package["form"])
+            source_package = root_by_form[form] / Path(cast(str, inventory_package["relative_package_path"]))
+            governed_package_sha = _derive_form_lock_key(form, source_package).split(":", 1)[-1]
+            if package_sha != governed_package_sha:
+                raise BackfillSafetyError("certified canary governed hash differs from inventory package contents")
+            package_id = UUID(cast(str, item["package_id"]))
+            ingestion_run_id = UUID(cast(str, item["ingestion_run_id"]))
+            evidence = _get_recovery_governed_evidence(
+                connection,
+                package_id=package_id,
+                run_id=ingestion_run_id,
+                authorization_fingerprint=cast(str, valid["canary_authorization_fingerprint"]),
+            )
+            reconciliation_sha256 = _governed_reconciliation_sha256(connection, run_id=ingestion_run_id)
+            if evidence is None or evidence.package_sha256 != package_sha or evidence.commit_outcome != "committed" or str(evidence.supervisor_run_id) != valid["canary_supervisor_run_id"] or evidence.authorization_fingerprint != valid["canary_authorization_fingerprint"] or reconciliation_sha256 != item["reconciliation_sha256"]:
+                raise BackfillSafetyError("governed canary evidence does not match certificate")
+            promoted = manifests.promote_certified_canary_package(
+                cast(Any, connection),
+                package_id=package_id,
+                ingestion_run_id=ingestion_run_id,
+                supervisor_run_id=UUID(cast(str, valid["canary_supervisor_run_id"])),
+                authorization_fingerprint=cast(str, valid["canary_authorization_fingerprint"]),
+                package_sha256=package_sha,
+                reconciliation_sha256=cast(str, item["reconciliation_sha256"]),
+                certificate_id=UUID(cast(str, valid["certificate_id"])),
+                certificate_sha256=cast(str, valid["certificate_sha256"]),
+            )
+            seeds[identity] = {
+                "state": "canary_promoted",
+                "attempt": 0,
+                "package_sha256": inventory_package["package_sha256"],
+                "governed_package_sha256": package_sha,
+                "run_id": str(ingestion_run_id),
+                "reconciliation_hash": item["reconciliation_sha256"],
+                "package_transition_id": promoted.package_transition_id,
+                "certificate_id": valid["certificate_id"],
+                "certificate_sha256": valid["certificate_sha256"],
+            }
+        commit = getattr(connection, "commit", None)
+        if not callable(commit):
+            raise BackfillSafetyError("certified promotion connection cannot commit")
+        commit()
+        return seeds
+    except Exception:
+        rollback = getattr(connection, "rollback", None)
+        if callable(rollback):
+            try:
+                rollback()
+            except Exception:
+                pass
+        raise
 
 
 def _now() -> datetime:
@@ -1387,7 +2046,7 @@ def _assert_external_run_dir(run_dir: Path) -> None:
 def _can_resume(record: Mapping[str, object] | None, package: Mapping[str, object], inventory_hash: str, code_sha: str, authorization_fingerprint: str | None) -> bool:
     return bool(
         record
-        and record.get("state") in SUCCESS_STATES
+        and record.get("state") in SUCCESS_STATES | {"canary_promoted"}
         and record.get("package_sha256") == package.get("package_sha256")
         and record.get("inventory_hash") == inventory_hash
         and record.get("code_sha") == code_sha
@@ -1495,16 +2154,29 @@ def run_supervisor(
     controlled_boundary_crash: bool = False,
     stop_contract_hash: str | None = None,
     boundary_stop_requested: Callable[[], bool] | None = None,
+    supervisor_run_id: str | None = None,
+    execution_identities: Sequence[str] | None = None,
+    seeded_records: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, Any]:
     """Run one package at a time, recording a durable state after every attempt."""
     _assert_external_run_dir(status_path.parent)
     if not code_sha or not lease_owner or (heartbeat_interval_seconds is not None and heartbeat_interval_seconds <= 0) or (stop_contract_hash is not None and not _is_sha256(stop_contract_hash)):
         raise BackfillSafetyError("invalid inventory or supervisor identity")
+    if supervisor_run_id is not None:
+        try:
+            UUID(supervisor_run_id)
+        except ValueError as exc:
+            raise BackfillSafetyError("invalid supervisor run UUID") from exc
     root_by_form = _validate_inventory(inventory)
     inventory_hash = cast(str, inventory["inventory_hash"])
     packages = cast(list[dict[str, object]], inventory["packages"])
+    if execution_identities is not None:
+        requested = set(execution_identities)
+        if len(requested) != len(execution_identities) or not requested.issubset({cast(str, item["identity"]) for item in packages}):
+            raise BackfillSafetyError("execution scope differs from validated inventory")
+        packages = [item for item in packages if item["identity"] in requested]
     with _FileLock(status_path.with_suffix(".run.lock")):
-        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command, authorization_id, target_identity, authorization_fingerprint, authorization_lineage, heartbeat_interval_seconds, controlled_boundary_crash, stop_contract_hash, boundary_stop_requested)
+        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command, authorization_id, target_identity, authorization_fingerprint, authorization_lineage, heartbeat_interval_seconds, controlled_boundary_crash, stop_contract_hash, boundary_stop_requested, supervisor_run_id, seeded_records)
 
 
 def _run_supervisor_locked(
@@ -1524,6 +2196,8 @@ def _run_supervisor_locked(
     controlled_boundary_crash: bool,
     stop_contract_hash: str | None,
     boundary_stop_requested: Callable[[], bool] | None,
+    supervisor_run_id: str | None,
+    seeded_records: Mapping[str, Mapping[str, object]] | None,
 ) -> dict[str, Any]:
     with _FileLock(status_path.with_suffix(".status.lock")):
         status = _load_status(status_path)
@@ -1540,8 +2214,26 @@ def _run_supervisor_locked(
             raise BackfillSafetyError("resume status does not match execution target identity")
         if status and status.get("stop_contract_hash") != stop_contract_hash:
             raise BackfillSafetyError("resume status does not match the hashed stop contract")
+        if status and status.get("supervisor_run_id") != supervisor_run_id:
+            raise BackfillSafetyError("resume status does not match supervisor run UUID")
         existing_value = status.get("packages")
         existing: dict[str, Any] = dict(existing_value) if isinstance(existing_value, dict) else {}
+        if any(isinstance(record, Mapping) and record.get("state") == "ambiguous_commit" for record in existing.values()):
+            raise BackfillSafetyError("ambiguous commit requires explicit recovery before resume")
+        if seeded_records:
+            if status:
+                raise BackfillSafetyError("canary promotion seeds are valid only for a new full run")
+            package_by_identity = {cast(str, item["identity"]): item for item in packages}
+            if len(seeded_records) != 3:
+                raise BackfillSafetyError("full run requires exactly three promoted canary seeds")
+            for identity, seed in seeded_records.items():
+                package = package_by_identity.get(identity)
+                if package is None or seed.get("state") != "canary_promoted" or seed.get("package_sha256") != package.get("package_sha256"):
+                    raise BackfillSafetyError("invalid promoted canary status seed")
+                existing[identity] = {
+                    **dict(seed), "inventory_hash": inventory_hash, "code_sha": code_sha,
+                    "authorization_id": authorization_id, "authorization_fingerprint": authorization_fingerprint,
+                }
     status = {
         "schema_version": 1,
         "sanitized_command": _sanitize_command(command),
@@ -1552,6 +2244,7 @@ def _run_supervisor_locked(
         "authorization_id": authorization_id,
         "authorization_fingerprint": authorization_fingerprint,
         "authorization_lineage": projected_lineage,
+        "supervisor_run_id": supervisor_run_id,
         "stop_contract_hash": stop_contract_hash,
         "inventory_hash": inventory_hash,
         "packages": existing,
@@ -1584,12 +2277,38 @@ def _run_supervisor_locked(
         pulse = _LeaseHeartbeat(status_path, lease_owner, attempts, heartbeat_interval_seconds) if heartbeat_interval_seconds is not None else None
         if pulse is not None:
             pulse.start()
+        def commit_fence(commit_window: str, evidence: Mapping[str, object]) -> None:
+            if commit_window not in {"issued", "confirmed", "ambiguous"}:
+                raise BackfillSafetyError("invalid protected commit fence state")
+            if evidence.get("identity") != identity or evidence.get("inventory_package_sha256") != package.get("package_sha256") or not _is_sha256(evidence.get("package_sha256")) or evidence.get("authorization_fingerprint") != authorization_fingerprint or evidence.get("supervisor_run_id") != supervisor_run_id:
+                raise BackfillSafetyError("protected commit fence lineage mismatch")
+            if commit_window == "issued" and pulse is not None and pulse.failure_reason is not None:
+                raise BackfillSafetyError("heartbeat renewal failed before protected commit")
+            record = dict(cast(Mapping[str, object], existing[identity]))
+            record.update({
+                "commit_window": commit_window,
+                "run_id": evidence.get("run_id"),
+                "package_id": evidence.get("package_id"),
+                "governed_package_sha256": evidence.get("package_sha256"),
+                "supervisor_run_id": evidence.get("supervisor_run_id"),
+                "reconciliation_hash": evidence.get("reconciliation_hash"),
+                "terminal_result": evidence.get("terminal_result"),
+            })
+            if commit_window == "ambiguous":
+                record["state"] = "ambiguous_commit"
+            existing[identity] = record
+            with _FileLock(status_path.with_suffix(".status.lock")):
+                _write_status(status_path, status)
         try:
             try:
                 _verify_package_unchanged(package, root_by_form)
-                result = dict(execute_package(package))
+                protected = getattr(execute_package, "execute_with_fence", None)
+                result = dict(protected(package, commit_fence) if callable(protected) else execute_package(package))
                 state = result.get("state")
                 _verify_package_unchanged(package, root_by_form)
+            except AmbiguousCommitError:
+                result = {"state": "ambiguous_commit"}
+                state = "ambiguous_commit"
             except BackfillSafetyError as error:
                 result = {"state": "failed", "reason_code": _reason_code_for_safety_error(error)}
                 state = "failed"
@@ -1599,9 +2318,19 @@ def _run_supervisor_locked(
         finally:
             if pulse is not None:
                 pulse.stop()
-        if pulse is not None and pulse.failure_reason is not None:
+        confirmed_fence = isinstance(existing.get(identity), Mapping) and cast(Mapping[str, object], existing[identity]).get("commit_window") == "confirmed"
+        if pulse is not None and pulse.failure_reason is not None and state != "ambiguous_commit" and not confirmed_fence:
             result = {"state": "failed", "reason_code": pulse.failure_reason}
             state = "failed"
+        if state == "ambiguous_commit":
+            current_record = dict(cast(Mapping[str, object], existing[identity]))
+            current_record["state"] = "ambiguous_commit"
+            existing[identity] = current_record
+            status["final_exit_state"] = "blocked_ambiguous_commit"
+            status["blocked_package"] = identity
+            with _FileLock(status_path.with_suffix(".status.lock")):
+                _write_status(status_path, status)
+            return {"state": "blocked", "blocked_package": identity, "reason": "ambiguous_commit", "status_path": str(status_path)}
         if state not in SUCCESS_STATES and state != "failed":
             result = {"state": "failed", "reason_code": "unexpected_package_state"}
             state = "failed"
@@ -1642,15 +2371,46 @@ def _unconfigured_executor(_package: dict[str, object]) -> Mapping[str, object]:
 
 def cli(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m src.run historical-backfill")
-    parser.add_argument("action", choices=("start", "status", "resume"))
+    parser.add_argument("action", choices=("start", "status", "resume", "recover", "rollback-probe"))
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--execution-authorization", type=Path)
+    parser.add_argument("--recovery-authorization", type=Path)
+    parser.add_argument("--recovery-evidence", type=Path)
     parser.add_argument("--controlled-boundary-crash", action="store_true")
     args = parser.parse_args(argv)
     _assert_external_run_dir(args.run_dir)
     status_path = args.run_dir / "status.json"
     if args.action == "status":
         print(_canonical_json(_load_status(status_path)))
+        return 0
+    if args.action == "recover":
+        if args.execution_authorization is None or args.recovery_authorization is None or args.recovery_evidence is None:
+            raise BackfillSafetyError("recover requires execution authorization, recovery authorization, and recovery evidence")
+        inventory_path = args.run_dir / "inventory.json"
+        if not inventory_path.exists() or not status_path.exists():
+            raise BackfillSafetyError("recover requires existing status and inventory artifacts")
+        inventory = _load_status(inventory_path)
+        _validate_inventory(inventory)
+        current_code_sha = code_identity()
+        recovery_executor = build_authorized_executor(args.execution_authorization, inventory=inventory, code_sha=current_code_sha, run_directory=args.run_dir)
+        recovery_status = _load_status(status_path)
+        recovery = load_recovery_authorization(
+            args.recovery_authorization,
+            code_sha=current_code_sha,
+            inventory_hash=cast(str, inventory["inventory_hash"]),
+            status_path=status_path,
+            original_authorization_fingerprint=recovery_executor.authorization_fingerprint,
+        )
+        if recovery_status.get("authorization_fingerprint") != recovery_executor.authorization_fingerprint:
+            raise BackfillSafetyError("original execution authorization does not match durable status")
+        try:
+            evidence_value = json.loads(args.recovery_evidence.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise BackfillSafetyError("invalid recovery evidence artifact") from exc
+        if not isinstance(evidence_value, dict):
+            raise BackfillSafetyError("invalid recovery evidence artifact")
+        outcome = recovery_executor.recover_ambiguous(status_path=status_path, recovery_authorization=recovery, recovery_evidence=evidence_value)
+        print(_canonical_json(outcome))
         return 0
     with install_boundary_stop_handlers() as boundary_stop:
         with _FileLock(args.run_dir / ".lifecycle.lock"):
@@ -1663,9 +2423,9 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 source_mode, sources = _load_authorized_source_configuration(args.execution_authorization, code_sha=current_code_sha, run_directory=args.run_dir, command=authorization_command)
                 if source_mode == "production_authorized":
                     validate_production_paths(sources, args.run_dir)
-            if args.action == "start":
+            if args.action in {"start", "rollback-probe"}:
                 if status_path.exists() or inventory_path.exists():
-                    raise BackfillSafetyError("start requires an empty external run directory")
+                    raise BackfillSafetyError("start or rollback probe requires an empty external run directory")
                 if source_mode in {None, "test_unbound"}:
                     inventory = build_historical_inventory()
                     _validate_historical_boundary(inventory)
@@ -1674,24 +2434,33 @@ def cli(argv: Sequence[str] | None = None) -> int:
                     _validate_historical_boundary(inventory, sources)
                 _write_inventory(inventory_path, inventory)
                 status: Mapping[str, object] = {}
+                status_missing = False
             else:
-                if not status_path.exists() or not inventory_path.exists():
-                    raise BackfillSafetyError("resume requires existing status and inventory artifacts")
+                if not inventory_path.exists():
+                    raise BackfillSafetyError("resume requires an existing inventory artifact")
                 inventory = _load_status(inventory_path)
                 if source_mode in {None, "test_unbound"}:
                     _validate_historical_boundary(inventory)
                 else:
                     _validate_historical_boundary(inventory, sources)
+                status_missing = not status_path.exists()
                 status = _load_status(status_path)
-                if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != current_code_sha:
+                if status and (status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != current_code_sha):
                     raise BackfillSafetyError("resume status does not match inventory or code identity")
             if args.execution_authorization is None:
+                if args.action == "rollback-probe":
+                    raise BackfillSafetyError("rollback probe requires a production canary authorization")
+                if args.action == "resume" and status_missing:
+                    raise BackfillSafetyError("missing status requires a full certificate reconstruction")
                 executor: Callable[[dict[str, object]], Mapping[str, object]] = _unconfigured_executor
                 authorization_id = None
                 target_identity = None
                 authorization_fingerprint = None
                 authorization_lineage = None
                 stop_contract_hash = None
+                supervisor_run_id = None
+                execution_identities = None
+                seeded_records = None
             else:
                 executor = build_authorized_executor(args.execution_authorization, inventory=inventory, code_sha=current_code_sha, run_directory=args.run_dir, command=authorization_command)
                 authorization_id = executor.authorization_id
@@ -1699,9 +2468,32 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 authorization_fingerprint = executor.authorization_fingerprint
                 authorization_lineage = executor.authorization_lineage
                 stop_contract_hash = getattr(executor, "stop_contract_hash", None)
+                supervisor_value = getattr(executor, "supervisor_run_id", None) or status.get("supervisor_run_id") or str(uuid4())
+                if not isinstance(supervisor_value, str):
+                    raise BackfillSafetyError("invalid supervisor run UUID")
+                supervisor_run_id = supervisor_value
+                try:
+                    setattr(executor, "supervisor_run_id", supervisor_run_id)
+                except Exception:
+                    pass
+                executor_authorization = getattr(executor, "authorization", None)
+                if isinstance(executor_authorization, Mapping) and "package_scope" in executor_authorization:
+                    scope = _validate_scope(executor_authorization["package_scope"], inventory_hash=cast(str, inventory["inventory_hash"]), label="authorization")
+                    execution_identities = [item["identity"] for item in scope]
+                else:
+                    execution_identities = None
+                seeded_records = None
                 preflight = getattr(executor, "preflight", None)
                 if callable(preflight):
                     preflight()
-            outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash, boundary_stop_requested=boundary_stop.is_set)
+                if args.action == "rollback-probe":
+                    evidence = executor.run_rollback_probe(evidence_path=args.run_dir / "rollback-probe.json")
+                    print(_canonical_json({"state": "rollback_probed", "evidence_path": str(args.run_dir / "rollback-probe.json"), "identity": evidence["identity"]}))
+                    return 0
+                if args.action in {"start", "resume"} and isinstance(executor_authorization, Mapping) and executor_authorization.get("execution_mode") == "full" and (args.action == "start" or status_missing):
+                    seeded_records = executor.promote_canary_certificate()
+                elif args.action == "resume" and status_missing:
+                    raise BackfillSafetyError("missing status can be reconstructed only from a full certificate")
+            outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash, boundary_stop_requested=boundary_stop.is_set, supervisor_run_id=supervisor_run_id, execution_identities=execution_identities, seeded_records=seeded_records)
             print(_canonical_json(outcome))
             return 0 if outcome["state"] == "ok" else 1

@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import time
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -18,6 +19,23 @@ def test_connection_parameter_adapter_requires_psycopg3_get_parameters() -> None
         _connection_parameters(type("Connection", (), {"info": object()})())
 
 
+@pytest.mark.parametrize("keyword", ("sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "servicefile"))
+def test_status_secret_scan_rejects_quoted_and_unquoted_libpq_paths_under_benign_keys(keyword: str) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _assert_no_secret
+
+    for value in (f"{keyword}=C:/private/material.pem", f"host=db {keyword}='C:/private material.pem'"):
+        with pytest.raises(BackfillSafetyError, match="credential material"):
+            _assert_no_secret({"diagnostic_note": value})
+
+    class Info:
+        def get_parameters(self) -> dict[str, str]:
+            return {"host": "db", "sslmode": "verify-full", keyword: "C:/private/material.pem"}
+
+    with pytest.raises(BackfillSafetyError, match="credential material"):
+        from src.sec_regulatory.historical_backfill import _connection_parameters
+        _connection_parameters(type("Connection", (), {"info": Info()})())
+
+
 def test_psycopg3_connection_info_adapter_uses_real_disposable_connection() -> None:
     psycopg = pytest.importorskip("psycopg")
     dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
@@ -28,7 +46,7 @@ def test_psycopg3_connection_info_adapter_uses_real_disposable_connection() -> N
     with psycopg.connect(dsn, connect_timeout=3) as connection:
         parameters = _connection_parameters(connection)
     assert parameters["host"] == "127.0.0.1"
-    assert "password" not in parameters and "passfile" not in parameters
+    assert not {"password", "passfile", "sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "service"} & set(parameters)
 
 
 def test_real_disposable_collector_executes_every_fixed_select_before_fail_closed() -> None:
@@ -73,6 +91,147 @@ def test_real_disposable_target_inspection_detects_truncate_on_user_relation() -
         connection.rollback()
     assert "public.runner_preflight_truncate_probe" in observed["writable_tables"]
     assert "public.runner_preflight_truncate_probe" in observed["truncate_tables"]
+
+
+def test_real_disposable_governed_commit_wrapper_and_recovery_zero_queries_execute() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory import manifests
+    from src.sec_regulatory.historical_backfill import _get_recovery_governed_evidence, _get_recovery_zero_proof
+
+    run_id = uuid4()
+    supervisor_run_id = uuid4()
+    with psycopg.connect(dsn) as connection:
+        manifests.install_schema(connection)
+        run = manifests.create_or_resume_run(
+            connection, source_family="nport", package_sha256="c" * 64, parser_version=f"runner-probe-{run_id}",
+            source_quarter="2024Q1", package_relative_path=f"runner-probe-{run_id}", run_id=run_id,
+        )
+        recorded = manifests.record_commit_outcome(
+            connection, run_id=run.run_id, supervisor_run_id=supervisor_run_id,
+            authorization_fingerprint="a" * 64, package_sha256="c" * 64, outcome="committed",
+        )
+        assert recorded.outcome == "committed"
+        absent_package_id = uuid4()
+        absent_run_id = uuid4()
+        assert _get_recovery_governed_evidence(connection, package_id=absent_package_id, run_id=absent_run_id, authorization_fingerprint="a" * 64) is None
+        assert _get_recovery_zero_proof(connection, package_id=absent_package_id, run_id=absent_run_id) == {
+            "package_count": 0, "run_count": 0, "run_transition_count": 0,
+            "source_transition_count": 0, "validated_visibility_count": 0,
+        }
+        connection.rollback()
+
+
+def test_real_disposable_exact_16_table_snapshot_executes_after_transactional_install() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.nport import storage as nport_storage
+    from src.ncen import storage as ncen_storage
+    from src.rr1 import storage as rr1_storage
+    from src.sec_regulatory import manifests
+    from src.sec_regulatory.historical_backfill import _snapshot_exact_write_counts
+
+    with psycopg.connect(dsn) as connection:
+        manifests.install_schema(connection)
+        nport_storage.install_schema(connection)
+        ncen_storage.install_schema(connection)
+        rr1_storage.install_schema(connection)
+        counts = _snapshot_exact_write_counts(connection)
+        connection.rollback()
+    assert len(counts) == 16 and all(value >= 0 for value in counts.values())
+
+
+def test_real_pg18_monitoring_inheritance_allows_select_but_not_set_role() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    role = f"runner_monitor_probe_{os.getpid()}"
+    from src.sec_regulatory.historical_backfill import _collect_monitoring_privileges
+    admin = psycopg.connect(dsn, autocommit=True)
+    try:
+        with admin.cursor() as cursor:
+            cursor.execute(f"DROP ROLE IF EXISTS {role}")
+            cursor.execute(f"CREATE ROLE {role} NOLOGIN INHERIT")
+            cursor.execute(f"GRANT pg_monitor TO {role} WITH INHERIT TRUE, SET FALSE")
+        with psycopg.connect(dsn) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"SET SESSION AUTHORIZATION {role}")
+                cursor.execute("SELECT count(*) >= 0 FROM pg_stat_activity")
+                assert cursor.fetchone() == (True,)
+                cursor.execute("SELECT pg_has_role(current_user, 'pg_monitor', 'SET'), pg_has_role(current_user, 'pg_monitor', 'USAGE')")
+                assert cursor.fetchone() == (False, True)
+                assert _collect_monitoring_privileges(connection)["monitoring_privileges"] == {
+                    "pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"],
+                    "pg_monitor": ["DIRECT_MEMBER_NO_SET"], "pg_read_all_stats": ["INHERITED_USAGE"],
+                }
+                with pytest.raises(psycopg.Error):
+                    cursor.execute("SET ROLE pg_monitor")
+    finally:
+        with admin.cursor() as cursor:
+            cursor.execute(f"DROP ROLE IF EXISTS {role}")
+        admin.close()
+
+
+def test_real_relation_security_hash_changes_for_rls_policy_without_oid_change() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory.historical_backfill import _collect_relation_security
+
+    table = f"runner_rls_probe_{os.getpid()}"
+    qualified = f"public.{table}"
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE TABLE {qualified} (id integer)")
+            cursor.execute("SELECT %s::regclass::oid", (qualified,))
+            oid = cursor.fetchone()[0]
+        before = _collect_relation_security(connection, [qualified])["relations"][0]
+        with connection.cursor() as cursor:
+            cursor.execute(f"ALTER TABLE {qualified} ENABLE ROW LEVEL SECURITY")
+            cursor.execute(f"CREATE POLICY runner_policy ON {qualified} USING (id > 0)")
+            cursor.execute("SELECT %s::regclass::oid", (qualified,))
+            assert cursor.fetchone()[0] == oid
+        after = _collect_relation_security(connection, [qualified])["relations"][0]
+        connection.rollback()
+    assert before.split("|definition_sha256=")[0] == after.split("|definition_sha256=")[0]
+    assert before != after
+
+
+def test_real_target_inspection_includes_updatable_view_and_foreign_table_when_available() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory.historical_backfill import _inspect_connected_target
+
+    suffix = os.getpid()
+    base = f"runner_write_base_{suffix}"
+    view = f"runner_write_view_{suffix}"
+    foreign = f"runner_write_foreign_{suffix}"
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(f"CREATE TABLE public.{base} (id integer)")
+            cursor.execute(f"CREATE VIEW public.{view} AS SELECT id FROM public.{base}")
+            cursor.execute("SAVEPOINT before_foreign_probe")
+            foreign_available = True
+            try:
+                cursor.execute("CREATE EXTENSION IF NOT EXISTS file_fdw")
+                cursor.execute(f"CREATE SERVER runner_file_server_{suffix} FOREIGN DATA WRAPPER file_fdw")
+                cursor.execute(f"CREATE FOREIGN TABLE public.{foreign} (id integer) SERVER runner_file_server_{suffix} OPTIONS (filename '/dev/null')")
+            except psycopg.Error:
+                foreign_available = False
+                cursor.execute("ROLLBACK TO SAVEPOINT before_foreign_probe")
+        observed = _inspect_connected_target(connection)
+        connection.rollback()
+    assert f"public.{view}" in observed["writable_tables"]
+    if foreign_available:
+        assert f"public.{foreign}" in observed["writable_tables"]
 
 
 def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventory-v1") -> dict[str, object]:
@@ -138,7 +297,7 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         "table_privileges": {table: ["SELECT", "INSERT", "UPDATE", "DELETE"] for table in EXACT_WRITABLE_TABLES},
         "sequence_privileges": {name: ["USAGE"] for name in EXACT_IDENTITY_SEQUENCES},
         "function_privileges": {name: ["EXECUTE"] for name in EXACT_SECURITY_DEFINER_ROUTINES},
-        "monitoring_privileges": {"pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"], "pg_monitor": ["MEMBER"], "pg_read_all_stats": ["MEMBER"]},
+        "monitoring_privileges": {"pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"], "pg_monitor": ["DIRECT_MEMBER_NO_SET"], "pg_read_all_stats": ["INHERITED_USAGE"]},
         "effective_writable_tables": sorted(EXACT_WRITABLE_TABLES),
         "truncate_tables": [],
         "public_acl": [],
@@ -182,6 +341,16 @@ def test_preflight_requires_exact_security_definer_recovery_routine_set() -> Non
     missing_privilege = {**valid, "function_privileges": {key: value for key, value in valid["function_privileges"].items() if key != "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)"}}
     with pytest.raises(BackfillSafetyError, match="privilege identity"):
         _validate_preflight_attestation(missing_privilege)
+
+
+def test_preflight_rejects_usage_only_monitoring_claim_and_requires_direct_no_set_membership() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    assert _validate_preflight_attestation(valid)["monitoring_privileges"]["pg_monitor"] == ["DIRECT_MEMBER_NO_SET"]
+    inherited_only = {**valid, "monitoring_privileges": {**valid["monitoring_privileges"], "pg_monitor": ["INHERITED_USAGE"]}}
+    with pytest.raises(BackfillSafetyError, match="monitoring"):
+        _validate_preflight_attestation(inherited_only)
 
 
 def test_preflight_rejects_truncate_or_any_outside_effective_write() -> None:
@@ -335,6 +504,12 @@ class _LockConnection(_Connection):
         return _Cursor(self.events, self.busy)
 
 
+class _CommitFailureConnection(_LockConnection):
+    def commit(self) -> None:
+        self.commits += 1
+        raise RuntimeError("connection lost during COMMIT")
+
+
 def _single_package_inventory(tmp_path: Path) -> tuple[dict[str, object], Path]:
     from src.sec_regulatory.historical_backfill import SourceSpec, build_inventory
 
@@ -343,6 +518,19 @@ def _single_package_inventory(tmp_path: Path) -> tuple[dict[str, object], Path]:
     package.mkdir(parents=True)
     (package / "submission.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
     return build_inventory((SourceSpec("nport", root, 1),)), package
+
+
+def _three_form_inventory(tmp_path: Path) -> dict[str, object]:
+    from src.sec_regulatory.historical_backfill import SourceSpec, build_inventory
+
+    specs = []
+    for form in ("nport", "ncen", "rr1"):
+        root = tmp_path / form
+        package = root / f"2024q1_{form}"
+        package.mkdir(parents=True)
+        (package / "submission.tsv").write_text("a\tb\n1\t2\n", encoding="utf-8")
+        specs.append(SourceSpec(form, root, 1))
+    return build_inventory(tuple(specs))
 
 
 def test_authorized_executor_verifies_target_then_dispatches_exact_manifest_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,7 +543,9 @@ def test_authorized_executor_verifies_target_then_dispatches_exact_manifest_pack
     connection = _LockConnection([])
     calls: list[tuple[Path, Path]] = []
     monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
-    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: "nport:fixed-digest")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: f"nport:{'c' * 64}")
+    monkeypatch.setattr(backfill, "_governed_package_id", lambda *_args, **_kwargs: UUID("33333333-3333-4333-8333-333333333333"))
+    monkeypatch.setattr(backfill, "_governed_reconciliation_sha256", lambda *_args, **_kwargs: "f" * 64)
 
     executor = backfill.build_authorized_executor(
         authorization_path,
@@ -381,6 +571,68 @@ def test_authorized_executor_verifies_target_then_dispatches_exact_manifest_pack
     assert result == {"state": "raw_validated", "rows": 3, "run_id": "run-1"}
     assert calls == [(package_path, package_path.parent)]
     assert connection.commits == 1
+
+
+def test_protected_commit_fsyncs_issued_records_outcome_then_confirms(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _authorization(inventory_hash=str(inventory["inventory_hash"]))
+    artifact["supervisor_run_id"] = "11111111-1111-4111-8111-111111111111"
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    connection = _LockConnection([])
+    events: list[tuple[str, object]] = []
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: f"nport:{'c' * 64}")
+    monkeypatch.setattr(backfill, "_governed_package_id", lambda *_args, **_kwargs: UUID("33333333-3333-4333-8333-333333333333"))
+    monkeypatch.setattr(backfill, "_governed_reconciliation_sha256", lambda *_args, **_kwargs: "f" * 64)
+    monkeypatch.setattr(backfill.manifests, "record_commit_outcome", lambda _conn, **kwargs: events.append(("manifest", kwargs)) or object())
+
+    def dispatch(dispatch_connection: object, *, package: Path, source_root: Path) -> dict[str, object]:
+        dispatch_connection.commit()  # type: ignore[attr-defined]  # ingester checkpoint must be suppressed
+        return {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 1, "run_id": "22222222-2222-4222-8222-222222222222", "reconciliation_hash": "f" * 64}
+
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connection,
+        target_inspector=lambda _conn: {"database": "sec_backfill_test", "server_address": "127.0.0.1", "role": "sec_backfill_test", "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27", "is_superuser": False, "owns_any_table": False, "writable_tables": ["sec_raw.nport_filings"]},
+        schema_installers={"manifest": lambda _conn: None, "nport": lambda _conn: None},
+        dispatchers={"nport": dispatch},
+    )
+
+    result = executor.execute_with_fence(dict(inventory["packages"][0]), lambda state, evidence: events.append((state, dict(evidence))))
+
+    assert result["state"] == "raw_validated"
+    assert [event[0] for event in events] == ["issued", "manifest", "confirmed"]
+    assert connection.commits == 1 and connection.rollbacks == 0
+
+
+def test_commit_exception_is_ambiguous_and_cleanup_does_not_retry_or_downgrade(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _authorization(inventory_hash=str(inventory["inventory_hash"]))
+    artifact["supervisor_run_id"] = "11111111-1111-4111-8111-111111111111"
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    connection = _CommitFailureConnection([])
+    events: list[str] = []
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: f"nport:{'c' * 64}")
+    monkeypatch.setattr(backfill, "_governed_package_id", lambda *_args, **_kwargs: UUID("33333333-3333-4333-8333-333333333333"))
+    monkeypatch.setattr(backfill, "_governed_reconciliation_sha256", lambda *_args, **_kwargs: "f" * 64)
+    monkeypatch.setattr(backfill.manifests, "record_commit_outcome", lambda *_args, **_kwargs: object())
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connection,
+        target_inspector=lambda _conn: {"database": "sec_backfill_test", "server_address": "127.0.0.1", "role": "sec_backfill_test", "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27", "is_superuser": False, "owns_any_table": False, "writable_tables": ["sec_raw.nport_filings"]},
+        schema_installers={"manifest": lambda _conn: None, "nport": lambda _conn: None},
+        dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 1, "run_id": "22222222-2222-4222-8222-222222222222", "reconciliation_hash": "f" * 64}},
+    )
+
+    with pytest.raises(backfill.AmbiguousCommitError):
+        executor.execute_with_fence(dict(inventory["packages"][0]), lambda state, _evidence: events.append(state))
+    assert events == ["issued", "ambiguous"]
+    assert connection.commits == 1 and connection.rollbacks == 0
     assert connection.rollbacks == 0
     assert connection.closed
 
@@ -548,6 +800,98 @@ def test_certificate_bound_promotion_is_exact_immutable_and_idempotent(tmp_path:
         promote_canary_packages(certificate, inventory=inventory, canary_records={package["identity"]: {**canary[package["identity"]], "authorization_fingerprint": "a" * 64}}, full_records={}, existing_transitions=[], append_transition=lambda _item: None)
 
 
+def test_typed_canary_promotion_uses_governed_wrappers_and_one_commit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory = _three_form_inventory(tmp_path)
+    certificate_id = "11111111-1111-4111-8111-111111111111"
+    supervisor_id = "22222222-2222-4222-8222-222222222222"
+    canary_fp = "a" * 64
+    packages = []
+    governed_by_form: dict[str, str] = {}
+    for index, package in enumerate(inventory["packages"], start=3):
+        governed_hash = f"{index}" * 64
+        governed_by_form[package["form"]] = governed_hash
+        packages.append({
+            "identity": package["identity"], "package_sha256": governed_hash,
+            "package_id": f"{index:08d}-3333-4333-8333-333333333333",
+            "ingestion_run_id": f"{index:08d}-4444-4444-8444-444444444444",
+            "reconciliation_sha256": f"{index}" * 64,
+        })
+    certificate = {
+        "certificate_id": certificate_id, "canary_supervisor_run_id": supervisor_id,
+        "canary_authorization_fingerprint": canary_fp, "inventory_hash": inventory["inventory_hash"],
+        "packages": packages,
+    }
+    certificate["certificate_sha256"] = backfill._sha256_bytes(backfill._canonical_json(certificate).encode("ascii"))
+    connection = _Connection()
+    promoted: list[object] = []
+
+    def governed(_connection: object, **kwargs: object) -> object:
+        package = next(item for item in packages if item["package_id"] == str(kwargs["package_id"]))
+        return types.SimpleNamespace(
+            package_sha256=package["package_sha256"], commit_outcome="committed", supervisor_run_id=supervisor_id,
+            authorization_fingerprint=canary_fp,
+        )
+
+    monkeypatch.setattr(backfill, "_get_recovery_governed_evidence", governed)
+    monkeypatch.setattr(backfill, "_governed_reconciliation_sha256", lambda _connection, *, run_id: next(item["reconciliation_sha256"] for item in packages if item["ingestion_run_id"] == str(run_id)))
+    monkeypatch.setattr(backfill.manifests, "promote_certified_canary_package", lambda *_args, **kwargs: promoted.append(kwargs) or types.SimpleNamespace(package_transition_id=len(promoted)))
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda form, _package: f"{form}:{governed_by_form[form]}")
+
+    seeds = backfill.promote_certified_canary_packages(connection, certificate=certificate, inventory=inventory)
+
+    assert len(seeds) == len(promoted) == 3 and connection.commits == 1 and connection.rollbacks == 0
+    assert {record["state"] for record in seeds.values()} == {"canary_promoted"}
+
+
+def test_v4_production_canary_scope_is_exactly_one_package_per_form(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _validate_execution_authorization
+
+    inventory = _three_form_inventory(tmp_path)
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact["schema_version"] = 4
+    artifact["supervisor_run_id"] = "11111111-1111-4111-8111-111111111111"
+    artifact["package_scope"] = [{"identity": item["identity"], "package_sha256": item["package_sha256"]} for item in inventory["packages"]]
+
+    assert _validate_execution_authorization(artifact, code_sha="code-v1", inventory_hash=str(inventory["inventory_hash"]))["execution_mode"] == "canary"
+    for invalid_scope in (artifact["package_scope"][:2], [artifact["package_scope"][0], artifact["package_scope"][1], artifact["package_scope"][1]]):
+        with pytest.raises(BackfillSafetyError, match="scope|package"):
+            _validate_execution_authorization({**artifact, "package_scope": invalid_scope}, code_sha="code-v1", inventory_hash=str(inventory["inventory_hash"]))
+
+
+def test_production_rollback_probe_uses_real_dispatch_path_and_zero_delta_snapshots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory = _three_form_inventory(tmp_path)
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact.update({"schema_version": 4, "supervisor_run_id": "11111111-1111-4111-8111-111111111111"})
+    artifact["package_scope"] = [{"identity": item["identity"], "package_sha256": item["package_sha256"]} for item in inventory["packages"]]
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    connections = [_LockConnection([]) for _ in range(3)]
+    dispatched: list[str] = []
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: "fixed")
+    monkeypatch.setattr(backfill, "_snapshot_exact_write_counts", lambda _connection: {table: 0 for table in backfill.EXACT_WRITABLE_TABLES})
+    target = {
+        "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+        "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
+        "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_WRITABLE_TABLES), "truncate_tables": [],
+    }
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connections.pop(0),
+        target_inspector=lambda _connection: target, preflight_inspector=lambda _connection: _production_preflight(),
+        dispatchers={form: (lambda _connection, *, package, source_root, form=form: dispatched.append(form) or {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 0, "run_id": "22222222-2222-4222-8222-222222222222", "reconciliation_hash": "f" * 64}) for form in ("nport", "ncen", "rr1")},
+    )
+
+    evidence = executor.run_rollback_probe(evidence_path=tmp_path / "probe.json")
+
+    assert evidence["state"] == "ROLLBACK_PROBED" and len(evidence["table_deltas"]) == 16
+    assert len(dispatched) == 1 and all(value == 0 for value in evidence["table_deltas"].values())
+
+
 def test_rollback_probe_and_expired_lease_recovery_are_zero_delta_and_lineage_bound() -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, rollback_probe, validate_recovery_outcome
 
@@ -560,6 +904,50 @@ def test_rollback_probe_and_expired_lease_recovery_are_zero_delta_and_lineage_bo
     for outcome in (None, {"commit_outcome": "unknown"}, {"commit_outcome": "committed", "authorization_fingerprint": "b" * 64, "terminal_result": {"state": "raw_validated"}}):
         with pytest.raises(BackfillSafetyError):
             validate_recovery_outcome(status, authorization_fingerprint="a" * 64, outcome=outcome)
+
+
+def test_recovery_uses_governed_evidence_and_persists_definitive_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import types
+    import src.sec_regulatory.historical_backfill as backfill
+
+    status_path = tmp_path / "run" / "status.json"
+    identity = "nport:2024Q1:fixture"
+    original = "a" * 64
+    status = {
+        "authorization_fingerprint": original, "active_package": identity, "active_attempt": 1,
+        "lease": {"owner": "old", "expires_at": "2000-01-01T00:00:00+00:00"},
+        "packages": {identity: {
+            "state": "ambiguous_commit", "authorization_fingerprint": original,
+            "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+            "package_id": "33333333-3333-4333-8333-333333333333",
+            "run_id": "22222222-2222-4222-8222-222222222222", "package_sha256": "b" * 64,
+            "governed_package_sha256": "c" * 64,
+            "reconciliation_hash": "d" * 64, "terminal_result": {"state": "raw_validated", "rows": 1, "run_id": "22222222-2222-4222-8222-222222222222", "reconciliation_hash": "d" * 64},
+        }},
+    }
+    backfill._write_status(status_path, status)
+    evidence = {"governed_query": "unique_commit"}
+    recovery = {
+        "identity": identity, "original_authorization_fingerprint": original,
+        "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+        "package_id": "33333333-3333-4333-8333-333333333333",
+        "run_id": "22222222-2222-4222-8222-222222222222", "package_sha256": "c" * 64,
+        "reconciliation_sha256": "d" * 64, "expected_outcome": "committed",
+        "recovery_evidence_sha256": backfill._sha256_bytes(backfill._canonical_json(evidence).encode("ascii")),
+        "recovery_authorization_fingerprint": "e" * 64,
+    }
+    governed = types.SimpleNamespace(
+        commit_outcome="committed", package_id=UUID(recovery["package_id"]), run_id=UUID(recovery["run_id"]),
+        package_sha256=recovery["package_sha256"], supervisor_run_id=UUID(recovery["supervisor_run_id"]),
+        authorization_fingerprint=original,
+    )
+    monkeypatch.setattr(backfill, "_get_recovery_governed_evidence", lambda *_args, **_kwargs: governed)
+
+    result = backfill.recover_ambiguous_commit(_Connection(), status_path=status_path, recovery_authorization=recovery, recovery_evidence=evidence)
+
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    assert result["outcome"] == "committed" and durable["packages"][identity]["state"] == "raw_validated"
+    assert durable["lease"] is None and durable["final_exit_state"] == "recovered_committed"
 
 
 def test_lock_busy_refuses_before_schema_or_dispatch_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

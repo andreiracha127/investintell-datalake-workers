@@ -201,6 +201,73 @@ def test_boundary_stop_is_bound_to_the_contract_and_starts_no_package(tmp_path: 
         run_supervisor(inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test", execute_package=lambda _package: pytest.fail("mismatch must not execute"), stop_contract_hash="b" * 64)
 
 
+def test_supervisor_blocks_and_retains_fence_on_ambiguous_commit(tmp_path: Path) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+
+    class Executor:
+        def execute_with_fence(self, package: dict[str, object], fence: object) -> object:
+            evidence = {
+                "identity": package["identity"], "inventory_package_sha256": package["package_sha256"],
+                "package_sha256": "c" * 64, "package_id": "33333333-3333-4333-8333-333333333333",
+                "run_id": "22222222-2222-4222-8222-222222222222",
+                "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+                "authorization_fingerprint": "a" * 64, "reconciliation_hash": "f" * 64,
+            }
+            fence("issued", evidence)  # type: ignore[operator]
+            fence("ambiguous", evidence)  # type: ignore[operator]
+            raise backfill.AmbiguousCommitError("uncertain")
+
+    outcome = backfill.run_supervisor(
+        inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test",
+        execute_package=Executor(), authorization_id="auth", authorization_fingerprint="a" * 64,
+        supervisor_run_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    record = durable["packages"][inventory["packages"][0]["identity"]]
+    assert outcome["state"] == "blocked" and durable["final_exit_state"] == "blocked_ambiguous_commit"
+    assert record["state"] == "ambiguous_commit" and record["commit_window"] == "ambiguous"
+    assert durable["lease"] is not None and durable["active_package"] == inventory["packages"][0]["identity"]
+
+
+def test_full_supervisor_seeds_three_promoted_canaries_and_executes_exactly_79(tmp_path: Path) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    specs = []
+    for form, count in (("nport", 26), ("ncen", 17), ("rr1", 39)):
+        root = tmp_path / form
+        for index in range(count):
+            package = root / f"2024q1_{form}_{index:02d}"
+            package.mkdir(parents=True)
+            (package / "source.tsv").write_text("x\n", encoding="utf-8")
+        specs.append(backfill.SourceSpec(form, root, count))
+    inventory = backfill.build_inventory(tuple(specs))
+    promoted = {form: next(item for item in inventory["packages"] if item["form"] == form) for form in ("nport", "ncen", "rr1")}
+    seeds = {
+        item["identity"]: {
+            "state": "canary_promoted", "attempt": 0, "package_sha256": item["package_sha256"],
+            "run_id": f"0000000{index}-1111-4111-8111-111111111111", "reconciliation_hash": f"{index}" * 64,
+            "package_transition_id": index,
+        }
+        for index, item in enumerate(promoted.values(), start=1)
+    }
+    executed: list[str] = []
+
+    outcome = backfill.run_supervisor(
+        inventory, status_path=tmp_path / "run" / "status.json", code_sha="code-v1", lease_owner="unit-test",
+        execute_package=lambda package: executed.append(package["identity"]) or {"state": "raw_validated", "rows": 0},
+        authorization_id="full", authorization_fingerprint="a" * 64,
+        supervisor_run_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        execution_identities=[item["identity"] for item in inventory["packages"]], seeded_records=seeds,
+    )
+
+    assert outcome["state"] == "ok" and len(executed) == 79
+    assert not set(executed) & set(seeds)
+
+
 def test_canary_target_rejects_application_and_shared_roles() -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, validate_canary_target
 
