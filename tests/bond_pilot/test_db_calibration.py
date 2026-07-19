@@ -394,6 +394,18 @@ def test_complete_checkpoint_rejects_unproven_exact_multiple(mode: str, pages: i
         run_v2_calibration(None, evidence=evidence, approval=approval, series_ids=("S1",), mode=mode, checkpoint_path=checkpoint, run_id="run-1")
 
 
+@pytest.mark.parametrize("mode,page_size", [("calibration", 1000), ("first_bounded", 2500)])
+def test_complete_checkpoint_rejects_underfilled_multi_page_cardinality(mode: str, page_size: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    from src.bond_pilot import db_calibration as calibration
+
+    checkpoint = tmp_path / "checkpoint.json"
+    payload = calibration._checkpoint_payload(run_id="run-1", evidence=evidence, approval=approval, mode=mode, series_ids=("S1",), reports=[("S1", "2024-03-31", "pub-1", "acc-1")], last_key=("S1", "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1"), pages=2, rows=1, elapsed_seconds=1.0, output_hash=_sha("f"), output_state="complete", stop_reason=None)
+    checkpoint.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(PilotError, match="run_budget_required"):
+        run_v2_calibration(None, evidence=evidence, approval=approval, series_ids=("S1",), mode=mode, checkpoint_path=checkpoint, run_id="run-1")
+
+
 def test_exact_full_page_requires_empty_terminator_and_empty_cohort_is_one_page(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from src.bond_pilot import db_calibration as calibration
 

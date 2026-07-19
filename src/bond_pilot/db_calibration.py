@@ -327,7 +327,7 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         raise PilotError("run_budget_required")
     if state == "budget_reached" and (pages != budget.max_pages or rows != budget.max_rows):
         raise PilotError("run_budget_required")
-    if state == "complete" and not (0 <= rows < pages * budget.page_size):
+    if state == "complete" and not ((pages - 1) * budget.page_size <= rows < pages * budget.page_size):
         raise PilotError("run_budget_required")
     if key is not None and tuple(key[:4]) not in reports:
         raise PilotError("run_budget_required")
