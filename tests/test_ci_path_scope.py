@@ -51,6 +51,34 @@ def test_bond_pilot_paths_select_only_nport(path: str) -> None:
     assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
 
 
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("src/bond_pilot/internal/panel.py", Scope(False, True)),
+        ("tests/bond_pilot/internal/test_panel.py", Scope(False, True)),
+        ("tests/bond_pilot/fixtures/internal/data.json", Scope(False, True)),
+        ("docs/internal/bond-pilot-option-a.md", Scope(False, False)),
+    ],
+)
+def test_nested_bond_pilot_paths_do_not_match_single_level_patterns(
+    path: str, expected: Scope
+) -> None:
+    assert classify_paths([path]) == expected
+
+
+def test_nport_dependency_install_precedes_bond_pilot_tests() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    install_step = (
+        "      - name: Install N-PORT dependencies\n"
+        "        if: steps.changes.outputs.nport_changed == 'true'\n"
+        "        run: python -m pip install -r requirements.txt"
+    )
+    bond_tests_step = "      - name: Run bond-pilot tests"
+
+    assert install_step in workflow
+    assert workflow.index(install_step) < workflow.index(bond_tests_step)
+
+
 def test_stage_a_compute_path_selects_quant_only() -> None:
     assert classify_paths(["src/quadrant_score.py"]) == Scope(
         nport_changed=False,

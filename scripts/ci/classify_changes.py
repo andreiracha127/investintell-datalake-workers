@@ -25,21 +25,23 @@ ALL_LANES = {
 }
 NPORT_PATTERNS = (
     "requirements.txt",
-    "src/bond_pilot/*.py",
     "src/workers/nport_*.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
     "scripts/backfill_nport_holding_attributes.py",
     "scripts/load_nport_fund_flows.py",
-    "scripts/run_bond_pilot.py",
     "schemas/nport_*.sql",
-    "tests/bond_pilot/*.py",
-    "tests/bond_pilot/fixtures/*.json",
     "tests/test_nport_*.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",
     "tests/test_backfill_nport_holding_attributes.py",
     "tests/test_load_nport_*.py",
+)
+PILOT_NPORT_PATTERNS = (
+    "src/bond_pilot/*.py",
+    "scripts/run_bond_pilot.py",
+    "tests/bond_pilot/*.py",
+    "tests/bond_pilot/fixtures/*.json",
     "docs/bond-pilot-option-a.md",
 )
 SHARED_PATHS = {"src/db.py"}
@@ -73,6 +75,11 @@ def _normalize_path(raw_path: str) -> str:
     return path
 
 
+def _matches_single_level(path: str, pattern: str) -> bool:
+    """Match a pilot glob without allowing ``*`` to cross a path separator."""
+    return path.count("/") == pattern.count("/") and fnmatch.fnmatchcase(path, pattern)
+
+
 def classify_paths(paths: Iterable[str]) -> Scope:
     """Return the lanes required by ``paths``, failing closed for unknown code."""
     nport = False
@@ -89,6 +96,9 @@ def classify_paths(paths: Iterable[str]) -> Scope:
             path.startswith("fixtures/input_packs/") and "/sec_nport_" in path
         ):
             nport = quant = True
+            continue
+        if any(_matches_single_level(path, pattern) for pattern in PILOT_NPORT_PATTERNS):
+            nport = True
             continue
         if any(fnmatch.fnmatchcase(path, pattern) for pattern in NPORT_PATTERNS):
             nport = True

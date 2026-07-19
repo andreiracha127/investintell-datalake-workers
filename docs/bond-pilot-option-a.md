@@ -117,8 +117,15 @@ the same concurrency and retry limits. Both use a read-only transaction, a
 two-second lock timeout, a 60-second idle transaction timeout, static bound SQL,
 and `EXPLAIN (FORMAT JSON)` without `ANALYZE`. Unsafe/global/sequential plans,
 missing lineage predicates, absent indexed or partitioned access, or any write
-attempt stop the run. `full` is not implemented and means
-`run_budget_required` pending separate authorization and a new plan.
+attempt stop the run. Full execution is deferred pending separate authorization
+and a new plan. The current CLI rejects `--mode full` through argparse choices
+before `PilotError` handling; it reports an argument error and does not create a
+typed stop pack.
+
+Reaching a normal configured row or page cap publishes a successful partial
+calibration pack: `partial` is `true`, the checkpoint has
+`output_state: "budget_reached"`, and `calibration-report.json` is present.
+That outcome does not raise and contains no `stop-report.json`.
 
 To resume only a validated stopped calibration pack, use the same governed
 inputs, mode, ordered series, and cumulative budget. The resume pack is checked
@@ -168,10 +175,13 @@ evidence SHA-256, the same governance hashes, seam, relation, series, allowed
 modes, explicit read permission, approver, and UTC approval time. The current
 Phase 4 status does not satisfy this contract.
 
-Every JSON control input is a regular, bounded JSON object with duplicate keys
-rejected. The CLI prints sorted JSON on success. A typed stop exits with code 2
-and writes an internal stop report and checksum manifest when it can safely
-publish them.
+Phase 4 evidence/approval and resume checkpoint/control inputs use the strict,
+bounded parsing implemented for those inputs: duplicate keys and non-finite
+values are rejected. Source manifest and source approval inputs instead load
+through their exact domain contracts and pin validation; this runbook makes no
+universal parser claim for every JSON control input. The CLI prints sorted JSON
+on success. A typed stop exits with code 2 and writes an internal stop report
+and checksum manifest when it can safely publish them.
 
 ## Internal artifacts, checksums, and typed stops
 
@@ -179,9 +189,12 @@ Fixture packs retain `source-manifest.json`, `nport-extract-manifest.json`,
 `calibration-report.json`, `bond-observed-daily.parquet`,
 `bond-latest.parquet`, `fund-asof-match.parquet`,
 `fund-series-metrics.parquet`, `quality-summary.json`, `pilot-report.md`, and
-`checksums.sha256`. A partial database pack also retains its checkpoint and
-internal calibration provenance and stop/report material. `bond-latest.parquet`
-is an internal diagnostic only and never supplies historical matching.
+`checksums.sha256`. A normal capped partial database pack contains its
+checkpoint, internal calibration provenance, and `calibration-report.json`, but
+no `stop-report.json`. A typed stopped pack contains internal provenance,
+`stop-report.json`, and checksums where safely publishable; it retains a
+checkpoint only when one was created before the stop. `bond-latest.parquet` is
+an internal diagnostic only and never supplies historical matching.
 
 `checksums.sha256` verifies each artifact before review or resume. Checkpoints
 retain the run identity; evidence, approval, publication, query, and method
@@ -190,14 +203,16 @@ and elapsed time; output hash and state; and a typed stop reason. The original
 full provenance remains inside these internal artifacts.
 
 Typed stops are fail-closed: a qualification, hash, schema, terms, approval,
-mapping, evidence, lineage, relation, plan, timeout, budget, checkpoint, or
-resume mismatch stops without fallback; `phase4b_v2_unavailable` means the real
-read prerequisites or approval authority are absent or invalid;
-`calibration_connection_failed` means no safe connection was opened;
-`calibration_resume_invalid` means the prior pack cannot be trusted; and a
-write attempt, unsafe plan, or budget limit produces a partial stopped pack with
-its typed reason. There is no retry, counter reset, timeout increase, broadening,
-legacy fallback, or silent continuation.
+mapping, evidence, lineage, relation, unsafe plan, read-only violation,
+checkpoint, or resume mismatch stops without fallback;
+`phase4b_v2_unavailable` means the real-read prerequisites or approval authority
+are absent or invalid; `calibration_connection_failed` means no safe connection
+was opened; and `calibration_resume_invalid` means the prior pack cannot be
+trusted. An unsafe plan, timeout, or write attempt raises a typed stop and
+publishes a stopped pack where safely possible. A normal configured budget cap
+is instead the successful partial outcome described above. There is no retry,
+counter reset, timeout increase, broadening, legacy fallback, or silent
+continuation.
 
 ## Deferred scope
 
