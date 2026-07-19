@@ -25,17 +25,22 @@ ALL_LANES = {
 }
 NPORT_PATTERNS = (
     "requirements.txt",
+    "src/bond_pilot/*.py",
     "src/workers/nport_*.py",
     "src/workers/_openfigi.py",
     "src/workers/_yahoo_sector.py",
     "scripts/backfill_nport_holding_attributes.py",
     "scripts/load_nport_fund_flows.py",
+    "scripts/run_bond_pilot.py",
     "schemas/nport_*.sql",
+    "tests/bond_pilot/*.py",
+    "tests/bond_pilot/fixtures/*.json",
     "tests/test_nport_*.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",
     "tests/test_backfill_nport_holding_attributes.py",
     "tests/test_load_nport_*.py",
+    "docs/bond-pilot-option-a.md",
 )
 SHARED_PATHS = {"src/db.py"}
 QUANT_PATHS = {"requirements.quant-engine.in"}

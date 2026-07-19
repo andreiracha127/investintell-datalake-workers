@@ -37,6 +37,20 @@ def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
     assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "src/bond_pilot/panel.py",
+        "scripts/run_bond_pilot.py",
+        "tests/bond_pilot/test_panel.py",
+        "tests/bond_pilot/fixtures/debt-mapping-test-v1.json",
+        "docs/bond-pilot-option-a.md",
+    ],
+)
+def test_bond_pilot_paths_select_only_nport(path: str) -> None:
+    assert classify_paths([path]) == Scope(nport_changed=True, quant_changed=False)
+
+
 def test_stage_a_compute_path_selects_quant_only() -> None:
     assert classify_paths(["src/quadrant_score.py"]) == Scope(
         nport_changed=False,

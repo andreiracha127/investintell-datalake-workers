@@ -83,6 +83,10 @@ jobs:
           tests/test_load_nport_fund_flows.py
           -q
 
+      - name: Run bond-pilot tests
+        if: steps.changes.outputs.nport_changed == 'true'
+        run: python -m pytest -q tests/bond_pilot tests/test_ci_path_scope.py
+
       - name: Lint N-PORT modules
         if: steps.changes.outputs.nport_changed == 'true'
         run: >-
