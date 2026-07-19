@@ -328,6 +328,111 @@ def test_confirmed_fence_with_terminal_fsync_failure_never_redispatches(tmp_path
     assert record["state"] == "recovery_required" and record["commit_window"] == "confirmed"
 
 
+def test_rolled_back_recovery_blocks_original_authorization_and_fresh_lineage_can_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    old_status_path = tmp_path / "old-run" / "status.json"
+    old_supervisor = "11111111-1111-4111-8111-111111111111"
+
+    class DyingExecutor:
+        def execute_with_fence(self, package: dict[str, object], fence: object) -> object:
+            fence("issued", _protected_fence_evidence(package))  # type: ignore[operator]
+            raise SystemExit("simulated loss of the COMMIT outcome")
+
+    with pytest.raises(SystemExit, match="COMMIT outcome"):
+        backfill.run_supervisor(
+            inventory, status_path=old_status_path, code_sha="code-v1", lease_owner="first",
+            execute_package=DyingExecutor(), authorization_id="old-auth", authorization_fingerprint="a" * 64,
+            supervisor_run_id=old_supervisor,
+        )
+    crashed = json.loads(old_status_path.read_text(encoding="utf-8"))
+    crashed["lease"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    backfill._write_status(old_status_path, crashed)
+    zero_proof = {
+        "package_count": 0, "run_count": 0, "run_transition_count": 0,
+        "source_transition_count": 0, "validated_visibility_count": 0,
+    }
+    recovery_evidence = {"durable_table_delta": 0, **zero_proof}
+    recovery_authorization = {
+        "identity": inventory["packages"][0]["identity"],
+        "original_authorization_fingerprint": "a" * 64,
+        "supervisor_run_id": old_supervisor,
+        "package_id": "33333333-3333-4333-8333-333333333333",
+        "run_id": "22222222-2222-4222-8222-222222222222",
+        "package_sha256": "c" * 64, "reconciliation_sha256": "f" * 64,
+        "expected_outcome": "rolled_back",
+        "recovery_evidence_sha256": backfill._sha256_bytes(backfill._canonical_json(recovery_evidence).encode("ascii")),
+        "recovery_authorization_fingerprint": "e" * 64,
+    }
+    monkeypatch.setattr(backfill, "_get_recovery_governed_evidence", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(backfill, "_get_recovery_zero_proof", lambda *_args, **_kwargs: zero_proof)
+
+    recovered = backfill.recover_ambiguous_commit(
+        object(), status_path=old_status_path,
+        recovery_authorization=recovery_authorization, recovery_evidence=recovery_evidence,
+    )
+    original_calls: list[str] = []
+    blocked = backfill.run_supervisor(
+        inventory, status_path=old_status_path, code_sha="code-v1", lease_owner="resume",
+        execute_package=lambda package: original_calls.append(str(package["identity"])) or {"state": "raw_validated"},
+        authorization_id="old-auth", authorization_fingerprint="a" * 64,
+        supervisor_run_id=old_supervisor,
+    )
+
+    durable = json.loads(old_status_path.read_text(encoding="utf-8"))
+    assert recovered["outcome"] == "rolled_back"
+    assert blocked == {
+        "state": "blocked", "blocked_package": inventory["packages"][0]["identity"],
+        "reason": "new_authorization_required", "status_path": str(old_status_path),
+    }
+    assert original_calls == []
+    assert durable["final_exit_state"] == "recovered_rolled_back_requires_new_authorization"
+    assert durable["packages"][inventory["packages"][0]["identity"]]["state"] == "recovery_rolled_back"
+
+    with pytest.raises(backfill.BackfillSafetyError, match="authorization identity"):
+        backfill.run_supervisor(
+            inventory, status_path=old_status_path, code_sha="code-v1", lease_owner="new",
+            execute_package=lambda _package: pytest.fail("new authorization cannot reuse the old status lineage"),
+            authorization_id="new-auth", authorization_fingerprint="b" * 64,
+            supervisor_run_id="44444444-4444-4444-8444-444444444444",
+        )
+    fresh_calls: list[str] = []
+    fresh = backfill.run_supervisor(
+        inventory, status_path=tmp_path / "new-run" / "status.json", code_sha="code-v1", lease_owner="new",
+        execute_package=lambda package: fresh_calls.append(str(package["identity"])) or {"state": "raw_validated"},
+        authorization_id="new-auth", authorization_fingerprint="b" * 64,
+        supervisor_run_id="44444444-4444-4444-8444-444444444444",
+    )
+    assert fresh["state"] == "ok" and fresh_calls == [inventory["packages"][0]["identity"]]
+
+
+def test_precommit_failure_remains_retryable_with_the_same_authorization(tmp_path: Path) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+    common = {
+        "status_path": status_path, "code_sha": "code-v1", "authorization_id": "auth",
+        "authorization_fingerprint": "a" * 64,
+        "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+    }
+    failed = backfill.run_supervisor(
+        inventory, lease_owner="first", execute_package=lambda _package: {"state": "failed"}, **common,
+    )
+    calls: list[str] = []
+    retried = backfill.run_supervisor(
+        inventory, lease_owner="retry",
+        execute_package=lambda package: calls.append(str(package["identity"])) or {"state": "raw_validated"},
+        **common,
+    )
+
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    assert failed["state"] == "failed" and retried["state"] == "ok"
+    assert calls == [inventory["packages"][0]["identity"]]
+    assert durable["packages"][inventory["packages"][0]["identity"]]["attempt"] == 2
+
+
 def test_full_supervisor_seeds_three_promoted_canaries_and_executes_exactly_79(tmp_path: Path) -> None:
     import src.sec_regulatory.historical_backfill as backfill
 

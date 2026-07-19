@@ -2228,6 +2228,21 @@ def _run_supervisor_locked(
             raise BackfillSafetyError("resume status does not match supervisor run UUID")
         existing_value = status.get("packages")
         existing: dict[str, Any] = dict(existing_value) if isinstance(existing_value, dict) else {}
+        rolled_back_identity = next(
+            (
+                identity
+                for identity, record in existing.items()
+                if isinstance(record, Mapping) and record.get("state") == "recovery_rolled_back"
+            ),
+            None,
+        )
+        if rolled_back_identity is not None:
+            return {
+                "state": "blocked",
+                "blocked_package": rolled_back_identity,
+                "reason": "new_authorization_required",
+                "status_path": str(status_path),
+            }
         protected = next(
             (
                 (identity, record)
