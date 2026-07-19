@@ -368,6 +368,9 @@ CREATE INDEX IF NOT EXISTS sec_source_package_transitions_package_idx
 CREATE INDEX IF NOT EXISTS sec_table_reconciliations_run_idx ON sec_table_reconciliations (run_id, source_file_id);
 CREATE INDEX IF NOT EXISTS sec_row_issues_file_row_idx ON sec_row_issues (source_file_id, source_row_number);
 CREATE INDEX IF NOT EXISTS sec_run_transitions_run_idx ON sec_run_transitions (run_id, occurred_at);
+CREATE UNIQUE INDEX IF NOT EXISTS sec_run_transitions_initial_outcome_run_uq
+    ON sec_run_transitions (run_id)
+    WHERE event_type = 'commit_outcome';
 CREATE UNIQUE INDEX IF NOT EXISTS sec_run_transitions_definitive_outcome_uq
     ON sec_run_transitions (run_id, authorization_fingerprint)
     WHERE event_type IN ('commit_outcome', 'commit_outcome_resolution')
@@ -436,6 +439,11 @@ BEGIN
 
     FOR expected IN
         SELECT * FROM (VALUES
+            (
+                'sec_run_transitions_initial_outcome_run_uq',
+                'public.sec_run_transitions'::regclass,
+                $definition$CREATE UNIQUE INDEX sec_run_transitions_initial_outcome_run_uq ON public.sec_run_transitions USING btree (run_id) WHERE (event_type = 'commit_outcome'::text)$definition$
+            ),
             (
                 'sec_run_transitions_definitive_outcome_uq',
                 'public.sec_run_transitions'::regclass,
@@ -790,19 +798,42 @@ BEGIN
     END IF;
 
     SELECT run_transition.transition_id, run_transition.event_type,
-           run_transition.supervisor_run_id, run_transition.governed_package_sha256,
-           run_transition.commit_outcome, run_transition.recovery_authorization_fingerprint,
-           run_transition.recovery_evidence_sha256
+           run_transition.supervisor_run_id, run_transition.authorization_fingerprint,
+           run_transition.governed_package_sha256, run_transition.commit_outcome,
+           EXISTS (
+               SELECT 1
+               FROM sec_run_transitions AS resolution
+               WHERE resolution.run_id = run_transition.run_id
+                 AND resolution.authorization_fingerprint = run_transition.authorization_fingerprint
+                 AND resolution.event_type = 'commit_outcome_resolution'
+           ) AS is_resolved
     INTO existing
     FROM sec_run_transitions AS run_transition
     WHERE run_transition.run_id = target_run_id
-      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
-      AND run_transition.commit_outcome IN ('committed', 'rolled_back')
-    ORDER BY run_transition.transition_id DESC
+      AND run_transition.event_type = 'commit_outcome'
+    ORDER BY run_transition.transition_id
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN
-        IF existing.event_type = 'commit_outcome_resolution' THEN
-            RAISE EXCEPTION 'resolved outcome requires the governed recovery API for run %', target_run_id;
+        IF existing.commit_outcome = 'ambiguous' AND NOT existing.is_resolved THEN
+            IF existing.authorization_fingerprint = target_authorization_fingerprint
+               AND existing.supervisor_run_id = target_supervisor_run_id
+               AND existing.governed_package_sha256 = target_package_sha256
+               AND target_outcome = 'ambiguous' THEN
+                RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
+                    existing.supervisor_run_id, existing.authorization_fingerprint,
+                    existing.governed_package_sha256, existing.commit_outcome;
+                RETURN;
+            END IF;
+            RAISE EXCEPTION 'unresolved governed ambiguity requires the recovery API for run %',
+                target_run_id;
+        END IF;
+        IF existing.authorization_fingerprint <> target_authorization_fingerprint THEN
+            RAISE EXCEPTION 'conflicting original governed authorization lineage for run %',
+                target_run_id;
+        END IF;
+        IF existing.commit_outcome = 'ambiguous' THEN
+            RAISE EXCEPTION 'resolved outcome requires the governed recovery API for run %',
+                target_run_id;
         END IF;
         IF existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
            OR existing.governed_package_sha256 IS DISTINCT FROM target_package_sha256
@@ -810,31 +841,7 @@ BEGIN
             RAISE EXCEPTION 'conflicting definitive governed commit outcome for run %', target_run_id;
         END IF;
         RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
-            existing.supervisor_run_id, target_authorization_fingerprint,
-            existing.governed_package_sha256, existing.commit_outcome;
-        RETURN;
-    END IF;
-
-    SELECT run_transition.transition_id, run_transition.event_type,
-           run_transition.supervisor_run_id, run_transition.governed_package_sha256,
-           run_transition.commit_outcome
-    INTO existing
-    FROM sec_run_transitions AS run_transition
-    WHERE run_transition.run_id = target_run_id
-      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
-      AND run_transition.commit_outcome = 'ambiguous'
-    LIMIT 1 FOR UPDATE;
-    IF FOUND THEN
-        IF existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
-           OR existing.governed_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
-            RAISE EXCEPTION 'conflicting ambiguous governed lineage for run %', target_run_id;
-        END IF;
-        IF target_outcome <> 'ambiguous' THEN
-            RAISE EXCEPTION 'ambiguous outcome requires distinct governed recovery authorization for run %',
-                target_run_id;
-        END IF;
-        RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
-            existing.supervisor_run_id, target_authorization_fingerprint,
+            existing.supervisor_run_id, existing.authorization_fingerprint,
             existing.governed_package_sha256, existing.commit_outcome;
         RETURN;
     END IF;
@@ -1016,18 +1023,6 @@ BEGIN
        OR target_certificate_sha256 !~ '^[0-9a-f]{64}$' THEN
         RAISE EXCEPTION 'canary promotion requires typed UUID/SHA-256 evidence';
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended('sec:certificate:' || target_certificate_id::text, 0));
-    SELECT source_package.package_id, source_package.run_id, source_package.package_sha256,
-           source_package.package_state, source_package.retry_count
-    INTO package_row
-    FROM sec_source_packages AS source_package
-    WHERE source_package.package_id = target_package_id FOR UPDATE;
-    IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC package %', target_package_id; END IF;
-    IF package_row.run_id IS DISTINCT FROM target_ingestion_run_id
-       OR package_row.package_sha256 IS DISTINCT FROM target_package_sha256
-       OR package_row.package_state <> 'loaded' THEN
-        RAISE EXCEPTION 'package/run/hash lineage is not promotable';
-    END IF;
     SELECT ingestion_run.run_id, ingestion_run.package_sha256, ingestion_run.raw_validated_at
     INTO run_row
     FROM sec_ingestion_runs AS ingestion_run
@@ -1040,6 +1035,36 @@ BEGIN
        ) THEN
         RAISE EXCEPTION 'promotion requires a raw-validated ingestion run';
     END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM sec_run_transitions AS ambiguous_outcome
+        WHERE ambiguous_outcome.run_id = target_ingestion_run_id
+          AND ambiguous_outcome.event_type = 'commit_outcome'
+          AND ambiguous_outcome.commit_outcome = 'ambiguous'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM sec_run_transitions AS resolution
+              WHERE resolution.run_id = ambiguous_outcome.run_id
+                AND resolution.authorization_fingerprint =
+                    ambiguous_outcome.authorization_fingerprint
+                AND resolution.event_type = 'commit_outcome_resolution'
+          )
+    ) THEN
+        RAISE EXCEPTION 'unresolved governed ambiguity blocks promotion for run %',
+            target_ingestion_run_id;
+    END IF;
+    SELECT source_package.package_id, source_package.run_id, source_package.package_sha256,
+           source_package.package_state, source_package.retry_count
+    INTO package_row
+    FROM sec_source_packages AS source_package
+    WHERE source_package.package_id = target_package_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC package %', target_package_id; END IF;
+    IF package_row.run_id IS DISTINCT FROM target_ingestion_run_id
+       OR package_row.package_sha256 IS DISTINCT FROM target_package_sha256
+       OR package_row.package_state <> 'loaded' THEN
+        RAISE EXCEPTION 'package/run/hash lineage is not promotable';
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtextextended('sec:certificate:' || target_certificate_id::text, 0));
     SELECT run_transition.supervisor_run_id, run_transition.governed_package_sha256,
            run_transition.commit_outcome
     INTO outcome_row
@@ -1133,30 +1158,60 @@ RETURNS TABLE (
     certificate_sha256 character(64),
     promoted_at timestamptz
 )
-LANGUAGE sql
-STABLE
+LANGUAGE plpgsql
+VOLATILE
 SECURITY DEFINER
 SET search_path = pg_catalog, public
 AS $$
-    SELECT p.package_id, p.ingestion_run_id, p.supervisor_run_id,
-           p.authorization_fingerprint, p.governed_package_sha256,
-           o.commit_outcome, o.recovery_authorization_fingerprint,
-           o.recovery_evidence_sha256, p.reconciliation_sha256, p.certificate_id,
-           p.certificate_sha256, p.occurred_at
-    FROM sec_source_package_transitions AS p
+BEGIN
+    PERFORM ingestion_run.run_id
+    FROM sec_ingestion_runs AS ingestion_run
+    WHERE ingestion_run.run_id = target_ingestion_run_id
+    FOR SHARE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'unknown SEC run %', target_ingestion_run_id;
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM sec_run_transitions AS ambiguous_outcome
+        WHERE ambiguous_outcome.run_id = target_ingestion_run_id
+          AND ambiguous_outcome.event_type = 'commit_outcome'
+          AND ambiguous_outcome.commit_outcome = 'ambiguous'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM sec_run_transitions AS resolution
+              WHERE resolution.run_id = ambiguous_outcome.run_id
+                AND resolution.authorization_fingerprint =
+                    ambiguous_outcome.authorization_fingerprint
+                AND resolution.event_type = 'commit_outcome_resolution'
+          )
+    ) THEN
+        RAISE EXCEPTION 'unresolved governed ambiguity blocks evidence query for run %',
+            target_ingestion_run_id;
+    END IF;
+
+    RETURN QUERY
+    SELECT promoted.package_id, promoted.ingestion_run_id, promoted.supervisor_run_id,
+           promoted.authorization_fingerprint, promoted.governed_package_sha256,
+           outcome.commit_outcome, outcome.recovery_authorization_fingerprint,
+           outcome.recovery_evidence_sha256, promoted.reconciliation_sha256,
+           promoted.certificate_id, promoted.certificate_sha256, promoted.occurred_at
+    FROM sec_source_package_transitions AS promoted
     LEFT JOIN LATERAL (
-        SELECT r.commit_outcome, r.recovery_authorization_fingerprint,
-               r.recovery_evidence_sha256
-        FROM sec_run_transitions AS r
-        WHERE r.run_id = p.ingestion_run_id
-          AND r.authorization_fingerprint = p.authorization_fingerprint
-          AND r.commit_outcome IN ('committed', 'rolled_back')
-        ORDER BY r.transition_id DESC LIMIT 1
-    ) AS o ON TRUE
-    WHERE p.package_id = target_package_id
-      AND p.ingestion_run_id = target_ingestion_run_id
-      AND p.authorization_fingerprint = target_authorization_fingerprint
-      AND p.event_kind = 'canary_promoted';
+        SELECT governed_outcome.commit_outcome,
+               governed_outcome.recovery_authorization_fingerprint,
+               governed_outcome.recovery_evidence_sha256
+        FROM sec_run_transitions AS governed_outcome
+        WHERE governed_outcome.run_id = promoted.ingestion_run_id
+          AND governed_outcome.authorization_fingerprint = promoted.authorization_fingerprint
+          AND governed_outcome.commit_outcome IN ('committed', 'rolled_back')
+        ORDER BY governed_outcome.transition_id DESC LIMIT 1
+    ) AS outcome ON TRUE
+    WHERE promoted.package_id = target_package_id
+      AND promoted.ingestion_run_id = target_ingestion_run_id
+      AND promoted.authorization_fingerprint = target_authorization_fingerprint
+      AND promoted.event_kind = 'canary_promoted';
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION sec_package_discovery_guard()

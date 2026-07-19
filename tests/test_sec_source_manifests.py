@@ -67,6 +67,7 @@ def test_sec_source_manifest_ddl_declares_typed_backfill_governance_contract() -
         "sec_resolve_ambiguous_commit_outcome",
         "sec_promote_certified_canary_package",
         "sec_query_governed_evidence",
+        "sec_run_transitions_initial_outcome_run_uq",
         "sec_run_transitions_definitive_outcome_uq",
         "sec_source_package_transitions_canary_promotion_uq",
         "sec_source_package_transitions_certificate_uq",
@@ -372,6 +373,96 @@ def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_con
         )
 
 
+def test_real_db_cross_authorization_cannot_bypass_run_ambiguity(db_conn) -> None:
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        get_governed_evidence,
+        promote_certified_canary_package,
+        record_commit_outcome,
+        resolve_ambiguous_commit_outcome,
+    )
+
+    run, package = _governance_ready_package(db_conn, parser_version="cross-auth-ambiguity")
+    supervisor = uuid4()
+    original_authorization = "c" * 64
+    alternate_authorization = "f" * 64
+    recovery_authorization = "e" * 64
+    recovery_evidence = "d" * 64
+    record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint=original_authorization,
+        package_sha256="a" * 64, outcome="ambiguous",
+    )
+    db_conn.commit()
+
+    with pytest.raises(ManifestStateError, match="unresolved.*ambiguity"):
+        record_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint=alternate_authorization,
+            package_sha256="a" * 64, outcome="committed",
+        )
+    db_conn.rollback()
+    with pytest.raises(ManifestStateError, match="unresolved.*ambiguity"):
+        get_governed_evidence(
+            db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+            authorization_fingerprint=alternate_authorization,
+        )
+    db_conn.rollback()
+    with pytest.raises(ManifestStateError, match="unresolved.*ambiguity"):
+        promote_certified_canary_package(
+            db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+            supervisor_run_id=supervisor,
+            authorization_fingerprint=alternate_authorization,
+            package_sha256="a" * 64, reconciliation_sha256="b" * 64,
+            certificate_id=uuid4(), certificate_sha256="9" * 64,
+        )
+    db_conn.rollback()
+
+    resolution = resolve_ambiguous_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint=original_authorization,
+        package_sha256="a" * 64,
+        recovery_authorization_fingerprint=recovery_authorization,
+        recovery_evidence_sha256=recovery_evidence, outcome="committed",
+    )
+    assert resolution.event_type == "commit_outcome_resolution"
+    db_conn.commit()
+    with pytest.raises(ManifestStateError, match="matching committed"):
+        promote_certified_canary_package(
+            db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+            supervisor_run_id=supervisor,
+            authorization_fingerprint=alternate_authorization,
+            package_sha256="a" * 64, reconciliation_sha256="b" * 64,
+            certificate_id=uuid4(), certificate_sha256="8" * 64,
+        )
+    db_conn.rollback()
+    promotion = promote_certified_canary_package(
+        db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+        supervisor_run_id=supervisor,
+        authorization_fingerprint=original_authorization,
+        package_sha256="a" * 64, reconciliation_sha256="b" * 64,
+        certificate_id=uuid4(), certificate_sha256="9" * 64,
+    )
+    evidence = get_governed_evidence(
+        db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+        authorization_fingerprint=original_authorization,
+    )
+    assert evidence is not None
+    assert evidence.certificate_id == promotion.certificate_id
+    assert evidence.authorization_fingerprint == original_authorization
+    assert evidence.commit_outcome == "committed"
+    assert evidence.recovery_authorization_fingerprint == recovery_authorization
+    assert evidence.recovery_evidence_sha256 == recovery_evidence
+    db_conn.commit()
+
+    with pytest.raises(ManifestStateError, match="original.*lineage"):
+        record_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint=alternate_authorization,
+            package_sha256="a" * 64, outcome="committed",
+        )
+
+
 def test_real_db_certified_canary_promotion_is_idempotent_and_governed(db_conn) -> None:
     from src.sec_regulatory.manifests import (
         ManifestStateError,
@@ -501,6 +592,46 @@ def test_real_db_concurrent_identical_outcome_and_promotion_are_idempotent(db_co
             second_promotion = pending.result(timeout=5)
         second.commit()
     assert second_promotion == first_promotion
+
+
+def test_real_db_concurrent_cross_authorization_outcomes_preserve_one_lineage(db_conn) -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
+
+    run, _ = _governance_ready_package(db_conn, parser_version="cross-auth-race")
+    supervisor = uuid4()
+    db_conn.commit()
+    original_kwargs = {
+        "run_id": run.run_id,
+        "supervisor_run_id": supervisor,
+        "authorization_fingerprint": "c" * 64,
+        "package_sha256": "a" * 64,
+        "outcome": "ambiguous",
+    }
+    alternate_kwargs = {
+        **original_kwargs,
+        "authorization_fingerprint": "f" * 64,
+        "outcome": "committed",
+    }
+    with psycopg.connect(_test_dsn()) as first, psycopg.connect(_test_dsn()) as second:
+        original = record_commit_outcome(first, **original_kwargs)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(record_commit_outcome, second, **alternate_kwargs)
+            first.commit()
+            with pytest.raises(ManifestStateError, match="unresolved.*ambiguity"):
+                pending.result(timeout=5)
+        second.rollback()
+
+    with db_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT authorization_fingerprint, commit_outcome
+            FROM sec_run_transitions
+            WHERE run_id = %s AND event_type = 'commit_outcome'
+            """,
+            (run.run_id,),
+        )
+        assert cur.fetchall() == [(original.authorization_fingerprint, "ambiguous")]
 
 
 def test_real_db_certificate_cannot_cross_runs_and_query_returns_typed_evidence(db_conn) -> None:

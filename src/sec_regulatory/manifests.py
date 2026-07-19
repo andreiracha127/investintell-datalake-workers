@@ -675,18 +675,21 @@ def get_governed_evidence(
     _require_uuid(package_id, name="package_id")
     _require_uuid(ingestion_run_id, name="ingestion_run_id")
     _require_sha256(authorization_fingerprint, name="authorization_fingerprint")
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT package_id, ingestion_run_id, supervisor_run_id,
-                   authorization_fingerprint, package_sha256, commit_outcome,
-                   recovery_authorization_fingerprint, recovery_evidence_sha256,
-                   reconciliation_sha256, certificate_id, certificate_sha256, promoted_at
-            FROM sec_query_governed_evidence(%s, %s, %s)
-            """,
-            (package_id, ingestion_run_id, authorization_fingerprint),
-        )
-        row = cur.fetchone()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT package_id, ingestion_run_id, supervisor_run_id,
+                       authorization_fingerprint, package_sha256, commit_outcome,
+                       recovery_authorization_fingerprint, recovery_evidence_sha256,
+                       reconciliation_sha256, certificate_id, certificate_sha256, promoted_at
+                FROM sec_query_governed_evidence(%s, %s, %s)
+                """,
+                (package_id, ingestion_run_id, authorization_fingerprint),
+            )
+            row = cur.fetchone()
+    except psycopg.Error as exc:
+        raise ManifestStateError(str(exc)) from exc
     return GovernedEvidence(*row) if row is not None else None
 
 
