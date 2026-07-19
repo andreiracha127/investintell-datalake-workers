@@ -72,9 +72,7 @@ def test_rejects_wrong_sha_and_removes_outputs_from_failed_attempt(make_source_z
     with pytest.raises(PilotError, match="artifact_sha256_mismatch"):
         qualify_source(str(archive), run_dir, expected_sha256="0" * 64)
 
-    assert not list(run_dir.glob("*.partial"))
-    assert not (run_dir / "source.zip").exists()
-    assert not (run_dir / "source.parquet").exists()
+    assert not run_dir.exists()
 
 
 def test_collision_keeps_existing_output_and_cleans_attempt_partial(make_source_zip, tmp_path: Path) -> None:
@@ -89,24 +87,40 @@ def test_collision_keeps_existing_output_and_cleans_attempt_partial(make_source_
     assert not list(run_dir.glob("*.partial"))
 
 
-def test_cleanup_keeps_atomically_replaced_attempt_output(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_late_write_failure_leaves_no_final_or_attempt_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     run_dir = tmp_path / "run"
     original_write_json_once = source_artifact.write_json_once
 
-    def replace_output_then_fail(path: Path, value: object) -> Path:
+    def fail_late(path: Path, value: object) -> Path:
         if path.name == "qualification-report.json":
-            replacement = tmp_path / "replacement.parquet"
-            replacement.write_bytes(b"replacement")
-            os.replace(replacement, run_dir / "source.parquet")
             raise RuntimeError("injected later failure")
         return original_write_json_once(path, value)
 
-    monkeypatch.setattr(source_artifact, "write_json_once", replace_output_then_fail)
+    monkeypatch.setattr(source_artifact, "write_json_once", fail_late)
 
     with pytest.raises(RuntimeError, match="injected later failure"):
         qualify_source(str(make_source_zip()), run_dir)
 
+    assert not run_dir.exists()
+    assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
+
+
+def test_publish_collision_keeps_concurrent_final_and_removes_attempt_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "run"
+
+    def create_collision(source: str | bytes | os.PathLike[str] | os.PathLike[bytes], target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
+        target_path = Path(target)
+        target_path.mkdir()
+        (target_path / "source.parquet").write_bytes(b"replacement")
+        raise FileExistsError(target_path)
+
+    monkeypatch.setattr(os, "rename", create_collision)
+
+    with pytest.raises(PilotError, match="already_exists"):
+        qualify_source(str(make_source_zip()), run_dir)
+
     assert (run_dir / "source.parquet").read_bytes() == b"replacement"
+    assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
 
 
 def test_enforces_streaming_archive_and_member_caps(make_source_zip, tmp_path: Path) -> None:

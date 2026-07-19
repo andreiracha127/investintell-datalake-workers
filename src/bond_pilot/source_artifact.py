@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import stat
 import struct
 from typing import Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
+from uuid import uuid4
 from zipfile import BadZipFile, ZipFile, ZipInfo
 
 import httpx
@@ -44,27 +46,31 @@ class _HttpClient(Protocol):
     def stream(self, method: str, url: str): ...
 
 
-@dataclass(frozen=True)
-class _CreatedOutput:
-    path: Path
-    identity: tuple[int, int, int, int]
+def _create_attempt_directory(run_dir: Path) -> Path:
+    if run_dir.exists():
+        raise PilotError("already_exists", {"path": str(run_dir)})
+    run_dir.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(3):
+        attempt_dir = run_dir.parent / f".{run_dir.name}.qualification-{uuid4().hex}.partial-dir"
+        try:
+            attempt_dir.mkdir()
+        except FileExistsError:
+            continue
+        return attempt_dir
+    raise PilotError("attempt_directory_collision", {"path": str(run_dir)})
 
 
-def _path_identity(path: Path) -> tuple[int, int, int, int]:
-    status = path.lstat()
-    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
-
-
-def _track_created(path: Path, created: list[_CreatedOutput]) -> None:
-    created.append(_CreatedOutput(path, _path_identity(path)))
-
-
-def _remove_if_owned(output: _CreatedOutput) -> None:
+def _publish_attempt(attempt_dir: Path, run_dir: Path) -> None:
+    if run_dir.exists():
+        raise PilotError("already_exists", {"path": str(run_dir)})
     try:
-        if _path_identity(output.path) == output.identity:
-            output.path.unlink()
-    except OSError:
-        return
+        os.rename(attempt_dir, run_dir)
+    except FileExistsError as exc:
+        raise PilotError("already_exists", {"path": str(run_dir)}) from exc
+    except OSError as exc:
+        if run_dir.exists():
+            raise PilotError("already_exists", {"path": str(run_dir)}) from exc
+        raise PilotError("qualification_publish_failed", {"path": str(run_dir), "reason": str(exc)}) from exc
 
 
 def _raw_member_name(archive_path: Path, info: ZipInfo) -> str:
@@ -221,11 +227,10 @@ def qualify_source(
     """Acquire and inspect one ZIP-wrapped Parquet source for internal review."""
     locator_text = str(locator)
     run_dir = Path(run_dir)
-    run_dir.mkdir(parents=True, exist_ok=True)
-    archive_final = run_dir / "source.zip"
-    extracted_final = run_dir / "source.parquet"
-    created: list[_CreatedOutput] = []
-    success = False
+    attempt_dir = _create_attempt_directory(run_dir)
+    archive_final = attempt_dir / "source.zip"
+    extracted_final = attempt_dir / "source.parquet"
+    published = False
     default_client: httpx.Client | None = None
     try:
         local_chunks, remote_client = _source_chunks(locator_text, client, limits.streaming_chunk_bytes)
@@ -245,7 +250,6 @@ def qualify_source(
         except Exception:
             partial.unlink(missing_ok=True)
             raise
-        _track_created(archive_final, created)
 
         try:
             with ZipFile(archive_final) as archive:
@@ -266,7 +270,6 @@ def qualify_source(
                                 raise PilotError("member_size_exceeded", {"limit": limits.member_uncompressed_bytes})
                             output.write(chunk)
                     commit_partial(partial, extracted_final)
-                    _track_created(extracted_final, created)
                 except Exception:
                     partial.unlink(missing_ok=True)
                     raise
@@ -287,8 +290,8 @@ def qualify_source(
         candidate = SourceCandidate(
             schema_version="source-candidate-v1",
             source_locator=locator_text,
-            local_archive_path=str(archive_final),
-            local_extracted_path=str(extracted_final),
+            local_archive_path=str(run_dir / "source.zip"),
+            local_extracted_path=str(run_dir / "source.parquet"),
             artifact_bytes=archive_bytes,
             artifact_sha256=artifact_sha,
             member_name=member.filename,
@@ -302,10 +305,9 @@ def qualify_source(
             global_cutoff=global_cutoff,
             duplicate_check_scope="not_checked_during_qualification",
         )
-        manifest = run_dir / "source-manifest.json"
-        report = run_dir / "qualification-report.json"
+        manifest = attempt_dir / "source-manifest.json"
+        report = attempt_dir / "qualification-report.json"
         write_json_once(manifest, candidate.to_json_mapping())
-        _track_created(manifest, created)
         write_json_once(
             report,
             {
@@ -316,12 +318,16 @@ def qualify_source(
                 "human_approval_required": True,
             },
         )
-        _track_created(report, created)
-        success = True
-        return candidate
-    finally:
         if default_client is not None:
             default_client.close()
-        if not success:
-            for output in reversed(created):
-                _remove_if_owned(output)
+            default_client = None
+        _publish_attempt(attempt_dir, run_dir)
+        published = True
+        return candidate
+    finally:
+        try:
+            if default_client is not None:
+                default_client.close()
+        finally:
+            if not published:
+                shutil.rmtree(attempt_dir, ignore_errors=True)
