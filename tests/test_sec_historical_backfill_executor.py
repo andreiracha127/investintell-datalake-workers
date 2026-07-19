@@ -7,6 +7,36 @@ from uuid import UUID, uuid4
 import pytest
 
 
+EXPECTED_TRIGGER_WRITE_TARGETS = frozenset(
+    {
+        "public.ncen_raw_v2_rows:ncen_raw_v2_rows_lock_delete",
+        "public.ncen_raw_v2_rows:ncen_raw_v2_rows_lock_insert",
+        "public.ncen_raw_v2_rows:ncen_raw_v2_rows_lock_update",
+        "public.ncen_raw_v2_rows:ncen_raw_v2_rows_provenance_insert",
+        "public.ncen_raw_v2_rows:ncen_raw_v2_rows_provenance_update",
+        "public.nport_holding_accession_map:nport_holding_map_lock_delete",
+        "public.nport_holding_accession_map:nport_holding_map_lock_insert",
+        "public.nport_holding_accession_map:nport_holding_map_lock_update",
+        "public.nport_raw_rows:nport_raw_rows_lock_delete",
+        "public.nport_raw_rows:nport_raw_rows_lock_insert",
+        "public.nport_raw_rows:nport_raw_rows_lock_update",
+        "public.nport_raw_rows:nport_raw_rows_provenance",
+        "public.nport_raw_rows:nport_raw_rows_provenance_update",
+        "public.rr1_raw_v2_rows:rr1_raw_v2_rows_lock_delete",
+        "public.rr1_raw_v2_rows:rr1_raw_v2_rows_lock_insert",
+        "public.rr1_raw_v2_rows:rr1_raw_v2_rows_lock_update",
+        "public.rr1_raw_v2_rows:rr1_raw_v2_rows_provenance_insert",
+        "public.rr1_raw_v2_rows:rr1_raw_v2_rows_provenance_update",
+        "public.sec_ingestion_runs:sec_ingestion_runs_lifecycle_audit",
+        "public.sec_row_issues:sec_row_issues_active_disposition",
+        "public.sec_row_issues:sec_row_issues_raw_immutable",
+        "public.sec_source_files:sec_source_files_raw_immutable",
+        "public.sec_source_packages:sec_source_packages_discovery_audit",
+        "public.sec_table_reconciliations:sec_table_reconciliations_raw_immutable",
+    }
+)
+
+
 def test_connection_parameter_adapter_requires_psycopg3_get_parameters() -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, _connection_parameters
 
@@ -284,6 +314,7 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         EXACT_DIRECT_WRITABLE_TABLES,
         EXACT_IDENTITY_SEQUENCES,
         EXACT_SECURITY_DEFINER_ROUTINES,
+        EXACT_TRIGGER_WRITE_TARGETS,
         EXACT_WRITABLE_TABLES,
         _canonical_json,
         _sha256_bytes,
@@ -312,7 +343,7 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         "truncate_tables": [],
         "public_acl": [],
         "unsafe_security_definers": [],
-        "trigger_write_targets": [],
+        "trigger_write_targets": sorted(EXACT_TRIGGER_WRITE_TARGETS),
     }
     attestation["object_catalog_hash"] = _sha256_bytes(_canonical_json(attestation["object_identities"]).encode("ascii"))
     return attestation
@@ -404,6 +435,10 @@ def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> Non
 
     for changed in (
         {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "INSERT"]}},
+        {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "TRUNCATE"]}},
+        {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "REFERENCES"]}},
+        {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "TRIGGER"]}},
+        {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "MAINTAIN"]}},
         {**valid, "table_privileges": {key: value for key, value in valid["table_privileges"].items() if key != "public.rr1_contract_tables"}},
         {**valid, "sequence_privileges": {key: value for key, value in valid["sequence_privileges"].items() if key != "public.rr1_raw_v2_rows_raw_row_id_seq"}},
         {**valid, "sequence_privileges": {**valid["sequence_privileges"], "public.sec_run_transitions_transition_id_seq": ["USAGE"]}},
@@ -412,6 +447,33 @@ def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> Non
         {**valid, "effective_writable_tables": [*valid["effective_writable_tables"], "public.unapproved"]},
     ):
         with pytest.raises(BackfillSafetyError, match="table privilege|privilege identity|effective writable"):
+            _validate_preflight_attestation(changed)
+
+
+def test_preflight_requires_exact_reviewed_trigger_and_public_acl_contract() -> None:
+    from src.sec_regulatory.historical_backfill import (
+        BackfillSafetyError,
+        EXACT_TRIGGER_WRITE_TARGETS,
+        _validate_preflight_attestation,
+    )
+
+    assert EXACT_TRIGGER_WRITE_TARGETS == EXPECTED_TRIGGER_WRITE_TARGETS
+
+    valid = {
+        **_production_preflight(),
+        "trigger_write_targets": sorted(EXPECTED_TRIGGER_WRITE_TARGETS),
+    }
+    assert _validate_preflight_attestation(valid)["trigger_write_targets"] == sorted(
+        EXPECTED_TRIGGER_WRITE_TARGETS
+    )
+    trigger = valid["trigger_write_targets"][0]
+    for changed in (
+        {**valid, "trigger_write_targets": valid["trigger_write_targets"][1:]},
+        {**valid, "trigger_write_targets": [*valid["trigger_write_targets"], "custom.extra:unexpected_trigger"]},
+        {**valid, "trigger_write_targets": ["custom.retargeted:" + trigger.split(":", 1)[1], *valid["trigger_write_targets"][1:]]},
+        {**valid, "public_acl": ["function:custom.hidden_public_function():EXECUTE"]},
+    ):
+        with pytest.raises(BackfillSafetyError, match="trigger|PUBLIC"):
             _validate_preflight_attestation(changed)
 
 
@@ -445,11 +507,16 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         if "'cluster_identity'" in query:
             return {field: expected[field] for field in ("cluster_identity", "tls_identity", "role_identity")}
         if "'memberships'" in query:
+            assert "n.nspname !~ '^pg_'" in query
+            assert "n.nspname <> 'information_schema'" in query
+            assert "has_schema_privilege(current_user,n.oid,'CREATE')" in query
             return {"memberships": [], "capabilities": {**expected["role_capabilities"], "no_memberships": True}}
         if "'table_privileges'" in query:
             assert params == ()
             assert query.count("n.nspname !~ '^pg_'") >= 3
             assert query.count("n.nspname <> 'information_schema'") >= 3
+            for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"):
+                assert f"has_table_privilege(current_user,c.oid,'{privilege}')" in query
             assert "has_sequence_privilege(current_user,c.oid,'SELECT')" in query
             assert "has_sequence_privilege(current_user,c.oid,'UPDATE')" in query
             assert "has_sequence_privilege(current_user,c.oid,'USAGE')" in query
@@ -475,10 +542,24 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
     (
         ("baseline", ""),
         ("table", "SELECT"),
+        ("table", "TRUNCATE"),
+        ("table", "REFERENCES"),
+        ("table", "TRIGGER"),
+        ("table", "MAINTAIN"),
+        ("monitored_table", "TRUNCATE"),
+        ("monitored_table", "REFERENCES"),
+        ("monitored_table", "TRIGGER"),
+        ("monitored_table", "MAINTAIN"),
         ("sequence", "USAGE"),
         ("sequence", "SELECT"),
         ("sequence", "UPDATE"),
         ("routine", "EXECUTE"),
+        ("schema", "CREATE"),
+        ("public_acl", "EXECUTE"),
+        ("unsafe_security_definer", ""),
+        ("trigger_missing", ""),
+        ("trigger_extra", ""),
+        ("trigger_retargeted", ""),
     ),
 )
 def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runner_grant(grant_kind: str, grant_verb: str) -> None:
@@ -551,7 +632,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
             cursor.execute(
                 sql.SQL(
                     "CREATE FUNCTION {}.hidden_security_definer() RETURNS integer LANGUAGE sql "
-                    "SECURITY DEFINER SET search_path = pg_catalog AS 'SELECT 1'"
+                    "SECURITY DEFINER SET search_path = pg_catalog, public AS 'SELECT 1'"
                 ).format(sql.Identifier(schema))
             )
             cursor.execute(
@@ -559,13 +640,65 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     sql.Identifier(schema)
                 )
             )
+            cursor.execute(
+                sql.SQL(
+                    "CREATE FUNCTION {}.hidden_public_function() RETURNS integer LANGUAGE sql "
+                    "SET search_path = pg_catalog AS 'SELECT 1'"
+                ).format(sql.Identifier(schema))
+            )
+            cursor.execute(
+                sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_public_function() FROM PUBLIC").format(
+                    sql.Identifier(schema)
+                )
+            )
             if grant_kind == "table":
                 grant_target = sql.SQL("TABLE {}.hidden_relation").format(sql.Identifier(schema))
+            elif grant_kind == "monitored_table":
+                grant_target = sql.SQL("TABLE public.sec_source_package_transitions")
             elif grant_kind == "sequence":
                 grant_target = sql.SQL("SEQUENCE {}.hidden_sequence").format(sql.Identifier(schema))
             elif grant_kind == "routine":
                 grant_target = sql.SQL("FUNCTION {}.hidden_security_definer()").format(sql.Identifier(schema))
-            if grant_kind != "baseline":
+            if grant_kind == "schema":
+                cursor.execute(
+                    sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
+                        sql.Identifier(schema), sql.Identifier(role)
+                    )
+                )
+            elif grant_kind == "public_acl":
+                cursor.execute(
+                    sql.SQL("GRANT EXECUTE ON FUNCTION {}.hidden_public_function() TO PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            elif grant_kind == "unsafe_security_definer":
+                cursor.execute(
+                    sql.SQL("ALTER FUNCTION {}.hidden_security_definer() SET search_path TO pg_catalog").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            elif grant_kind == "trigger_missing":
+                cursor.execute(
+                    "DROP TRIGGER sec_ingestion_runs_lifecycle_audit ON public.sec_ingestion_runs"
+                )
+            elif grant_kind == "trigger_extra":
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE TRIGGER hidden_extra_write AFTER INSERT ON {}.hidden_relation "
+                        "FOR EACH ROW EXECUTE FUNCTION public.sec_audit_run_lifecycle()"
+                    ).format(sql.Identifier(schema))
+                )
+            elif grant_kind == "trigger_retargeted":
+                cursor.execute(
+                    "DROP TRIGGER sec_ingestion_runs_lifecycle_audit ON public.sec_ingestion_runs"
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE TRIGGER sec_ingestion_runs_lifecycle_audit AFTER INSERT ON {}.hidden_relation "
+                        "FOR EACH ROW EXECUTE FUNCTION public.sec_audit_run_lifecycle()"
+                    ).format(sql.Identifier(schema))
+                )
+            elif grant_kind != "baseline":
                 cursor.execute(
                     sql.SQL("GRANT {} ON {} TO {}").format(
                         sql.SQL(grant_verb), grant_target, sql.Identifier(role)
@@ -605,8 +738,14 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     item.split("|", 1)[0] for item in object_identities["routines"]
                 } == EXACT_SECURITY_DEFINER_ROUTINES
                 assert set(observed["function_privileges"]) == EXACT_DIRECT_EXECUTE_ROUTINES
+                assert observed["public_acl"] == []
+                assert observed["unsafe_security_definers"] == []
+                assert set(observed["trigger_write_targets"]) == EXPECTED_TRIGGER_WRITE_TARGETS
             else:
-                with pytest.raises(BackfillSafetyError, match="table privilege|privilege identity|privilege matrix"):
+                with pytest.raises(
+                    BackfillSafetyError,
+                    match="table privilege|privilege identity|privilege matrix|role capability|PUBLIC|SECURITY DEFINER|trigger write-target",
+                ):
                     _collect_production_preflight(Connection(runner), authorization)
     finally:
         with admin.cursor() as cursor:
@@ -615,6 +754,10 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
             cursor.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
             cursor.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
         admin.close()
+        if grant_kind in {"trigger_missing", "trigger_retargeted"}:
+            with psycopg.connect(dsn) as installer:
+                manifests.install_schema(installer)
+                installer.commit()
 
 
 def test_preflight_requires_exact_security_definer_recovery_routine_set() -> None:
