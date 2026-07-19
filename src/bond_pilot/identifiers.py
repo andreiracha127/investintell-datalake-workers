@@ -25,7 +25,9 @@ def normalize_cusip9(value: object) -> NormalizedCusip:
     """Normalize only outer whitespace and casing; never repair an identifier."""
     if value is None:
         return NormalizedCusip(value, None, IdentifierState.BLANK, "rejected")
-    normalized = str(value).strip().upper()
+    if not isinstance(value, str):
+        return NormalizedCusip(value, None, IdentifierState.INVALID_FORMAT, "rejected")
+    normalized = value.strip().upper()
     if not normalized:
         return NormalizedCusip(value, None, IdentifierState.BLANK, "rejected")
     if normalized in _PLACEHOLDERS:

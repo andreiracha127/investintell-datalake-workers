@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 
 import pyarrow as pa
@@ -8,6 +9,7 @@ import pytest
 
 from src.bond_pilot.contracts import FieldState, IdentifierState, PilotError
 from src.bond_pilot.identifiers import normalize_cusip9
+from src.bond_pilot import panel
 from src.bond_pilot.panel import build_observed_panel
 
 
@@ -30,6 +32,8 @@ def _read_output(path: Path) -> dict[str, list[object]]:
         ("N/A", IdentifierState.PLACEHOLDER, None, "rejected"),
         ("IS:123456", IdentifierState.SYNTHETIC, None, "rejected"),
         ("123-45678", IdentifierState.INVALID_FORMAT, None, "rejected"),
+        (123456789, IdentifierState.INVALID_FORMAT, None, "rejected"),
+        (Decimal("123456789"), IdentifierState.INVALID_FORMAT, None, "rejected"),
     ],
 )
 def test_normalize_cusip9_is_reversible_and_explicit(
@@ -41,6 +45,20 @@ def test_normalize_cusip9_is_reversible_and_explicit(
     assert result.state is state
     assert result.normalized_cusip9 == normalized
     assert result.transformation == transformation
+
+
+def test_non_string_cusips_are_not_cohort_keys_or_source_identifiers(tmp_path: Path) -> None:
+    source = tmp_path / "source.parquet"
+    output = tmp_path / "panel.parquet"
+    _write_source(source, {"cusip_id": [123456789], "trd_exctn_dt": ["2024-01-01"], "pr": [1.0]})
+
+    result = build_observed_panel(source, output, [123456789, Decimal("123456789")])
+    actual = _read_output(output)
+
+    assert actual["normalized_cusip9"] == [None]
+    assert actual["cusip_state"] == ["invalid_format"]
+    assert actual["daily_key_state"] == ["invalid_key"]
+    assert result.cohort_valid_cusip_count == 0
 
 
 def test_build_panel_preserves_rows_columns_and_marks_ambiguity(tmp_path: Path) -> None:
@@ -87,6 +105,23 @@ def test_build_panel_preserves_rows_columns_and_marks_ambiguity(tmp_path: Path) 
     assert result.global_uniqueness_proven is False
 
 
+def test_offset_timestamp_uses_its_parsed_calendar_date_without_timezone_conversion(tmp_path: Path) -> None:
+    source = tmp_path / "source.parquet"
+    output = tmp_path / "panel.parquet"
+    _write_source(
+        source,
+        {
+            "cusip_id": ["123456789"],
+            "trd_exctn_dt": ["2024-01-02T00:30:00+01:00"],
+            "pr": [1.0],
+        },
+    )
+
+    build_observed_panel(source, output, ["123456789"])
+
+    assert _read_output(output)["observation_date"] == ["2024-01-02"]
+
+
 def test_duplicate_outside_cohort_is_preserved_but_not_counted(tmp_path: Path) -> None:
     source = tmp_path / "source.parquet"
     output = tmp_path / "panel.parquet"
@@ -117,5 +152,54 @@ def test_missing_schema_columns_collision_and_cleanup(tmp_path: Path) -> None:
 
     with pytest.raises(PilotError, match="already_exists"):
         build_observed_panel(source, output, ["123456789"])
+    assert not list(tmp_path.glob("*.partial"))
+    assert not list(tmp_path.glob("*.sqlite*"))
+
+
+def test_writer_close_failure_removes_partial_and_sqlite_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.parquet"
+    output = tmp_path / "panel.parquet"
+    _write_source(source, {"cusip_id": ["123456789"], "trd_exctn_dt": ["2024-01-01"], "pr": [1.0]})
+
+    class CloseFailingWriter:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.writer = pq.ParquetWriter(*args, **kwargs)
+
+        def write_batch(self, batch: pa.RecordBatch) -> None:
+            self.writer.write_batch(batch)
+
+        def close(self) -> None:
+            self.writer.close()
+            raise RuntimeError("injected close failure")
+
+    monkeypatch.setattr(panel, "_PARQUET_WRITER_FACTORY", CloseFailingWriter, raising=False)
+
+    with pytest.raises(RuntimeError, match="injected close failure"):
+        build_observed_panel(source, output, ["123456789"])
+    assert not output.exists()
+    assert not list(tmp_path.glob("*.partial"))
+    assert not list(tmp_path.glob("*.sqlite*"))
+
+
+def test_writer_write_failure_removes_partial_and_sqlite_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "source.parquet"
+    output = tmp_path / "panel.parquet"
+    _write_source(source, {"cusip_id": ["123456789"], "trd_exctn_dt": ["2024-01-01"], "pr": [1.0]})
+
+    class WriteFailingWriter:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.writer = pq.ParquetWriter(*args, **kwargs)
+
+        def write_batch(self, batch: pa.RecordBatch) -> None:
+            raise RuntimeError("injected write failure")
+
+        def close(self) -> None:
+            self.writer.close()
+
+    monkeypatch.setattr(panel, "_PARQUET_WRITER_FACTORY", WriteFailingWriter)
+
+    with pytest.raises(RuntimeError, match="injected write failure"):
+        build_observed_panel(source, output, ["123456789"])
+    assert not output.exists()
     assert not list(tmp_path.glob("*.partial"))
     assert not list(tmp_path.glob("*.sqlite*"))

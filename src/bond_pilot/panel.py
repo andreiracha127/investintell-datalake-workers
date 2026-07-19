@@ -46,6 +46,7 @@ _DERIVED_COLUMNS = (
 )
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _ISO_DATETIME = re.compile(r"^\d{4}-\d{2}-\d{2}T")
+_PARQUET_WRITER_FACTORY = pq.ParquetWriter
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,20 @@ def _key_count(database: sqlite3.Connection, cusip: str, day: str) -> int:
     return 0 if row is None else int(row[0])
 
 
+def _cleanup(writer: object | None, partial: Path, sqlite_path: Path) -> None:
+    """Attempt every cleanup step without masking the operational failure."""
+    if writer is not None:
+        try:
+            writer.close()  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    for path in (partial, sqlite_path):
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def _append_derived(
     batch: pa.RecordBatch,
     source_columns: set[str],
@@ -253,7 +268,7 @@ def build_observed_panel(
             database = sqlite3.connect(sqlite_path)
             try:
                 _count_matching_keys(parquet, cohort, database, batch_size)
-                writer = pq.ParquetWriter(partial, schema)
+                writer = _PARQUET_WRITER_FACTORY(partial, schema)
                 for batch in parquet.iter_batches(batch_size=batch_size):
                     writer.write_batch(_append_derived(batch, source_columns, cohort, database, input_rows))
                     input_rows += batch.num_rows
@@ -274,7 +289,4 @@ def build_observed_panel(
             checked_scope="matching_cohort_cusip_date_keys",
         )
     finally:
-        if writer is not None:
-            writer.close()
-        partial.unlink(missing_ok=True)
-        sqlite_path.unlink(missing_ok=True)
+        _cleanup(writer, partial, sqlite_path)
