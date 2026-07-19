@@ -133,6 +133,8 @@ CREATE OR REPLACE FUNCTION nport_contract_catalog_sha256()
 RETURNS text LANGUAGE sql STABLE SECURITY DEFINER SET search_path=pg_catalog,public AS $$
   SELECT encode(sha256(convert_to(public.nport_contract_catalog_payload()::text, 'UTF8')), 'hex');
 $$;
+REVOKE ALL ON FUNCTION nport_contract_catalog_payload() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_contract_catalog_sha256() FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION nport_install_contract_catalog(payload jsonb)
 RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog,public AS $$

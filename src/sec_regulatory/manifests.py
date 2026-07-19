@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import re
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -57,6 +58,46 @@ class RunStatus:
     retry_count: int
 
 
+@dataclass(frozen=True)
+class CommitOutcome:
+    """Evidência governada e imutável do resultado de COMMIT de uma execução."""
+
+    transition_id: int
+    event_type: str
+    run_id: UUID
+    supervisor_run_id: UUID
+    authorization_fingerprint: str
+    package_sha256: str
+    outcome: str
+
+
+@dataclass(frozen=True)
+class CanaryPromotion:
+    """Promoção única de um pacote canário certificada pela transação no banco."""
+
+    package_transition_id: int
+    package_id: UUID
+    ingestion_run_id: UUID
+    certificate_id: UUID
+    reconciliation_sha256: str
+
+
+@dataclass(frozen=True)
+class GovernedEvidence:
+    """Evidência mínima de recuperação/continuação, sem texto livre ou segredo."""
+
+    package_id: UUID
+    ingestion_run_id: UUID
+    supervisor_run_id: UUID
+    authorization_fingerprint: str
+    package_sha256: str
+    commit_outcome: str | None
+    reconciliation_sha256: str
+    certificate_id: UUID
+    certificate_sha256: str
+    promoted_at: datetime
+
+
 _NEXT_STATES = {
     "discovered": {"loading"},
     "loading": set(),  # raw_validated exige validate_raw_run().
@@ -64,6 +105,21 @@ _NEXT_STATES = {
     "derived_building": {"derived_validated"},
     "derived_validated": {"published"},
 }
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_COMMIT_OUTCOMES = frozenset({"committed", "rolled_back", "ambiguous"})
+
+
+def _require_uuid(value: UUID, *, name: str) -> UUID:
+    if not isinstance(value, UUID):
+        raise ManifestStateError(f"{name} deve ser UUID tipado")
+    return value
+
+
+def _require_sha256(value: str, *, name: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ManifestStateError(f"{name} deve ser SHA-256 hexadecimal minúsculo de 64 caracteres")
+    return value
 
 
 def _status(row: tuple[Any, ...]) -> RunStatus:
@@ -166,6 +222,8 @@ def register_package_discovery(
              metadata_sha256, readme_sha256, package_state, reason, run_id, duplicate_of_package_id),
         )
         row = cur.fetchone()
+    if row is None:
+        raise ManifestStateError("não foi possível localizar o pacote idempotente")
     return PackageStatus(*row)
 
 
@@ -429,7 +487,10 @@ def validate_raw_run(conn: psycopg.Connection, *, run_id: UUID) -> RunStatus:
             """,
             (run_id, run_id, run_id, run_id, run_id, run_id),
         )
-        has_files, bad_file_state, bad_table_state, bad_issues, bad_counts = cur.fetchone()
+        reconciliation_row = cur.fetchone()
+        if reconciliation_row is None:
+            raise ManifestStateError("a reconciliação bruta não retornou estado")
+        has_files, bad_file_state, bad_table_state, bad_issues, bad_counts = reconciliation_row
         if not has_files:
             raise RawValidationError("a validação bruta exige ao menos um arquivo registrado")
         if bad_file_state or bad_table_state:
@@ -445,6 +506,118 @@ def validate_raw_run(conn: psycopg.Connection, *, run_id: UUID) -> RunStatus:
     if status is None:
         raise ManifestStateError("a execução não existe após a validação")
     return status
+
+
+def record_commit_outcome(
+    conn: psycopg.Connection,
+    *,
+    run_id: UUID,
+    supervisor_run_id: UUID,
+    authorization_fingerprint: str,
+    package_sha256: str,
+    outcome: str,
+) -> CommitOutcome:
+    """Acrescenta ou recupera o único resultado governado de COMMIT da linhagem.
+
+    A conexão pertence ao chamador: esta camada nunca confirma nem desfaz uma
+    transação em seu nome.  O banco serializa a linhagem e somente ele permite
+    resolver ``ambiguous`` para um resultado definitivo.
+    """
+    _require_uuid(run_id, name="run_id")
+    _require_uuid(supervisor_run_id, name="supervisor_run_id")
+    _require_sha256(authorization_fingerprint, name="authorization_fingerprint")
+    _require_sha256(package_sha256, name="package_sha256")
+    if outcome not in _COMMIT_OUTCOMES:
+        raise ManifestStateError("outcome deve ser committed, rolled_back ou ambiguous")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT transition_id, event_type, run_id, supervisor_run_id,
+                       authorization_fingerprint, package_sha256, commit_outcome
+                FROM sec_record_commit_outcome(%s, %s, %s, %s, %s)
+                """,
+                (run_id, supervisor_run_id, authorization_fingerprint, package_sha256, outcome),
+            )
+            row = cur.fetchone()
+    except psycopg.Error as exc:
+        raise ManifestStateError(str(exc)) from exc
+    if row is None:
+        raise ManifestStateError("o banco não retornou a evidência de commit")
+    return CommitOutcome(*row)
+
+
+def promote_certified_canary_package(
+    conn: psycopg.Connection,
+    *,
+    package_id: UUID,
+    ingestion_run_id: UUID,
+    supervisor_run_id: UUID,
+    authorization_fingerprint: str,
+    package_sha256: str,
+    reconciliation_sha256: str,
+    certificate_id: UUID,
+    certificate_sha256: str,
+) -> CanaryPromotion:
+    """Promove uma vez o canário certificado, sem auto-commit implícito."""
+    _require_uuid(package_id, name="package_id")
+    _require_uuid(ingestion_run_id, name="ingestion_run_id")
+    _require_uuid(supervisor_run_id, name="supervisor_run_id")
+    _require_uuid(certificate_id, name="certificate_id")
+    _require_sha256(authorization_fingerprint, name="authorization_fingerprint")
+    _require_sha256(package_sha256, name="package_sha256")
+    _require_sha256(reconciliation_sha256, name="reconciliation_sha256")
+    _require_sha256(certificate_sha256, name="certificate_sha256")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT package_transition_id, package_id, ingestion_run_id,
+                       certificate_id, reconciliation_sha256
+                FROM sec_promote_certified_canary_package(%s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    package_id,
+                    ingestion_run_id,
+                    supervisor_run_id,
+                    authorization_fingerprint,
+                    package_sha256,
+                    reconciliation_sha256,
+                    certificate_id,
+                    certificate_sha256,
+                ),
+            )
+            row = cur.fetchone()
+    except psycopg.Error as exc:
+        raise ManifestStateError(str(exc)) from exc
+    if row is None:
+        raise ManifestStateError("o banco não retornou a promoção certificada")
+    return CanaryPromotion(*row)
+
+
+def get_governed_evidence(
+    conn: psycopg.Connection,
+    *,
+    package_id: UUID,
+    ingestion_run_id: UUID,
+    authorization_fingerprint: str,
+) -> GovernedEvidence | None:
+    """Consulta a evidência tipada que a recuperação/continuação precisará."""
+    _require_uuid(package_id, name="package_id")
+    _require_uuid(ingestion_run_id, name="ingestion_run_id")
+    _require_sha256(authorization_fingerprint, name="authorization_fingerprint")
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT package_id, ingestion_run_id, supervisor_run_id,
+                   authorization_fingerprint, package_sha256, commit_outcome,
+                   reconciliation_sha256, certificate_id, certificate_sha256, promoted_at
+            FROM sec_query_governed_evidence(%s, %s, %s)
+            """,
+            (package_id, ingestion_run_id, authorization_fingerprint),
+        )
+        row = cur.fetchone()
+    return GovernedEvidence(*row) if row is not None else None
 
 
 def get_run_status(conn: psycopg.Connection, *, run_id: UUID) -> RunStatus | None:
@@ -464,7 +637,10 @@ def is_raw_visible(conn: psycopg.Connection, *, run_id: UUID) -> bool:
     """Informa se a execução aparece na superfície de dados brutos validados."""
     with conn.cursor() as cur:
         cur.execute("SELECT EXISTS (SELECT 1 FROM sec_validated_raw_runs WHERE run_id = %s)", (run_id,))
-        return bool(cur.fetchone()[0])
+        row = cur.fetchone()
+    if row is None:
+        raise ManifestStateError("a consulta de visibilidade não retornou estado")
+    return bool(row[0])
 
 
 def _json(value: dict[str, Any] | None) -> str:

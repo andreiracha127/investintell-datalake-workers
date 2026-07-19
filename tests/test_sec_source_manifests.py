@@ -44,8 +44,43 @@ def test_sec_source_manifest_api_is_importable() -> None:
         "validate_raw_run",
         "get_run_status",
         "is_raw_visible",
+        "record_commit_outcome",
+        "promote_certified_canary_package",
+        "get_governed_evidence",
     ):
         assert callable(getattr(manifests, name))
+
+
+def test_sec_source_manifest_ddl_declares_typed_backfill_governance_contract() -> None:
+    ddl = (ROOT / "schemas" / "sec_source_manifests.sql").read_text(encoding="utf-8")
+
+    for surface in (
+        "commit_outcome",
+        "commit_outcome_resolution",
+        "canary_promoted",
+        "authorization_fingerprint",
+        "reconciliation_sha256",
+        "certificate_id",
+        "certificate_sha256",
+        "sec_record_commit_outcome",
+        "sec_promote_certified_canary_package",
+        "sec_query_governed_evidence",
+        "sec_run_transitions_definitive_outcome_uq",
+        "sec_source_package_transitions_canary_promotion_uq",
+        "sec_source_package_transitions_certificate_uq",
+    ):
+        assert surface in ddl
+
+    # Typed evidence is canonical; historical lifecycle diagnostics remain
+    # compatible but cannot populate the new governance columns.
+    assert "event_kind = 'lifecycle'" in ddl
+    assert "event_type IN ('created', 'transition', 'raw_validated', 'failed', 'retry')" in ddl
+    for routine in (
+        "sec_record_commit_outcome(uuid,uuid,character,character,text)",
+        "sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
+        "sec_query_governed_evidence(uuid,uuid,character)",
+    ):
+        assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
 
 
 def _test_dsn() -> str | None:
@@ -113,6 +148,212 @@ def _loading_run(conn, *, parser_version: str = "p1"):
     run = _run(conn, parser_version=parser_version)
     run = transition_run(conn, run_id=run.run_id, expected_state="discovered", target_state="loading")
     return run
+
+
+def _governance_ready_package(conn, *, parser_version: str = "governance"):
+    from src.sec_regulatory.manifests import (
+        register_file,
+        register_package_discovery,
+        transition_run,
+        validate_raw_run,
+    )
+
+    run = _run(conn, parser_version=parser_version)
+    package = register_package_discovery(
+        conn,
+        source_family="manifest-test",
+        source_quarter="2026Q2",
+        package_relative_path=f"packages/{parser_version}",
+        package_state="discovered",
+        package_sha256="a" * 64,
+    )
+    package = register_package_discovery(
+        conn,
+        source_family="manifest-test",
+        source_quarter="2026Q2",
+        package_relative_path=f"packages/{parser_version}",
+        package_state="loaded",
+        package_sha256="a" * 64,
+        run_id=run.run_id,
+    )
+    transition_run(conn, run_id=run.run_id, expected_state="discovered", target_state="loading")
+    register_file(conn, run_id=run.run_id, relative_path="table.csv", sha256="b" * 64, byte_size=0)
+    validate_raw_run(conn, run_id=run.run_id)
+    return run, package
+
+
+def test_governance_wrappers_reject_secret_shaped_or_untyped_evidence() -> None:
+    from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
+
+    with pytest.raises(ManifestStateError, match="UUID"):
+        record_commit_outcome(
+            None,  # type: ignore[arg-type]
+            run_id="not-a-uuid",  # type: ignore[arg-type]
+            supervisor_run_id=uuid4(),
+            authorization_fingerprint="a" * 64,
+            package_sha256="b" * 64,
+            outcome="committed",
+        )
+    with pytest.raises(ManifestStateError, match="SHA-256"):
+        record_commit_outcome(
+            None,  # type: ignore[arg-type]
+            run_id=uuid4(),
+            supervisor_run_id=uuid4(),
+            authorization_fingerprint="Bearer definitely-not-evidence",
+            package_sha256="b" * 64,
+            outcome="committed",
+        )
+
+
+def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_conn) -> None:
+    from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
+
+    run, _ = _governance_ready_package(db_conn)
+    supervisor = uuid4()
+    first = record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="ambiguous",
+    )
+    assert record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="ambiguous",
+    ) == first
+    resolved = record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+    )
+    assert resolved.event_type == "commit_outcome_resolution"
+    with pytest.raises(ManifestStateError, match="conflicting"):
+        record_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="rolled_back",
+        )
+
+
+def test_real_db_certified_canary_promotion_is_idempotent_and_governed(db_conn) -> None:
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        promote_certified_canary_package,
+        record_commit_outcome,
+    )
+
+    run, package = _governance_ready_package(db_conn)
+    supervisor = uuid4()
+    record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+    )
+    certificate = uuid4()
+    first = promote_certified_canary_package(
+        db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+        supervisor_run_id=supervisor, authorization_fingerprint="c" * 64,
+        package_sha256="a" * 64, reconciliation_sha256="d" * 64,
+        certificate_id=certificate, certificate_sha256="e" * 64,
+    )
+    assert promote_certified_canary_package(
+        db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+        supervisor_run_id=supervisor, authorization_fingerprint="c" * 64,
+        package_sha256="a" * 64, reconciliation_sha256="d" * 64,
+        certificate_id=certificate, certificate_sha256="e" * 64,
+    ) == first
+    db_conn.commit()
+    with pytest.raises(ManifestStateError, match="conflicting"):
+        promote_certified_canary_package(
+            db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+            supervisor_run_id=supervisor, authorization_fingerprint="c" * 64,
+            package_sha256="a" * 64, reconciliation_sha256="f" * 64,
+            certificate_id=certificate, certificate_sha256="e" * 64,
+        )
+    db_conn.rollback()
+    with db_conn.cursor() as cur:
+        with pytest.raises(Exception, match="append-only"):
+            cur.execute("DELETE FROM sec_source_package_transitions WHERE package_transition_id = %s", (first.package_transition_id,))
+    db_conn.rollback()
+    with db_conn.cursor() as cur:
+        with pytest.raises(Exception, match="append-only"):
+            cur.execute("UPDATE sec_run_transitions SET detail = 'tamper' WHERE run_id = %s", (run.run_id,))
+
+
+def test_real_db_promotion_requires_raw_validation_and_matching_lineage(db_conn) -> None:
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        promote_certified_canary_package,
+        record_commit_outcome,
+        register_package_discovery,
+    )
+
+    run = _run(db_conn, parser_version="unvalidated-governance")
+    package = register_package_discovery(
+        db_conn, source_family="manifest-test", source_quarter="2026Q2",
+        package_relative_path="packages/unvalidated-governance", package_state="discovered",
+        package_sha256="a" * 64,
+    )
+    package = register_package_discovery(
+        db_conn, source_family="manifest-test", source_quarter="2026Q2",
+        package_relative_path="packages/unvalidated-governance", package_state="loaded",
+        package_sha256="a" * 64, run_id=run.run_id,
+    )
+    supervisor = uuid4()
+    record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+    )
+    with pytest.raises(ManifestStateError, match="raw-validated"):
+        promote_certified_canary_package(
+            db_conn, package_id=package.package_id, ingestion_run_id=run.run_id,
+            supervisor_run_id=supervisor, authorization_fingerprint="c" * 64,
+            package_sha256="a" * 64, reconciliation_sha256="d" * 64,
+            certificate_id=uuid4(), certificate_sha256="e" * 64,
+        )
+
+
+def test_real_db_certificate_cannot_cross_runs_and_query_returns_typed_evidence(db_conn) -> None:
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        get_governed_evidence,
+        promote_certified_canary_package,
+        record_commit_outcome,
+    )
+
+    first_run, first_package = _governance_ready_package(db_conn, parser_version="cert-first")
+    second_run, second_package = _governance_ready_package(db_conn, parser_version="cert-second")
+    certificate = uuid4()
+    for run in (first_run, second_run):
+        record_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=uuid4(),
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+        )
+    with db_conn.cursor() as cur:
+        cur.execute(
+            "SELECT supervisor_run_id FROM sec_run_transitions WHERE run_id = %s AND commit_outcome = 'committed'",
+            (first_run.run_id,),
+        )
+        first_supervisor = cur.fetchone()[0]
+        cur.execute(
+            "SELECT supervisor_run_id FROM sec_run_transitions WHERE run_id = %s AND commit_outcome = 'committed'",
+            (second_run.run_id,),
+        )
+        second_supervisor = cur.fetchone()[0]
+    promote_certified_canary_package(
+        db_conn, package_id=first_package.package_id, ingestion_run_id=first_run.run_id,
+        supervisor_run_id=first_supervisor, authorization_fingerprint="c" * 64,
+        package_sha256="a" * 64, reconciliation_sha256="d" * 64,
+        certificate_id=certificate, certificate_sha256="e" * 64,
+    )
+    evidence = get_governed_evidence(
+        db_conn, package_id=first_package.package_id, ingestion_run_id=first_run.run_id,
+        authorization_fingerprint="c" * 64,
+    )
+    assert evidence is not None
+    assert evidence.certificate_id == certificate
+    assert evidence.commit_outcome == "committed"
+    with pytest.raises(ManifestStateError, match="certificate"):
+        promote_certified_canary_package(
+            db_conn, package_id=second_package.package_id, ingestion_run_id=second_run.run_id,
+            supervisor_run_id=second_supervisor, authorization_fingerprint="c" * 64,
+            package_sha256="a" * 64, reconciliation_sha256="d" * 64,
+            certificate_id=certificate, certificate_sha256="e" * 64,
+        )
 
 
 def _accounted_file(conn, run_id, *, expected: int = 0, source: int = 0, lexical: int = 0, typed: int = 0, quarantine: int = 0, rejected: int = 0, state: str = "accounted"):
@@ -473,7 +714,7 @@ def test_real_db_package_discovery_keeps_duplicate_paths_distinct(db_conn) -> No
 
 
 def test_real_db_package_discovery_is_idempotent_monotonic_and_keeps_immutable_metadata(db_conn) -> None:
-    from src.sec_regulatory.manifests import ManifestStateError, register_package_discovery
+    from src.sec_regulatory.manifests import register_package_discovery
 
     run = _run(db_conn)
     first = register_package_discovery(
@@ -608,7 +849,6 @@ def test_real_db_concurrent_package_retry_cannot_double_increment(db_conn) -> No
 
 def test_real_db_table_issue_counts_are_reconciled_per_declared_table(db_conn) -> None:
     from src.sec_regulatory.manifests import (
-        RawValidationError,
         record_issue,
         register_table_reconciliation,
         validate_raw_run,
@@ -760,7 +1000,7 @@ def test_real_db_path_constraints_reject_absolute_drive_backslash_dot_and_empty_
 
 
 def test_real_db_multiple_issue_details_count_once_and_mixed_dispositions_fail(db_conn) -> None:
-    from src.sec_regulatory.manifests import RawValidationError, record_issue, validate_raw_run
+    from src.sec_regulatory.manifests import record_issue, validate_raw_run
 
     good = _loading_run(db_conn, parser_version="p3")
     good_file = _accounted_file(
@@ -848,7 +1088,7 @@ def test_real_db_issue_counts_must_reconcile_but_nonzero_quarantine_is_allowed(d
     from src.sec_regulatory.manifests import RawValidationError, record_issue, validate_raw_run
 
     blocked = _loading_run(db_conn)
-    blocked_file = _accounted_file(
+    _accounted_file(
         db_conn,
         blocked.run_id,
         expected=2,

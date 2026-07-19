@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 
 
+def test_nport_security_definer_catalog_routines_revoke_public_execute() -> None:
+    ddl = Path("schemas/nport_raw.sql").read_text(encoding="utf-8")
+
+    for routine in ("nport_contract_catalog_payload()", "nport_contract_catalog_sha256()"):
+        assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
+
+
 def test_nport_benchmark_exit_code_is_fail_closed() -> None:
     from tests.fixtures.run_nport_w1_benchmark import PUBLICATION_SQL, _benchmark_exit_code
 
@@ -84,7 +91,7 @@ def test_streamer_does_not_need_full_file_reads(tmp_path: Path) -> None:
 
 
 def test_declared_optional_tsv_is_zero_row_but_submission_is_foundational(tmp_path: Path) -> None:
-    from src.nport.schema import load_nport_contract, verify_package
+    from src.nport.schema import verify_package
     from src.sec_regulatory.contracts import ContractError
 
     contract = _synthetic_contract(tmp_path)
@@ -640,7 +647,7 @@ def test_extra_zero_count_source_file_cannot_hide_outside_closed_contract(relati
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
 def test_governed_family_fails_closed_when_overlay_reconciler_is_absent() -> None:
     import psycopg
-    from src.sec_regulatory.manifests import register_file, validate_raw_run
+    from src.sec_regulatory.manifests import validate_raw_run
 
     with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
         run, _ = _seed_zero_row_contract_run(conn, suffix="missing-overlay")
@@ -726,7 +733,7 @@ def test_publication_rejects_forged_required_blank_as_typed() -> None:
     """Required-blank derivation stays fail-closed inside the fused row scan."""
     import psycopg
     from src.nport.schema import json_typed_projection, load_nport_contract, parse_row
-    from src.sec_regulatory.manifests import register_file, register_table_reconciliation, validate_raw_run
+    from src.sec_regulatory.manifests import register_file, validate_raw_run
 
     with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
         run, _ = _seed_zero_row_contract_run(conn, suffix="required-blank-forgery")
@@ -916,10 +923,14 @@ def test_publication_derives_exact_error_issue_and_disposition(mutation: str) ->
             "raw_value": "bad-date", "detail": "data inválida para o campo",
         }
         status = "quarantined"
-        if mutation == "raw-value": error["raw_value"] = "invented"
-        elif mutation == "detail": error["detail"] = "invented"
-        elif mutation == "code": error["code"] = "invalid_text"
-        else: status = "rejected"
+        if mutation == "raw-value":
+            error["raw_value"] = "invented"
+        elif mutation == "detail":
+            error["detail"] = "invented"
+        elif mutation == "code":
+            error["code"] = "invalid_text"
+        else:
+            status = "rejected"
         with conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO nport_raw_rows (
