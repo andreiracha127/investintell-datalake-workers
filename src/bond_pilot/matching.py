@@ -188,7 +188,6 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                 "price, price_state TEXT, ytm, db_type, db_type_state TEXT, daily_key_state TEXT, "
                 "PRIMARY KEY (cusip, observation_date, source_row_number)) WITHOUT ROWID"
             )
-            connection.executemany("INSERT INTO universe (cusip) VALUES (?)", ((value,) for value in sorted(cohort)))
             with pq.ParquetFile(panel_path) as panel:
                 available = set(panel.schema_arrow.names)
                 needed = {"normalized_cusip9", "observation_date", "source_row_number"}
@@ -199,6 +198,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                 for batch in panel.iter_batches(columns=columns):
                     values = batch.to_pydict()
                     rows: list[tuple[object, ...]] = []
+                    universe_rows: list[tuple[str]] = []
                     for index, raw_cusip in enumerate(values["normalized_cusip9"]):
                         cusip = normalize_cusip9(raw_cusip).normalized_cusip9
                         raw_date = values["observation_date"][index]
@@ -212,6 +212,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                         source_row = values["source_row_number"][index]
                         if isinstance(source_row, bool) or not isinstance(source_row, int):
                             continue
+                        universe_rows.append((cusip,))
                         rows.append(
                             (
                                 cusip,
@@ -226,6 +227,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                             )
                         )
                     if rows:
+                        connection.executemany("INSERT OR IGNORE INTO universe (cusip) VALUES (?)", universe_rows)
                         connection.executemany("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
             connection.commit()
             connection.close()

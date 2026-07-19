@@ -149,6 +149,26 @@ def test_observation_index_preserves_competing_final_during_publish_race(tmp_pat
     assert not list(tmp_path.glob(".index.sqlite.*.partial*"))
 
 
+def test_observation_index_derives_universe_from_valid_panel_rows(tmp_path: Path, mapping: object) -> None:
+    panel = tmp_path / "panel.parquet"
+    index = tmp_path / "index.sqlite"
+    _write_panel(
+        panel,
+        [
+            {"normalized_cusip9": "555555555", "observation_date": "2024-01-20", "source_row_number": 1, "pr": None, "pr_state": "null", "ytm": None, "db_type": None, "daily_key_state": "unique_in_matching_cohort"},
+            {"normalized_cusip9": "666666666", "observation_date": "invalid-date", "observation_date_state": "invalid", "source_row_number": 2, "pr": 100.0, "pr_state": "present", "ytm": None, "db_type": None, "daily_key_state": "invalid_key"},
+        ],
+    )
+    with ObservationIndex.build(panel, index, ["987654321", "555555555", "666666666"]) as observations:
+        assert not observations.is_universe_member("987654321")
+        assert observations.is_universe_member("555555555")
+        assert not observations.is_universe_member("666666666")
+        absent = match_holding(_holding(original_cusip="987654321"), mapping, observations, "2024-01-01", "2024-01-31")
+        future_only = match_holding(_holding(original_cusip="555555555"), mapping, observations, "2024-01-01", "2024-01-31")
+    assert absent.state is MatchState.UNMATCHED_NO_CUSIP
+    assert future_only.state is MatchState.UNMATCHED_NO_PRIOR_OBSERVATION
+
+
 def test_historical_matcher_rejects_latest_lane_output(tmp_path: Path, mapping: object) -> None:
     panel = tmp_path / "panel.parquet"
     index = tmp_path / "index.sqlite"
@@ -206,6 +226,7 @@ def test_required_precedence_collisions_and_asof_states(tmp_path: Path, mapping:
             {"normalized_cusip9": "333333333", "observation_date": "2023-12-16", "source_row_number": 4, "pr": 100.0, "pr_state": "present", "ytm": None, "db_type": 1, "daily_key_state": "duplicate_in_matching_cohort"},
             {"normalized_cusip9": "333333333", "observation_date": "2023-12-16", "source_row_number": 5, "pr": 101.0, "pr_state": "present", "ytm": None, "db_type": 1, "daily_key_state": "duplicate_in_matching_cohort"},
             {"normalized_cusip9": "444444444", "observation_date": "2023-12-16", "source_row_number": 6, "pr": 100.0, "pr_state": "present", "ytm": None, "db_type": 1, "daily_key_state": "unique_in_matching_cohort"},
+            {"normalized_cusip9": "555555555", "observation_date": "2024-01-20", "source_row_number": 7, "pr": 100.0, "pr_state": "present", "ytm": None, "db_type": 1, "daily_key_state": "unique_in_matching_cohort"},
         ],
     )
     with ObservationIndex.build(panel, index, ["123456789", "222222222", "333333333", "444444444", "555555555"]) as observations:
