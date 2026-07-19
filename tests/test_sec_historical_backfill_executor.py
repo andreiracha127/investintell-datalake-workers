@@ -520,6 +520,9 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
             assert "has_sequence_privilege(current_user,c.oid,'SELECT')" in query
             assert "has_sequence_privilege(current_user,c.oid,'UPDATE')" in query
             assert "has_sequence_privilege(current_user,c.oid,'USAGE')" in query
+            assert "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace" in query
+            assert "WHERE p.prosecdef" not in query
+            assert "has_function_privilege(current_user,p.oid,'EXECUTE')" in query
             return {
                 field: expected[field]
                 for field in ("table_privileges", "sequence_privileges", "function_privileges")
@@ -555,6 +558,10 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("sequence", "SELECT"),
         ("sequence", "UPDATE"),
         ("routine", "EXECUTE"),
+        ("ordinary_routine", "EXECUTE"),
+        ("procedure", "EXECUTE"),
+        ("aggregate", "EXECUTE"),
+        ("window", "EXECUTE"),
         ("schema", "CREATE"),
         ("public_acl", "EXECUTE"),
         ("public_acl_default", "EXECUTE"),
@@ -660,6 +667,52 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         "SET search_path = pg_catalog AS 'SELECT 1'"
                     ).format(sql.Identifier(schema))
                 )
+            if grant_kind == "procedure":
+                cursor.execute(
+                    sql.SQL("CREATE PROCEDURE {}.hidden_procedure() LANGUAGE sql AS 'SELECT 1'").format(
+                        sql.Identifier(schema)
+                    )
+                )
+                cursor.execute(
+                    sql.SQL("REVOKE ALL ON PROCEDURE {}.hidden_procedure() FROM PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            if grant_kind == "aggregate":
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE FUNCTION {}.hidden_sum_step(integer,integer) RETURNS integer "
+                        "LANGUAGE sql IMMUTABLE AS 'SELECT COALESCE($1, 0) + COALESCE($2, 0)'"
+                    ).format(sql.Identifier(schema))
+                )
+                cursor.execute(
+                    sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_sum_step(integer,integer) FROM PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE AGGREGATE {}.hidden_sum(integer) "
+                        "(SFUNC = {}.hidden_sum_step, STYPE = integer, INITCOND = '0')"
+                    ).format(sql.Identifier(schema), sql.Identifier(schema))
+                )
+                cursor.execute(
+                    sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_sum(integer) FROM PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
+            if grant_kind == "window":
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE FUNCTION {}.hidden_row_number() RETURNS bigint "
+                        "LANGUAGE internal WINDOW AS 'window_row_number'"
+                    ).format(sql.Identifier(schema))
+                )
+                cursor.execute(
+                    sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_row_number() FROM PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
             if grant_kind == "table":
                 grant_target = sql.SQL("TABLE {}.hidden_relation").format(sql.Identifier(schema))
             elif grant_kind == "monitored_table":
@@ -668,6 +721,14 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                 grant_target = sql.SQL("SEQUENCE {}.hidden_sequence").format(sql.Identifier(schema))
             elif grant_kind == "routine":
                 grant_target = sql.SQL("FUNCTION {}.hidden_security_definer()").format(sql.Identifier(schema))
+            elif grant_kind == "ordinary_routine":
+                grant_target = sql.SQL("FUNCTION public.nport_expected_row(jsonb,jsonb)")
+            elif grant_kind == "procedure":
+                grant_target = sql.SQL("PROCEDURE {}.hidden_procedure()").format(sql.Identifier(schema))
+            elif grant_kind == "aggregate":
+                grant_target = sql.SQL("FUNCTION {}.hidden_sum(integer)").format(sql.Identifier(schema))
+            elif grant_kind == "window":
+                grant_target = sql.SQL("FUNCTION {}.hidden_row_number()").format(sql.Identifier(schema))
             if grant_kind == "schema":
                 cursor.execute(
                     sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
