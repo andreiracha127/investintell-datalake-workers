@@ -50,7 +50,7 @@ _METHOD_VERSION = "bond-pilot-calibration-v3"
 _QUERY_SHA256 = hashlib.sha256((RESOLVER_SQL + "\n" + INITIAL_PAGE_SQL + "\n" + RESUME_PAGE_SQL).encode()).hexdigest()
 _METHOD_SHA256 = hashlib.sha256(_METHOD_VERSION.encode()).hexdigest()
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
-_CHECKPOINT_KEYS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
+_CHECKPOINT_KEYS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
 
 
 @dataclass(frozen=True, init=False)
@@ -187,7 +187,17 @@ def load_phase4_v2_evidence(path: str | Path) -> Phase4V2Evidence:
 def load_phase4_v2_evidence_approval(path: str | Path) -> Phase4V2EvidenceApproval:
     value, raw, source = _read_json(path)
     _validate_approval(value)
-    return Phase4V2EvidenceApproval(token=_TOKEN, artifact_sha256=hashlib.sha256(raw).hexdigest(), path=source, values=value)
+    approval = Phase4V2EvidenceApproval(token=_TOKEN, artifact_sha256=hashlib.sha256(raw).hexdigest(), path=source, values=value)
+    _approval_authority_hash(approval)
+    return approval
+
+
+def _approval_authority_hash(approval: Phase4V2EvidenceApproval) -> str:
+    pin = os.environ.get("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256")
+    authority = os.environ.get("BOND_PILOT_PHASE4_V2_APPROVER_ID")
+    if not _sha(pin) or pin != approval.artifact_sha256 or not isinstance(authority, str) or not authority or authority != approval.values.get("approved_by"):
+        raise PilotError("phase4b_v2_unavailable")
+    return hashlib.sha256(authority.encode("utf-8")).hexdigest()
 
 
 def _rehash(governance: object, kind: str) -> tuple[dict[str, object], str]:
@@ -200,6 +210,8 @@ def _rehash(governance: object, kind: str) -> tuple[dict[str, object], str]:
     (_validate_evidence if kind == "evidence" else _validate_approval)(value)
     if dict(governance.values) != value:
         raise PilotError("phase4b_v2_unavailable")
+    if kind == "approval":
+        _approval_authority_hash(governance)
     return value, governance.artifact_sha256
 
 
@@ -239,7 +251,7 @@ def _date(value: object) -> str:
 
 
 def _checkpoint_payload(*, run_id: str, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series_ids: tuple[str, ...], reports: Sequence[tuple[str, str, str, str]], last_key: tuple[str, ...] | None, pages: int, rows: int, elapsed_seconds: float, output_hash: str, output_state: str, stop_reason: str | None) -> dict[str, object]:
-    return {"schema_version": "bond-pilot-calibration-checkpoint-v2", "run_id": run_id, "evidence_sha256": evidence.artifact_sha256, "approval_sha256": approval.artifact_sha256, "publication_sha256": evidence.values["publication_sha256"], "mode": mode, "series_ids": list(series_ids), "seam": SEAM_NAME, "relation": V2_RELATION, "query_version": _QUERY_VERSION, "query_sha256": _QUERY_SHA256, "method_version": _METHOD_VERSION, "method_sha256": _METHOD_SHA256, "resolved_reports": [dict(zip(_REPORT_COLUMNS, report, strict=True)) for report in reports], "last_key": list(last_key) if last_key else None, "pages": pages, "rows": rows, "elapsed_seconds": elapsed_seconds, "output_hash": output_hash, "output_state": output_state, "stop_reason": stop_reason}
+    return {"schema_version": "bond-pilot-calibration-checkpoint-v2", "run_id": run_id, "evidence_sha256": evidence.artifact_sha256, "approval_sha256": approval.artifact_sha256, "approval_authority_sha256": _approval_authority_hash(approval), "publication_sha256": evidence.values["publication_sha256"], "mode": mode, "series_ids": list(series_ids), "seam": SEAM_NAME, "relation": V2_RELATION, "query_version": _QUERY_VERSION, "query_sha256": _QUERY_SHA256, "method_version": _METHOD_VERSION, "method_sha256": _METHOD_SHA256, "resolved_reports": [dict(zip(_REPORT_COLUMNS, report, strict=True)) for report in reports], "last_key": list(last_key) if last_key else None, "pages": pages, "rows": rows, "elapsed_seconds": elapsed_seconds, "output_hash": output_hash, "output_state": output_state, "stop_reason": stop_reason}
 
 
 def _decode_reports(rows: object, expected_series: tuple[str, ...]) -> tuple[tuple[str, str, str, str], ...]:
@@ -278,14 +290,20 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         value, _raw, _ = _read_json(path)
     except PilotError as exc:
         raise PilotError("run_budget_required") from exc
-    expected = {"schema_version": "bond-pilot-calibration-checkpoint-v2", "run_id": run_id, "evidence_sha256": evidence.artifact_sha256, "approval_sha256": approval.artifact_sha256, "publication_sha256": evidence.values["publication_sha256"], "mode": mode, "series_ids": list(series), "seam": SEAM_NAME, "relation": V2_RELATION, "query_version": _QUERY_VERSION, "query_sha256": _QUERY_SHA256, "method_version": _METHOD_VERSION, "method_sha256": _METHOD_SHA256}
+    expected = {"schema_version": "bond-pilot-calibration-checkpoint-v2", "run_id": run_id, "evidence_sha256": evidence.artifact_sha256, "approval_sha256": approval.artifact_sha256, "approval_authority_sha256": _approval_authority_hash(approval), "publication_sha256": evidence.values["publication_sha256"], "mode": mode, "series_ids": list(series), "seam": SEAM_NAME, "relation": V2_RELATION, "query_version": _QUERY_VERSION, "query_sha256": _QUERY_SHA256, "method_version": _METHOD_VERSION, "method_sha256": _METHOD_SHA256}
     if set(value) != _CHECKPOINT_KEYS or any(value.get(key) != item for key, item in expected.items()):
         raise PilotError("run_budget_required")
     pages, rows, elapsed = value["pages"], value["rows"], value["elapsed_seconds"]
     if not isinstance(pages, int) or isinstance(pages, bool) or not isinstance(rows, int) or isinstance(rows, bool) or pages < 0 or pages > budget.max_pages or rows < 0 or rows > budget.max_rows or pages > rows or not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or not math.isfinite(elapsed) or elapsed < 0 or not _sha(value["output_hash"]):
         raise PilotError("run_budget_required")
-    reports = _decode_reports(value["resolved_reports"], series) if value["resolved_reports"] else ()
-    key = _decode_key(value["last_key"])
+    try:
+        reports = _decode_reports(value["resolved_reports"], series) if value["resolved_reports"] else ()
+        key = _decode_key(value["last_key"])
+        if key is not None:
+            canonical_date = _date(key[1])
+            key = (key[0], canonical_date, *key[2:])
+    except PilotError as exc:
+        raise PilotError("run_budget_required") from exc
     state, reason = value["output_state"], value["stop_reason"]
     if state not in {"new", "in_progress", "complete", "budget_reached", "stopped"} or reason is not None and not isinstance(reason, str):
         raise PilotError("run_budget_required")
@@ -293,11 +311,13 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         raise PilotError("run_budget_required")
     if state in {"in_progress", "budget_reached"} and (not rows or not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH):
         raise PilotError("run_budget_required")
-    if state == "stopped" and (not isinstance(reason, str) or not reason or (rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or reports or key is not None or value["output_hash"] != _EMPTY_HASH))):
+    if state == "stopped" and (not isinstance(reason, str) or not reason or (rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or key is not None or value["output_hash"] != _EMPTY_HASH))):
         raise PilotError("run_budget_required")
     if state == "budget_reached" and (reason != "budget_reached" or (pages < budget.max_pages and rows < budget.max_rows)):
         raise PilotError("run_budget_required")
     if state == "complete" and ((rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or key is not None or value["output_hash"] != _EMPTY_HASH)) or reason is not None):
+        raise PilotError("run_budget_required")
+    if key is not None and tuple(key[:4]) not in reports:
         raise PilotError("run_budget_required")
     value["resolved_reports"], value["last_key"] = reports, key
     return value
