@@ -13,9 +13,13 @@ import json
 import sys
 
 from src.db import resolve_dsn
+from src.sec_regulatory.historical_backfill import cli as historical_backfill_cli
 
 
-def main() -> None:
+def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "historical-backfill":
+        return historical_backfill_cli(sys.argv[2:])
+
     ap = argparse.ArgumentParser()
     ap.add_argument("worker", help="module name under src/workers (e.g. risk_metrics)")
     ap.add_argument("--calc-date", default=None)
@@ -29,7 +33,8 @@ def main() -> None:
 
     stats = mod.run(resolve_dsn(), calc_date=args.calc_date, limit=args.limit)
     print(json.dumps({"worker": args.worker, **(stats or {})}, default=str))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,3 +1,4 @@
+from contextlib import nullcontext
 import hashlib
 import os
 from pathlib import Path
@@ -14,6 +15,90 @@ _RR1_METADATA_SHA256S = {
     "cbdf8ac1971b531874eb87fb11e0126440b704f12886fa989c067fc666c08783",
 }
 _FIXTURE_METADATA_SHA256 = "2196a3843eb45a9369f2165baa760c157b0efe0e4d52f0d5d7458fae8a0a412f"
+
+
+@pytest.mark.parametrize("success_state", ("raw_validated", "duplicate"))
+def test_rr1_worker_stops_and_reports_the_first_failed_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, success_state: str
+) -> None:
+    """A failed package must not be hidden by later package successes."""
+    import src.workers.rr1_ingestion as worker
+
+    packages = [tmp_path / name for name in ("2024q1_rr1", "2024q2_rr1", "2024q3_rr1")]
+    for package in packages:
+        package.mkdir()
+
+    class Connection:
+        commits = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            self.commits += 1
+
+    connection = Connection()
+    calls: list[str] = []
+    monkeypatch.setattr(worker, "SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(worker, "connect", lambda _dsn: connection)
+    monkeypatch.setattr(worker, "advisory_lock", lambda *_args: nullcontext(True))
+    monkeypatch.setattr(worker, "install_manifest_schema", lambda _conn: None)
+    monkeypatch.setattr(worker, "install_schema", lambda _conn: None)
+
+    def ingest(_conn: object, *, package: Path, source_root: Path) -> dict[str, str]:
+        assert source_root == tmp_path
+        calls.append(package.name)
+        return {"state": "failed" if package == packages[1] else success_state}
+
+    monkeypatch.setattr(worker, "ingest_package", ingest)
+
+    result = worker.run("postgresql://unit-test")
+
+    assert result["state"] == "failed"
+    assert result["failed_package"] == "2024q2_rr1"
+    assert result["packages"] == 2
+    assert calls == ["2024q1_rr1", "2024q2_rr1"]
+    assert connection.commits == 2
+
+
+def test_rr1_worker_rolls_back_an_unexpected_package_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.workers.rr1_ingestion as worker
+
+    (tmp_path / "2024q1_rr1").mkdir()
+
+    class Connection:
+        commits = 0
+        rollbacks = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def rollback(self) -> None:
+            self.rollbacks += 1
+
+    connection = Connection()
+    monkeypatch.setattr(worker, "SOURCE_ROOT", tmp_path)
+    monkeypatch.setattr(worker, "connect", lambda _dsn: connection)
+    monkeypatch.setattr(worker, "advisory_lock", lambda *_args: nullcontext(True))
+    monkeypatch.setattr(worker, "install_manifest_schema", lambda _conn: None)
+    monkeypatch.setattr(worker, "install_schema", lambda _conn: None)
+    monkeypatch.setattr(worker, "ingest_package", lambda *_args, **_kwargs: {"state": "loading"})
+
+    result = worker.run("postgresql://unit-test")
+
+    assert result["state"] == "failed"
+    assert result["failed_state"] == "loading"
+    assert connection.commits == 0
+    assert connection.rollbacks == 1
 
 
 @pytest.mark.skipif(not os.getenv("RR1_CORPUS_AUDIT"), reason="defina RR1_CORPUS_AUDIT=1 para auditar E:\\Edgard")
@@ -199,7 +284,6 @@ def test_rr1_streaming_accepts_long_text_and_only_blank_trailing_cells(tmp_path:
 def test_invalid_parent_effdate_excludes_an_accession_with_typed_facts_from_current_candidates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import psycopg
     from src.rr1.ingestion import ingest_package
-    from src.rr1.schema import load_rr1_contract
     from src.rr1.storage import install_schema
     from src.sec_regulatory.manifests import install_schema as install_manifest_schema
 

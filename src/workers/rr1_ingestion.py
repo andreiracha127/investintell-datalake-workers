@@ -10,6 +10,11 @@ from src.rr1.storage import install_schema
 from src.sec_regulatory.manifests import install_schema as install_manifest_schema
 
 SOURCE_ROOT = Path(os.getenv("RR1_SOURCE_ROOT", r"E:\Edgard\RR1"))
+
+
+_SUCCESS_STATES = {"raw_validated", "duplicate"}
+
+
 def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, object]:
     packages = sorted(path for path in SOURCE_ROOT.iterdir() if path.is_dir())
     if calc_date:
@@ -22,6 +27,23 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             return {"state": "locked", "packages": 0}
         install_manifest_schema(conn)
         install_schema(conn)
-        results = [ingest_package(conn, package=package, source_root=SOURCE_ROOT) for package in packages]
-        conn.commit()
-    return {"state": "ok", "packages": len(packages), "results": results}
+        results = []
+        for package in packages:
+            result = ingest_package(conn, package=package, source_root=SOURCE_ROOT)
+            results.append(result)
+            package_state = result.get("state")
+            if package_state in _SUCCESS_STATES:
+                conn.commit()
+                continue
+            if package_state == "failed":
+                conn.commit()
+            else:
+                conn.rollback()
+            return {
+                "state": "failed",
+                "packages": len(results),
+                "failed_package": package.name,
+                "failed_state": package_state,
+                "results": results,
+            }
+    return {"state": "ok", "packages": len(results), "results": results}
