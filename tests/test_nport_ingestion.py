@@ -10,10 +10,24 @@ from pathlib import Path
 import pytest
 
 
-def test_nport_security_definer_catalog_routines_revoke_public_execute() -> None:
+def test_nport_routines_revoke_public_execute() -> None:
     ddl = Path("schemas/nport_raw.sql").read_text(encoding="utf-8")
 
-    for routine in ("nport_contract_catalog_payload()", "nport_contract_catalog_sha256()"):
+    for routine in (
+        "nport_contract_catalog_payload()",
+        "nport_contract_catalog_sha256()",
+        "nport_install_contract_catalog(jsonb)",
+        "nport_contract_catalog_immutable()",
+        "nport_expected_row(jsonb,jsonb)",
+        "nport_validate_raw_statement()",
+        "nport_raw_run_reconciles(uuid)",
+        "nport_lock_raw_insert_statement()",
+        "nport_lock_raw_update_statement()",
+        "nport_lock_raw_delete_statement()",
+        "nport_lock_holding_map_insert_statement()",
+        "nport_lock_holding_map_update_statement()",
+        "nport_lock_holding_map_delete_statement()",
+    ):
         assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
 
 

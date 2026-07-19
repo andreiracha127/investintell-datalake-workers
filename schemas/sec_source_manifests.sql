@@ -1406,6 +1406,14 @@ FOR EACH ROW EXECUTE FUNCTION sec_audit_run_lifecycle();
 
 -- The installer only defines the routines.  Task 4 grants the dedicated
 -- runtime login explicitly after ownership and ACL attestation.
+REVOKE ALL ON FUNCTION sec_raw_run_reconciles(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_lock_manifest_run_lineage() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_lock_issue_run_lineage() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_check_issue_active_disposition() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_package_discovery_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_run_insert_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_reject_append_only_mutation() FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_validate_raw_visibility_marker() FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_raw_validation_token_present(uuid) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_run_lifecycle_guard() FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_validate_raw_run(uuid, text) FROM PUBLIC;

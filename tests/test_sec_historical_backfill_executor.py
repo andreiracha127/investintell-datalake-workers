@@ -527,6 +527,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         if "'effective_writable_tables'" in query:
             return {field: expected[field] for field in ("effective_writable_tables", "truncate_tables")}
         if "'public_acl'" in query:
+            assert query.count("aclexplode(coalesce(p.proacl, acldefault('f', p.proowner)))") >= 2
             return {field: expected[field] for field in ("public_acl", "unsafe_security_definers", "trigger_write_targets")}
         raise AssertionError("unexpected preflight query")
 
@@ -556,6 +557,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("routine", "EXECUTE"),
         ("schema", "CREATE"),
         ("public_acl", "EXECUTE"),
+        ("public_acl_default", "EXECUTE"),
         ("unsafe_security_definer", ""),
         ("trigger_missing", ""),
         ("trigger_extra", ""),
@@ -651,6 +653,13 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     sql.Identifier(schema)
                 )
             )
+            if grant_kind == "public_acl_default":
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE FUNCTION {}.hidden_default_public_function() RETURNS integer LANGUAGE sql "
+                        "SET search_path = pg_catalog AS 'SELECT 1'"
+                    ).format(sql.Identifier(schema))
+                )
             if grant_kind == "table":
                 grant_target = sql.SQL("TABLE {}.hidden_relation").format(sql.Identifier(schema))
             elif grant_kind == "monitored_table":
@@ -698,7 +707,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         "FOR EACH ROW EXECUTE FUNCTION public.sec_audit_run_lifecycle()"
                     ).format(sql.Identifier(schema))
                 )
-            elif grant_kind != "baseline":
+            elif grant_kind not in {"baseline", "public_acl_default"}:
                 cursor.execute(
                     sql.SQL("GRANT {} ON {} TO {}").format(
                         sql.SQL(grant_verb), grant_target, sql.Identifier(role)

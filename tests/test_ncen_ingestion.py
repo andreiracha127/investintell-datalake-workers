@@ -6,7 +6,20 @@ import pytest
 from src.ncen.ingestion import _relationship_keys, source_quarter_from_package
 from src.ncen.inventory import CANONICAL_PACKAGE_INVENTORIES, build_package_inventory
 from src.ncen.schema import load_ncen_contract, parse_row, verify_package
-from src.sec_regulatory.contracts import ContractError
+
+
+def test_ncen_routines_revoke_public_execute() -> None:
+    ddl = Path("schemas/ncen_raw_v2.sql").read_text(encoding="utf-8")
+
+    for routine in (
+        "ncen_contract_catalog_immutable()",
+        "ncen_validate_raw_statement()",
+        "ncen_lock_raw_insert_statement()",
+        "ncen_lock_raw_update_statement()",
+        "ncen_lock_raw_delete_statement()",
+        "ncen_raw_run_reconciles(uuid)",
+    ):
+        assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
 
 
 def test_ncen_worker_lock_is_registered_and_unique() -> None:

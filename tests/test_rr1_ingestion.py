@@ -17,6 +17,22 @@ _RR1_METADATA_SHA256S = {
 _FIXTURE_METADATA_SHA256 = "2196a3843eb45a9369f2165baa760c157b0efe0e4d52f0d5d7458fae8a0a412f"
 
 
+def test_rr1_routines_revoke_public_execute() -> None:
+    ddl = Path("schemas/rr1_raw_v2.sql").read_text(encoding="utf-8")
+
+    for routine in (
+        "rr1_contract_catalog_immutable()",
+        "rr1_expected_row_evidence(jsonb,text[],jsonb)",
+        "rr1_row_evidence_is_valid(rr1_raw_v2_rows,rr1_contract_tables)",
+        "rr1_validate_raw_statement()",
+        "rr1_lock_raw_insert_statement()",
+        "rr1_lock_raw_update_statement()",
+        "rr1_lock_raw_delete_statement()",
+        "rr1_raw_run_reconciles(uuid)",
+    ):
+        assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
+
+
 @pytest.mark.parametrize("success_state", ("raw_validated", "duplicate"))
 def test_rr1_worker_stops_and_reports_the_first_failed_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, success_state: str

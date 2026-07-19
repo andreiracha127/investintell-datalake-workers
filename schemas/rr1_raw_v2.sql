@@ -230,3 +230,13 @@ BEGIN
  IF EXISTS(SELECT 1 FROM rr1_raw_v2_rows child WHERE child.ingestion_run_id=target_run_id AND child.source_table='cal.tsv' AND (NOT EXISTS(SELECT 1 FROM rr1_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table='tag.tsv' AND parent.tag=child.original_lexical_row->>'ptag' AND parent.version=child.original_lexical_row->>'pversion') OR NOT EXISTS(SELECT 1 FROM rr1_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table='tag.tsv' AND parent.tag=child.original_lexical_row->>'ctag' AND parent.version=child.original_lexical_row->>'cversion'))) THEN RETURN false; END IF;
  RETURN true;
 END $$;
+
+-- Every user-schema routine must opt out of PostgreSQL's default PUBLIC EXECUTE.
+REVOKE ALL ON FUNCTION rr1_contract_catalog_immutable() FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_expected_row_evidence(jsonb,text[],jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_row_evidence_is_valid(rr1_raw_v2_rows,rr1_contract_tables) FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_validate_raw_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_lock_raw_insert_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_lock_raw_update_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_lock_raw_delete_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION rr1_raw_run_reconciles(uuid) FROM PUBLIC;

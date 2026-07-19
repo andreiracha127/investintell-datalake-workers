@@ -156,3 +156,11 @@ BEGIN
  ) THEN RETURN false; END IF;
  RETURN true;
 END $$;
+
+-- Every user-schema routine must opt out of PostgreSQL's default PUBLIC EXECUTE.
+REVOKE ALL ON FUNCTION ncen_contract_catalog_immutable() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ncen_validate_raw_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ncen_lock_raw_insert_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ncen_lock_raw_update_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ncen_lock_raw_delete_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION ncen_raw_run_reconciles(uuid) FROM PUBLIC;

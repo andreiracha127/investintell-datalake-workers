@@ -87,6 +87,31 @@ def test_sec_source_manifest_ddl_declares_typed_backfill_governance_contract() -
         assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
 
 
+def test_sec_source_manifest_ddl_revokes_public_execute_from_every_routine() -> None:
+    ddl = (ROOT / "schemas" / "sec_source_manifests.sql").read_text(encoding="utf-8")
+
+    for routine in (
+        "sec_raw_run_reconciles(uuid)",
+        "sec_lock_manifest_run_lineage()",
+        "sec_lock_issue_run_lineage()",
+        "sec_check_issue_active_disposition()",
+        "sec_package_discovery_guard()",
+        "sec_run_insert_guard()",
+        "sec_reject_append_only_mutation()",
+        "sec_validate_raw_visibility_marker()",
+        "sec_raw_validation_token_present(uuid)",
+        "sec_run_lifecycle_guard()",
+        "sec_validate_raw_run(uuid, text)",
+        "sec_audit_package_discovery()",
+        "sec_audit_run_lifecycle()",
+        "sec_record_commit_outcome(uuid,uuid,character,character,text)",
+        "sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)",
+        "sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
+        "sec_query_governed_evidence(uuid,uuid,character)",
+    ):
+        assert f"REVOKE ALL ON FUNCTION {routine} FROM PUBLIC" in ddl
+
+
 def _test_dsn() -> str | None:
     dsn = os.getenv("SEC_TEST_DATABASE_URL")
     if not dsn:

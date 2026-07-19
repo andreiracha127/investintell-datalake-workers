@@ -672,3 +672,15 @@ BEGIN
     END LOOP;
 END;
 $$;
+
+-- Every user-schema routine must opt out of PostgreSQL's default PUBLIC EXECUTE.
+REVOKE ALL ON FUNCTION nport_contract_catalog_immutable() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_expected_row(jsonb,jsonb) FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_validate_raw_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_raw_run_reconciles(uuid) FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_raw_insert_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_raw_update_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_raw_delete_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_holding_map_insert_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_holding_map_update_statement() FROM PUBLIC;
+REVOKE ALL ON FUNCTION nport_lock_holding_map_delete_statement() FROM PUBLIC;
