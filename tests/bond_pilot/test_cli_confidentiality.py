@@ -30,12 +30,12 @@ class _Connection:
         return None
 
 
-def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64, *, state: str = "complete", reason: str | None = None, run_id: str = "calibration", pages: int | None = None) -> bytes:
+def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64, *, state: str = "complete", reason: str | None = None, run_id: str = "calibration", pages: int | None = None, rows_read: int | None = None, reports: tuple[tuple[str, str, str, str], ...] | None = None, last_key: tuple[str, ...] | None = None) -> bytes:
     from src.bond_pilot import db_calibration as calibration
 
     return calibration.canonical_json_bytes(calibration._checkpoint_payload(
         run_id=run_id, evidence=values["evidence"], approval=values["approval"], mode=values["mode"],
-        series_ids=values["series_ids"], reports=(), last_key=None, pages=(0 if state == "stopped" and pages is None else pages or 1), rows=len(values.get("rows", ())),
+        series_ids=values["series_ids"], reports=(reports if reports is not None else ([(values["series_ids"][0], "2024-03-31", "pub-1", "acc-1")] if state == "complete" else ())), last_key=(last_key if last_key is not None else ((values["series_ids"][0], "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1") if state == "complete" and values.get("rows") else None)), pages=(0 if state == "stopped" and pages is None else pages or 1), rows=(len(values.get("rows", ())) if rows_read is None else rows_read),
         elapsed_seconds=1.0, output_hash=output_hash, output_state=state, stop_reason=reason,
     ))
 
@@ -190,8 +190,8 @@ _FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "row_id
 _FORBIDDEN_TEXT = re.compile(r"\b(?:source|provider|vendor|upstream|lineage|license|entitlement|error|trace|finra|osbap|openbondassetpricing|bonds-api|bonds api|wrds|developer_finra|sec|n-?port)\b", re.IGNORECASE)
 _URI = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _FILE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_-]{0,15}(?:$|[?#])", re.IGNORECASE)
-_HEX_DIGEST = re.compile(r"^(?:sha(?:256|512):)?[0-9a-f]{64}$", re.IGNORECASE)
-_BASE64_DIGEST = re.compile(r"^(?:sha(?:256|512):)?(?:[A-Za-z0-9+/]{43}=|[A-Za-z0-9_-]{43}=|[A-Za-z0-9+/]{86}==|[A-Za-z0-9_-]{86}==)$", re.IGNORECASE)
+_HEX_DIGEST = re.compile(r"^(?:(?:sha256:)?[0-9a-f]{64}|(?:sha512:)?[0-9a-f]{128})$", re.IGNORECASE)
+_BASE64_DIGEST = re.compile(r"^(?:(?:sha256:)?(?:[A-Za-z0-9+/]{43}=|[A-Za-z0-9_-]{43}=)|(?:sha512:)?(?:[A-Za-z0-9+/]{86}==|[A-Za-z0-9_-]{86}==))$", re.IGNORECASE)
 
 
 def _assert_future_public(value: object) -> None:
@@ -226,7 +226,7 @@ def _assert_future_public(value: object) -> None:
 
 def test_future_public_allowlist_rejects_nested_provenance_and_source_family_literals() -> None:
     _assert_future_public({"values": [{"value": 1.0, "unit": "seconds"}], "is_144a": True, "quality": {"freshness": "daily"}, "methodology_version": "bond-metrics-v1"})
-    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "artifact.xlsx"}, {"value": "data.avro"}, {"value": "snapshot.gz"}, {"value": "report.parquet?download=1"}, {"value": "sha256:" + "a" * 64}, {"value": "sha512:" + "a" * 128}, {"value": "A" * 43 + "="}, {"value": "A" * 86 + "=="}, {"value": ("not-json",)}, {"value": float("nan")}):
+    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "artifact.xlsx"}, {"value": "data.avro"}, {"value": "snapshot.gz"}, {"value": "report.parquet?download=1"}, {"value": "a" * 64}, {"value": "sha256:" + "a" * 64}, {"value": "a" * 128}, {"value": "sha512:" + "a" * 128}, {"value": "A" * 43 + "="}, {"value": "sha256:" + "A" * 43 + "="}, {"value": "A" * 86 + "=="}, {"value": "sha512:" + "A" * 86 + "=="}, {"value": "_" * 86 + "=="}, {"value": "sha512:" + "_" * 86 + "=="}, {"value": ("not-json",)}, {"value": float("nan")}):
         with pytest.raises(AssertionError):
             _assert_future_public(value)
 
@@ -293,7 +293,7 @@ def test_calibration_success_pack_is_atomic_and_binds_internal_provenance(tmp_pa
     def succeed(_connection, **values):
         values["rows"] = (_calibration_row(),)
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=None)
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=("series-1", "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1"), mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     report = run_calibration(**kwargs)
     final = kwargs["run_dir"]
@@ -322,8 +322,8 @@ def test_calibration_late_write_failure_leaves_no_final_or_staging_and_retry_suc
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def succeed(_connection, **values):
         values["rows"] = ()
-        values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
+        values["checkpoint_path"].write_bytes(_checkpoint(values, output_hash=hashlib.sha256(b"").hexdigest()))
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None, mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     original = workflow.write_json_once
     def fail_late(path: Path, value: object):
@@ -344,8 +344,8 @@ def test_publish_races_preserve_existing_winner_for_calibration_and_stop(tmp_pat
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def succeed(_connection, **values):
         values["rows"] = ()
-        values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
+        values["checkpoint_path"].write_bytes(_checkpoint(values, output_hash=hashlib.sha256(b"").hexdigest()))
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None, mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     def winner(_staging: Path, output: Path) -> None:
         output.mkdir()
@@ -369,7 +369,7 @@ def test_calibration_row_serialization_fails_closed_with_typed_stop(tmp_path: Pa
     def succeed(_connection, **values):
         values["rows"] = (_calibration_row(cusip=bad),)
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=None)
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=("series-1", "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1"), mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     with pytest.raises(PilotError, match="calibration_row_serialization_failed"):
         run_calibration(**kwargs)
@@ -392,8 +392,10 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     provenance = workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration")
     prior = tmp_path / "prior"
     prior.mkdir()
+    prior_key = ("series-1", "2024-03-31", "pub-1", "acc-1", "h-1000", "run-1", "instrument-1000")
+    reports = (("series-1", "2024-03-31", "pub-1", "acc-1"),)
     values = {"evidence": evidence, "approval": evidence_approval, "mode": "calibration", "series_ids": series, "rows": ()}
-    checkpoint = _checkpoint(values, output_hash=hashlib.sha256(b"").hexdigest(), state="stopped", reason="unsafe_query_plan", run_id="original-run")
+    checkpoint = _checkpoint(values, state="stopped", reason="unsafe_query_plan", run_id="original-run", pages=1, rows_read=1000, reports=reports, last_key=prior_key)
     (prior / "checkpoint.json").write_bytes(checkpoint)
     (prior / "calibration-provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
     (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")
@@ -403,11 +405,15 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
     monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
     def resumed(_connection, **values):
-        values["checkpoint_path"].write_bytes(_checkpoint({**values, "rows": ()}, run_id="original-run"))
-        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
+        assert values["checkpoint_path"].read_bytes() == checkpoint
+        final_key = ("series-1", "2024-03-31", "pub-1", "acc-1", "h-1001", "run-1", "instrument-1001")
+        rows = (_calibration_row(holding_id="h-1001", instrument_id="instrument-1001"),)
+        values["checkpoint_path"].write_bytes(_checkpoint({**values, "rows": rows}, output_hash="e" * 64, run_id="original-run", pages=2, rows_read=1001, reports=reports, last_key=final_key))
+        return SimpleNamespace(rows=rows, rows_read=1001, pages=2, partial=False, last_key=final_key, mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", resumed)
     result = run_calibration(**kwargs, resume_pack=prior)
     assert result["resume_pack_checksums_sha256"] == hashlib.sha256(before["checksums.sha256"]).hexdigest()
+    assert result["invocation_rows"] == 1 and result["cumulative_rows"] == 1001 and result["rows_artifact_scope"] == "this_invocation"
     assert before == {path.name: path.read_bytes() for path in prior.iterdir()}
     tampered = tmp_path / "tampered"
     tampered.mkdir()
@@ -419,3 +425,57 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     with pytest.raises(PilotError, match="calibration_resume_invalid"):
         run_calibration(**{**kwargs, "run_dir": tmp_path / "tampered-output"}, resume_pack=tampered)
     assert calls == []
+
+
+@pytest.mark.parametrize("field,value", [("evidence_sha256", "0" * 64), ("query_sha256", "0" * 64), ("method_sha256", "0" * 64), ("mode", "first_bounded")])
+def test_resume_governance_mismatches_fail_before_dsn(field: str, value: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    payload = json.loads(_checkpoint({"evidence": evidence, "approval": evidence_approval, "mode": "calibration", "series_ids": series, "rows": ()}, output_hash=hashlib.sha256(b"").hexdigest(), state="stopped", reason="unsafe_query_plan", run_id="original-run"))
+    payload[field] = value
+    (prior / "checkpoint.json").write_text(json.dumps(payload), encoding="utf-8")
+    (prior / "calibration-provenance.json").write_text(json.dumps(workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration")), encoding="utf-8")
+    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")
+    from src.bond_pilot.artifacts import write_checksums
+    write_checksums(prior)
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=prior)
+    assert calls == []
+
+
+@pytest.mark.parametrize("oversized", ["checkpoint.json", "checksums.sha256"])
+def test_resume_oversized_control_file_fails_before_dsn(oversized: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    for name in ("checkpoint.json", "calibration-provenance.json", "stop-report.json", "checksums.sha256"):
+        (prior / name).write_bytes(b"{}")
+    (prior / oversized).write_bytes(b"x" * (workflow._MAX_RESUME_CONTROL_BYTES + 1))
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=prior)
+    assert calls == []
+
+
+@pytest.mark.parametrize("field,value", [("run_id", "other-run"), ("mode", "first_bounded"), ("query_sha256", "0" * 64), ("method_sha256", "0" * 64), ("output_state", "stopped"), ("stop_reason", "unexpected")])
+def test_final_checkpoint_mismatches_are_not_published(field: str, value: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / f"bad-{field}"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def mismatched(_connection, **values):
+        rows = (_calibration_row(),)
+        raw = _checkpoint({**values, "rows": rows}, run_id=values["run_id"])
+        payload = json.loads(raw)
+        payload[field] = value
+        values["checkpoint_path"].write_text(json.dumps(payload), encoding="utf-8")
+        key = ("series-1", "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1")
+        return SimpleNamespace(rows=rows, rows_read=1, pages=1, partial=False, last_key=key, mode="calibration")
+    monkeypatch.setattr(workflow, "run_v2_calibration", mismatched)
+    with pytest.raises(PilotError):
+        run_calibration(**kwargs)
+    assert not (kwargs["run_dir"] / "calibration-report.json").exists()

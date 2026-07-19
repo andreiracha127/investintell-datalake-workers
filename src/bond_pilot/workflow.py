@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
 import shutil
 from typing import Mapping, Sequence
 from uuid import uuid4
@@ -123,29 +124,20 @@ def _calibration_provenance(candidate: object, approval: object, mapping: object
     return {"internal_only": True, "source": {**candidate.to_json_mapping(), "approval": approval.to_json_mapping()}, "mapping": mapping.to_mapping(), "phase4": {"evidence_sha256": evidence.artifact_sha256, "approval_sha256": evidence_approval.artifact_sha256, "approval_authority_sha256": hashlib.sha256(str(evidence_approval.values["approved_by"]).encode("utf-8")).hexdigest(), "evidence": dict(evidence.values), "approval": dict(evidence_approval.values)}, "governed_request": {"mode": mode, "series_ids": list(series)}}
 
 
-_CHECKPOINT_FIELDS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
 _RESUME_FILES = frozenset({"checkpoint.json", "calibration-provenance.json", "stop-report.json", "checksums.sha256"})
 _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\/]+(?:/[^\\/]+)*)$")
-
-
-def _checkpoint_metadata(checkpoint: Path) -> tuple[dict[str, object], str]:
-    try:
-        raw = checkpoint.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PilotError("calibration_checkpoint_invalid") from exc
-    if not isinstance(payload, dict) or set(payload) != _CHECKPOINT_FIELDS or not isinstance(payload.get("output_hash"), str) or len(payload["output_hash"]) != 64 or any(character not in "0123456789abcdef" for character in payload["output_hash"]):
-        raise PilotError("calibration_checkpoint_invalid")
-    return payload, hashlib.sha256(raw).hexdigest()
+_MAX_RESUME_CONTROL_BYTES = 1024 * 1024
 
 
 def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[str, object], result: object, mode: str, series: tuple[str, ...]) -> None:
+    if result.mode != mode:
+        raise PilotError("calibration_checkpoint_mismatch")
     phase4 = provenance["phase4"]
     expected = {
         "evidence_sha256": phase4["evidence_sha256"], "approval_sha256": phase4["approval_sha256"],
         "approval_authority_sha256": phase4["approval_authority_sha256"], "publication_sha256": phase4["evidence"]["publication_sha256"],
         "mode": mode, "series_ids": list(series), "seam": phase4["evidence"]["seam"], "relation": phase4["evidence"]["relation"],
-        "pages": result.pages, "rows": result.rows_read, "last_key": list(result.last_key) if result.last_key else None,
+        "pages": result.pages, "rows": result.rows_read, "last_key": tuple(result.last_key) if result.last_key else None,
     }
     if any(payload.get(key) != value for key, value in expected.items()):
         raise PilotError("calibration_checkpoint_mismatch")
@@ -153,15 +145,40 @@ def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[st
         raise PilotError("calibration_checkpoint_mismatch")
 
 
+def _read_resume_control(root: Path, name: str) -> bytes:
+    path = root / name
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_RESUME_CONTROL_BYTES:
+            raise OSError("unsafe control")
+        with path.open("rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise OSError("swapped control")
+            raw = handle.read(_MAX_RESUME_CONTROL_BYTES + 1)
+        if len(raw) > _MAX_RESUME_CONTROL_BYTES:
+            raise OSError("oversized control")
+    except OSError as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    return raw
+
+
 def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: object, approval: object, mode: str, series: tuple[str, ...]) -> tuple[bytes, dict[str, object], str]:
     root = Path(path)
     resolved = root.resolve(strict=False)
     if not root.is_dir() or os.path.islink(root) or _within(resolved, _REPOSITORY_ROOT):
         raise PilotError("calibration_resume_invalid")
-    files = {item.name for item in root.iterdir() if item.is_file() and not os.path.islink(item)}
-    if files != _RESUME_FILES or any(item.is_dir() or os.path.islink(item) for item in root.iterdir()):
+    try:
+        entries = list(os.scandir(root))
+    except OSError as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    if {item.name for item in entries} != _RESUME_FILES or any(item.is_symlink() or not item.is_file(follow_symlinks=False) for item in entries):
         raise PilotError("calibration_resume_invalid")
-    manifest = (root / "checksums.sha256").read_text(encoding="utf-8")
+    captured = {name: _read_resume_control(root, name) for name in _RESUME_FILES}
+    try:
+        manifest = captured["checksums.sha256"].decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PilotError("calibration_resume_invalid") from exc
     checks: dict[str, str] = {}
     for line in manifest.splitlines():
         match = _CHECKSUM_LINE.fullmatch(line)
@@ -171,23 +188,31 @@ def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: 
     if set(checks) != _RESUME_FILES - {"checksums.sha256"}:
         raise PilotError("calibration_resume_invalid")
     for name, digest in checks.items():
-        if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+        if hashlib.sha256(captured[name]).hexdigest() != digest:
             raise PilotError("calibration_resume_invalid")
-    checkpoint_bytes = (root / "checkpoint.json").read_bytes()
-    checkpoint = validate_calibration_checkpoint_bytes(checkpoint_bytes, evidence=evidence, approval=approval, mode=mode, series_ids=series)
+    checkpoint_bytes = captured["checkpoint.json"]
     try:
-        prior = json.loads((root / "calibration-provenance.json").read_text(encoding="utf-8"))
-        stop = json.loads((root / "stop-report.json").read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
+        checkpoint = validate_calibration_checkpoint_bytes(checkpoint_bytes, evidence=evidence, approval=approval, mode=mode, series_ids=series)
+    except PilotError as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    try:
+        prior = json.loads(captured["calibration-provenance.json"].decode("utf-8"))
+        stop = json.loads(captured["stop-report.json"].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PilotError("calibration_resume_invalid") from exc
     if prior != provenance or not isinstance(stop, dict) or stop.get("status") != "stopped" or stop.get("code") != checkpoint.get("stop_reason") or checkpoint.get("output_state") != "stopped":
         raise PilotError("calibration_resume_invalid")
     return checkpoint_bytes, checkpoint, hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
 
-def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path, resume_digest: str | None = None) -> Mapping[str, object]:
+def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path, expected_run_id: str, resume_digest: str | None = None) -> Mapping[str, object]:
     provenance = _calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, mode)
-    checkpoint_payload, checkpoint_sha256 = _checkpoint_metadata(checkpoint)
+    try:
+        checkpoint_raw = checkpoint.read_bytes()
+    except OSError as exc:
+        raise PilotError("calibration_checkpoint_invalid") from exc
+    checkpoint_payload = validate_calibration_checkpoint_bytes(checkpoint_raw, evidence=evidence, approval=evidence_approval, mode=mode, series_ids=series, run_id=expected_run_id)
+    checkpoint_sha256 = hashlib.sha256(checkpoint_raw).hexdigest()
     _cross_bind_checkpoint(checkpoint_payload, provenance, result, mode, series)
     report: dict[str, object] = {"internal_only": True, "mode": mode, "rows_read": result.rows_read, "pages": result.pages, "partial": result.partial, "output_hash": checkpoint_payload["output_hash"], "checkpoint_sha256": checkpoint_sha256, "rows_artifact": "calibration-rows-v1.json", "rows_artifact_scope": "this_invocation", "invocation_rows": len(result.rows), "cumulative_rows": result.rows_read}
     if resume_digest is not None:
@@ -247,12 +272,13 @@ def run_calibration(*, source_manifest: str | Path, source_approval: str | Path,
             raise PilotError("calibration_connection_failed") from exc
         try:
             with connection:
-                result = run_v2_calibration(connection, evidence=phase4, approval=phase4_approval, series_ids=series, mode=mode, checkpoint_path=checkpoint, run_id=(resume_checkpoint or {}).get("run_id", output.name))
+                expected_run_id = str(resume_checkpoint["run_id"]) if resume_checkpoint is not None else output.name
+                result = run_v2_calibration(connection, evidence=phase4, approval=phase4_approval, series_ids=series, mode=mode, checkpoint_path=checkpoint, run_id=expected_run_id)
         except PilotError:
             raise
         except psycopg.Error as exc:
             raise PilotError("calibration_database_failed") from exc
-        report = _write_calibration_pack(staging, candidate=candidate, approval=approval, mapping=debt_mapping, evidence=phase4, evidence_approval=phase4_approval, series=series, mode=mode, result=result, checkpoint=checkpoint, resume_digest=resume_digest)
+        report = _write_calibration_pack(staging, candidate=candidate, approval=approval, mapping=debt_mapping, evidence=phase4, evidence_approval=phase4_approval, series=series, mode=mode, result=result, checkpoint=checkpoint, expected_run_id=expected_run_id, resume_digest=resume_digest)
         _publish(staging, output)
         published = True
         return report
