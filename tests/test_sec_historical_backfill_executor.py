@@ -93,6 +93,24 @@ def _production_authorization(inventory_hash: str) -> dict[str, object]:
     return artifact
 
 
+def test_preflight_requires_exact_security_definer_recovery_routine_set() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, EXACT_SECURITY_DEFINER_ROUTINES, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    assert "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)" in EXACT_SECURITY_DEFINER_ROUTINES
+    for routines in (
+        [item for item in valid["object_identities"]["routines"] if not item.startswith("public.sec_resolve_ambiguous_commit_outcome(")],
+        [*valid["object_identities"]["routines"], "public.unapproved_recovery():999"],
+        [item.replace("character,character,text)", "text,text,text)") if item.startswith("public.sec_resolve_ambiguous_commit_outcome(") else item for item in valid["object_identities"]["routines"]],
+    ):
+        changed = {**valid, "object_identities": {**valid["object_identities"], "routines": sorted(routines)}}
+        with pytest.raises(BackfillSafetyError, match="SECURITY DEFINER routine"):
+            _validate_preflight_attestation(changed)
+    missing_privilege = {**valid, "function_privileges": {key: value for key, value in valid["function_privileges"].items() if key != "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)"}}
+    with pytest.raises(BackfillSafetyError, match="privilege identity"):
+        _validate_preflight_attestation(missing_privilege)
+
+
 def test_execution_authorization_requires_exact_schema_and_matches_code_and_inventory(tmp_path: Path) -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, load_execution_authorization
 

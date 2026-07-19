@@ -129,6 +129,7 @@ EXACT_SECURITY_DEFINER_ROUTINES = frozenset({
     "public.sec_run_lifecycle_guard()",
     "public.sec_validate_raw_run(uuid,text)",
     "public.sec_record_commit_outcome(uuid,uuid,character,character,text)",
+    "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)",
     "public.sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
     "public.sec_query_governed_evidence(uuid,uuid,character)",
     "public.sec_audit_package_discovery()",
@@ -623,7 +624,7 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
         raise BackfillSafetyError("invalid production preflight relation identity set")
     if {item.rsplit(":", 1)[0] for item in objects["sequences"]} != EXACT_IDENTITY_SEQUENCES or len(objects["sequences"]) != 7:
         raise BackfillSafetyError("invalid production preflight identity sequence set")
-    if {item.rsplit(":", 1)[0] for item in objects["routines"]} != EXACT_SECURITY_DEFINER_ROUTINES or len(objects["routines"]) != 11:
+    if {item.rsplit(":", 1)[0] for item in objects["routines"]} != EXACT_SECURITY_DEFINER_ROUTINES or len(objects["routines"]) != len(EXACT_SECURITY_DEFINER_ROUTINES):
         raise BackfillSafetyError("invalid production preflight SECURITY DEFINER routine set")
     table_privileges = attestation["table_privileges"]
     if not isinstance(table_privileges, dict) or set(table_privileges) != EXACT_WRITABLE_TABLES or any(value != ["SELECT", "INSERT", "UPDATE", "DELETE"] for value in table_privileges.values()):
