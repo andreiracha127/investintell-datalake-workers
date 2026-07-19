@@ -8,6 +8,7 @@ must be supplied explicitly and can only report a package terminal state.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import importlib.metadata
 import json
@@ -43,7 +44,18 @@ EXCLUDED_ROOT = Path(r"E:\Edgard\13-F")
 DEFAULT_RUN_DIR = Path(r"E:\investintell-sec-runs\historical-backfill")
 SUCCESS_STATES = frozenset({"raw_validated", "duplicate"})
 _QUARTER = re.compile(r"(?P<year>\d{4})[^0-9]*q(?P<quarter>[1-4])", re.IGNORECASE)
-_SENSITIVE = ("password", "token", "secret", "credential", "dsn", "uri", "url", "postgres://", "postgresql://")
+_SENSITIVE_KEYS = frozenset({"password", "token", "secret", "credential", "dsn", "database_url", "connection_url"})
+_SENSITIVE_SUFFIXES = ("_password", "_token", "_secret", "_credential", "_dsn")
+_DATABASE_SCHEMES = ("postgres://", "postgresql://")
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = key.casefold()
+    return normalized in _SENSITIVE_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES)
+
+
+def _is_sensitive_value(value: str) -> bool:
+    return value.casefold().startswith(_DATABASE_SCHEMES)
 
 
 class _FileLock:
@@ -272,11 +284,19 @@ def build_historical_inventory() -> dict[str, object]:
 
 def _validate_historical_boundary(inventory: Mapping[str, object]) -> None:
     """Apply the fixed 82-package production policy, never fixture roots."""
+    validate_immutable_roots()
     _validate_inventory(inventory)
     expected_roots = [{"form": spec.form, "root": str(spec.root)} for spec in IMMUTABLE_SOURCES]
-    if inventory.get("roots") != expected_roots or len(cast(list[object], inventory["packages"])) != 82:
+    expected_counts = Counter({"nport": 26, "ncen": 17, "rr1": 39})
+    packages = cast(list[dict[str, object]], inventory["packages"])
+    observed_counts = Counter(cast(str, package["form"]) for package in packages)
+    if inventory.get("roots") != expected_roots or len(packages) != 82 or observed_counts != expected_counts:
         raise BackfillSafetyError("historical inventory differs from immutable 82-package source policy")
-    for package in cast(list[dict[str, object]], inventory["packages"]):
+    for package in packages:
+        relative = cast(str, package["relative_package_path"])
+        relative_path = Path(relative)
+        if relative_path.is_absolute() or ".." in relative_path.parts or relative != relative_path.as_posix():
+            raise BackfillSafetyError("historical package path is noncanonical")
         identity = f"{package['form']}:{package['quarter']}:{package['relative_package_path']}"
         if package["identity"] != identity or package["form"] not in {"nport", "ncen", "rr1"}:
             raise BackfillSafetyError("historical package identity differs from source policy")
@@ -330,24 +350,24 @@ def _load_status(path: Path) -> dict[str, Any]:
 def _assert_no_secret(value: object) -> None:
     if isinstance(value, Mapping):
         for key, item in value.items():
-            if isinstance(key, str) and any(marker in key.casefold() for marker in _SENSITIVE):
+            if isinstance(key, str) and _is_sensitive_key(key):
                 raise BackfillSafetyError("credential material is forbidden in status artifacts")
             _assert_no_secret(item)
     elif isinstance(value, (list, tuple, set)):
         for item in value:
             _assert_no_secret(item)
-    elif isinstance(value, str) and any(marker in value.casefold() for marker in _SENSITIVE):
+    elif isinstance(value, str) and _is_sensitive_value(value):
         raise BackfillSafetyError("credential material is forbidden in status artifacts")
 
 
 def _redact(value: object, *, key: str = "") -> object:
-    if any(marker in key.casefold() for marker in _SENSITIVE):
+    if _is_sensitive_key(key):
         return "[redacted]"
     if isinstance(value, Mapping):
         return {str(item_key): _redact(item, key=str(item_key)) for item_key, item in value.items()}
     if isinstance(value, (list, tuple, set)):
         return [_redact(item) for item in value]
-    if isinstance(value, str) and any(marker in value.casefold() for marker in _SENSITIVE):
+    if isinstance(value, str) and _is_sensitive_value(value):
         return "[redacted]"
     return value
 
@@ -356,7 +376,7 @@ def _sanitize_command(command: Sequence[str]) -> list[str]:
     sanitized = []
     for argument in command:
         value = str(argument)
-        if any(marker in value.casefold() for marker in ("postgres://", "password", "apikey", "token", "secret")):
+        if _is_sensitive_value(value) or _is_sensitive_key(value.removeprefix("--").split("=", 1)[0]):
             sanitized.append("[redacted]")
         else:
             sanitized.append(value)

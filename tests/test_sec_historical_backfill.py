@@ -203,6 +203,38 @@ def test_inventory_round_trip_keeps_security_filename_and_command_redacts_postgr
     assert _sanitize_command(("run", "postgresql://user:secret@example.test/db")) == ["run", "[redacted]"]
 
 
+def test_sanitizer_redacts_postgres_scheme_but_preserves_harmless_security_fields() -> None:
+    from src.sec_regulatory.historical_backfill import _redact, _sanitize_command
+
+    assert _sanitize_command(("run", "postgresql://u:p@host/db")) == ["run", "[redacted]"]
+    assert _redact({"security_note": "security review", "label": "security review"}) == {"security_note": "security review", "label": "security review"}
+
+
+def test_historical_boundary_calls_root_validator_and_rejects_noncanonical_or_unbalanced_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    specs = []
+    for form, count in (("nport", 26), ("ncen", 17), ("rr1", 39)):
+        root = tmp_path / form
+        for index in range(count):
+            package = root / f"2024q1_{form}_{index:02d}"
+            package.mkdir(parents=True)
+            (package / "source.tsv").write_text("x\n", encoding="utf-8")
+        specs.append(backfill.SourceSpec(form, root, count))
+    monkeypatch.setattr(backfill, "IMMUTABLE_SOURCES", tuple(specs))
+    calls: list[bool] = []
+    monkeypatch.setattr(backfill, "validate_immutable_roots", lambda: calls.append(True))
+    inventory = backfill.build_inventory(tuple(specs))
+
+    backfill._validate_historical_boundary(inventory)
+    assert calls == [True]
+    inventory["packages"][0]["relative_package_path"] = "./aliased"
+    canonical = {key: value for key, value in inventory.items() if key != "inventory_hash"}
+    inventory["inventory_hash"] = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")).hexdigest()
+    with pytest.raises(backfill.BackfillSafetyError, match="noncanonical"):
+        backfill._validate_historical_boundary(inventory)
+
+
 def test_supervisor_cross_process_lock_allows_exactly_one_executor(tmp_path: Path) -> None:
     inventory, _ = _single_package_inventory(tmp_path)
     status_path = tmp_path / "run" / "status.json"
