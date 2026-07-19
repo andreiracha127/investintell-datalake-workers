@@ -256,7 +256,7 @@ def _verify_package_unchanged(package: Mapping[str, object], root_by_form: Mappi
         raise BackfillSafetyError("invalid package relative path")
     source = root / relative
     actual = _package_inventory(SourceSpec(form, root, 0), source)
-    expected = {key: package[key] for key in ("file_count", "byte_count", "files", "package_sha256")}
+    expected = {key: package[key] for key in ("identity", "form", "quarter", "relative_package_path", "file_count", "byte_count", "files", "package_sha256")}
     observed = {key: actual[key] for key in expected}
     if observed != expected:
         raise BackfillSafetyError("source drift detected against immutable inventory")
@@ -292,6 +292,9 @@ def _validate_historical_boundary(inventory: Mapping[str, object]) -> None:
     observed_counts = Counter(cast(str, package["form"]) for package in packages)
     if inventory.get("roots") != expected_roots or len(packages) != 82 or observed_counts != expected_counts:
         raise BackfillSafetyError("historical inventory differs from immutable 82-package source policy")
+    roots = {spec.form: spec.root for spec in IMMUTABLE_SOURCES}
+    normalized_paths: set[tuple[str, str]] = set()
+    resolved_targets: set[tuple[str, str]] = set()
     for package in packages:
         relative = cast(str, package["relative_package_path"])
         relative_path = Path(relative)
@@ -300,6 +303,18 @@ def _validate_historical_boundary(inventory: Mapping[str, object]) -> None:
         identity = f"{package['form']}:{package['quarter']}:{package['relative_package_path']}"
         if package["identity"] != identity or package["form"] not in {"nport", "ncen", "rr1"}:
             raise BackfillSafetyError("historical package identity differs from source policy")
+        form = cast(str, package["form"])
+        normalized = (form, relative.casefold())
+        source = roots[form] / relative_path
+        resolved = source.resolve(strict=True)
+        resolved_key = (form, str(resolved).casefold())
+        if normalized in normalized_paths or resolved_key in resolved_targets:
+            raise BackfillSafetyError("historical package path aliases a duplicate resolved target")
+        normalized_paths.add(normalized)
+        resolved_targets.add(resolved_key)
+        actual = _package_inventory(SourceSpec(form, roots[form], 0), source)
+        if any(actual[key] != package[key] for key in ("identity", "form", "quarter", "relative_package_path", "file_count", "byte_count", "files", "package_sha256")):
+            raise BackfillSafetyError("historical package metadata differs from resolved source")
 
 
 def validate_canary_target(target: Mapping[str, object]) -> dict[str, object]:

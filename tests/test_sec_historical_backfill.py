@@ -235,6 +235,30 @@ def test_historical_boundary_calls_root_validator_and_rejects_noncanonical_or_un
         backfill._validate_historical_boundary(inventory)
 
 
+def test_historical_boundary_rejects_case_alias_to_the_same_resolved_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    specs = []
+    for form, count in (("nport", 26), ("ncen", 17), ("rr1", 39)):
+        root = tmp_path / form
+        for index in range(count):
+            package = root / f"2024q1_{form}_{index:02d}"
+            package.mkdir(parents=True)
+            (package / "source.tsv").write_text("x\n", encoding="utf-8")
+        specs.append(backfill.SourceSpec(form, root, count))
+    monkeypatch.setattr(backfill, "IMMUTABLE_SOURCES", tuple(specs))
+    monkeypatch.setattr(backfill, "validate_immutable_roots", lambda: None)
+    inventory = backfill.build_inventory(tuple(specs))
+    first, second = inventory["packages"][0], inventory["packages"][1]
+    second["relative_package_path"] = first["relative_package_path"].upper()
+    second["quarter"] = first["quarter"]
+    second["identity"] = f"{second['form']}:{second['quarter']}:{second['relative_package_path']}"
+    canonical = {key: value for key, value in inventory.items() if key != "inventory_hash"}
+    inventory["inventory_hash"] = hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")).hexdigest()
+    with pytest.raises(backfill.BackfillSafetyError, match="alias|duplicate"):
+        backfill._validate_historical_boundary(inventory)
+
+
 def test_supervisor_cross_process_lock_allows_exactly_one_executor(tmp_path: Path) -> None:
     inventory, _ = _single_package_inventory(tmp_path)
     status_path = tmp_path / "run" / "status.json"
