@@ -147,9 +147,11 @@ _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
         "role_capabilities", "object_catalog_hash", "object_identities", "table_privileges", "column_privileges",
         "sequence_privileges", "function_privileges", "database_privileges", "monitoring_privileges",
         "effective_writable_tables", "truncate_tables", "public_acl",
-        "unsafe_security_definers", "trigger_write_targets",
+        "unsafe_security_definers", "non_sec_privilege_inventory", "non_sec_privilege_inventory_hash",
+        "non_sec_effective_write_privileges", "trigger_write_targets",
     }
 )
+_NON_SEC_INVENTORY_FIELDS = frozenset({"relations", "sequences", "routines", "schemas", "public_acl", "monitoring"})
 _RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
 _SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
 _CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "certificate_sha256", "canary_supervisor_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
@@ -697,6 +699,63 @@ def _validate_scope(scope: object, *, inventory_hash: str, label: str) -> list[d
     return validated
 
 
+def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: object) -> None:
+    """Validate inventory shape without treating non-SEC read surfaces as grants."""
+    if not isinstance(inventory, dict) or set(inventory) != _NON_SEC_INVENTORY_FIELDS:
+        raise BackfillSafetyError("invalid non-SEC privilege inventory")
+    if not isinstance(inventory_hash, str) or not _is_sha256(inventory_hash) or _sha256_bytes(_canonical_json(inventory).encode("ascii")) != inventory_hash:
+        raise BackfillSafetyError("non-SEC privilege inventory hash mismatch")
+
+    def sorted_unique_records(value: object) -> list[Mapping[str, object]]:
+        if not isinstance(value, list) or value != sorted(value, key=_canonical_json):
+            raise BackfillSafetyError("invalid non-SEC privilege inventory")
+        records: list[Mapping[str, object]] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            encoded = _canonical_json(item)
+            if encoded in seen:
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            seen.add(encoded)
+            records.append(item)
+        return records
+
+    common_fields = {"identity", "schema", "owner", "extension", "acl_source", "grantee", "privileges"}
+    allowed_privileges = {
+        "relations": {"SELECT"}, "sequences": {"SELECT", "USAGE", "UPDATE"},
+        "routines": {"EXECUTE"}, "schemas": {"USAGE"},
+    }
+    for category in ("relations", "sequences", "routines", "schemas"):
+        for record in sorted_unique_records(inventory[category]):
+            required = common_fields | ({"pg_monitor_surface"} if category == "relations" else set())
+            if category == "routines":
+                required |= {"prokind", "security_definer", "security_definer_classification", "proconfig", "search_path", "definition_sha256", "side_effect_keywords"}
+            if set(record) != required or not all(isinstance(record[field], str) and record[field] for field in ("identity", "schema", "owner", "grantee")):
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            if record["extension"] is not None and (not isinstance(record["extension"], str) or not record["extension"]):
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            if record["acl_source"] not in {"INHERITED", "PUBLIC"} or (record["acl_source"] == "PUBLIC") is not (record["grantee"] == "PUBLIC"):
+                raise BackfillSafetyError("non-SEC direct or malformed privilege inventory")
+            privileges = record["privileges"]
+            if not isinstance(privileges, list) or not privileges or privileges != sorted(set(privileges)) or not all(isinstance(value, str) and value in allowed_privileges[category] for value in privileges):
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            if category == "relations" and not isinstance(record["pg_monitor_surface"], bool):
+                raise BackfillSafetyError("invalid non-SEC privilege inventory")
+            if category == "routines":
+                if record["prokind"] not in {"f", "p", "a", "w"} or not isinstance(record["security_definer"], bool) or not isinstance(record["proconfig"], list) or not all(isinstance(value, str) for value in record["proconfig"]) or record["search_path"] is not None and not isinstance(record["search_path"], str) or not isinstance(record["definition_sha256"], str) or not _is_sha256(record["definition_sha256"]) or not isinstance(record["side_effect_keywords"], list) or record["side_effect_keywords"] != sorted(set(record["side_effect_keywords"])) or not all(isinstance(value, str) and value in {"INSERT", "UPDATE", "DELETE", "TRUNCATE", "CREATE", "ALTER", "DROP", "COPY", "CALL"} for value in record["side_effect_keywords"]):
+                    raise BackfillSafetyError("invalid non-SEC routine inventory")
+                classification = record["security_definer_classification"]
+                if (record["security_definer"] and classification != "PENDING_SIGNED_BASELINE") or (not record["security_definer"] and classification is not None):
+                    raise BackfillSafetyError("unclassified non-SEC SECURITY DEFINER inventory")
+    for record in sorted_unique_records(inventory["public_acl"]):
+        if set(record) != {"object_kind", "identity", "schema", "owner", "extension", "privilege"} or record["object_kind"] not in {"relation", "routine", "sequence", "schema"} or not all(isinstance(record[field], str) and record[field] for field in ("identity", "schema", "owner", "privilege")) or record["extension"] is not None and not isinstance(record["extension"], str):
+            raise BackfillSafetyError("invalid non-SEC PUBLIC privilege inventory")
+    for record in sorted_unique_records(inventory["monitoring"]):
+        if set(record) != {"identity", "membership", "surface"} or not all(isinstance(record[field], str) and record[field] for field in record) or record["membership"] not in {"DIRECT_MEMBER_NO_SET", "INHERITED_USAGE"} or record["surface"] != "pg_monitor":
+            raise BackfillSafetyError("invalid non-SEC monitoring inventory")
+
+
 def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
     if not isinstance(attestation, dict) or set(attestation) != _PREFLIGHT_ATTESTATION_FIELDS:
         raise BackfillSafetyError("invalid production preflight attestation")
@@ -758,9 +817,14 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
         raise BackfillSafetyError("unexpected production preflight PUBLIC privilege is unsafe")
     if attestation["unsafe_security_definers"] != []:
         raise BackfillSafetyError("unsafe production preflight SECURITY DEFINER routine")
+    _validate_non_sec_privilege_inventory(
+        attestation["non_sec_privilege_inventory"], attestation["non_sec_privilege_inventory_hash"]
+    )
+    if attestation["non_sec_effective_write_privileges"] != []:
+        raise BackfillSafetyError("non-SEC effective relation write privilege is unsafe")
     if attestation["trigger_write_targets"] != sorted(EXACT_TRIGGER_WRITE_TARGETS):
         raise BackfillSafetyError("invalid production preflight reviewed trigger write-target contract")
-    for field in _PREFLIGHT_ATTESTATION_FIELDS - {"cluster_identity", "tls_identity", "role_identity", "object_catalog_hash", "fixed_memberships"}:
+    for field in _PREFLIGHT_ATTESTATION_FIELDS - {"cluster_identity", "tls_identity", "role_identity", "object_catalog_hash", "fixed_memberships", "non_sec_privilege_inventory_hash"}:
         if not isinstance(attestation[field], (dict, list)):
             raise BackfillSafetyError("invalid production preflight attestation")
     _assert_no_secret(attestation)
@@ -1077,18 +1141,40 @@ def _collect_nonrelation_object_identities(connection: object) -> dict[str, obje
     return dict(value)
 
 
-def _collect_production_preflight(connection: object, authorization: Mapping[str, object]) -> dict[str, object]:
-    """Collect the complete immutable production contract using SELECT-only SQL.
+def _collect_non_sec_privilege_inventory(connection: object) -> dict[str, object]:
+    """Collect non-SEC effective read capability for a separately signed baseline.
 
-    Every query returns JSON and every unavailable catalogue surface is fatal.  The
-    statements intentionally contain no CTE with a modifying command, DDL, or DML.
+    This is evidence, not an approval path: validation rejects direct grants and
+    incomplete SECURITY DEFINER metadata, while the authorization comparison pins
+    every remaining inherited/PUBLIC surface exactly.
     """
+    value = _query_json(
+        connection,
+        "WITH relation_acl AS MATERIALIZED (SELECT n.nspname||'.'||c.relname AS identity,n.nspname AS schema,pg_get_userbyid(c.relowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type, n.nspname='pg_catalog' AND a.grantee<>0 AND pg_has_role('pg_monitor',a.grantee,'USAGE') AS pg_monitor_surface FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.relkind IN ('r','p','v','m','f') AND a.privilege_type='SELECT' AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND (n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s) OR n.nspname='pg_catalog' AND a.grantee<>0 AND pg_has_role('pg_monitor',a.grantee,'USAGE'))), sequence_acl AS MATERIALIZED (SELECT n.nspname||'.'||c.relname AS identity,n.nspname AS schema,pg_get_userbyid(c.relowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.relkind='S' AND a.privilege_type IN ('SELECT','USAGE','UPDATE') AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s)), routine_acl AS MATERIALIZED (SELECT n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' AS identity,n.nspname AS schema,pg_get_userbyid(p.proowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,p.prokind,p.prosecdef,coalesce(to_jsonb(p.proconfig),'[]'::jsonb) AS proconfig,(SELECT substring(setting FROM 13) FROM unnest(coalesce(p.proconfig,ARRAY[]::text[])) setting WHERE setting LIKE 'search_path=%' LIMIT 1) AS search_path,encode(sha256(convert_to(pg_get_functiondef(p.oid),'UTF8')),'hex') AS definition_sha256,to_jsonb(array_remove(ARRAY[CASE WHEN pg_get_functiondef(p.oid) ~* '\\mINSERT\\M' THEN 'INSERT' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mUPDATE\\M' THEN 'UPDATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mDELETE\\M' THEN 'DELETE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mTRUNCATE\\M' THEN 'TRUNCATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCREATE\\M' THEN 'CREATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mALTER\\M' THEN 'ALTER' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mDROP\\M' THEN 'DROP' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCOPY\\M' THEN 'COPY' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCALL\\M' THEN 'CALL' END],NULL)) AS side_effect_keywords FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')'<>ALL(%s)), schema_acl AS MATERIALIZED (SELECT n.nspname AS identity,n.nspname AS schema,pg_get_userbyid(n.nspowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_namespace'::regclass AND d.objid=n.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type FROM pg_namespace n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE a.privilege_type='USAGE' AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname<>'public') SELECT jsonb_build_object('relations',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type),'pg_monitor_surface',pg_monitor_surface) ORDER BY identity,acl_source,grantee) FROM relation_acl),'[]'::jsonb),'sequences',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type)) ORDER BY identity,acl_source,grantee,privilege_type) FROM sequence_acl),'[]'::jsonb),'routines',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array('EXECUTE'),'prokind',prokind::text,'security_definer',prosecdef,'security_definer_classification',CASE WHEN prosecdef THEN 'PENDING_SIGNED_BASELINE' ELSE NULL END,'proconfig',proconfig,'search_path',search_path,'definition_sha256',definition_sha256,'side_effect_keywords',side_effect_keywords) ORDER BY identity,acl_source,grantee) FROM routine_acl),'[]'::jsonb),'schemas',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type)) ORDER BY identity,acl_source,grantee) FROM schema_acl),'[]'::jsonb),'public_acl',coalesce((SELECT jsonb_agg(jsonb_build_object('object_kind','relation','identity',identity,'schema',schema,'owner',owner,'extension',extension,'privilege',privilege_type) ORDER BY identity,privilege_type) FROM relation_acl WHERE acl_source='PUBLIC'),'[]'::jsonb),'monitoring',CASE WHEN pg_has_role(current_user,'pg_monitor','USAGE') THEN jsonb_build_array(jsonb_build_object('identity','pg_catalog.pg_stat_activity','membership','DIRECT_MEMBER_NO_SET','surface','pg_monitor'),jsonb_build_object('identity','pg_catalog.pg_locks','membership','DIRECT_MEMBER_NO_SET','surface','pg_monitor')) ELSE '[]'::jsonb END)",
+        (sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_IDENTITY_SEQUENCES), sorted(EXACT_SECURITY_DEFINER_ROUTINES)),
+    )
+    if not isinstance(value, Mapping) or set(value) != _NON_SEC_INVENTORY_FIELDS:
+        raise BackfillSafetyError("production non-SEC privilege inventory query returned malformed JSON")
+    inventory = {
+        field: sorted(cast(list[object], entries), key=_canonical_json)
+        for field, entries in cast(Mapping[str, object], value).items()
+        if isinstance(entries, list)
+    }
+    if set(inventory) != _NON_SEC_INVENTORY_FIELDS:
+        raise BackfillSafetyError("production non-SEC privilege inventory query returned malformed JSON")
+    inventory_hash = _sha256_bytes(_canonical_json(inventory).encode("ascii"))
+    _validate_non_sec_privilege_inventory(inventory, inventory_hash)
+    return {"non_sec_privilege_inventory": inventory, "non_sec_privilege_inventory_hash": inventory_hash}
+
+
+def _collect_production_preflight(connection: object, authorization: Mapping[str, object]) -> dict[str, object]:
+    """Collect the immutable production contract using SELECT-only SQL."""
     target = cast(Mapping[str, object], authorization["target"])
     dsn_parameters = _connection_parameters(connection)
-    if not isinstance(dsn_parameters, Mapping) or dsn_parameters.get("sslmode") != "verify-full" or dsn_parameters.get("host") != target["host"]:
+    if dsn_parameters.get("sslmode") != "verify-full" or dsn_parameters.get("host") != target["host"]:
         raise BackfillSafetyError("production preflight cannot prove verify-full host binding")
-    identity = _query_json(connection, "SELECT jsonb_build_object('cluster_identity', current_database() || ':' || inet_server_addr()::text || ':' || version(), 'tls_identity', (SELECT coalesce(ssl, false)::text || ':' || coalesce(version, '') || ':' || coalesce(cipher, '') FROM pg_stat_ssl WHERE pid = pg_backend_pid()), 'role_identity', current_user)")
-    roles = _query_json(connection, "SELECT jsonb_build_object('memberships', coalesce((SELECT jsonb_agg(member ORDER BY member) FROM (SELECT parent.rolname AS member FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user) x), '[]'::jsonb), 'capabilities', jsonb_build_object('is_superuser', (SELECT rolsuper FROM pg_roles WHERE rolname=current_user), 'owns_any_table', EXISTS (SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user AND c.relkind IN ('r','p','v','m','f','S')), 'can_create_role', (SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user), 'can_create_database', (SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user), 'bypass_rls', (SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user), 'schema_create', EXISTS (SELECT 1 FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE')), 'set_role', EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname <> current_user AND pg_has_role(current_user, r.oid, 'SET'))))")
+    identity = _query_json(connection, "SELECT jsonb_build_object('cluster_identity',current_database()||':'||inet_server_addr()::text||':'||version(),'tls_identity',(SELECT coalesce(ssl,false)::text||':'||coalesce(version,'')||':'||coalesce(cipher,'') FROM pg_stat_ssl WHERE pid=pg_backend_pid()),'role_identity',current_user)")
+    roles = _query_json(connection, "SELECT jsonb_build_object('memberships',coalesce((SELECT jsonb_agg(rolname ORDER BY rolname) FROM pg_auth_members m JOIN pg_roles parent ON parent.oid=m.roleid JOIN pg_roles child ON child.oid=m.member WHERE child.rolname=current_user),'[]'::jsonb),'capabilities',jsonb_build_object('is_superuser',(SELECT rolsuper FROM pg_roles WHERE rolname=current_user),'owns_any_table',EXISTS(SELECT 1 FROM pg_class c JOIN pg_roles r ON r.oid=c.relowner WHERE r.rolname=current_user AND c.relkind IN ('r','p','v','m','f','S')),'can_create_role',(SELECT rolcreaterole FROM pg_roles WHERE rolname=current_user),'can_create_database',(SELECT rolcreatedb FROM pg_roles WHERE rolname=current_user),'bypass_rls',(SELECT rolbypassrls FROM pg_roles WHERE rolname=current_user),'schema_create',EXISTS(SELECT 1 FROM pg_namespace n WHERE n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND has_schema_privilege(current_user,n.oid,'CREATE')),'set_role',EXISTS(SELECT 1 FROM pg_roles r WHERE r.rolname<>current_user AND pg_has_role(current_user,r.oid,'SET'))))")
     objects = _collect_nonrelation_object_identities(connection)
     relation_security = _collect_relation_security(connection)
     if not isinstance(objects, Mapping) or not isinstance(relation_security, Mapping) or not isinstance(relation_security.get("relations"), list):
@@ -1097,34 +1183,46 @@ def _collect_production_preflight(connection: object, authorization: Mapping[str
     if any(not isinstance(values, list) or not all(isinstance(item, str) for item in values) for values in objects.values()):
         raise BackfillSafetyError("production preflight object identity query returned malformed JSON")
     objects = {field: sorted(cast(list[str], values)) for field, values in objects.items()}
-    privileges = _query_json(connection, "SELECT jsonb_build_object('table_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,c.oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'DELETE') THEN 'DELETE' END,CASE WHEN c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE') THEN 'TRUNCATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'REFERENCES') THEN 'REFERENCES' END,CASE WHEN has_table_privilege(current_user,c.oid,'TRIGGER') THEN 'TRIGGER' END,CASE WHEN has_table_privilege(current_user,c.oid,'MAINTAIN') THEN 'MAINTAIN' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_table_privilege(current_user,c.oid,'SELECT') OR has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')) OR has_table_privilege(current_user,c.oid,'REFERENCES') OR has_table_privilege(current_user,c.oid,'TRIGGER') OR has_table_privilege(current_user,c.oid,'MAINTAIN'))) q), 'sequence_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_sequence_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_sequence_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_sequence_privilege(current_user,c.oid,'USAGE') THEN 'USAGE' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_sequence_privilege(current_user,c.oid,'SELECT') OR has_sequence_privilege(current_user,c.oid,'UPDATE') OR has_sequence_privilege(current_user,c.oid,'USAGE'))) q), 'function_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')', jsonb_build_array('EXECUTE')), '{}'::jsonb) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_function_privilege(current_user,p.oid,'EXECUTE')), 'monitoring_privileges', jsonb_build_object('pg_stat_activity', jsonb_build_array('SELECT')), 'public_acl', '[]'::jsonb, 'unsafe_security_definers', '[]'::jsonb, 'trigger_write_targets', '[]'::jsonb)")
-    privilege_boundaries = _query_json(connection, "SELECT jsonb_build_object('column_privileges', coalesce((SELECT jsonb_agg(identity ORDER BY identity) FROM (SELECT n.nspname||'.'||c.relname||'.'||a.attname||':'||acl.privilege_type||':grantee='||coalesce(pg_get_userbyid(NULLIF(acl.grantee,0)),'PUBLIC') AS identity FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) acl WHERE a.attnum>0 AND NOT a.attisdropped AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND acl.privilege_type IN ('SELECT','INSERT','UPDATE','REFERENCES') AND CASE WHEN acl.grantee=0 THEN true ELSE pg_has_role(current_user,acl.grantee,'USAGE') END) q), '[]'::jsonb), 'database_privileges', jsonb_build_object('CONNECT', has_database_privilege(current_user,current_database(),'CONNECT'), 'CREATE', has_database_privilege(current_user,current_database(),'CREATE'), 'TEMPORARY', has_database_privilege(current_user,current_database(),'TEMPORARY')))")
-    write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind <> 'S' AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')))) writable), '[]'::jsonb), 'truncate_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) truncatable), '[]'::jsonb))")
+
+    privileges = _query_json(
+        connection,
+        "WITH table_objects AS MATERIALIZED (SELECT c.oid,n.nspname||'.'||c.relname AS name,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)), sequence_objects AS MATERIALIZED (SELECT c.oid,n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)), routine_objects AS MATERIALIZED (SELECT p.oid,n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' AS name FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')'=ANY(%s)) SELECT jsonb_build_object('table_privileges',coalesce((SELECT jsonb_object_agg(name,verbs ORDER BY name) FROM (SELECT name,to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,oid,'DELETE') THEN 'DELETE' END,CASE WHEN relkind IN ('r','p') AND has_table_privilege(current_user,oid,'TRUNCATE') THEN 'TRUNCATE' END,CASE WHEN has_table_privilege(current_user,oid,'REFERENCES') THEN 'REFERENCES' END,CASE WHEN has_table_privilege(current_user,oid,'TRIGGER') THEN 'TRIGGER' END,CASE WHEN has_table_privilege(current_user,oid,'MAINTAIN') THEN 'MAINTAIN' END],NULL)) verbs FROM table_objects) q),'{}'::jsonb),'sequence_privileges',coalesce((SELECT jsonb_object_agg(name,verbs ORDER BY name) FROM (SELECT name,to_jsonb(array_remove(ARRAY[CASE WHEN has_sequence_privilege(current_user,oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_sequence_privilege(current_user,oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_sequence_privilege(current_user,oid,'USAGE') THEN 'USAGE' END],NULL)) verbs FROM sequence_objects) q),'{}'::jsonb),'function_privileges',coalesce((SELECT jsonb_object_agg(name,jsonb_build_array('EXECUTE') ORDER BY name) FROM routine_objects WHERE has_function_privilege(current_user,oid,'EXECUTE')),'{}'::jsonb))",
+        (sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_DIRECT_USAGE_SEQUENCES), sorted(EXACT_DIRECT_EXECUTE_ROUTINES)),
+    )
+    privilege_boundaries = _query_json(connection, "SELECT jsonb_build_object('column_privileges',coalesce((SELECT jsonb_agg(identity ORDER BY identity) FROM (SELECT n.nspname||'.'||c.relname||'.'||a.attname||':'||acl.privilege_type||':grantee='||coalesce(pg_get_userbyid(NULLIF(acl.grantee,0)),'PUBLIC') identity FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) acl WHERE a.attnum>0 AND NOT a.attisdropped AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND acl.privilege_type IN ('SELECT','INSERT','UPDATE','REFERENCES') AND CASE WHEN acl.grantee=0 THEN true ELSE pg_has_role(current_user,acl.grantee,'USAGE') END) q),'[]'::jsonb),'database_privileges',jsonb_build_object('CONNECT',has_database_privilege(current_user,current_database(),'CONNECT'),'CREATE',has_database_privilege(current_user,current_database(),'CREATE'),'TEMPORARY',has_database_privilege(current_user,current_database(),'TEMPORARY')))")
+    write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables',coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')))) q),'[]'::jsonb),'truncate_tables',coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) q),'[]'::jsonb))")
+    non_sec_writes = _query_json(connection, "WITH relation_objects AS MATERIALIZED (SELECT c.oid,n.nspname||'.'||c.relname name,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s)) SELECT jsonb_build_object('non_sec_effective_write_privileges',coalesce((SELECT jsonb_agg(name||':'||verb ORDER BY name,verb) FROM relation_objects CROSS JOIN LATERAL unnest(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,oid,'DELETE') THEN 'DELETE' END,CASE WHEN relkind IN ('r','p') AND has_table_privilege(current_user,oid,'TRUNCATE') THEN 'TRUNCATE' END,CASE WHEN has_table_privilege(current_user,oid,'REFERENCES') THEN 'REFERENCES' END,CASE WHEN has_table_privilege(current_user,oid,'TRIGGER') THEN 'TRIGGER' END],NULL)) verb),'[]'::jsonb))", (sorted(EXACT_MONITORED_RELATIONS),))
     monitoring = _collect_monitoring_privileges(connection)
-    safety = _query_json(connection, "SELECT jsonb_build_object('public_acl', coalesce((SELECT jsonb_agg(kind || ':' || identity || ':' || privilege ORDER BY kind,identity,privilege) FROM (SELECT 'function' AS kind, n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' AS identity, a.privilege_type AS privilege FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' UNION ALL SELECT 'relation', n.nspname||'.'||c.relname, a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE a.grantee=0 AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema') acl), '[]'::jsonb), 'unsafe_security_definers', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' ORDER BY n.nspname,p.proname,replace(oidvectortypes(p.proargtypes),', ', ',')) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (NOT coalesce(p.proconfig, ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog, public'] OR EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))), '[]'::jsonb), 'trigger_write_targets', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND NOT (n.nspname='public' AND c.relname='rr1_contract_tables' AND t.tgname='rr1_contract_tables_immutable') AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'), '[]'::jsonb))")
-    if not all(isinstance(value, Mapping) for value in (identity, roles, objects, privileges, privilege_boundaries, write_surface, monitoring, safety)):
+    non_sec_inventory = _collect_non_sec_privilege_inventory(connection)
+    safety = _query_json(connection, "SELECT jsonb_build_object('public_acl','[]'::jsonb,'unsafe_security_definers','[]'::jsonb,'trigger_write_targets',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND NOT (n.nspname='public' AND c.relname='rr1_contract_tables' AND t.tgname='rr1_contract_tables_immutable') AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'),'[]'::jsonb))")
+    sec_safety = _query_json(connection, "SELECT jsonb_build_object('public_acl',coalesce((SELECT jsonb_agg(kind||':'||identity||':'||privilege ORDER BY kind,identity,privilege) FROM (SELECT 'function' kind,n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' identity,a.privilege_type privilege FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND n.nspname='public' AND n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')'=ANY(%s) UNION ALL SELECT 'relation',n.nspname||'.'||c.relname,a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(c.relacl) a WHERE a.grantee=0 AND n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)) q),'[]'::jsonb),'unsafe_security_definers',coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' ORDER BY n.nspname,p.proname) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname='public' AND n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')'=ANY(%s) AND (NOT coalesce(p.proconfig,ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog, public'] OR EXISTS(SELECT 1 FROM aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))),'[]'::jsonb))", (sorted(EXACT_SECURITY_DEFINER_ROUTINES), sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_SECURITY_DEFINER_ROUTINES)))
+    if not isinstance(safety, Mapping) or not isinstance(sec_safety, Mapping):
+        raise BackfillSafetyError("production preflight safety query returned malformed JSON")
+    safety = {**dict(safety), **dict(sec_safety)}
+    if not all(isinstance(value, Mapping) for value in (identity, roles, privileges, privilege_boundaries, write_surface, non_sec_writes, monitoring, non_sec_inventory, safety)):
         raise BackfillSafetyError("production preflight collector returned malformed JSON")
     role_data = cast(Mapping[str, object], roles)
     membership_value = role_data.get("memberships")
     capability_value = role_data.get("capabilities")
     if not isinstance(membership_value, list) or not isinstance(capability_value, Mapping):
         raise BackfillSafetyError("production preflight role query returned malformed JSON")
-    memberships = list(cast(list[str], membership_value))
     capabilities = dict(cast(Mapping[str, object], capability_value))
-    capabilities["no_memberships"] = not memberships
-    safety_data = dict(cast(Mapping[str, object], safety))
-    safety_fields = {"public_acl", "unsafe_security_definers", "trigger_write_targets"}
-    if set(safety_data) != safety_fields or any(not isinstance(safety_data[field], list) or not all(isinstance(item, str) for item in cast(list[object], safety_data[field])) for field in safety_fields):
-        raise BackfillSafetyError("production preflight safety query returned malformed JSON")
-    safety_data = {field: sorted(cast(list[str], safety_data[field])) for field in safety_fields}
+    capabilities["no_memberships"] = not membership_value
     result = {
         "cluster_identity": cast(Mapping[str, object], identity)["cluster_identity"],
         "tls_identity": cast(Mapping[str, object], identity)["tls_identity"],
         "role_identity": cast(Mapping[str, object], identity)["role_identity"],
-        "fixed_memberships": sorted(memberships), "role_capabilities": capabilities,
-        "object_catalog_hash": _sha256_bytes(_canonical_json(objects).encode("ascii")), "object_identities": objects,
-        **dict(cast(Mapping[str, object], privileges)), **dict(cast(Mapping[str, object], privilege_boundaries)),
-        **dict(cast(Mapping[str, object], write_surface)), **dict(cast(Mapping[str, object], monitoring)), **safety_data,
+        "fixed_memberships": sorted(cast(list[str], membership_value)),
+        "role_capabilities": capabilities,
+        "object_catalog_hash": _sha256_bytes(_canonical_json(objects).encode("ascii")),
+        "object_identities": objects,
+        **dict(cast(Mapping[str, object], privileges)),
+        **dict(cast(Mapping[str, object], privilege_boundaries)),
+        **dict(cast(Mapping[str, object], write_surface)),
+        **dict(cast(Mapping[str, object], non_sec_writes)),
+        **dict(cast(Mapping[str, object], monitoring)),
+        **dict(cast(Mapping[str, object], non_sec_inventory)),
+        **dict(cast(Mapping[str, object], safety)),
     }
     return _validate_preflight_attestation(result)
 

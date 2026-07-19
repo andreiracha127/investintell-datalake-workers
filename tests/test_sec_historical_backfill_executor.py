@@ -320,6 +320,9 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         _sha256_bytes,
     )
 
+    non_sec_inventory = {
+        "relations": [], "sequences": [], "routines": [], "schemas": [], "public_acl": [], "monitoring": [],
+    }
     attestation = {
         "cluster_identity": cluster_identity,
         "tls_identity": "verify-full:fake-ca",
@@ -345,10 +348,61 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         "truncate_tables": [],
         "public_acl": [],
         "unsafe_security_definers": [],
+        "non_sec_privilege_inventory": non_sec_inventory,
+        "non_sec_privilege_inventory_hash": _sha256_bytes(_canonical_json(non_sec_inventory).encode("ascii")),
+        "non_sec_effective_write_privileges": [],
         "trigger_write_targets": sorted(EXACT_TRIGGER_WRITE_TARGETS),
     }
     attestation["object_catalog_hash"] = _sha256_bytes(_canonical_json(attestation["object_identities"]).encode("ascii"))
     return attestation
+
+
+def test_preflight_accepts_deterministic_inherited_monitor_and_public_read_inventory() -> None:
+    from src.sec_regulatory.historical_backfill import _canonical_json, _sha256_bytes, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    inventory = {
+        "relations": [
+            {"identity": "pg_catalog.pg_stat_activity", "schema": "pg_catalog", "owner": "postgres", "extension": None, "acl_source": "INHERITED", "grantee": "pg_read_all_stats", "privileges": ["SELECT"], "pg_monitor_surface": True},
+        ],
+        "sequences": [
+            {"identity": "_timescaledb_catalog.chunk_id_seq", "schema": "_timescaledb_catalog", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["SELECT", "USAGE"]},
+        ],
+        "routines": [
+            {"identity": "_timescaledb_internal.some_helper()", "schema": "_timescaledb_internal", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": False, "security_definer_classification": None, "proconfig": [], "search_path": None, "definition_sha256": "a" * 64, "side_effect_keywords": []},
+        ],
+        "schemas": [
+            {"identity": "_timescaledb_catalog", "schema": "_timescaledb_catalog", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["USAGE"]},
+        ],
+        "public_acl": [
+            {"object_kind": "routine", "identity": "_timescaledb_internal.some_helper()", "schema": "_timescaledb_internal", "privilege": "EXECUTE", "owner": "postgres", "extension": "timescaledb"},
+        ],
+        "monitoring": [
+            {"identity": "pg_catalog.pg_stat_activity", "membership": "DIRECT_MEMBER_NO_SET", "surface": "pg_monitor"},
+        ],
+    }
+    valid["non_sec_privilege_inventory"] = inventory
+    valid["non_sec_privilege_inventory_hash"] = _sha256_bytes(_canonical_json(inventory).encode("ascii"))
+    observed = _validate_preflight_attestation(valid)
+    assert observed["non_sec_privilege_inventory"] == inventory
+
+
+@pytest.mark.parametrize(
+    "changed_inventory",
+    (
+        {"relations": [{"identity": "public.other", "schema": "public", "owner": "other", "extension": None, "acl_source": "DIRECT", "grantee": "sec_backfill_runner", "privileges": ["SELECT"], "pg_monitor_surface": False}], "sequences": [], "routines": [], "schemas": [], "public_acl": [], "monitoring": []},
+        {"relations": [], "sequences": [], "routines": [{"identity": "public.unclassified()", "schema": "public", "owner": "other", "extension": None, "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": True, "proconfig": [], "search_path": None, "definition_sha256": "b" * 64, "side_effect_keywords": []}], "schemas": [], "public_acl": [], "monitoring": []},
+        {"relations": [], "sequences": [], "routines": [], "schemas": [], "public_acl": [], "monitoring": [{"identity": "pg_catalog.pg_stat_activity", "membership": "BROKEN", "surface": "pg_monitor"}]},
+    ),
+)
+def test_preflight_rejects_non_sec_direct_or_unclassified_inventory(changed_inventory: dict[str, object]) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _canonical_json, _sha256_bytes, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    valid["non_sec_privilege_inventory"] = changed_inventory
+    valid["non_sec_privilege_inventory_hash"] = _sha256_bytes(_canonical_json(changed_inventory).encode("ascii"))
+    with pytest.raises(BackfillSafetyError, match="non-SEC"):
+        _validate_preflight_attestation(valid)
 
 
 def _production_authorization(inventory_hash: str) -> dict[str, object]:
@@ -509,27 +563,37 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         "_collect_monitoring_privileges",
         lambda _connection: {"monitoring_privileges": expected["monitoring_privileges"]},
     )
+    monkeypatch.setattr(
+        backfill,
+        "_collect_non_sec_privilege_inventory",
+        lambda _connection: {
+            "non_sec_privilege_inventory": expected["non_sec_privilege_inventory"],
+            "non_sec_privilege_inventory_hash": expected["non_sec_privilege_inventory_hash"],
+        },
+    )
 
     def query_json(_connection: object, query: str, params: tuple[object, ...] = ()) -> object:
         if "'cluster_identity'" in query:
             return {field: expected[field] for field in ("cluster_identity", "tls_identity", "role_identity")}
         if "'memberships'" in query:
             assert "n.nspname !~ '^pg_'" in query
-            assert "n.nspname <> 'information_schema'" in query
+            assert "n.nspname<>'information_schema'" in query
             assert "has_schema_privilege(current_user,n.oid,'CREATE')" in query
             return {"memberships": [], "capabilities": {**expected["role_capabilities"], "no_memberships": True}}
         if "'table_privileges'" in query:
-            assert params == ()
-            assert query.count("n.nspname !~ '^pg_'") >= 3
-            assert query.count("n.nspname <> 'information_schema'") >= 3
+            assert len(params) == 3
+            assert "table_objects AS MATERIALIZED" in query
+            assert "sequence_objects AS MATERIALIZED" in query
+            assert "routine_objects AS MATERIALIZED" in query
             for privilege in ("TRUNCATE", "REFERENCES", "TRIGGER", "MAINTAIN"):
-                assert f"has_table_privilege(current_user,c.oid,'{privilege}')" in query
-            assert "has_sequence_privilege(current_user,c.oid,'SELECT')" in query
-            assert "has_sequence_privilege(current_user,c.oid,'UPDATE')" in query
-            assert "has_sequence_privilege(current_user,c.oid,'USAGE')" in query
+                assert f"has_table_privilege(current_user,oid,'{privilege}')" in query
+            assert "has_sequence_privilege(current_user,oid,'SELECT')" in query
+            assert "has_sequence_privilege(current_user,oid,'UPDATE')" in query
+            assert "has_sequence_privilege(current_user,oid,'USAGE')" in query
+            assert "FROM sequence_objects" in query
             assert "FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace" in query
             assert "WHERE p.prosecdef" not in query
-            assert "has_function_privilege(current_user,p.oid,'EXECUTE')" in query
+            assert "has_function_privilege(current_user,oid,'EXECUTE')" in query
             return {
                 field: expected[field]
                 for field in ("table_privileges", "sequence_privileges", "function_privileges")
@@ -544,8 +608,11 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
             return {field: expected[field] for field in ("column_privileges", "database_privileges")}
         if "'effective_writable_tables'" in query:
             return {field: expected[field] for field in ("effective_writable_tables", "truncate_tables")}
+        if "'non_sec_effective_write_privileges'" in query:
+            assert "relation_objects AS MATERIALIZED" in query
+            assert params
+            return {"non_sec_effective_write_privileges": []}
         if "'public_acl'" in query:
-            assert query.count("aclexplode(coalesce(p.proacl, acldefault('f', p.proowner)))") >= 2
             return {field: expected[field] for field in ("public_acl", "unsafe_security_definers", "trigger_write_targets")}
         raise AssertionError("unexpected preflight query")
 
@@ -556,6 +623,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
     assert observed["sequence_privileges"] == expected["sequence_privileges"]
     assert observed["function_privileges"] == expected["function_privileges"]
     assert observed["database_privileges"] == {"CONNECT": True, "CREATE": False, "TEMPORARY": False}
+    assert observed["non_sec_effective_write_privileges"] == []
 
 
 @pytest.mark.parametrize(
