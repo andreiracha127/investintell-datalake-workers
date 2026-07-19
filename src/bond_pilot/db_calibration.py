@@ -234,6 +234,12 @@ def _governance(evidence: object, approval: object, *, mode: str, series_ids: Se
     return evidence, approval, series
 
 
+def validate_v2_request(evidence: object, approval: object, mode: str, series_ids: Sequence[str]) -> tuple[str, ...]:
+    """Revalidate every V2 authority pin before a caller resolves or opens a DB connection."""
+    _evidence, _approval, series = _governance(evidence, approval, mode=mode, series_ids=series_ids)
+    return series
+
+
 def _date(value: object) -> str:
     if isinstance(value, datetime):
         raise PilotError("nondeterministic_page")

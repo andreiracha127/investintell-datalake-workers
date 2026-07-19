@@ -3,15 +3,27 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
+import os
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from scripts.run_bond_pilot import build_parser, main
 from src.bond_pilot.contracts import PilotError, SourceApproval
 from src.bond_pilot.source_artifact import qualify_source
-from src.bond_pilot.workflow import run_calibration, run_fixture
+from src.bond_pilot import workflow
+from src.bond_pilot.workflow import qualify, run_calibration, run_fixture
+
+
+class _Connection:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
 
 
 def _approval_for(candidate) -> SourceApproval:
@@ -106,17 +118,64 @@ def test_calibrate_prevalidates_every_governance_input_before_dsn_or_connection(
     with pytest.raises(PilotError):
         run_calibration(**kwargs)
     assert calls == []
+    assert (kwargs["run_dir"] / "stop-report.json").is_file()
+    assert (kwargs["run_dir"] / "checksums.sha256").is_file()
+
+
+def test_calibrate_revalidates_mismatched_phase4_pins_before_dsn_or_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: calls.append("connect"))
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "run"}
+    approval = json.loads(kwargs["evidence_approval"].read_text(encoding="utf-8"))
+    approval["evidence_sha256"] = "f" * 64
+    kwargs["evidence_approval"].write_text(json.dumps(approval), encoding="utf-8")
+    monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", hashlib.sha256(kwargs["evidence_approval"].read_bytes()).hexdigest())
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+        run_calibration(**kwargs)
+    assert calls == []
+
+
+def test_output_path_gate_precedes_source_or_dsn_and_recognizes_lexists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = Path(__file__).resolve().parents[2]
+    with pytest.raises(PilotError, match="invalid_output_path"):
+        qualify(source=tmp_path / "missing.zip", run_dir=root / "unused-pilot-output")
+    for existing in (tmp_path / "existing-dir", tmp_path / "existing-file"):
+        if existing.name.endswith("dir"):
+            existing.mkdir()
+        else:
+            existing.write_text("winner", encoding="utf-8")
+        with pytest.raises(PilotError, match="already_exists"):
+            qualify(source=tmp_path / "missing.zip", run_dir=existing)
+    dangling = tmp_path / "dangling"
+    try:
+        os.symlink(tmp_path / "missing-target", dangling)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    with pytest.raises(PilotError, match="already_exists"):
+        qualify(source=tmp_path / "missing.zip", run_dir=dangling)
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: calls.append("connect"))
+    existing_calibration = tmp_path / "calibration-final"
+    existing_calibration.mkdir()
+    with pytest.raises(PilotError, match="already_exists"):
+        run_calibration(source_manifest=tmp_path / "missing", source_approval=tmp_path / "missing", mapping=tmp_path / "missing", mapping_approval=tmp_path / "missing", evidence=tmp_path / "missing", evidence_approval=tmp_path / "missing", mode="calibration", series_ids=("S1",), run_dir=existing_calibration)
+    assert calls == []
 
 
 _PUBLIC_KEYS = {"value", "values", "unit", "units", "date", "as_of_date", "freshness", "quality", "availability", "methodology_version", "is_144a"}
-_FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "version", "row_id", "hash", "lineage", "license", "entitlement", "error", "trace", "osbap", "finra", "wrds", "sec"}
+_FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "row_id", "hash", "lineage", "license", "entitlement", "error", "trace", "finra", "osbap", "openbondassetpricing", "bonds-api", "bonds api", "wrds", "developer_finra"}
 
 
 def _assert_future_public(value: object) -> None:
     if isinstance(value, dict):
         for key, child in value.items():
-            key_text = str(key).casefold()
+            assert isinstance(key, str)
+            key_text = key.casefold()
             assert key_text in _PUBLIC_KEYS
+            if key_text != "methodology_version":
+                assert "version" not in key_text
             assert not any(token in key_text for token in _FORBIDDEN)
             _assert_future_public(child)
     elif isinstance(value, list):
@@ -125,14 +184,23 @@ def _assert_future_public(value: object) -> None:
     elif isinstance(value, str):
         lowered = value.casefold()
         assert not any(token in lowered for token in _FORBIDDEN)
+        assert "://" not in lowered and ":\\" not in lowered and "/" not in lowered and "\\" not in lowered
+        assert not any(lowered.endswith(extension) for extension in (".csv", ".json", ".parquet", ".zip", ".sql", ".py"))
+        assert len(lowered) != 64 or any(character not in "0123456789abcdef" for character in lowered)
+    elif value is None or isinstance(value, bool | int):
+        return
+    elif isinstance(value, float):
+        assert math.isfinite(value)
+        return
+    else:
+        raise AssertionError("future public payload must be JSON-only")
 
 
 def test_future_public_allowlist_rejects_nested_provenance_and_source_family_literals() -> None:
-    _assert_future_public({"value": 1.0, "is_144a": True, "quality": {"freshness": "daily"}})
-    with pytest.raises(AssertionError):
-        _assert_future_public({"quality": {"source_url": "https://example.invalid"}})
-    with pytest.raises(AssertionError):
-        _assert_future_public({"methodology_version": "trace-v1"})
+    _assert_future_public({"values": [{"value": 1.0, "unit": "USD"}], "is_144a": True, "quality": {"freshness": "daily"}, "methodology_version": "bond-metrics-v1"})
+    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "trace-v1"}, {"value": "C:/secret/file.csv"}, {"value": "a" * 64}, {"value": ("not-json",)}, {"value": float("nan")}):
+        with pytest.raises(AssertionError):
+            _assert_future_public(value)
 
 
 def test_internal_manifest_retains_full_provenance_and_pilot_stays_out_of_public_surfaces() -> None:
@@ -140,7 +208,11 @@ def test_internal_manifest_retains_full_provenance_and_pilot_stays_out_of_public
     source = (root / "src" / "bond_pilot" / "reporting.py").read_text(encoding="utf-8")
     assert "source_candidate.to_json_mapping" in source and "internal_only" in source
     forbidden_roots = ("frontend", "api", "public", "backend/app")
-    assert not [path for base in forbidden_roots if (root / base).exists() for path in (root / base).rglob("*bond_pilot*")]
+    changed = subprocess.run(["git", "diff", "--name-only", "main...HEAD"], cwd=root, capture_output=True, text=True, check=True).stdout.splitlines()
+    assert not [path for path in changed if path.startswith(("frontend/", "api/", "public/", "backend/app/"))]
+    for base in forbidden_roots:
+        if (root / base).exists():
+            assert not [path for path in (root / base).rglob("*") if path.is_file() and "bond_pilot" in path.read_text(encoding="utf-8", errors="ignore")]
     for path in (root / "src" / "run.py", root / "src" / "run_worker.py"):
         assert "bond_pilot" not in ast.dump(ast.parse(path.read_text(encoding="utf-8")))
     diff = subprocess.run(["git", "diff", "--exit-code", "main...HEAD", "--", "src/run.py", "src/run_worker.py", "src/workers", "requirements.txt", "pyproject.toml"], cwd=root, capture_output=True, text=True)
@@ -153,3 +225,97 @@ def test_cli_typed_stop_publishes_internal_only_checksums_and_exit_two(tmp_path:
     report = json.loads((tmp_path / "stop" / "stop-report.json").read_text(encoding="utf-8"))
     assert report["internal_only"] is True
     assert (tmp_path / "stop" / "checksums.sha256").is_file()
+
+
+def test_stop_report_never_replaces_existing_final_or_repo_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    final = tmp_path / "winner"
+    final.mkdir()
+    (final / "sentinel").write_text("winner", encoding="utf-8")
+    workflow.write_stop_report(final, PilotError("stopped"))
+    assert (final / "sentinel").read_text(encoding="utf-8") == "winner"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(workflow, "_REPOSITORY_ROOT", repo)
+    internal = repo / "stop-path"
+    workflow.write_stop_report(internal, PilotError("stopped"))
+    assert not internal.exists()
+
+
+def test_calibration_publishes_atomic_internal_pack_and_checkpoint_on_typed_stop(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def stop(_connection, **values):
+        values["checkpoint_path"].write_text('{"checkpoint":"retained"}', encoding="utf-8")
+        raise PilotError("unsafe_query_plan")
+    monkeypatch.setattr(workflow, "run_v2_calibration", stop)
+    with pytest.raises(PilotError, match="unsafe_query_plan"):
+        run_calibration(**kwargs)
+    final = kwargs["run_dir"]
+    assert (final / "checkpoint.json").is_file()
+    assert (final / "stop-report.json").is_file()
+    assert (final / "checksums.sha256").is_file()
+    assert not list(tmp_path.glob(".calibration.*.partial-dir"))
+
+
+def test_calibration_success_pack_is_atomic_and_binds_internal_provenance(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def succeed(_connection, **values):
+        values["checkpoint_path"].write_text('{"checkpoint":"complete"}', encoding="utf-8")
+        return SimpleNamespace(rows=({"holding": "internal"},), rows_read=1, pages=1, partial=False)
+    monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
+    report = run_calibration(**kwargs)
+    final = kwargs["run_dir"]
+    assert report["rows_artifact"] == "calibration-rows.json"
+    provenance = json.loads((final / "calibration-provenance.json").read_text(encoding="utf-8"))
+    assert provenance["internal_only"] is True
+    assert provenance["source"]["approval"]["source_locator"]
+    assert provenance["mapping"]["observed_values_sha256"] == "c" * 64
+    assert provenance["phase4"]["evidence_sha256"]
+    assert (final / "checkpoint.json").is_file() and (final / "checksums.sha256").is_file()
+    assert not list(tmp_path.glob(".calibration.*.partial-dir"))
+
+
+def test_calibration_late_write_failure_leaves_no_final_or_staging_and_retry_succeeds(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def succeed(_connection, **values):
+        values["checkpoint_path"].write_text("{}", encoding="utf-8")
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
+    monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
+    original = workflow.write_json_once
+    def fail_late(path: Path, value: object):
+        if path.name == "calibration-report.json":
+            raise RuntimeError("late write")
+        return original(path, value)
+    monkeypatch.setattr(workflow, "write_json_once", fail_late)
+    with pytest.raises(RuntimeError, match="late write"):
+        run_calibration(**kwargs)
+    assert not kwargs["run_dir"].exists() and not list(tmp_path.glob(".calibration.*.partial-dir"))
+    monkeypatch.setattr(workflow, "write_json_once", original)
+    assert run_calibration(**kwargs)["internal_only"] is True
+
+
+def test_publish_races_preserve_existing_winner_for_calibration_and_stop(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def succeed(_connection, **values):
+        values["checkpoint_path"].write_text("{}", encoding="utf-8")
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
+    monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
+    def winner(_staging: Path, output: Path) -> None:
+        output.mkdir()
+        (output / "sentinel").write_text("winner", encoding="utf-8")
+        raise PilotError("already_exists")
+    monkeypatch.setattr(workflow, "_publish", winner)
+    with pytest.raises(PilotError, match="already_exists"):
+        run_calibration(**kwargs)
+    assert (kwargs["run_dir"] / "sentinel").read_text(encoding="utf-8") == "winner"
+    stop = tmp_path / "stop"
+    workflow.write_stop_report(stop, PilotError("stopped"))
+    assert (stop / "sentinel").read_text(encoding="utf-8") == "winner"
+    assert not list(tmp_path.glob(".stop.*.partial-dir"))

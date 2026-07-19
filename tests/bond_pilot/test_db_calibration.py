@@ -22,6 +22,7 @@ from src.bond_pilot.db_calibration import (
     load_phase4_v2_evidence,
     load_phase4_v2_evidence_approval,
     run_v2_calibration,
+    validate_v2_request,
 )
 
 
@@ -58,6 +59,34 @@ def _governance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", hashlib.sha256(approval_path.read_bytes()).hexdigest())
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVER_ID", "human-approver")
     return load_phase4_v2_evidence(evidence_path), load_phase4_v2_evidence_approval(approval_path), evidence_path, approval_path
+
+
+def test_public_request_validation_rehashes_all_governance_without_a_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence, approval, evidence_path, approval_path = _governance(tmp_path, monkeypatch)
+    assert validate_v2_request(evidence, approval, "calibration", ("S1",)) == ("S1",)
+    for mode, series in (("full", ("S1",)), ("calibration", ("S1",) * 2), ("calibration", tuple(f"S{i}" for i in range(6))), ("calibration", ("not-approved",))):
+        with pytest.raises(PilotError):
+            validate_v2_request(evidence, approval, mode, series)
+    approval_payload = json.loads(approval_path.read_text(encoding="utf-8"))
+    approval_payload["evidence_sha256"] = _sha("f")
+    approval_path.write_bytes(canonical_json_bytes(approval_payload))
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+        validate_v2_request(evidence, approval, "calibration", ("S1",))
+    approval_path.write_bytes(canonical_json_bytes({**approval_payload, "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(), "phase4_run_sha256": _sha("f")}))
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+        validate_v2_request(evidence, approval, "calibration", ("S1",))
+
+
+@pytest.mark.parametrize("pin,authority", [(None, "human-approver"), (_sha("f"), "human-approver"), (None, "wrong-human")])
+def test_public_request_validation_requires_out_of_band_authority_pins(pin: str | None, authority: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    if pin is None:
+        monkeypatch.delenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256")
+    else:
+        monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", pin)
+    monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVER_ID", authority)
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+        validate_v2_request(evidence, approval, "calibration", ("S1",))
 
 
 class _Transaction:
