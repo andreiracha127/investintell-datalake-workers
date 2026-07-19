@@ -107,7 +107,7 @@ _AUTHORIZATION_FIELDS = frozenset(
         "supervisor_run_id",
     }
 )
-EXACT_WRITABLE_TABLES = frozenset(
+EXACT_MONITORED_RELATIONS = frozenset(
     {
         "public.sec_ingestion_runs", "public.sec_source_packages", "public.sec_source_files",
         "public.sec_source_package_transitions", "public.sec_table_reconciliations",
@@ -116,6 +116,30 @@ EXACT_WRITABLE_TABLES = frozenset(
         "public.nport_contract_tables", "public.ncen_raw_v2_rows", "public.ncen_contract_tables",
         "public.rr1_raw_v2_rows", "public.rr1_contract_tables",
     }
+)
+# The execution authorization remains bound to the complete signed relation
+# boundary.  Live preflight separately proves the narrower direct DML surface.
+EXACT_WRITABLE_TABLES = EXACT_MONITORED_RELATIONS
+EXACT_DIRECT_TABLE_PRIVILEGES = {
+    "public.sec_ingestion_runs": ("SELECT", "INSERT", "UPDATE"),
+    "public.sec_source_packages": ("SELECT", "INSERT", "UPDATE"),
+    "public.sec_source_files": ("SELECT", "INSERT", "UPDATE"),
+    "public.sec_source_package_transitions": ("SELECT",),
+    "public.sec_table_reconciliations": ("SELECT", "INSERT", "UPDATE"),
+    "public.sec_row_issues": ("SELECT", "INSERT"),
+    "public.sec_run_transitions": ("SELECT",),
+    "public.sec_validated_raw_visibility": ("SELECT",),
+    "public.sec_raw_validation_tokens": ("SELECT",),
+    "public.nport_raw_rows": ("SELECT", "INSERT", "UPDATE"),
+    "public.nport_holding_accession_map": ("SELECT", "INSERT", "DELETE"),
+    "public.nport_contract_tables": ("SELECT",),
+    "public.ncen_raw_v2_rows": ("SELECT", "INSERT"),
+    "public.ncen_contract_tables": ("SELECT",),
+    "public.rr1_raw_v2_rows": ("SELECT", "INSERT"),
+    "public.rr1_contract_tables": ("SELECT",),
+}
+EXACT_DIRECT_WRITABLE_TABLES = frozenset(
+    table for table, verbs in EXACT_DIRECT_TABLE_PRIVILEGES.items() if set(verbs) - {"SELECT"}
 )
 _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
     {
@@ -161,6 +185,20 @@ EXACT_SECURITY_DEFINER_ROUTINES = frozenset({
     "public.sec_query_governed_evidence(uuid,uuid,character)",
     "public.sec_audit_package_discovery()",
     "public.sec_audit_run_lifecycle()",
+})
+EXACT_DIRECT_USAGE_SEQUENCES = frozenset({
+    "public.sec_table_reconciliations_reconciliation_id_seq",
+    "public.sec_row_issues_issue_id_seq",
+    "public.nport_raw_rows_raw_row_id_seq",
+    "public.ncen_raw_v2_rows_raw_row_id_seq",
+    "public.rr1_raw_v2_rows_raw_row_id_seq",
+})
+EXACT_DIRECT_EXECUTE_ROUTINES = frozenset({
+    "public.sec_validate_raw_run(uuid,text)",
+    "public.sec_record_commit_outcome(uuid,uuid,character,character,text)",
+    "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)",
+    "public.sec_query_governed_evidence(uuid,uuid,character)",
+    "public.sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
 })
 _TARGET_FIELDS = frozenset(
     {
@@ -653,7 +691,7 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
     def object_identity(item: str) -> str:
         return item.split("|", 1)[0] if "|" in item else item.rsplit(":", 1)[0]
 
-    if {object_identity(item) for item in objects["relations"]} != EXACT_WRITABLE_TABLES:
+    if {object_identity(item) for item in objects["relations"]} != EXACT_MONITORED_RELATIONS:
         raise BackfillSafetyError("invalid production preflight relation identity set")
     if {object_identity(item) for item in objects["sequences"]} != EXACT_IDENTITY_SEQUENCES or len(objects["sequences"]) != 7:
         raise BackfillSafetyError("invalid production preflight identity sequence set")
@@ -665,11 +703,12 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
     if _sha256_bytes(_canonical_json(objects).encode("ascii")) != attestation["object_catalog_hash"]:
         raise BackfillSafetyError("production preflight object catalog hash mismatch")
     table_privileges = attestation["table_privileges"]
-    if not isinstance(table_privileges, dict) or set(table_privileges) != EXACT_WRITABLE_TABLES or any(value != ["SELECT", "INSERT", "UPDATE", "DELETE"] for value in table_privileges.values()):
+    expected_table_privileges = {table: list(verbs) for table, verbs in EXACT_DIRECT_TABLE_PRIVILEGES.items()}
+    if not isinstance(table_privileges, dict) or table_privileges != expected_table_privileges:
         raise BackfillSafetyError("invalid production preflight table privilege matrix")
     effective_writable = attestation["effective_writable_tables"]
     truncate_tables = attestation["truncate_tables"]
-    if not isinstance(effective_writable, list) or effective_writable != sorted(EXACT_WRITABLE_TABLES) or not all(isinstance(value, str) for value in effective_writable):
+    if not isinstance(effective_writable, list) or effective_writable != sorted(EXACT_DIRECT_WRITABLE_TABLES) or not all(isinstance(value, str) for value in effective_writable):
         raise BackfillSafetyError("invalid effective writable table set")
     if not isinstance(truncate_tables, list) or truncate_tables or not all(isinstance(value, str) for value in truncate_tables):
         raise BackfillSafetyError("TRUNCATE privilege is unsafe")
@@ -677,7 +716,7 @@ def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
         matrix = attestation[field]
         if not isinstance(matrix, dict) or not matrix or any(value != [required] for value in matrix.values()):
             raise BackfillSafetyError("invalid production preflight privilege matrix")
-    if set(attestation["sequence_privileges"]) != EXACT_IDENTITY_SEQUENCES or set(attestation["function_privileges"]) != EXACT_SECURITY_DEFINER_ROUTINES:
+    if set(attestation["sequence_privileges"]) != EXACT_DIRECT_USAGE_SEQUENCES or set(attestation["function_privileges"]) != EXACT_DIRECT_EXECUTE_ROUTINES:
         raise BackfillSafetyError("invalid production preflight privilege identity matrix")
     monitoring = attestation["monitoring_privileges"]
     if not isinstance(monitoring, dict) or set(monitoring) != {"pg_stat_activity", "pg_locks", "pg_monitor", "pg_read_all_stats"} or monitoring["pg_stat_activity"] != ["SELECT"] or monitoring["pg_locks"] != ["SELECT"] or monitoring["pg_monitor"] != ["DIRECT_MEMBER_NO_SET"] or monitoring["pg_read_all_stats"] != ["INHERITED_USAGE"]:
@@ -967,7 +1006,7 @@ def _collect_relation_security(connection: object, tables: Sequence[str] | None 
         "ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace LEFT JOIN pg_am am ON am.oid=c.relam "
         "LEFT JOIN pg_foreign_table ft ON ft.ftrelid=c.oid LEFT JOIN pg_foreign_server fs ON fs.oid=ft.ftserver "
         "WHERE n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s) AND c.relkind IN ('r','p','v','f')), '[]'::jsonb))",
-        (sorted(tables or EXACT_WRITABLE_TABLES),),
+        (sorted(tables or EXACT_MONITORED_RELATIONS),),
     )
     if not isinstance(relation_security, Mapping) or not isinstance(relation_security.get("relations"), list):
         raise BackfillSafetyError("production preflight relation security query returned malformed JSON")
@@ -992,7 +1031,7 @@ def _collect_nonrelation_object_identities(connection: object) -> dict[str, obje
         "'triggers',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname||':'||t.oid||':'||pg_get_triggerdef(t.oid,true)||':'||p.oid ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname='public'),'[]'::jsonb),"
         "'sequences',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||c.oid ORDER BY n.nspname,c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND n.nspname||'.'||c.relname=ANY(%s)),'[]'::jsonb),"
         "'routines',coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')|oid='||p.oid||'|owner='||pg_get_userbyid(p.proowner)||'|definition_sha256='||encode(sha256(convert_to(pg_get_functiondef(p.oid),'UTF8')),'hex')||'|proconfig_sha256='||encode(sha256(convert_to(coalesce(array_to_string(p.proconfig,','),''),'UTF8')),'hex') ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND n.nspname='public'),'[]'::jsonb))",
-        (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)),
+        (sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_IDENTITY_SEQUENCES)),
     )
     if not isinstance(value, Mapping) or set(value) != _OBJECT_IDENTITY_FIELDS:
         raise BackfillSafetyError("production object identity query returned malformed JSON")
@@ -1016,7 +1055,7 @@ def _collect_production_preflight(connection: object, authorization: Mapping[str
     if not isinstance(objects, Mapping) or not isinstance(relation_security, Mapping) or not isinstance(relation_security.get("relations"), list):
         raise BackfillSafetyError("production preflight relation security query returned malformed JSON")
     objects = {**dict(objects), "relations": relation_security["relations"]}
-    privileges = _query_json(connection, "SELECT jsonb_build_object('table_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,c.oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'DELETE') THEN 'DELETE' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname||'.'||c.relname=ANY(%s)) q), 'sequence_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||c.relname, jsonb_build_array('USAGE')), '{}'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname||'.'||c.relname=ANY(%s) AND has_sequence_privilege(current_user,c.oid,'USAGE')), 'function_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')', jsonb_build_array('EXECUTE')), '{}'::jsonb) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND has_function_privilege(current_user,p.oid,'EXECUTE')), 'monitoring_privileges', jsonb_build_object('pg_stat_activity', jsonb_build_array('SELECT')), 'public_acl', '[]'::jsonb, 'unsafe_security_definers', '[]'::jsonb, 'trigger_write_targets', '[]'::jsonb)", (sorted(EXACT_WRITABLE_TABLES), sorted(EXACT_IDENTITY_SEQUENCES)))
+    privileges = _query_json(connection, "SELECT jsonb_build_object('table_privileges', (SELECT coalesce(jsonb_object_agg(name, verbs ORDER BY name), '{}'::jsonb) FROM (SELECT n.nspname||'.'||c.relname AS name, to_jsonb(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,c.oid,'SELECT') THEN 'SELECT' END,CASE WHEN has_table_privilege(current_user,c.oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,c.oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,c.oid,'DELETE') THEN 'DELETE' END],NULL)) AS verbs FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname||'.'||c.relname=ANY(%s)) q), 'sequence_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||c.relname, jsonb_build_array('USAGE')), '{}'::jsonb) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind='S' AND n.nspname='public' AND has_sequence_privilege(current_user,c.oid,'USAGE')), 'function_privileges', (SELECT coalesce(jsonb_object_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')', jsonb_build_array('EXECUTE')), '{}'::jsonb) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND has_function_privilege(current_user,p.oid,'EXECUTE')), 'monitoring_privileges', jsonb_build_object('pg_stat_activity', jsonb_build_array('SELECT')), 'public_acl', '[]'::jsonb, 'unsafe_security_definers', '[]'::jsonb, 'trigger_write_targets', '[]'::jsonb)", (sorted(EXACT_MONITORED_RELATIONS),))
     write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')))) writable), '[]'::jsonb), 'truncate_tables', coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname <> 'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) truncatable), '[]'::jsonb))")
     monitoring = _collect_monitoring_privileges(connection)
     safety = _query_json(connection, "SELECT jsonb_build_object('public_acl', coalesce((SELECT jsonb_agg(kind || ':' || identity || ':' || privilege ORDER BY kind,identity,privilege) FROM (SELECT 'function' AS kind, n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' AS identity, a.privilege_type AS privilege FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 UNION ALL SELECT 'relation', n.nspname||'.'||c.relname, a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl, acldefault('r', c.relowner))) a WHERE a.grantee=0) acl), '[]'::jsonb), 'unsafe_security_definers', coalesce((SELECT jsonb_agg(n.nspname||'.'||p.proname||'('||pg_get_function_identity_arguments(p.oid)||')' ORDER BY n.nspname,p.proname,pg_get_function_identity_arguments(p.oid)) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE p.prosecdef AND (NOT coalesce(p.proconfig, ARRAY[]::text[]) @> ARRAY['search_path=pg_catalog, public'] OR EXISTS (SELECT 1 FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE'))), '[]'::jsonb), 'trigger_write_targets', coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'), '[]'::jsonb))")

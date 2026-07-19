@@ -277,7 +277,17 @@ def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventor
 
 
 def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str, object]:
-    from src.sec_regulatory.historical_backfill import EXACT_IDENTITY_SEQUENCES, EXACT_SECURITY_DEFINER_ROUTINES, EXACT_WRITABLE_TABLES, _canonical_json, _sha256_bytes
+    from src.sec_regulatory.historical_backfill import (
+        EXACT_DIRECT_EXECUTE_ROUTINES,
+        EXACT_DIRECT_TABLE_PRIVILEGES,
+        EXACT_DIRECT_USAGE_SEQUENCES,
+        EXACT_DIRECT_WRITABLE_TABLES,
+        EXACT_IDENTITY_SEQUENCES,
+        EXACT_SECURITY_DEFINER_ROUTINES,
+        EXACT_WRITABLE_TABLES,
+        _canonical_json,
+        _sha256_bytes,
+    )
 
     attestation = {
         "cluster_identity": cluster_identity,
@@ -294,11 +304,11 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
             "constraints": ["public.nport_raw_rows:nport_raw_rows_pkey:2"], "indexes": ["public.nport_raw_rows_pkey:3"],
             "triggers": ["public.nport_raw_rows:nport_validate_raw_statement:4"], "sequences": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_IDENTITY_SEQUENCES)), "routines": sorted(f"{name}|oid={index}|owner=sec_backfill_owner|definition_sha256={'b' * 64}|proconfig_sha256={'c' * 64}" for index, name in enumerate(EXACT_SECURITY_DEFINER_ROUTINES)),
         },
-        "table_privileges": {table: ["SELECT", "INSERT", "UPDATE", "DELETE"] for table in EXACT_WRITABLE_TABLES},
-        "sequence_privileges": {name: ["USAGE"] for name in EXACT_IDENTITY_SEQUENCES},
-        "function_privileges": {name: ["EXECUTE"] for name in EXACT_SECURITY_DEFINER_ROUTINES},
+        "table_privileges": {table: list(verbs) for table, verbs in EXACT_DIRECT_TABLE_PRIVILEGES.items()},
+        "sequence_privileges": {name: ["USAGE"] for name in EXACT_DIRECT_USAGE_SEQUENCES},
+        "function_privileges": {name: ["EXECUTE"] for name in EXACT_DIRECT_EXECUTE_ROUTINES},
         "monitoring_privileges": {"pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"], "pg_monitor": ["DIRECT_MEMBER_NO_SET"], "pg_read_all_stats": ["INHERITED_USAGE"]},
-        "effective_writable_tables": sorted(EXACT_WRITABLE_TABLES),
+        "effective_writable_tables": sorted(EXACT_DIRECT_WRITABLE_TABLES),
         "truncate_tables": [],
         "public_acl": [],
         "unsafe_security_definers": [],
@@ -323,6 +333,86 @@ def _production_authorization(inventory_hash: str) -> dict[str, object]:
     artifact["run_directory"] = "/var/lib/sec-backfill/run-1"
     artifact["preflight_attestation"] = _production_preflight()
     return artifact
+
+
+def _least_privilege_production_preflight() -> dict[str, object]:
+    valid = _production_preflight()
+    table_privileges = {
+        "public.sec_ingestion_runs": ["SELECT", "INSERT", "UPDATE"],
+        "public.sec_source_packages": ["SELECT", "INSERT", "UPDATE"],
+        "public.sec_source_files": ["SELECT", "INSERT", "UPDATE"],
+        "public.sec_source_package_transitions": ["SELECT"],
+        "public.sec_table_reconciliations": ["SELECT", "INSERT", "UPDATE"],
+        "public.sec_row_issues": ["SELECT", "INSERT"],
+        "public.sec_run_transitions": ["SELECT"],
+        "public.sec_validated_raw_visibility": ["SELECT"],
+        "public.sec_raw_validation_tokens": ["SELECT"],
+        "public.nport_raw_rows": ["SELECT", "INSERT", "UPDATE"],
+        "public.nport_holding_accession_map": ["SELECT", "INSERT", "DELETE"],
+        "public.nport_contract_tables": ["SELECT"],
+        "public.ncen_raw_v2_rows": ["SELECT", "INSERT"],
+        "public.ncen_contract_tables": ["SELECT"],
+        "public.rr1_raw_v2_rows": ["SELECT", "INSERT"],
+        "public.rr1_contract_tables": ["SELECT"],
+    }
+    sequence_privileges = {
+        "public.sec_table_reconciliations_reconciliation_id_seq": ["USAGE"],
+        "public.sec_row_issues_issue_id_seq": ["USAGE"],
+        "public.nport_raw_rows_raw_row_id_seq": ["USAGE"],
+        "public.ncen_raw_v2_rows_raw_row_id_seq": ["USAGE"],
+        "public.rr1_raw_v2_rows_raw_row_id_seq": ["USAGE"],
+    }
+    function_privileges = {
+        "public.sec_validate_raw_run(uuid,text)": ["EXECUTE"],
+        "public.sec_record_commit_outcome(uuid,uuid,character,character,text)": ["EXECUTE"],
+        "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)": ["EXECUTE"],
+        "public.sec_query_governed_evidence(uuid,uuid,character)": ["EXECUTE"],
+        "public.sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)": ["EXECUTE"],
+    }
+    effective_writable_tables = sorted(
+        table for table, verbs in table_privileges.items() if set(verbs) - {"SELECT"}
+    )
+    return {
+        **valid,
+        "table_privileges": table_privileges,
+        "sequence_privileges": sequence_privileges,
+        "function_privileges": function_privileges,
+        "effective_writable_tables": effective_writable_tables,
+    }
+
+
+def test_preflight_requires_exact_least_privilege_direct_grant_surfaces() -> None:
+    from src.sec_regulatory.historical_backfill import (
+        BackfillSafetyError,
+        EXACT_DIRECT_EXECUTE_ROUTINES,
+        EXACT_DIRECT_TABLE_PRIVILEGES,
+        EXACT_DIRECT_USAGE_SEQUENCES,
+        _validate_preflight_attestation,
+    )
+
+    valid = _least_privilege_production_preflight()
+    assert EXACT_DIRECT_TABLE_PRIVILEGES == {
+        table: tuple(verbs) for table, verbs in valid["table_privileges"].items()
+    }
+    assert EXACT_DIRECT_USAGE_SEQUENCES == frozenset(valid["sequence_privileges"])
+    assert EXACT_DIRECT_EXECUTE_ROUTINES == frozenset(valid["function_privileges"])
+    assert len(valid["object_identities"]["relations"]) == 16
+    assert len(valid["object_identities"]["sequences"]) == 7
+    assert len(valid["object_identities"]["routines"]) == 12
+    assert len(valid["effective_writable_tables"]) == 9
+    assert _validate_preflight_attestation(valid)["table_privileges"] == valid["table_privileges"]
+
+    for changed in (
+        {**valid, "table_privileges": {**valid["table_privileges"], "public.sec_source_package_transitions": ["SELECT", "INSERT"]}},
+        {**valid, "table_privileges": {key: value for key, value in valid["table_privileges"].items() if key != "public.rr1_contract_tables"}},
+        {**valid, "sequence_privileges": {key: value for key, value in valid["sequence_privileges"].items() if key != "public.rr1_raw_v2_rows_raw_row_id_seq"}},
+        {**valid, "sequence_privileges": {**valid["sequence_privileges"], "public.sec_run_transitions_transition_id_seq": ["USAGE"]}},
+        {**valid, "function_privileges": {key: value for key, value in valid["function_privileges"].items() if key != "public.sec_validate_raw_run(uuid,text)"}},
+        {**valid, "function_privileges": {**valid["function_privileges"], "public.sec_audit_run_lifecycle()": ["EXECUTE"]}},
+        {**valid, "effective_writable_tables": [*valid["effective_writable_tables"], "public.unapproved"]},
+    ):
+        with pytest.raises(BackfillSafetyError, match="table privilege|privilege identity|effective writable"):
+            _validate_preflight_attestation(changed)
 
 
 def test_preflight_requires_exact_security_definer_recovery_routine_set() -> None:
