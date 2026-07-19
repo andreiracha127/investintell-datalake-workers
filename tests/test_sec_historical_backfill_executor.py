@@ -370,7 +370,7 @@ def test_preflight_accepts_deterministic_inherited_monitor_and_public_read_inven
             {"identity": "_timescaledb_catalog.chunk_id_seq", "schema": "_timescaledb_catalog", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["SELECT", "USAGE"]},
         ],
         "routines": [
-            {"identity": "_timescaledb_internal.some_helper()", "schema": "_timescaledb_internal", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": False, "security_definer_classification": None, "proconfig": [], "search_path": None, "definition_sha256": "a" * 64, "side_effect_keywords": []},
+            {"identity": "_timescaledb_internal.some_helper()", "schema": "_timescaledb_internal", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": False, "security_definer_classification": None, "proconfig": [], "search_path": None, "definition_sha256": "a" * 64, "side_effect_keywords": [], "aggregate_definition": None},
         ],
         "schemas": [
             {"identity": "_timescaledb_catalog", "schema": "_timescaledb_catalog", "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["USAGE"]},
@@ -392,7 +392,7 @@ def test_preflight_accepts_deterministic_inherited_monitor_and_public_read_inven
     "changed_inventory",
     (
         {"relations": [{"identity": "public.other", "schema": "public", "owner": "other", "extension": None, "acl_source": "DIRECT", "grantee": "sec_backfill_runner", "privileges": ["SELECT"], "pg_monitor_surface": False}], "sequences": [], "routines": [], "schemas": [], "public_acl": [], "monitoring": []},
-        {"relations": [], "sequences": [], "routines": [{"identity": "public.unclassified()", "schema": "public", "owner": "other", "extension": None, "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": True, "proconfig": [], "search_path": None, "definition_sha256": "b" * 64, "side_effect_keywords": []}], "schemas": [], "public_acl": [], "monitoring": []},
+        {"relations": [], "sequences": [], "routines": [{"identity": "public.unclassified()", "schema": "public", "owner": "other", "extension": None, "acl_source": "PUBLIC", "grantee": "PUBLIC", "privileges": ["EXECUTE"], "prokind": "f", "security_definer": True, "proconfig": [], "search_path": None, "definition_sha256": "b" * 64, "side_effect_keywords": [], "aggregate_definition": None}], "schemas": [], "public_acl": [], "monitoring": []},
         {"relations": [], "sequences": [], "routines": [], "schemas": [], "public_acl": [], "monitoring": [{"identity": "pg_catalog.pg_stat_activity", "membership": "BROKEN", "surface": "pg_monitor"}]},
     ),
 )
@@ -415,9 +415,15 @@ def test_non_sec_inventory_collector_canonicalizes_multiple_side_effect_keywords
         "privileges": ["EXECUTE"], "prokind": "f", "security_definer": False,
         "security_definer_classification": None, "proconfig": [], "search_path": None,
         "definition_sha256": "d" * 64, "side_effect_keywords": ["UPDATE", "CREATE", "INSERT"],
+        "aggregate_definition": None,
     }
     raw = {"relations": [], "sequences": [], "routines": [routine], "schemas": [], "public_acl": [], "monitoring": []}
     def query_json(_connection: object, query: str, params: tuple[object, ...]) -> object:
+        if "JOIN pg_aggregate" in query:
+            assert len(params) == 1
+            assert "ELSE 'INHERITED'" in query
+            assert "pg_has_role(current_user, a.grantee, 'USAGE')" in query
+            return {"routines": []}
         assert "LIKE 'search_path=%%'" in query
         assert query.replace("%%", "").count("%") == 3
         assert len(params) == 3
@@ -427,6 +433,58 @@ def test_non_sec_inventory_collector_canonicalizes_multiple_side_effect_keywords
 
     observed = backfill._collect_non_sec_privilege_inventory(object())
     assert observed["non_sec_privilege_inventory"]["routines"][0]["side_effect_keywords"] == ["CREATE", "INSERT", "UPDATE"]
+
+
+def test_preflight_validates_exact_aggregate_inventory_schema() -> None:
+    from src.sec_regulatory.historical_backfill import (
+        BackfillSafetyError,
+        _canonical_json,
+        _sha256_bytes,
+        _validate_preflight_attestation,
+    )
+
+    aggregate_definition = {
+        "kind": "n", "num_direct_args": 0,
+        "transition_function": "runner_hidden.hidden_sum_step(integer,integer)",
+        "final_function": "-", "combine_function": "-", "serial_function": "-",
+        "deserial_function": "-", "moving_transition_function": "-",
+        "moving_inverse_function": "-", "moving_final_function": "-",
+        "transition_type": "integer", "moving_transition_type": "-",
+        "sort_operator": "-", "transition_space": 0, "moving_transition_space": 0,
+        "initial_value": "0", "moving_initial_value": None,
+        "final_extra": False, "moving_final_extra": False,
+        "final_modify": "r", "moving_final_modify": "r", "parallel": "u",
+    }
+    routine = {
+        "identity": "runner_hidden.hidden_sum(integer)", "schema": "runner_hidden",
+        "owner": "postgres", "extension": None, "acl_source": "PUBLIC", "grantee": "PUBLIC",
+        "privileges": ["EXECUTE"], "prokind": "a", "security_definer": False,
+        "security_definer_classification": None, "proconfig": [], "search_path": None,
+        "definition_sha256": _sha256_bytes(_canonical_json(aggregate_definition).encode("ascii")),
+        "side_effect_keywords": [], "aggregate_definition": aggregate_definition,
+    }
+    valid = _production_preflight()
+    inventory = deepcopy(valid["non_sec_privilege_inventory"])
+    inventory["routines"] = [routine]
+    valid["non_sec_privilege_inventory"] = inventory
+    valid["non_sec_privilege_inventory_hash"] = _sha256_bytes(_canonical_json(inventory).encode("ascii"))
+    assert _validate_preflight_attestation(valid)["non_sec_privilege_inventory"] == inventory
+
+    for malformed_definition in (
+        {key: value for key, value in aggregate_definition.items() if key != "transition_function"},
+        {**aggregate_definition, "num_direct_args": "0"},
+        {**aggregate_definition, "parallel": "x"},
+    ):
+        changed = deepcopy(valid)
+        changed_routine = deepcopy(routine)
+        changed_routine["aggregate_definition"] = malformed_definition
+        changed_routine["definition_sha256"] = _sha256_bytes(_canonical_json(malformed_definition).encode("ascii"))
+        changed["non_sec_privilege_inventory"]["routines"] = [changed_routine]
+        changed["non_sec_privilege_inventory_hash"] = _sha256_bytes(
+            _canonical_json(changed["non_sec_privilege_inventory"]).encode("ascii")
+        )
+        with pytest.raises(BackfillSafetyError, match="aggregate"):
+            _validate_preflight_attestation(changed)
 
 
 def test_preflight_rejects_non_sec_maintain_surface() -> None:
@@ -710,6 +768,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("ordinary_routine", "EXECUTE"),
         ("procedure", "EXECUTE"),
         ("aggregate", "EXECUTE"),
+        ("aggregate_public_default", "EXECUTE"),
         ("window", "EXECUTE"),
         ("schema_usage_direct", "USAGE"),
         ("schema", "CREATE"),
@@ -838,7 +897,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         sql.Identifier(schema)
                     )
                 )
-            if grant_kind == "aggregate":
+            if grant_kind in {"aggregate", "aggregate_public_default"}:
                 cursor.execute(
                     sql.SQL(
                         "CREATE FUNCTION {}.hidden_sum_step(integer,integer) RETURNS integer "
@@ -856,11 +915,12 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         "(SFUNC = {}.hidden_sum_step, STYPE = integer, INITCOND = '0')"
                     ).format(sql.Identifier(schema), sql.Identifier(schema))
                 )
-                cursor.execute(
-                    sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_sum(integer) FROM PUBLIC").format(
-                        sql.Identifier(schema)
+                if grant_kind == "aggregate":
+                    cursor.execute(
+                        sql.SQL("REVOKE ALL ON FUNCTION {}.hidden_sum(integer) FROM PUBLIC").format(
+                            sql.Identifier(schema)
+                        )
                     )
-                )
             if grant_kind == "window":
                 cursor.execute(
                     sql.SQL(
@@ -982,7 +1042,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     ).format(sql.Identifier(schema))
                 )
             elif grant_kind not in {
-                "baseline", "public_acl_default", "column_direct", "column_inherited",
+                "baseline", "public_acl_default", "aggregate_public_default", "column_direct", "column_inherited",
                 "column_public", "column_redundant", "database_temporary", "database_create",
                 "database_connect_missing",
             }:
@@ -1030,15 +1090,27 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                 assert observed["public_acl"] == []
                 assert observed["unsafe_security_definers"] == []
                 assert set(observed["trigger_write_targets"]) == EXPECTED_TRIGGER_WRITE_TARGETS
-            elif grant_kind in {"public_acl", "public_acl_default", "unsafe_security_definer"}:
+            elif grant_kind in {"public_acl", "public_acl_default", "unsafe_security_definer", "aggregate_public_default"}:
                 observed = _collect_production_preflight(Connection(runner), authorization)
                 expected = deepcopy(observed)
                 routine_name = {
                     "public_acl": "hidden_public_function",
                     "public_acl_default": "hidden_default_public_function",
                     "unsafe_security_definer": "hidden_security_definer",
+                    "aggregate_public_default": "hidden_sum",
                 }[grant_kind]
                 expected_inventory = deepcopy(expected["non_sec_privilege_inventory"])
+                if grant_kind == "aggregate_public_default":
+                    aggregate_records = [
+                        record for record in expected_inventory["routines"]
+                        if record["identity"].startswith(f"{schema}.{routine_name}(")
+                    ]
+                    assert len(aggregate_records) == 1
+                    assert aggregate_records[0]["prokind"] == "a"
+                    assert aggregate_records[0]["acl_source"] == "PUBLIC"
+                    assert aggregate_records[0]["aggregate_definition"]["transition_function"].endswith(
+                        ".hidden_sum_step(integer,integer)"
+                    )
                 expected_inventory["routines"] = [
                     record for record in expected_inventory["routines"]
                     if not record["identity"].startswith(f"{schema}.{routine_name}(")

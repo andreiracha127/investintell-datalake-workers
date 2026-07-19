@@ -152,6 +152,14 @@ _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
     }
 )
 _NON_SEC_INVENTORY_FIELDS = frozenset({"relations", "sequences", "routines", "schemas", "public_acl", "monitoring"})
+_AGGREGATE_DEFINITION_FIELDS = frozenset({
+    "kind", "num_direct_args", "transition_function", "final_function", "combine_function",
+    "serial_function", "deserial_function", "moving_transition_function",
+    "moving_inverse_function", "moving_final_function", "transition_type",
+    "moving_transition_type", "sort_operator", "transition_space", "moving_transition_space",
+    "initial_value", "moving_initial_value", "final_extra", "moving_final_extra",
+    "final_modify", "moving_final_modify", "parallel",
+})
 _RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
 _SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
 _CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "certificate_sha256", "canary_supervisor_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
@@ -730,7 +738,7 @@ def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: obj
         for record in sorted_unique_records(inventory[category]):
             required = common_fields | ({"pg_monitor_surface"} if category == "relations" else set())
             if category == "routines":
-                required |= {"prokind", "security_definer", "security_definer_classification", "proconfig", "search_path", "definition_sha256", "side_effect_keywords"}
+                required |= {"prokind", "security_definer", "security_definer_classification", "proconfig", "search_path", "definition_sha256", "side_effect_keywords", "aggregate_definition"}
             if set(record) != required or not all(isinstance(record[field], str) and record[field] for field in ("identity", "schema", "owner", "grantee")):
                 raise BackfillSafetyError("invalid non-SEC privilege inventory")
             if record["extension"] is not None and (not isinstance(record["extension"], str) or not record["extension"]):
@@ -748,6 +756,34 @@ def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: obj
                 classification = record["security_definer_classification"]
                 if (record["security_definer"] and classification != "PENDING_SIGNED_BASELINE") or (not record["security_definer"] and classification is not None):
                     raise BackfillSafetyError("unclassified non-SEC SECURITY DEFINER inventory")
+                aggregate_definition = record["aggregate_definition"]
+                if record["prokind"] != "a":
+                    if aggregate_definition is not None:
+                        raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                    continue
+                if not isinstance(aggregate_definition, Mapping) or set(aggregate_definition) != _AGGREGATE_DEFINITION_FIELDS:
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                string_fields = {
+                    "kind", "transition_function", "final_function", "combine_function",
+                    "serial_function", "deserial_function", "moving_transition_function",
+                    "moving_inverse_function", "moving_final_function", "transition_type",
+                    "moving_transition_type", "sort_operator", "final_modify",
+                    "moving_final_modify", "parallel",
+                }
+                if not all(isinstance(aggregate_definition[field], str) and aggregate_definition[field] for field in string_fields):
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if aggregate_definition["kind"] not in {"n", "o", "h"} or aggregate_definition["final_modify"] not in {"r", "s", "w"} or aggregate_definition["moving_final_modify"] not in {"r", "s", "w"} or aggregate_definition["parallel"] not in {"s", "r", "u"}:
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if any(type(aggregate_definition[field]) is not int or aggregate_definition[field] < 0 for field in ("num_direct_args", "transition_space", "moving_transition_space")):
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if any(not isinstance(aggregate_definition[field], bool) for field in ("final_extra", "moving_final_extra")):
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if any(aggregate_definition[field] is not None and not isinstance(aggregate_definition[field], str) for field in ("initial_value", "moving_initial_value")):
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if record["security_definer"] or record["proconfig"] or record["search_path"] is not None or record["side_effect_keywords"]:
+                    raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                if record["definition_sha256"] != _sha256_bytes(_canonical_json(aggregate_definition).encode("ascii")):
+                    raise BackfillSafetyError("non-SEC aggregate definition hash mismatch")
     for record in sorted_unique_records(inventory["public_acl"]):
         if set(record) != {"object_kind", "identity", "schema", "owner", "extension", "privilege"} or record["object_kind"] not in {"relation", "routine", "sequence", "schema"} or not all(isinstance(record[field], str) and record[field] for field in ("identity", "schema", "owner", "privilege")) or record["extension"] is not None and not isinstance(record["extension"], str):
             raise BackfillSafetyError("invalid non-SEC PUBLIC privilege inventory")
@@ -1141,6 +1177,111 @@ def _collect_nonrelation_object_identities(connection: object) -> dict[str, obje
     return dict(value)
 
 
+def _collect_non_sec_aggregate_inventory(connection: object) -> list[object]:
+    """Collect callable non-SEC aggregates without pg_get_functiondef()."""
+    value = _query_json(
+        connection,
+        """
+        WITH aggregate_metadata AS MATERIALIZED (
+            SELECT
+                p.oid,
+                p.proowner,
+                p.proacl,
+                n.nspname || '.' || p.proname || '(' ||
+                    replace(oidvectortypes(p.proargtypes), ', ', ',') || ')' AS identity,
+                n.nspname AS schema,
+                pg_get_userbyid(p.proowner) AS owner,
+                (
+                    SELECT e.extname
+                    FROM pg_depend d
+                    JOIN pg_extension e ON e.oid = d.refobjid
+                    WHERE d.classid = 'pg_proc'::regclass
+                      AND d.objid = p.oid
+                      AND d.deptype = 'e'
+                    LIMIT 1
+                ) AS extension,
+                jsonb_build_object(
+                    'kind', ag.aggkind::text,
+                    'num_direct_args', ag.aggnumdirectargs,
+                    'transition_function', ag.aggtransfn::regprocedure::text,
+                    'final_function', CASE WHEN ag.aggfinalfn = 0 THEN '-' ELSE ag.aggfinalfn::regprocedure::text END,
+                    'combine_function', CASE WHEN ag.aggcombinefn = 0 THEN '-' ELSE ag.aggcombinefn::regprocedure::text END,
+                    'serial_function', CASE WHEN ag.aggserialfn = 0 THEN '-' ELSE ag.aggserialfn::regprocedure::text END,
+                    'deserial_function', CASE WHEN ag.aggdeserialfn = 0 THEN '-' ELSE ag.aggdeserialfn::regprocedure::text END,
+                    'moving_transition_function', CASE WHEN ag.aggmtransfn = 0 THEN '-' ELSE ag.aggmtransfn::regprocedure::text END,
+                    'moving_inverse_function', CASE WHEN ag.aggminvtransfn = 0 THEN '-' ELSE ag.aggminvtransfn::regprocedure::text END,
+                    'moving_final_function', CASE WHEN ag.aggmfinalfn = 0 THEN '-' ELSE ag.aggmfinalfn::regprocedure::text END,
+                    'transition_type', format_type(ag.aggtranstype, NULL),
+                    'moving_transition_type', CASE WHEN ag.aggmtranstype = 0 THEN '-' ELSE format_type(ag.aggmtranstype, NULL) END,
+                    'sort_operator', CASE WHEN ag.aggsortop = 0 THEN '-' ELSE ag.aggsortop::regoperator::text END,
+                    'transition_space', ag.aggtransspace,
+                    'moving_transition_space', ag.aggmtransspace,
+                    'initial_value', ag.agginitval,
+                    'moving_initial_value', ag.aggminitval,
+                    'final_extra', ag.aggfinalextra,
+                    'moving_final_extra', ag.aggmfinalextra,
+                    'final_modify', ag.aggfinalmodify::text,
+                    'moving_final_modify', ag.aggmfinalmodify::text,
+                    'parallel', p.proparallel::text
+                ) AS aggregate_definition
+            FROM pg_proc p
+            JOIN pg_namespace n ON n.oid = p.pronamespace
+            JOIN pg_aggregate ag ON ag.aggfnoid = p.oid
+            WHERE p.prokind = 'a'
+              AND n.nspname !~ '^pg_'
+              AND n.nspname <> 'information_schema'
+              AND n.nspname || '.' || p.proname || '(' ||
+                  replace(oidvectortypes(p.proargtypes), ', ', ',') || ')' <> ALL(%s)
+        ), aggregate_acl AS MATERIALIZED (
+            SELECT
+                m.*,
+                CASE
+                    WHEN a.grantee = 0 THEN 'PUBLIC'
+                    WHEN a.grantee = (SELECT oid FROM pg_roles WHERE rolname = current_user) THEN 'DIRECT'
+                    ELSE 'INHERITED'
+                END AS acl_source,
+                coalesce(pg_get_userbyid(NULLIF(a.grantee, 0)), 'PUBLIC') AS grantee
+            FROM aggregate_metadata m
+            CROSS JOIN LATERAL aclexplode(coalesce(m.proacl, acldefault('f', m.proowner))) a
+            WHERE a.privilege_type = 'EXECUTE'
+              AND (a.grantee = 0 OR pg_has_role(current_user, a.grantee, 'USAGE'))
+        )
+        SELECT jsonb_build_object(
+            'routines', coalesce(
+                (
+                    SELECT jsonb_agg(
+                        jsonb_build_object(
+                            'identity', identity,
+                            'schema', schema,
+                            'owner', owner,
+                            'extension', extension,
+                            'acl_source', acl_source,
+                            'grantee', grantee,
+                            'privileges', jsonb_build_array('EXECUTE'),
+                            'prokind', 'a',
+                            'security_definer', false,
+                            'security_definer_classification', NULL,
+                            'proconfig', '[]'::jsonb,
+                            'search_path', NULL,
+                            'side_effect_keywords', '[]'::jsonb,
+                            'aggregate_definition', aggregate_definition
+                        )
+                        ORDER BY identity, acl_source, grantee
+                    )
+                    FROM aggregate_acl
+                ),
+                '[]'::jsonb
+            )
+        )
+        """,
+        (sorted(EXACT_SECURITY_DEFINER_ROUTINES),),
+    )
+    routines = value.get("routines") if isinstance(value, Mapping) else None
+    if not isinstance(routines, list):
+        raise BackfillSafetyError("production non-SEC aggregate inventory query returned malformed JSON")
+    return routines
+
+
 def _collect_non_sec_privilege_inventory(connection: object) -> dict[str, object]:
     """Collect non-SEC effective read capability for a separately signed baseline.
 
@@ -1153,19 +1294,28 @@ def _collect_non_sec_privilege_inventory(connection: object) -> dict[str, object
         "WITH relation_acl AS MATERIALIZED (SELECT n.nspname||'.'||c.relname AS identity,n.nspname AS schema,pg_get_userbyid(c.relowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type, n.nspname='pg_catalog' AND a.grantee<>0 AND pg_has_role('pg_monitor',a.grantee,'USAGE') AS pg_monitor_surface FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.relkind IN ('r','p','v','m','f') AND a.privilege_type='SELECT' AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND (n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s) OR n.nspname='pg_catalog' AND a.grantee<>0 AND pg_has_role('pg_monitor',a.grantee,'USAGE'))), sequence_acl AS MATERIALIZED (SELECT n.nspname||'.'||c.relname AS identity,n.nspname AS schema,pg_get_userbyid(c.relowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(coalesce(c.relacl,acldefault('r',c.relowner))) a WHERE c.relkind='S' AND a.privilege_type IN ('SELECT','USAGE','UPDATE') AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s)), routine_acl AS MATERIALIZED (SELECT n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')' AS identity,n.nspname AS schema,pg_get_userbyid(p.proowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,p.prokind,p.prosecdef,coalesce(to_jsonb(p.proconfig),'[]'::jsonb) AS proconfig,(SELECT substring(setting FROM 13) FROM unnest(coalesce(p.proconfig,ARRAY[]::text[])) setting WHERE setting LIKE 'search_path=%%' LIMIT 1) AS search_path,encode(sha256(convert_to(pg_get_functiondef(p.oid),'UTF8')),'hex') AS definition_sha256,to_jsonb(array_remove(ARRAY[CASE WHEN pg_get_functiondef(p.oid) ~* '\\mINSERT\\M' THEN 'INSERT' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mUPDATE\\M' THEN 'UPDATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mDELETE\\M' THEN 'DELETE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mTRUNCATE\\M' THEN 'TRUNCATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCREATE\\M' THEN 'CREATE' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mALTER\\M' THEN 'ALTER' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mDROP\\M' THEN 'DROP' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCOPY\\M' THEN 'COPY' END,CASE WHEN pg_get_functiondef(p.oid) ~* '\\mCALL\\M' THEN 'CALL' END],NULL)) AS side_effect_keywords FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE p.prokind<>'a' AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||p.proname||'('||replace(oidvectortypes(p.proargtypes),', ', ',')||')'<>ALL(%s)), schema_acl AS MATERIALIZED (SELECT n.nspname AS identity,n.nspname AS schema,pg_get_userbyid(n.nspowner) AS owner,(SELECT e.extname FROM pg_depend d JOIN pg_extension e ON e.oid=d.refobjid WHERE d.classid='pg_namespace'::regclass AND d.objid=n.oid AND d.deptype='e' LIMIT 1) AS extension,CASE WHEN a.grantee=0 THEN 'PUBLIC' WHEN a.grantee=(SELECT oid FROM pg_roles WHERE rolname=current_user) THEN 'DIRECT' ELSE 'INHERITED' END AS acl_source,coalesce(pg_get_userbyid(NULLIF(a.grantee,0)),'PUBLIC') AS grantee,a.privilege_type FROM pg_namespace n CROSS JOIN LATERAL aclexplode(coalesce(n.nspacl,acldefault('n',n.nspowner))) a WHERE a.privilege_type='USAGE' AND (a.grantee=0 OR pg_has_role(current_user,a.grantee,'USAGE')) AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname<>'public') SELECT jsonb_build_object('relations',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type),'pg_monitor_surface',pg_monitor_surface) ORDER BY identity,acl_source,grantee) FROM relation_acl),'[]'::jsonb),'sequences',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type)) ORDER BY identity,acl_source,grantee,privilege_type) FROM sequence_acl),'[]'::jsonb),'routines',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array('EXECUTE'),'prokind',prokind::text,'security_definer',prosecdef,'security_definer_classification',CASE WHEN prosecdef THEN 'PENDING_SIGNED_BASELINE' ELSE NULL END,'proconfig',proconfig,'search_path',search_path,'definition_sha256',definition_sha256,'side_effect_keywords',side_effect_keywords) ORDER BY identity,acl_source,grantee) FROM routine_acl),'[]'::jsonb),'schemas',coalesce((SELECT jsonb_agg(jsonb_build_object('identity',identity,'schema',schema,'owner',owner,'extension',extension,'acl_source',acl_source,'grantee',grantee,'privileges',jsonb_build_array(privilege_type)) ORDER BY identity,acl_source,grantee) FROM schema_acl),'[]'::jsonb),'public_acl',coalesce((SELECT jsonb_agg(jsonb_build_object('object_kind','relation','identity',identity,'schema',schema,'owner',owner,'extension',extension,'privilege',privilege_type) ORDER BY identity,privilege_type) FROM relation_acl WHERE acl_source='PUBLIC'),'[]'::jsonb),'monitoring',CASE WHEN pg_has_role(current_user,'pg_monitor','USAGE') THEN jsonb_build_array(jsonb_build_object('identity','pg_catalog.pg_stat_activity','membership','DIRECT_MEMBER_NO_SET','surface','pg_monitor'),jsonb_build_object('identity','pg_catalog.pg_locks','membership','DIRECT_MEMBER_NO_SET','surface','pg_monitor')) ELSE '[]'::jsonb END)",
         (sorted(EXACT_MONITORED_RELATIONS), sorted(EXACT_IDENTITY_SEQUENCES), sorted(EXACT_SECURITY_DEFINER_ROUTINES)),
     )
+    aggregate_routines = _collect_non_sec_aggregate_inventory(connection)
     if not isinstance(value, Mapping) or set(value) != _NON_SEC_INVENTORY_FIELDS:
         raise BackfillSafetyError("production non-SEC privilege inventory query returned malformed JSON")
     inventory: dict[str, list[object]] = {}
     for field, entries in cast(Mapping[str, object], value).items():
         if not isinstance(entries, list):
             continue
+        if field == "routines":
+            entries = [*entries, *aggregate_routines]
         normalized: list[object] = []
         for entry in entries:
             if field == "routines" and isinstance(entry, Mapping):
                 routine = dict(entry)
+                routine.setdefault("aggregate_definition", None)
                 keywords = routine.get("side_effect_keywords")
                 if isinstance(keywords, list) and all(isinstance(keyword, str) for keyword in keywords):
                     routine["side_effect_keywords"] = sorted(set(keywords))
+                aggregate_definition = routine.get("aggregate_definition")
+                if routine.get("prokind") == "a" and isinstance(aggregate_definition, Mapping):
+                    routine["definition_sha256"] = _sha256_bytes(
+                        _canonical_json(aggregate_definition).encode("ascii")
+                    )
                 entry = routine
             normalized.append(entry)
         inventory[field] = sorted(normalized, key=_canonical_json)
