@@ -1,4 +1,4 @@
-"""Offline N-PORT fixture loading for the pre-backfill bond-pilot run."""
+"""Offline, bounded N-PORT fixture loading for the pre-backfill pilot."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from .contracts import PilotError
 from .matching import HoldingRecord
 
 
+MAX_FIXTURE_BYTES = 64 * 1024 * 1024
 _SCHEMA_VERSION = "nport-fixture-v1"
 _REQUIRED_FIELDS = (
     "publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date",
@@ -23,10 +24,30 @@ _REQUIRED_FIELDS = (
 _PHYSICAL_LINEAGE_FIELDS = ("publication_id", "accession_number", "holding_id", "source_run_id", "series_id", "instrument_id")
 
 
-def _read_fixture(path: Path) -> Mapping[str, object]:
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value: str) -> object:
+    raise ValueError("non-finite JSON constant")
+
+
+def _parse_fixture(path: Path, max_rows: int) -> tuple[Mapping[str, object], list[object]]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if path.stat().st_size > MAX_FIXTURE_BYTES:
+            raise PilotError("nport_fixture_too_large", {"path": str(path)})
+        raw = path.read_bytes()
+        if len(raw) > MAX_FIXTURE_BYTES:
+            raise PilotError("nport_fixture_too_large", {"path": str(path)})
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_constant)
+    except PilotError:
+        raise
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise PilotError("nport_invalid_fixture") from exc
     if not isinstance(value, dict):
         raise PilotError("nport_invalid_fixture")
@@ -34,7 +55,13 @@ def _read_fixture(path: Path) -> Mapping[str, object]:
         raise PilotError("nport_invalid_schema_version")
     if value.get("phase4_state") != "pre_backfill":
         raise PilotError("nport_invalid_phase4_state")
-    return value
+    rows = value.get("holdings")
+    if not isinstance(rows, list):
+        raise PilotError("nport_invalid_holdings")
+    effective_limit = min(max_rows, 10_000)
+    if len(rows) > effective_limit:
+        raise PilotError("nport_row_limit_exceeded", {"max_rows": effective_limit, "row_count": len(rows)})
+    return value, rows
 
 
 def _nonempty(value: object, field: str, row_number: int) -> str:
@@ -65,17 +92,7 @@ def _frozen_raw(value: Mapping[str, object]) -> Mapping[str, object]:
     return MappingProxyType({str(key): freeze(item) for key, item in value.items()})
 
 
-def load_fixture_holdings(path: str | Path, max_rows: int = 10_000) -> tuple[HoldingRecord, ...]:
-    """Load a bounded, deliberately offline N-PORT fixture without DB access."""
-    if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 0:
-        raise PilotError("nport_invalid_row_limit")
-    value = _read_fixture(Path(path))
-    rows = value.get("holdings")
-    if not isinstance(rows, list):
-        raise PilotError("nport_invalid_holdings")
-    effective_limit = min(max_rows, 10_000)
-    if len(rows) > effective_limit:
-        raise PilotError("nport_row_limit_exceeded", {"max_rows": effective_limit, "row_count": len(rows)})
+def _holdings_from_rows(rows: list[object]) -> tuple[HoldingRecord, ...]:
     holdings: list[HoldingRecord] = []
     lots: set[tuple[str, str]] = set()
     for row_number, row in enumerate(rows):
@@ -100,14 +117,26 @@ def load_fixture_holdings(path: str | Path, max_rows: int = 10_000) -> tuple[Hol
     return tuple(holdings)
 
 
+def load_fixture_holdings(path: str | Path, max_rows: int = 10_000) -> tuple[HoldingRecord, ...]:
+    """Load a bounded, deliberately offline N-PORT fixture without DB access."""
+    if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 0:
+        raise PilotError("nport_invalid_row_limit")
+    _, rows = _parse_fixture(Path(path), max_rows)
+    return _holdings_from_rows(rows)
+
+
 def fixture_manifest(path: str | Path, holdings: tuple[HoldingRecord, ...]) -> dict[str, object]:
-    """Return immutable-run provenance derived from the raw fixture bytes."""
+    """Bind the manifest's raw hash and counts to the exact fixture holdings."""
     fixture_path = Path(path)
+    _, rows = _parse_fixture(fixture_path, 10_000)
+    parsed_holdings = _holdings_from_rows(rows)
+    if parsed_holdings != holdings:
+        raise PilotError("fixture_manifest_mismatch")
     return {
         "schema_version": "nport-extract-manifest-v1", "extraction_mode": "fixture", "phase4_state": "pre_backfill",
         "representative_post_backfill": False, "db_reads": 0, "db_writes": 0, "fixture_path": str(fixture_path),
-        "fixture_sha256": sha256_file(fixture_path), "row_count": len(holdings),
-        "distinct_lot_count": len({(row.accession_number, row.holding_id) for row in holdings}),
-        "distinct_series_count": len({row.series_id for row in holdings}), "distinct_accession_count": len({row.accession_number for row in holdings}),
-        "lineage_fields_present": all(all(getattr(row, field) for field in _PHYSICAL_LINEAGE_FIELDS) for row in holdings),
+        "fixture_sha256": sha256_file(fixture_path), "row_count": len(parsed_holdings),
+        "distinct_lot_count": len({(row.accession_number, row.holding_id) for row in parsed_holdings}),
+        "distinct_series_count": len({row.series_id for row in parsed_holdings}), "distinct_accession_count": len({row.accession_number for row in parsed_holdings}),
+        "lineage_fields_present": all(all(getattr(row, field) for field in _PHYSICAL_LINEAGE_FIELDS) for row in parsed_holdings),
     }
