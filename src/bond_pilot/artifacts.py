@@ -85,6 +85,8 @@ def commit_partial(partial: Path, final: Path) -> Path:
 
 def replace_checkpoint(path: Path, contents: bytes | str) -> Path:
     path = Path(path)
+    if path.name != "checkpoint.json":
+        raise PilotError("checkpoint_path_invalid", {"path": str(path)})
     payload = contents.encode("utf-8") if isinstance(contents, str) else contents
     if not isinstance(payload, bytes):
         raise PilotError("invalid_checkpoint_contents", {"path": str(path)})

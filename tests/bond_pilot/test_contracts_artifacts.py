@@ -113,6 +113,26 @@ def test_source_candidate_roundtrips_as_frozen_json_mapping() -> None:
         SourceCandidate.from_json_mapping({**source.to_json_mapping(), "artifact_sha256": "A" * 64})
 
 
+def test_source_candidate_normalizes_schema_lists_to_immutable_tuples() -> None:
+    schema_columns = ["cusip", "reported_at"]
+    optional_columns = ["issuer"]
+    source = SourceCandidate(
+        **{
+            **candidate().to_json_mapping(),
+            "schema_columns": schema_columns,
+            "schema_optional_columns": optional_columns,
+        }
+    )
+
+    schema_columns.append("mutated")
+    optional_columns.append("mutated")
+
+    assert source.schema_columns == ("cusip", "reported_at")
+    assert source.schema_optional_columns == ("issuer",)
+    assert isinstance(source.schema_columns, tuple)
+    assert isinstance(source.schema_optional_columns, tuple)
+
+
 def test_source_approval_requires_evidence_and_matches_candidate() -> None:
     approval = SourceApproval.from_json_mapping(approval_mapping())
     assert approval.validate_for(candidate()) is None
@@ -120,6 +140,12 @@ def test_source_approval_requires_evidence_and_matches_candidate() -> None:
         SourceApproval.from_json_mapping({**approval_mapping(), "terms_evidence": ""})
     with pytest.raises(PilotError, match="source_locator"):
         SourceApproval.from_json_mapping({**approval_mapping(), "source_locator": "https://other.test/source.zip"}).validate_for(candidate())
+
+
+@pytest.mark.parametrize("approved_at", ["2024-02-01", "2024-02-01T12:00:00+00:00", "2024-02-30T12:00:00Z", "2024-02-01T24:00:00Z"])
+def test_source_approval_rejects_noncanonical_or_impossible_utc_timestamps(approved_at: str) -> None:
+    with pytest.raises(PilotError, match="approved_at"):
+        SourceApproval.from_json_mapping({**approval_mapping(), "approved_at": approved_at})
 
 
 def test_canonical_json_is_compact_sorted_utf8_lf_and_rejects_nonfinite() -> None:
@@ -164,6 +190,16 @@ def test_checkpoint_replacement_is_atomic_overwrite_exception(tmp_path: Path) ->
     write_text_once(checkpoint, "old")
     replace_checkpoint(checkpoint, b"new")
     assert checkpoint.read_bytes() == b"new"
+
+
+def test_checkpoint_replacement_cannot_overwrite_final_artifacts(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    write_text_once(manifest, "original")
+
+    with pytest.raises(PilotError, match="checkpoint_path_invalid"):
+        replace_checkpoint(manifest, b"replacement")
+
+    assert manifest.read_bytes() == b"original"
 
 
 def test_checksums_are_sorted_relative_and_exclude_self_and_partials(tmp_path: Path) -> None:

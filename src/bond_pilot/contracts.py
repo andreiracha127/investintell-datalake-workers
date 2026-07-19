@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+import re
 from typing import Any, Mapping
 
 
@@ -98,6 +100,20 @@ def _require_strings(value: object, field: str) -> tuple[str, ...]:
     return tuple(value)
 
 
+_RFC3339_UTC_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def _require_rfc3339_utc_timestamp(value: object, field: str) -> str:
+    value = _require_nonempty(value, field)
+    if not _RFC3339_UTC_SECONDS.fullmatch(value):
+        raise PilotError(f"invalid_{field}", {"field": field})
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise PilotError(f"invalid_{field}", {"field": field}) from exc
+    return value
+
+
 @dataclass(frozen=True)
 class SourceCandidate:
     schema_version: str
@@ -135,8 +151,8 @@ class SourceCandidate:
         _require_sha256(self.schema_sha256, "schema_sha256")
         for field in ("artifact_bytes", "member_uncompressed_bytes", "row_count", "row_group_count"):
             _require_nonnegative(getattr(self, field), field)
-        _require_strings(self.schema_columns, "schema_columns")
-        _require_strings(self.schema_optional_columns, "schema_optional_columns")
+        object.__setattr__(self, "schema_columns", _require_strings(self.schema_columns, "schema_columns"))
+        object.__setattr__(self, "schema_optional_columns", _require_strings(self.schema_optional_columns, "schema_optional_columns"))
         if self.approval_state != "unapproved":
             raise PilotError("invalid_approval_state", {"field": "approval_state"})
 
@@ -203,8 +219,9 @@ class SourceApproval:
     def __post_init__(self) -> None:
         if self.schema_version != "source-approval-v1":
             raise PilotError("invalid_schema_version", {"field": "schema_version"})
-        for field in ("source_locator", "cutoff", "terms_evidence", "approved_by", "approved_at"):
+        for field in ("source_locator", "cutoff", "terms_evidence", "approved_by"):
             _require_nonempty(getattr(self, field), field)
+        _require_rfc3339_utc_timestamp(self.approved_at, "approved_at")
         _require_sha256(self.artifact_sha256, "artifact_sha256")
         _require_sha256(self.schema_sha256, "schema_sha256")
         if self.local_use_allowed is not True:
