@@ -33,9 +33,7 @@ def main() -> int:
 
     stats = mod.run(resolve_dsn(), calc_date=args.calc_date, limit=args.limit)
     print(json.dumps({"worker": args.worker, **(stats or {})}, default=str))
-    if not isinstance(stats, dict):
-        return 1
-    return 0 if stats.get("state") in {"ok", "locked"} else 1
+    return 1 if isinstance(stats, dict) and stats.get("state") == "failed" else 0
 
 
 if __name__ == "__main__":

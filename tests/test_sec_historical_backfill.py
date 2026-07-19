@@ -178,15 +178,29 @@ def test_status_rejects_a_run_directory_inside_the_repository(tmp_path: Path, mo
         backfill.cli(["status", "--run-dir", str(Path(backfill.__file__).resolve().parents[2])])
 
 
-def test_dispatcher_returns_nonzero_for_failed_worker(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("stats", "expected"), (({"state": "failed"}, 1), ({"rows": 4}, 0), ({"state": "risk_on"}, 0), (None, 0)))
+def test_dispatcher_preserves_legacy_success_shapes_and_fails_only_explicit_failure(monkeypatch: pytest.MonkeyPatch, stats: object, expected: int) -> None:
     import types
     import src.run as dispatcher
 
     monkeypatch.setattr(sys, "argv", ["run", "rr1_ingestion"])
-    monkeypatch.setattr(dispatcher.importlib, "import_module", lambda _name: types.SimpleNamespace(run=lambda *_args, **_kwargs: {"state": "failed"}))
+    monkeypatch.setattr(dispatcher.importlib, "import_module", lambda _name: types.SimpleNamespace(run=lambda *_args, **_kwargs: stats))
     monkeypatch.setattr(dispatcher, "resolve_dsn", lambda: "unit-test-dsn")
 
-    assert dispatcher.main() == 1
+    assert dispatcher.main() == expected
+
+
+def test_inventory_round_trip_keeps_security_filename_and_command_redacts_postgresql_dsn(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import SourceSpec, _sanitize_command, _write_inventory, _load_status, build_inventory
+
+    inventory, package = _single_package_inventory(tmp_path)
+    (package / "security.tsv").write_text("safe\n", encoding="utf-8")
+    inventory = build_inventory((SourceSpec("nport", package.parent, 1),))
+    inventory_path = tmp_path / "inventory.json"
+    _write_inventory(inventory_path, inventory)
+
+    assert _load_status(inventory_path) == inventory
+    assert _sanitize_command(("run", "postgresql://user:secret@example.test/db")) == ["run", "[redacted]"]
 
 
 def test_supervisor_cross_process_lock_allows_exactly_one_executor(tmp_path: Path) -> None:
@@ -229,12 +243,12 @@ def test_start_rejects_existing_external_run_artifacts(tmp_path: Path, monkeypat
         backfill.cli(["start", "--run-dir", str(tmp_path)])
 
 
-def test_resume_requires_matching_durable_code_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resume_rejects_arbitrary_fixture_roots_at_the_historical_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import src.sec_regulatory.historical_backfill as backfill
 
     inventory, _ = _single_package_inventory(tmp_path)
     (tmp_path / "inventory.json").write_text(json.dumps(inventory), encoding="utf-8")
     (tmp_path / "status.json").write_text(json.dumps({"schema_version": 1, "inventory_hash": inventory["inventory_hash"], "code_sha": "stale"}), encoding="utf-8")
     monkeypatch.setattr(backfill, "code_identity", lambda: "current")
-    with pytest.raises(backfill.BackfillSafetyError, match="does not match"):
+    with pytest.raises(backfill.BackfillSafetyError, match="immutable 82-package"):
         backfill.cli(["resume", "--run-dir", str(tmp_path)])

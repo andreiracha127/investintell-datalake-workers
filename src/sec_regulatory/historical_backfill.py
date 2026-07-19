@@ -270,6 +270,18 @@ def build_historical_inventory() -> dict[str, object]:
     return build_inventory(IMMUTABLE_SOURCES)
 
 
+def _validate_historical_boundary(inventory: Mapping[str, object]) -> None:
+    """Apply the fixed 82-package production policy, never fixture roots."""
+    _validate_inventory(inventory)
+    expected_roots = [{"form": spec.form, "root": str(spec.root)} for spec in IMMUTABLE_SOURCES]
+    if inventory.get("roots") != expected_roots or len(cast(list[object], inventory["packages"])) != 82:
+        raise BackfillSafetyError("historical inventory differs from immutable 82-package source policy")
+    for package in cast(list[dict[str, object]], inventory["packages"]):
+        identity = f"{package['form']}:{package['quarter']}:{package['relative_package_path']}"
+        if package["identity"] != identity or package["form"] not in {"nport", "ncen", "rr1"}:
+            raise BackfillSafetyError("historical package identity differs from source policy")
+
+
 def validate_canary_target(target: Mapping[str, object]) -> dict[str, object]:
     """Require a disposable loopback-only target before destructive fault injection.
 
@@ -290,7 +302,7 @@ def validate_canary_target(target: Mapping[str, object]) -> dict[str, object]:
         raise BackfillSafetyError("canary target must use a disposable database")
     if role != "sec_backfill_test" and not role.startswith("sec_backfill_test_"):
         raise BackfillSafetyError("canary target must use a disposable role")
-    if not secret_source or any(term in secret_source for term in ("gcloud", "iap", "timescale-sp", "prod", "production", "secret-manager")):
+    if secret_source not in {"local-disposable-fixture", "pytest-disposable-fixture"}:
         raise BackfillSafetyError("canary target must not use a production secret source")
     return dict(target)
 
@@ -357,6 +369,16 @@ def _write_status(path: Path, status: Mapping[str, object]) -> None:
     _assert_no_secret(safe_status)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
         temporary.write(_canonical_json(safe_status) + "\n")
+        temporary_path = Path(temporary.name)
+    os.replace(temporary_path, path)
+
+
+def _write_inventory(path: Path, inventory: Mapping[str, object]) -> None:
+    """Persist the integrity artifact verbatim; unlike status it is never redacted."""
+    _validate_inventory(inventory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp", delete=False) as temporary:
+        temporary.write(_canonical_json(inventory) + "\n")
         temporary_path = Path(temporary.name)
     os.replace(temporary_path, path)
 
@@ -476,6 +498,8 @@ def _run_supervisor_locked(
         if state not in SUCCESS_STATES and state != "failed":
             result = {"state": "failed", "reason_code": "unexpected_package_state"}
             state = "failed"
+        if state == "failed" and result.get("reason_code") not in {"source_drift", "executor_exception", "unexpected_package_state", "executor_unconfigured"}:
+            result = {"state": "failed", "reason_code": "executor_reported_failure"}
         existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "result_state": result.get("state"), "reason_code": result.get("reason_code")}
         status["active_package"] = None
         status["active_attempt"] = None
@@ -503,7 +527,7 @@ def code_identity() -> str:
 
 
 def _unconfigured_executor(_package: dict[str, object]) -> Mapping[str, object]:
-    return {"state": "failed", "reason": "historical package executor is not configured"}
+    return {"state": "failed", "reason_code": "executor_unconfigured"}
 
 
 def cli(argv: Sequence[str] | None = None) -> int:
@@ -516,20 +540,22 @@ def cli(argv: Sequence[str] | None = None) -> int:
     if args.action == "status":
         print(_canonical_json(_load_status(status_path)))
         return 0
-    inventory_path = args.run_dir / "inventory.json"
-    if args.action == "start":
-        if status_path.exists() or inventory_path.exists():
-            raise BackfillSafetyError("start requires an empty external run directory")
-        inventory = build_historical_inventory()
-        _write_status(inventory_path, inventory)
-    else:
-        if not status_path.exists() or not inventory_path.exists():
-            raise BackfillSafetyError("resume requires existing status and inventory artifacts")
-        inventory = _load_status(inventory_path)
-        _validate_inventory(inventory)
-        status = _load_status(status_path)
-        if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != code_identity():
-            raise BackfillSafetyError("resume status does not match inventory or code identity")
-    outcome = run_supervisor(inventory, status_path=status_path, code_sha=code_identity(), execute_package=_unconfigured_executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action))
-    print(_canonical_json(outcome))
-    return 0 if outcome["state"] == "ok" else 1
+    with _FileLock(args.run_dir / ".lifecycle.lock"):
+        inventory_path = args.run_dir / "inventory.json"
+        if args.action == "start":
+            if status_path.exists() or inventory_path.exists():
+                raise BackfillSafetyError("start requires an empty external run directory")
+            inventory = build_historical_inventory()
+            _validate_historical_boundary(inventory)
+            _write_inventory(inventory_path, inventory)
+        else:
+            if not status_path.exists() or not inventory_path.exists():
+                raise BackfillSafetyError("resume requires existing status and inventory artifacts")
+            inventory = _load_status(inventory_path)
+            _validate_historical_boundary(inventory)
+            status = _load_status(status_path)
+            if status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != code_identity():
+                raise BackfillSafetyError("resume status does not match inventory or code identity")
+        outcome = run_supervisor(inventory, status_path=status_path, code_sha=code_identity(), execute_package=_unconfigured_executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action))
+        print(_canonical_json(outcome))
+        return 0 if outcome["state"] == "ok" else 1
