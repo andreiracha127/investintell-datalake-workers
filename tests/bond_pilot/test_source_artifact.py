@@ -146,22 +146,47 @@ def test_late_write_failure_leaves_no_final_or_attempt_directory(make_source_zip
     assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
 
 
-def test_publish_collision_keeps_concurrent_final_and_removes_attempt_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_publication_collision_preserves_competing_run_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
     run_dir = tmp_path / "run"
 
-    def create_collision(source: str | bytes | os.PathLike[str] | os.PathLike[bytes], target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
+    def create_competing_final(target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
         target_path = Path(target)
         target_path.mkdir()
         (target_path / "source.parquet").write_bytes(b"replacement")
-        raise FileExistsError(target_path)
 
-    monkeypatch.setattr(os, "rename", create_collision)
+    monkeypatch.setattr(source_artifact.sys, "platform", platform)
+    if platform == "win32":
+        def windows_collision(_source: str | bytes | os.PathLike[str] | os.PathLike[bytes], target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
+            create_competing_final(target)
+            raise FileExistsError(target)
+
+        monkeypatch.setattr(os, "rename", windows_collision)
+    else:
+        def linux_collision(_old: bytes, target: bytes, _flags: int) -> None:
+            create_competing_final(os.fsdecode(target))
+            raise OSError(errno.EEXIST, "already exists")
+
+        monkeypatch.setattr(source_artifact, "_renameat2", linux_collision)
 
     with pytest.raises(PilotError, match="already_exists"):
         qualify_source(str(make_source_zip()), run_dir)
 
     assert (run_dir / "source.parquet").read_bytes() == b"replacement"
     assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
+
+
+def test_unsupported_platform_fails_closed_without_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempt_dir = tmp_path / ".run.qualification-test.partial-dir"
+    attempt_dir.mkdir()
+    run_dir = tmp_path / "run"
+    monkeypatch.setattr(source_artifact.sys, "platform", "darwin")
+
+    with pytest.raises(PilotError, match="atomic_no_replace_unavailable"):
+        source_artifact._publish_directory_no_replace(attempt_dir, run_dir)
+
+    assert attempt_dir.is_dir()
+    assert not run_dir.exists()
 
 
 def test_enforces_streaming_archive_and_member_caps(make_source_zip, tmp_path: Path) -> None:
