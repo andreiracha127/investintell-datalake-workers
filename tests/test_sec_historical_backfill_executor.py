@@ -405,6 +405,46 @@ def test_preflight_rejects_non_sec_direct_or_unclassified_inventory(changed_inve
         _validate_preflight_attestation(valid)
 
 
+def test_non_sec_inventory_collector_canonicalizes_multiple_side_effect_keywords(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.sec_regulatory import historical_backfill as backfill
+
+    routine = {
+        "identity": "_timescaledb_internal.mutating_helper()", "schema": "_timescaledb_internal",
+        "owner": "postgres", "extension": "timescaledb", "acl_source": "PUBLIC", "grantee": "PUBLIC",
+        "privileges": ["EXECUTE"], "prokind": "f", "security_definer": False,
+        "security_definer_classification": None, "proconfig": [], "search_path": None,
+        "definition_sha256": "d" * 64, "side_effect_keywords": ["UPDATE", "CREATE", "INSERT"],
+    }
+    raw = {"relations": [], "sequences": [], "routines": [routine], "schemas": [], "public_acl": [], "monitoring": []}
+    monkeypatch.setattr(backfill, "_query_json", lambda *_args, **_kwargs: raw)
+
+    observed = backfill._collect_non_sec_privilege_inventory(object())
+    assert observed["non_sec_privilege_inventory"]["routines"][0]["side_effect_keywords"] == ["CREATE", "INSERT", "UPDATE"]
+
+
+def test_preflight_rejects_non_sec_maintain_surface() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _validate_preflight_attestation
+
+    changed = {**_production_preflight(), "non_sec_effective_write_privileges": ["custom.hidden_relation:MAINTAIN"]}
+    with pytest.raises(BackfillSafetyError, match="write privilege"):
+        _validate_preflight_attestation(changed)
+
+
+def test_non_sec_effective_write_collector_includes_maintain(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.sec_regulatory import historical_backfill as backfill
+
+    def query_json(_connection: object, query: str, params: tuple[object, ...]) -> object:
+        assert "relation_objects AS MATERIALIZED" in query
+        assert "has_table_privilege(current_user,oid,'MAINTAIN')" in query
+        assert params
+        return {"non_sec_effective_write_privileges": ["custom.hidden_relation:MAINTAIN"]}
+
+    monkeypatch.setattr(backfill, "_query_json", query_json)
+    assert backfill._collect_non_sec_effective_writes(object()) == {
+        "non_sec_effective_write_privileges": ["custom.hidden_relation:MAINTAIN"]
+    }
+
+
 def _production_authorization(inventory_hash: str) -> dict[str, object]:
     from src.sec_regulatory.historical_backfill import EXACT_WRITABLE_TABLES
 
@@ -571,6 +611,11 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
             "non_sec_privilege_inventory_hash": expected["non_sec_privilege_inventory_hash"],
         },
     )
+    monkeypatch.setattr(
+        backfill,
+        "_collect_non_sec_effective_writes",
+        lambda _connection: {"non_sec_effective_write_privileges": []},
+    )
 
     def query_json(_connection: object, query: str, params: tuple[object, ...] = ()) -> object:
         if "'cluster_identity'" in query:
@@ -657,6 +702,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("procedure", "EXECUTE"),
         ("aggregate", "EXECUTE"),
         ("window", "EXECUTE"),
+        ("schema_usage_direct", "USAGE"),
         ("schema", "CREATE"),
         ("public_acl", "EXECUTE"),
         ("public_acl_default", "EXECUTE"),
@@ -737,7 +783,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     )
                 )
             cursor.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
-            cursor.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(sql.Identifier(schema), sql.Identifier(role)))
+            cursor.execute(sql.SQL("GRANT USAGE ON SCHEMA {} TO PUBLIC").format(sql.Identifier(schema)))
             cursor.execute(sql.SQL("CREATE TABLE {}.hidden_relation (id integer)").format(sql.Identifier(schema)))
             cursor.execute(sql.SQL("CREATE SEQUENCE {}.hidden_sequence").format(sql.Identifier(schema)))
             cursor.execute(
@@ -873,7 +919,13 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         sql.Identifier(database)
                     )
                 )
-            if grant_kind == "schema":
+            if grant_kind == "schema_usage_direct":
+                cursor.execute(
+                    sql.SQL("GRANT USAGE ON SCHEMA {} TO {}").format(
+                        sql.Identifier(schema), sql.Identifier(role)
+                    )
+                )
+            elif grant_kind == "schema":
                 cursor.execute(
                     sql.SQL("GRANT CREATE ON SCHEMA {} TO {}").format(
                         sql.Identifier(schema), sql.Identifier(role)
@@ -1422,7 +1474,8 @@ def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_
         "cluster_identity", "tls_identity", "role_identity", "fixed_memberships", "object_catalog_hash",
         "object_identities", "table_privileges", "column_privileges", "sequence_privileges", "function_privileges",
         "database_privileges",
-        "monitoring_privileges", "public_acl", "unsafe_security_definers", "trigger_write_targets",
+        "monitoring_privileges", "public_acl", "unsafe_security_definers", "non_sec_privilege_inventory",
+        "non_sec_privilege_inventory_hash", "non_sec_effective_write_privileges", "trigger_write_targets",
     ):
         actual = _production_preflight()
         actual[field] = "drifted" if isinstance(actual[field], str) else {"drifted": []} if isinstance(actual[field], dict) else ["drifted"]
@@ -1436,7 +1489,7 @@ def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_
             preflight_inspector=lambda _conn, value=actual: value,
             dispatchers={"nport": lambda *_args, **_kwargs: dispatched.append(True) or pytest.fail("preflight drift must block DML")},
         )
-        with pytest.raises(backfill.BackfillSafetyError, match="preflight"):
+        with pytest.raises(backfill.BackfillSafetyError, match="preflight|non-SEC"):
             executor(dict(inventory["packages"][0]))
     assert dispatched == []
 

@@ -1155,16 +1155,37 @@ def _collect_non_sec_privilege_inventory(connection: object) -> dict[str, object
     )
     if not isinstance(value, Mapping) or set(value) != _NON_SEC_INVENTORY_FIELDS:
         raise BackfillSafetyError("production non-SEC privilege inventory query returned malformed JSON")
-    inventory = {
-        field: sorted(cast(list[object], entries), key=_canonical_json)
-        for field, entries in cast(Mapping[str, object], value).items()
-        if isinstance(entries, list)
-    }
+    inventory: dict[str, list[object]] = {}
+    for field, entries in cast(Mapping[str, object], value).items():
+        if not isinstance(entries, list):
+            continue
+        normalized: list[object] = []
+        for entry in entries:
+            if field == "routines" and isinstance(entry, Mapping):
+                routine = dict(entry)
+                keywords = routine.get("side_effect_keywords")
+                if isinstance(keywords, list) and all(isinstance(keyword, str) for keyword in keywords):
+                    routine["side_effect_keywords"] = sorted(set(keywords))
+                entry = routine
+            normalized.append(entry)
+        inventory[field] = sorted(normalized, key=_canonical_json)
     if set(inventory) != _NON_SEC_INVENTORY_FIELDS:
         raise BackfillSafetyError("production non-SEC privilege inventory query returned malformed JSON")
     inventory_hash = _sha256_bytes(_canonical_json(inventory).encode("ascii"))
     _validate_non_sec_privilege_inventory(inventory, inventory_hash)
     return {"non_sec_privilege_inventory": inventory, "non_sec_privilege_inventory_hash": inventory_hash}
+
+
+def _collect_non_sec_effective_writes(connection: object) -> dict[str, object]:
+    value = _query_json(
+        connection,
+        "WITH relation_objects AS MATERIALIZED (SELECT c.oid,n.nspname||'.'||c.relname name,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s)) SELECT jsonb_build_object('non_sec_effective_write_privileges',coalesce((SELECT jsonb_agg(name||':'||verb ORDER BY name,verb) FROM relation_objects CROSS JOIN LATERAL unnest(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,oid,'DELETE') THEN 'DELETE' END,CASE WHEN relkind IN ('r','p') AND has_table_privilege(current_user,oid,'TRUNCATE') THEN 'TRUNCATE' END,CASE WHEN has_table_privilege(current_user,oid,'REFERENCES') THEN 'REFERENCES' END,CASE WHEN has_table_privilege(current_user,oid,'TRIGGER') THEN 'TRIGGER' END,CASE WHEN has_table_privilege(current_user,oid,'MAINTAIN') THEN 'MAINTAIN' END],NULL)) verb),'[]'::jsonb))",
+        (sorted(EXACT_MONITORED_RELATIONS),),
+    )
+    writes = value.get("non_sec_effective_write_privileges") if isinstance(value, Mapping) else None
+    if not isinstance(writes, list) or writes != sorted(set(writes)) or not all(isinstance(item, str) and item for item in writes):
+        raise BackfillSafetyError("production non-SEC effective write query returned malformed JSON")
+    return {"non_sec_effective_write_privileges": writes}
 
 
 def _collect_production_preflight(connection: object, authorization: Mapping[str, object]) -> dict[str, object]:
@@ -1191,7 +1212,7 @@ def _collect_production_preflight(connection: object, authorization: Mapping[str
     )
     privilege_boundaries = _query_json(connection, "SELECT jsonb_build_object('column_privileges',coalesce((SELECT jsonb_agg(identity ORDER BY identity) FROM (SELECT n.nspname||'.'||c.relname||'.'||a.attname||':'||acl.privilege_type||':grantee='||coalesce(pg_get_userbyid(NULLIF(acl.grantee,0)),'PUBLIC') identity FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace CROSS JOIN LATERAL aclexplode(a.attacl) acl WHERE a.attnum>0 AND NOT a.attisdropped AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND acl.privilege_type IN ('SELECT','INSERT','UPDATE','REFERENCES') AND CASE WHEN acl.grantee=0 THEN true ELSE pg_has_role(current_user,acl.grantee,'USAGE') END) q),'[]'::jsonb),'database_privileges',jsonb_build_object('CONNECT',has_database_privilege(current_user,current_database(),'CONNECT'),'CREATE',has_database_privilege(current_user,current_database(),'CREATE'),'TEMPORARY',has_database_privilege(current_user,current_database(),'TEMPORARY')))")
     write_surface = _query_json(connection, "SELECT jsonb_build_object('effective_writable_tables',coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND (has_table_privilege(current_user,c.oid,'INSERT') OR has_table_privilege(current_user,c.oid,'UPDATE') OR has_table_privilege(current_user,c.oid,'DELETE') OR (c.relkind IN ('r','p') AND has_table_privilege(current_user,c.oid,'TRUNCATE')))) q),'[]'::jsonb),'truncate_tables',coalesce((SELECT jsonb_agg(name ORDER BY name) FROM (SELECT n.nspname||'.'||c.relname name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND has_table_privilege(current_user,c.oid,'TRUNCATE')) q),'[]'::jsonb))")
-    non_sec_writes = _query_json(connection, "WITH relation_objects AS MATERIALIZED (SELECT c.oid,n.nspname||'.'||c.relname name,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE c.relkind IN ('r','p','v','m','f') AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND n.nspname||'.'||c.relname<>ALL(%s)) SELECT jsonb_build_object('non_sec_effective_write_privileges',coalesce((SELECT jsonb_agg(name||':'||verb ORDER BY name,verb) FROM relation_objects CROSS JOIN LATERAL unnest(array_remove(ARRAY[CASE WHEN has_table_privilege(current_user,oid,'INSERT') THEN 'INSERT' END,CASE WHEN has_table_privilege(current_user,oid,'UPDATE') THEN 'UPDATE' END,CASE WHEN has_table_privilege(current_user,oid,'DELETE') THEN 'DELETE' END,CASE WHEN relkind IN ('r','p') AND has_table_privilege(current_user,oid,'TRUNCATE') THEN 'TRUNCATE' END,CASE WHEN has_table_privilege(current_user,oid,'REFERENCES') THEN 'REFERENCES' END,CASE WHEN has_table_privilege(current_user,oid,'TRIGGER') THEN 'TRIGGER' END],NULL)) verb),'[]'::jsonb))", (sorted(EXACT_MONITORED_RELATIONS),))
+    non_sec_writes = _collect_non_sec_effective_writes(connection)
     monitoring = _collect_monitoring_privileges(connection)
     non_sec_inventory = _collect_non_sec_privilege_inventory(connection)
     safety = _query_json(connection, "SELECT jsonb_build_object('public_acl','[]'::jsonb,'unsafe_security_definers','[]'::jsonb,'trigger_write_targets',coalesce((SELECT jsonb_agg(n.nspname||'.'||c.relname||':'||t.tgname ORDER BY n.nspname,c.relname,t.tgname) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE NOT t.tgisinternal AND n.nspname !~ '^pg_' AND n.nspname<>'information_schema' AND NOT (n.nspname='public' AND c.relname='rr1_contract_tables' AND t.tgname='rr1_contract_tables_immutable') AND pg_get_functiondef(p.oid) ~* '\\m(insert|update|delete|truncate)\\M'),'[]'::jsonb))")
