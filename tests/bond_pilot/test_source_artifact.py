@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import os
 import stat
@@ -85,6 +86,46 @@ def test_collision_keeps_existing_output_and_cleans_attempt_partial(make_source_
 
     assert (run_dir / "source.zip").read_bytes() == b"pre-existing"
     assert not list(run_dir.glob("*.partial"))
+
+
+def test_rejects_existing_empty_final_directory_without_removing_it(make_source_zip, tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    with pytest.raises(PilotError, match="already_exists"):
+        qualify_source(str(make_source_zip()), run_dir)
+
+    assert run_dir.is_dir()
+    assert not list(run_dir.iterdir())
+    assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
+
+
+def test_lexists_counts_a_dangling_final_symlink(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    try:
+        run_dir.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    assert source_artifact._path_lexists(run_dir)
+
+
+def test_linux_no_replace_uses_renameat2_flag_and_translates_collision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    attempt_dir = tmp_path / ".run.qualification-test.partial-dir"
+    run_dir = tmp_path / "run"
+    calls: list[tuple[bytes, bytes, int]] = []
+
+    def collision(old: bytes, new: bytes, flags: int) -> None:
+        calls.append((old, new, flags))
+        raise OSError(errno.EEXIST, "already exists")
+
+    monkeypatch.setattr(os.sys, "platform", "linux")
+    monkeypatch.setattr(source_artifact, "_renameat2", collision, raising=False)
+
+    with pytest.raises(PilotError, match="already_exists"):
+        source_artifact._publish_directory_no_replace(attempt_dir, run_dir)
+
+    assert calls == [(os.fsencode(attempt_dir), os.fsencode(run_dir), 1)]
 
 
 def test_late_write_failure_leaves_no_final_or_attempt_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

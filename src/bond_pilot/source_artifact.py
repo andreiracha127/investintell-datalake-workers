@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import ctypes
 from datetime import date, datetime
+import errno
 import hashlib
 import json
 import os
@@ -12,6 +14,7 @@ import re
 import shutil
 import stat
 import struct
+import sys
 from typing import Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -40,14 +43,20 @@ OPTIONAL_COLUMNS = (
 )
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 _ZIP_DRIVE = re.compile(r"^[A-Za-z]:")
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
 
 
 class _HttpClient(Protocol):
     def stream(self, method: str, url: str): ...
 
 
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
 def _create_attempt_directory(run_dir: Path) -> Path:
-    if run_dir.exists():
+    if _path_lexists(run_dir):
         raise PilotError("already_exists", {"path": str(run_dir)})
     run_dir.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(3):
@@ -60,16 +69,37 @@ def _create_attempt_directory(run_dir: Path) -> Path:
     raise PilotError("attempt_directory_collision", {"path": str(run_dir)})
 
 
-def _publish_attempt(attempt_dir: Path, run_dir: Path) -> None:
-    if run_dir.exists():
-        raise PilotError("already_exists", {"path": str(run_dir)})
+def _renameat2(old: bytes, new: bytes, flags: int) -> None:
     try:
-        os.rename(attempt_dir, run_dir)
-    except FileExistsError as exc:
-        raise PilotError("already_exists", {"path": str(run_dir)}) from exc
+        renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+    except (AttributeError, OSError) as exc:
+        raise OSError(errno.ENOSYS, "renameat2 unavailable") from exc
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(_AT_FDCWD, old, _AT_FDCWD, new, flags) != 0:
+        raise OSError(ctypes.get_errno(), "renameat2 failed")
+
+
+def _publish_directory_no_replace(attempt_dir: Path, run_dir: Path) -> None:
+    if _path_lexists(run_dir):
+        raise PilotError("already_exists", {"path": str(run_dir)})
+    if sys.platform == "win32":
+        try:
+            os.rename(attempt_dir, run_dir)
+        except OSError as exc:
+            if _path_lexists(run_dir) or getattr(exc, "winerror", None) in {80, 145, 183}:
+                raise PilotError("already_exists", {"path": str(run_dir)}) from exc
+            raise PilotError("qualification_publish_failed", {"path": str(run_dir), "reason": str(exc)}) from exc
+        return
+    if sys.platform != "linux":
+        raise PilotError("atomic_no_replace_unavailable", {"path": str(run_dir)})
+    try:
+        _renameat2(os.fsencode(attempt_dir), os.fsencode(run_dir), _RENAME_NOREPLACE)
     except OSError as exc:
-        if run_dir.exists():
+        if exc.errno in {errno.EEXIST, errno.ENOTEMPTY}:
             raise PilotError("already_exists", {"path": str(run_dir)}) from exc
+        if exc.errno == errno.ENOSYS:
+            raise PilotError("atomic_no_replace_unavailable", {"path": str(run_dir)}) from exc
         raise PilotError("qualification_publish_failed", {"path": str(run_dir), "reason": str(exc)}) from exc
 
 
@@ -321,7 +351,7 @@ def qualify_source(
         if default_client is not None:
             default_client.close()
             default_client = None
-        _publish_attempt(attempt_dir, run_dir)
+        _publish_directory_no_replace(attempt_dir, run_dir)
         published = True
         return candidate
     finally:
