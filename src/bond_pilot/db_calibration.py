@@ -315,7 +315,11 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         raise PilotError("run_budget_required")
     if state == "budget_reached" and (reason != "budget_reached" or (pages < budget.max_pages and rows < budget.max_rows)):
         raise PilotError("run_budget_required")
-    if state == "complete" and ((rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or key is not None or value["output_hash"] != _EMPTY_HASH)) or reason is not None):
+    if state == "complete" and (not pages or not reports or reason is not None):
+        raise PilotError("run_budget_required")
+    if state == "complete" and not rows and (pages != 1 or key is not None or value["output_hash"] != _EMPTY_HASH):
+        raise PilotError("run_budget_required")
+    if state == "complete" and rows and (key is None or value["output_hash"] == _EMPTY_HASH):
         raise PilotError("run_budget_required")
     if state == "in_progress" and rows != pages * budget.page_size:
         raise PilotError("run_budget_required")
@@ -323,7 +327,7 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         raise PilotError("run_budget_required")
     if state == "budget_reached" and (pages != budget.max_pages or rows != budget.max_rows):
         raise PilotError("run_budget_required")
-    if state == "complete" and rows and not ((pages - 1) * budget.page_size < rows <= pages * budget.page_size):
+    if state == "complete" and not (0 <= rows < pages * budget.page_size):
         raise PilotError("run_budget_required")
     if key is not None and tuple(key[:4]) not in reports:
         raise PilotError("run_budget_required")
@@ -494,8 +498,8 @@ def run_v2_calibration(connection: object, *, evidence: object, approval: object
                     page, key = _decode_page(cursor.fetchall(), last_key)
                     if len(page) > limit:
                         raise PilotError("budget_drift")
+                    pages += 1
                     if page:
-                        pages += 1
                         rows_read += len(page)
                         last_key = key
                         output_hash = _page_hash(output_hash, page)
