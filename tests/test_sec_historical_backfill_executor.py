@@ -443,14 +443,27 @@ def test_preflight_validates_exact_aggregate_inventory_schema() -> None:
         _validate_preflight_attestation,
     )
 
+    function_dependency = {
+        "oid": 12345, "identity": "runner_hidden.hidden_sum_step(integer,integer)",
+        "owner": "postgres", "language": "sql", "security_definer": False,
+        "proconfig": [], "search_path": None,
+        "acl": [{"acl_source": "PUBLIC", "grantee": "PUBLIC", "privilege": "EXECUTE", "effective": True}],
+        "effective_callable": True, "definition_sha256": "d" * 64,
+    }
+    operator = {
+        "oid": 23456, "identity": "runner_hidden.<(integer,integer)", "owner": "postgres",
+        "implementation": deepcopy(function_dependency), "restriction": None, "join": None,
+    }
+    operator["definition_sha256"] = _sha256_bytes(_canonical_json(operator).encode("ascii"))
     aggregate_definition = {
         "kind": "n", "num_direct_args": 0,
-        "transition_function": "runner_hidden.hidden_sum_step(integer,integer)",
-        "final_function": "-", "combine_function": "-", "serial_function": "-",
-        "deserial_function": "-", "moving_transition_function": "-",
-        "moving_inverse_function": "-", "moving_final_function": "-",
+        "support_functions": {
+            "transition": function_dependency, "final": None, "combine": None,
+            "serial": None, "deserial": None, "moving_transition": None,
+            "moving_inverse": None, "moving_final": None,
+        },
         "transition_type": "integer", "moving_transition_type": "-",
-        "sort_operator": "-", "transition_space": 0, "moving_transition_space": 0,
+        "sort_operator": operator, "transition_space": 0, "moving_transition_space": 0,
         "initial_value": "0", "moving_initial_value": None,
         "final_extra": False, "moving_final_extra": False,
         "final_modify": "r", "moving_final_modify": "r", "parallel": "u",
@@ -469,11 +482,26 @@ def test_preflight_validates_exact_aggregate_inventory_schema() -> None:
     valid["non_sec_privilege_inventory"] = inventory
     valid["non_sec_privilege_inventory_hash"] = _sha256_bytes(_canonical_json(inventory).encode("ascii"))
     assert _validate_preflight_attestation(valid)["non_sec_privilege_inventory"] == inventory
+    owner_changed = deepcopy(aggregate_definition)
+    owner_changed["support_functions"]["transition"]["owner"] = "other_owner"
+    assert _sha256_bytes(_canonical_json(owner_changed).encode("ascii")) != routine["definition_sha256"]
 
+    missing_support = deepcopy(aggregate_definition)
+    missing_support["support_functions"]["transition"].pop("owner")
+    bad_support_hash = deepcopy(aggregate_definition)
+    bad_support_hash["support_functions"]["transition"]["definition_sha256"] = "e" * 63
+    bad_acl_context = deepcopy(aggregate_definition)
+    bad_acl_context["support_functions"]["transition"]["acl"][0]["effective"] = False
+    bad_operator_hash = deepcopy(aggregate_definition)
+    bad_operator_hash["sort_operator"]["definition_sha256"] = "f" * 64
     for malformed_definition in (
-        {key: value for key, value in aggregate_definition.items() if key != "transition_function"},
+        {key: value for key, value in aggregate_definition.items() if key != "support_functions"},
         {**aggregate_definition, "num_direct_args": "0"},
         {**aggregate_definition, "parallel": "x"},
+        missing_support,
+        bad_support_hash,
+        bad_acl_context,
+        bad_operator_hash,
     ):
         changed = deepcopy(valid)
         changed_routine = deepcopy(routine)
@@ -769,6 +797,9 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         ("procedure", "EXECUTE"),
         ("aggregate", "EXECUTE"),
         ("aggregate_public_default", "EXECUTE"),
+        ("aggregate_sort_operator_default", "EXECUTE"),
+        ("aggregate_transition_replace", "EXECUTE"),
+        ("aggregate_transition_attributes", "EXECUTE"),
         ("window", "EXECUTE"),
         ("schema_usage_direct", "USAGE"),
         ("schema", "CREATE"),
@@ -897,7 +928,10 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         sql.Identifier(schema)
                     )
                 )
-            if grant_kind in {"aggregate", "aggregate_public_default"}:
+            if grant_kind in {
+                "aggregate", "aggregate_public_default", "aggregate_transition_replace",
+                "aggregate_transition_attributes",
+            }:
                 cursor.execute(
                     sql.SQL(
                         "CREATE FUNCTION {}.hidden_sum_step(integer,integer) RETURNS integer "
@@ -921,6 +955,13 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                             sql.Identifier(schema)
                         )
                     )
+            if grant_kind == "aggregate_sort_operator_default":
+                cursor.execute(
+                    sql.SQL(
+                        "CREATE AGGREGATE {}.hidden_min(integer) "
+                        "(SFUNC = pg_catalog.int4smaller, STYPE = integer, SORTOP = OPERATOR(pg_catalog.<))"
+                    ).format(sql.Identifier(schema))
+                )
             if grant_kind == "window":
                 cursor.execute(
                     sql.SQL(
@@ -1042,7 +1083,9 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     ).format(sql.Identifier(schema))
                 )
             elif grant_kind not in {
-                "baseline", "public_acl_default", "aggregate_public_default", "column_direct", "column_inherited",
+                "baseline", "public_acl_default", "aggregate_public_default", "aggregate_sort_operator_default",
+                "aggregate_transition_replace", "aggregate_transition_attributes",
+                "column_direct", "column_inherited",
                 "column_public", "column_redundant", "database_temporary", "database_create",
                 "database_connect_missing",
             }:
@@ -1090,7 +1133,61 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                 assert observed["public_acl"] == []
                 assert observed["unsafe_security_definers"] == []
                 assert set(observed["trigger_write_targets"]) == EXPECTED_TRIGGER_WRITE_TARGETS
-            elif grant_kind in {"public_acl", "public_acl_default", "unsafe_security_definer", "aggregate_public_default"}:
+            elif grant_kind in {"aggregate_transition_replace", "aggregate_transition_attributes"}:
+                expected = _collect_production_preflight(Connection(runner), authorization)
+                expected_record = next(
+                    record for record in expected["non_sec_privilege_inventory"]["routines"]
+                    if record["identity"].startswith(f"{schema}.hidden_sum(")
+                )
+                expected_dependency = expected_record["aggregate_definition"]["support_functions"]["transition"]
+                runner.commit()
+                with admin.cursor() as cursor:
+                    if grant_kind == "aggregate_transition_replace":
+                        cursor.execute(
+                            sql.SQL(
+                                "CREATE OR REPLACE FUNCTION {}.hidden_sum_step(integer,integer) RETURNS integer "
+                                "LANGUAGE sql IMMUTABLE AS 'SELECT COALESCE($1, 0) + COALESCE($2, 0) + 1'"
+                            ).format(sql.Identifier(schema))
+                        )
+                    else:
+                        cursor.execute(
+                            sql.SQL("ALTER FUNCTION {}.hidden_sum_step(integer,integer) SECURITY DEFINER").format(
+                                sql.Identifier(schema)
+                            )
+                        )
+                        cursor.execute(
+                            sql.SQL("ALTER FUNCTION {}.hidden_sum_step(integer,integer) SET search_path TO pg_catalog").format(
+                                sql.Identifier(schema)
+                            )
+                        )
+                actual = _collect_production_preflight(Connection(runner), authorization)
+                actual_record = next(
+                    record for record in actual["non_sec_privilege_inventory"]["routines"]
+                    if record["identity"].startswith(f"{schema}.hidden_sum(")
+                )
+                actual_dependency = actual_record["aggregate_definition"]["support_functions"]["transition"]
+                assert actual_dependency["oid"] == expected_dependency["oid"]
+                if grant_kind == "aggregate_transition_replace":
+                    assert actual_dependency["definition_sha256"] != expected_dependency["definition_sha256"]
+                else:
+                    assert actual_dependency["owner"] == "postgres"
+                    assert actual_dependency["security_definer"] is True
+                    assert actual_dependency["search_path"] == "pg_catalog"
+                    assert actual_dependency["proconfig"] == ["search_path=pg_catalog"]
+                assert actual["non_sec_privilege_inventory_hash"] != expected["non_sec_privilege_inventory_hash"]
+                executor = object.__new__(AuthorizedPackageExecutor)
+                executor.authorization = {
+                    "target_mode": "production_authorized",
+                    "preflight_attestation": expected,
+                    "target": {"role": role},
+                }
+                executor.preflight_inspector = lambda _connection: actual
+                with pytest.raises(BackfillSafetyError, match="preflight attestation drift"):
+                    executor._validate_production_preflight(object())
+            elif grant_kind in {
+                "public_acl", "public_acl_default", "unsafe_security_definer",
+                "aggregate_public_default", "aggregate_sort_operator_default",
+            }:
                 observed = _collect_production_preflight(Connection(runner), authorization)
                 expected = deepcopy(observed)
                 routine_name = {
@@ -1098,9 +1195,10 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     "public_acl_default": "hidden_default_public_function",
                     "unsafe_security_definer": "hidden_security_definer",
                     "aggregate_public_default": "hidden_sum",
+                    "aggregate_sort_operator_default": "hidden_min",
                 }[grant_kind]
                 expected_inventory = deepcopy(expected["non_sec_privilege_inventory"])
-                if grant_kind == "aggregate_public_default":
+                if grant_kind in {"aggregate_public_default", "aggregate_sort_operator_default"}:
                     aggregate_records = [
                         record for record in expected_inventory["routines"]
                         if record["identity"].startswith(f"{schema}.{routine_name}(")
@@ -1108,9 +1206,15 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                     assert len(aggregate_records) == 1
                     assert aggregate_records[0]["prokind"] == "a"
                     assert aggregate_records[0]["acl_source"] == "PUBLIC"
-                    assert aggregate_records[0]["aggregate_definition"]["transition_function"].endswith(
-                        ".hidden_sum_step(integer,integer)"
-                    )
+                    if grant_kind == "aggregate_public_default":
+                        assert aggregate_records[0]["aggregate_definition"]["support_functions"]["transition"]["identity"].endswith(
+                            ".hidden_sum_step(integer,integer)"
+                        )
+                    else:
+                        operator = aggregate_records[0]["aggregate_definition"]["sort_operator"]
+                        assert operator["identity"] == "pg_catalog.<(integer,integer)"
+                        assert operator["implementation"]["identity"] == "pg_catalog.int4lt(integer,integer)"
+                        assert len(operator["implementation"]["definition_sha256"]) == 64
                 expected_inventory["routines"] = [
                     record for record in expected_inventory["routines"]
                     if not record["identity"].startswith(f"{schema}.{routine_name}(")

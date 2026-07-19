@@ -152,13 +152,23 @@ _PREFLIGHT_ATTESTATION_FIELDS = frozenset(
     }
 )
 _NON_SEC_INVENTORY_FIELDS = frozenset({"relations", "sequences", "routines", "schemas", "public_acl", "monitoring"})
+_AGGREGATE_SUPPORT_FUNCTIONS = (
+    "transition", "final", "combine", "serial", "deserial",
+    "moving_transition", "moving_inverse", "moving_final",
+)
 _AGGREGATE_DEFINITION_FIELDS = frozenset({
-    "kind", "num_direct_args", "transition_function", "final_function", "combine_function",
-    "serial_function", "deserial_function", "moving_transition_function",
-    "moving_inverse_function", "moving_final_function", "transition_type",
-    "moving_transition_type", "sort_operator", "transition_space", "moving_transition_space",
+    "kind", "num_direct_args", "support_functions", "sort_operator", "transition_type",
+    "moving_transition_type", "transition_space", "moving_transition_space",
     "initial_value", "moving_initial_value", "final_extra", "moving_final_extra",
     "final_modify", "moving_final_modify", "parallel",
+})
+_AGGREGATE_FUNCTION_FIELDS = frozenset({
+    "oid", "identity", "owner", "language", "security_definer", "proconfig",
+    "search_path", "acl", "effective_callable", "definition_sha256",
+})
+_AGGREGATE_FUNCTION_ACL_FIELDS = frozenset({"acl_source", "grantee", "privilege", "effective"})
+_AGGREGATE_OPERATOR_FIELDS = frozenset({
+    "oid", "identity", "owner", "implementation", "restriction", "join", "definition_sha256",
 })
 _RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
 _SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
@@ -734,6 +744,54 @@ def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: obj
         "relations": {"SELECT"}, "sequences": {"SELECT", "USAGE", "UPDATE"},
         "routines": {"EXECUTE"}, "schemas": {"USAGE"},
     }
+
+    def validate_function_dependency(value: object) -> None:
+        if not isinstance(value, Mapping) or set(value) != _AGGREGATE_FUNCTION_FIELDS:
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if type(value["oid"]) is not int or value["oid"] <= 0:
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if not all(isinstance(value[field], str) and value[field] for field in ("identity", "owner", "language")):
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if not isinstance(value["security_definer"], bool) or not isinstance(value["effective_callable"], bool):
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if not isinstance(value["proconfig"], list) or not all(isinstance(item, str) for item in value["proconfig"]):
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if value["search_path"] is not None and not isinstance(value["search_path"], str):
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        if not _is_sha256(value["definition_sha256"]):
+            raise BackfillSafetyError("invalid non-SEC aggregate function dependency")
+        acl = value["acl"]
+        if not isinstance(acl, list) or acl != sorted(acl, key=_canonical_json):
+            raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+        seen_acl: set[str] = set()
+        for entry in acl:
+            if not isinstance(entry, Mapping) or set(entry) != _AGGREGATE_FUNCTION_ACL_FIELDS:
+                raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+            encoded = _canonical_json(entry)
+            if encoded in seen_acl:
+                raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+            seen_acl.add(encoded)
+            if entry["acl_source"] not in {"PUBLIC", "DIRECT", "INHERITED", "OTHER"} or not isinstance(entry["grantee"], str) or not entry["grantee"] or entry["privilege"] != "EXECUTE" or not isinstance(entry["effective"], bool):
+                raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+            if (entry["acl_source"] == "PUBLIC") is not (entry["grantee"] == "PUBLIC"):
+                raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+            if entry["effective"] is not (entry["acl_source"] != "OTHER"):
+                raise BackfillSafetyError("invalid non-SEC aggregate function ACL dependency")
+
+    def validate_operator_dependency(value: object) -> None:
+        if not isinstance(value, Mapping) or set(value) != _AGGREGATE_OPERATOR_FIELDS:
+            raise BackfillSafetyError("invalid non-SEC aggregate operator dependency")
+        if type(value["oid"]) is not int or value["oid"] <= 0 or not all(isinstance(value[field], str) and value[field] for field in ("identity", "owner")):
+            raise BackfillSafetyError("invalid non-SEC aggregate operator dependency")
+        for field in ("implementation", "restriction", "join"):
+            if value[field] is not None:
+                validate_function_dependency(value[field])
+        if value["implementation"] is None:
+            raise BackfillSafetyError("invalid non-SEC aggregate operator dependency")
+        definition = {key: item for key, item in value.items() if key != "definition_sha256"}
+        if value["definition_sha256"] != _sha256_bytes(_canonical_json(definition).encode("ascii")):
+            raise BackfillSafetyError("non-SEC aggregate operator definition hash mismatch")
+
     for category in ("relations", "sequences", "routines", "schemas"):
         for record in sorted_unique_records(inventory[category]):
             required = common_fields | ({"pg_monitor_surface"} if category == "relations" else set())
@@ -763,13 +821,7 @@ def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: obj
                     continue
                 if not isinstance(aggregate_definition, Mapping) or set(aggregate_definition) != _AGGREGATE_DEFINITION_FIELDS:
                     raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
-                string_fields = {
-                    "kind", "transition_function", "final_function", "combine_function",
-                    "serial_function", "deserial_function", "moving_transition_function",
-                    "moving_inverse_function", "moving_final_function", "transition_type",
-                    "moving_transition_type", "sort_operator", "final_modify",
-                    "moving_final_modify", "parallel",
-                }
+                string_fields = {"kind", "transition_type", "moving_transition_type", "final_modify", "moving_final_modify", "parallel"}
                 if not all(isinstance(aggregate_definition[field], str) and aggregate_definition[field] for field in string_fields):
                     raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
                 if aggregate_definition["kind"] not in {"n", "o", "h"} or aggregate_definition["final_modify"] not in {"r", "s", "w"} or aggregate_definition["moving_final_modify"] not in {"r", "s", "w"} or aggregate_definition["parallel"] not in {"s", "r", "u"}:
@@ -782,6 +834,16 @@ def _validate_non_sec_privilege_inventory(inventory: object, inventory_hash: obj
                     raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
                 if record["security_definer"] or record["proconfig"] or record["search_path"] is not None or record["side_effect_keywords"]:
                     raise BackfillSafetyError("invalid non-SEC aggregate definition inventory")
+                support_functions = aggregate_definition["support_functions"]
+                if not isinstance(support_functions, Mapping) or set(support_functions) != set(_AGGREGATE_SUPPORT_FUNCTIONS):
+                    raise BackfillSafetyError("invalid non-SEC aggregate support dependency inventory")
+                for name, dependency in support_functions.items():
+                    if dependency is not None:
+                        validate_function_dependency(dependency)
+                    elif name == "transition":
+                        raise BackfillSafetyError("invalid non-SEC aggregate support dependency inventory")
+                if aggregate_definition["sort_operator"] is not None:
+                    validate_operator_dependency(aggregate_definition["sort_operator"])
                 if record["definition_sha256"] != _sha256_bytes(_canonical_json(aggregate_definition).encode("ascii")):
                     raise BackfillSafetyError("non-SEC aggregate definition hash mismatch")
     for record in sorted_unique_records(inventory["public_acl"]):
@@ -1177,6 +1239,130 @@ def _collect_nonrelation_object_identities(connection: object) -> dict[str, obje
     return dict(value)
 
 
+def _collect_aggregate_function_dependencies(
+    connection: object, function_oids: Sequence[int]
+) -> dict[int, dict[str, object]]:
+    if not function_oids:
+        return {}
+    value = _query_json(
+        connection,
+        """
+        SELECT jsonb_build_object(
+            'functions', coalesce(
+                jsonb_object_agg(
+                    p.oid::text,
+                    jsonb_build_object(
+                        'oid', p.oid::bigint,
+                        'identity', n.nspname || '.' || p.proname || '(' ||
+                            replace(oidvectortypes(p.proargtypes), ', ', ',') || ')',
+                        'owner', pg_get_userbyid(p.proowner),
+                        'language', l.lanname,
+                        'security_definer', p.prosecdef,
+                        'proconfig', coalesce(to_jsonb(p.proconfig), '[]'::jsonb),
+                        'search_path', (
+                            SELECT substring(setting FROM 13)
+                            FROM unnest(coalesce(p.proconfig, ARRAY[]::text[])) setting
+                            WHERE setting LIKE 'search_path=%%'
+                            LIMIT 1
+                        ),
+                        'acl', coalesce(
+                            (
+                                SELECT jsonb_agg(
+                                    jsonb_build_object(
+                                        'acl_source', CASE
+                                            WHEN a.grantee = 0 THEN 'PUBLIC'
+                                            WHEN a.grantee = (SELECT oid FROM pg_roles WHERE rolname = current_user) THEN 'DIRECT'
+                                            WHEN pg_has_role(current_user, a.grantee, 'USAGE') THEN 'INHERITED'
+                                            ELSE 'OTHER'
+                                        END,
+                                        'grantee', coalesce(pg_get_userbyid(NULLIF(a.grantee, 0)), 'PUBLIC'),
+                                        'privilege', a.privilege_type,
+                                        'effective', a.grantee = 0 OR pg_has_role(current_user, a.grantee, 'USAGE')
+                                    )
+                                    ORDER BY a.grantee, a.privilege_type
+                                )
+                                FROM aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) a
+                                WHERE a.privilege_type = 'EXECUTE'
+                            ),
+                            '[]'::jsonb
+                        ),
+                        'effective_callable', has_function_privilege(current_user, p.oid, 'EXECUTE'),
+                        'definition_sha256', encode(
+                            sha256(convert_to(pg_get_functiondef(p.oid), 'UTF8')),
+                            'hex'
+                        )
+                    )
+                    ORDER BY p.oid
+                ),
+                '{}'::jsonb
+            )
+        )
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        JOIN pg_language l ON l.oid = p.prolang
+        WHERE p.oid = ANY(%s)
+        """,
+        (sorted(set(function_oids)),),
+    )
+    raw = value.get("functions") if isinstance(value, Mapping) else None
+    if not isinstance(raw, Mapping) or set(raw) != {str(oid) for oid in set(function_oids)}:
+        raise BackfillSafetyError("production aggregate function dependency query returned malformed JSON")
+    dependencies: dict[int, dict[str, object]] = {}
+    for key, item in raw.items():
+        if not isinstance(item, Mapping):
+            raise BackfillSafetyError("production aggregate function dependency query returned malformed JSON")
+        dependency = dict(item)
+        acl = dependency.get("acl")
+        if isinstance(acl, list):
+            dependency["acl"] = sorted(acl, key=_canonical_json)
+        dependencies[int(key)] = dependency
+    return dependencies
+
+
+def _collect_aggregate_operators(
+    connection: object, operator_oids: Sequence[int]
+) -> dict[int, dict[str, object]]:
+    if not operator_oids:
+        return {}
+    value = _query_json(
+        connection,
+        """
+        SELECT jsonb_build_object(
+            'operators', coalesce(
+                jsonb_object_agg(
+                    o.oid::text,
+                    jsonb_build_object(
+                        'oid', o.oid::bigint,
+                        'identity', n.nspname || '.' || o.oprname || '(' ||
+                            CASE WHEN o.oprleft = 0 THEN '-' ELSE format_type(o.oprleft, NULL) END || ',' ||
+                            CASE WHEN o.oprright = 0 THEN '-' ELSE format_type(o.oprright, NULL) END || ')',
+                        'owner', pg_get_userbyid(o.oprowner),
+                        'implementation_oid', o.oprcode::oid::bigint,
+                        'restriction_oid', CASE WHEN o.oprrest = 0 THEN NULL ELSE o.oprrest::oid::bigint END,
+                        'join_oid', CASE WHEN o.oprjoin = 0 THEN NULL ELSE o.oprjoin::oid::bigint END
+                    )
+                    ORDER BY o.oid
+                ),
+                '{}'::jsonb
+            )
+        )
+        FROM pg_operator o
+        JOIN pg_namespace n ON n.oid = o.oprnamespace
+        WHERE o.oid = ANY(%s)
+        """,
+        (sorted(set(operator_oids)),),
+    )
+    raw = value.get("operators") if isinstance(value, Mapping) else None
+    if not isinstance(raw, Mapping) or set(raw) != {str(oid) for oid in set(operator_oids)}:
+        raise BackfillSafetyError("production aggregate operator dependency query returned malformed JSON")
+    operators: dict[int, dict[str, object]] = {}
+    for key, item in raw.items():
+        if not isinstance(item, Mapping):
+            raise BackfillSafetyError("production aggregate operator dependency query returned malformed JSON")
+        operators[int(key)] = dict(item)
+    return operators
+
+
 def _collect_non_sec_aggregate_inventory(connection: object) -> list[object]:
     """Collect callable non-SEC aggregates without pg_get_functiondef()."""
     value = _query_json(
@@ -1203,17 +1389,19 @@ def _collect_non_sec_aggregate_inventory(connection: object) -> list[object]:
                 jsonb_build_object(
                     'kind', ag.aggkind::text,
                     'num_direct_args', ag.aggnumdirectargs,
-                    'transition_function', ag.aggtransfn::regprocedure::text,
-                    'final_function', CASE WHEN ag.aggfinalfn = 0 THEN '-' ELSE ag.aggfinalfn::regprocedure::text END,
-                    'combine_function', CASE WHEN ag.aggcombinefn = 0 THEN '-' ELSE ag.aggcombinefn::regprocedure::text END,
-                    'serial_function', CASE WHEN ag.aggserialfn = 0 THEN '-' ELSE ag.aggserialfn::regprocedure::text END,
-                    'deserial_function', CASE WHEN ag.aggdeserialfn = 0 THEN '-' ELSE ag.aggdeserialfn::regprocedure::text END,
-                    'moving_transition_function', CASE WHEN ag.aggmtransfn = 0 THEN '-' ELSE ag.aggmtransfn::regprocedure::text END,
-                    'moving_inverse_function', CASE WHEN ag.aggminvtransfn = 0 THEN '-' ELSE ag.aggminvtransfn::regprocedure::text END,
-                    'moving_final_function', CASE WHEN ag.aggmfinalfn = 0 THEN '-' ELSE ag.aggmfinalfn::regprocedure::text END,
+                    '_support_function_oids', jsonb_build_object(
+                        'transition', ag.aggtransfn::oid::bigint,
+                        'final', CASE WHEN ag.aggfinalfn = 0 THEN NULL ELSE ag.aggfinalfn::oid::bigint END,
+                        'combine', CASE WHEN ag.aggcombinefn = 0 THEN NULL ELSE ag.aggcombinefn::oid::bigint END,
+                        'serial', CASE WHEN ag.aggserialfn = 0 THEN NULL ELSE ag.aggserialfn::oid::bigint END,
+                        'deserial', CASE WHEN ag.aggdeserialfn = 0 THEN NULL ELSE ag.aggdeserialfn::oid::bigint END,
+                        'moving_transition', CASE WHEN ag.aggmtransfn = 0 THEN NULL ELSE ag.aggmtransfn::oid::bigint END,
+                        'moving_inverse', CASE WHEN ag.aggminvtransfn = 0 THEN NULL ELSE ag.aggminvtransfn::oid::bigint END,
+                        'moving_final', CASE WHEN ag.aggmfinalfn = 0 THEN NULL ELSE ag.aggmfinalfn::oid::bigint END
+                    ),
+                    '_sort_operator_oid', CASE WHEN ag.aggsortop = 0 THEN NULL ELSE ag.aggsortop::bigint END,
                     'transition_type', format_type(ag.aggtranstype, NULL),
                     'moving_transition_type', CASE WHEN ag.aggmtranstype = 0 THEN '-' ELSE format_type(ag.aggmtranstype, NULL) END,
-                    'sort_operator', CASE WHEN ag.aggsortop = 0 THEN '-' ELSE ag.aggsortop::regoperator::text END,
                     'transition_space', ag.aggtransspace,
                     'moving_transition_space', ag.aggmtransspace,
                     'initial_value', ag.agginitval,
@@ -1279,7 +1467,59 @@ def _collect_non_sec_aggregate_inventory(connection: object) -> list[object]:
     routines = value.get("routines") if isinstance(value, Mapping) else None
     if not isinstance(routines, list):
         raise BackfillSafetyError("production non-SEC aggregate inventory query returned malformed JSON")
-    return routines
+    support_oids: set[int] = set()
+    operator_oids: set[int] = set()
+    for routine in routines:
+        aggregate_definition = routine.get("aggregate_definition") if isinstance(routine, Mapping) else None
+        raw_support = aggregate_definition.get("_support_function_oids") if isinstance(aggregate_definition, Mapping) else None
+        raw_operator = aggregate_definition.get("_sort_operator_oid") if isinstance(aggregate_definition, Mapping) else None
+        if not isinstance(raw_support, Mapping) or set(raw_support) != set(_AGGREGATE_SUPPORT_FUNCTIONS):
+            raise BackfillSafetyError("production non-SEC aggregate inventory query returned malformed JSON")
+        if any(value is not None and (type(value) is not int or value <= 0) for value in raw_support.values()):
+            raise BackfillSafetyError("production non-SEC aggregate inventory query returned malformed JSON")
+        support_oids.update(cast(int, oid) for oid in raw_support.values() if oid is not None)
+        if raw_operator is not None:
+            if type(raw_operator) is not int or raw_operator <= 0:
+                raise BackfillSafetyError("production non-SEC aggregate inventory query returned malformed JSON")
+            operator_oids.add(raw_operator)
+
+    raw_operators = _collect_aggregate_operators(connection, sorted(operator_oids))
+    for operator in raw_operators.values():
+        for field in ("implementation_oid", "restriction_oid", "join_oid"):
+            oid = operator.get(field)
+            if oid is not None:
+                if type(oid) is not int or oid <= 0:
+                    raise BackfillSafetyError("production aggregate operator dependency query returned malformed JSON")
+                support_oids.add(oid)
+    function_dependencies = _collect_aggregate_function_dependencies(connection, sorted(support_oids))
+
+    operators: dict[int, dict[str, object]] = {}
+    for oid, raw_operator in raw_operators.items():
+        operator = {
+            "oid": raw_operator.get("oid"),
+            "identity": raw_operator.get("identity"),
+            "owner": raw_operator.get("owner"),
+            "implementation": function_dependencies.get(cast(int, raw_operator.get("implementation_oid"))),
+            "restriction": function_dependencies.get(cast(int, raw_operator["restriction_oid"])) if raw_operator.get("restriction_oid") is not None else None,
+            "join": function_dependencies.get(cast(int, raw_operator["join_oid"])) if raw_operator.get("join_oid") is not None else None,
+        }
+        operator["definition_sha256"] = _sha256_bytes(_canonical_json(operator).encode("ascii"))
+        operators[oid] = operator
+
+    normalized: list[object] = []
+    for raw_routine in routines:
+        routine = dict(cast(Mapping[str, object], raw_routine))
+        aggregate_definition = dict(cast(Mapping[str, object], routine["aggregate_definition"]))
+        raw_support = cast(Mapping[str, object], aggregate_definition.pop("_support_function_oids"))
+        raw_operator = aggregate_definition.pop("_sort_operator_oid")
+        aggregate_definition["support_functions"] = {
+            name: function_dependencies.get(cast(int, raw_support[name])) if raw_support[name] is not None else None
+            for name in _AGGREGATE_SUPPORT_FUNCTIONS
+        }
+        aggregate_definition["sort_operator"] = operators.get(cast(int, raw_operator)) if raw_operator is not None else None
+        routine["aggregate_definition"] = aggregate_definition
+        normalized.append(routine)
+    return normalized
 
 
 def _collect_non_sec_privilege_inventory(connection: object) -> dict[str, object]:
