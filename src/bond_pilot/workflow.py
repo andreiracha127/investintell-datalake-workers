@@ -34,7 +34,10 @@ from .source_artifact import (
     _publish_directory_no_replace,
     load_candidate,
     load_source_approval,
+    qualify_local_source,
     qualify_source,
+    verify_matching_extracted_files,
+    verify_requalified_candidate,
     verify_source_approval,
 )
 
@@ -95,8 +98,20 @@ def run_fixture(*, source_manifest: str | Path, source_approval: str | Path, fix
     fixture_result = load_fixture_result(fixture)
     work = _staging(output, "fixture-work")
     try:
+        verified_dir = work / "verified-source"
+        try:
+            verified = qualify_local_source(candidate.local_archive_path, verified_dir, expected_sha256=candidate.artifact_sha256)
+            verify_requalified_candidate(candidate, verified)
+            verify_matching_extracted_files(
+                Path(candidate.local_extracted_path),
+                Path(verified.local_extracted_path),
+                limit=candidate.member_uncompressed_bytes,
+                chunk_size=1024 * 1024,
+            )
+        except PilotError as exc:
+            raise PilotError("source_integrity_failed") from exc
         panel_path = work / "bond-observed-daily.parquet"
-        panel_result = build_observed_panel(candidate.local_extracted_path, panel_path, (row.original_cusip for row in fixture_result.holdings))
+        panel_result = build_observed_panel(verified.local_extracted_path, panel_path, (row.original_cusip for row in fixture_result.holdings))
         index_path = work / "observations.sqlite"
         with ObservationIndex.build(panel_path, index_path, (row.original_cusip for row in fixture_result.holdings)) as observations:
             matches = match_holdings_asof(fixture_result.holdings, debt_mapping, observations, candidate.global_start, candidate.global_cutoff)

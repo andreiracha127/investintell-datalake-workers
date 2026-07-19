@@ -17,7 +17,8 @@ import pytest
 from scripts.run_bond_pilot import build_parser, main
 from src.bond_pilot.contracts import PilotError, SourceApproval
 from src.bond_pilot.db_calibration import REQUIRED_COLUMNS
-from src.bond_pilot.source_artifact import qualify_source
+from src.bond_pilot import source_artifact
+from src.bond_pilot.source_artifact import load_candidate, qualify_source
 from src.bond_pilot import workflow
 from src.bond_pilot.workflow import qualify, run_calibration, run_fixture
 
@@ -138,6 +139,101 @@ def test_fixture_run_executes_offline_path_and_publishes_internal_evidence(tmp_p
     assert quality["source"]["source_locator"] == str(_)
     assert (run_dir / "checksums.sha256").is_file()
     assert not list(tmp_path.glob("*.sqlite*"))
+    assert not list(tmp_path.glob(".fixture-run.fixture-work-*.partial-dir"))
+
+
+@pytest.mark.parametrize("artifact", ["archive", "extracted"])
+def test_fixture_run_rejects_replaced_approved_source_before_panel_or_report(artifact: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    candidate = load_candidate(source_manifest)
+    Path(candidate.local_archive_path if artifact == "archive" else candidate.local_extracted_path).write_bytes(b"replaced")
+    panel_calls: list[Path] = []
+    monkeypatch.setattr(workflow, "build_observed_panel", lambda source, *_args: panel_calls.append(Path(source)))
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("fixture run must not resolve a DSN"))
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: pytest.fail("fixture run must not connect"))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$") as error:
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+
+    assert error.value.details == {}
+    assert panel_calls == []
+    assert not (tmp_path / "fixture-run").exists()
+    assert not list(tmp_path.glob(".fixture-run.fixture-work-*.partial-dir"))
+
+
+def test_fixture_run_consumes_only_requalified_staging_parquet_and_retains_approved_provenance(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    candidate = load_candidate(source_manifest)
+    real_panel = workflow.build_observed_panel
+    real_reports = workflow.write_internal_reports
+    panel_sources: list[Path] = []
+    report_sources: list[object] = []
+
+    def capture_panel(source: str | Path, *args: object):
+        panel_sources.append(Path(source))
+        return real_panel(source, *args)
+
+    def capture_reports(*args: object, **kwargs: object):
+        report_sources.append(kwargs["source_candidate"])
+        return real_reports(*args, **kwargs)
+
+    monkeypatch.setattr(workflow, "build_observed_panel", capture_panel)
+    monkeypatch.setattr(workflow, "write_internal_reports", capture_reports)
+    run_fixture(
+        source_manifest=source_manifest,
+        source_approval=source_approval,
+        fixture=_fixture(tmp_path / "fixture.json"),
+        mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+        run_dir=tmp_path / "fixture-run",
+    )
+
+    assert panel_sources and panel_sources == [panel_sources[0]]
+    assert panel_sources[0] != Path(candidate.local_extracted_path)
+    assert panel_sources[0].parent.name == "verified-source"
+    assert report_sources == [candidate]
+    assert not list(tmp_path.glob(".fixture-run.fixture-work-*.partial-dir"))
+
+
+def test_fixture_run_cleans_requalified_staging_after_panel_failure(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    monkeypatch.setattr(workflow, "build_observed_panel", lambda *_args: (_ for _ in ()).throw(PilotError("panel_failed")))
+
+    with pytest.raises(PilotError, match="^panel_failed$"):
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+
+    assert not (tmp_path / "fixture-run").exists()
+    assert not list(tmp_path.glob(".fixture-run.fixture-work-*.partial-dir"))
+
+
+def test_fixture_run_never_treats_candidate_local_archive_path_as_network_locator(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    manifest["local_archive_path"] = "https://example.test/source.zip"
+    source_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("fixture run must not create an HTTP client"))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+
+    assert not (tmp_path / "fixture-run").exists()
 
 
 @pytest.mark.parametrize("missing", ["source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval"])

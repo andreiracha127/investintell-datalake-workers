@@ -247,6 +247,70 @@ def verify_source_approval(candidate: SourceCandidate, approval: SourceApproval)
     approval.validate_for(candidate)
 
 
+def verify_requalified_candidate(approved: SourceCandidate, requalified: SourceCandidate) -> None:
+    """Require a local requalification to preserve every approved source invariant."""
+    immutable_fields = (
+        "schema_version",
+        "artifact_bytes",
+        "artifact_sha256",
+        "member_name",
+        "member_uncompressed_bytes",
+        "schema_sha256",
+        "schema_columns",
+        "schema_optional_columns",
+        "row_count",
+        "row_group_count",
+        "global_start",
+        "global_cutoff",
+        "duplicate_check_scope",
+        "approval_state",
+    )
+    if any(getattr(approved, field) != getattr(requalified, field) for field in immutable_fields):
+        raise PilotError("source_integrity_failed")
+
+
+def _reparse_point(status: os.stat_result) -> bool:
+    return bool(getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _regular_file_digest(path: Path, *, limit: int, chunk_size: int) -> str:
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or _reparse_point(before) or before.st_size > limit:
+            raise OSError("unsafe source file")
+        digest = hashlib.sha256()
+        total = 0
+        with path.open("rb") as source:
+            opened = os.fstat(source.fileno())
+            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                raise OSError("source file changed")
+            for chunk in iter(lambda: source.read(chunk_size), b""):
+                total += len(chunk)
+                if total > limit:
+                    raise OSError("source file exceeded limit")
+                digest.update(chunk)
+            after = os.fstat(source.fileno())
+        if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) or total != before.st_size:
+            raise OSError("source file changed")
+        return digest.hexdigest()
+    except OSError as exc:
+        raise PilotError("source_integrity_failed") from exc
+
+
+def verify_matching_extracted_files(original: Path, verified: Path, *, limit: int, chunk_size: int) -> None:
+    """Require the approved extraction and staged re-extraction to be identical regular files."""
+    if _regular_file_digest(original, limit=limit, chunk_size=chunk_size) != _regular_file_digest(verified, limit=limit, chunk_size=chunk_size):
+        raise PilotError("source_integrity_failed")
+
+
+def qualify_local_source(archive_path: str | Path, run_dir: Path, *, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> SourceCandidate:
+    """Requalify an already-local archive without allowing a network locator."""
+    locator = str(archive_path)
+    if urlsplit(locator).scheme and not _WINDOWS_DRIVE.match(locator):
+        raise PilotError("source_integrity_failed")
+    return qualify_source(Path(locator), run_dir, expected_sha256=expected_sha256, limits=limits)
+
+
 def qualify_source(
     locator: str | Path,
     run_dir: Path,

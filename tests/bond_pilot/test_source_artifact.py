@@ -5,10 +5,11 @@ import json
 import os
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval
+from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
 from src.bond_pilot import source_artifact
 from src.bond_pilot.source_artifact import (
     load_candidate,
@@ -52,6 +53,76 @@ def test_qualifies_local_nested_parquet_and_writes_unapproved_internal_manifests
         "local_use_allowed": False,
         "redistribution_decision": "not_evaluated",
     }
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("artifact_bytes", 999),
+        ("artifact_sha256", "0" * 64),
+        ("member_name", "other.parquet"),
+        ("member_uncompressed_bytes", 999),
+        ("schema_sha256", "0" * 64),
+        ("schema_columns", ("cusip_id", "pr", "trd_exctn_dt")),
+        ("schema_optional_columns", ("ytm",)),
+        ("row_count", 999),
+        ("row_group_count", 999),
+        ("global_start", "2020-01-01"),
+        ("global_cutoff", "2020-01-01"),
+        ("duplicate_check_scope", "different_scope"),
+    ],
+)
+def test_requalified_candidate_requires_every_immutable_approved_invariant(field: str, value: object, make_source_zip, tmp_path: Path) -> None:
+    approved = qualify_source(make_source_zip(), tmp_path / "approved")
+    forged = SourceCandidate(**{**approved.to_json_mapping(), field: value})
+
+    compare = getattr(source_artifact, "verify_requalified_candidate", None)
+    assert compare is not None
+    with pytest.raises(PilotError, match="source_integrity_failed"):
+        compare(approved, forged)
+
+
+@pytest.mark.parametrize("unsafe", ["missing", "directory", "oversized"])
+def test_matching_extracted_files_rejects_unsafe_original(unsafe: str, tmp_path: Path) -> None:
+    original = tmp_path / "original.parquet"
+    verified = tmp_path / "verified.parquet"
+    verified.write_bytes(b"same")
+    if unsafe == "directory":
+        original.mkdir()
+    elif unsafe == "oversized":
+        original.write_bytes(b"oversized")
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$") as error:
+        source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
+
+    assert error.value.details == {}
+
+
+def test_matching_extracted_files_detects_a_file_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = tmp_path / "original.parquet"
+    verified = tmp_path / "verified.parquet"
+    original.write_bytes(b"same")
+    verified.write_bytes(b"same")
+    real_fstat = source_artifact.os.fstat
+    calls = 0
+
+    def raced_fstat(fd: int):
+        nonlocal calls
+        calls += 1
+        current = real_fstat(fd)
+        if calls == 2:
+            return SimpleNamespace(
+                st_mode=current.st_mode,
+                st_dev=current.st_dev,
+                st_ino=current.st_ino,
+                st_size=current.st_size,
+                st_mtime_ns=current.st_mtime_ns + 1,
+            )
+        return current
+
+    monkeypatch.setattr(source_artifact.os, "fstat", raced_fstat)
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
 
 
 def test_qualifies_https_only_through_injected_client(make_source_zip, tmp_path: Path) -> None:
