@@ -618,20 +618,23 @@ BEGIN
     IF target_outcome NOT IN ('committed', 'rolled_back', 'ambiguous') THEN
         RAISE EXCEPTION 'invalid governed commit outcome %', target_outcome;
     END IF;
-    SELECT package_sha256 INTO persisted_package_sha256
-    FROM sec_ingestion_runs WHERE run_id = target_run_id FOR UPDATE;
+    SELECT ingestion_run.package_sha256 INTO persisted_package_sha256
+    FROM sec_ingestion_runs AS ingestion_run
+    WHERE ingestion_run.run_id = target_run_id FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC run %', target_run_id; END IF;
     IF persisted_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
         RAISE EXCEPTION 'governed package hash does not match run %', target_run_id;
     END IF;
 
-    SELECT transition_id, event_type, supervisor_run_id, governed_package_sha256, commit_outcome
+    SELECT run_transition.transition_id, run_transition.event_type,
+           run_transition.supervisor_run_id, run_transition.governed_package_sha256,
+           run_transition.commit_outcome
     INTO existing
-    FROM sec_run_transitions
-    WHERE run_id = target_run_id
-      AND authorization_fingerprint = target_authorization_fingerprint
-      AND commit_outcome IN ('committed', 'rolled_back')
-    ORDER BY transition_id DESC
+    FROM sec_run_transitions AS run_transition
+    WHERE run_transition.run_id = target_run_id
+      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
+      AND run_transition.commit_outcome IN ('committed', 'rolled_back')
+    ORDER BY run_transition.transition_id DESC
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN
         IF existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
@@ -645,12 +648,14 @@ BEGIN
         RETURN;
     END IF;
 
-    SELECT transition_id, event_type, supervisor_run_id, governed_package_sha256, commit_outcome
+    SELECT run_transition.transition_id, run_transition.event_type,
+           run_transition.supervisor_run_id, run_transition.governed_package_sha256,
+           run_transition.commit_outcome
     INTO existing
-    FROM sec_run_transitions
-    WHERE run_id = target_run_id
-      AND authorization_fingerprint = target_authorization_fingerprint
-      AND commit_outcome = 'ambiguous'
+    FROM sec_run_transitions AS run_transition
+    WHERE run_transition.run_id = target_run_id
+      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
+      AND run_transition.commit_outcome = 'ambiguous'
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN
         IF existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
@@ -728,37 +733,50 @@ DECLARE
     existing record;
 BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended('sec:certificate:' || target_certificate_id::text, 0));
-    SELECT package_id, run_id, package_sha256, package_state, retry_count INTO package_row
-    FROM sec_source_packages WHERE package_id = target_package_id FOR UPDATE;
+    SELECT source_package.package_id, source_package.run_id, source_package.package_sha256,
+           source_package.package_state, source_package.retry_count
+    INTO package_row
+    FROM sec_source_packages AS source_package
+    WHERE source_package.package_id = target_package_id FOR UPDATE;
     IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC package %', target_package_id; END IF;
     IF package_row.run_id IS DISTINCT FROM target_ingestion_run_id
        OR package_row.package_sha256 IS DISTINCT FROM target_package_sha256
        OR package_row.package_state <> 'loaded' THEN
         RAISE EXCEPTION 'package/run/hash lineage is not promotable';
     END IF;
-    SELECT run_id, package_sha256, raw_validated_at INTO run_row
-    FROM sec_ingestion_runs WHERE run_id = target_ingestion_run_id FOR UPDATE;
+    SELECT ingestion_run.run_id, ingestion_run.package_sha256, ingestion_run.raw_validated_at
+    INTO run_row
+    FROM sec_ingestion_runs AS ingestion_run
+    WHERE ingestion_run.run_id = target_ingestion_run_id FOR UPDATE;
     IF NOT FOUND OR run_row.package_sha256 IS DISTINCT FROM target_package_sha256
        OR run_row.raw_validated_at IS NULL
-       OR NOT EXISTS (SELECT 1 FROM sec_validated_raw_visibility WHERE run_id = target_ingestion_run_id) THEN
+       OR NOT EXISTS (
+           SELECT 1 FROM sec_validated_raw_visibility AS raw_visibility
+           WHERE raw_visibility.run_id = target_ingestion_run_id
+       ) THEN
         RAISE EXCEPTION 'promotion requires a raw-validated ingestion run';
     END IF;
-    SELECT supervisor_run_id, governed_package_sha256, commit_outcome INTO outcome_row
-    FROM sec_run_transitions
-    WHERE run_id = target_ingestion_run_id
-      AND authorization_fingerprint = target_authorization_fingerprint
-      AND commit_outcome IN ('committed', 'rolled_back')
-    ORDER BY transition_id DESC LIMIT 1 FOR UPDATE;
+    SELECT run_transition.supervisor_run_id, run_transition.governed_package_sha256,
+           run_transition.commit_outcome
+    INTO outcome_row
+    FROM sec_run_transitions AS run_transition
+    WHERE run_transition.run_id = target_ingestion_run_id
+      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
+      AND run_transition.commit_outcome IN ('committed', 'rolled_back')
+    ORDER BY run_transition.transition_id DESC LIMIT 1 FOR UPDATE;
     IF NOT FOUND OR outcome_row.commit_outcome <> 'committed'
        OR outcome_row.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
        OR outcome_row.governed_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
         RAISE EXCEPTION 'promotion requires matching committed governed outcome';
     END IF;
-    SELECT package_transition_id, ingestion_run_id, supervisor_run_id, authorization_fingerprint,
-           governed_package_sha256, reconciliation_sha256, certificate_id, certificate_sha256
+    SELECT package_transition.package_transition_id, package_transition.ingestion_run_id,
+           package_transition.supervisor_run_id, package_transition.authorization_fingerprint,
+           package_transition.governed_package_sha256, package_transition.reconciliation_sha256,
+           package_transition.certificate_id, package_transition.certificate_sha256
     INTO existing
-    FROM sec_source_package_transitions
-    WHERE package_id = target_package_id AND event_kind = 'canary_promoted'
+    FROM sec_source_package_transitions AS package_transition
+    WHERE package_transition.package_id = target_package_id
+      AND package_transition.event_kind = 'canary_promoted'
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN
         IF (existing.ingestion_run_id, existing.supervisor_run_id, existing.authorization_fingerprint,
@@ -774,9 +792,10 @@ BEGIN
             existing.ingestion_run_id, existing.certificate_id, existing.reconciliation_sha256;
         RETURN;
     END IF;
-    SELECT package_id INTO existing
-    FROM sec_source_package_transitions
-    WHERE certificate_id = target_certificate_id AND event_kind = 'canary_promoted'
+    SELECT package_transition.package_id INTO existing
+    FROM sec_source_package_transitions AS package_transition
+    WHERE package_transition.certificate_id = target_certificate_id
+      AND package_transition.event_kind = 'canary_promoted'
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN RAISE EXCEPTION 'certificate % already promotes another package', target_certificate_id; END IF;
     INSERT INTO sec_source_package_transitions (

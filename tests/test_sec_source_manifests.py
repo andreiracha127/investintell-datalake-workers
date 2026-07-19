@@ -206,6 +206,7 @@ def test_governance_wrappers_reject_secret_shaped_or_untyped_evidence() -> None:
 
 
 def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_conn) -> None:
+    from psycopg.pq import TransactionStatus
     from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
 
     run, _ = _governance_ready_package(db_conn)
@@ -223,11 +224,20 @@ def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_con
         authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
     )
     assert resolved.event_type == "commit_outcome_resolution"
+    db_conn.commit()
     with pytest.raises(ManifestStateError, match="conflicting"):
         record_commit_outcome(
             db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
             authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="rolled_back",
         )
+    # The wrapper must not hide an expected database conflict by committing or
+    # rolling back the caller's transaction.  Callers recover explicitly.
+    assert db_conn.info.transaction_status is TransactionStatus.INERROR
+    db_conn.rollback()
+    assert record_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+    ) == resolved
 
 
 def test_real_db_certified_canary_promotion_is_idempotent_and_governed(db_conn) -> None:
