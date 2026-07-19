@@ -66,8 +66,37 @@ _AUTHORIZATION_FIELDS = frozenset(
         "authorization_id",
         "stop_contract_hash",
         "reconciliation_contract_hash",
+        "preflight_attestation",
+        "runner_attestation",
+        "secret_version_resource",
+        "execution_mode",
+        "package_scope",
+        "canary_certificate",
     }
 )
+EXACT_WRITABLE_TABLES = frozenset(
+    {
+        "public.sec_ingestion_runs", "public.sec_source_packages", "public.sec_source_files",
+        "public.sec_source_package_transitions", "public.sec_table_reconciliations",
+        "public.sec_row_issues", "public.sec_run_transitions", "public.sec_validated_raw_visibility",
+        "public.sec_raw_validation_tokens", "public.nport_raw_rows", "public.nport_holding_accession_map",
+        "public.nport_contract_tables", "public.ncen_raw_v2_rows", "public.ncen_contract_tables",
+        "public.rr1_raw_v2_rows", "public.rr1_contract_tables",
+    }
+)
+_PREFLIGHT_ATTESTATION_FIELDS = frozenset(
+    {
+        "cluster_identity", "tls_identity", "role_identity", "fixed_memberships",
+        "role_capabilities", "object_catalog_hash", "object_identities", "table_privileges", "sequence_privileges",
+        "function_privileges", "monitoring_privileges", "public_acl",
+        "unsafe_security_definers", "trigger_write_targets",
+    }
+)
+_RUNNER_ATTESTATION_FIELDS = frozenset({"project", "service_account", "disk_identity"})
+_SCOPE_ENTRY_FIELDS = frozenset({"identity", "package_sha256"})
+_CANARY_CERTIFICATE_FIELDS = frozenset({"certificate_id", "canary_run_id", "canary_authorization_fingerprint", "inventory_hash", "packages"})
+_ROLE_CAPABILITY_FIELDS = frozenset({"is_superuser", "owns_any_table", "can_create_role", "can_create_database", "bypass_rls", "schema_create", "set_role"})
+_OBJECT_IDENTITY_FIELDS = frozenset({"relations", "columns", "constraints", "indexes", "triggers", "sequences", "routines"})
 _TARGET_FIELDS = frozenset(
     {
         "project",
@@ -408,9 +437,75 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value))
 
 
+def _validate_scope(scope: object, *, inventory_hash: str, label: str) -> list[dict[str, str]]:
+    if not isinstance(scope, list) or not scope:
+        raise BackfillSafetyError(f"invalid {label} package scope")
+    seen: set[str] = set()
+    validated: list[dict[str, str]] = []
+    for item in scope:
+        if not isinstance(item, dict) or set(item) != _SCOPE_ENTRY_FIELDS:
+            raise BackfillSafetyError(f"invalid {label} package scope")
+        identity = item.get("identity")
+        package_hash = item.get("package_sha256")
+        if not isinstance(identity, str) or not identity or not _is_sha256(package_hash) or identity in seen:
+            raise BackfillSafetyError(f"invalid {label} package scope")
+        seen.add(identity)
+        validated.append({"identity": identity, "package_sha256": cast(str, package_hash)})
+    return validated
+
+
+def _validate_preflight_attestation(attestation: object) -> dict[str, object]:
+    if not isinstance(attestation, dict) or set(attestation) != _PREFLIGHT_ATTESTATION_FIELDS:
+        raise BackfillSafetyError("invalid production preflight attestation")
+    scalar_fields = ("cluster_identity", "tls_identity", "role_identity", "object_catalog_hash")
+    if any(not isinstance(attestation[field], str) or not attestation[field] for field in scalar_fields):
+        raise BackfillSafetyError("invalid production preflight attestation")
+    if not _is_sha256(attestation["object_catalog_hash"]):
+        raise BackfillSafetyError("invalid production preflight attestation")
+    if not isinstance(attestation["fixed_memberships"], list) or not all(isinstance(value, str) and value for value in attestation["fixed_memberships"]):
+        raise BackfillSafetyError("invalid production preflight attestation")
+    capabilities = attestation["role_capabilities"]
+    if not isinstance(capabilities, dict) or set(capabilities) != _ROLE_CAPABILITY_FIELDS or any(value is not False for value in capabilities.values()):
+        raise BackfillSafetyError("invalid production preflight role capability matrix")
+    objects = attestation["object_identities"]
+    if not isinstance(objects, dict) or set(objects) != _OBJECT_IDENTITY_FIELDS or any(not isinstance(value, list) for value in objects.values()):
+        raise BackfillSafetyError("invalid production preflight object identity matrix")
+    table_privileges = attestation["table_privileges"]
+    if not isinstance(table_privileges, dict) or set(table_privileges) != EXACT_WRITABLE_TABLES or any(value != ["SELECT", "INSERT", "UPDATE", "DELETE"] for value in table_privileges.values()):
+        raise BackfillSafetyError("invalid production preflight table privilege matrix")
+    for field, required in (("sequence_privileges", "USAGE"), ("function_privileges", "EXECUTE"), ("monitoring_privileges", "SELECT")):
+        matrix = attestation[field]
+        if not isinstance(matrix, dict) or not matrix or any(value != [required] for value in matrix.values()):
+            raise BackfillSafetyError("invalid production preflight privilege matrix")
+    for field in _PREFLIGHT_ATTESTATION_FIELDS - {"cluster_identity", "tls_identity", "role_identity", "object_catalog_hash", "fixed_memberships"}:
+        if not isinstance(attestation[field], (dict, list)):
+            raise BackfillSafetyError("invalid production preflight attestation")
+    _assert_no_secret(attestation)
+    return dict(attestation)
+
+
+def _validate_runner_attestation(attestation: object) -> dict[str, str]:
+    if not isinstance(attestation, dict) or set(attestation) != _RUNNER_ATTESTATION_FIELDS or not all(isinstance(value, str) and value for value in attestation.values()):
+        raise BackfillSafetyError("invalid runner attestation")
+    _assert_no_secret(attestation)
+    return cast(dict[str, str], dict(attestation))
+
+
+def _validate_canary_certificate(certificate: object, *, inventory_hash: str) -> dict[str, object] | None:
+    if certificate is None:
+        return None
+    if not isinstance(certificate, dict) or set(certificate) != _CANARY_CERTIFICATE_FIELDS:
+        raise BackfillSafetyError("invalid canary certificate")
+    if certificate.get("inventory_hash") != inventory_hash or not all(isinstance(certificate.get(field), str) and certificate[field] for field in ("certificate_id", "canary_run_id", "canary_authorization_fingerprint")) or not _is_sha256(certificate["canary_authorization_fingerprint"]):
+        raise BackfillSafetyError("invalid canary certificate")
+    _validate_scope(certificate.get("packages"), inventory_hash=inventory_hash, label="canary certificate")
+    _assert_no_secret(certificate)
+    return dict(certificate)
+
+
 def _validate_execution_authorization(document: Mapping[str, object], *, code_sha: str, inventory_hash: str) -> dict[str, object]:
     """Validate a file-only authorization before resolving a connection secret."""
-    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 1 or document.get("stage") != "phase4_historical_backfill":
+    if set(document) != _AUTHORIZATION_FIELDS or document.get("schema_version") != 2 or document.get("stage") != "phase4_historical_backfill":
         raise BackfillSafetyError("invalid execution authorization schema")
     if document.get("code_sha") != code_sha:
         raise BackfillSafetyError("execution authorization code SHA mismatch")
@@ -448,6 +543,15 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
         raise BackfillSafetyError("execution authorization requires a separately issued authorization ID")
     if not _is_sha256(document.get("stop_contract_hash")) or not _is_sha256(document.get("reconciliation_contract_hash")):
         raise BackfillSafetyError("invalid execution authorization contract hash")
+    execution_mode = document.get("execution_mode")
+    if execution_mode not in {"canary", "full"}:
+        raise BackfillSafetyError("invalid execution authorization mode")
+    _validate_scope(document.get("package_scope"), inventory_hash=inventory_hash, label="authorization")
+    _validate_runner_attestation(document.get("runner_attestation"))
+    secret_version_resource = document.get("secret_version_resource")
+    if not isinstance(secret_version_resource, str) or not re.fullmatch(r"projects/[^/]+/secrets/[^/]+/versions/[1-9][0-9]*", secret_version_resource):
+        raise BackfillSafetyError("invalid Secret Manager version resource")
+    certificate = _validate_canary_certificate(document.get("canary_certificate"), inventory_hash=inventory_hash)
     if mode == "local_disposable":
         validate_canary_target(
             {
@@ -465,6 +569,13 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
             raise BackfillSafetyError("invalid production execution authorization target")
         if target["role"].casefold() in {"postgres", "owner", "superuser"}:
             raise BackfillSafetyError("production execution authorization role is unsafe")
+        if set(writable) != EXACT_WRITABLE_TABLES:
+            raise BackfillSafetyError("production execution authorization writable table allowlist differs from the exact contract")
+        _validate_preflight_attestation(document.get("preflight_attestation"))
+        if execution_mode == "full" and certificate is None:
+            raise BackfillSafetyError("full production execution requires a canary certificate")
+    if mode == "local_disposable" and document.get("preflight_attestation") is not None:
+        raise BackfillSafetyError("local disposable authorization cannot carry production preflight attestation")
     return dict(document)
 
 
@@ -531,6 +642,16 @@ def _inspect_connected_target(connection: object) -> dict[str, object]:
     }
 
 
+def _default_production_preflight_inspector(_connection: object) -> Mapping[str, object]:
+    """Fail closed until a deployment supplies the independently attested inspector.
+
+    The runner deliberately does not infer catalog/ACL safety from a partial
+    target identity query.  A production integration must provide the complete
+    read-only attestation matrix defined by the authorization artifact.
+    """
+    raise BackfillSafetyError("production preflight inspector is unavailable")
+
+
 def _default_schema_installers(form: str) -> dict[str, Callable[[object], None]]:
     manifests = importlib.import_module("src.sec_regulatory.manifests")
     storage = importlib.import_module(f"src.{form}.storage")
@@ -581,6 +702,7 @@ class AuthorizedPackageExecutor:
         target_inspector: Callable[[object], Mapping[str, object]] | None,
         schema_installers: Mapping[str, Callable[[object], None]] | None,
         dispatchers: Mapping[str, Callable[..., Mapping[str, object]]] | None,
+        preflight_inspector: Callable[[object], Mapping[str, object]] | None = None,
     ) -> None:
         self.authorization = dict(authorization)
         self.inventory = inventory
@@ -588,11 +710,45 @@ class AuthorizedPackageExecutor:
         self.target_inspector = target_inspector or _inspect_connected_target
         self.schema_installers = schema_installers
         self.dispatchers = dispatchers
+        self.preflight_inspector = preflight_inspector or _default_production_preflight_inspector
         target = cast(Mapping[str, object], authorization["target"])
         self.target_identity = {key: target[key] for key in ("project", "vm", "zone", "database", "server_address", "role")}
         self.authorization_id = cast(str, authorization["authorization_id"])
         self.authorization_fingerprint = cast(str, authorization["authorization_fingerprint"])
+        self.stop_contract_hash = cast(str, authorization["stop_contract_hash"])
         self.authorization_lineage = {key: value for key, value in authorization.items() if key != "authorization_fingerprint"}
+
+    def _validate_production_preflight(self, connection: object) -> None:
+        if self.authorization["target_mode"] != "production_authorized":
+            return
+        expected = _validate_preflight_attestation(self.authorization["preflight_attestation"])
+        actual = _validate_preflight_attestation(self.preflight_inspector(connection))
+        unsafe = ("public_acl", "unsafe_security_definers", "trigger_write_targets")
+        if any(expected[field] != [] for field in unsafe):
+            raise BackfillSafetyError("production preflight authorization contains unsafe privileges")
+        if expected["role_identity"] != cast(Mapping[str, object], self.authorization["target"])["role"]:
+            raise BackfillSafetyError("production preflight role identity mismatch")
+        if actual != expected:
+            raise BackfillSafetyError("production preflight attestation drift")
+
+    def preflight(self) -> None:
+        """Run the no-DML production gate before supervisor launch."""
+        if self.authorization["target_mode"] != "production_authorized":
+            return
+        dsn = os.environ.get(cast(str, self.authorization["dsn_env_var"]))
+        if not dsn:
+            raise BackfillSafetyError("authorized executor DSN environment variable is unavailable")
+        factory = self.connection_factory
+        if factory is None:
+            factory = importlib.import_module("psycopg").connect
+        connection = factory(dsn)
+        try:
+            self._validate_connected_target(self.target_inspector(connection))
+            self._validate_production_preflight(connection)
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
 
     def _validate_connected_target(self, actual: Mapping[str, object]) -> None:
         target = cast(Mapping[str, object], self.authorization["target"])
@@ -655,6 +811,13 @@ class AuthorizedPackageExecutor:
         expected = next((candidate for candidate in cast(list[dict[str, object]], self.inventory["packages"]) if candidate["identity"] == identity), None)
         if expected is None or any(package.get(key) != expected.get(key) for key in expected):
             raise BackfillSafetyError("package is not bound to the validated inventory")
+        if self.authorization["target_mode"] == "production_authorized":
+            scope = {
+                item["identity"]: item["package_sha256"]
+                for item in _validate_scope(self.authorization["package_scope"], inventory_hash=cast(str, self.authorization["inventory_hash"]), label="authorization")
+            }
+            if scope.get(cast(str, expected["identity"])) != expected["package_sha256"]:
+                raise BackfillSafetyError("package is absent from the production authorization scope")
         form = cast(str, expected["form"])
         if form not in {"nport", "ncen", "rr1"}:
             raise BackfillSafetyError("unsupported historical package form")
@@ -671,6 +834,7 @@ class AuthorizedPackageExecutor:
         lock_key: str | None = None
         try:
             self._validate_connected_target(self.target_inspector(connection))
+            self._validate_production_preflight(connection)
             source_package = root_by_form[form] / Path(cast(str, expected["relative_package_path"]))
             lock_key = _derive_form_lock_key(form, source_package)
             if not _try_form_advisory_lock(connection, lock_key):
@@ -718,6 +882,7 @@ def build_authorized_executor(
     target_inspector: Callable[[object], Mapping[str, object]] | None = None,
     schema_installers: Mapping[str, Callable[[object], None]] | None = None,
     dispatchers: Mapping[str, Callable[..., Mapping[str, object]]] | None = None,
+    preflight_inspector: Callable[[object], Mapping[str, object]] | None = None,
     run_directory: Path | None = None,
     command: Sequence[str] | None = None,
 ) -> AuthorizedPackageExecutor:
@@ -726,7 +891,98 @@ def build_authorized_executor(
     if not isinstance(inventory_hash, str):
         raise BackfillSafetyError("invalid inventory for authorized executor")
     authorization = load_execution_authorization(authorization_path, code_sha=code_sha, inventory_hash=inventory_hash, run_directory=run_directory, command=command)
-    return AuthorizedPackageExecutor(authorization, inventory, connection_factory, target_inspector, schema_installers, dispatchers)
+    if authorization["target_mode"] == "production_authorized":
+        inventory_scope = {item["identity"]: item["package_sha256"] for item in cast(list[dict[str, object]], inventory["packages"])}
+        for item in _validate_scope(authorization["package_scope"], inventory_hash=inventory_hash, label="authorization"):
+            if inventory_scope.get(item["identity"]) != item["package_sha256"]:
+                raise BackfillSafetyError("production authorization package scope differs from inventory")
+    return AuthorizedPackageExecutor(authorization, inventory, connection_factory, target_inspector, schema_installers, dispatchers, preflight_inspector)
+
+
+def rollback_probe(
+    connection: object,
+    *,
+    probe: Callable[[object], Mapping[str, object]],
+    evidence_writer: Callable[[Mapping[str, object]], None],
+) -> dict[str, object]:
+    """Exercise a transactional real path and retain only zero-delta evidence."""
+    try:
+        result = dict(probe(connection))
+    finally:
+        rollback = getattr(connection, "rollback", None)
+        if callable(rollback):
+            rollback()
+    if result != {"state": "rollback_probed", "table_delta": 0}:
+        raise BackfillSafetyError("rollback probe did not prove zero committed table delta")
+    evidence = {"state": "ROLLBACK_PROBED", "table_delta": 0}
+    evidence_writer(evidence)
+    return evidence
+
+
+def validate_recovery_outcome(
+    status: Mapping[str, object],
+    *,
+    authorization_fingerprint: str,
+    outcome: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Allow expired-lease recovery only after a positive, lineage-bound commit proof."""
+    if _unexpired_lease(status):
+        raise BackfillSafetyError("live lease blocks recovery")
+    if status.get("authorization_fingerprint") != authorization_fingerprint:
+        raise BackfillSafetyError("recovery authorization lineage mismatch")
+    if not isinstance(outcome, Mapping) or outcome.get("commit_outcome") != "committed" or outcome.get("authorization_fingerprint") != authorization_fingerprint:
+        raise BackfillSafetyError("ambiguous commit outcome blocks recovery")
+    terminal = outcome.get("terminal_result")
+    if not isinstance(terminal, Mapping) or terminal.get("state") not in SUCCESS_STATES:
+        raise BackfillSafetyError("commit outcome is not a positive terminal result")
+    return dict(terminal)
+
+
+def promote_canary_packages(
+    certificate: Mapping[str, object],
+    *,
+    inventory: Mapping[str, object],
+    canary_records: Mapping[str, object],
+    full_records: Mapping[str, object],
+    existing_transitions: Sequence[Mapping[str, object]],
+    append_transition: Callable[[Mapping[str, object]], None],
+) -> list[dict[str, object]]:
+    """Append immutable certificate-bound promotion evidence through an injected writer."""
+    inventory_hash = inventory.get("inventory_hash")
+    if not isinstance(inventory_hash, str):
+        raise BackfillSafetyError("invalid inventory for canary promotion")
+    valid = _validate_canary_certificate(certificate, inventory_hash=inventory_hash)
+    if valid is None:
+        raise BackfillSafetyError("canary promotion requires a certificate")
+    packages = {item["identity"]: item["package_sha256"] for item in _validate_scope(valid["packages"], inventory_hash=inventory_hash, label="canary certificate")}
+    inventory_packages = {cast(str, item["identity"]): cast(str, item["package_sha256"]) for item in cast(list[dict[str, object]], inventory.get("packages", []))}
+    if not packages or any(inventory_packages.get(identity) != digest for identity, digest in packages.items()):
+        raise BackfillSafetyError("canary certificate package differs from inventory")
+    transitions: list[dict[str, object]] = []
+    seen_full: set[str] = set()
+    for identity, package_hash in packages.items():
+        canary = canary_records.get(identity)
+        full = full_records.get(identity)
+        if not isinstance(canary, Mapping) or canary.get("state") not in SUCCESS_STATES or canary.get("package_sha256") != package_hash or canary.get("run_id") != valid["canary_run_id"] or canary.get("authorization_fingerprint") != valid["canary_authorization_fingerprint"] or not _is_sha256(canary.get("reconciliation_hash")):
+            raise BackfillSafetyError("canary certificate package is absent, nonterminal, or unreconciled")
+        if isinstance(full, Mapping):
+            raise BackfillSafetyError("cross-run duplicate package evidence")
+        if identity in seen_full:
+            raise BackfillSafetyError("duplicate canary promotion package")
+        seen_full.add(identity)
+        transition = {
+            "state": "CANARY_PROMOTED", "certificate_id": valid["certificate_id"],
+            "canary_run_id": valid["canary_run_id"], "identity": identity,
+            "package_sha256": package_hash, "reconciliation_hash": canary["reconciliation_hash"],
+        }
+        same = [dict(item) for item in existing_transitions if item.get("identity") == identity]
+        if same:
+            if same != [transition]:
+                raise BackfillSafetyError("canary promotion transition is immutable")
+        else:
+            append_transition(transition)
+        transitions.append(transition)
+    return transitions
 
 
 def _now() -> datetime:
@@ -896,16 +1152,19 @@ def run_supervisor(
     authorization_fingerprint: str | None = None,
     authorization_lineage: Mapping[str, object] | None = None,
     heartbeat_interval_seconds: float | None = None,
+    controlled_boundary_crash: bool = False,
+    stop_contract_hash: str | None = None,
+    boundary_stop_requested: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     """Run one package at a time, recording a durable state after every attempt."""
     _assert_external_run_dir(status_path.parent)
-    if not code_sha or not lease_owner or (heartbeat_interval_seconds is not None and heartbeat_interval_seconds <= 0):
+    if not code_sha or not lease_owner or (heartbeat_interval_seconds is not None and heartbeat_interval_seconds <= 0) or (stop_contract_hash is not None and not _is_sha256(stop_contract_hash)):
         raise BackfillSafetyError("invalid inventory or supervisor identity")
     root_by_form = _validate_inventory(inventory)
     inventory_hash = cast(str, inventory["inventory_hash"])
     packages = cast(list[dict[str, object]], inventory["packages"])
     with _FileLock(status_path.with_suffix(".run.lock")):
-        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command, authorization_id, target_identity, authorization_fingerprint, authorization_lineage, heartbeat_interval_seconds)
+        return _run_supervisor_locked(inventory_hash, packages, root_by_form, status_path, code_sha, execute_package, lease_owner, command, authorization_id, target_identity, authorization_fingerprint, authorization_lineage, heartbeat_interval_seconds, controlled_boundary_crash, stop_contract_hash, boundary_stop_requested)
 
 
 def _run_supervisor_locked(
@@ -922,6 +1181,9 @@ def _run_supervisor_locked(
     authorization_fingerprint: str | None,
     authorization_lineage: Mapping[str, object] | None,
     heartbeat_interval_seconds: float | None,
+    controlled_boundary_crash: bool,
+    stop_contract_hash: str | None,
+    boundary_stop_requested: Callable[[], bool] | None,
 ) -> dict[str, Any]:
     with _FileLock(status_path.with_suffix(".status.lock")):
         status = _load_status(status_path)
@@ -935,6 +1197,8 @@ def _run_supervisor_locked(
             raise BackfillSafetyError("resume status does not match execution authorization lineage")
         if status and "target_identity" in status and status.get("target_identity") != (dict(target_identity) if target_identity is not None else {"kind": "unconfigured", "value": "no_database_connection"}):
             raise BackfillSafetyError("resume status does not match execution target identity")
+        if status and status.get("stop_contract_hash") != stop_contract_hash:
+            raise BackfillSafetyError("resume status does not match the hashed stop contract")
         existing_value = status.get("packages")
         existing: dict[str, Any] = dict(existing_value) if isinstance(existing_value, dict) else {}
     status = {
@@ -947,6 +1211,7 @@ def _run_supervisor_locked(
         "authorization_id": authorization_id,
         "authorization_fingerprint": authorization_fingerprint,
         "authorization_lineage": dict(authorization_lineage) if authorization_lineage is not None else None,
+        "stop_contract_hash": stop_contract_hash,
         "inventory_hash": inventory_hash,
         "packages": existing,
         "active_package": None,
@@ -956,6 +1221,12 @@ def _run_supervisor_locked(
         "final_exit_state": "running",
     }
     for package in sorted(packages, key=lambda candidate: str(candidate["identity"])):
+        if boundary_stop_requested is not None and boundary_stop_requested():
+            status["final_exit_state"] = "stopped_boundary"
+            status["stop_reason_code"] = "boundary_stop"
+            with _FileLock(status_path.with_suffix(".status.lock")):
+                _write_status(status_path, status)
+            return {"state": "stopped", "reason": "boundary_stop", "status_path": str(status_path)}
         identity = str(package["identity"])
         old_record = existing.get(identity)
         if isinstance(old_record, dict) and _can_resume(old_record, package, inventory_hash, code_sha, authorization_fingerprint):
@@ -1009,6 +1280,8 @@ def _run_supervisor_locked(
             return {"state": "failed", "failed_package": identity, "reason": result.get("reason_code"), "status_path": str(status_path)}
         with _FileLock(status_path.with_suffix(".status.lock")):
             _write_status(status_path, status)
+        if controlled_boundary_crash:
+            raise BackfillSafetyError("controlled boundary crash after confirmed commit and checkpoint")
     status["final_exit_state"] = "ok"
     with _FileLock(status_path.with_suffix(".status.lock")):
         _write_status(status_path, status)
@@ -1031,6 +1304,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("action", choices=("start", "status", "resume"))
     parser.add_argument("--run-dir", type=Path, default=DEFAULT_RUN_DIR)
     parser.add_argument("--execution-authorization", type=Path)
+    parser.add_argument("--controlled-boundary-crash", action="store_true")
     args = parser.parse_args(argv)
     _assert_external_run_dir(args.run_dir)
     status_path = args.run_dir / "status.json"
@@ -1060,6 +1334,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
             target_identity = None
             authorization_fingerprint = None
             authorization_lineage = None
+            stop_contract_hash = None
         else:
             authorization_command: Sequence[str] = ("historical-backfill", args.action)
             if args.action == "resume":
@@ -1071,6 +1346,10 @@ def cli(argv: Sequence[str] | None = None) -> int:
             target_identity = executor.target_identity
             authorization_fingerprint = executor.authorization_fingerprint
             authorization_lineage = executor.authorization_lineage
-        outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None)
+            stop_contract_hash = getattr(executor, "stop_contract_hash", None)
+            preflight = getattr(executor, "preflight", None)
+            if callable(preflight):
+                preflight()
+        outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash)
         print(_canonical_json(outcome))
         return 0 if outcome["state"] == "ok" else 1

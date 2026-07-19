@@ -161,6 +161,46 @@ def test_supervisor_never_persists_dsn_from_executor_result_or_exception(tmp_pat
     assert "postgresql" not in status_path.read_text(encoding="utf-8")
 
 
+def test_controlled_boundary_crash_occurs_only_after_terminal_checkpoint(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, run_supervisor
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+    executed: list[bool] = []
+    with pytest.raises(BackfillSafetyError, match="confirmed commit and checkpoint"):
+        run_supervisor(
+            inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test",
+            execute_package=lambda package: executed.append(True) or {"package": package["relative_package_path"], "state": "raw_validated", "rows": 0, "run_id": "committed-run"},
+            controlled_boundary_crash=True,
+        )
+    record = json.loads(status_path.read_text(encoding="utf-8"))["packages"][inventory["packages"][0]["identity"]]
+    assert executed == [True] and record["state"] == "raw_validated" and record["run_id"] == "committed-run"
+
+
+def test_resume_rejects_mixed_canary_full_authorization_lineage(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, run_supervisor
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+    canary_lineage = {"execution_mode": "canary", "package_scope": [{"identity": "nport:2024Q1:fixture"}], "canary_certificate": None}
+    run_supervisor(inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test", execute_package=lambda package: {"package": package["relative_package_path"], "state": "raw_validated"}, authorization_id="auth", authorization_fingerprint="a" * 64, authorization_lineage=canary_lineage)
+    with pytest.raises(BackfillSafetyError, match="fingerprint|lineage"):
+        run_supervisor(inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test", execute_package=lambda _package: pytest.fail("mixed lineage must not execute"), authorization_id="auth", authorization_fingerprint="b" * 64, authorization_lineage={**canary_lineage, "execution_mode": "full", "canary_certificate": {"certificate_id": "c"}})
+
+
+def test_boundary_stop_is_bound_to_the_contract_and_starts_no_package(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, run_supervisor
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+    outcome = run_supervisor(inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test", execute_package=lambda _package: pytest.fail("boundary stop must start no package"), stop_contract_hash="a" * 64, boundary_stop_requested=lambda: True)
+    assert outcome["state"] == "stopped"
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    assert durable["final_exit_state"] == "stopped_boundary" and durable["stop_contract_hash"] == "a" * 64
+    with pytest.raises(BackfillSafetyError, match="stop contract"):
+        run_supervisor(inventory, status_path=status_path, code_sha="code-v1", lease_owner="unit-test", execute_package=lambda _package: pytest.fail("mismatch must not execute"), stop_contract_hash="b" * 64)
+
+
 def test_canary_target_rejects_application_and_shared_roles() -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, validate_canary_target
 

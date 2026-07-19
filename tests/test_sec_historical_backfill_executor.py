@@ -8,7 +8,7 @@ import pytest
 
 def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventory-v1") -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "phase4_historical_backfill",
         "code_sha": code_sha,
         "inventory_hash": inventory_hash,
@@ -34,7 +34,60 @@ def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventor
         "authorization_id": "auth-local-001",
         "stop_contract_hash": "a" * 64,
         "reconciliation_contract_hash": "b" * 64,
+        "preflight_attestation": None,
+        "runner_attestation": {
+            "project": "local-disposable",
+            "service_account": "local-test-runner@example.test",
+            "disk_identity": "local-disposable-disk",
+        },
+        "secret_version_resource": "projects/local-disposable/secrets/sec-backfill/versions/1",
+        "execution_mode": "canary",
+        "package_scope": [{"identity": "nport:2024Q1:fixture", "package_sha256": "c" * 64}],
+        "canary_certificate": None,
     }
+
+
+def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str, object]:
+    from src.sec_regulatory.historical_backfill import EXACT_WRITABLE_TABLES
+
+    return {
+        "cluster_identity": cluster_identity,
+        "tls_identity": "verify-full:fake-ca",
+        "role_identity": "sec_backfill_runner",
+        "fixed_memberships": ["sec_backfill_executor"],
+        "role_capabilities": {
+            "is_superuser": False, "owns_any_table": False, "can_create_role": False,
+            "can_create_database": False, "bypass_rls": False, "schema_create": False, "set_role": False,
+        },
+        "object_catalog_hash": "d" * 64,
+        "object_identities": {
+            "relations": ["public.nport_raw_rows:100"], "columns": ["public.nport_raw_rows.id:1"],
+            "constraints": ["public.nport_raw_rows:pkey"], "indexes": ["public.nport_raw_rows_pkey"],
+            "triggers": [], "sequences": ["public.nport_raw_rows_id_seq:101"], "routines": ["public.sec_record_transition:102"],
+        },
+        "table_privileges": {table: ["SELECT", "INSERT", "UPDATE", "DELETE"] for table in EXACT_WRITABLE_TABLES},
+        "sequence_privileges": {"public.nport_raw_rows_id_seq": ["USAGE"]},
+        "function_privileges": {"public.sec_record_transition": ["EXECUTE"]},
+        "monitoring_privileges": {"pg_stat_activity": ["SELECT"]},
+        "public_acl": [],
+        "unsafe_security_definers": [],
+        "trigger_write_targets": [],
+    }
+
+
+def _production_authorization(inventory_hash: str) -> dict[str, object]:
+    from src.sec_regulatory.historical_backfill import EXACT_WRITABLE_TABLES
+
+    artifact = _authorization(inventory_hash=inventory_hash)
+    artifact["target_mode"] = "production_authorized"
+    artifact["target"] = {
+        **artifact["target"],
+        "project": "investintell-research-analisys", "vm": "timescale-sp", "zone": "southamerica-east1-a",
+        "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+    }
+    artifact["writable_tables"] = sorted(EXACT_WRITABLE_TABLES)
+    artifact["preflight_attestation"] = _production_preflight()
+    return artifact
 
 
 def test_execution_authorization_requires_exact_schema_and_matches_code_and_inventory(tmp_path: Path) -> None:
@@ -74,6 +127,25 @@ def test_authorization_fingerprint_binds_complete_artifact_command_and_run_direc
     with pytest.raises(BackfillSafetyError, match="run directory|command"):
         load_execution_authorization(path, code_sha="code-v1", inventory_hash="inventory-v1", run_directory=tmp_path / "other", command=("historical-backfill", "resume"))
     assert authorization_fingerprint(changed) != authorization_fingerprint(artifact)
+
+
+def test_authorization_fingerprint_binds_runner_secret_scope_and_canary_lineage(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, authorization_fingerprint, load_execution_authorization
+
+    artifact = _authorization()
+    path = tmp_path / "authorization.json"
+    for field, replacement in (
+        ("runner_attestation", {"project": "other", "service_account": "runner@example.test", "disk_identity": "disk"}),
+        ("secret_version_resource", "projects/local-disposable/secrets/sec-backfill/versions/2"),
+        ("package_scope", [{"identity": "nport:2024Q1:other", "package_sha256": "d" * 64}]),
+    ):
+        changed = {**artifact, field: replacement}
+        assert authorization_fingerprint(changed) != authorization_fingerprint(artifact)
+    missing = dict(artifact)
+    missing.pop("runner_attestation")
+    path.write_text(json.dumps(missing), encoding="utf-8")
+    with pytest.raises(BackfillSafetyError, match="authorization schema"):
+        load_execution_authorization(path, code_sha="code-v1", inventory_hash="inventory-v1")
 
 
 def test_authorization_and_connected_writable_tables_reject_current_namespace_and_duplicates(tmp_path: Path) -> None:
@@ -223,17 +295,8 @@ def test_production_authorized_executor_never_runs_schema_installers(tmp_path: P
     import src.sec_regulatory.historical_backfill as backfill
 
     inventory, _ = _single_package_inventory(tmp_path)
-    artifact = _authorization(inventory_hash=str(inventory["inventory_hash"]))
-    artifact["target_mode"] = "production_authorized"
-    artifact["target"] = {
-        **artifact["target"],
-        "project": "investintell-research-analisys",
-        "vm": "timescale-sp",
-        "zone": "southamerica-east1-a",
-        "database": "market",
-        "server_address": "10.0.0.1",
-        "role": "sec_backfill_runner",
-    }
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact["package_scope"] = [{"identity": inventory["packages"][0]["identity"], "package_sha256": inventory["packages"][0]["package_sha256"]}]
     path = tmp_path / "authorization.json"
     path.write_text(json.dumps(artifact), encoding="utf-8")
     installed: list[str] = []
@@ -246,15 +309,115 @@ def test_production_authorized_executor_never_runs_schema_installers(tmp_path: P
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": ["sec_raw.nport_filings"],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
         },
         schema_installers={"manifest": lambda _conn: installed.append("manifest"), "nport": lambda _conn: installed.append("nport")},
         dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 0, "run_id": "run-1"}},
+        preflight_inspector=lambda _conn: _production_preflight(),
     )
 
     executor(dict(inventory["packages"][0]))
 
     assert installed == []
+
+
+def test_production_preflight_refuses_attestation_drift_before_dispatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact["package_scope"] = [{"identity": inventory["packages"][0]["identity"], "package_sha256": inventory["packages"][0]["package_sha256"]}]
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: _Connection(),
+        target_inspector=lambda _conn: {
+            "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+            "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+        },
+    )
+
+    executor.preflight_inspector = lambda _conn: _production_preflight(cluster_identity="drifted")
+    with pytest.raises(backfill.BackfillSafetyError, match="preflight"):
+        executor.preflight()
+
+
+def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_matrix_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _production_authorization(str(inventory["inventory_hash"]))
+    artifact["package_scope"] = [{"identity": inventory["packages"][0]["identity"], "package_sha256": inventory["packages"][0]["package_sha256"]}]
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: "nport:fixed-digest")
+    dispatched: list[bool] = []
+    for field in (
+        "cluster_identity", "tls_identity", "role_identity", "fixed_memberships", "object_catalog_hash",
+        "object_identities", "table_privileges", "sequence_privileges", "function_privileges",
+        "monitoring_privileges", "public_acl", "unsafe_security_definers", "trigger_write_targets",
+    ):
+        actual = _production_preflight()
+        actual[field] = "drifted" if isinstance(actual[field], str) else {"drifted": []} if isinstance(actual[field], dict) else ["drifted"]
+        executor = backfill.build_authorized_executor(
+            path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: _LockConnection([]),
+            target_inspector=lambda _conn: {
+                "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
+                "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
+                "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+            },
+            preflight_inspector=lambda _conn, value=actual: value,
+            dispatchers={"nport": lambda *_args, **_kwargs: dispatched.append(True) or pytest.fail("preflight drift must block DML")},
+        )
+        with pytest.raises(backfill.BackfillSafetyError, match="preflight"):
+            executor(dict(inventory["packages"][0]))
+    assert dispatched == []
+
+
+def test_certificate_bound_promotion_is_exact_immutable_and_idempotent(tmp_path: Path) -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, promote_canary_packages
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    package = inventory["packages"][0]
+    certificate = {
+        "certificate_id": "certificate-1", "canary_run_id": "canary-run-1",
+        "canary_authorization_fingerprint": "e" * 64, "inventory_hash": inventory["inventory_hash"],
+        "packages": [{"identity": package["identity"], "package_sha256": package["package_sha256"]}],
+    }
+    canary = {package["identity"]: {"state": "raw_validated", "package_sha256": package["package_sha256"], "run_id": "canary-run-1", "authorization_fingerprint": "e" * 64, "reconciliation_hash": "f" * 64}}
+    appended: list[dict[str, object]] = []
+    transitions = promote_canary_packages(certificate, inventory=inventory, canary_records=canary, full_records={}, existing_transitions=[], append_transition=lambda item: appended.append(dict(item)))
+
+    assert transitions == appended and transitions[0]["state"] == "CANARY_PROMOTED"
+    assert promote_canary_packages(certificate, inventory=inventory, canary_records=canary, full_records={}, existing_transitions=transitions, append_transition=lambda _item: pytest.fail("idempotent promotion must not append")) == transitions
+    for invalid in (
+        {},
+        {package["identity"]: {**canary[package["identity"]], "state": "running"}},
+        {package["identity"]: {**canary[package["identity"]], "reconciliation_hash": None}},
+    ):
+        with pytest.raises(BackfillSafetyError):
+            promote_canary_packages(certificate, inventory=inventory, canary_records=invalid, full_records={}, existing_transitions=[], append_transition=lambda _item: None)
+    with pytest.raises(BackfillSafetyError, match="cross-run duplicate"):
+        promote_canary_packages(certificate, inventory=inventory, canary_records=canary, full_records={package["identity"]: {"run_id": "canary-run-1"}}, existing_transitions=[], append_transition=lambda _item: None)
+    with pytest.raises(BackfillSafetyError, match="nonterminal|unreconciled"):
+        promote_canary_packages(certificate, inventory=inventory, canary_records={package["identity"]: {**canary[package["identity"]], "authorization_fingerprint": "a" * 64}}, full_records={}, existing_transitions=[], append_transition=lambda _item: None)
+
+
+def test_rollback_probe_and_expired_lease_recovery_are_zero_delta_and_lineage_bound() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, rollback_probe, validate_recovery_outcome
+
+    connection = _Connection()
+    evidence: list[dict[str, object]] = []
+    assert rollback_probe(connection, probe=lambda _conn: {"state": "rollback_probed", "table_delta": 0}, evidence_writer=lambda item: evidence.append(dict(item))) == {"state": "ROLLBACK_PROBED", "table_delta": 0}
+    assert connection.rollbacks == 1 and connection.commits == 0 and evidence == [{"state": "ROLLBACK_PROBED", "table_delta": 0}]
+    status = {"lease": {"owner": "old", "expires_at": "2000-01-01T00:00:00+00:00"}, "authorization_fingerprint": "a" * 64}
+    assert validate_recovery_outcome(status, authorization_fingerprint="a" * 64, outcome={"commit_outcome": "committed", "authorization_fingerprint": "a" * 64, "terminal_result": {"state": "raw_validated"}}) == {"state": "raw_validated"}
+    for outcome in (None, {"commit_outcome": "unknown"}, {"commit_outcome": "committed", "authorization_fingerprint": "b" * 64, "terminal_result": {"state": "raw_validated"}}):
+        with pytest.raises(BackfillSafetyError):
+            validate_recovery_outcome(status, authorization_fingerprint="a" * 64, outcome=outcome)
 
 
 def test_lock_busy_refuses_before_schema_or_dispatch_and_rolls_back(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
