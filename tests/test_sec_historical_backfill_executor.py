@@ -6,6 +6,75 @@ import time
 import pytest
 
 
+def test_connection_parameter_adapter_requires_psycopg3_get_parameters() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _connection_parameters
+
+    class Info:
+        def get_parameters(self) -> dict[str, str]:
+            return {"host": "db", "sslmode": "verify-full"}
+
+    assert _connection_parameters(type("Connection", (), {"info": Info()})()) == {"host": "db", "sslmode": "verify-full"}
+    with pytest.raises(BackfillSafetyError, match="connection parameters"):
+        _connection_parameters(type("Connection", (), {"info": object()})())
+
+
+def test_psycopg3_connection_info_adapter_uses_real_disposable_connection() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory.historical_backfill import _connection_parameters
+
+    with psycopg.connect(dsn, connect_timeout=3) as connection:
+        parameters = _connection_parameters(connection)
+    assert parameters["host"] == "127.0.0.1"
+    assert "password" not in parameters and "passfile" not in parameters
+
+
+def test_real_disposable_collector_executes_every_fixed_select_before_fail_closed() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _collect_production_preflight
+
+    class Info:
+        def get_parameters(self) -> dict[str, str]:
+            return {"host": "127.0.0.1", "sslmode": "verify-full"}
+
+    class Connection:
+        info = Info()
+
+        def __init__(self, raw: object) -> None:
+            self.raw = raw
+
+        def cursor(self) -> object:
+            return self.raw.cursor()  # type: ignore[no-any-return,union-attr]
+
+    authorization = _production_authorization("a" * 64)
+    authorization["target"] = {**authorization["target"], "host": "127.0.0.1"}
+    with psycopg.connect(dsn, connect_timeout=3) as raw:
+        with pytest.raises(BackfillSafetyError) as error:
+            _collect_production_preflight(Connection(raw), authorization)
+    assert "query failed" not in str(error.value)
+
+
+def test_real_disposable_target_inspection_detects_truncate_on_user_relation() -> None:
+    psycopg = pytest.importorskip("psycopg")
+    dsn = os.environ.get("SEC_P4_DISPOSABLE_DSN")
+    if not dsn:
+        pytest.skip("SEC_P4_DISPOSABLE_DSN not supplied")
+    from src.sec_regulatory.historical_backfill import _inspect_connected_target
+
+    with psycopg.connect(dsn) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("CREATE TABLE public.runner_preflight_truncate_probe (id integer)")
+        observed = _inspect_connected_target(connection)
+        connection.rollback()
+    assert "public.runner_preflight_truncate_probe" in observed["writable_tables"]
+    assert "public.runner_preflight_truncate_probe" in observed["truncate_tables"]
+
+
 def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventory-v1") -> dict[str, object]:
     return {
         "schema_version": 3,
@@ -49,9 +118,9 @@ def _authorization(*, code_sha: str = "code-v1", inventory_hash: str = "inventor
 
 
 def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str, object]:
-    from src.sec_regulatory.historical_backfill import EXACT_IDENTITY_SEQUENCES, EXACT_SECURITY_DEFINER_ROUTINES, EXACT_WRITABLE_TABLES
+    from src.sec_regulatory.historical_backfill import EXACT_IDENTITY_SEQUENCES, EXACT_SECURITY_DEFINER_ROUTINES, EXACT_WRITABLE_TABLES, _canonical_json, _sha256_bytes
 
-    return {
+    attestation = {
         "cluster_identity": cluster_identity,
         "tls_identity": "verify-full:fake-ca",
         "role_identity": "sec_backfill_runner",
@@ -62,18 +131,22 @@ def _production_preflight(*, cluster_identity: str = "cluster-fake") -> dict[str
         },
         "object_catalog_hash": "d" * 64,
         "object_identities": {
-            "relations": sorted(f"{table}:{index}" for index, table in enumerate(EXACT_WRITABLE_TABLES)), "columns": ["public.nport_raw_rows.raw_row_id:1"],
+            "relations": sorted(f"{table}|oid={index}|owner=sec_backfill_owner|relkind=r|definition_sha256={'a' * 64}" for index, table in enumerate(EXACT_WRITABLE_TABLES)), "columns": ["public.nport_raw_rows.raw_row_id:1"],
             "constraints": ["public.nport_raw_rows:nport_raw_rows_pkey:2"], "indexes": ["public.nport_raw_rows_pkey:3"],
-            "triggers": ["public.nport_raw_rows:nport_validate_raw_statement:4"], "sequences": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_IDENTITY_SEQUENCES)), "routines": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_SECURITY_DEFINER_ROUTINES)),
+            "triggers": ["public.nport_raw_rows:nport_validate_raw_statement:4"], "sequences": sorted(f"{name}:{index}" for index, name in enumerate(EXACT_IDENTITY_SEQUENCES)), "routines": sorted(f"{name}|oid={index}|owner=sec_backfill_owner|definition_sha256={'b' * 64}|proconfig_sha256={'c' * 64}" for index, name in enumerate(EXACT_SECURITY_DEFINER_ROUTINES)),
         },
         "table_privileges": {table: ["SELECT", "INSERT", "UPDATE", "DELETE"] for table in EXACT_WRITABLE_TABLES},
         "sequence_privileges": {name: ["USAGE"] for name in EXACT_IDENTITY_SEQUENCES},
         "function_privileges": {name: ["EXECUTE"] for name in EXACT_SECURITY_DEFINER_ROUTINES},
-        "monitoring_privileges": {"pg_stat_activity": ["SELECT"]},
+        "monitoring_privileges": {"pg_stat_activity": ["SELECT"], "pg_locks": ["SELECT"], "pg_monitor": ["MEMBER"], "pg_read_all_stats": ["MEMBER"]},
+        "effective_writable_tables": sorted(EXACT_WRITABLE_TABLES),
+        "truncate_tables": [],
         "public_acl": [],
         "unsafe_security_definers": [],
         "trigger_write_targets": [],
     }
+    attestation["object_catalog_hash"] = _sha256_bytes(_canonical_json(attestation["object_identities"]).encode("ascii"))
+    return attestation
 
 
 def _production_authorization(inventory_hash: str) -> dict[str, object]:
@@ -109,6 +182,28 @@ def test_preflight_requires_exact_security_definer_recovery_routine_set() -> Non
     missing_privilege = {**valid, "function_privileges": {key: value for key, value in valid["function_privileges"].items() if key != "public.sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)"}}
     with pytest.raises(BackfillSafetyError, match="privilege identity"):
         _validate_preflight_attestation(missing_privilege)
+
+
+def test_preflight_rejects_truncate_or_any_outside_effective_write() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, EXACT_WRITABLE_TABLES, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    for changed in (
+        {**valid, "truncate_tables": ["public.nport_raw_rows"]},
+        {**valid, "effective_writable_tables": sorted({*EXACT_WRITABLE_TABLES, "public.unapproved"})},
+    ):
+        with pytest.raises(BackfillSafetyError, match="writable|TRUNCATE"):
+            _validate_preflight_attestation(changed)
+
+
+def test_preflight_object_catalog_hash_binds_routine_definition_and_owner() -> None:
+    from src.sec_regulatory.historical_backfill import BackfillSafetyError, _validate_preflight_attestation
+
+    valid = _production_preflight()
+    routine = valid["object_identities"]["routines"][0]
+    changed = {**valid, "object_identities": {**valid["object_identities"], "routines": [routine.replace("definition_sha256=" + "b" * 64, "definition_sha256=" + "d" * 64) if item == routine else item for item in valid["object_identities"]["routines"]]}}
+    with pytest.raises(BackfillSafetyError, match="catalog hash"):
+        _validate_preflight_attestation(changed)
 
 
 def test_execution_authorization_requires_exact_schema_and_matches_code_and_inventory(tmp_path: Path) -> None:
@@ -330,7 +425,7 @@ def test_production_authorized_executor_never_runs_schema_installers(tmp_path: P
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
         },
         schema_installers={"manifest": lambda _conn: installed.append("manifest"), "nport": lambda _conn: installed.append("nport")},
         dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 0, "run_id": "run-1"}},
@@ -356,7 +451,7 @@ def test_production_preflight_refuses_attestation_drift_before_dispatch(tmp_path
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
         },
     )
 
@@ -382,7 +477,7 @@ def test_production_executor_uses_builtin_read_only_collector_without_injection(
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
         },
     )
 
@@ -414,7 +509,7 @@ def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_
             target_inspector=lambda _conn: {
                 "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
                 "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-                "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"],
+                "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
             },
             preflight_inspector=lambda _conn, value=actual: value,
             dispatchers={"nport": lambda *_args, **_kwargs: dispatched.append(True) or pytest.fail("preflight drift must block DML")},

@@ -76,7 +76,7 @@ def test_status_projects_authorization_and_rejects_bearer_pem_and_credentials(tm
     _write_status(path, {"authorization_lineage": {"authorization_id": "auth-1", "target": {"project": "project", "vm": "vm", "zone": "zone", "database": "market", "server_address": "10.0.0.1", "role": "runner"}, "secret_version_resource": "projects/project/secrets/sec-backfill/versions/1", "preflight_attestation": {"opaque": "must-not-persist"}}})
     stored = json.loads(path.read_text(encoding="utf-8"))
     assert stored["authorization_lineage"] == {"authorization_id": "auth-1", "target": {"project": "project", "vm": "vm", "zone": "zone", "database": "market", "server_address": "10.0.0.1", "role": "runner"}, "secret_version_resource": "projects/project/secrets/sec-backfill/versions/1"}
-    for secret in ("Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig", "-----BEGIN PRIVATE KEY-----", "aws_access_key_id=AKIA1234567890123456"):
+    for secret in ("Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig", "-----BEGIN PRIVATE KEY-----", "aws_access_key_id=AKIA1234567890123456", "host=db user=x password=y", "host=db passfile='/tmp/secret'", "token=opaque", "private-key=opaque"):
         with pytest.raises(BackfillSafetyError, match="credential"):
             _write_status(path, {"message": secret})
 
