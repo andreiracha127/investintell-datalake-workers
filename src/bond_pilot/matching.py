@@ -16,8 +16,9 @@ from typing import Iterable, Mapping
 
 import pyarrow.parquet as pq
 
+from .artifacts import commit_partial, partial_path
 from .contracts import DebtState, FieldState, MatchState, PilotError
-from .debt_mapping import DebtMapping
+from .debt_mapping import DebtMapping, _is_loader_validated
 from .identifiers import normalize_cusip9
 
 
@@ -68,6 +69,7 @@ class Observation:
     price_state: object
     ytm: object
     db_type: object
+    db_type_state: object
     daily_key_state: object
 
     def to_mapping(self) -> dict[str, object]:
@@ -104,11 +106,12 @@ class SeriesMetric:
     source_run_id: object
     state_counts: Mapping[str, int]
     denominator_diagnostics: Mapping[str, int]
-    denominator_weight: float
-    numerator_weight: float
+    denominator_weight: float | None
+    numerator_weight: float | None
     nav_ratio: float | None
     eligible_market_value_by_currency: Mapping[str, float]
     matched_market_value_by_currency: Mapping[str, float]
+    market_value_diagnostics: Mapping[str, int]
 
     def to_mapping(self) -> dict[str, object]:
         return _record_mapping(self)
@@ -168,6 +171,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
         if destination.exists():
             raise PilotError("already_exists", {"path": str(destination)})
         destination.parent.mkdir(parents=True, exist_ok=True)
+        partial = partial_path(destination)
         cohort = {
             item.normalized_cusip9
             for value in cohort_cusips
@@ -175,12 +179,13 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
         }
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(destination)
+            connection = sqlite3.connect(partial)
+            connection.execute("PRAGMA journal_mode=DELETE")
             connection.execute("CREATE TABLE universe (cusip TEXT PRIMARY KEY) WITHOUT ROWID")
             connection.execute(
                 "CREATE TABLE observations ("
                 "cusip TEXT NOT NULL, observation_date TEXT NOT NULL, source_row_number INTEGER NOT NULL, "
-                "price, price_state TEXT, ytm, db_type, daily_key_state TEXT, "
+                "price, price_state TEXT, ytm, db_type, db_type_state TEXT, daily_key_state TEXT, "
                 "PRIMARY KEY (cusip, observation_date, source_row_number)) WITHOUT ROWID"
             )
             connection.executemany("INSERT INTO universe (cusip) VALUES (?)", ((value,) for value in sorted(cohort)))
@@ -189,7 +194,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                 needed = {"normalized_cusip9", "observation_date", "source_row_number"}
                 if not needed.issubset(available):
                     raise PilotError("missing_panel_columns", {"columns": sorted(needed - available)})
-                optional = [name for name in ("pr", "pr_state", "ytm", "db_type", "daily_key_state", "observation_date_state") if name in available]
+                optional = [name for name in ("pr", "pr_state", "ytm", "db_type", "db_type_state", "daily_key_state", "observation_date_state") if name in available]
                 columns = ["normalized_cusip9", "observation_date", "source_row_number", *optional]
                 for batch in panel.iter_batches(columns=columns):
                     values = batch.to_pydict()
@@ -216,17 +221,22 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                                 values.get("pr_state", [None] * batch.num_rows)[index],
                                 values.get("ytm", [None] * batch.num_rows)[index],
                                 values.get("db_type", [None] * batch.num_rows)[index],
+                                values.get("db_type_state", [FieldState.INVALID.value] * batch.num_rows)[index],
                                 values.get("daily_key_state", [None] * batch.num_rows)[index],
                             )
                         )
                     if rows:
-                        connection.executemany("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+                        connection.executemany("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
             connection.commit()
-            return cls(destination, connection)
+            connection.close()
+            connection = None
+            commit_partial(partial, destination)
+            return cls(destination, sqlite3.connect(destination))
         except Exception:
             if connection is not None:
                 connection.close()
-            destination.unlink(missing_ok=True)
+            partial.unlink(missing_ok=True)
+            Path(f"{partial}-journal").unlink(missing_ok=True)
             raise
 
     def is_universe_member(self, cusip: str) -> bool:
@@ -244,7 +254,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
         if row is None or row[0] is None:
             return ()
         rows = self._connection.execute(
-            "SELECT cusip, observation_date, source_row_number, price, price_state, ytm, db_type, daily_key_state "
+            "SELECT cusip, observation_date, source_row_number, price, price_state, ytm, db_type, db_type_state, daily_key_state "
             "FROM observations WHERE cusip = ? AND observation_date = ? ORDER BY source_row_number",
             (cusip, row[0]),
         ).fetchall()
@@ -252,7 +262,7 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
 
     def latest_rows(self) -> tuple[Observation, ...]:
         rows = self._connection.execute(
-            "SELECT o.cusip, o.observation_date, o.source_row_number, o.price, o.price_state, o.ytm, o.db_type, o.daily_key_state "
+            "SELECT o.cusip, o.observation_date, o.source_row_number, o.price, o.price_state, o.ytm, o.db_type, o.db_type_state, o.daily_key_state "
             "FROM observations o JOIN (SELECT cusip, MAX(observation_date) AS observation_date FROM observations GROUP BY cusip) latest "
             "ON o.cusip = latest.cusip AND o.observation_date = latest.observation_date "
             "ORDER BY o.cusip, o.source_row_number"
@@ -271,9 +281,18 @@ def _state_for_category(state: DebtState) -> MatchState:
 
 
 def _is_144a(observation: Observation | None) -> bool | None:
-    if observation is None or observation.db_type is None:
+    if observation is None or observation.db_type_state != FieldState.PRESENT.value:
         return None
-    return observation.db_type == 3
+    value = _finite_number(observation.db_type)
+    if value is None or not value.is_integer():
+        return None
+    return int(value) == 3
+
+
+def _require_valid_mapping(mapping: object) -> DebtMapping:
+    if not isinstance(mapping, DebtMapping) or not _is_loader_validated(mapping):
+        raise PilotError("debt_mapping_unapproved")
+    return mapping
 
 
 def match_holding(
@@ -286,6 +305,7 @@ def match_holding(
     """Match a holding according to the fixed, category-first state precedence."""
     if not isinstance(observations, ObservationIndex):
         raise PilotError("invalid_observation_index")
+    debt_mapping = _require_valid_mapping(debt_mapping)
     category_state = debt_mapping.classify(holding.issuer_category)
     if category_state is not DebtState.DEBT_LIKE_ELIGIBLE:
         return MatchResult(holding, _state_for_category(category_state))
@@ -314,6 +334,20 @@ def match_holding(
     )
 
 
+def match_holdings_asof(
+    holdings: Iterable[HoldingRecord],
+    debt_mapping: DebtMapping,
+    observations: ObservationIndex,
+    global_start: object,
+    cutoff: object,
+) -> tuple[MatchResult, ...]:
+    """Historical-only batch matching; the latest-output lane is never accepted."""
+    debt_mapping = _require_valid_mapping(debt_mapping)
+    if not isinstance(observations, ObservationIndex):
+        raise PilotError("invalid_observation_index")
+    return tuple(match_holding(holding, debt_mapping, observations, global_start, cutoff) for holding in holdings)
+
+
 def classify_weight(value: object) -> WeightState:
     if value is None:
         return WeightState.NULL
@@ -323,8 +357,28 @@ def classify_weight(value: object) -> WeightState:
     return WeightState.NEGATIVE if number < 0 else WeightState.VALID
 
 
-def _currency(value: object) -> str:
-    return value.strip() if isinstance(value, str) and value.strip() else "UNKNOWN"
+def _currency(value: object) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _numeric_reason(value: object) -> str | None:
+    if isinstance(value, bool) or not isinstance(value, (Real, Decimal)):
+        return "non_numeric"
+    return None if _finite_number(value) is not None else "non_finite"
+
+
+def _add_finite_amount(
+    totals: dict[str, float], poisoned: set[str], currency: str, amount: float, diagnostics: Counter[str]
+) -> None:
+    if currency in poisoned:
+        return
+    total = totals.get(currency, 0.0) + amount
+    if not math.isfinite(total):
+        totals.pop(currency, None)
+        poisoned.add(currency)
+        diagnostics["aggregate_non_finite"] += 1
+        return
+    totals[currency] = total
 
 
 def _eligible(match: MatchResult) -> bool:
@@ -347,10 +401,14 @@ def compute_series_metrics(matches: Iterable[MatchResult]) -> tuple[SeriesMetric
         publication_id, source_run_id = next(iter(lineages))
         states = Counter(row.state.value for row in rows)
         diagnostics = Counter()
+        market_diagnostics = Counter()
         denominator = 0.0
         numerator = 0.0
+        nav_aggregate_non_finite = False
         eligible_value: dict[str, float] = defaultdict(float)
         matched_value: dict[str, float] = defaultdict(float)
+        eligible_poisoned: set[str] = set()
+        matched_poisoned: set[str] = set()
         for row in rows:
             if not _eligible(row):
                 continue
@@ -358,19 +416,41 @@ def compute_series_metrics(matches: Iterable[MatchResult]) -> tuple[SeriesMetric
             if weight_state is WeightState.VALID:
                 weight = _finite_number(row.holding.signed_pct_of_nav)
                 assert weight is not None
-                denominator += weight
+                candidate = denominator + weight
+                if not math.isfinite(candidate):
+                    nav_aggregate_non_finite = True
+                else:
+                    denominator = candidate
                 if row.state is MatchState.MATCHED:
-                    numerator += weight
+                    candidate = numerator + weight
+                    if not math.isfinite(candidate):
+                        nav_aggregate_non_finite = True
+                    else:
+                        numerator = candidate
             else:
                 diagnostics[weight_state.value] += 1
-            value = _finite_number(row.holding.signed_market_value)
-            if value is not None:
-                currency = _currency(row.holding.currency)
-                eligible_value[currency] += value
+            amount_reason = _numeric_reason(row.holding.signed_market_value)
+            currency = _currency(row.holding.currency)
+            if amount_reason is not None:
+                market_diagnostics[amount_reason] += 1
+            if currency is None:
+                market_diagnostics["missing_currency"] += 1
+            if amount_reason is None and currency is not None:
+                value = _finite_number(row.holding.signed_market_value)
+                assert value is not None
+                _add_finite_amount(eligible_value, eligible_poisoned, currency, value, market_diagnostics)
                 if row.state is MatchState.MATCHED:
-                    matched_value[currency] += value
-        ratio = numerator / denominator if denominator else None
-        if ratio is None:
+                    _add_finite_amount(matched_value, matched_poisoned, currency, value, market_diagnostics)
+        if nav_aggregate_non_finite:
+            diagnostics["aggregate_non_finite"] += 1
+            denominator_output = None
+            numerator_output = None
+            ratio = None
+        else:
+            denominator_output = denominator
+            numerator_output = numerator
+            ratio = numerator / denominator if denominator else None
+        if ratio is None and not nav_aggregate_non_finite:
             diagnostics["zero_valid_denominator"] += 1
         metrics.append(
             SeriesMetric(
@@ -380,11 +460,12 @@ def compute_series_metrics(matches: Iterable[MatchResult]) -> tuple[SeriesMetric
                 source_run_id,
                 dict(states),
                 dict(diagnostics),
-                denominator,
-                numerator,
+                denominator_output,
+                numerator_output,
                 ratio,
                 dict(eligible_value),
                 dict(matched_value),
+                dict(market_diagnostics),
             )
         )
     return tuple(metrics)
@@ -404,7 +485,10 @@ def compute_cross_series_summary(metrics: Iterable[SeriesMetric]) -> CrossSeries
     excluded = Counter()
     for metric in metrics:
         if metric.nav_ratio is None:
-            excluded["zero_valid_denominator"] += 1
+            reason = "aggregate_non_finite" if metric.denominator_diagnostics.get("aggregate_non_finite") else "zero_valid_denominator"
+            excluded[reason] += 1
+        elif not math.isfinite(metric.nav_ratio):
+            excluded["non_finite_metric"] += 1
         else:
             values.append(metric.nav_ratio)
     values.sort()

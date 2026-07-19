@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
@@ -23,6 +23,7 @@ _OUTCOMES = frozenset(
 )
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_VALIDATION_TOKEN = object()
 
 
 def _unapproved() -> PilotError:
@@ -37,12 +38,21 @@ def _read_mapping(path: str | Path) -> tuple[Path, bytes, dict[str, object]]:
     try:
         mapping_path = Path(path)
         raw = mapping_path.read_bytes()
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _unapproved() from exc
     if not isinstance(value, dict):
         raise _unapproved()
     return mapping_path, raw, value
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise _unapproved()
+        value[key] = item
+    return value
 
 
 def _categories(value: object) -> dict[str, str]:
@@ -62,8 +72,11 @@ class DebtMapping:
     scope: str
     categories: Mapping[str, str]
     observed_values_sha256: str | None = None
+    _validation_token: object = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if self._validation_token is not _VALIDATION_TOKEN:
+            raise _unapproved()
         if not isinstance(self.mapping_version, str) or not self.mapping_version.strip():
             raise _unapproved()
         if self.schema_version not in {"debt-mapping-test-v1", "debt-mapping-v1"}:
@@ -96,6 +109,10 @@ class DebtMapping:
         return value
 
 
+def _is_loader_validated(mapping: object) -> bool:
+    return isinstance(mapping, DebtMapping) and mapping._validation_token is _VALIDATION_TOKEN
+
+
 def load_fixture_debt_mapping(mapping_path: str | Path) -> DebtMapping:
     """Load the one deliberately synthetic fixture mapping used by unit tests."""
     _, _, value = _read_mapping(mapping_path)
@@ -111,7 +128,7 @@ def load_fixture_debt_mapping(mapping_path: str | Path) -> DebtMapping:
     }
     if value != expected:
         raise _unapproved()
-    return DebtMapping(**value)
+    return DebtMapping(**value, _validation_token=_VALIDATION_TOKEN)
 
 
 def _valid_evidence(value: object) -> bool:
@@ -174,4 +191,5 @@ def load_approved_debt_mapping(mapping_path: str | Path, approval_path: str | Pa
         scope="approved_external",
         categories=_categories(mapping["categories"]),
         observed_values_sha256=mapping["observed_values_sha256"],
+        _validation_token=_VALIDATION_TOKEN,
     )
