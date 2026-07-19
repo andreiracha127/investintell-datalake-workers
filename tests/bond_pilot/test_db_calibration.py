@@ -409,9 +409,12 @@ def test_exact_full_page_requires_empty_terminator_and_empty_cohort_is_one_page(
     connection.assert_exhausted()
 
     empty = TranscriptConnection(_prefix(calibration, reports) + [(EXPLAIN_INITIAL_SQL, initial, _plan()), (INITIAL_PAGE_SQL, initial, [])])
-    result = run_v2_calibration(empty, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=tmp_path / "empty" / "checkpoint.json", run_id="run-1")
+    empty_checkpoint = tmp_path / "empty" / "checkpoint.json"
+    result = run_v2_calibration(empty, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=empty_checkpoint, run_id="run-1")
     assert result.pages == 1 and result.rows_read == 0 and result.partial is False
     empty.assert_exhausted()
+    reopened = run_v2_calibration(None, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=empty_checkpoint, run_id="run-1")
+    assert reopened.pages == 1 and reopened.rows_read == 0 and reopened.partial is False
 
 
 @pytest.mark.parametrize("resolver,resume,plan", [

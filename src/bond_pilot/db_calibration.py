@@ -294,7 +294,7 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
     if set(value) != _CHECKPOINT_KEYS or any(value.get(key) != item for key, item in expected.items()):
         raise PilotError("run_budget_required")
     pages, rows, elapsed = value["pages"], value["rows"], value["elapsed_seconds"]
-    if not isinstance(pages, int) or isinstance(pages, bool) or not isinstance(rows, int) or isinstance(rows, bool) or pages < 0 or pages > budget.max_pages or rows < 0 or rows > budget.max_rows or pages > rows or not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or not math.isfinite(elapsed) or elapsed < 0 or not _sha(value["output_hash"]):
+    if not isinstance(pages, int) or isinstance(pages, bool) or not isinstance(rows, int) or isinstance(rows, bool) or pages < 0 or pages > budget.max_pages or rows < 0 or rows > budget.max_rows or not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or not math.isfinite(elapsed) or elapsed < 0 or not _sha(value["output_hash"]):
         raise PilotError("run_budget_required")
     try:
         reports = _decode_reports(value["resolved_reports"], series) if value["resolved_reports"] else ()
