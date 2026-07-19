@@ -15,7 +15,7 @@ from uuid import uuid4
 import psycopg
 from src.db import connect, resolve_dsn
 
-from .artifacts import write_checksums, write_json_once
+from .artifacts import canonical_json_bytes, write_checksums, write_json_once
 from .contracts import PilotError
 from .db_calibration import (
     load_phase4_v2_evidence,
@@ -129,6 +129,35 @@ _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\/]+(?:/[^\\/]+)*)$")
 _MAX_RESUME_CONTROL_BYTES = 1024 * 1024
 
 
+def _reparse_point(path: Path, status: os.stat_result) -> bool:
+    isjunction = getattr(os.path, "isjunction", None)
+    if callable(isjunction) and isjunction(path):
+        return True
+    attributes = getattr(status, "st_file_attributes", 0)
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _strict_captured_json(raw: bytes) -> dict[str, object]:
+    def duplicate(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    def nonfinite(value: str) -> object:
+        raise ValueError(f"non-finite {value}")
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=duplicate, parse_constant=nonfinite)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    if not isinstance(value, dict):
+        raise PilotError("calibration_resume_invalid")
+    return value
+
+
 def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[str, object], result: object, mode: str, series: tuple[str, ...]) -> None:
     if result.mode != mode:
         raise PilotError("calibration_checkpoint_mismatch")
@@ -145,11 +174,10 @@ def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[st
         raise PilotError("calibration_checkpoint_mismatch")
 
 
-def _read_resume_control(root: Path, name: str) -> bytes:
-    path = root / name
+def _read_captured_regular_file(path: Path, *, error_code: str) -> bytes:
     try:
         before = os.lstat(path)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_RESUME_CONTROL_BYTES:
+        if not stat.S_ISREG(before.st_mode) or _reparse_point(path, before) or before.st_size > _MAX_RESUME_CONTROL_BYTES:
             raise OSError("unsafe control")
         with path.open("rb") as handle:
             opened = os.fstat(handle.fileno())
@@ -159,14 +187,20 @@ def _read_resume_control(root: Path, name: str) -> bytes:
         if len(raw) > _MAX_RESUME_CONTROL_BYTES:
             raise OSError("oversized control")
     except OSError as exc:
-        raise PilotError("calibration_resume_invalid") from exc
+        raise PilotError(error_code) from exc
     return raw
 
 
 def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: object, approval: object, mode: str, series: tuple[str, ...]) -> tuple[bytes, dict[str, object], str]:
     root = Path(path)
+    try:
+        root_status = os.lstat(root)
+    except OSError as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    if not stat.S_ISDIR(root_status.st_mode) or _reparse_point(root, root_status):
+        raise PilotError("calibration_resume_invalid")
     resolved = root.resolve(strict=False)
-    if not root.is_dir() or os.path.islink(root) or _within(resolved, _REPOSITORY_ROOT):
+    if _within(resolved, _REPOSITORY_ROOT):
         raise PilotError("calibration_resume_invalid")
     try:
         entries = list(os.scandir(root))
@@ -174,7 +208,7 @@ def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: 
         raise PilotError("calibration_resume_invalid") from exc
     if {item.name for item in entries} != _RESUME_FILES or any(item.is_symlink() or not item.is_file(follow_symlinks=False) for item in entries):
         raise PilotError("calibration_resume_invalid")
-    captured = {name: _read_resume_control(root, name) for name in _RESUME_FILES}
+    captured = {name: _read_captured_regular_file(root / name, error_code="calibration_resume_invalid") for name in _RESUME_FILES}
     try:
         manifest = captured["checksums.sha256"].decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -195,22 +229,16 @@ def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: 
         checkpoint = validate_calibration_checkpoint_bytes(checkpoint_bytes, evidence=evidence, approval=approval, mode=mode, series_ids=series)
     except PilotError as exc:
         raise PilotError("calibration_resume_invalid") from exc
-    try:
-        prior = json.loads(captured["calibration-provenance.json"].decode("utf-8"))
-        stop = json.loads(captured["stop-report.json"].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise PilotError("calibration_resume_invalid") from exc
-    if prior != provenance or not isinstance(stop, dict) or stop.get("status") != "stopped" or stop.get("code") != checkpoint.get("stop_reason") or checkpoint.get("output_state") != "stopped":
+    prior = _strict_captured_json(captured["calibration-provenance.json"])
+    stop = _strict_captured_json(captured["stop-report.json"])
+    if canonical_json_bytes(prior) != canonical_json_bytes(provenance) or set(stop) != {"internal_only", "status", "code", "exception_class"} or stop["internal_only"] is not True or stop["status"] != "stopped" or stop["exception_class"] != "PilotError" or not isinstance(stop["code"], str) or stop["code"] != checkpoint.get("stop_reason") or checkpoint.get("output_state") != "stopped":
         raise PilotError("calibration_resume_invalid")
     return checkpoint_bytes, checkpoint, hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
 
 def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path, expected_run_id: str, resume_digest: str | None = None) -> Mapping[str, object]:
     provenance = _calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, mode)
-    try:
-        checkpoint_raw = checkpoint.read_bytes()
-    except OSError as exc:
-        raise PilotError("calibration_checkpoint_invalid") from exc
+    checkpoint_raw = _read_captured_regular_file(checkpoint, error_code="calibration_checkpoint_invalid")
     checkpoint_payload = validate_calibration_checkpoint_bytes(checkpoint_raw, evidence=evidence, approval=evidence_approval, mode=mode, series_ids=series, run_id=expected_run_id)
     checkpoint_sha256 = hashlib.sha256(checkpoint_raw).hexdigest()
     _cross_bind_checkpoint(checkpoint_payload, provenance, result, mode, series)

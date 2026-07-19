@@ -92,6 +92,17 @@ def _calibration_documents(tmp_path: Path, make_source_zip, monkeypatch: pytest.
     return {"source_manifest": source_manifest, "source_approval": source_approval, "mapping": mapping, "mapping_approval": mapping_approval, "evidence": evidence, "evidence_approval": evidence_approval}
 
 
+def _write_stopped_resume_pack(path: Path, *, provenance: object, evidence: object, approval: object, series: tuple[str, ...], checkpoint_raw: bytes | None = None, provenance_raw: bytes | None = None, stop_raw: bytes | None = None) -> None:
+    from src.bond_pilot.artifacts import write_checksums
+
+    path.mkdir()
+    values = {"evidence": evidence, "approval": approval, "mode": "calibration", "series_ids": series, "rows": ()}
+    (path / "checkpoint.json").write_bytes(checkpoint_raw or _checkpoint(values, output_hash=hashlib.sha256(b"").hexdigest(), state="stopped", reason="unsafe_query_plan", run_id="original-run"))
+    (path / "calibration-provenance.json").write_bytes(provenance_raw or json.dumps(provenance).encode("utf-8"))
+    (path / "stop-report.json").write_bytes(stop_raw or json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "PilotError"}).encode("utf-8"))
+    write_checksums(path)
+
+
 def test_parser_exposes_exact_manual_commands_and_never_accepts_relation() -> None:
     parser = build_parser()
     commands = parser._subparsers._group_actions[0].choices  # type: ignore[attr-defined]
@@ -191,7 +202,7 @@ _FORBIDDEN_TEXT = re.compile(r"\b(?:source|provider|vendor|upstream|lineage|lice
 _URI = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _FILE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_-]{0,15}(?:$|[?#])", re.IGNORECASE)
 _HEX_DIGEST = re.compile(r"^(?:(?:sha256:)?[0-9a-f]{64}|(?:sha512:)?[0-9a-f]{128})$", re.IGNORECASE)
-_BASE64_DIGEST = re.compile(r"^(?:(?:sha256:)?(?:[A-Za-z0-9+/]{43}=|[A-Za-z0-9_-]{43}=)|(?:sha512:)?(?:[A-Za-z0-9+/]{86}==|[A-Za-z0-9_-]{86}==))$", re.IGNORECASE)
+_BASE64_DIGEST = re.compile(r"^(?:(?:sha256:)?(?:[A-Za-z0-9+/]{43}=?|[A-Za-z0-9_-]{43}=?)|(?:sha512:)?(?:[A-Za-z0-9+/]{86}(?:==)?|[A-Za-z0-9_-]{86}(?:==)?))$", re.IGNORECASE)
 
 
 def _assert_future_public(value: object) -> None:
@@ -229,6 +240,17 @@ def test_future_public_allowlist_rejects_nested_provenance_and_source_family_lit
     for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "artifact.xlsx"}, {"value": "data.avro"}, {"value": "snapshot.gz"}, {"value": "report.parquet?download=1"}, {"value": "a" * 64}, {"value": "sha256:" + "a" * 64}, {"value": "a" * 128}, {"value": "sha512:" + "a" * 128}, {"value": "A" * 43 + "="}, {"value": "sha256:" + "A" * 43 + "="}, {"value": "A" * 86 + "=="}, {"value": "sha512:" + "A" * 86 + "=="}, {"value": "_" * 86 + "=="}, {"value": "sha512:" + "_" * 86 + "=="}, {"value": ("not-json",)}, {"value": float("nan")}):
         with pytest.raises(AssertionError):
             _assert_future_public(value)
+
+
+@pytest.mark.parametrize("digest", [
+    "A" * 43, "A" * 43 + "=", "-" * 43, "-" * 43 + "=",
+    "sha256:" + "A" * 43, "sha256:" + "A" * 43 + "=", "sha256:" + "-" * 43, "sha256:" + "-" * 43 + "=",
+    "A" * 86, "A" * 86 + "==", "_" * 86, "_" * 86 + "==",
+    "sha512:" + "A" * 86, "sha512:" + "A" * 86 + "==", "sha512:" + "_" * 86, "sha512:" + "_" * 86 + "==",
+])
+def test_future_public_allowlist_rejects_padded_and_unpadded_algorithm_bound_base64(digest: str) -> None:
+    with pytest.raises(AssertionError):
+        _assert_future_public({"value": digest})
 
 
 def test_internal_manifest_retains_full_provenance_and_pilot_stays_out_of_public_surfaces() -> None:
@@ -398,7 +420,7 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     checkpoint = _checkpoint(values, state="stopped", reason="unsafe_query_plan", run_id="original-run", pages=1, rows_read=1000, reports=reports, last_key=prior_key)
     (prior / "checkpoint.json").write_bytes(checkpoint)
     (prior / "calibration-provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
-    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")
+    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "PilotError"}), encoding="utf-8")
     from src.bond_pilot.artifacts import write_checksums
     write_checksums(prior)
     before = {path.name: path.read_bytes() for path in prior.iterdir()}
@@ -437,7 +459,7 @@ def test_resume_governance_mismatches_fail_before_dsn(field: str, value: str, tm
     payload[field] = value
     (prior / "checkpoint.json").write_text(json.dumps(payload), encoding="utf-8")
     (prior / "calibration-provenance.json").write_text(json.dumps(workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration")), encoding="utf-8")
-    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")
+    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "PilotError"}), encoding="utf-8")
     from src.bond_pilot.artifacts import write_checksums
     write_checksums(prior)
     calls: list[str] = []
@@ -479,3 +501,86 @@ def test_final_checkpoint_mismatches_are_not_published(field: str, value: str, t
     with pytest.raises(PilotError):
         run_calibration(**kwargs)
     assert not (kwargs["run_dir"] / "calibration-report.json").exists()
+
+
+@pytest.mark.parametrize("document,raw", [
+    ("calibration-provenance.json", b'{"internal_only":true,"internal_only":true}'),
+    ("stop-report.json", b'{"internal_only":true,"internal_only":true}'),
+    ("calibration-provenance.json", b'{"value":NaN}'),
+    ("stop-report.json", b'{"value":Infinity}'),
+    ("calibration-provenance.json", b'{"value":-Infinity}'),
+])
+def test_resume_captured_json_rejects_duplicate_and_nonfinite_values_before_dsn(document: str, raw: bytes, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    raw_kwargs = {"provenance_raw": raw} if document == "calibration-provenance.json" else {"stop_raw": raw}
+    _write_stopped_resume_pack(tmp_path / "prior", provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series, **raw_kwargs)
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=tmp_path / "prior")
+    assert calls == []
+
+
+def test_resume_provenance_comparison_is_type_strict_before_dsn(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    provenance = workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration")
+    masquerading = {**provenance, "internal_only": 1}
+    _write_stopped_resume_pack(tmp_path / "prior", provenance=provenance, evidence=evidence, approval=evidence_approval, series=series, provenance_raw=json.dumps(masquerading).encode("utf-8"))
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=tmp_path / "prior")
+    assert calls == []
+
+
+@pytest.mark.parametrize("stop", [
+    {"internal_only": True, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "PilotError", "extra": True},
+    {"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"},
+    {"internal_only": 1, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "PilotError"},
+    {"internal_only": True, "status": "complete", "code": "unsafe_query_plan", "exception_class": "PilotError"},
+    {"internal_only": True, "status": "stopped", "code": True, "exception_class": "PilotError"},
+    {"internal_only": True, "status": "stopped", "code": "unsafe_query_plan", "exception_class": "RuntimeError"},
+])
+def test_resume_stop_report_requires_exact_schema_and_types_before_dsn(stop: dict[str, object], tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    _write_stopped_resume_pack(tmp_path / "prior", provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series, stop_raw=json.dumps(stop).encode("utf-8"))
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=tmp_path / "prior")
+    assert calls == []
+
+
+@pytest.mark.parametrize("target", ["root", "checkpoint.json"])
+def test_resume_reparse_points_fail_before_dsn(target: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    prior = tmp_path / "prior"
+    _write_stopped_resume_pack(prior, provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series)
+    real_reparse = workflow._reparse_point
+    monkeypatch.setattr(workflow, "_reparse_point", lambda path, status: path == prior if target == "root" else (path.name == target or real_reparse(path, status)))
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=prior)
+    assert calls == []
+
+
+def test_final_checkpoint_is_captured_by_bounded_regular_file_reader(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def succeed(_connection, **values):
+        rows = (_calibration_row(),)
+        values["checkpoint_path"].write_bytes(_checkpoint({**values, "rows": rows}, run_id=values["run_id"]))
+        key = ("series-1", "2024-03-31", "pub-1", "acc-1", "h-1", "run-1", "instrument-1")
+        return SimpleNamespace(rows=rows, rows_read=1, pages=1, partial=False, last_key=key, mode="calibration")
+    monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
+    captured: list[tuple[Path, str]] = []
+    real_reader = workflow._read_captured_regular_file
+    monkeypatch.setattr(workflow, "_read_captured_regular_file", lambda path, *, error_code: captured.append((path, error_code)) or real_reader(path, error_code=error_code))
+    run_calibration(**kwargs)
+    assert any(path.name == "checkpoint.json" and code == "calibration_checkpoint_invalid" for path, code in captured)
