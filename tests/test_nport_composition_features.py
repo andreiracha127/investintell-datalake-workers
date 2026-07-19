@@ -229,3 +229,124 @@ def test_composition_rejects_wrong_product_lifecycle_and_covers_top_n_boundaries
                 VALUES(%s,%s,'WRONG','2026-01-31','2026-06-30','unavailable','[]','{}','{}',0,150)""",
                 (wrong_row_id, holdings_id))
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_upgrade_from_legacy_security_hhi_fails_closed_and_serves_only_corrected_revision():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema = f"nport_composition_upgrade_{uuid4().hex}"
+        run_id, package_id, holdings_id, legacy_current_id, legacy_prepared_id, corrected_id = (uuid4() for _ in range(6))
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
+        cur.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid NOT NULL)")
+        cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
+        for name in ("sec_derived_publications.sql", "nport_holdings_v2.sql"):
+            cur.execute((ROOT / "schemas" / name).read_text(encoding="utf-8"))
+        cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
+        cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
+        cur.execute("""INSERT INTO sec_derived_publications
+            (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+            VALUES(%s,'sec_nport_holdings_v2',1,%s,%s,%s)""", (holdings_id, run_id, package_id, "a" * 64))
+        _holding(cur, holdings_id, run_id, "OLD-1", "UPGRADE", "2026-01-31", 60,
+                 issuer="SAME", category="Corporate", payoff="Long", lei="LEI-SAME", nav=6)
+        _holding(cur, holdings_id, run_id, "OLD-2", "UPGRADE", "2026-01-31", 40,
+                 issuer="SAME", category="Corporate", payoff="Long", lei="LEI-SAME", nav=4)
+        _publish_holdings(cur, holdings_id)
+
+        # Exact pre-fix summary/build table shape: no security-identity coverage
+        # and no build methodology revision.
+        cur.execute("""CREATE TABLE nport_composition_features (
+            publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            methodology_version text NOT NULL DEFAULT 'nport_composition_features_v1',
+            series_id text NOT NULL, report_date date NOT NULL, measured_at date NOT NULL,
+            status text NOT NULL CHECK (status IN ('certified','degraded','insufficient','unavailable')),
+            reason_codes jsonb NOT NULL DEFAULT '[]'::jsonb, provenance jsonb NOT NULL, coverage jsonb NOT NULL,
+            position_count integer NOT NULL CHECK (position_count >= 0),
+            unknown_market_value_position_count integer NOT NULL DEFAULT 0 CHECK (unknown_market_value_position_count >= 0),
+            unknown_nav_position_count integer NOT NULL DEFAULT 0 CHECK (unknown_nav_position_count >= 0),
+            signed_market_value numeric, gross_market_value numeric, signed_nav_pct numeric, gross_nav_pct numeric,
+            signed_nav_residual_pct numeric, gross_nav_residual_pct numeric,
+            identifier_market_value_coverage numeric CHECK (identifier_market_value_coverage IS NULL OR identifier_market_value_coverage BETWEEN 0 AND 1),
+            issuer_category_market_value_coverage numeric CHECK (issuer_category_market_value_coverage IS NULL OR issuer_category_market_value_coverage BETWEEN 0 AND 1),
+            payoff_profile_market_value_coverage numeric CHECK (payoff_profile_market_value_coverage IS NULL OR payoff_profile_market_value_coverage BETWEEN 0 AND 1),
+            issuer_market_value_coverage numeric CHECK (issuer_market_value_coverage IS NULL OR issuer_market_value_coverage BETWEEN 0 AND 1),
+            top_5_gross_market_value_share numeric CHECK (top_5_gross_market_value_share IS NULL OR top_5_gross_market_value_share BETWEEN 0 AND 1),
+            top_10_gross_market_value_share numeric CHECK (top_10_gross_market_value_share IS NULL OR top_10_gross_market_value_share BETWEEN 0 AND 1),
+            issuer_hhi numeric CHECK (issuer_hhi IS NULL OR issuer_hhi BETWEEN 0 AND 1), issuer_effective_position_count numeric,
+            security_hhi numeric CHECK (security_hhi IS NULL OR security_hhi BETWEEN 0 AND 1), security_effective_position_count numeric,
+            report_age_days integer NOT NULL CHECK (report_age_days >= 0), created_at timestamptz NOT NULL DEFAULT now(),
+            PRIMARY KEY (publication_id,series_id,report_date), CHECK (methodology_version='nport_composition_features_v1'),
+            CHECK (jsonb_typeof(reason_codes)='array'), CHECK (jsonb_typeof(provenance)='object'), CHECK (jsonb_typeof(coverage)='object'))""")
+        cur.execute("""CREATE TABLE nport_composition_feature_builds (
+            publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            as_of_date date NOT NULL, created_at timestamptz NOT NULL DEFAULT now())""")
+        for version, publication_id, fingerprint in (
+            (1, legacy_current_id, "b" * 64), (2, legacy_prepared_id, "c" * 64)
+        ):
+            cur.execute("""INSERT INTO sec_derived_publications
+                (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+                VALUES(%s,'nport_composition_features_v1',%s,%s,%s,%s)""",
+                (publication_id, version, run_id, package_id, fingerprint))
+            cur.execute("INSERT INTO nport_composition_feature_builds VALUES(%s,%s,'2026-06-30',now())",
+                        (publication_id, holdings_id))
+            cur.execute("""INSERT INTO nport_composition_features
+                (publication_id,source_holdings_publication_id,series_id,report_date,measured_at,status,
+                 reason_codes,provenance,coverage,position_count,security_hhi,security_effective_position_count,report_age_days)
+                VALUES(%s,%s,'UPGRADE','2026-01-31','2026-06-30','certified','[]','{}','{}',2,1,1,150)""",
+                (publication_id, holdings_id))
+        cur.execute("SELECT sec_validate_derived_publication(%s)", (legacy_current_id,))
+        cur.execute("SELECT sec_set_current_derived_publication('nport_composition_features_v1',%s)", (legacy_current_id,))
+
+        ddl = (ROOT / "schemas" / "nport_composition_features.sql").read_text(encoding="utf-8")
+        cur.execute(ddl)
+        cur.execute(ddl)
+        cur.execute("""SELECT column_name FROM information_schema.columns
+            WHERE table_schema=%s AND table_name='nport_composition_features'
+              AND column_name='security_identity_market_value_coverage'""", (schema,))
+        assert cur.fetchone() == ("security_identity_market_value_coverage",)
+        cur.execute("""SELECT count(*) FROM pg_constraint
+            WHERE conrelid='nport_composition_features'::regclass
+              AND conname='nport_composition_features_security_identity_coverage_check'""")
+        assert cur.fetchone() == (1,)
+        cur.execute("SELECT methodology_revision FROM nport_composition_feature_builds WHERE publication_id=%s", (legacy_current_id,))
+        assert cur.fetchone() == (None,)
+        cur.execute("SELECT count(*) FROM sec_current_nport_composition_features")
+        assert cur.fetchone() == (0,)
+        cur.execute("SELECT count(*) FROM sec_current_nport_composition_dimension_features")
+        assert cur.fetchone() == (0,)
+        with pytest.raises(psycopg.Error, match="methodology revision"):
+            cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (legacy_prepared_id,))
+        with pytest.raises(psycopg.Error, match="methodology revision"):
+            cur.execute("""INSERT INTO nport_composition_features
+                (publication_id,source_holdings_publication_id,series_id,report_date,measured_at,status,
+                 reason_codes,provenance,coverage,position_count,report_age_days)
+                VALUES(%s,%s,'LEGACY-DIRECT','2026-01-31','2026-06-30','unavailable','[]','{}','{}',0,150)""",
+                (legacy_prepared_id, holdings_id))
+        with pytest.raises(psycopg.Error, match="methodology revision"):
+            cur.execute("""INSERT INTO nport_composition_dimension_features
+                (publication_id,series_id,report_date,dimension_type,dimension_key,position_count)
+                VALUES(%s,'UPGRADE','2026-01-31','issuer_category','legacy-mutation',0)""",
+                (legacy_prepared_id,))
+        cur.execute("SELECT methodology_revision,security_hhi FROM nport_composition_feature_builds b JOIN nport_composition_features f USING(publication_id) WHERE b.publication_id=%s", (legacy_prepared_id,))
+        assert cur.fetchone() == (None, 1)
+
+        cur.execute("""INSERT INTO sec_derived_publications
+            (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+            VALUES(%s,'nport_composition_features_v1',3,%s,%s,%s)""",
+            (corrected_id, run_id, package_id, "d" * 64))
+        cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (corrected_id,))
+        assert cur.fetchone() == (1,)
+        cur.execute("SELECT sec_validate_derived_publication(%s)", (corrected_id,))
+        cur.execute("SELECT sec_set_current_derived_publication('nport_composition_features_v1',%s)", (corrected_id,))
+        cur.execute("""SELECT f.series_id,f.security_hhi,b.methodology_revision
+            FROM sec_current_nport_composition_features f
+            JOIN nport_composition_feature_builds b USING(publication_id)""")
+        series_id, hhi, revision = cur.fetchone()
+        assert series_id == "UPGRADE" and float(hhi) == pytest.approx(0.52)
+        assert revision == "security_identity_v2"
+        cur.execute("SELECT count(*) FROM sec_current_nport_composition_dimension_features")
+        assert cur.fetchone() == (3,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS nport_composition_features (
     issuer_category_market_value_coverage numeric CHECK (issuer_category_market_value_coverage IS NULL OR issuer_category_market_value_coverage BETWEEN 0 AND 1),
     payoff_profile_market_value_coverage numeric CHECK (payoff_profile_market_value_coverage IS NULL OR payoff_profile_market_value_coverage BETWEEN 0 AND 1),
     issuer_market_value_coverage numeric CHECK (issuer_market_value_coverage IS NULL OR issuer_market_value_coverage BETWEEN 0 AND 1),
-    security_identity_market_value_coverage numeric CHECK (security_identity_market_value_coverage IS NULL OR security_identity_market_value_coverage BETWEEN 0 AND 1),
+    security_identity_market_value_coverage numeric
+        CONSTRAINT nport_composition_features_security_identity_coverage_check
+        CHECK (security_identity_market_value_coverage IS NULL OR security_identity_market_value_coverage BETWEEN 0 AND 1),
     top_5_gross_market_value_share numeric CHECK (top_5_gross_market_value_share IS NULL OR top_5_gross_market_value_share BETWEEN 0 AND 1),
     top_10_gross_market_value_share numeric CHECK (top_10_gross_market_value_share IS NULL OR top_10_gross_market_value_share BETWEEN 0 AND 1),
     issuer_hhi numeric CHECK (issuer_hhi IS NULL OR issuer_hhi BETWEEN 0 AND 1),
@@ -41,6 +43,24 @@ CREATE TABLE IF NOT EXISTS nport_composition_features (
     CHECK (jsonb_typeof(provenance) = 'object'),
     CHECK (jsonb_typeof(coverage) = 'object')
 );
+
+-- Upgrade pre-security-identity tables without assigning corrected semantics to
+-- any existing row.  The nullable column is populated only by corrected builds.
+ALTER TABLE nport_composition_features
+    ADD COLUMN IF NOT EXISTS security_identity_market_value_coverage numeric;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='nport_composition_features_security_identity_coverage_check'
+          AND conrelid='nport_composition_features'::regclass
+    ) THEN
+        ALTER TABLE nport_composition_features
+            ADD CONSTRAINT nport_composition_features_security_identity_coverage_check
+            CHECK (security_identity_market_value_coverage IS NULL OR security_identity_market_value_coverage BETWEEN 0 AND 1);
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS nport_composition_dimension_features (
     publication_id uuid NOT NULL,
@@ -63,8 +83,29 @@ CREATE TABLE IF NOT EXISTS nport_composition_feature_builds (
     publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     as_of_date date NOT NULL,
+    methodology_revision text
+        CONSTRAINT nport_composition_feature_builds_methodology_revision_check
+        CHECK (methodology_revision IS NULL OR methodology_revision='security_identity_v2'),
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- NULL is deliberately preserved for legacy build identities.  It marks rows
+-- whose security concentration may have used an issuer identifier as security.
+ALTER TABLE nport_composition_feature_builds
+    ADD COLUMN IF NOT EXISTS methodology_revision text;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname='nport_composition_feature_builds_methodology_revision_check'
+          AND conrelid='nport_composition_feature_builds'::regclass
+    ) THEN
+        ALTER TABLE nport_composition_feature_builds
+            ADD CONSTRAINT nport_composition_feature_builds_methodology_revision_check
+            CHECK (methodology_revision IS NULL OR methodology_revision='security_identity_v2');
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS nport_composition_features_source_idx
     ON nport_composition_features (source_holdings_publication_id, series_id, report_date DESC);
@@ -85,6 +126,9 @@ BEGIN
     IF parent_state IS DISTINCT FROM 'prepared' THEN
         RAISE EXCEPTION 'N-PORT composition feature build identity requires a prepared composition publication';
     END IF;
+    IF NEW.methodology_revision IS DISTINCT FROM 'security_identity_v2' THEN
+        RAISE EXCEPTION 'N-PORT composition feature build identity requires methodology revision security_identity_v2';
+    END IF;
     SELECT sec_derived_publication_is_validated(NEW.source_holdings_publication_id, 'sec_nport_holdings_v2')
       INTO source_is_valid;
     IF NOT source_is_valid THEN
@@ -103,6 +147,7 @@ RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent_state text;
         pinned_source uuid;
         pinned_as_of date;
+        pinned_methodology_revision text;
 BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'N-PORT composition feature row is immutable';
@@ -115,8 +160,12 @@ BEGIN
     IF parent_state IS DISTINCT FROM 'prepared' THEN
         RAISE EXCEPTION 'N-PORT composition feature row requires a prepared composition publication';
     END IF;
-    SELECT source_holdings_publication_id, as_of_date INTO pinned_source, pinned_as_of
+    SELECT source_holdings_publication_id, as_of_date, methodology_revision
+      INTO pinned_source, pinned_as_of, pinned_methodology_revision
     FROM nport_composition_feature_builds WHERE publication_id = NEW.publication_id;
+    IF pinned_methodology_revision IS DISTINCT FROM 'security_identity_v2' THEN
+        RAISE EXCEPTION 'N-PORT composition feature row requires methodology revision security_identity_v2';
+    END IF;
     IF pinned_source IS DISTINCT FROM NEW.source_holdings_publication_id
        OR pinned_as_of IS DISTINCT FROM NEW.measured_at THEN
         RAISE EXCEPTION 'N-PORT composition feature row requires matching pinned build metadata';
@@ -131,6 +180,7 @@ FOR EACH ROW EXECUTE FUNCTION nport_composition_features_write_guard();
 
 CREATE OR REPLACE FUNCTION nport_composition_dimension_features_write_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE pinned_methodology_revision text;
 BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'N-PORT composition dimension row is immutable';
@@ -142,6 +192,12 @@ BEGIN
           AND p.product='nport_composition_features_v1' AND p.lifecycle_state='prepared'
     ) THEN
         RAISE EXCEPTION 'N-PORT composition dimension row requires its prepared composition summary';
+    END IF;
+    SELECT b.methodology_revision INTO pinned_methodology_revision
+    FROM nport_composition_feature_builds b
+    WHERE b.publication_id=NEW.publication_id;
+    IF pinned_methodology_revision IS DISTINCT FROM 'security_identity_v2' THEN
+        RAISE EXCEPTION 'N-PORT composition dimension row requires methodology revision security_identity_v2';
     END IF;
     RETURN NEW;
 END $$;
@@ -160,6 +216,7 @@ DECLARE
     source_publication_id uuid;
     pinned_source_publication_id uuid;
     pinned_as_of_date date;
+    pinned_methodology_revision text;
     inserted_count integer;
 BEGIN
     IF as_of_date IS NULL THEN
@@ -183,11 +240,16 @@ BEGIN
         RAISE EXCEPTION 'N-PORT composition feature build requires a current sec_nport_holdings_v2 publication';
     END IF;
 
-    INSERT INTO nport_composition_feature_builds (publication_id,source_holdings_publication_id,as_of_date)
-    VALUES (target_publication_id,source_publication_id,as_of_date)
+    INSERT INTO nport_composition_feature_builds
+        (publication_id,source_holdings_publication_id,as_of_date,methodology_revision)
+    VALUES (target_publication_id,source_publication_id,as_of_date,'security_identity_v2')
     ON CONFLICT (publication_id) DO NOTHING;
-    SELECT b.source_holdings_publication_id,b.as_of_date INTO pinned_source_publication_id,pinned_as_of_date
+    SELECT b.source_holdings_publication_id,b.as_of_date,b.methodology_revision
+      INTO pinned_source_publication_id,pinned_as_of_date,pinned_methodology_revision
     FROM nport_composition_feature_builds b WHERE b.publication_id=target_publication_id FOR UPDATE;
+    IF pinned_methodology_revision IS DISTINCT FROM 'security_identity_v2' THEN
+        RAISE EXCEPTION 'N-PORT composition feature publication has legacy methodology revision; rebuild under a new publication';
+    END IF;
     IF pinned_as_of_date IS DISTINCT FROM as_of_date THEN
         RAISE EXCEPTION 'N-PORT composition feature publication is already pinned to as_of_date %', pinned_as_of_date;
     END IF;
@@ -365,10 +427,14 @@ CREATE OR REPLACE VIEW sec_current_nport_composition_features AS
 SELECT f.*
 FROM sec_derived_current_pointers c
 JOIN nport_composition_features f ON f.publication_id=c.publication_id
-WHERE c.product='nport_composition_features_v1';
+JOIN nport_composition_feature_builds b ON b.publication_id=f.publication_id
+WHERE c.product='nport_composition_features_v1'
+  AND b.methodology_revision='security_identity_v2';
 
 CREATE OR REPLACE VIEW sec_current_nport_composition_dimension_features AS
 SELECT d.*
 FROM sec_derived_current_pointers c
 JOIN nport_composition_dimension_features d ON d.publication_id=c.publication_id
-WHERE c.product='nport_composition_features_v1';
+JOIN nport_composition_feature_builds b ON b.publication_id=d.publication_id
+WHERE c.product='nport_composition_features_v1'
+  AND b.methodology_revision='security_identity_v2';
