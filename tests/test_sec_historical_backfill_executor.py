@@ -1,5 +1,6 @@
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 import time
 from uuid import UUID, uuid4
@@ -622,6 +623,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         "_collect_non_sec_effective_writes",
         lambda _connection: {"non_sec_effective_write_privileges": []},
     )
+    monkeypatch.setattr(backfill, "_assert_no_non_sec_direct_privileges", lambda _connection: None)
 
     def query_json(_connection: object, query: str, params: tuple[object, ...] = ()) -> object:
         if "'cluster_identity'" in query:
@@ -731,6 +733,7 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
     from src.rr1 import storage as rr1_storage
     from src.sec_regulatory import manifests
     from src.sec_regulatory.historical_backfill import (
+        AuthorizedPackageExecutor,
         BackfillSafetyError,
         EXACT_DIRECT_EXECUTE_ROUTINES,
         EXACT_DIRECT_TABLE_PRIVILEGES,
@@ -738,7 +741,9 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
         EXACT_IDENTITY_SEQUENCES,
         EXACT_MONITORED_RELATIONS,
         EXACT_SECURITY_DEFINER_ROUTINES,
+        _canonical_json,
         _collect_production_preflight,
+        _sha256_bytes,
     )
 
     suffix = uuid4().hex[:12]
@@ -950,6 +955,11 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                         sql.Identifier(schema)
                     )
                 )
+                cursor.execute(
+                    sql.SQL("GRANT EXECUTE ON FUNCTION {}.hidden_security_definer() TO PUBLIC").format(
+                        sql.Identifier(schema)
+                    )
+                )
             elif grant_kind == "trigger_missing":
                 cursor.execute(
                     "DROP TRIGGER sec_ingestion_runs_lifecycle_audit ON public.sec_ingestion_runs"
@@ -1020,10 +1030,37 @@ def test_real_pg18_preflight_accepts_exact_and_refuses_hidden_cross_schema_runne
                 assert observed["public_acl"] == []
                 assert observed["unsafe_security_definers"] == []
                 assert set(observed["trigger_write_targets"]) == EXPECTED_TRIGGER_WRITE_TARGETS
+            elif grant_kind in {"public_acl", "public_acl_default", "unsafe_security_definer"}:
+                observed = _collect_production_preflight(Connection(runner), authorization)
+                expected = deepcopy(observed)
+                routine_name = {
+                    "public_acl": "hidden_public_function",
+                    "public_acl_default": "hidden_default_public_function",
+                    "unsafe_security_definer": "hidden_security_definer",
+                }[grant_kind]
+                expected_inventory = deepcopy(expected["non_sec_privilege_inventory"])
+                expected_inventory["routines"] = [
+                    record for record in expected_inventory["routines"]
+                    if not record["identity"].startswith(f"{schema}.{routine_name}(")
+                ]
+                assert expected_inventory["routines"] != observed["non_sec_privilege_inventory"]["routines"]
+                expected["non_sec_privilege_inventory"] = expected_inventory
+                expected["non_sec_privilege_inventory_hash"] = _sha256_bytes(
+                    _canonical_json(expected_inventory).encode("ascii")
+                )
+                executor = object.__new__(AuthorizedPackageExecutor)
+                executor.authorization = {
+                    "target_mode": "production_authorized",
+                    "preflight_attestation": expected,
+                    "target": {"role": role},
+                }
+                executor.preflight_inspector = lambda _connection: observed
+                with pytest.raises(BackfillSafetyError, match="preflight attestation drift"):
+                    executor._validate_production_preflight(object())
             else:
                 with pytest.raises(
                     BackfillSafetyError,
-                    match="table privilege|column privilege|database privilege|privilege identity|privilege matrix|role capability|PUBLIC|SECURITY DEFINER|trigger write-target",
+                    match="table privilege|column privilege|database privilege|privilege identity|privilege matrix|role capability|PUBLIC|SECURITY DEFINER|trigger write-target|non-SEC|write privilege|effective writable",
                 ):
                     _collect_production_preflight(Connection(runner), authorization)
     finally:
