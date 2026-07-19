@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from decimal import Decimal
 import hashlib
 import json
 import os
@@ -482,6 +483,37 @@ def test_strict_named_page_decoder_accepts_reordered_dates_and_rejects_extra_dat
     ordered["report_date"] = datetime(2024, 3, 31, 1)
     with pytest.raises(PilotError, match="nondeterministic_page"):
         calibration._decode_page([ordered], None)
+
+
+def test_page_hash_uses_shared_decimal_encoder_and_rejects_unsafe_scalars() -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    page = ({**_row(holding_id="h-1"), "signed_market_value": Decimal("10.250")},)
+    encoded = calibration.encode_calibration_rows(page)
+    assert encoded["rows"][0][REQUIRED_COLUMNS.index("signed_market_value")] == {"type": "decimal", "value": "10.250"}
+    assert calibration._page_hash(hashlib.sha256(b"").hexdigest(), page)
+    for unsafe in (Decimal("NaN"), float("nan"), object()):
+        with pytest.raises(PilotError, match="calibration_serialization_failed"):
+            calibration._page_hash(hashlib.sha256(b"").hexdigest(), ({**_row(holding_id="h-1"), "cusip": unsafe},))
+
+
+def test_decimal_page_checkpoint_hashes_and_unsafe_page_stops_typed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    reports = [("S1", date(2024, 3, 31), "pub-1", "acc-1")]
+    params = (("S1",), ("2024-03-31",), ("pub-1",), ("acc-1",), 1000)
+    decimal_page = [{**_row(holding_id="h-1"), "signed_market_value": Decimal("1.20")}]
+    connection = TranscriptConnection(_prefix(calibration, reports) + [(EXPLAIN_INITIAL_SQL, params, _plan()), (INITIAL_PAGE_SQL, params, decimal_page)])
+    checkpoint = tmp_path / "decimal" / "checkpoint.json"
+    assert run_v2_calibration(connection, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=checkpoint, run_id="run-1").rows_read == 1
+    assert json.loads(checkpoint.read_text(encoding="utf-8"))["output_hash"] != hashlib.sha256(b"").hexdigest()
+    unsafe = [{**_row(holding_id="h-1"), "cusip": object()}]
+    failing = TranscriptConnection(_prefix(calibration, reports) + [(EXPLAIN_INITIAL_SQL, params, _plan()), (INITIAL_PAGE_SQL, params, unsafe)])
+    stopped = tmp_path / "stopped" / "checkpoint.json"
+    with pytest.raises(PilotError, match="calibration_serialization_failed"):
+        run_v2_calibration(failing, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=stopped, run_id="run-1")
+    assert json.loads(stopped.read_text(encoding="utf-8"))["output_state"] == "stopped"
 
 
 def test_sql_templates_have_exact_arity_and_no_legacy_relation() -> None:

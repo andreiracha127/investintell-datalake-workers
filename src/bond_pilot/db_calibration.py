@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 import hashlib
 import json
 import math
@@ -431,8 +432,38 @@ def _write(path: Path, *, run_id: str, evidence: Phase4V2Evidence, approval: Pha
     replace_checkpoint(path, canonical_json_bytes(_checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=reports, last_key=key, pages=pages, rows=rows, elapsed_seconds=elapsed, output_hash=output_hash, output_state=state, stop_reason=reason)))
 
 
+def encode_calibration_scalar(value: object) -> object:
+    """Canonical, JSON-safe scalar form shared by the cumulative hash and local rows artifact."""
+    if value is None or isinstance(value, bool) or isinstance(value, str):
+        return value
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise PilotError("calibration_serialization_failed")
+        return {"type": "decimal", "value": format(value, "f")}
+    if isinstance(value, datetime):
+        raise PilotError("calibration_serialization_failed")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise PilotError("calibration_serialization_failed")
+
+
+def encode_calibration_rows(rows: object) -> dict[str, object]:
+    if not isinstance(rows, (tuple, list)):
+        raise PilotError("calibration_serialization_failed")
+    output: list[list[object]] = []
+    for row in rows:
+        if not isinstance(row, Mapping) or set(row) != set(REQUIRED_COLUMNS):
+            raise PilotError("calibration_serialization_failed")
+        output.append([encode_calibration_scalar(row[column]) for column in REQUIRED_COLUMNS])
+    return {"schema_version": "calibration-rows-v1", "columns": list(REQUIRED_COLUMNS), "rows": output}
+
+
 def _page_hash(previous: str, page: tuple[dict[str, object], ...]) -> str:
-    return hashlib.sha256(bytes.fromhex(previous) + canonical_json_bytes(page)).hexdigest()
+    return hashlib.sha256(bytes.fromhex(previous) + canonical_json_bytes(encode_calibration_rows(page))).hexdigest()
 
 
 def run_v2_calibration(connection: object, *, evidence: object, approval: object, series_ids: Sequence[str], mode: str, checkpoint_path: str | Path, run_id: str = "bond-pilot-calibration", clock: Callable[[], float] = monotonic) -> CalibrationResult:

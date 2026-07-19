@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate_parser.add_argument("--mode", required=True, choices=("calibration", "first_bounded"))
     calibrate_parser.add_argument("--series", action="append", required=True)
     calibrate_parser.add_argument("--run-dir", required=True)
+    calibrate_parser.add_argument("--resume-pack")
     return parser
 
 
@@ -50,7 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "fixture-run":
             result = run_fixture(source_manifest=args.source_manifest, source_approval=args.source_approval, fixture=args.fixture, mapping=args.mapping, run_dir=args.run_dir)
         else:
-            result = run_calibration(source_manifest=args.source_manifest, source_approval=args.source_approval, mapping=args.mapping, mapping_approval=args.mapping_approval, evidence=args.phase4_evidence, evidence_approval=args.phase4_approval, mode=args.mode, series_ids=tuple(args.series), run_dir=args.run_dir)
+            result = run_calibration(source_manifest=args.source_manifest, source_approval=args.source_approval, mapping=args.mapping, mapping_approval=args.mapping_approval, evidence=args.phase4_evidence, evidence_approval=args.phase4_approval, mode=args.mode, series_ids=tuple(args.series), run_dir=args.run_dir, resume_pack=args.resume_pack)
     except PilotError as error:
         write_stop_report(args.run_dir, error)
         return 2

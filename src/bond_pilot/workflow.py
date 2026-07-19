@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
+import re
 import shutil
 from typing import Mapping, Sequence
 from uuid import uuid4
-from datetime import date, datetime
-from decimal import Decimal
 
 import psycopg
 from src.db import connect, resolve_dsn
@@ -23,7 +21,7 @@ from .db_calibration import (
     load_phase4_v2_evidence_approval,
     run_v2_calibration,
     validate_v2_request,
-    REQUIRED_COLUMNS,
+    encode_calibration_rows,
 )
 from .debt_mapping import load_approved_debt_mapping, load_fixture_debt_mapping
 from .matching import ObservationIndex, compute_cross_series_summary, compute_series_metrics, match_holdings_asof
@@ -125,6 +123,8 @@ def _calibration_provenance(candidate: object, approval: object, mapping: object
 
 
 _CHECKPOINT_FIELDS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
+_RESUME_FILES = frozenset({"checkpoint.json", "calibration-provenance.json", "stop-report.json", "checksums.sha256"})
+_CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\/]+(?:/[^\\/]+)*)$")
 
 
 def _checkpoint_metadata(checkpoint: Path) -> tuple[dict[str, object], str]:
@@ -138,45 +138,67 @@ def _checkpoint_metadata(checkpoint: Path) -> tuple[dict[str, object], str]:
     return payload, hashlib.sha256(raw).hexdigest()
 
 
-def _row_scalar(value: object) -> object:
-    if value is None or isinstance(value, bool) or isinstance(value, str):
-        return value
-    if isinstance(value, Decimal):
-        if not value.is_finite():
-            raise PilotError("calibration_row_serialization_failed")
-        return {"type": "decimal", "value": format(value, "f")}
-    if isinstance(value, datetime):
-        raise PilotError("calibration_row_serialization_failed")
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    raise PilotError("calibration_row_serialization_failed")
+def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[str, object], result: object, mode: str, series: tuple[str, ...]) -> None:
+    phase4 = provenance["phase4"]
+    expected = {
+        "evidence_sha256": phase4["evidence_sha256"], "approval_sha256": phase4["approval_sha256"],
+        "approval_authority_sha256": phase4["approval_authority_sha256"], "publication_sha256": phase4["evidence"]["publication_sha256"],
+        "mode": mode, "series_ids": list(series), "seam": phase4["evidence"]["seam"], "relation": phase4["evidence"]["relation"],
+        "pages": result.pages, "rows": result.rows_read, "last_key": list(result.last_key) if result.last_key else None,
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        raise PilotError("calibration_checkpoint_mismatch")
+    if payload["output_state"] != ("budget_reached" if result.partial else "complete"):
+        raise PilotError("calibration_checkpoint_mismatch")
 
 
-def _rows_payload(rows: object) -> dict[str, object]:
-    if not isinstance(rows, (tuple, list)):
-        raise PilotError("calibration_row_serialization_failed")
-    encoded: list[list[object]] = []
-    for row in rows:
-        if not isinstance(row, Mapping) or set(row) != set(REQUIRED_COLUMNS):
-            raise PilotError("calibration_row_serialization_failed")
-        encoded.append([_row_scalar(row[column]) for column in REQUIRED_COLUMNS])
-    return {"schema_version": "calibration-rows-v1", "columns": list(REQUIRED_COLUMNS), "rows": encoded}
+def _resume_input(path: str | Path, provenance: Mapping[str, object]) -> tuple[bytes, dict[str, object], str]:
+    root = Path(path)
+    resolved = root.resolve(strict=False)
+    if not root.is_dir() or os.path.islink(root) or _within(resolved, _REPOSITORY_ROOT):
+        raise PilotError("calibration_resume_invalid")
+    files = {item.name for item in root.iterdir() if item.is_file() and not os.path.islink(item)}
+    if files != _RESUME_FILES or any(item.is_dir() or os.path.islink(item) for item in root.iterdir()):
+        raise PilotError("calibration_resume_invalid")
+    manifest = (root / "checksums.sha256").read_text(encoding="utf-8")
+    checks: dict[str, str] = {}
+    for line in manifest.splitlines():
+        match = _CHECKSUM_LINE.fullmatch(line)
+        if match is None or match.group(2) in checks or match.group(2) == "checksums.sha256":
+            raise PilotError("calibration_resume_invalid")
+        checks[match.group(2)] = match.group(1)
+    if set(checks) != _RESUME_FILES - {"checksums.sha256"}:
+        raise PilotError("calibration_resume_invalid")
+    for name, digest in checks.items():
+        if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
+            raise PilotError("calibration_resume_invalid")
+    checkpoint_bytes = (root / "checkpoint.json").read_bytes()
+    checkpoint, _digest = _checkpoint_metadata(root / "checkpoint.json")
+    try:
+        prior = json.loads((root / "calibration-provenance.json").read_text(encoding="utf-8"))
+        stop = json.loads((root / "stop-report.json").read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
+        raise PilotError("calibration_resume_invalid") from exc
+    if prior != provenance or not isinstance(stop, dict) or stop.get("status") != "stopped" or checkpoint.get("output_state") != "stopped":
+        raise PilotError("calibration_resume_invalid")
+    return checkpoint_bytes, checkpoint, hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
 
-def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path) -> Mapping[str, object]:
+def _write_calibration_pack(staging: Path, *, candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str, result: object, checkpoint: Path, resume_digest: str | None = None) -> Mapping[str, object]:
     provenance = _calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, mode)
     checkpoint_payload, checkpoint_sha256 = _checkpoint_metadata(checkpoint)
-    report: dict[str, object] = {"internal_only": True, "mode": mode, "rows_read": result.rows_read, "pages": result.pages, "partial": result.partial, "output_hash": checkpoint_payload["output_hash"], "checkpoint_sha256": checkpoint_sha256, "rows_artifact": "calibration-rows-v1.json"}
+    _cross_bind_checkpoint(checkpoint_payload, provenance, result, mode, series)
+    report: dict[str, object] = {"internal_only": True, "mode": mode, "rows_read": result.rows_read, "pages": result.pages, "partial": result.partial, "output_hash": checkpoint_payload["output_hash"], "checkpoint_sha256": checkpoint_sha256, "rows_artifact": "calibration-rows-v1.json", "rows_artifact_scope": "this_invocation", "invocation_rows": len(result.rows), "cumulative_rows": result.rows_read}
+    if resume_digest is not None:
+        report["resume_pack_checksums_sha256"] = resume_digest
     try:
-        write_json_once(staging / "calibration-rows-v1.json", _rows_payload(result.rows))
+        write_json_once(staging / "calibration-rows-v1.json", encode_calibration_rows(result.rows))
         write_json_once(staging / "calibration-provenance.json", provenance)
         write_json_once(staging / "calibration-report.json", report)
         write_checksums(staging)
-    except PilotError:
+    except PilotError as exc:
+        if exc.code == "calibration_serialization_failed":
+            raise PilotError("calibration_row_serialization_failed") from exc
         raise
     except (OSError, TypeError, ValueError) as exc:
         raise PilotError("calibration_artifact_write_failed") from exc
@@ -189,7 +211,7 @@ def _write_calibration_stop(staging: Path, error: PilotError, provenance: Mappin
     write_checksums(staging)
 
 
-def run_calibration(*, source_manifest: str | Path, source_approval: str | Path, mapping: str | Path, mapping_approval: str | Path, evidence: str | Path, evidence_approval: str | Path, mode: str, series_ids: Sequence[str], run_dir: str | Path) -> Mapping[str, object]:
+def run_calibration(*, source_manifest: str | Path, source_approval: str | Path, mapping: str | Path, mapping_approval: str | Path, evidence: str | Path, evidence_approval: str | Path, mode: str, series_ids: Sequence[str], run_dir: str | Path, resume_pack: str | Path | None = None) -> Mapping[str, object]:
     """Run the governed V2 reader only after all source, mapping, and Phase 4 pins validate."""
     output = _output_path(run_dir)
     try:
@@ -199,9 +221,21 @@ def run_calibration(*, source_manifest: str | Path, source_approval: str | Path,
         raise
     staging = _staging(output, "calibration")
     provenance = _calibration_provenance(candidate, approval, debt_mapping, phase4, phase4_approval, series, mode)
+    resume_bytes: bytes | None = None
+    resume_checkpoint: dict[str, object] | None = None
+    resume_digest: str | None = None
+    if resume_pack is not None:
+        try:
+            resume_bytes, resume_checkpoint, resume_digest = _resume_input(resume_pack, provenance)
+        except PilotError as error:
+            shutil.rmtree(staging, ignore_errors=True)
+            write_stop_report(output, error)
+            raise
     published = False
     try:
         checkpoint = staging / "checkpoint.json"
+        if resume_bytes is not None:
+            checkpoint.write_bytes(resume_bytes)
         try:
             dsn = resolve_dsn()
         except (RuntimeError, OSError, psycopg.Error) as exc:
@@ -212,12 +246,12 @@ def run_calibration(*, source_manifest: str | Path, source_approval: str | Path,
             raise PilotError("calibration_connection_failed") from exc
         try:
             with connection:
-                result = run_v2_calibration(connection, evidence=phase4, approval=phase4_approval, series_ids=series, mode=mode, checkpoint_path=checkpoint, run_id=output.name)
+                result = run_v2_calibration(connection, evidence=phase4, approval=phase4_approval, series_ids=series, mode=mode, checkpoint_path=checkpoint, run_id=(resume_checkpoint or {}).get("run_id", output.name))
         except PilotError:
             raise
         except psycopg.Error as exc:
             raise PilotError("calibration_database_failed") from exc
-        report = _write_calibration_pack(staging, candidate=candidate, approval=approval, mapping=debt_mapping, evidence=phase4, evidence_approval=phase4_approval, series=series, mode=mode, result=result, checkpoint=checkpoint)
+        report = _write_calibration_pack(staging, candidate=candidate, approval=approval, mapping=debt_mapping, evidence=phase4, evidence_approval=phase4_approval, series=series, mode=mode, result=result, checkpoint=checkpoint, resume_digest=resume_digest)
         _publish(staging, output)
         published = True
         return report

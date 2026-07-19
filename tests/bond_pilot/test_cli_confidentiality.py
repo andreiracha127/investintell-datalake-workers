@@ -30,13 +30,13 @@ class _Connection:
         return None
 
 
-def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64) -> bytes:
+def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64, *, state: str = "complete", reason: str | None = None, run_id: str = "calibration") -> bytes:
     from src.bond_pilot import db_calibration as calibration
 
     return calibration.canonical_json_bytes(calibration._checkpoint_payload(
-        run_id="calibration", evidence=values["evidence"], approval=values["approval"], mode=values["mode"],
+        run_id=run_id, evidence=values["evidence"], approval=values["approval"], mode=values["mode"],
         series_ids=values["series_ids"], reports=(), last_key=None, pages=1, rows=len(values.get("rows", ())),
-        elapsed_seconds=1.0, output_hash=output_hash, output_state="complete", stop_reason=None,
+        elapsed_seconds=1.0, output_hash=output_hash, output_state=state, stop_reason=reason,
     ))
 
 
@@ -293,7 +293,7 @@ def test_calibration_success_pack_is_atomic_and_binds_internal_provenance(tmp_pa
     def succeed(_connection, **values):
         values["rows"] = (_calibration_row(),)
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False)
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=None)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     report = run_calibration(**kwargs)
     final = kwargs["run_dir"]
@@ -323,7 +323,7 @@ def test_calibration_late_write_failure_leaves_no_final_or_staging_and_retry_suc
     def succeed(_connection, **values):
         values["rows"] = ()
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     original = workflow.write_json_once
     def fail_late(path: Path, value: object):
@@ -345,7 +345,7 @@ def test_publish_races_preserve_existing_winner_for_calibration_and_stop(tmp_pat
     def succeed(_connection, **values):
         values["rows"] = ()
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False)
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     def winner(_staging: Path, output: Path) -> None:
         output.mkdir()
@@ -369,7 +369,7 @@ def test_calibration_row_serialization_fails_closed_with_typed_stop(tmp_path: Pa
     def succeed(_connection, **values):
         values["rows"] = (_calibration_row(cusip=bad),)
         values["checkpoint_path"].write_bytes(_checkpoint(values))
-        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False)
+        return SimpleNamespace(rows=values["rows"], rows_read=1, pages=1, partial=False, last_key=None)
     monkeypatch.setattr(workflow, "run_v2_calibration", succeed)
     with pytest.raises(PilotError, match="calibration_row_serialization_failed"):
         run_calibration(**kwargs)
@@ -384,3 +384,38 @@ def test_calibration_maps_operational_failures_without_leaking_messages(tmp_path
         run_calibration(**kwargs)
     stop = json.loads((kwargs["run_dir"] / "stop-report.json").read_text(encoding="utf-8"))
     assert "postgres" not in json.dumps(stop) and stop["exception_class"] == "PilotError"
+
+
+def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immutable(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    provenance = workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration")
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    values = {"evidence": evidence, "approval": evidence_approval, "mode": "calibration", "series_ids": series, "rows": ()}
+    checkpoint = _checkpoint(values, state="stopped", reason="unsafe_query_plan", run_id="original-run")
+    (prior / "checkpoint.json").write_bytes(checkpoint)
+    (prior / "calibration-provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+    (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")
+    from src.bond_pilot.artifacts import write_checksums
+    write_checksums(prior)
+    before = {path.name: path.read_bytes() for path in prior.iterdir()}
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: "dsn")
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: _Connection())
+    def resumed(_connection, **values):
+        values["checkpoint_path"].write_bytes(_checkpoint({**values, "rows": ()}, run_id="original-run"))
+        return SimpleNamespace(rows=(), rows_read=0, pages=1, partial=False, last_key=None)
+    monkeypatch.setattr(workflow, "run_v2_calibration", resumed)
+    result = run_calibration(**kwargs, resume_pack=prior)
+    assert result["resume_pack_checksums_sha256"] == hashlib.sha256(before["checksums.sha256"]).hexdigest()
+    assert before == {path.name: path.read_bytes() for path in prior.iterdir()}
+    tampered = tmp_path / "tampered"
+    tampered.mkdir()
+    for name, contents in before.items():
+        (tampered / name).write_bytes(contents)
+    (tampered / "checkpoint.json").write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**{**kwargs, "run_dir": tmp_path / "tampered-output"}, resume_pack=tampered)
+    assert calls == []
