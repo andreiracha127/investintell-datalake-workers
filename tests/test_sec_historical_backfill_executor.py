@@ -906,7 +906,8 @@ def test_rollback_probe_and_expired_lease_recovery_are_zero_delta_and_lineage_bo
             validate_recovery_outcome(status, authorization_fingerprint="a" * 64, outcome=outcome)
 
 
-def test_recovery_uses_governed_evidence_and_persists_definitive_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("fence_state", "commit_window"), (("ambiguous_commit", "ambiguous"), ("recovery_required", "issued"), ("recovery_required", "confirmed")))
+def test_recovery_uses_governed_evidence_and_persists_definitive_decision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fence_state: str, commit_window: str) -> None:
     import types
     import src.sec_regulatory.historical_backfill as backfill
 
@@ -917,7 +918,7 @@ def test_recovery_uses_governed_evidence_and_persists_definitive_decision(tmp_pa
         "authorization_fingerprint": original, "active_package": identity, "active_attempt": 1,
         "lease": {"owner": "old", "expires_at": "2000-01-01T00:00:00+00:00"},
         "packages": {identity: {
-            "state": "ambiguous_commit", "authorization_fingerprint": original,
+            "state": fence_state, "commit_window": commit_window, "authorization_fingerprint": original,
             "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
             "package_id": "33333333-3333-4333-8333-333333333333",
             "run_id": "22222222-2222-4222-8222-222222222222", "package_sha256": "b" * 64,

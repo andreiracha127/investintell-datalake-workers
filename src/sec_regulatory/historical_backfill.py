@@ -1713,7 +1713,10 @@ def recover_ambiguous_commit(
         "governed_package_sha256": "package_sha256",
         "reconciliation_hash": "reconciliation_sha256",
     }
-    if not isinstance(record, Mapping) or record.get("state") != "ambiguous_commit" or status.get("active_package") != identity or status.get("authorization_fingerprint") != recovery_authorization.get("original_authorization_fingerprint") or any(record.get(left) != recovery_authorization.get(right) for left, right in exact.items()):
+    if not isinstance(record, Mapping):
+        raise BackfillSafetyError("recovery authorization does not match the ambiguous fence")
+    recoverable_fence = record.get("state") == "ambiguous_commit" or _requires_commit_recovery(record)
+    if not recoverable_fence or status.get("active_package") != identity or status.get("authorization_fingerprint") != recovery_authorization.get("original_authorization_fingerprint") or any(record.get(left) != recovery_authorization.get(right) for left, right in exact.items()):
         raise BackfillSafetyError("recovery authorization does not match the ambiguous fence")
     evidence_hash = _sha256_bytes(_canonical_json(recovery_evidence).encode("ascii"))
     if evidence_hash != recovery_authorization.get("recovery_evidence_sha256"):
@@ -2054,6 +2057,15 @@ def _can_resume(record: Mapping[str, object] | None, package: Mapping[str, objec
     )
 
 
+def _requires_commit_recovery(record: Mapping[str, object]) -> bool:
+    """Return whether a durable protected fence still needs DB adjudication."""
+    if record.get("recovery_decision") in {"committed", "rolled_back"}:
+        return False
+    if record.get("state") in SUCCESS_STATES | {"canary_promoted", "recovery_rolled_back"}:
+        return False
+    return record.get("commit_window") in {"issued", "confirmed"}
+
+
 def _unexpired_lease(status: Mapping[str, object]) -> bool:
     lease = status.get("lease")
     if not isinstance(lease, Mapping) or not isinstance(lease.get("expires_at"), str):
@@ -2202,8 +2214,6 @@ def _run_supervisor_locked(
     with _FileLock(status_path.with_suffix(".status.lock")):
         status = _load_status(status_path)
         projected_lineage = _status_authorization_lineage(authorization_lineage)
-        if _unexpired_lease(status):
-            raise BackfillSafetyError("an active historical package lease has not expired")
         if status and status.get("authorization_id") != authorization_id:
             raise BackfillSafetyError("resume status does not match execution authorization identity")
         if status and ("authorization_fingerprint" in status and status.get("authorization_fingerprint") != authorization_fingerprint or "authorization_fingerprint" not in status and authorization_fingerprint is not None):
@@ -2218,6 +2228,31 @@ def _run_supervisor_locked(
             raise BackfillSafetyError("resume status does not match supervisor run UUID")
         existing_value = status.get("packages")
         existing: dict[str, Any] = dict(existing_value) if isinstance(existing_value, dict) else {}
+        protected = next(
+            (
+                (identity, record)
+                for identity, record in existing.items()
+                if isinstance(record, Mapping) and _requires_commit_recovery(record)
+            ),
+            None,
+        )
+        if protected is not None:
+            identity, record = protected
+            classified = dict(record)
+            classified["state"] = "recovery_required"
+            existing[identity] = classified
+            status["packages"] = existing
+            status["final_exit_state"] = "blocked_ambiguous_commit"
+            status["blocked_package"] = identity
+            _write_status(status_path, status)
+            return {
+                "state": "blocked",
+                "blocked_package": identity,
+                "reason": "recovery_required",
+                "status_path": str(status_path),
+            }
+        if _unexpired_lease(status):
+            raise BackfillSafetyError("an active historical package lease has not expired")
         if any(isinstance(record, Mapping) and record.get("state") == "ambiguous_commit" for record in existing.values()):
             raise BackfillSafetyError("ambiguous commit requires explicit recovery before resume")
         if seeded_records:

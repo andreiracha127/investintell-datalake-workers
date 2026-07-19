@@ -233,6 +233,101 @@ def test_supervisor_blocks_and_retains_fence_on_ambiguous_commit(tmp_path: Path)
     assert durable["lease"] is not None and durable["active_package"] == inventory["packages"][0]["identity"]
 
 
+def _protected_fence_evidence(package: dict[str, object]) -> dict[str, object]:
+    return {
+        "identity": package["identity"], "inventory_package_sha256": package["package_sha256"],
+        "package_sha256": "c" * 64, "package_id": "33333333-3333-4333-8333-333333333333",
+        "run_id": "22222222-2222-4222-8222-222222222222",
+        "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+        "authorization_fingerprint": "a" * 64, "reconciliation_hash": "f" * 64,
+        "terminal_result": {"state": "raw_validated", "rows": 1, "run_id": "22222222-2222-4222-8222-222222222222", "reconciliation_hash": "f" * 64},
+    }
+
+
+def test_expired_issued_fence_after_uncatchable_commit_death_never_redispatches(tmp_path: Path) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+
+    class DyingExecutor:
+        def execute_with_fence(self, package: dict[str, object], fence: object) -> object:
+            fence("issued", _protected_fence_evidence(package))  # type: ignore[operator]
+            raise SystemExit("simulated process death after server COMMIT")
+
+    with pytest.raises(SystemExit, match="server COMMIT"):
+        backfill.run_supervisor(
+            inventory, status_path=status_path, code_sha="code-v1", lease_owner="first",
+            execute_package=DyingExecutor(), authorization_id="auth", authorization_fingerprint="a" * 64,
+            supervisor_run_id="11111111-1111-4111-8111-111111111111",
+        )
+    crashed = json.loads(status_path.read_text(encoding="utf-8"))
+    crashed["lease"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    backfill._write_status(status_path, crashed)
+    calls: list[str] = []
+
+    outcome = backfill.run_supervisor(
+        inventory, status_path=status_path, code_sha="code-v1", lease_owner="resume",
+        execute_package=lambda package: calls.append(str(package["identity"])) or {"state": "raw_validated"},
+        authorization_id="auth", authorization_fingerprint="a" * 64,
+        supervisor_run_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    record = durable["packages"][inventory["packages"][0]["identity"]]
+    assert outcome["state"] == "blocked" and calls == []
+    assert record["state"] == "recovery_required" and record["commit_window"] == "issued"
+
+
+def test_confirmed_fence_with_terminal_fsync_failure_never_redispatches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    status_path = tmp_path / "run" / "status.json"
+
+    class ConfirmingExecutor:
+        def execute_with_fence(self, package: dict[str, object], fence: object) -> object:
+            evidence = _protected_fence_evidence(package)
+            fence("issued", evidence)  # type: ignore[operator]
+            fence("confirmed", evidence)  # type: ignore[operator]
+            return evidence["terminal_result"]
+
+    real_write_status = backfill._write_status
+    writes = 0
+
+    def fail_terminal_write(path: Path, status: dict[str, object]) -> None:
+        nonlocal writes
+        writes += 1
+        if writes == 4:
+            raise OSError("simulated terminal fsync failure")
+        real_write_status(path, status)
+
+    monkeypatch.setattr(backfill, "_write_status", fail_terminal_write)
+    with pytest.raises(OSError, match="terminal fsync"):
+        backfill.run_supervisor(
+            inventory, status_path=status_path, code_sha="code-v1", lease_owner="first",
+            execute_package=ConfirmingExecutor(), authorization_id="auth", authorization_fingerprint="a" * 64,
+            supervisor_run_id="11111111-1111-4111-8111-111111111111",
+        )
+    monkeypatch.setattr(backfill, "_write_status", real_write_status)
+    crashed = json.loads(status_path.read_text(encoding="utf-8"))
+    crashed["lease"]["expires_at"] = "2000-01-01T00:00:00+00:00"
+    real_write_status(status_path, crashed)
+    calls: list[str] = []
+
+    outcome = backfill.run_supervisor(
+        inventory, status_path=status_path, code_sha="code-v1", lease_owner="resume",
+        execute_package=lambda package: calls.append(str(package["identity"])) or {"state": "raw_validated"},
+        authorization_id="auth", authorization_fingerprint="a" * 64,
+        supervisor_run_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    durable = json.loads(status_path.read_text(encoding="utf-8"))
+    record = durable["packages"][inventory["packages"][0]["identity"]]
+    assert outcome["state"] == "blocked" and calls == []
+    assert record["state"] == "recovery_required" and record["commit_window"] == "confirmed"
+
+
 def test_full_supervisor_seeds_three_promoted_canaries_and_executes_exactly_79(tmp_path: Path) -> None:
     import src.sec_regulatory.historical_backfill as backfill
 
