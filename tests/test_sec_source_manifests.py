@@ -45,6 +45,7 @@ def test_sec_source_manifest_api_is_importable() -> None:
         "get_run_status",
         "is_raw_visible",
         "record_commit_outcome",
+        "resolve_ambiguous_commit_outcome",
         "promote_certified_canary_package",
         "get_governed_evidence",
     ):
@@ -63,6 +64,7 @@ def test_sec_source_manifest_ddl_declares_typed_backfill_governance_contract() -
         "certificate_id",
         "certificate_sha256",
         "sec_record_commit_outcome",
+        "sec_resolve_ambiguous_commit_outcome",
         "sec_promote_certified_canary_package",
         "sec_query_governed_evidence",
         "sec_run_transitions_definitive_outcome_uq",
@@ -77,6 +79,7 @@ def test_sec_source_manifest_ddl_declares_typed_backfill_governance_contract() -
     assert "event_type IN ('created', 'transition', 'raw_validated', 'failed', 'retry')" in ddl
     for routine in (
         "sec_record_commit_outcome(uuid,uuid,character,character,text)",
+        "sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text)",
         "sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character)",
         "sec_query_governed_evidence(uuid,uuid,character)",
     ):
@@ -106,6 +109,68 @@ def test_real_db_schema_apply_is_idempotent() -> None:
             assert cur.fetchone()[0] == "sec_ingestion_runs"
 
 
+@pytest.mark.skipif(_test_dsn() is None, reason="SEC_TEST_DATABASE_URL ausente")
+def test_real_db_installer_rejects_same_named_malformed_governed_constraint() -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import install_schema
+
+    with psycopg.connect(_test_dsn()) as conn:
+        install_schema(conn)
+        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE sec_source_package_transitions "
+                    "DROP CONSTRAINT sec_package_transition_event_kind_ck"
+                )
+                cur.execute(
+                    "ALTER TABLE sec_source_package_transitions "
+                    "ADD CONSTRAINT sec_package_transition_event_kind_ck CHECK (event_kind <> '')"
+                )
+            conn.commit()
+            with pytest.raises(Exception, match="malformed governed constraint"):
+                install_schema(conn)
+            conn.rollback()
+        finally:
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE sec_source_package_transitions "
+                    "DROP CONSTRAINT IF EXISTS sec_package_transition_event_kind_ck"
+                )
+            conn.commit()
+            install_schema(conn)
+            conn.commit()
+
+
+@pytest.mark.skipif(_test_dsn() is None, reason="SEC_TEST_DATABASE_URL ausente")
+def test_real_db_installer_rejects_same_named_malformed_governed_index() -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import install_schema
+
+    with psycopg.connect(_test_dsn()) as conn:
+        install_schema(conn)
+        conn.commit()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DROP INDEX sec_source_package_transitions_certificate_uq")
+                cur.execute(
+                    "CREATE INDEX sec_source_package_transitions_certificate_uq "
+                    "ON sec_source_package_transitions (occurred_at)"
+                )
+            conn.commit()
+            with pytest.raises(Exception, match="malformed governed index"):
+                install_schema(conn)
+            conn.rollback()
+        finally:
+            conn.rollback()
+            with conn.cursor() as cur:
+                cur.execute("DROP INDEX IF EXISTS sec_source_package_transitions_certificate_uq")
+            conn.commit()
+            install_schema(conn)
+            conn.commit()
+
+
 @pytest.fixture
 def db_conn():
     dsn = _test_dsn()
@@ -118,9 +183,17 @@ def db_conn():
         install_schema(conn)
         with conn.cursor() as cur:
             cur.execute(
+                "ALTER TABLE sec_source_package_transitions DISABLE TRIGGER sec_source_package_transitions_truncate_reject; "
+                "ALTER TABLE sec_run_transitions DISABLE TRIGGER sec_run_transitions_truncate_reject"
+            )
+            cur.execute(
                 "TRUNCATE sec_source_package_transitions, sec_source_packages, "
                 "sec_row_issues, sec_table_reconciliations, sec_source_files, "
                 "sec_validated_raw_visibility, sec_run_transitions, sec_ingestion_runs CASCADE"
+            )
+            cur.execute(
+                "ALTER TABLE sec_source_package_transitions ENABLE TRIGGER sec_source_package_transitions_truncate_reject; "
+                "ALTER TABLE sec_run_transitions ENABLE TRIGGER sec_run_transitions_truncate_reject"
             )
         conn.commit()
         yield conn
@@ -183,7 +256,11 @@ def _governance_ready_package(conn, *, parser_version: str = "governance"):
 
 
 def test_governance_wrappers_reject_secret_shaped_or_untyped_evidence() -> None:
-    from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        record_commit_outcome,
+        resolve_ambiguous_commit_outcome,
+    )
 
     with pytest.raises(ManifestStateError, match="UUID"):
         record_commit_outcome(
@@ -203,11 +280,23 @@ def test_governance_wrappers_reject_secret_shaped_or_untyped_evidence() -> None:
             package_sha256="b" * 64,
             outcome="committed",
         )
+    with pytest.raises(ManifestStateError, match="SHA-256"):
+        resolve_ambiguous_commit_outcome(
+            None,  # type: ignore[arg-type]
+            run_id=uuid4(), supervisor_run_id=uuid4(),
+            authorization_fingerprint="a" * 64, package_sha256="b" * 64,
+            recovery_authorization_fingerprint="",
+            recovery_evidence_sha256="d" * 64, outcome="committed",
+        )
 
 
 def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_conn) -> None:
     from psycopg.pq import TransactionStatus
-    from src.sec_regulatory.manifests import ManifestStateError, record_commit_outcome
+    from src.sec_regulatory.manifests import (
+        ManifestStateError,
+        record_commit_outcome,
+        resolve_ambiguous_commit_outcome,
+    )
 
     run, _ = _governance_ready_package(db_conn)
     supervisor = uuid4()
@@ -219,25 +308,68 @@ def test_real_db_governed_commit_outcome_is_idempotent_and_conflicts_fail(db_con
         db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
         authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="ambiguous",
     ) == first
-    resolved = record_commit_outcome(
-        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
-        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
-    )
-    assert resolved.event_type == "commit_outcome_resolution"
     db_conn.commit()
-    with pytest.raises(ManifestStateError, match="conflicting"):
+    with pytest.raises(ManifestStateError, match="recovery"):
         record_commit_outcome(
             db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
-            authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="rolled_back",
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
         )
     # The wrapper must not hide an expected database conflict by committing or
     # rolling back the caller's transaction.  Callers recover explicitly.
     assert db_conn.info.transaction_status is TransactionStatus.INERROR
     db_conn.rollback()
-    assert record_commit_outcome(
+    with pytest.raises(ManifestStateError, match="distinct"):
+        resolve_ambiguous_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+            recovery_authorization_fingerprint="c" * 64,
+            recovery_evidence_sha256="d" * 64, outcome="committed",
+        )
+    resolved = resolve_ambiguous_commit_outcome(
         db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
-        authorization_fingerprint="c" * 64, package_sha256="a" * 64, outcome="committed",
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+        recovery_authorization_fingerprint="e" * 64,
+        recovery_evidence_sha256="d" * 64, outcome="committed",
+    )
+    assert resolved.event_type == "commit_outcome_resolution"
+    assert resolved.recovery_authorization_fingerprint == "e" * 64
+    assert resolve_ambiguous_commit_outcome(
+        db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+        authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+        recovery_authorization_fingerprint="e" * 64,
+        recovery_evidence_sha256="d" * 64, outcome="committed",
     ) == resolved
+    db_conn.commit()
+    with pytest.raises(ManifestStateError, match="recovery API"):
+        record_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+            outcome="committed",
+        )
+    db_conn.rollback()
+    with pytest.raises(ManifestStateError, match="conflicting"):
+        resolve_ambiguous_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+            recovery_authorization_fingerprint="e" * 64,
+            recovery_evidence_sha256="f" * 64, outcome="committed",
+        )
+    db_conn.rollback()
+    with pytest.raises(ManifestStateError, match="matching ambiguous"):
+        resolve_ambiguous_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=uuid4(),
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+            recovery_authorization_fingerprint="e" * 64,
+            recovery_evidence_sha256="d" * 64, outcome="committed",
+        )
+    db_conn.rollback()
+    with pytest.raises(ManifestStateError, match="conflicting"):
+        resolve_ambiguous_commit_outcome(
+            db_conn, run_id=run.run_id, supervisor_run_id=supervisor,
+            authorization_fingerprint="c" * 64, package_sha256="a" * 64,
+            recovery_authorization_fingerprint="f" * 64,
+            recovery_evidence_sha256="d" * 64, outcome="rolled_back",
+        )
 
 
 def test_real_db_certified_canary_promotion_is_idempotent_and_governed(db_conn) -> None:
@@ -315,6 +447,60 @@ def test_real_db_promotion_requires_raw_validation_and_matching_lineage(db_conn)
             package_sha256="a" * 64, reconciliation_sha256="d" * 64,
             certificate_id=uuid4(), certificate_sha256="e" * 64,
         )
+
+
+def test_real_db_governed_transition_ledgers_reject_truncate(db_conn) -> None:
+    for table_name in ("sec_run_transitions", "sec_source_package_transitions"):
+        with pytest.raises(Exception, match="append-only"):
+            with db_conn.cursor() as cur:
+                cur.execute(f"TRUNCATE {table_name}")
+        db_conn.rollback()
+
+
+def test_real_db_concurrent_identical_outcome_and_promotion_are_idempotent(db_conn) -> None:
+    import psycopg
+    from src.sec_regulatory.manifests import (
+        promote_certified_canary_package,
+        record_commit_outcome,
+    )
+
+    run, package = _governance_ready_package(db_conn, parser_version="governance-race")
+    supervisor = uuid4()
+    db_conn.commit()
+    outcome_kwargs = {
+        "run_id": run.run_id,
+        "supervisor_run_id": supervisor,
+        "authorization_fingerprint": "c" * 64,
+        "package_sha256": "a" * 64,
+        "outcome": "committed",
+    }
+    with psycopg.connect(_test_dsn()) as first, psycopg.connect(_test_dsn()) as second:
+        first_outcome = record_commit_outcome(first, **outcome_kwargs)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(record_commit_outcome, second, **outcome_kwargs)
+            first.commit()
+            second_outcome = pending.result(timeout=5)
+        second.commit()
+    assert second_outcome == first_outcome
+
+    promotion_kwargs = {
+        "package_id": package.package_id,
+        "ingestion_run_id": run.run_id,
+        "supervisor_run_id": supervisor,
+        "authorization_fingerprint": "c" * 64,
+        "package_sha256": "a" * 64,
+        "reconciliation_sha256": "d" * 64,
+        "certificate_id": uuid4(),
+        "certificate_sha256": "e" * 64,
+    }
+    with psycopg.connect(_test_dsn()) as first, psycopg.connect(_test_dsn()) as second:
+        first_promotion = promote_certified_canary_package(first, **promotion_kwargs)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(promote_certified_canary_package, second, **promotion_kwargs)
+            first.commit()
+            second_promotion = pending.result(timeout=5)
+        second.commit()
+    assert second_promotion == first_promotion
 
 
 def test_real_db_certificate_cannot_cross_runs_and_query_returns_typed_evidence(db_conn) -> None:

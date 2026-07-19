@@ -72,6 +72,21 @@ class CommitOutcome:
 
 
 @dataclass(frozen=True)
+class CommitResolution:
+    """Resolução definitiva vinculada a uma autorização de recuperação distinta."""
+
+    transition_id: int
+    event_type: str
+    run_id: UUID
+    supervisor_run_id: UUID
+    authorization_fingerprint: str
+    package_sha256: str
+    outcome: str
+    recovery_authorization_fingerprint: str
+    recovery_evidence_sha256: str
+
+
+@dataclass(frozen=True)
 class CanaryPromotion:
     """Promoção única de um pacote canário certificada pela transação no banco."""
 
@@ -92,6 +107,8 @@ class GovernedEvidence:
     authorization_fingerprint: str
     package_sha256: str
     commit_outcome: str | None
+    recovery_authorization_fingerprint: str | None
+    recovery_evidence_sha256: str | None
     reconciliation_sha256: str
     certificate_id: UUID
     certificate_sha256: str
@@ -547,6 +564,58 @@ def record_commit_outcome(
     return CommitOutcome(*row)
 
 
+def resolve_ambiguous_commit_outcome(
+    conn: psycopg.Connection,
+    *,
+    run_id: UUID,
+    supervisor_run_id: UUID,
+    authorization_fingerprint: str,
+    package_sha256: str,
+    recovery_authorization_fingerprint: str,
+    recovery_evidence_sha256: str,
+    outcome: str,
+) -> CommitResolution:
+    """Resolve ``ambiguous`` somente sob autorização/evidência de recuperação."""
+    _require_uuid(run_id, name="run_id")
+    _require_uuid(supervisor_run_id, name="supervisor_run_id")
+    _require_sha256(authorization_fingerprint, name="authorization_fingerprint")
+    _require_sha256(package_sha256, name="package_sha256")
+    _require_sha256(
+        recovery_authorization_fingerprint,
+        name="recovery_authorization_fingerprint",
+    )
+    _require_sha256(recovery_evidence_sha256, name="recovery_evidence_sha256")
+    if recovery_authorization_fingerprint == authorization_fingerprint:
+        raise ManifestStateError("recovery authorization fingerprint deve ser distinct da autorização original")
+    if outcome not in {"committed", "rolled_back"}:
+        raise ManifestStateError("outcome de recuperação deve ser committed ou rolled_back")
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT transition_id, event_type, run_id, supervisor_run_id,
+                       authorization_fingerprint, package_sha256, commit_outcome,
+                       recovery_authorization_fingerprint, recovery_evidence_sha256
+                FROM sec_resolve_ambiguous_commit_outcome(%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    supervisor_run_id,
+                    authorization_fingerprint,
+                    package_sha256,
+                    recovery_authorization_fingerprint,
+                    recovery_evidence_sha256,
+                    outcome,
+                ),
+            )
+            row = cur.fetchone()
+    except psycopg.Error as exc:
+        raise ManifestStateError(str(exc)) from exc
+    if row is None:
+        raise ManifestStateError("o banco não retornou a resolução de recuperação")
+    return CommitResolution(*row)
+
+
 def promote_certified_canary_package(
     conn: psycopg.Connection,
     *,
@@ -611,6 +680,7 @@ def get_governed_evidence(
             """
             SELECT package_id, ingestion_run_id, supervisor_run_id,
                    authorization_fingerprint, package_sha256, commit_outcome,
+                   recovery_authorization_fingerprint, recovery_evidence_sha256,
                    reconciliation_sha256, certificate_id, certificate_sha256, promoted_at
             FROM sec_query_governed_evidence(%s, %s, %s)
             """,

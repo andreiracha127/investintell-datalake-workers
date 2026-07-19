@@ -174,7 +174,9 @@ ALTER TABLE sec_run_transitions
     ADD COLUMN IF NOT EXISTS supervisor_run_id uuid,
     ADD COLUMN IF NOT EXISTS authorization_fingerprint char(64),
     ADD COLUMN IF NOT EXISTS governed_package_sha256 char(64),
-    ADD COLUMN IF NOT EXISTS commit_outcome text;
+    ADD COLUMN IF NOT EXISTS commit_outcome text,
+    ADD COLUMN IF NOT EXISTS recovery_authorization_fingerprint char(64),
+    ADD COLUMN IF NOT EXISTS recovery_evidence_sha256 char(64);
 
 ALTER TABLE sec_source_package_transitions
     ADD COLUMN IF NOT EXISTS event_kind text NOT NULL DEFAULT 'lifecycle',
@@ -202,26 +204,57 @@ BEGIN
             )
         );
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sec_run_transition_governance_fields_ck') THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conname = 'sec_run_transition_governance_fields_ck'
+          AND conrelid = 'public.sec_run_transitions'::regclass
+          AND pg_get_constraintdef(oid, true) IN (
+              $old$CHECK ((event_type = ANY (ARRAY['created'::text, 'transition'::text, 'raw_validated'::text, 'failed'::text, 'retry'::text])) AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL AND governed_package_sha256 IS NULL AND commit_outcome IS NULL OR event_type = 'commit_outcome'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text, 'ambiguous'::text])) OR event_type = 'commit_outcome_resolution'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text])))$old$,
+              $old$CHECK ((event_type = ANY (ARRAY['created'::text, 'transition'::text, 'raw_validated'::text, 'failed'::text, 'retry'::text])) AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL AND governed_package_sha256 IS NULL AND commit_outcome IS NULL AND recovery_authorization_fingerprint IS NULL AND recovery_evidence_sha256 IS NULL OR event_type = 'commit_outcome'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text, 'ambiguous'::text])) AND recovery_authorization_fingerprint IS NULL AND recovery_evidence_sha256 IS NULL OR event_type = 'commit_outcome_resolution'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text])) AND recovery_authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND recovery_authorization_fingerprint <> authorization_fingerprint AND recovery_evidence_sha256 ~ '^[0-9a-f]{64}$'::text)$old$
+          )
+    ) THEN
+        ALTER TABLE sec_run_transitions DROP CONSTRAINT sec_run_transition_governance_fields_ck;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conname = 'sec_run_transition_governance_fields_ck'
+    ) THEN
         ALTER TABLE sec_run_transitions ADD CONSTRAINT sec_run_transition_governance_fields_ck CHECK (
             (
                 event_type IN ('created', 'transition', 'raw_validated', 'failed', 'retry')
                 AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL
                 AND governed_package_sha256 IS NULL AND commit_outcome IS NULL
+                AND recovery_authorization_fingerprint IS NULL
+                AND recovery_evidence_sha256 IS NULL
             )
             OR (
                 event_type = 'commit_outcome'
                 AND supervisor_run_id IS NOT NULL
+                AND authorization_fingerprint IS NOT NULL
                 AND authorization_fingerprint ~ '^[0-9a-f]{64}$'
+                AND governed_package_sha256 IS NOT NULL
                 AND governed_package_sha256 ~ '^[0-9a-f]{64}$'
+                AND commit_outcome IS NOT NULL
                 AND commit_outcome IN ('committed', 'rolled_back', 'ambiguous')
+                AND recovery_authorization_fingerprint IS NULL
+                AND recovery_evidence_sha256 IS NULL
             )
             OR (
                 event_type = 'commit_outcome_resolution'
                 AND supervisor_run_id IS NOT NULL
+                AND authorization_fingerprint IS NOT NULL
                 AND authorization_fingerprint ~ '^[0-9a-f]{64}$'
+                AND governed_package_sha256 IS NOT NULL
                 AND governed_package_sha256 ~ '^[0-9a-f]{64}$'
+                AND commit_outcome IS NOT NULL
                 AND commit_outcome IN ('committed', 'rolled_back')
+                AND recovery_authorization_fingerprint IS NOT NULL
+                AND recovery_authorization_fingerprint ~ '^[0-9a-f]{64}$'
+                AND recovery_authorization_fingerprint <> authorization_fingerprint
+                AND recovery_evidence_sha256 IS NOT NULL
+                AND recovery_evidence_sha256 ~ '^[0-9a-f]{64}$'
             )
         );
     END IF;
@@ -230,7 +263,22 @@ BEGIN
             event_kind IN ('lifecycle', 'canary_promoted')
         );
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'sec_package_transition_governance_fields_ck') THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conname = 'sec_package_transition_governance_fields_ck'
+          AND conrelid = 'public.sec_source_package_transitions'::regclass
+          AND pg_get_constraintdef(oid, true) =
+              $old$CHECK (event_kind = 'lifecycle'::text AND ingestion_run_id IS NULL AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL AND governed_package_sha256 IS NULL AND reconciliation_sha256 IS NULL AND certificate_id IS NULL AND certificate_sha256 IS NULL OR event_kind = 'canary_promoted'::text AND ingestion_run_id IS NOT NULL AND supervisor_run_id IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND reconciliation_sha256 ~ '^[0-9a-f]{64}$'::text AND certificate_id IS NOT NULL AND certificate_sha256 ~ '^[0-9a-f]{64}$'::text)$old$
+    ) THEN
+        ALTER TABLE sec_source_package_transitions
+            DROP CONSTRAINT sec_package_transition_governance_fields_ck;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace
+          AND conname = 'sec_package_transition_governance_fields_ck'
+    ) THEN
         ALTER TABLE sec_source_package_transitions ADD CONSTRAINT sec_package_transition_governance_fields_ck CHECK (
             (
                 event_kind = 'lifecycle'
@@ -242,10 +290,15 @@ BEGIN
             OR (
                 event_kind = 'canary_promoted'
                 AND ingestion_run_id IS NOT NULL AND supervisor_run_id IS NOT NULL
+                AND authorization_fingerprint IS NOT NULL
                 AND authorization_fingerprint ~ '^[0-9a-f]{64}$'
+                AND governed_package_sha256 IS NOT NULL
                 AND governed_package_sha256 ~ '^[0-9a-f]{64}$'
+                AND reconciliation_sha256 IS NOT NULL
                 AND reconciliation_sha256 ~ '^[0-9a-f]{64}$'
-                AND certificate_id IS NOT NULL AND certificate_sha256 ~ '^[0-9a-f]{64}$'
+                AND certificate_id IS NOT NULL
+                AND certificate_sha256 IS NOT NULL
+                AND certificate_sha256 ~ '^[0-9a-f]{64}$'
             )
         );
     END IF;
@@ -328,6 +381,109 @@ CREATE UNIQUE INDEX IF NOT EXISTS sec_source_package_transitions_canary_promotio
 CREATE UNIQUE INDEX IF NOT EXISTS sec_source_package_transitions_certificate_uq
     ON sec_source_package_transitions (certificate_id)
     WHERE event_kind = 'canary_promoted';
+
+-- IF NOT EXISTS must never turn a same-named but weaker object into apparent
+-- success.  PostgreSQL 18 renders these definitions deterministically; compare
+-- the normalized catalog contract and owning relation after every install.
+DO $$
+DECLARE
+    expected record;
+    object_count integer;
+    actual_relation oid;
+    actual_definition text;
+BEGIN
+    FOR expected IN
+        SELECT * FROM (VALUES
+            (
+                'sec_run_transition_event_type_ck',
+                'public.sec_run_transitions'::regclass,
+                $definition$CHECK (event_type = ANY (ARRAY['created'::text, 'transition'::text, 'raw_validated'::text, 'failed'::text, 'retry'::text, 'commit_outcome'::text, 'commit_outcome_resolution'::text]))$definition$
+            ),
+            (
+                'sec_run_transition_governance_fields_ck',
+                'public.sec_run_transitions'::regclass,
+                $definition$CHECK ((event_type = ANY (ARRAY['created'::text, 'transition'::text, 'raw_validated'::text, 'failed'::text, 'retry'::text])) AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL AND governed_package_sha256 IS NULL AND commit_outcome IS NULL AND recovery_authorization_fingerprint IS NULL AND recovery_evidence_sha256 IS NULL OR event_type = 'commit_outcome'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 IS NOT NULL AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND commit_outcome IS NOT NULL AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text, 'ambiguous'::text])) AND recovery_authorization_fingerprint IS NULL AND recovery_evidence_sha256 IS NULL OR event_type = 'commit_outcome_resolution'::text AND supervisor_run_id IS NOT NULL AND authorization_fingerprint IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 IS NOT NULL AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND commit_outcome IS NOT NULL AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text])) AND recovery_authorization_fingerprint IS NOT NULL AND recovery_authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND recovery_authorization_fingerprint <> authorization_fingerprint AND recovery_evidence_sha256 IS NOT NULL AND recovery_evidence_sha256 ~ '^[0-9a-f]{64}$'::text)$definition$
+            ),
+            (
+                'sec_package_transition_event_kind_ck',
+                'public.sec_source_package_transitions'::regclass,
+                $definition$CHECK (event_kind = ANY (ARRAY['lifecycle'::text, 'canary_promoted'::text]))$definition$
+            ),
+            (
+                'sec_package_transition_governance_fields_ck',
+                'public.sec_source_package_transitions'::regclass,
+                $definition$CHECK (event_kind = 'lifecycle'::text AND ingestion_run_id IS NULL AND supervisor_run_id IS NULL AND authorization_fingerprint IS NULL AND governed_package_sha256 IS NULL AND reconciliation_sha256 IS NULL AND certificate_id IS NULL AND certificate_sha256 IS NULL OR event_kind = 'canary_promoted'::text AND ingestion_run_id IS NOT NULL AND supervisor_run_id IS NOT NULL AND authorization_fingerprint IS NOT NULL AND authorization_fingerprint ~ '^[0-9a-f]{64}$'::text AND governed_package_sha256 IS NOT NULL AND governed_package_sha256 ~ '^[0-9a-f]{64}$'::text AND reconciliation_sha256 IS NOT NULL AND reconciliation_sha256 ~ '^[0-9a-f]{64}$'::text AND certificate_id IS NOT NULL AND certificate_sha256 IS NOT NULL AND certificate_sha256 ~ '^[0-9a-f]{64}$'::text)$definition$
+            )
+        ) AS governed_constraint(object_name, relation_oid, definition)
+    LOOP
+        SELECT count(*) INTO object_count
+        FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace AND conname = expected.object_name;
+        IF object_count <> 1 THEN
+            RAISE EXCEPTION 'malformed governed constraint %: expected exactly one public object',
+                expected.object_name;
+        END IF;
+        SELECT conrelid, pg_get_constraintdef(oid, true)
+        INTO actual_relation, actual_definition
+        FROM pg_constraint
+        WHERE connamespace = 'public'::regnamespace AND conname = expected.object_name;
+        IF actual_relation <> expected.relation_oid
+           OR btrim(regexp_replace(actual_definition, '[[:space:]]+', ' ', 'g')) <>
+              btrim(regexp_replace(expected.definition, '[[:space:]]+', ' ', 'g')) THEN
+            RAISE EXCEPTION 'malformed governed constraint %', expected.object_name;
+        END IF;
+    END LOOP;
+
+    FOR expected IN
+        SELECT * FROM (VALUES
+            (
+                'sec_run_transitions_definitive_outcome_uq',
+                'public.sec_run_transitions'::regclass,
+                $definition$CREATE UNIQUE INDEX sec_run_transitions_definitive_outcome_uq ON public.sec_run_transitions USING btree (run_id, authorization_fingerprint) WHERE ((event_type = ANY (ARRAY['commit_outcome'::text, 'commit_outcome_resolution'::text])) AND (commit_outcome = ANY (ARRAY['committed'::text, 'rolled_back'::text])))$definition$
+            ),
+            (
+                'sec_run_transitions_ambiguous_outcome_uq',
+                'public.sec_run_transitions'::regclass,
+                $definition$CREATE UNIQUE INDEX sec_run_transitions_ambiguous_outcome_uq ON public.sec_run_transitions USING btree (run_id, authorization_fingerprint) WHERE ((event_type = 'commit_outcome'::text) AND (commit_outcome = 'ambiguous'::text))$definition$
+            ),
+            (
+                'sec_source_package_transitions_canary_promotion_uq',
+                'public.sec_source_package_transitions'::regclass,
+                $definition$CREATE UNIQUE INDEX sec_source_package_transitions_canary_promotion_uq ON public.sec_source_package_transitions USING btree (package_id) WHERE (event_kind = 'canary_promoted'::text)$definition$
+            ),
+            (
+                'sec_source_package_transitions_certificate_uq',
+                'public.sec_source_package_transitions'::regclass,
+                $definition$CREATE UNIQUE INDEX sec_source_package_transitions_certificate_uq ON public.sec_source_package_transitions USING btree (certificate_id) WHERE (event_kind = 'canary_promoted'::text)$definition$
+            )
+        ) AS governed_index(object_name, relation_oid, definition)
+    LOOP
+        SELECT count(*) INTO object_count
+        FROM pg_class AS index_class
+        JOIN pg_namespace AS index_namespace ON index_namespace.oid = index_class.relnamespace
+        WHERE index_namespace.nspname = 'public'
+          AND index_class.relname = expected.object_name
+          AND index_class.relkind = 'i';
+        IF object_count <> 1 THEN
+            RAISE EXCEPTION 'malformed governed index %: expected exactly one public object',
+                expected.object_name;
+        END IF;
+        SELECT index_catalog.indrelid, pg_get_indexdef(index_catalog.indexrelid)
+        INTO actual_relation, actual_definition
+        FROM pg_class AS index_class
+        JOIN pg_namespace AS index_namespace ON index_namespace.oid = index_class.relnamespace
+        JOIN pg_index AS index_catalog ON index_catalog.indexrelid = index_class.oid
+        WHERE index_namespace.nspname = 'public'
+          AND index_class.relname = expected.object_name
+          AND index_class.relkind = 'i';
+        IF actual_relation <> expected.relation_oid
+           OR btrim(regexp_replace(actual_definition, '[[:space:]]+', ' ', 'g')) <>
+              btrim(regexp_replace(expected.definition, '[[:space:]]+', ' ', 'g')) THEN
+            RAISE EXCEPTION 'malformed governed index %', expected.object_name;
+        END IF;
+    END LOOP;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION sec_raw_run_reconciles(target_run_id uuid)
 RETURNS boolean
@@ -618,6 +774,13 @@ BEGIN
     IF target_outcome NOT IN ('committed', 'rolled_back', 'ambiguous') THEN
         RAISE EXCEPTION 'invalid governed commit outcome %', target_outcome;
     END IF;
+    IF target_run_id IS NULL OR target_supervisor_run_id IS NULL
+       OR target_authorization_fingerprint IS NULL
+       OR target_authorization_fingerprint !~ '^[0-9a-f]{64}$'
+       OR target_package_sha256 IS NULL
+       OR target_package_sha256 !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'governed commit outcome requires typed UUID/SHA-256 evidence';
+    END IF;
     SELECT ingestion_run.package_sha256 INTO persisted_package_sha256
     FROM sec_ingestion_runs AS ingestion_run
     WHERE ingestion_run.run_id = target_run_id FOR UPDATE;
@@ -628,7 +791,8 @@ BEGIN
 
     SELECT run_transition.transition_id, run_transition.event_type,
            run_transition.supervisor_run_id, run_transition.governed_package_sha256,
-           run_transition.commit_outcome
+           run_transition.commit_outcome, run_transition.recovery_authorization_fingerprint,
+           run_transition.recovery_evidence_sha256
     INTO existing
     FROM sec_run_transitions AS run_transition
     WHERE run_transition.run_id = target_run_id
@@ -637,6 +801,9 @@ BEGIN
     ORDER BY run_transition.transition_id DESC
     LIMIT 1 FOR UPDATE;
     IF FOUND THEN
+        IF existing.event_type = 'commit_outcome_resolution' THEN
+            RAISE EXCEPTION 'resolved outcome requires the governed recovery API for run %', target_run_id;
+        END IF;
         IF existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
            OR existing.governed_package_sha256 IS DISTINCT FROM target_package_sha256
            OR existing.commit_outcome IS DISTINCT FROM target_outcome THEN
@@ -662,27 +829,13 @@ BEGIN
            OR existing.governed_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
             RAISE EXCEPTION 'conflicting ambiguous governed lineage for run %', target_run_id;
         END IF;
-        IF target_outcome = 'ambiguous' THEN
-            RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
-                existing.supervisor_run_id, target_authorization_fingerprint,
-                existing.governed_package_sha256, existing.commit_outcome;
-            RETURN;
+        IF target_outcome <> 'ambiguous' THEN
+            RAISE EXCEPTION 'ambiguous outcome requires distinct governed recovery authorization for run %',
+                target_run_id;
         END IF;
-        INSERT INTO sec_run_transitions (
-            run_id, from_state, to_state, event_type, supervisor_run_id,
-            authorization_fingerprint, governed_package_sha256, commit_outcome
-        ) VALUES (
-            target_run_id, NULL, 'governed_resolution', 'commit_outcome_resolution',
-            target_supervisor_run_id, target_authorization_fingerprint,
-            target_package_sha256, target_outcome
-        )
-        RETURNING sec_run_transitions.transition_id, sec_run_transitions.event_type,
-            sec_run_transitions.run_id, sec_run_transitions.supervisor_run_id,
-            sec_run_transitions.authorization_fingerprint,
-            sec_run_transitions.governed_package_sha256, sec_run_transitions.commit_outcome
-        INTO transition_id, event_type, run_id, supervisor_run_id, authorization_fingerprint,
-            package_sha256, commit_outcome;
-        RETURN NEXT;
+        RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
+            existing.supervisor_run_id, target_authorization_fingerprint,
+            existing.governed_package_sha256, existing.commit_outcome;
         RETURN;
     END IF;
 
@@ -700,6 +853,126 @@ BEGIN
         sec_run_transitions.governed_package_sha256, sec_run_transitions.commit_outcome
     INTO transition_id, event_type, run_id, supervisor_run_id, authorization_fingerprint,
         package_sha256, commit_outcome;
+    RETURN NEXT;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION sec_resolve_ambiguous_commit_outcome(
+    target_run_id uuid,
+    target_supervisor_run_id uuid,
+    target_authorization_fingerprint character(64),
+    target_package_sha256 character(64),
+    target_recovery_authorization_fingerprint character(64),
+    target_recovery_evidence_sha256 character(64),
+    target_outcome text
+)
+RETURNS TABLE (
+    transition_id bigint,
+    event_type text,
+    run_id uuid,
+    supervisor_run_id uuid,
+    authorization_fingerprint character(64),
+    package_sha256 character(64),
+    commit_outcome text,
+    recovery_authorization_fingerprint character(64),
+    recovery_evidence_sha256 character(64)
+)
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+    persisted_package_sha256 character(64);
+    ambiguous_row record;
+    existing record;
+BEGIN
+    IF target_outcome NOT IN ('committed', 'rolled_back') THEN
+        RAISE EXCEPTION 'recovery resolution outcome must be committed or rolled_back';
+    END IF;
+    IF target_run_id IS NULL OR target_supervisor_run_id IS NULL
+       OR target_authorization_fingerprint IS NULL
+       OR target_authorization_fingerprint !~ '^[0-9a-f]{64}$'
+       OR target_package_sha256 IS NULL
+       OR target_package_sha256 !~ '^[0-9a-f]{64}$'
+       OR target_recovery_authorization_fingerprint IS NULL
+       OR target_recovery_authorization_fingerprint !~ '^[0-9a-f]{64}$'
+       OR target_recovery_evidence_sha256 IS NULL
+       OR target_recovery_evidence_sha256 !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'governed recovery requires typed UUID/SHA-256 evidence';
+    END IF;
+    IF target_recovery_authorization_fingerprint = target_authorization_fingerprint THEN
+        RAISE EXCEPTION 'recovery authorization fingerprint must be distinct from original authorization';
+    END IF;
+    SELECT ingestion_run.package_sha256 INTO persisted_package_sha256
+    FROM sec_ingestion_runs AS ingestion_run
+    WHERE ingestion_run.run_id = target_run_id FOR UPDATE;
+    IF NOT FOUND THEN RAISE EXCEPTION 'unknown SEC run %', target_run_id; END IF;
+    IF persisted_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
+        RAISE EXCEPTION 'governed package hash does not match recovery run %', target_run_id;
+    END IF;
+
+    SELECT run_transition.transition_id, run_transition.supervisor_run_id,
+           run_transition.governed_package_sha256
+    INTO ambiguous_row
+    FROM sec_run_transitions AS run_transition
+    WHERE run_transition.run_id = target_run_id
+      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
+      AND run_transition.event_type = 'commit_outcome'
+      AND run_transition.commit_outcome = 'ambiguous'
+    LIMIT 1 FOR UPDATE;
+    IF NOT FOUND
+       OR ambiguous_row.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
+       OR ambiguous_row.governed_package_sha256 IS DISTINCT FROM target_package_sha256 THEN
+        RAISE EXCEPTION 'recovery requires matching ambiguous original lineage for run %', target_run_id;
+    END IF;
+
+    SELECT run_transition.transition_id, run_transition.event_type,
+           run_transition.supervisor_run_id, run_transition.governed_package_sha256,
+           run_transition.commit_outcome, run_transition.recovery_authorization_fingerprint,
+           run_transition.recovery_evidence_sha256
+    INTO existing
+    FROM sec_run_transitions AS run_transition
+    WHERE run_transition.run_id = target_run_id
+      AND run_transition.authorization_fingerprint = target_authorization_fingerprint
+      AND run_transition.commit_outcome IN ('committed', 'rolled_back')
+    LIMIT 1 FOR UPDATE;
+    IF FOUND THEN
+        IF existing.event_type <> 'commit_outcome_resolution'
+           OR existing.supervisor_run_id IS DISTINCT FROM target_supervisor_run_id
+           OR existing.governed_package_sha256 IS DISTINCT FROM target_package_sha256
+           OR existing.commit_outcome IS DISTINCT FROM target_outcome
+           OR existing.recovery_authorization_fingerprint IS DISTINCT FROM
+              target_recovery_authorization_fingerprint
+           OR existing.recovery_evidence_sha256 IS DISTINCT FROM target_recovery_evidence_sha256 THEN
+            RAISE EXCEPTION 'conflicting governed recovery resolution for run %', target_run_id;
+        END IF;
+        RETURN QUERY SELECT existing.transition_id, existing.event_type, target_run_id,
+            existing.supervisor_run_id, target_authorization_fingerprint,
+            existing.governed_package_sha256, existing.commit_outcome,
+            existing.recovery_authorization_fingerprint, existing.recovery_evidence_sha256;
+        RETURN;
+    END IF;
+
+    INSERT INTO sec_run_transitions (
+        run_id, from_state, to_state, event_type, supervisor_run_id,
+        authorization_fingerprint, governed_package_sha256, commit_outcome,
+        recovery_authorization_fingerprint, recovery_evidence_sha256
+    ) VALUES (
+        target_run_id, NULL, 'governed_resolution', 'commit_outcome_resolution',
+        target_supervisor_run_id, target_authorization_fingerprint,
+        target_package_sha256, target_outcome,
+        target_recovery_authorization_fingerprint, target_recovery_evidence_sha256
+    )
+    RETURNING sec_run_transitions.transition_id, sec_run_transitions.event_type,
+        sec_run_transitions.run_id, sec_run_transitions.supervisor_run_id,
+        sec_run_transitions.authorization_fingerprint,
+        sec_run_transitions.governed_package_sha256, sec_run_transitions.commit_outcome,
+        sec_run_transitions.recovery_authorization_fingerprint,
+        sec_run_transitions.recovery_evidence_sha256
+    INTO transition_id, event_type, run_id, supervisor_run_id, authorization_fingerprint,
+        package_sha256, commit_outcome, recovery_authorization_fingerprint,
+        recovery_evidence_sha256;
     RETURN NEXT;
 END;
 $$;
@@ -732,6 +1005,17 @@ DECLARE
     outcome_row record;
     existing record;
 BEGIN
+    IF target_package_id IS NULL OR target_ingestion_run_id IS NULL
+       OR target_supervisor_run_id IS NULL OR target_certificate_id IS NULL
+       OR target_authorization_fingerprint IS NULL
+       OR target_authorization_fingerprint !~ '^[0-9a-f]{64}$'
+       OR target_package_sha256 IS NULL OR target_package_sha256 !~ '^[0-9a-f]{64}$'
+       OR target_reconciliation_sha256 IS NULL
+       OR target_reconciliation_sha256 !~ '^[0-9a-f]{64}$'
+       OR target_certificate_sha256 IS NULL
+       OR target_certificate_sha256 !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'canary promotion requires typed UUID/SHA-256 evidence';
+    END IF;
     PERFORM pg_advisory_xact_lock(hashtextextended('sec:certificate:' || target_certificate_id::text, 0));
     SELECT source_package.package_id, source_package.run_id, source_package.package_sha256,
            source_package.package_state, source_package.retry_count
@@ -815,6 +1099,21 @@ BEGIN
 END;
 $$;
 
+DO $$
+DECLARE query_result text;
+BEGIN
+    SELECT pg_get_function_result(to_regprocedure('public.sec_query_governed_evidence(uuid,uuid,character)'))
+    INTO query_result;
+    IF query_result =
+       'TABLE(package_id uuid, ingestion_run_id uuid, supervisor_run_id uuid, authorization_fingerprint character, package_sha256 character, commit_outcome text, reconciliation_sha256 character, certificate_id uuid, certificate_sha256 character, promoted_at timestamp with time zone)' THEN
+        DROP FUNCTION sec_query_governed_evidence(uuid,uuid,character);
+    ELSIF query_result IS NOT NULL AND query_result <>
+       'TABLE(package_id uuid, ingestion_run_id uuid, supervisor_run_id uuid, authorization_fingerprint character, package_sha256 character, commit_outcome text, recovery_authorization_fingerprint character, recovery_evidence_sha256 character, reconciliation_sha256 character, certificate_id uuid, certificate_sha256 character, promoted_at timestamp with time zone)' THEN
+        RAISE EXCEPTION 'malformed governed evidence query result';
+    END IF;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION sec_query_governed_evidence(
     target_package_id uuid,
     target_ingestion_run_id uuid,
@@ -827,6 +1126,8 @@ RETURNS TABLE (
     authorization_fingerprint character(64),
     package_sha256 character(64),
     commit_outcome text,
+    recovery_authorization_fingerprint character(64),
+    recovery_evidence_sha256 character(64),
     reconciliation_sha256 character(64),
     certificate_id uuid,
     certificate_sha256 character(64),
@@ -839,11 +1140,13 @@ SET search_path = pg_catalog, public
 AS $$
     SELECT p.package_id, p.ingestion_run_id, p.supervisor_run_id,
            p.authorization_fingerprint, p.governed_package_sha256,
-           o.commit_outcome, p.reconciliation_sha256, p.certificate_id,
+           o.commit_outcome, o.recovery_authorization_fingerprint,
+           o.recovery_evidence_sha256, p.reconciliation_sha256, p.certificate_id,
            p.certificate_sha256, p.occurred_at
     FROM sec_source_package_transitions AS p
     LEFT JOIN LATERAL (
-        SELECT r.commit_outcome
+        SELECT r.commit_outcome, r.recovery_authorization_fingerprint,
+               r.recovery_evidence_sha256
         FROM sec_run_transitions AS r
         WHERE r.run_id = p.ingestion_run_id
           AND r.authorization_fingerprint = p.authorization_fingerprint
@@ -1019,9 +1322,15 @@ FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
 DROP TRIGGER IF EXISTS sec_run_transitions_append_only ON sec_run_transitions;
 CREATE TRIGGER sec_run_transitions_append_only BEFORE UPDATE OR DELETE ON sec_run_transitions
 FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
+DROP TRIGGER IF EXISTS sec_run_transitions_truncate_reject ON sec_run_transitions;
+CREATE TRIGGER sec_run_transitions_truncate_reject BEFORE TRUNCATE ON sec_run_transitions
+FOR EACH STATEMENT EXECUTE FUNCTION sec_reject_append_only_mutation();
 DROP TRIGGER IF EXISTS sec_source_package_transitions_append_only ON sec_source_package_transitions;
 CREATE TRIGGER sec_source_package_transitions_append_only BEFORE UPDATE OR DELETE ON sec_source_package_transitions
 FOR EACH ROW EXECUTE FUNCTION sec_reject_append_only_mutation();
+DROP TRIGGER IF EXISTS sec_source_package_transitions_truncate_reject ON sec_source_package_transitions;
+CREATE TRIGGER sec_source_package_transitions_truncate_reject BEFORE TRUNCATE ON sec_source_package_transitions
+FOR EACH STATEMENT EXECUTE FUNCTION sec_reject_append_only_mutation();
 DROP TRIGGER IF EXISTS sec_validated_raw_visibility_eligible ON sec_validated_raw_visibility;
 CREATE TRIGGER sec_validated_raw_visibility_eligible BEFORE INSERT OR UPDATE ON sec_validated_raw_visibility
 FOR EACH ROW EXECUTE FUNCTION sec_validate_raw_visibility_marker();
@@ -1048,5 +1357,6 @@ REVOKE ALL ON FUNCTION sec_validate_raw_run(uuid, text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_audit_package_discovery() FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_audit_run_lifecycle() FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_record_commit_outcome(uuid,uuid,character,character,text) FROM PUBLIC;
+REVOKE ALL ON FUNCTION sec_resolve_ambiguous_commit_outcome(uuid,uuid,character,character,character,character,text) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_promote_certified_canary_package(uuid,uuid,uuid,character,character,character,uuid,character) FROM PUBLIC;
 REVOKE ALL ON FUNCTION sec_query_governed_evidence(uuid,uuid,character) FROM PUBLIC;

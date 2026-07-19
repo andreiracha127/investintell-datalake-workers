@@ -61,7 +61,15 @@ def _isolated_nport_database() -> None:
         install_manifest_schema(conn)
         install_nport_schema(conn)
         with conn.cursor() as cur:
+            cur.execute(
+                "ALTER TABLE sec_source_package_transitions DISABLE TRIGGER sec_source_package_transitions_truncate_reject; "
+                "ALTER TABLE sec_run_transitions DISABLE TRIGGER sec_run_transitions_truncate_reject"
+            )
             cur.execute("TRUNCATE nport_raw_rows, nport_holding_accession_map, sec_source_packages, sec_ingestion_runs CASCADE")
+            cur.execute(
+                "ALTER TABLE sec_source_package_transitions ENABLE TRIGGER sec_source_package_transitions_truncate_reject; "
+                "ALTER TABLE sec_run_transitions ENABLE TRIGGER sec_run_transitions_truncate_reject"
+            )
         conn.commit()
     yield
 
