@@ -290,6 +290,42 @@ def _decode_key(value: object) -> tuple[str, ...] | None:
     return tuple(value)
 
 
+def validate_calibration_checkpoint_bytes(raw: bytes, *, evidence: object, approval: object, mode: str, series_ids: Sequence[str], run_id: str | None = None) -> dict[str, object]:
+    """Validate one already-captured checkpoint payload without filesystem access or a connection."""
+    evidence, approval, series = _governance(evidence, approval, mode=mode, series_ids=series_ids)
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_duplicate, parse_constant=_nonfinite)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise PilotError("run_budget_required") from exc
+    budget = _BUDGETS[mode]
+    if not isinstance(value, dict) or set(value) != _CHECKPOINT_KEYS or not isinstance(value.get("run_id"), str) or not value["run_id"] or (run_id is not None and value["run_id"] != run_id):
+        raise PilotError("run_budget_required")
+    expected = {"schema_version": "bond-pilot-calibration-checkpoint-v2", "evidence_sha256": evidence.artifact_sha256, "approval_sha256": approval.artifact_sha256, "approval_authority_sha256": _approval_authority_hash(approval), "publication_sha256": evidence.values["publication_sha256"], "mode": mode, "series_ids": list(series), "seam": SEAM_NAME, "relation": V2_RELATION, "query_version": _QUERY_VERSION, "query_sha256": _QUERY_SHA256, "method_version": _METHOD_VERSION, "method_sha256": _METHOD_SHA256}
+    if any(value.get(key) != item for key, item in expected.items()):
+        raise PilotError("run_budget_required")
+    pages, rows, elapsed = value["pages"], value["rows"], value["elapsed_seconds"]
+    if not isinstance(pages, int) or isinstance(pages, bool) or not isinstance(rows, int) or isinstance(rows, bool) or pages < 0 or pages > budget.max_pages or rows < 0 or rows > budget.max_rows or not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool) or not math.isfinite(elapsed) or elapsed < 0 or not _sha(value["output_hash"]):
+        raise PilotError("run_budget_required")
+    try:
+        reports = _decode_reports(value["resolved_reports"], series) if value["resolved_reports"] else ()
+        key = _decode_key(value["last_key"])
+        if key is not None:
+            key = (key[0], _date(key[1]), *key[2:])
+    except PilotError as exc:
+        raise PilotError("run_budget_required") from exc
+    state, reason = value["output_state"], value["stop_reason"]
+    if state not in {"new", "in_progress", "complete", "budget_reached", "stopped"} or reason is not None and not isinstance(reason, str):
+        raise PilotError("run_budget_required")
+    if state == "stopped" and (not isinstance(reason, str) or not reason or (rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or key is not None or value["output_hash"] != _EMPTY_HASH))):
+        raise PilotError("run_budget_required")
+    if state == "stopped" and rows and rows != pages * budget.page_size:
+        raise PilotError("run_budget_required")
+    if key is not None and tuple(key[:4]) not in reports:
+        raise PilotError("run_budget_required")
+    value["resolved_reports"], value["last_key"] = reports, key
+    return value
+
+
 def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series: tuple[str, ...], run_id: str, budget: CalibrationBudget) -> dict[str, object]:
     if not path.exists():
         return _checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=(), last_key=None, pages=0, rows=0, elapsed_seconds=0.0, output_hash=_EMPTY_HASH, output_state="new", stop_reason=None)

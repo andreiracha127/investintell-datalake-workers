@@ -30,12 +30,12 @@ class _Connection:
         return None
 
 
-def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64, *, state: str = "complete", reason: str | None = None, run_id: str = "calibration") -> bytes:
+def _checkpoint(values: dict[str, object], output_hash: str = "f" * 64, *, state: str = "complete", reason: str | None = None, run_id: str = "calibration", pages: int | None = None) -> bytes:
     from src.bond_pilot import db_calibration as calibration
 
     return calibration.canonical_json_bytes(calibration._checkpoint_payload(
         run_id=run_id, evidence=values["evidence"], approval=values["approval"], mode=values["mode"],
-        series_ids=values["series_ids"], reports=(), last_key=None, pages=1, rows=len(values.get("rows", ())),
+        series_ids=values["series_ids"], reports=(), last_key=None, pages=(0 if state == "stopped" and pages is None else pages or 1), rows=len(values.get("rows", ())),
         elapsed_seconds=1.0, output_hash=output_hash, output_state=state, stop_reason=reason,
     ))
 
@@ -189,9 +189,9 @@ _PUBLIC_KEYS = {"value", "values", "unit", "units", "date", "as_of_date", "fresh
 _FORBIDDEN = {"source", "provider", "vendor", "upstream", "url", "file", "row_id", "hash", "lineage", "license", "entitlement", "error"}
 _FORBIDDEN_TEXT = re.compile(r"\b(?:source|provider|vendor|upstream|lineage|license|entitlement|error|trace|finra|osbap|openbondassetpricing|bonds-api|bonds api|wrds|developer_finra|sec|n-?port)\b", re.IGNORECASE)
 _URI = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
-_FILE = re.compile(r"\.(?:csv|json|parquet|zip|sql|py|txt|xml|pdf)(?:$|[?#])", re.IGNORECASE)
+_FILE = re.compile(r"[A-Za-z0-9_-]+\.[A-Za-z][A-Za-z0-9_-]{0,15}(?:$|[?#])", re.IGNORECASE)
 _HEX_DIGEST = re.compile(r"^(?:sha(?:256|512):)?[0-9a-f]{64}$", re.IGNORECASE)
-_BASE64_DIGEST = re.compile(r"^(?:sha(?:256|512):)?[A-Za-z0-9+/]{43}=$", re.IGNORECASE)
+_BASE64_DIGEST = re.compile(r"^(?:sha(?:256|512):)?(?:[A-Za-z0-9+/]{43}=|[A-Za-z0-9_-]{43}=|[A-Za-z0-9+/]{86}==|[A-Za-z0-9_-]{86}==)$", re.IGNORECASE)
 
 
 def _assert_future_public(value: object) -> None:
@@ -226,7 +226,7 @@ def _assert_future_public(value: object) -> None:
 
 def test_future_public_allowlist_rejects_nested_provenance_and_source_family_literals() -> None:
     _assert_future_public({"values": [{"value": 1.0, "unit": "seconds"}], "is_144a": True, "quality": {"freshness": "daily"}, "methodology_version": "bond-metrics-v1"})
-    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "report.parquet?download=1"}, {"value": "sha256:" + "a" * 64}, {"value": "A" * 43 + "="}, {"value": ("not-json",)}, {"value": float("nan")}):
+    for value in ({"quality": {"source_url": "https://example.invalid"}}, {"methodology_version": "TRACE-v1"}, {"value": "C:/secret/file.csv"}, {"value": "../../secret"}, {"value": "mailto:owner@example.invalid"}, {"value": "row.SEC.nport"}, {"value": "artifact.xlsx"}, {"value": "data.avro"}, {"value": "snapshot.gz"}, {"value": "report.parquet?download=1"}, {"value": "sha256:" + "a" * 64}, {"value": "sha512:" + "a" * 128}, {"value": "A" * 43 + "="}, {"value": "A" * 86 + "=="}, {"value": ("not-json",)}, {"value": float("nan")}):
         with pytest.raises(AssertionError):
             _assert_future_public(value)
 
@@ -393,7 +393,7 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     prior = tmp_path / "prior"
     prior.mkdir()
     values = {"evidence": evidence, "approval": evidence_approval, "mode": "calibration", "series_ids": series, "rows": ()}
-    checkpoint = _checkpoint(values, state="stopped", reason="unsafe_query_plan", run_id="original-run")
+    checkpoint = _checkpoint(values, output_hash=hashlib.sha256(b"").hexdigest(), state="stopped", reason="unsafe_query_plan", run_id="original-run")
     (prior / "checkpoint.json").write_bytes(checkpoint)
     (prior / "calibration-provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
     (prior / "stop-report.json").write_text(json.dumps({"internal_only": True, "status": "stopped", "code": "unsafe_query_plan"}), encoding="utf-8")

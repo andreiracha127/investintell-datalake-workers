@@ -22,6 +22,7 @@ from .db_calibration import (
     run_v2_calibration,
     validate_v2_request,
     encode_calibration_rows,
+    validate_calibration_checkpoint_bytes,
 )
 from .debt_mapping import load_approved_debt_mapping, load_fixture_debt_mapping
 from .matching import ObservationIndex, compute_cross_series_summary, compute_series_metrics, match_holdings_asof
@@ -152,7 +153,7 @@ def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[st
         raise PilotError("calibration_checkpoint_mismatch")
 
 
-def _resume_input(path: str | Path, provenance: Mapping[str, object]) -> tuple[bytes, dict[str, object], str]:
+def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: object, approval: object, mode: str, series: tuple[str, ...]) -> tuple[bytes, dict[str, object], str]:
     root = Path(path)
     resolved = root.resolve(strict=False)
     if not root.is_dir() or os.path.islink(root) or _within(resolved, _REPOSITORY_ROOT):
@@ -173,13 +174,13 @@ def _resume_input(path: str | Path, provenance: Mapping[str, object]) -> tuple[b
         if hashlib.sha256((root / name).read_bytes()).hexdigest() != digest:
             raise PilotError("calibration_resume_invalid")
     checkpoint_bytes = (root / "checkpoint.json").read_bytes()
-    checkpoint, _digest = _checkpoint_metadata(root / "checkpoint.json")
+    checkpoint = validate_calibration_checkpoint_bytes(checkpoint_bytes, evidence=evidence, approval=approval, mode=mode, series_ids=series)
     try:
         prior = json.loads((root / "calibration-provenance.json").read_text(encoding="utf-8"))
         stop = json.loads((root / "stop-report.json").read_text(encoding="utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError, OSError) as exc:
         raise PilotError("calibration_resume_invalid") from exc
-    if prior != provenance or not isinstance(stop, dict) or stop.get("status") != "stopped" or checkpoint.get("output_state") != "stopped":
+    if prior != provenance or not isinstance(stop, dict) or stop.get("status") != "stopped" or stop.get("code") != checkpoint.get("stop_reason") or checkpoint.get("output_state") != "stopped":
         raise PilotError("calibration_resume_invalid")
     return checkpoint_bytes, checkpoint, hashlib.sha256(manifest.encode("utf-8")).hexdigest()
 
@@ -226,7 +227,7 @@ def run_calibration(*, source_manifest: str | Path, source_approval: str | Path,
     resume_digest: str | None = None
     if resume_pack is not None:
         try:
-            resume_bytes, resume_checkpoint, resume_digest = _resume_input(resume_pack, provenance)
+            resume_bytes, resume_checkpoint, resume_digest = _resume_input(resume_pack, provenance, phase4, phase4_approval, mode, series)
         except PilotError as error:
             shutil.rmtree(staging, ignore_errors=True)
             write_stop_report(output, error)
