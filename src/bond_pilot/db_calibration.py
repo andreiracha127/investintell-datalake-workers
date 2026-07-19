@@ -317,6 +317,14 @@ def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4
         raise PilotError("run_budget_required")
     if state == "complete" and ((rows and (not pages or not reports or key is None or value["output_hash"] == _EMPTY_HASH)) or (not rows and (pages or key is not None or value["output_hash"] != _EMPTY_HASH)) or reason is not None):
         raise PilotError("run_budget_required")
+    if state == "in_progress" and rows != pages * budget.page_size:
+        raise PilotError("run_budget_required")
+    if state == "stopped" and rows and rows != pages * budget.page_size:
+        raise PilotError("run_budget_required")
+    if state == "budget_reached" and (pages != budget.max_pages or rows != budget.max_rows):
+        raise PilotError("run_budget_required")
+    if state == "complete" and rows and not ((pages - 1) * budget.page_size < rows <= pages * budget.page_size):
+        raise PilotError("run_budget_required")
     if key is not None and tuple(key[:4]) not in reports:
         raise PilotError("run_budget_required")
     value["resolved_reports"], value["last_key"] = reports, key
@@ -446,6 +454,7 @@ def run_v2_calibration(connection: object, *, evidence: object, approval: object
         raise PilotError("phase4b_v2_unavailable")
     connection.read_only = True
     _assert_read_only(connection)
+    terminal_checkpoint_written = False
     try:
         with connection.transaction():
             _assert_read_only(connection)
@@ -498,11 +507,15 @@ def run_v2_calibration(connection: object, *, evidence: object, approval: object
                         state, reason = "budget_reached", "budget_reached"
                     _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state=state, reason=reason)
                     if complete or state == "budget_reached":
+                        terminal_checkpoint_written = True
                         _governance(evidence, approval, mode=mode, series_ids=series)  # rehash before success
                         return CalibrationResult(tuple(result_rows), pages, rows_read, state != "complete", last_key, mode)
                 _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="budget_reached", reason="budget_reached")
+                terminal_checkpoint_written = True
                 _governance(evidence, approval, mode=mode, series_ids=series)
                 return CalibrationResult(tuple(result_rows), pages, rows_read, True, last_key, mode)
     except PilotError as exc:
+        if terminal_checkpoint_written:
+            raise
         _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="stopped", reason=exc.code)
         raise
