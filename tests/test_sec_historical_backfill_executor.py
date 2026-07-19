@@ -621,6 +621,7 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
         if "'cluster_identity'" in query:
             return {field: expected[field] for field in ("cluster_identity", "tls_identity", "role_identity")}
         if "'memberships'" in query:
+            assert "jsonb_agg(parent.rolname ORDER BY parent.rolname)" in query
             assert "n.nspname !~ '^pg_'" in query
             assert "n.nspname<>'information_schema'" in query
             assert "has_schema_privilege(current_user,n.oid,'CREATE')" in query
