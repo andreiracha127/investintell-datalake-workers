@@ -17,7 +17,7 @@ from src.bond_pilot.matching import CrossSeriesSummary, MatchResult, Observation
 from src.bond_pilot.nport import fixture_manifest, load_fixture_holdings, load_fixture_result
 from src.bond_pilot.panel import PanelBuildResult
 from src.bond_pilot.reporting import write_internal_reports
-from src.bond_pilot import nport, reporting
+from src.bond_pilot import artifacts, nport, reporting
 
 
 def _row(*, holding_id: str = "lot-1", instrument_id: str = "instrument-1", weight: object = "not-a-number") -> dict[str, object]:
@@ -109,6 +109,40 @@ def test_fixture_result_binds_hash_and_holdings_to_one_bounded_read(tmp_path: Pa
     assert result.fixture_sha256 == original_hash
     assert result.holdings[0].holding_id == "lot-1"
     assert result.row_count == 1
+
+
+def test_fixture_rejects_unc_before_lstat_or_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    unsafe = r"\\server\share\fixture.json"
+    monkeypatch.setattr(artifacts.os, "lstat", lambda _path: pytest.fail("UNC fixture must fail before lstat"))
+    monkeypatch.setattr(artifacts.Path, "open", lambda *_args, **_kwargs: pytest.fail("UNC fixture must fail before open"))
+
+    with pytest.raises(PilotError, match="^nport_invalid_fixture$"):
+        load_fixture_result(unsafe)
+
+
+def test_fixture_rejects_final_symlink(tmp_path: Path) -> None:
+    target = _fixture(tmp_path / "target.json", [_row()])
+    link = tmp_path / "fixture-link.json"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+
+    with pytest.raises(PilotError, match="^nport_invalid_fixture$"):
+        load_fixture_result(link)
+
+
+def test_fixture_rejects_reparse_ancestor_before_child_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir()
+    child = _fixture(ancestor / "fixture.json", [_row()])
+    real_reparse = artifacts._reparse_point
+    real_open = artifacts.Path.open
+    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+    monkeypatch.setattr(artifacts.Path, "open", lambda path, *args, **kwargs: pytest.fail("fixture child must not open") if path == child else real_open(path, *args, **kwargs))
+
+    with pytest.raises(PilotError, match="^nport_invalid_fixture$"):
+        load_fixture_result(child)
 
 
 def test_fixture_mapping_loader_exposes_exact_raw_mapping_hash(tmp_path: Path) -> None:

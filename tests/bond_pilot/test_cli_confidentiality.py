@@ -18,7 +18,7 @@ import pytest
 from scripts.run_bond_pilot import build_parser, main
 from src.bond_pilot.contracts import PilotError, SourceApproval
 from src.bond_pilot.db_calibration import REQUIRED_COLUMNS
-from src.bond_pilot import source_artifact
+from src.bond_pilot import artifacts, source_artifact
 from src.bond_pilot.source_artifact import load_candidate, qualify_source
 from src.bond_pilot import workflow
 from src.bond_pilot.workflow import qualify, run_calibration, run_fixture
@@ -371,6 +371,38 @@ def test_calibrate_prevalidates_every_governance_input_before_dsn_or_connection(
     assert calls == []
     assert (kwargs["run_dir"] / "stop-report.json").is_file()
     assert (kwargs["run_dir"] / "checksums.sha256").is_file()
+
+
+@pytest.mark.parametrize("control", ["mapping", "mapping_approval", "evidence", "evidence_approval"])
+def test_calibrate_rejects_nonlocal_control_before_open_or_connection(control: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "run"}
+    unsafe = r"\\server\share\control.json"
+    kwargs[control] = unsafe
+    real_lstat = artifacts.os.lstat
+    real_open = artifacts.Path.open
+    monkeypatch.setattr(artifacts.os, "lstat", lambda path: pytest.fail("nonlocal control must fail before lstat") if str(path) == unsafe else real_lstat(path))
+    monkeypatch.setattr(artifacts.Path, "open", lambda path, *args, **kwargs: pytest.fail("nonlocal control must fail before open") if str(path) == unsafe else real_open(path, *args, **kwargs))
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("control must fail before DSN"))
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: pytest.fail("control must fail before connection"))
+
+    with pytest.raises(PilotError):
+        run_calibration(**kwargs)
+
+
+def test_calibrate_rejects_mapping_reparse_ancestor_before_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "run"}
+    ancestor = tmp_path / "mapping-ancestor"
+    ancestor.mkdir()
+    child = ancestor / "mapping.json"
+    child.write_bytes(Path(kwargs["mapping"]).read_bytes())
+    kwargs["mapping"] = child
+    real_reparse = artifacts._reparse_point
+    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("mapping must fail before DSN"))
+    monkeypatch.setattr(workflow, "connect", lambda _dsn: pytest.fail("mapping must fail before connection"))
+
+    with pytest.raises(PilotError, match="debt_mapping_unapproved"):
+        run_calibration(**kwargs)
 
 
 def test_calibrate_revalidates_mismatched_phase4_pins_before_dsn_or_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -796,13 +828,34 @@ def test_resume_reparse_points_fail_before_dsn(target: str, tmp_path: Path, make
     candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
     prior = tmp_path / "prior"
     _write_stopped_resume_pack(prior, provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series)
-    real_reparse = workflow._reparse_point
-    monkeypatch.setattr(workflow, "_reparse_point", lambda path, status: path == prior if target == "root" else (path.name == target or real_reparse(path, status)))
+    if target == "root":
+        real_reparse = workflow._reparse_point
+        monkeypatch.setattr(workflow, "_reparse_point", lambda path, status: path == prior or real_reparse(path, status))
+    else:
+        real_reparse = artifacts._reparse_point
+        monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: path.name == target or real_reparse(path, status))
     calls: list[str] = []
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
     with pytest.raises(PilotError, match="calibration_resume_invalid"):
         run_calibration(**kwargs, resume_pack=prior)
     assert calls == []
+
+
+def test_resume_reparse_ancestor_fails_before_scandir_or_dsn(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
+    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    ancestor = tmp_path / "resume-ancestor"
+    ancestor.mkdir()
+    prior = ancestor / "prior"
+    _write_stopped_resume_pack(prior, provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series)
+    real_reparse = artifacts._reparse_point
+    real_scandir = workflow.os.scandir
+    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+    monkeypatch.setattr(workflow.os, "scandir", lambda path: pytest.fail("resume ancestor must fail before scandir") if Path(path) == prior else real_scandir(path))
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("resume ancestor must fail before DSN"))
+
+    with pytest.raises(PilotError, match="calibration_resume_invalid"):
+        run_calibration(**kwargs, resume_pack=prior)
 
 
 def test_final_checkpoint_is_captured_by_bounded_regular_file_reader(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:

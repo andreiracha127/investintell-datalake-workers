@@ -11,6 +11,7 @@ import re
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from .artifacts import read_secure_local_file
 from .contracts import DebtState, PilotError
 
 
@@ -23,6 +24,7 @@ _DECISIONS = {
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UTC_TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _VALIDATION_TOKEN = object()
+_MAX_MAPPING_BYTES = 1024 * 1024
 
 
 def _unapproved() -> PilotError:
@@ -43,11 +45,15 @@ def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]
 
 
 def _read_mapping(path: str | Path) -> tuple[Path, bytes, dict[str, object]]:
+    def nonfinite(_value: str) -> object:
+        raise _unapproved()
+
     try:
-        mapping_path = Path(path)
-        raw = mapping_path.read_bytes()
-        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        mapping_path, raw = read_secure_local_file(path, max_bytes=_MAX_MAPPING_BYTES, error_code="debt_mapping_unapproved")
+        value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys, parse_constant=nonfinite)
+    except PilotError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise _unapproved() from exc
     if not isinstance(value, dict):
         raise _unapproved()

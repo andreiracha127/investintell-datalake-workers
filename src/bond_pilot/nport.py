@@ -7,12 +7,11 @@ from dataclasses import dataclass
 from datetime import date
 import hashlib
 import json
-import os
 from pathlib import Path
-import stat
 from types import MappingProxyType
 from typing import Mapping
 
+from .artifacts import read_secure_local_file
 from .contracts import PilotError
 from .matching import HoldingRecord
 
@@ -56,19 +55,13 @@ def _reject_constant(_value: str) -> object:
     raise ValueError("non-finite JSON constant")
 
 
-def _read_fixture_bytes(path: Path) -> bytes:
-    try:
-        with path.open("rb") as fixture:
-            if not stat.S_ISREG(os.fstat(fixture.fileno()).st_mode):
-                raise PilotError("nport_invalid_fixture", {"path": str(path)})
-            raw = fixture.read(MAX_FIXTURE_BYTES + 1)
-    except PilotError:
-        raise
-    except OSError as exc:
-        raise PilotError("nport_invalid_fixture", {"path": str(path)}) from exc
-    if len(raw) > MAX_FIXTURE_BYTES:
-        raise PilotError("nport_fixture_too_large", {"path": str(path)})
-    return raw
+def _read_fixture_bytes(path: str | Path) -> tuple[Path, bytes]:
+    return read_secure_local_file(
+        path,
+        max_bytes=MAX_FIXTURE_BYTES,
+        error_code="nport_invalid_fixture",
+        too_large_code="nport_fixture_too_large",
+    )
 
 
 def _parse_rows(raw: bytes, max_rows: int) -> list[object]:
@@ -142,8 +135,7 @@ def load_fixture_result(path: str | Path, max_rows: int = 10_000) -> FixtureLoad
     """Read, hash, parse, and materialize one regular fixture file exactly once."""
     if not isinstance(max_rows, int) or isinstance(max_rows, bool) or max_rows < 0:
         raise PilotError("nport_invalid_row_limit")
-    fixture_path = Path(path)
-    raw = _read_fixture_bytes(fixture_path)
+    fixture_path, raw = _read_fixture_bytes(path)
     holdings = _holdings_from_rows(_parse_rows(raw, max_rows))
     return FixtureLoadResult(str(fixture_path), hashlib.sha256(raw).hexdigest(), holdings, len(holdings), len({(row.accession_number, row.holding_id) for row in holdings}), len({row.series_id for row in holdings}), len({row.accession_number for row in holdings}))
 

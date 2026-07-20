@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from src.bond_pilot import artifacts
 from src.bond_pilot.artifacts import (
     canonical_json_bytes,
     commit_partial,
@@ -200,6 +201,38 @@ def test_checkpoint_replacement_cannot_overwrite_final_artifacts(tmp_path: Path)
         replace_checkpoint(manifest, b"replacement")
 
     assert manifest.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("unsafe", [r"\\server\share\control.json", "//server/share/control.json", r"\\?\C:\control.json", "file:///C:/control.json"])
+def test_secure_local_reader_rejects_nonlocal_paths_before_filesystem_access(unsafe: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = getattr(artifacts, "read_secure_local_file", None)
+    assert reader is not None
+    monkeypatch.setattr(artifacts.os, "lstat", lambda _path: pytest.fail("unsafe path must fail before lstat"))
+    monkeypatch.setattr(artifacts.Path, "open", lambda *_args, **_kwargs: pytest.fail("unsafe path must fail before open"))
+
+    with pytest.raises(PilotError, match="^control_invalid$"):
+        reader(unsafe, max_bytes=1024, error_code="control_invalid")
+
+
+def test_secure_local_reader_rejects_reparse_ancestor_before_child_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    reader = getattr(artifacts, "read_secure_local_file", None)
+    assert reader is not None
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir()
+    child = ancestor / "control.json"
+    child.write_bytes(b"{}")
+    real_lstat = artifacts.os.lstat
+    real_reparse = getattr(artifacts, "_reparse_point", None)
+
+    def reparse(path: Path, status: object) -> bool:
+        return Path(path) == ancestor or (real_reparse(path, status) if real_reparse is not None else False)
+
+    monkeypatch.setattr(artifacts, "_reparse_point", reparse, raising=False)
+    monkeypatch.setattr(artifacts.os, "lstat", lambda path: real_lstat(path))
+    monkeypatch.setattr(artifacts.Path, "open", lambda path, *_args, **_kwargs: pytest.fail("child must not be opened") if path == child else Path.open(path, *_args, **_kwargs))
+
+    with pytest.raises(PilotError, match="^control_invalid$"):
+        reader(child, max_bytes=1024, error_code="control_invalid")
 
 
 def test_checksums_are_sorted_relative_and_exclude_self_and_partials(tmp_path: Path) -> None:

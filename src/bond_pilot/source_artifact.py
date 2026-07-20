@@ -23,7 +23,7 @@ from zipfile import BadZipFile, ZipFile, ZipInfo
 import httpx
 import pyarrow.parquet as pq
 
-from .artifacts import commit_partial, partial_path, write_json_once
+from .artifacts import commit_partial, partial_path, read_secure_local_file, validated_local_path, write_json_once
 from .contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
 
 
@@ -45,6 +45,17 @@ _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
 _ZIP_DRIVE = re.compile(r"^[A-Za-z]:")
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
+_MAX_SOURCE_CONTROL_BYTES = 1024 * 1024
+_CANDIDATE_KEYS = frozenset({
+    "schema_version", "source_locator", "local_archive_path", "local_extracted_path", "artifact_bytes",
+    "artifact_sha256", "member_name", "member_uncompressed_bytes", "schema_sha256", "schema_columns",
+    "schema_optional_columns", "row_count", "row_group_count", "global_start", "global_cutoff",
+    "duplicate_check_scope", "approval_state",
+})
+_APPROVAL_KEYS = frozenset({
+    "schema_version", "source_locator", "artifact_sha256", "schema_sha256", "cutoff", "terms_evidence",
+    "local_use_allowed", "redistribution_allowed", "approved_by", "approved_at",
+})
 
 
 class _HttpClient(Protocol):
@@ -160,29 +171,11 @@ def _stream_to_partial(chunks: Iterator[bytes], final: Path, limit: int) -> tupl
     return partial, size, digest.hexdigest()
 
 
-def _local_chunks(path: Path, chunk_size: int) -> Iterator[bytes]:
-    with path.open("rb") as source:
-        yield from iter(lambda: source.read(chunk_size), b"")
-
-
 @contextmanager
 def _remote_chunks(client: _HttpClient, locator: str, chunk_size: int) -> Iterator[Iterator[bytes]]:
     with client.stream("GET", locator) as response:
         response.raise_for_status()
         yield iter(response.iter_bytes(chunk_size))
-
-
-def _source_chunks(locator: str, client: _HttpClient | None, chunk_size: int) -> tuple[Iterator[bytes] | None, object | None]:
-    parsed = urlsplit(locator)
-    if parsed.scheme == "https":
-        return None, client or httpx.Client()
-    if parsed.scheme and not _WINDOWS_DRIVE.match(locator):
-        raise PilotError("unsupported_source_locator", {"locator": locator})
-    path = Path(locator)
-    if not path.is_file():
-        raise PilotError("source_not_found", {"locator": locator})
-    return _local_chunks(path, chunk_size), None
-
 
 def _iso_date(value: object) -> date:
     if isinstance(value, datetime):
@@ -222,24 +215,48 @@ def _date_bounds(parquet_path: Path, chunk_size: int) -> tuple[str, str]:
     return minimum.isoformat(), maximum.isoformat()
 
 
-def _read_object(path: Path) -> Mapping[str, object]:
+def _read_object(path: str | Path, expected_keys: frozenset[str]) -> Mapping[str, object]:
+    def duplicate(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        value: dict[str, object] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON key")
+            value[key] = item
+        return value
+
+    def nonfinite(value: str) -> object:
+        raise ValueError(f"non-finite {value}")
+
     try:
-        value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PilotError("invalid_json_object", {"path": str(path)}) from exc
-    if not isinstance(value, dict):
-        raise PilotError("invalid_json_object", {"path": str(path)})
+        _, raw = read_secure_local_file(path, max_bytes=_MAX_SOURCE_CONTROL_BYTES, error_code="source_control_invalid")
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=duplicate, parse_constant=nonfinite)
+    except PilotError:
+        raise
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+        raise PilotError("source_control_invalid") from exc
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise PilotError("source_control_invalid")
     return value
 
 
-def load_candidate(path: Path) -> SourceCandidate:
+def load_candidate(path: str | Path) -> SourceCandidate:
     """Load a canonical source-candidate manifest into its frozen contract."""
-    return SourceCandidate.from_json_mapping(_read_object(path))
+    try:
+        return SourceCandidate.from_json_mapping(_read_object(path, _CANDIDATE_KEYS))
+    except PilotError as exc:
+        if exc.code == "source_control_invalid":
+            raise
+        raise PilotError("source_control_invalid") from exc
 
 
-def load_source_approval(path: Path) -> SourceApproval:
+def load_source_approval(path: str | Path) -> SourceApproval:
     """Load a human approval pin without inferring any legal decision."""
-    return SourceApproval.from_json_mapping(_read_object(path))
+    try:
+        return SourceApproval.from_json_mapping(_read_object(path, _APPROVAL_KEYS))
+    except PilotError as exc:
+        if exc.code == "source_control_invalid":
+            raise
+        raise PilotError("source_control_invalid") from exc
 
 
 def verify_source_approval(candidate: SourceCandidate, approval: SourceApproval) -> None:
@@ -274,31 +291,35 @@ def _reparse_point(status: os.stat_result) -> bool:
 
 
 def _local_path(value: str | Path) -> Path:
-    locator = str(value)
-    normalized = locator.strip()
-    if normalized.startswith(("\\\\", "//")) or (urlsplit(normalized).scheme and not _WINDOWS_DRIVE.match(normalized)):
-        raise PilotError("source_integrity_failed")
-    return Path(locator)
+    return validated_local_path(value, error_code="source_integrity_failed")
 
 
-def _regular_file(status: os.stat_result, *, limit: int) -> None:
-    if not stat.S_ISREG(status.st_mode) or _reparse_point(status) or status.st_size > limit:
+def _regular_file(status: os.stat_result, *, limit: int, too_large_code: str = "source_integrity_failed") -> None:
+    if not stat.S_ISREG(status.st_mode) or _reparse_point(status):
         raise PilotError("source_integrity_failed")
+    if status.st_size > limit:
+        details = {} if too_large_code == "source_integrity_failed" else {"limit": limit}
+        raise PilotError(too_large_code, details)
 
 
 def _fingerprint(status: os.stat_result) -> tuple[int, int, int, int]:
     return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
 
 
-def _open_regular_file(value: str | Path, *, limit: int) -> tuple[Path, os.stat_result, BinaryIO]:
+def _open_regular_file(
+    value: str | Path,
+    *,
+    limit: int,
+    too_large_code: str = "source_integrity_failed",
+) -> tuple[Path, os.stat_result, BinaryIO]:
     path = _local_path(value)
     handle: BinaryIO | None = None
     try:
         before = os.lstat(path)
-        _regular_file(before, limit=limit)
+        _regular_file(before, limit=limit, too_large_code=too_large_code)
         handle = path.open("rb")
         opened = os.fstat(handle.fileno())
-        _regular_file(opened, limit=limit)
+        _regular_file(opened, limit=limit, too_large_code=too_large_code)
         if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
             raise PilotError("source_integrity_failed")
         return path, before, handle
@@ -348,9 +369,13 @@ def verify_matching_extracted_files(original: str | Path, verified: str | Path, 
         raise PilotError("source_integrity_failed")
 
 
-def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> None:
+def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expected_sha256: str | None, limits: ArtifactLimits = ArtifactLimits()) -> tuple[int, str]:
     """Copy a local archive once while binding its bytes to its approved SHA-256."""
-    _, before, source = _open_regular_file(archive_path, limit=limits.archive_bytes)
+    _, before, source = _open_regular_file(
+        archive_path,
+        limit=limits.archive_bytes,
+        too_large_code="archive_size_exceeded",
+    )
     partial = partial_path(capture_path)
     try:
         try:
@@ -360,13 +385,15 @@ def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expec
                 for chunk in iter(lambda: source.read(limits.streaming_chunk_bytes), b""):
                     total += len(chunk)
                     if total > limits.archive_bytes:
-                        raise PilotError("source_integrity_failed")
+                        raise PilotError("archive_size_exceeded", {"limit": limits.archive_bytes})
                     digest.update(chunk)
                     captured.write(chunk)
             _require_unchanged(source, before, total=total)
-            if digest.hexdigest() != expected_sha256:
-                raise PilotError("source_integrity_failed")
+            artifact_sha = digest.hexdigest()
+            if expected_sha256 is not None and artifact_sha != expected_sha256:
+                raise PilotError("artifact_sha256_mismatch", {"expected": expected_sha256, "actual": artifact_sha})
             commit_partial(partial, capture_path)
+            return total, artifact_sha
         except Exception:
             partial.unlink(missing_ok=True)
             raise
@@ -427,23 +454,30 @@ def qualify_source(
     published = False
     default_client: httpx.Client | None = None
     try:
-        local_chunks, remote_client = _source_chunks(locator_text, client, limits.streaming_chunk_bytes)
-        if remote_client is None:
-            assert local_chunks is not None
-            partial, archive_bytes, artifact_sha = _stream_to_partial(local_chunks, archive_final, limits.archive_bytes)
-        else:
+        parsed = urlsplit(locator_text)
+        if parsed.scheme == "https":
+            remote_client = client or httpx.Client()
             if client is None:
                 default_client = remote_client  # type: ignore[assignment]
             with _remote_chunks(remote_client, locator_text, limits.streaming_chunk_bytes) as chunks:
                 partial, archive_bytes, artifact_sha = _stream_to_partial(chunks, archive_final, limits.archive_bytes)
-        if expected_sha256 is not None and artifact_sha != expected_sha256:
-            partial.unlink(missing_ok=True)
-            raise PilotError("artifact_sha256_mismatch", {"expected": expected_sha256, "actual": artifact_sha})
-        try:
-            commit_partial(partial, archive_final)
-        except Exception:
-            partial.unlink(missing_ok=True)
-            raise
+            if expected_sha256 is not None and artifact_sha != expected_sha256:
+                partial.unlink(missing_ok=True)
+                raise PilotError("artifact_sha256_mismatch", {"expected": expected_sha256, "actual": artifact_sha})
+            try:
+                commit_partial(partial, archive_final)
+            except Exception:
+                partial.unlink(missing_ok=True)
+                raise
+        else:
+            if parsed.scheme and not _WINDOWS_DRIVE.match(locator_text):
+                raise PilotError("unsupported_source_locator", {"locator": locator_text})
+            archive_bytes, artifact_sha = capture_local_archive(
+                locator_text,
+                archive_final,
+                expected_sha256=expected_sha256,
+                limits=limits,
+            )
 
         try:
             with ZipFile(archive_final) as archive:

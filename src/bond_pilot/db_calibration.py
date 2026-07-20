@@ -10,11 +10,10 @@ import json
 import math
 import os
 from pathlib import Path
-import stat
 from time import monotonic
 from typing import Callable, Mapping, Sequence
 
-from .artifacts import canonical_json_bytes, replace_checkpoint
+from .artifacts import canonical_json_bytes, read_secure_local_file, replace_checkpoint
 from .contracts import PilotError
 
 
@@ -66,7 +65,7 @@ class Phase4V2Evidence:
         if token is not _TOKEN:
             raise PilotError("phase4b_v2_unavailable")
         object.__setattr__(self, "artifact_sha256", artifact_sha256)
-        object.__setattr__(self, "path", path.resolve())
+        object.__setattr__(self, "path", path)
         object.__setattr__(self, "values", dict(values))
         object.__setattr__(self, "_token", token)
 
@@ -82,7 +81,7 @@ class Phase4V2EvidenceApproval:
         if token is not _TOKEN:
             raise PilotError("phase4b_v2_unavailable")
         object.__setattr__(self, "artifact_sha256", artifact_sha256)
-        object.__setattr__(self, "path", path.resolve())
+        object.__setattr__(self, "path", path)
         object.__setattr__(self, "values", dict(values))
         object.__setattr__(self, "_token", token)
 
@@ -128,20 +127,10 @@ def _sha(value: object) -> bool:
 
 
 def _read_json(path: str | Path) -> tuple[dict[str, object], bytes, Path]:
-    source = Path(path).resolve()
     try:
-        before = os.stat(source, follow_symlinks=False)
-        if not stat.S_ISREG(before.st_mode):
-            raise OSError("not a regular file")
-        with source.open("rb") as handle:
-            opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise OSError("file changed")
-            raw = handle.read(_MAX_GOVERNANCE_BYTES + 1)
-    except OSError as exc:
-        raise PilotError("phase4b_v2_unavailable") from exc
-    if len(raw) > _MAX_GOVERNANCE_BYTES:
-        raise PilotError("phase4b_v2_unavailable")
+        source, raw = read_secure_local_file(path, max_bytes=_MAX_GOVERNANCE_BYTES, error_code="phase4b_v2_unavailable")
+    except PilotError:
+        raise
     try:
         parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=_duplicate, parse_constant=_nonfinite)
     except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:

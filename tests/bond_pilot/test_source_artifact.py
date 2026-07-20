@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
-from src.bond_pilot import source_artifact
+from src.bond_pilot import artifacts, source_artifact
 from src.bond_pilot.source_artifact import (
     load_candidate,
     load_source_approval,
@@ -53,6 +53,36 @@ def test_qualifies_local_nested_parquet_and_writes_unapproved_internal_manifests
         "local_use_allowed": False,
         "redistribution_decision": "not_evaluated",
     }
+
+
+@pytest.mark.parametrize("document", ["candidate", "approval"])
+@pytest.mark.parametrize("invalid", ["duplicate", "unknown", "missing", "nonfinite"])
+def test_source_control_json_requires_strict_unique_exact_finite_top_level(document: str, invalid: str, make_source_zip, tmp_path: Path) -> None:
+    candidate = qualify_source(make_source_zip(), tmp_path / "qualified")
+    approval = SourceApproval(
+        "source-approval-v1", candidate.source_locator, candidate.artifact_sha256, candidate.schema_sha256,
+        candidate.global_cutoff, "internal terms", True, False, "reviewer", "2026-07-19T12:00:00Z",
+    )
+    value = candidate.to_json_mapping() if document == "candidate" else approval.to_json_mapping()
+    required = "approval_state" if document == "candidate" else "approved_at"
+    if invalid == "unknown":
+        value["unexpected"] = True
+        raw = json.dumps(value)
+    elif invalid == "missing":
+        value.pop(required)
+        raw = json.dumps(value)
+    elif invalid == "nonfinite":
+        raw = json.dumps(value)[:-1] + ',"unexpected":NaN}'
+    else:
+        raw = json.dumps(value)[:-1] + f',"{required}":{json.dumps(value[required])}' + "}"
+    path = tmp_path / f"{document}.json"
+    path.write_text(raw, encoding="utf-8")
+
+    loader = load_candidate if document == "candidate" else load_source_approval
+    with pytest.raises(PilotError, match="^source_control_invalid$") as error:
+        loader(path)
+
+    assert error.value.details == {}
 
 
 @pytest.mark.parametrize(
@@ -163,6 +193,33 @@ def test_qualifies_https_only_through_injected_client(make_source_zip, tmp_path:
     assert client.urls == ["https://example.test/source.zip"]
     with pytest.raises(PilotError, match="unsupported_source_locator"):
         qualify_source("http://example.test/source.zip", tmp_path / "http", client=client)
+
+
+@pytest.mark.parametrize("unsafe", [r"\\server\share\source.zip", "//server/share/source.zip", r"\\?\C:\source.zip", r"\\.\PhysicalDrive0"])
+def test_initial_local_qualification_rejects_unc_and_device_before_stat_open_or_network(unsafe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_lstat = artifacts.os.lstat
+    real_open = source_artifact.Path.open
+    real_is_file = source_artifact.Path.is_file
+    monkeypatch.setattr(artifacts.os, "lstat", lambda path: pytest.fail("unsafe source must fail before lstat") if str(path) == unsafe else real_lstat(path))
+    monkeypatch.setattr(source_artifact.Path, "open", lambda path, *args, **kwargs: pytest.fail("unsafe source must fail before open") if str(path) == unsafe else real_open(path, *args, **kwargs))
+    monkeypatch.setattr(source_artifact.Path, "is_file", lambda path: pytest.fail("unsafe source must fail before stat") if str(path) == unsafe else real_is_file(path))
+    monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("local qualification must not create an HTTP client"))
+
+    with pytest.raises(PilotError):
+        qualify_source(unsafe, tmp_path / "run")
+
+
+def test_initial_local_qualification_rejects_reparse_ancestor_before_child_open(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir()
+    source = ancestor / "source.zip"
+    source.write_bytes(make_source_zip().read_bytes())
+    real_reparse = artifacts._reparse_point
+    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+    monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("local qualification must not create an HTTP client"))
+
+    with pytest.raises(PilotError, match="source_integrity_failed"):
+        qualify_source(source, tmp_path / "run")
 
 
 def test_rejects_wrong_sha_and_removes_outputs_from_failed_attempt(make_source_zip, tmp_path: Path) -> None:
@@ -386,5 +443,5 @@ def test_load_candidate_requires_a_json_object(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     manifest.write_text("[]", encoding="utf-8")
 
-    with pytest.raises(PilotError, match="invalid_json_object"):
+    with pytest.raises(PilotError, match="source_control_invalid"):
         load_candidate(manifest)

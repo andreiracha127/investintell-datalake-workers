@@ -15,7 +15,7 @@ from uuid import uuid4
 import psycopg
 from src.db import connect, resolve_dsn
 
-from .artifacts import canonical_json_bytes, write_checksums, write_json_once
+from .artifacts import canonical_json_bytes, read_secure_local_file, validated_local_path, write_checksums, write_json_once
 from .contracts import PilotError
 from .db_calibration import (
     load_phase4_v2_evidence,
@@ -51,14 +51,12 @@ def _within(path: Path, root: Path) -> bool:
 
 def _output_path(value: str | Path) -> Path:
     """Require a new destination outside the checkout, including after symlink resolution."""
-    raw = Path(value)
-    lexical = raw if raw.is_absolute() else Path.cwd() / raw
-    resolved = lexical.resolve(strict=False)
-    if _within(lexical.absolute(), _REPOSITORY_ROOT) or _within(resolved, _REPOSITORY_ROOT):
+    lexical = validated_local_path(value, error_code="invalid_output_path")
+    if _within(lexical, _REPOSITORY_ROOT):
         raise PilotError("invalid_output_path")
-    if os.path.lexists(lexical) or os.path.lexists(resolved):
+    if os.path.lexists(lexical):
         raise PilotError("already_exists", {"path": str(lexical)})
-    return resolved
+    return lexical
 
 
 def _staging(output: Path, purpose: str) -> Path:
@@ -91,8 +89,8 @@ def _fixture_provenance(mapping: object) -> dict[str, object]:
 def run_fixture(*, source_manifest: str | Path, source_approval: str | Path, fixture: str | Path, mapping: str | Path, run_dir: str | Path) -> Mapping[str, object]:
     """Execute the complete offline fixture path and atomically publish internal evidence."""
     output = _output_path(run_dir)
-    candidate = load_candidate(Path(source_manifest))
-    approval = load_source_approval(Path(source_approval))
+    candidate = load_candidate(source_manifest)
+    approval = load_source_approval(source_approval)
     verify_source_approval(candidate, approval)
     debt_mapping = load_fixture_debt_mapping(mapping)
     fixture_result = load_fixture_result(fixture)
@@ -130,8 +128,8 @@ def run_fixture(*, source_manifest: str | Path, source_approval: str | Path, fix
 
 def _calibration_inputs(*, source_manifest: str | Path, source_approval: str | Path, mapping: str | Path, mapping_approval: str | Path, evidence: str | Path, evidence_approval: str | Path, mode: str, series_ids: Sequence[str]) -> tuple[object, object, object, object, object, tuple[str, ...]]:
     """Validate every file-backed authority before a DSN is resolved or a connection opens."""
-    candidate = load_candidate(Path(source_manifest))
-    approval = load_source_approval(Path(source_approval))
+    candidate = load_candidate(source_manifest)
+    approval = load_source_approval(source_approval)
     verify_source_approval(candidate, approval)
     debt_mapping = load_approved_debt_mapping(mapping, mapping_approval)
     phase4 = load_phase4_v2_evidence(evidence)
@@ -198,32 +196,19 @@ def _cross_bind_checkpoint(payload: Mapping[str, object], provenance: Mapping[st
 
 
 def _read_captured_regular_file(path: Path, *, error_code: str) -> bytes:
-    try:
-        before = os.lstat(path)
-        if not stat.S_ISREG(before.st_mode) or _reparse_point(path, before) or before.st_size > _MAX_RESUME_CONTROL_BYTES:
-            raise OSError("unsafe control")
-        with path.open("rb") as handle:
-            opened = os.fstat(handle.fileno())
-            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise OSError("swapped control")
-            raw = handle.read(_MAX_RESUME_CONTROL_BYTES + 1)
-        if len(raw) > _MAX_RESUME_CONTROL_BYTES:
-            raise OSError("oversized control")
-    except OSError as exc:
-        raise PilotError(error_code) from exc
+    _, raw = read_secure_local_file(path, max_bytes=_MAX_RESUME_CONTROL_BYTES, error_code=error_code)
     return raw
 
 
 def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: object, approval: object, mode: str, series: tuple[str, ...]) -> tuple[bytes, dict[str, object], str]:
-    root = Path(path)
+    root = validated_local_path(path, error_code="calibration_resume_invalid")
     try:
         root_status = os.lstat(root)
     except OSError as exc:
         raise PilotError("calibration_resume_invalid") from exc
     if not stat.S_ISDIR(root_status.st_mode) or _reparse_point(root, root_status):
         raise PilotError("calibration_resume_invalid")
-    resolved = root.resolve(strict=False)
-    if _within(resolved, _REPOSITORY_ROOT):
+    if _within(root, _REPOSITORY_ROOT):
         raise PilotError("calibration_resume_invalid")
     try:
         entries = list(os.scandir(root))
