@@ -2004,7 +2004,11 @@ class AuthorizedPackageExecutor:
         writable = actual["writable_tables"]
         if not isinstance(writable, list) or not all(isinstance(value, str) for value in writable) or len(set(writable)) != len(writable):
             raise BackfillSafetyError("uncertain effective writable table set")
-        allowed = set(cast(list[str], self.authorization["writable_tables"]))
+        allowed = (
+            set(EXACT_DIRECT_WRITABLE_TABLES)
+            if self.authorization["target_mode"] == "production_authorized"
+            else set(cast(list[str], self.authorization["writable_tables"]))
+        )
         denied = set(cast(list[str], self.authorization["pointer_table_denylist"]))
         if set(writable) != allowed or set(writable) & denied or any(value.casefold().startswith("sec_current.") or "provider" in value.casefold() or "pointer" in value.casefold() for value in writable):
             raise BackfillSafetyError("connected target writable table set is unsafe")

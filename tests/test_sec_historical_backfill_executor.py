@@ -1623,7 +1623,7 @@ def test_production_authorized_executor_never_runs_schema_installers(tmp_path: P
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_DIRECT_WRITABLE_TABLES), "truncate_tables": [],
         },
         schema_installers={"manifest": lambda _conn: installed.append("manifest"), "nport": lambda _conn: installed.append("nport")},
         dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "rows": 0, "run_id": "run-1"}},
@@ -1649,7 +1649,7 @@ def test_production_preflight_refuses_attestation_drift_before_dispatch(tmp_path
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_DIRECT_WRITABLE_TABLES), "truncate_tables": [],
         },
     )
 
@@ -1675,7 +1675,7 @@ def test_production_executor_uses_builtin_read_only_collector_without_injection(
         target_inspector=lambda _conn: {
             "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
             "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-            "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
+            "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_DIRECT_WRITABLE_TABLES), "truncate_tables": [],
         },
     )
 
@@ -1709,7 +1709,7 @@ def test_production_preflight_runs_before_dispatch_and_refuses_each_attestation_
             target_inspector=lambda _conn: {
                 "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
                 "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-                "is_superuser": False, "owns_any_table": False, "writable_tables": artifact["writable_tables"], "truncate_tables": [],
+                "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_DIRECT_WRITABLE_TABLES), "truncate_tables": [],
             },
             preflight_inspector=lambda _conn, value=actual: value,
             dispatchers={"nport": lambda *_args, **_kwargs: dispatched.append(True) or pytest.fail("preflight drift must block DML")},
@@ -1826,7 +1826,7 @@ def test_production_rollback_probe_uses_real_dispatch_path_and_zero_delta_snapsh
     target = {
         "database": "market", "server_address": "10.0.0.1", "role": "sec_backfill_runner",
         "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27",
-        "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_WRITABLE_TABLES), "truncate_tables": [],
+        "is_superuser": False, "owns_any_table": False, "writable_tables": sorted(backfill.EXACT_DIRECT_WRITABLE_TABLES), "truncate_tables": [],
     }
     executor = backfill.build_authorized_executor(
         path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connections.pop(0),
