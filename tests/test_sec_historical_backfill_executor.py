@@ -1939,7 +1939,7 @@ def test_executor_commits_only_valid_explicit_failure_with_fixed_reason(tmp_path
         dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "failed", "reason": "postgresql://user:secret@host/db"}},
     )
 
-    assert executor(dict(inventory["packages"][0])) == {"state": "failed", "reason_code": "ingester_failed"}
+    assert executor(dict(inventory["packages"][0])) == {"state": "failed", "reason_code": "ingester_failed", "failure_detail": "[redacted]"}
     assert connection.commits == 1
     assert connection.rollbacks == 0
     assert connection.closed

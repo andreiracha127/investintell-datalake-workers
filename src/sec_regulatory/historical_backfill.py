@@ -2055,7 +2055,17 @@ class AuthorizedPackageExecutor:
         elif state == "failed":
             if set(result) - {"package", "state", "run_id", "reason", "reason_code"}:
                 raise BackfillSafetyError("ingester returned unexpected failed fields")
-            safe = {"state": state, "reason_code": "ingester_failed"}
+            run_id = result.get("run_id")
+            if run_id is not None:
+                try:
+                    UUID(cast(str, run_id))
+                except (TypeError, ValueError) as exc:
+                    raise BackfillSafetyError("ingester returned an invalid failed run UUID") from exc
+            reason = result.get("reason")
+            failure_detail = _redact(reason) if isinstance(reason, str) else None
+            safe = {"state": state, "reason_code": "ingester_failed", "failure_detail": failure_detail}
+            if run_id is not None:
+                safe["run_id"] = cast(str, run_id)
         else:
             raise BackfillSafetyError("ingester returned a nonterminal package state")
         if reconciliation_hash is not None:
@@ -2125,6 +2135,11 @@ class AuthorizedPackageExecutor:
             dispatch_connection = _ProtectedTransactionConnection(connection) if commit_fence is not None else connection
             result = dict(dispatcher(dispatch_connection, package=source_package, source_root=root))
             safe = self._terminal_result(result, cast(str, expected["relative_package_path"]))
+            if safe.get("state") == "failed" and safe.get("run_id") is None and commit_fence is not None:
+                rollback = getattr(connection, "rollback", None)
+                if callable(rollback):
+                    rollback()
+                return safe
             commit = getattr(connection, "commit", None)
             if not callable(commit):
                 raise BackfillSafetyError("authorized executor connection cannot commit")
@@ -3016,7 +3031,7 @@ def _run_supervisor_locked(
         if state == "failed" and result.get("reason_code") not in FAILURE_REASON_CODES:
             result = {"state": "failed", "reason_code": "executor_reported_failure"}
         reason_code = cast(str, result.get("reason_code", ""))
-        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id, "authorization_fingerprint": authorization_fingerprint, "result_state": result.get("state"), "reason_code": reason_code or None, "error_digest": _error_digest(reason_code) if state == "failed" and reason_code else None, "safety_error_digest": result.get("safety_error_digest"), "rows": result.get("rows"), "run_id": result.get("run_id"), "reconciliation_hash": result.get("reconciliation_hash")}
+        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id, "authorization_fingerprint": authorization_fingerprint, "result_state": result.get("state"), "reason_code": reason_code or None, "error_digest": _error_digest(reason_code) if state == "failed" and reason_code else None, "safety_error_digest": result.get("safety_error_digest"), "failure_detail": result.get("failure_detail"), "rows": result.get("rows"), "run_id": result.get("run_id"), "reconciliation_hash": result.get("reconciliation_hash")}
         status["active_package"] = None
         status["active_attempt"] = None
         status["lease"] = None
