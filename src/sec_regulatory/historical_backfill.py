@@ -2135,7 +2135,7 @@ class AuthorizedPackageExecutor:
             dispatch_connection = _ProtectedTransactionConnection(connection) if commit_fence is not None else connection
             result = dict(dispatcher(dispatch_connection, package=source_package, source_root=root))
             safe = self._terminal_result(result, cast(str, expected["relative_package_path"]))
-            if safe.get("state") == "failed" and safe.get("run_id") is None and commit_fence is not None:
+            if safe.get("state") == "failed" and commit_fence is not None:
                 rollback = getattr(connection, "rollback", None)
                 if callable(rollback):
                     rollback()
