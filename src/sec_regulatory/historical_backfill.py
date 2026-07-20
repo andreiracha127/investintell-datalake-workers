@@ -2985,7 +2985,11 @@ def _run_supervisor_locked(
                 result = {"state": "ambiguous_commit"}
                 state = "ambiguous_commit"
             except BackfillSafetyError as error:
-                result = {"state": "failed", "reason_code": _reason_code_for_safety_error(error)}
+                result = {
+                    "state": "failed",
+                    "reason_code": _reason_code_for_safety_error(error),
+                    "safety_error_digest": _sha256_bytes(str(error).encode("utf-8")),
+                }
                 state = "failed"
             except Exception:  # executor boundaries must be recorded, never ignored
                 result = {"state": "failed", "reason_code": "executor_exception"}
@@ -3012,7 +3016,7 @@ def _run_supervisor_locked(
         if state == "failed" and result.get("reason_code") not in FAILURE_REASON_CODES:
             result = {"state": "failed", "reason_code": "executor_reported_failure"}
         reason_code = cast(str, result.get("reason_code", ""))
-        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id, "authorization_fingerprint": authorization_fingerprint, "result_state": result.get("state"), "reason_code": reason_code or None, "error_digest": _error_digest(reason_code) if state == "failed" and reason_code else None, "rows": result.get("rows"), "run_id": result.get("run_id"), "reconciliation_hash": result.get("reconciliation_hash")}
+        existing[identity] = {"state": state, "attempt": attempts, "package_sha256": package.get("package_sha256"), "inventory_hash": inventory_hash, "code_sha": code_sha, "authorization_id": authorization_id, "authorization_fingerprint": authorization_fingerprint, "result_state": result.get("state"), "reason_code": reason_code or None, "error_digest": _error_digest(reason_code) if state == "failed" and reason_code else None, "safety_error_digest": result.get("safety_error_digest"), "rows": result.get("rows"), "run_id": result.get("run_id"), "reconciliation_hash": result.get("reconciliation_hash")}
         status["active_package"] = None
         status["active_attempt"] = None
         status["lease"] = None
