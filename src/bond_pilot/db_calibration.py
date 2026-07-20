@@ -20,12 +20,13 @@ from .contracts import PilotError
 
 V2_RELATION = "public.sec_nport_holdings_v2_current"
 SEAM_NAME = "nport-v2-current"
-REQUIRED_COLUMNS = ("publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date", "series_id", "class_id", "instrument_id", "issuer_category", "cusip", "signed_market_value", "signed_pct_of_nav", "currency")
+REQUIRED_COLUMNS = ("publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date", "series_id", "class_id", "instrument_id", "issuer_category", "asset_class", "instrument_structure", "cusip", "signed_market_value", "signed_pct_of_nav", "currency")
 FULL_KEY_COLUMNS = ("series_id", "report_date", "publication_id", "accession_number", "holding_id", "source_run_id", "instrument_id")
 _REPORT_COLUMNS = ("series_id", "report_date", "publication_id", "accession_number")
 _HASH_FIELDS = ("phase4_run_sha256", "reconciliation_sha256", "publication_sha256", "schema_sha256", "lineage_attestation_sha256")
-_EVIDENCE_KEYS = frozenset({"schema_version", "phase4_status", "reconciled", "v2_published", "seam", "relation", "required_columns", *_HASH_FIELDS, "approved_series", "approved_by", "approved_at"})
-_APPROVAL_KEYS = frozenset({"schema_version", "evidence_sha256", *_HASH_FIELDS, "seam", "relation", "approved_series", "approved_modes", "allow_read", "approved_by", "approved_at"})
+_MAPPING_BINDING_FIELDS = ("mapping_contract", "mapping_schema_version", "mapping_artifact_sha256", "mapping_approval_sha256")
+_EVIDENCE_KEYS = frozenset({"schema_version", "phase4_status", "reconciled", "v2_published", "seam", "relation", "required_columns", *_HASH_FIELDS, *_MAPPING_BINDING_FIELDS, "approved_series", "approved_by", "approved_at"})
+_APPROVAL_KEYS = frozenset({"schema_version", "evidence_sha256", *_HASH_FIELDS, *_MAPPING_BINDING_FIELDS, "seam", "relation", "approved_series", "approved_modes", "allow_read", "approved_by", "approved_at"})
 _TOKEN = object()
 _MAX_GOVERNANCE_BYTES = 1024 * 1024
 
@@ -46,8 +47,8 @@ RESUME_PAGE_SQL = f"SELECT {_SELECT} FROM {V2_RELATION} AS holdings {_JOIN} WHER
 EXPLAIN_INITIAL_SQL = f"EXPLAIN (FORMAT JSON) {INITIAL_PAGE_SQL}"
 EXPLAIN_RESUME_SQL = f"EXPLAIN (FORMAT JSON) {RESUME_PAGE_SQL}"
 
-_QUERY_VERSION = "nport-v2-keyset-v3"
-_METHOD_VERSION = "bond-pilot-calibration-v3"
+_QUERY_VERSION = "nport-v2-keyset-v4"
+_METHOD_VERSION = "bond-pilot-calibration-v4"
 _QUERY_SHA256 = hashlib.sha256((RESOLVER_SQL + "\n" + INITIAL_PAGE_SQL + "\n" + RESUME_PAGE_SQL).encode()).hexdigest()
 _METHOD_SHA256 = hashlib.sha256(_METHOD_VERSION.encode()).hexdigest()
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
@@ -161,7 +162,7 @@ def _timestamp(value: object) -> bool:
 
 
 def _validate_evidence(value: Mapping[str, object]) -> None:
-    if set(value) != _EVIDENCE_KEYS or value.get("schema_version") != "phase4b-v2-evidence-v1" or value.get("phase4_status") != "completed" or value.get("reconciled") is not True or value.get("v2_published") is not True or value.get("seam") != SEAM_NAME or value.get("relation") != V2_RELATION or tuple(value.get("required_columns", ())) != REQUIRED_COLUMNS:
+    if set(value) != _EVIDENCE_KEYS or value.get("schema_version") != "phase4b-v2-evidence-v2" or value.get("phase4_status") != "completed" or value.get("reconciled") is not True or value.get("v2_published") is not True or value.get("seam") != SEAM_NAME or value.get("relation") != V2_RELATION or tuple(value.get("required_columns", ())) != REQUIRED_COLUMNS or value.get("mapping_contract") != "composite-exact-v2" or value.get("mapping_schema_version") != "debt-mapping-v2" or not all(_sha(value.get(field)) for field in ("mapping_artifact_sha256", "mapping_approval_sha256")):
         raise PilotError("phase4b_v2_unavailable")
     series = value.get("approved_series")
     if not isinstance(series, list) or not series or len(series) > 5 or len(series) != len(set(series)) or any(not isinstance(item, str) or not item.strip() for item in series) or not all(_sha(value.get(field)) for field in _HASH_FIELDS) or not _timestamp(value.get("approved_at")) or not isinstance(value.get("approved_by"), str) or not value["approved_by"].strip():
@@ -169,7 +170,7 @@ def _validate_evidence(value: Mapping[str, object]) -> None:
 
 
 def _validate_approval(value: Mapping[str, object]) -> None:
-    if set(value) != _APPROVAL_KEYS or value.get("schema_version") != "phase4b-v2-evidence-approval-v1" or value.get("seam") != SEAM_NAME or value.get("relation") != V2_RELATION or value.get("allow_read") is not True or not _sha(value.get("evidence_sha256")) or not all(_sha(value.get(field)) for field in _HASH_FIELDS) or not _timestamp(value.get("approved_at")) or not isinstance(value.get("approved_by"), str) or not value["approved_by"].strip():
+    if set(value) != _APPROVAL_KEYS or value.get("schema_version") != "phase4b-v2-evidence-approval-v2" or value.get("seam") != SEAM_NAME or value.get("relation") != V2_RELATION or value.get("allow_read") is not True or not _sha(value.get("evidence_sha256")) or not all(_sha(value.get(field)) for field in (*_HASH_FIELDS, "mapping_artifact_sha256", "mapping_approval_sha256")) or value.get("mapping_contract") != "composite-exact-v2" or value.get("mapping_schema_version") != "debt-mapping-v2" or not _timestamp(value.get("approved_at")) or not isinstance(value.get("approved_by"), str) or not value["approved_by"].strip():
         raise PilotError("phase4b_v2_unavailable")
     for field in ("approved_series", "approved_modes"):
         items = value.get(field)
@@ -225,7 +226,7 @@ def _governance(evidence: object, approval: object, *, mode: str, series_ids: Se
         raise PilotError("run_budget_required") from exc
     ev, _ = _rehash(evidence, "evidence")
     ap, _ = _rehash(approval, "approval")
-    if ap["evidence_sha256"] != evidence.artifact_sha256 or any(ap[field] != ev[field] for field in _HASH_FIELDS) or ap["seam"] != ev["seam"] or ap["relation"] != ev["relation"] or not set(ap["approved_series"]).issubset(ev["approved_series"]) or mode not in ap["approved_modes"]:
+    if ap["evidence_sha256"] != evidence.artifact_sha256 or any(ap[field] != ev[field] for field in (*_HASH_FIELDS, *_MAPPING_BINDING_FIELDS)) or ap["seam"] != ev["seam"] or ap["relation"] != ev["relation"] or not set(ap["approved_series"]).issubset(ev["approved_series"]) or mode not in ap["approved_modes"]:
         raise PilotError("phase4b_v2_unavailable")
     if isinstance(series_ids, str) or not isinstance(series_ids, Sequence):
         raise PilotError("run_budget_required")

@@ -50,6 +50,8 @@ class HoldingRecord:
     class_id: object = None
     instrument_id: object = None
     issuer_category: object = None
+    asset_class: object = None
+    instrument_structure: object = None
     original_cusip: object = None
     signed_market_value: object = None
     signed_pct_of_nav: object = None
@@ -308,7 +310,7 @@ def match_holding(
     if not isinstance(observations, ObservationIndex):
         raise PilotError("invalid_observation_index")
     debt_mapping = _require_valid_mapping(debt_mapping)
-    category_state = debt_mapping.classify(holding.issuer_category)
+    category_state = debt_mapping.classify(holding.issuer_category, holding.asset_class, holding.instrument_structure)
     if category_state is not DebtState.DEBT_LIKE_ELIGIBLE:
         return MatchResult(holding, _state_for_category(category_state))
     identifier = normalize_cusip9(holding.original_cusip)
@@ -386,7 +388,6 @@ def _add_finite_amount(
 def _eligible(match: MatchResult) -> bool:
     return (
         normalize_cusip9(match.holding.original_cusip).normalized_cusip9 is not None
-        and match.holding.issuer_category is not None
         and match.state not in {MatchState.INELIGIBLE_NON_DEBT, MatchState.AMBIGUOUS_CATEGORY, MatchState.MISSING_CATEGORY, MatchState.INVALID_IDENTIFIER}
     )
 

@@ -33,11 +33,13 @@ def _sha(char: str) -> str:
 
 def _evidence_payload(**changes: object) -> dict[str, object]:
     payload: dict[str, object] = {
-        "schema_version": "phase4b-v2-evidence-v1", "phase4_status": "completed", "reconciled": True,
+        "schema_version": "phase4b-v2-evidence-v2", "phase4_status": "completed", "reconciled": True,
         "v2_published": True, "seam": "nport-v2-current", "relation": V2_RELATION,
         "required_columns": list(REQUIRED_COLUMNS), "phase4_run_sha256": _sha("a"),
         "reconciliation_sha256": _sha("b"), "publication_sha256": _sha("c"), "schema_sha256": _sha("d"),
         "approved_series": ["S1"], "lineage_attestation_sha256": _sha("e"),
+        "mapping_contract": "composite-exact-v2", "mapping_schema_version": "debt-mapping-v2",
+        "mapping_artifact_sha256": _sha("f"), "mapping_approval_sha256": _sha("0"),
         "approved_by": "human-approver", "approved_at": "2026-07-19T12:00:00Z",
     }
     payload.update(changes)
@@ -49,10 +51,12 @@ def _governance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     evidence_path.write_bytes(canonical_json_bytes(_evidence_payload()))
     evidence_bytes = evidence_path.read_bytes()
     approval = {
-        "schema_version": "phase4b-v2-evidence-approval-v1", "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+        "schema_version": "phase4b-v2-evidence-approval-v2", "evidence_sha256": hashlib.sha256(evidence_bytes).hexdigest(),
         "phase4_run_sha256": _sha("a"), "reconciliation_sha256": _sha("b"), "publication_sha256": _sha("c"),
         "schema_sha256": _sha("d"), "lineage_attestation_sha256": _sha("e"), "seam": "nport-v2-current",
         "relation": V2_RELATION, "approved_series": ["S1"], "approved_modes": ["calibration", "first_bounded"],
+        "mapping_contract": "composite-exact-v2", "mapping_schema_version": "debt-mapping-v2",
+        "mapping_artifact_sha256": _sha("f"), "mapping_approval_sha256": _sha("0"),
         "allow_read": True, "approved_by": "human-approver", "approved_at": "2026-07-19T12:01:00Z",
     }
     approval_path = tmp_path / "approval.json"
@@ -76,6 +80,26 @@ def test_public_request_validation_rehashes_all_governance_without_a_connection(
     approval_path.write_bytes(canonical_json_bytes({**approval_payload, "evidence_sha256": hashlib.sha256(evidence_path.read_bytes()).hexdigest(), "phase4_run_sha256": _sha("f")}))
     with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
         validate_v2_request(evidence, approval, "calibration", ("S1",))
+
+
+@pytest.mark.parametrize("field", ["issuer_category", "asset_class", "instrument_structure"])
+def test_phase4_evidence_rejects_each_missing_composite_column(field: str, tmp_path: Path) -> None:
+    payload = _evidence_payload(required_columns=[column for column in REQUIRED_COLUMNS if column != field])
+    path = tmp_path / f"missing-{field}.json"
+    path.write_bytes(canonical_json_bytes(payload))
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+        load_phase4_v2_evidence(path)
+
+
+def test_phase4_evidence_requires_composite_mapping_and_approval_binding(tmp_path: Path) -> None:
+    payload = _evidence_payload()
+    for field in ("mapping_contract", "mapping_schema_version", "mapping_artifact_sha256", "mapping_approval_sha256"):
+        missing = dict(payload)
+        missing.pop(field)
+        path = tmp_path / f"missing-{field}.json"
+        path.write_bytes(canonical_json_bytes(missing))
+        with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
+            load_phase4_v2_evidence(path)
 
 
 @pytest.mark.parametrize("pin,authority", [(None, "human-approver"), (_sha("f"), "human-approver"), (None, "wrong-human")])

@@ -27,7 +27,7 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MATCH_SCHEMA = pa.schema([
     pa.field("publication_id", pa.string()), pa.field("accession_number", pa.string()), pa.field("holding_id", pa.string()), pa.field("source_run_id", pa.string()),
     pa.field("report_date", pa.string()), pa.field("filing_date", pa.string()), pa.field("series_id", pa.string()), pa.field("class_id", pa.string()),
-    pa.field("instrument_id", pa.string()), pa.field("issuer_category", pa.string()), pa.field("original_cusip", pa.string()), pa.field("normalized_cusip9", pa.string()),
+    pa.field("instrument_id", pa.string()), pa.field("issuer_category", pa.string()), pa.field("asset_class", pa.string()), pa.field("instrument_structure", pa.string()), pa.field("original_cusip", pa.string()), pa.field("normalized_cusip9", pa.string()),
     pa.field("signed_market_value_raw", pa.string()), pa.field("signed_pct_of_nav_raw", pa.string()), pa.field("currency", pa.string()), pa.field("raw_values_json", pa.string()),
     pa.field("debt_state", pa.string()), pa.field("state", pa.string()), pa.field("observation_date", pa.string()), pa.field("observation_age_days", pa.int64()),
     pa.field("is_144a", pa.bool_()), pa.field("observation_price", pa.float64()), pa.field("observations_json", pa.string()),
@@ -88,9 +88,9 @@ def _match_rows(matches: Iterable[MatchResult], mapping: DebtMapping) -> list[di
         rows.append({
             "publication_id": _text(holding.publication_id), "accession_number": _text(holding.accession_number), "holding_id": _text(holding.holding_id), "source_run_id": _text(holding.source_run_id),
             "report_date": _text(holding.report_date), "filing_date": _text(holding.filing_date), "series_id": _text(holding.series_id), "class_id": _text(holding.class_id),
-            "instrument_id": _text(holding.instrument_id), "issuer_category": _text(holding.issuer_category), "original_cusip": _text(holding.original_cusip), "normalized_cusip9": match.normalized_cusip9,
+            "instrument_id": _text(holding.instrument_id), "issuer_category": _text(holding.issuer_category), "asset_class": _text(holding.asset_class), "instrument_structure": _text(holding.instrument_structure), "original_cusip": _text(holding.original_cusip), "normalized_cusip9": match.normalized_cusip9,
             "signed_market_value_raw": _json(holding.signed_market_value), "signed_pct_of_nav_raw": _json(holding.signed_pct_of_nav), "currency": _text(holding.currency), "raw_values_json": _json(holding.raw_values or {}),
-            "debt_state": mapping.classify(holding.issuer_category).value, "state": match.state.value, "observation_date": match.observation_date, "observation_age_days": match.observation_age_days,
+            "debt_state": mapping.classify(holding.issuer_category, holding.asset_class, holding.instrument_structure).value, "state": match.state.value, "observation_date": match.observation_date, "observation_age_days": match.observation_age_days,
             "is_144a": match.is_144a, "observation_price": _finite(match.observations[0].price) if match.observations else None, "observations_json": _json(match.observations),
         })
     return rows
@@ -196,21 +196,24 @@ def _validate_fixture_coverage(matches: tuple[MatchResult, ...], fixture: Fixtur
 
 
 def _validate_mapping_provenance(value: Mapping[str, object], mapping: DebtMapping) -> dict[str, object]:
-    if not isinstance(value, Mapping) or value.get("schema_version") != "mapping-provenance-v1" or value.get("mapping_version") != mapping.mapping_version or value.get("scope") != mapping.scope or value.get("mapping_sha256") != mapping.mapping_sha256:
+    if not isinstance(value, Mapping) or value.get("schema_version") != "mapping-provenance-v2" or value.get("mapping_contract") != "composite-exact-v2" or value.get("mapping_version") != mapping.mapping_version or value.get("scope") != mapping.scope or value.get("mapping_sha256") != mapping.mapping_sha256:
         raise PilotError("invalid_mapping_provenance")
     if mapping.scope == "synthetic_fixture_only":
-        expected = {"schema_version", "mapping_version", "scope", "mapping_sha256", "approval_state"}
-        if set(value) != expected or value.get("approval_state") != "synthetic_fixture_only":
+        expected = {"schema_version", "mapping_contract", "mapping_version", "scope", "mapping_sha256", "approval_state", "approval_reference"}
+        if set(value) != expected or value.get("approval_state") != "synthetic_fixture_only" or value.get("approval_reference") != "synthetic_fixture_only":
             raise PilotError("invalid_mapping_provenance")
     elif mapping.scope == "approved_external":
-        expected = {"schema_version", "mapping_version", "scope", "mapping_sha256", "observed_values_sha256", "approval_state", "evidence", "approved_by", "approved_at"}
-        evidence = value.get("evidence")
-        valid_evidence = isinstance(evidence, list) and bool(evidence) and all(isinstance(item, Mapping) and set(item) == {"reference", "sha256"} and isinstance(item["reference"], str) and bool(item["reference"].strip()) and _valid_sha(item["sha256"]) for item in evidence)
-        if set(value) != expected or value.get("observed_values_sha256") != mapping.observed_values_sha256 or value.get("approval_state") != "approved" or not valid_evidence or not isinstance(value.get("approved_by"), str) or not value["approved_by"].strip() or not isinstance(value.get("approved_at"), str) or not value["approved_at"].strip():
+        expected = {"schema_version", "mapping_contract", "mapping_version", "scope", "mapping_sha256", "observed_composite_values_sha256", "approval_state", "approval_reference"}
+        if set(value) != expected or value.get("observed_composite_values_sha256") != mapping.observed_composite_values_sha256 or value.get("approval_state") != "approved" or value.get("approval_reference") != mapping.approval_sha256:
             raise PilotError("invalid_mapping_provenance")
     else:
         raise PilotError("invalid_mapping_provenance")
     return dict(_plain(value))
+
+
+def _mapping_evidence(mapping: DebtMapping, provenance: Mapping[str, object]) -> dict[str, object]:
+    """Expose only contract pins; decision-table values never enter diagnostics."""
+    return {"schema_version": mapping.schema_version, "mapping_version": mapping.mapping_version, "scope": mapping.scope, "mapping_sha256": mapping.mapping_sha256, "classification_fields": ["issuer_category", "asset_class", "instrument_structure"], "mapping_contract": provenance["mapping_contract"], "approval_reference": provenance["approval_reference"]}
 
 
 def _panel_is_inside_run(panel_path: Path, run_dir: Path) -> bool:
@@ -243,7 +246,16 @@ def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandi
     match_rows, metric_rows, latest_rows = _match_rows(match_values, debt_mapping), _metric_rows(metric_values), _latest_rows(latest_values)
     source_manifest = {**source_candidate.to_json_mapping(), "approval": source_approval.to_json_mapping(), "internal_only": True}
     calibration = {**dict(calibration_report), "status": "not_started", "phase4_state": "pre_backfill", "representative_post_backfill": False, "db_reads": 0, "db_writes": 0}
-    quality = {"internal_only": True, "source": source_manifest, "mapping": {**debt_mapping.to_mapping(), "provenance": provenance}, "nport": manifest, "panel": _plain(panel_result), "state_counts": {key: sum(1 for row in match_rows if row["state"] == key) for key in sorted({str(row["state"]) for row in match_rows})}, "invalid_weight_diagnostics": {"by_series": [_plain(metric.denominator_diagnostics) for metric in metric_values]}, "market_diagnostics": {"by_series": [_plain(metric.market_value_diagnostics) for metric in metric_values], "currency_values_no_fx": [_plain(_known_currencies(metric.eligible_market_value_by_currency)) for metric in metric_values]}, "cross_series": _plain(cross_series_summary), "latest_lane": {"historical_input": False}, "db_reads": 0, "db_writes": 0, "representative": False}
+    dispositions = {"eligible": 0, "missing_category": 0, "ambiguous_category": 0, "non_debt_excluded": 0}
+    for row in match_values:
+        state = row.state.value
+        if state == "matched" or state not in {"missing_category", "ambiguous_category", "ineligible_non_debt"}:
+            dispositions["eligible"] += int(state not in {"missing_category", "ambiguous_category", "ineligible_non_debt"})
+        elif state == "ineligible_non_debt":
+            dispositions["non_debt_excluded"] += 1
+        else:
+            dispositions[state] += 1
+    quality = {"internal_only": True, "source": source_manifest, "mapping": _mapping_evidence(debt_mapping, provenance), "nport": manifest, "panel": _plain(panel_result), "state_counts": {key: sum(1 for row in match_rows if row["state"] == key) for key in sorted({str(row["state"]) for row in match_rows})}, "disposition_counts": dispositions, "invalid_weight_diagnostics": {"by_series": [_plain(metric.denominator_diagnostics) for metric in metric_values]}, "market_diagnostics": {"by_series": [_plain(metric.market_value_diagnostics) for metric in metric_values], "currency_values_no_fx": [_plain(_known_currencies(metric.eligible_market_value_by_currency)) for metric in metric_values]}, "cross_series": _plain(cross_series_summary), "latest_lane": {"historical_input": False}, "db_reads": 0, "db_writes": 0, "representative": False}
     report = "# Bond pilot internal report\n\nInternal-only local/offline/no-write fixture run. Phase state: pre-backfill; representative: false. Full internal provenance is expected. Latest lane is isolated (`historical_input:false`). No frontend, API, or production claim.\n"
     attempt = _create_reporting_attempt(root)
     try:

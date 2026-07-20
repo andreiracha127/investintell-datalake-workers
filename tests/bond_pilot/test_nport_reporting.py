@@ -23,6 +23,7 @@ def _row(*, holding_id: str = "lot-1", instrument_id: str = "instrument-1", weig
         "publication_id": "publication-1", "accession_number": "0000000000-24-000001", "holding_id": holding_id,
         "source_run_id": "source-run-1", "report_date": "2024-03-31", "filing_date": "2024-04-15",
         "series_id": "series-1", "class_id": None, "instrument_id": instrument_id, "issuer_category": "fixture_debt",
+        "asset_class": "fixture_asset", "instrument_structure": "fixture_structure",
         "cusip": "123456789", "signed_market_value": "100.25", "signed_pct_of_nav": weight, "currency": "USD",
     }
 
@@ -42,13 +43,13 @@ def _approval() -> SourceApproval:
 
 def _mapping(tmp_path: Path):
     path = tmp_path / "mapping.json"
-    path.write_text(json.dumps({"schema_version": "debt-mapping-test-v1", "mapping_version": "synthetic-test-v1", "scope": "synthetic_fixture_only", "categories": {"fixture_debt": "debt_like_eligible", "fixture_non_debt": "ineligible_non_debt", "fixture_ambiguous": "ambiguous_category"}}), encoding="utf-8")
+    path.write_text((Path(__file__).parent / "fixtures" / "debt-mapping-test-v2.json").read_text(encoding="utf-8"), encoding="utf-8")
     return load_fixture_debt_mapping(path)
 
 
 def _provenance(tmp_path: Path) -> dict[str, object]:
     mapping = _mapping(tmp_path)
-    return {"schema_version": "mapping-provenance-v1", "mapping_version": "synthetic-test-v1", "scope": "synthetic_fixture_only", "mapping_sha256": mapping.mapping_sha256, "approval_state": "synthetic_fixture_only"}
+    return {"schema_version": "mapping-provenance-v2", "mapping_version": "synthetic-test-v2", "scope": "synthetic_fixture_only", "mapping_sha256": mapping.mapping_sha256, "mapping_contract": "composite-exact-v2", "approval_state": "synthetic_fixture_only", "approval_reference": "synthetic_fixture_only"}
 
 
 def test_fixture_rejects_over_cap_before_converting_rows(tmp_path: Path) -> None:
@@ -69,6 +70,14 @@ def test_fixture_accepts_10000_and_preserves_lineage_and_invalid_raw_weight(tmp_
     assert holdings[0].raw_values["signed_pct_of_nav"] == "not-a-number"
     with pytest.raises(TypeError):
         holdings[0].raw_values["changed"] = True  # type: ignore[index]
+
+
+@pytest.mark.parametrize("field", ["issuer_category", "asset_class", "instrument_structure"])
+def test_fixture_rejects_each_missing_composite_component(tmp_path: Path, field: str) -> None:
+    row = _row()
+    row.pop(field)
+    with pytest.raises(PilotError, match="nport_missing_field"):
+        load_fixture_holdings(_fixture(tmp_path / f"missing-{field}.json", [row]))
 
 
 def test_fixture_rejects_duplicate_lot_but_keeps_distinct_lots(tmp_path: Path) -> None:
@@ -151,6 +160,9 @@ def test_reports_write_explicit_schemas_internal_provenance_and_no_enum_repr(tmp
     assert quality["internal_only"] is True
     assert quality["latest_lane"]["historical_input"] is False
     assert quality["source"]["source_locator"] == "file:///internal/source.zip"
+    assert quality["mapping"]["classification_fields"] == ["issuer_category", "asset_class", "instrument_structure"]
+    assert "rules" not in quality["mapping"]
+    assert quality["disposition_counts"] == {"eligible": 1, "missing_category": 0, "ambiguous_category": 0, "non_debt_excluded": 0}
     assert (tmp_path / "run" / "bond-observed-daily.parquet").read_bytes() == panel_path.read_bytes()
     assert "bond-latest.parquet" in reports["checksums"].read_text(encoding="utf-8")
 

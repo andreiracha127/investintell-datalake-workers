@@ -1,0 +1,14 @@
+{
+  "schema_version": "debt-mapping-test-v2",
+  "mapping_version": "synthetic-test-v2",
+  "scope": "synthetic_fixture_only",
+  "rules": [
+    {"issuer_category": "fixture_debt", "asset_class": "fixture_asset", "instrument_structure": "fixture_structure", "decision": "eligible_debt"},
+    {"issuer_category": "fixture_non_debt", "asset_class": "fixture_asset", "instrument_structure": "fixture_structure", "decision": "non_debt_excluded"},
+    {"issuer_category": "synthetic_mbs", "asset_class": "synthetic_asset", "instrument_structure": "synthetic_structure", "decision": "non_debt_excluded"},
+    {"issuer_category": "synthetic_abs", "asset_class": "synthetic_asset", "instrument_structure": "synthetic_structure", "decision": "non_debt_excluded"},
+    {"issuer_category": "synthetic_clo", "asset_class": "synthetic_asset", "instrument_structure": "synthetic_structure", "decision": "non_debt_excluded"},
+    {"issuer_category": "synthetic_loan", "asset_class": "synthetic_asset", "instrument_structure": "synthetic_structure", "decision": "non_debt_excluded"},
+    {"issuer_category": "synthetic_repo", "asset_class": "synthetic_asset", "instrument_structure": "synthetic_structure", "decision": "non_debt_excluded"}
+  ]
+}

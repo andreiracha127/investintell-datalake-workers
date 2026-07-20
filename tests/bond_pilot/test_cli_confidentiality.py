@@ -61,7 +61,7 @@ def _fixture(path: Path) -> Path:
     path.write_text(json.dumps({"schema_version": "nport-fixture-v1", "phase4_state": "pre_backfill", "holdings": [{
         "publication_id": "publication-1", "accession_number": "0000000000-24-000001", "holding_id": "lot-1",
         "source_run_id": "source-run-1", "report_date": "2024-03-31", "filing_date": "2024-04-15",
-        "series_id": "series-1", "class_id": None, "instrument_id": "instrument-1", "issuer_category": "fixture_debt",
+        "series_id": "series-1", "class_id": None, "instrument_id": "instrument-1", "issuer_category": "fixture_debt", "asset_class": "fixture_asset", "instrument_structure": "fixture_structure",
         "cusip": "123456789", "signed_market_value": 100.0, "signed_pct_of_nav": 0.1, "currency": "USD",
     }]}), encoding="utf-8")
     return path
@@ -81,14 +81,15 @@ def _calibration_documents(tmp_path: Path, make_source_zip, monkeypatch: pytest.
     source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
     observed = "c" * 64
     mapping = tmp_path / "mapping.json"
-    mapping.write_text(json.dumps({"schema_version": "debt-mapping-v1", "mapping_version": "real-v1", "observed_values_sha256": observed, "categories": {"debt": "debt_like_eligible"}}), encoding="utf-8")
+    mapping.write_text(json.dumps({"schema_version": "debt-mapping-v2", "mapping_version": "real-v2", "observed_composite_values_sha256": observed, "rules": [{"issuer_category": "debt", "asset_class": "asset", "instrument_structure": "structure", "decision": "eligible_debt"}]}), encoding="utf-8")
     mapping_approval = tmp_path / "mapping-approval.json"
-    mapping_approval.write_text(json.dumps({"schema_version": "debt-mapping-approval-v1", "mapping_sha256": hashlib.sha256(mapping.read_bytes()).hexdigest(), "observed_values_sha256": observed, "evidence": [{"reference": "internal evidence", "sha256": "d" * 64}], "approved_by": "reviewer", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
+    mapping_approval.write_text(json.dumps({"schema_version": "debt-mapping-approval-v2", "mapping_sha256": hashlib.sha256(mapping.read_bytes()).hexdigest(), "observed_composite_values_sha256": observed, "evidence": [{"reference": "internal evidence", "sha256": "d" * 64}], "approved_by": "reviewer", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
     hash_fields = {field: "a" * 64 for field in ("phase4_run_sha256", "reconciliation_sha256", "publication_sha256", "schema_sha256", "lineage_attestation_sha256")}
     evidence = tmp_path / "evidence.json"
-    evidence.write_text(json.dumps({"schema_version": "phase4b-v2-evidence-v1", "phase4_status": "completed", "reconciled": True, "v2_published": True, "seam": "nport-v2-current", "relation": "public.sec_nport_holdings_v2_current", "required_columns": ["publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date", "series_id", "class_id", "instrument_id", "issuer_category", "cusip", "signed_market_value", "signed_pct_of_nav", "currency"], **hash_fields, "approved_series": ["series-1"], "approved_by": "phase4 reviewer", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
+    mapping_pins = {"mapping_contract": "composite-exact-v2", "mapping_schema_version": "debt-mapping-v2", "mapping_artifact_sha256": hashlib.sha256(mapping.read_bytes()).hexdigest(), "mapping_approval_sha256": hashlib.sha256(mapping_approval.read_bytes()).hexdigest()}
+    evidence.write_text(json.dumps({"schema_version": "phase4b-v2-evidence-v2", "phase4_status": "completed", "reconciled": True, "v2_published": True, "seam": "nport-v2-current", "relation": "public.sec_nport_holdings_v2_current", "required_columns": list(REQUIRED_COLUMNS), **hash_fields, **mapping_pins, "approved_series": ["series-1"], "approved_by": "phase4 reviewer", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
     evidence_approval = tmp_path / "evidence-approval.json"
-    evidence_approval.write_text(json.dumps({"schema_version": "phase4b-v2-evidence-approval-v1", "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(), **hash_fields, "seam": "nport-v2-current", "relation": "public.sec_nport_holdings_v2_current", "approved_series": ["series-1"], "approved_modes": ["calibration"], "allow_read": True, "approved_by": "phase4 approver", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
+    evidence_approval.write_text(json.dumps({"schema_version": "phase4b-v2-evidence-approval-v2", "evidence_sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(), **hash_fields, **mapping_pins, "seam": "nport-v2-current", "relation": "public.sec_nport_holdings_v2_current", "approved_series": ["series-1"], "approved_modes": ["calibration"], "allow_read": True, "approved_by": "phase4 approver", "approved_at": "2026-07-19T12:00:00Z"}), encoding="utf-8")
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", hashlib.sha256(evidence_approval.read_bytes()).hexdigest())
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVER_ID", "phase4 approver")
     return {"source_manifest": source_manifest, "source_approval": source_approval, "mapping": mapping, "mapping_approval": mapping_approval, "evidence": evidence, "evidence_approval": evidence_approval}
@@ -126,7 +127,7 @@ def test_direct_script_help_works_for_each_manual_command() -> None:
 def test_fixture_run_executes_offline_path_and_publishes_internal_evidence(tmp_path: Path, make_source_zip) -> None:
     source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
     fixture = _fixture(tmp_path / "fixture.json")
-    mapping = Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json")
+    mapping = Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json")
     outcome = run_fixture(
         source_manifest=source_manifest, source_approval=source_approval, fixture=fixture,
         mapping=mapping, run_dir=tmp_path / "fixture-run",
@@ -158,7 +159,7 @@ def test_fixture_run_rejects_replaced_approved_source_before_panel_or_report(art
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -190,7 +191,7 @@ def test_fixture_run_consumes_only_requalified_staging_parquet_and_retains_appro
         source_manifest=source_manifest,
         source_approval=source_approval,
         fixture=_fixture(tmp_path / "fixture.json"),
-        mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+        mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
         run_dir=tmp_path / "fixture-run",
     )
 
@@ -210,7 +211,7 @@ def test_fixture_run_cleans_requalified_staging_after_panel_failure(tmp_path: Pa
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -230,7 +231,7 @@ def test_fixture_run_never_treats_candidate_local_archive_path_as_network_locato
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -273,7 +274,7 @@ def test_fixture_run_rejects_unc_device_and_uri_candidate_paths_before_filesyste
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -313,7 +314,7 @@ def test_fixture_run_rejects_staged_path_replacement_after_descriptor_open(tmp_p
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
     except PilotError as raised:
@@ -351,7 +352,7 @@ def test_fixture_run_detects_staged_in_place_mutation_before_durable_report(tmp_
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -488,7 +489,7 @@ def test_internal_manifest_retains_full_provenance_and_pilot_stays_out_of_public
 
 
 def test_cli_typed_stop_publishes_internal_only_checksums_and_exit_two(tmp_path: Path) -> None:
-    code = main(["fixture-run", "--source-manifest", str(tmp_path / "missing.json"), "--source-approval", str(tmp_path / "missing-approval.json"), "--fixture", str(tmp_path / "fixture.json"), "--mapping", "tests/bond_pilot/fixtures/debt-mapping-test-v1.json", "--run-dir", str(tmp_path / "stop")])
+    code = main(["fixture-run", "--source-manifest", str(tmp_path / "missing.json"), "--source-approval", str(tmp_path / "missing-approval.json"), "--fixture", str(tmp_path / "fixture.json"), "--mapping", "tests/bond_pilot/fixtures/debt-mapping-test-v2.json", "--run-dir", str(tmp_path / "stop")])
     assert code == 2
     report = json.loads((tmp_path / "stop" / "stop-report.json").read_text(encoding="utf-8"))
     assert report["internal_only"] is True
@@ -541,8 +542,9 @@ def test_calibration_success_pack_is_atomic_and_binds_internal_provenance(tmp_pa
     provenance = json.loads((final / "calibration-provenance.json").read_text(encoding="utf-8"))
     assert provenance["internal_only"] is True
     assert provenance["source"]["approval"]["source_locator"]
-    assert provenance["mapping"]["observed_values_sha256"] == "c" * 64
-    assert provenance["mapping"]["approval"]["approved_by"] == "reviewer"
+    assert provenance["mapping"]["observed_composite_values_sha256"] == "c" * 64
+    assert "rules" not in provenance["mapping"]
+    assert provenance["mapping"]["approval_reference"] == hashlib.sha256(kwargs["mapping_approval"].read_bytes()).hexdigest()
     assert provenance["phase4"]["evidence_sha256"] and provenance["phase4"]["approval_sha256"]
     assert provenance["phase4"]["evidence"]["approved_by"] == "phase4 reviewer"
     assert provenance["phase4"]["approval"]["approved_modes"] == ["calibration"]
@@ -717,6 +719,22 @@ def test_final_checkpoint_mismatches_are_not_published(field: str, value: str, t
         return SimpleNamespace(rows=rows, rows_read=1, pages=1, partial=False, last_key=key, mode="calibration")
     monkeypatch.setattr(workflow, "run_v2_calibration", mismatched)
     with pytest.raises(PilotError):
+        run_calibration(**kwargs)
+    assert not (kwargs["run_dir"] / "calibration-report.json").exists()
+
+
+def test_calibrate_rejects_phase4_evidence_not_bound_to_exact_composite_mapping(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "calibration"}
+    evidence = json.loads(kwargs["evidence"].read_text(encoding="utf-8"))
+    evidence["mapping_artifact_sha256"] = "f" * 64
+    kwargs["evidence"].write_text(json.dumps(evidence), encoding="utf-8")
+    approval = json.loads(kwargs["evidence_approval"].read_text(encoding="utf-8"))
+    approval["evidence_sha256"] = hashlib.sha256(kwargs["evidence"].read_bytes()).hexdigest()
+    approval["mapping_artifact_sha256"] = "f" * 64
+    kwargs["evidence_approval"].write_text(json.dumps(approval), encoding="utf-8")
+    monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", hashlib.sha256(kwargs["evidence_approval"].read_bytes()).hexdigest())
+    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("mapping binding must fail before DSN"))
+    with pytest.raises(PilotError, match="phase4b_v2_unavailable"):
         run_calibration(**kwargs)
     assert not (kwargs["run_dir"] / "calibration-report.json").exists()
 

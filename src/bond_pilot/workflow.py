@@ -85,7 +85,7 @@ def qualify(*, source: str | Path, run_dir: str | Path, expected_sha256: str | N
 
 
 def _fixture_provenance(mapping: object) -> dict[str, object]:
-    return {"schema_version": "mapping-provenance-v1", "mapping_version": mapping.mapping_version, "scope": "synthetic_fixture_only", "mapping_sha256": mapping.mapping_sha256, "approval_state": "synthetic_fixture_only"}
+    return {"schema_version": "mapping-provenance-v2", "mapping_contract": "composite-exact-v2", "mapping_version": mapping.mapping_version, "scope": "synthetic_fixture_only", "mapping_sha256": mapping.mapping_sha256, "approval_state": "synthetic_fixture_only", "approval_reference": "synthetic_fixture_only"}
 
 
 def run_fixture(*, source_manifest: str | Path, source_approval: str | Path, fixture: str | Path, mapping: str | Path, run_dir: str | Path) -> Mapping[str, object]:
@@ -136,12 +136,15 @@ def _calibration_inputs(*, source_manifest: str | Path, source_approval: str | P
     debt_mapping = load_approved_debt_mapping(mapping, mapping_approval)
     phase4 = load_phase4_v2_evidence(evidence)
     phase4_approval = load_phase4_v2_evidence_approval(evidence_approval)
+    if phase4.values["mapping_artifact_sha256"] != debt_mapping.mapping_sha256 or phase4.values["mapping_approval_sha256"] != debt_mapping.approval_sha256:
+        raise PilotError("phase4b_v2_unavailable")
     series = validate_v2_request(phase4, phase4_approval, mode, series_ids)
     return candidate, approval, debt_mapping, phase4, phase4_approval, series
 
 
 def _calibration_provenance(candidate: object, approval: object, mapping: object, evidence: object, evidence_approval: object, series: tuple[str, ...], mode: str) -> dict[str, object]:
-    return {"internal_only": True, "source": {**candidate.to_json_mapping(), "approval": approval.to_json_mapping()}, "mapping": mapping.to_mapping(), "phase4": {"evidence_sha256": evidence.artifact_sha256, "approval_sha256": evidence_approval.artifact_sha256, "approval_authority_sha256": hashlib.sha256(str(evidence_approval.values["approved_by"]).encode("utf-8")).hexdigest(), "evidence": dict(evidence.values), "approval": dict(evidence_approval.values)}, "governed_request": {"mode": mode, "series_ids": list(series)}}
+    mapping_evidence = {"schema_version": mapping.schema_version, "mapping_version": mapping.mapping_version, "scope": mapping.scope, "mapping_sha256": mapping.mapping_sha256, "observed_composite_values_sha256": mapping.observed_composite_values_sha256, "approval_reference": mapping.approval_sha256, "mapping_contract": "composite-exact-v2", "classification_fields": ["issuer_category", "asset_class", "instrument_structure"]}
+    return {"internal_only": True, "source": {**candidate.to_json_mapping(), "approval": approval.to_json_mapping()}, "mapping": mapping_evidence, "phase4": {"evidence_sha256": evidence.artifact_sha256, "approval_sha256": evidence_approval.artifact_sha256, "approval_authority_sha256": hashlib.sha256(str(evidence_approval.values["approved_by"]).encode("utf-8")).hexdigest(), "evidence": dict(evidence.values), "approval": dict(evidence_approval.values)}, "governed_request": {"mode": mode, "series_ids": list(series)}}
 
 
 _RESUME_FILES = frozenset({"checkpoint.json", "calibration-provenance.json", "stop-report.json", "checksums.sha256"})

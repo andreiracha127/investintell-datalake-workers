@@ -34,6 +34,8 @@ def _holding(**changes: object) -> HoldingRecord:
         "class_id": "class-a",
         "instrument_id": "instrument-1",
         "issuer_category": "fixture_debt",
+        "asset_class": "fixture_asset",
+        "instrument_structure": "fixture_structure",
         "original_cusip": "123456789",
         "signed_market_value": 100.0,
         "signed_pct_of_nav": 10.0,
@@ -50,31 +52,31 @@ def _write_panel(path: Path, rows: list[dict[str, object]]) -> None:
 
 @pytest.fixture
 def mapping() -> object:
-    return load_fixture_debt_mapping(Path(__file__).parent / "fixtures" / "debt-mapping-test-v1.json")
+    return load_fixture_debt_mapping(Path(__file__).parent / "fixtures" / "debt-mapping-test-v2.json")
 
 
-def test_fixture_mapping_is_strictly_synthetic_and_classifies_exact_values(mapping: object) -> None:
-    assert mapping.classify("fixture_debt") is DebtState.DEBT_LIKE_ELIGIBLE
-    assert mapping.classify(" fixture_debt ") is DebtState.AMBIGUOUS_CATEGORY
-    assert mapping.classify(None) is DebtState.MISSING_CATEGORY
-    assert mapping.classify(" ") is DebtState.MISSING_CATEGORY
-    assert mapping.classify("unseen") is DebtState.AMBIGUOUS_CATEGORY
+def test_fixture_mapping_is_strictly_synthetic_and_classifies_exact_composites(mapping: object) -> None:
+    assert mapping.classify("fixture_debt", "fixture_asset", "fixture_structure") is DebtState.DEBT_LIKE_ELIGIBLE
+    assert mapping.classify("fixture_debt", "fixture_asset", "fixture_structure ") is DebtState.AMBIGUOUS_CATEGORY
+    assert mapping.classify(None, "fixture_asset", "fixture_structure") is DebtState.MISSING_CATEGORY
+    assert mapping.classify("fixture_debt", " ", "fixture_structure") is DebtState.AMBIGUOUS_CATEGORY
+    assert mapping.classify("unseen", "fixture_asset", "fixture_structure") is DebtState.AMBIGUOUS_CATEGORY
 
 
 def test_debt_mapping_cannot_bypass_loader_provenance() -> None:
     with pytest.raises(PilotError, match="debt_mapping_unapproved"):
-        DebtMapping("debt-mapping-test-v1", "synthetic-test-v1", "synthetic_fixture_only", {"fixture_debt": "debt_like_eligible"})
+        DebtMapping("debt-mapping-test-v2", "synthetic-test-v2", "synthetic_fixture_only", ())
 
 
 def test_mapping_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
     duplicate_top_level = tmp_path / "duplicate-top.json"
     duplicate_top_level.write_text(
-        '{"schema_version":"debt-mapping-test-v1","schema_version":"debt-mapping-test-v1","mapping_version":"synthetic-test-v1","scope":"synthetic_fixture_only","categories":{"fixture_debt":"debt_like_eligible","fixture_non_debt":"ineligible_non_debt","fixture_ambiguous":"ambiguous_category"}}',
+        '{"schema_version":"debt-mapping-test-v2","schema_version":"debt-mapping-test-v2","mapping_version":"synthetic-test-v2","scope":"synthetic_fixture_only","rules":[]}',
         encoding="utf-8",
     )
     duplicate_category = tmp_path / "duplicate-category.json"
     duplicate_category.write_text(
-        '{"schema_version":"debt-mapping-test-v1","mapping_version":"synthetic-test-v1","scope":"synthetic_fixture_only","categories":{"fixture_debt":"debt_like_eligible","fixture_debt":"debt_like_eligible","fixture_non_debt":"ineligible_non_debt","fixture_ambiguous":"ambiguous_category"}}',
+        '{"schema_version":"debt-mapping-test-v2","mapping_version":"synthetic-test-v2","scope":"synthetic_fixture_only","rules":[{"issuer_category":"fixture_debt","asset_class":"fixture_asset","instrument_structure":"fixture_structure","decision":"eligible_debt"},{"issuer_category":"fixture_debt","asset_class":"fixture_asset","instrument_structure":"fixture_structure","decision":"eligible_debt"}]}',
         encoding="utf-8",
     )
     for path in (duplicate_top_level, duplicate_category):
@@ -85,19 +87,19 @@ def test_mapping_loader_rejects_duplicate_json_keys(tmp_path: Path) -> None:
 def test_real_mapping_requires_external_approved_hash_bound_files(tmp_path: Path) -> None:
     mapping_path = tmp_path / "mapping.json"
     mapping_payload = {
-        "schema_version": "debt-mapping-v1",
+        "schema_version": "debt-mapping-v2",
         "mapping_version": "calibration-1",
-        "observed_values_sha256": "a" * 64,
-        "categories": {"observed-value": "debt_like_eligible"},
+        "observed_composite_values_sha256": "a" * 64,
+        "rules": [{"issuer_category": "observed-value", "asset_class": "asset", "instrument_structure": "structure", "decision": "eligible_debt"}],
     }
     mapping_path.write_text(json.dumps(mapping_payload), encoding="utf-8")
     with pytest.raises(PilotError, match="debt_mapping_unapproved"):
         load_approved_debt_mapping(mapping_path, tmp_path / "missing.json")
 
     approval = {
-        "schema_version": "debt-mapping-approval-v1",
+        "schema_version": "debt-mapping-approval-v2",
         "mapping_sha256": hashlib.sha256(mapping_path.read_bytes()).hexdigest(),
-        "observed_values_sha256": "a" * 64,
+        "observed_composite_values_sha256": "a" * 64,
         "evidence": [{"reference": "ticket-1", "sha256": "b" * 64}],
         "approved_by": "reviewer",
         "approved_at": "2024-01-01T12:00:00Z",
@@ -105,7 +107,7 @@ def test_real_mapping_requires_external_approved_hash_bound_files(tmp_path: Path
     approval_path = tmp_path / "approval.json"
     approval_path.write_text(json.dumps(approval), encoding="utf-8")
     loaded = load_approved_debt_mapping(mapping_path, approval_path)
-    assert loaded.classify("observed-value") is DebtState.DEBT_LIKE_ELIGIBLE
+    assert loaded.classify("observed-value", "asset", "structure") is DebtState.DEBT_LIKE_ELIGIBLE
     assert loaded.approval_sha256 == hashlib.sha256(approval_path.read_bytes()).hexdigest()
     assert loaded.approval_manifest["approved_by"] == "reviewer"
     assert loaded.approval_canonical_json == (json.dumps(approval, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
@@ -116,6 +118,45 @@ def test_real_mapping_requires_external_approved_hash_bound_files(tmp_path: Path
     assert loaded.to_mapping()["approval"]["mapping_sha256"] != "0" * 64
     with pytest.raises(PilotError, match="debt_mapping_unapproved"):
         load_approved_debt_mapping(mapping_path, approval_path)
+
+
+@pytest.mark.parametrize("field", ["issuer_category", "asset_class", "instrument_structure"])
+def test_composite_mapping_missing_component_is_missing_category(mapping: object, field: str) -> None:
+    values = {"issuer_category": "fixture_debt", "asset_class": "fixture_asset", "instrument_structure": "fixture_structure"}
+    for value in (None, ""):
+        values[field] = value
+        assert mapping.classify(values["issuer_category"], values["asset_class"], values["instrument_structure"]) is DebtState.MISSING_CATEGORY
+
+
+def test_composite_mapping_does_not_normalize_or_near_match(mapping: object) -> None:
+    for values in (
+        ("fixture_debt ", "fixture_asset", "fixture_structure"),
+        ("fixture_debt", "fixture-asset", "fixture_structure"),
+        ("fixture_debt", "fixture_asset", "fixture structure"),
+    ):
+        assert mapping.classify(*values) is DebtState.AMBIGUOUS_CATEGORY
+
+
+@pytest.mark.parametrize("issuer,asset,structure", [
+    ("synthetic_mbs", "synthetic_asset", "synthetic_structure"),
+    ("synthetic_abs", "synthetic_asset", "synthetic_structure"),
+    ("synthetic_clo", "synthetic_asset", "synthetic_structure"),
+    ("synthetic_loan", "synthetic_asset", "synthetic_structure"),
+    ("synthetic_repo", "synthetic_asset", "synthetic_structure"),
+])
+def test_synthetic_exclusion_families_require_explicit_decision_rows(mapping: object, issuer: str, asset: str, structure: str) -> None:
+    assert mapping.classify(issuer, asset, structure) is DebtState.INELIGIBLE_NON_DEBT
+
+
+def test_issuer_only_and_duplicate_or_conflicting_composite_rules_are_rejected(tmp_path: Path) -> None:
+    issuer_only = tmp_path / "issuer-only.json"
+    issuer_only.write_text(json.dumps({"schema_version": "debt-mapping-test-v2", "mapping_version": "synthetic-test-v2", "scope": "synthetic_fixture_only", "categories": {"issuer": "eligible_debt"}}), encoding="utf-8")
+    duplicate = tmp_path / "duplicate.json"
+    rules = [{"issuer_category": "i", "asset_class": "a", "instrument_structure": "s", "decision": decision} for decision in ("eligible_debt", "non_debt_excluded")]
+    duplicate.write_text(json.dumps({"schema_version": "debt-mapping-test-v2", "mapping_version": "synthetic-test-v2", "scope": "synthetic_fixture_only", "rules": rules}), encoding="utf-8")
+    for path in (issuer_only, duplicate):
+        with pytest.raises(PilotError, match="debt_mapping_unapproved"):
+            load_fixture_debt_mapping(path)
 
 
 def test_observation_index_asof_preserves_duplicates_and_latest_is_independent(tmp_path: Path) -> None:

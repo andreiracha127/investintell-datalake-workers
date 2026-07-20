@@ -19,7 +19,7 @@ from .matching import HoldingRecord
 
 MAX_FIXTURE_BYTES = 64 * 1024 * 1024
 _SCHEMA_VERSION = "nport-fixture-v1"
-_REQUIRED_FIELDS = ("publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date", "series_id", "class_id", "instrument_id", "issuer_category", "cusip", "signed_market_value", "signed_pct_of_nav", "currency")
+_REQUIRED_FIELDS = ("publication_id", "accession_number", "holding_id", "source_run_id", "report_date", "filing_date", "series_id", "class_id", "instrument_id", "issuer_category", "asset_class", "instrument_structure", "cusip", "signed_market_value", "signed_pct_of_nav", "currency")
 _PHYSICAL_LINEAGE_FIELDS = ("publication_id", "accession_number", "holding_id", "source_run_id", "series_id", "instrument_id")
 
 
@@ -134,7 +134,7 @@ def _holdings_from_rows(rows: list[object]) -> tuple[HoldingRecord, ...]:
         if lot in lots:
             raise PilotError("nport_duplicate_lot", {"accession_number": lot[0], "holding_id": lot[1]})
         lots.add(lot)
-        holdings.append(HoldingRecord(publication_id=lineage["publication_id"], accession_number=lineage["accession_number"], holding_id=lineage["holding_id"], source_run_id=lineage["source_run_id"], report_date=report_date, filing_date=filing_date, series_id=lineage["series_id"], class_id=row["class_id"], instrument_id=lineage["instrument_id"], issuer_category=row["issuer_category"], original_cusip=row["cusip"], signed_market_value=row["signed_market_value"], signed_pct_of_nav=row["signed_pct_of_nav"], currency=row["currency"], raw_values=_frozen_raw(row)))
+        holdings.append(HoldingRecord(publication_id=lineage["publication_id"], accession_number=lineage["accession_number"], holding_id=lineage["holding_id"], source_run_id=lineage["source_run_id"], report_date=report_date, filing_date=filing_date, series_id=lineage["series_id"], class_id=row["class_id"], instrument_id=lineage["instrument_id"], issuer_category=row["issuer_category"], asset_class=row["asset_class"], instrument_structure=row["instrument_structure"], original_cusip=row["cusip"], signed_market_value=row["signed_market_value"], signed_pct_of_nav=row["signed_pct_of_nav"], currency=row["currency"], raw_values=_frozen_raw(row)))
     return tuple(holdings)
 
 

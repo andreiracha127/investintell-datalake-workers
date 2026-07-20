@@ -161,19 +161,26 @@ SHA-256, and cutoff, and records terms evidence, local-use and redistribution
 decisions, approver, and UTC approval time. Its exact pins must match the
 candidate.
 
-The synthetic fixture mapping has schema `debt-mapping-test-v1` and is only for
-the fixture lane. A real mapping has schema `debt-mapping-v1`, a mapping version,
-observed-values SHA-256, and explicit categories. Its separate
-`debt-mapping-approval-v1` binds the mapping SHA-256 and observed-values SHA-256
-to internal evidence, approver, and UTC approval time.
+The synthetic fixture mapping has schema `debt-mapping-test-v2` and is only for
+the fixture lane. A real mapping has schema `debt-mapping-v2`, a mapping version,
+an observed-composite-values SHA-256, and an ordered table of exact rules keyed
+by `issuer_category`, `asset_class`, and `instrument_structure`. A decision is
+only `eligible_debt` or `non_debt_excluded`; absent, null, or empty components
+are `missing_category`, while a complete unmatched tuple is
+`ambiguous_category`. There is no normalization, inference, legacy mapping, or
+fallback. Its separate `debt-mapping-approval-v2` binds the exact mapping bytes
+and observed-composite-values SHA-256 to internal evidence, approver, and UTC
+approval time.
 
-The real-read evidence has schema `phase4b-v2-evidence-v1`; it must declare a
+The real-read evidence has schema `phase4b-v2-evidence-v2`; it must declare a
 completed, reconciled, published V2 state, the allowlisted seam and relation,
-the required columns, five governance hashes, approved series, approver, and
-UTC approval time. Its separate `phase4b-v2-evidence-approval-v1` binds the
-evidence SHA-256, the same governance hashes, seam, relation, series, allowed
-modes, explicit read permission, approver, and UTC approval time. The current
-Phase 4 status does not satisfy this contract.
+the required columns (including the three composite fields), five governance
+hashes, the composite mapping contract/version/artifact hash/approval reference,
+approved series, approver, and UTC approval time. Its separate
+`phase4b-v2-evidence-approval-v2` binds the evidence SHA-256 and every one of
+those governance and composite-mapping pins. Phase 4 remains blocked until a
+real composite mapping and its new hash-bound approval exist; current status
+alone does not satisfy this contract.
 
 Phase 4 evidence/approval and resume checkpoint/control inputs use the strict,
 bounded parsing implemented for those inputs: duplicate keys and non-finite
@@ -184,6 +191,14 @@ on success. A typed stop exits with code 2 and writes an internal stop report
 and checksum manifest when it can safely publish them.
 
 ## Internal artifacts, checksums, and typed stops
+
+Confidentiality is fail-closed: no source identity, provider, dataset,
+upstream, locator, path, row identifier, hash, lineage, license, entitlement,
+or provider-error detail may cross into frontend, API, public DTOs, public
+errors, client logs, page props, HTML, or JavaScript. `144A` is only a security
+attribute. Internal artifacts may retain the governed provenance needed for
+review; public diagnostics never serialize raw mapping rules or canonical
+classification values.
 
 Fixture packs retain `source-manifest.json`, `nport-extract-manifest.json`,
 `calibration-report.json`, `bond-observed-daily.parquet`,
