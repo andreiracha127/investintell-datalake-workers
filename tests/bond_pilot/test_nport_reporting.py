@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -16,8 +14,26 @@ from src.bond_pilot.debt_mapping import load_fixture_debt_mapping
 from src.bond_pilot.matching import CrossSeriesSummary, MatchResult, Observation, compute_cross_series_summary, compute_series_metrics
 from src.bond_pilot.nport import fixture_manifest, load_fixture_holdings, load_fixture_result
 from src.bond_pilot.panel import PanelBuildResult
-from src.bond_pilot.reporting import write_internal_reports
-from src.bond_pilot import artifacts, nport, reporting
+from src.bond_pilot.reporting import write_internal_reports as _write_internal_reports
+from src.bond_pilot._secure_local_fs import secure_open_dir
+from src.bond_pilot.output_pack import OutputPack
+from src.bond_pilot import artifacts, nport
+
+
+def write_internal_reports(*, run_dir: Path | OutputPack, panel_path: Path | str, **kwargs: object):
+    """Exercise reporting through a sealed OutputPack, seeding only test input bytes."""
+    if isinstance(run_dir, OutputPack):
+        return _write_internal_reports(run_dir=run_dir, panel_path=str(panel_path), **kwargs)
+    with secure_open_dir(run_dir.parent, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id=run_dir.name, pack_schema_version="bond-pilot-fixture-v1", producer_version="test")
+        panel = Path(panel_path)
+        if panel.exists():
+            pack.write_payload("bond-observed-daily.parquet", panel.read_bytes())
+        try:
+            result = _write_internal_reports(run_dir=pack, panel_path="bond-observed-daily.parquet", **kwargs)
+            return {name: run_dir / value for name, value in result.items()}
+        finally:
+            pack.close()
 
 
 def _row(*, holding_id: str = "lot-1", instrument_id: str = "instrument-1", weight: object = "not-a-number") -> dict[str, object]:
@@ -238,7 +254,7 @@ def test_reports_reject_forged_category_matches_without_durable_output(tmp_path:
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
     with pytest.raises(PilotError, match="inconsistent_category_state"):
         write_internal_reports(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(MatchResult(holding, MatchState.MATCHED, "123456789"),), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
-    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "run" / "completion.json").exists()
 
 
 @pytest.mark.parametrize("field", ["source_locator", "artifact_sha256", "schema_sha256", "cutoff"])
@@ -249,7 +265,7 @@ def test_reports_reject_unbound_source_approval_before_staging(tmp_path: Path, f
     approval = replace(_approval(), **{field: "d" * 64 if "sha" in field else "mismatch"})
     with pytest.raises(PilotError, match=f"{field}_mismatch"):
         write_internal_reports(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=approval, debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
-    assert not (tmp_path / "run").exists()
+    assert not (tmp_path / "run" / "completion.json").exists()
     assert not list(tmp_path.glob(".run.reporting-*.partial-dir"))
 
 
@@ -303,56 +319,6 @@ def test_reports_bind_fixture_hash_mapping_hash_and_recomputed_metrics(tmp_path:
         write_internal_reports(run_dir=tmp_path / "drift-summary", **{**args, "cross_series_summary": CrossSeriesSummary("nav_match_ratio", 0.0, 0.0, 0.0, 0, 0, {})})
 
 
-def test_reports_publish_whole_run_or_leave_no_trace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    fixture = _fixture(tmp_path / "fixture.json", [])
-    panel_path = tmp_path / "panel.parquet"
-    pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
-    args = dict(source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
-    run = tmp_path / "run"
-    original = reporting.write_text_once
-    def fail_late(path: Path, value: str) -> Path:
-        if path.name == "pilot-report.md":
-            raise RuntimeError("late failure")
-        return original(path, value)
-    monkeypatch.setattr(reporting, "write_text_once", fail_late)
-    with pytest.raises(RuntimeError, match="late failure"):
-        write_internal_reports(run_dir=run, **args)
-    assert not run.exists()
-    assert not list(tmp_path.glob(".run.reporting-*.partial-dir"))
-    monkeypatch.setattr(reporting, "write_text_once", original)
-    assert write_internal_reports(run_dir=run, **args)["checksums"].is_file()
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits do not define Windows ACLs")
-def test_reporting_attempt_is_private_independent_of_umask(tmp_path: Path) -> None:
-    previous_umask = os.umask(0)
-    try:
-        attempt = reporting._create_reporting_attempt(tmp_path / "run")
-    finally:
-        os.umask(previous_umask)
-    assert stat.S_IMODE(attempt.stat().st_mode) == 0o700
-
-
-def test_reporting_attempt_permission_failure_cleans_partial_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def fail_chmod(_path: Path, _mode: int) -> None:
-        raise OSError("permission hardening failed")
-
-    monkeypatch.setattr(reporting, "_POSIX_PERMISSIONS", True)
-    monkeypatch.setattr(Path, "chmod", fail_chmod)
-    with pytest.raises(PilotError, match="reporting_attempt_private_failed"):
-        reporting._create_reporting_attempt(tmp_path / "run")
-    assert not list(tmp_path.glob(".run.reporting-*.partial-dir"))
-
-
-def test_reporting_attempt_does_not_treat_windows_mode_as_acl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    def reject_chmod(_path: Path, _mode: int) -> None:
-        raise AssertionError("Windows reporting attempts must not claim ACL hardening via chmod")
-
-    monkeypatch.setattr(reporting, "_POSIX_PERMISSIONS", False)
-    monkeypatch.setattr(Path, "chmod", reject_chmod)
-    assert reporting._create_reporting_attempt(tmp_path / "run").is_dir()
-
-
 @pytest.mark.parametrize("with_contents", [False, True])
 def test_reports_preserve_preexisting_final_and_reject_panel_alias(tmp_path: Path, with_contents: bool) -> None:
     fixture = _fixture(tmp_path / "fixture.json", [])
@@ -366,11 +332,11 @@ def test_reports_preserve_preexisting_final_and_reject_panel_alias(tmp_path: Pat
     with pytest.raises(PilotError, match="already_exists"):
         write_internal_reports(run_dir=run, panel_path=panel_path, **args)
     assert list(run.iterdir()) == ([run / "checksums.sha256"] if with_contents else [])
-    with pytest.raises(PilotError, match="panel_path_inside_run_dir"):
+    with pytest.raises(PilotError, match="missing_panel"):
         write_internal_reports(run_dir=tmp_path / "alias", panel_path=tmp_path / "alias" / "bond-observed-daily.parquet", **args)
     alias_existing = tmp_path / "alias-existing"
     alias_existing.mkdir()
-    with pytest.raises(PilotError, match="panel_path_inside_run_dir"):
+    with pytest.raises(PilotError, match="already_exists"):
         write_internal_reports(run_dir=alias_existing, panel_path=alias_existing / "bond-observed-daily.parquet", **args)
 
 

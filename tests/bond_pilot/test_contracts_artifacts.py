@@ -1,22 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
 from src.bond_pilot import artifacts
-from src.bond_pilot.artifacts import (
-    canonical_json_bytes,
-    commit_partial,
-    create_run_directory,
-    partial_path,
-    replace_checkpoint,
-    write_checksums,
-    write_json_once,
-    write_text_once,
-)
+from src.bond_pilot.artifacts import canonical_json_bytes
 from src.bond_pilot.contracts import (
     ArtifactLimits,
     DebtState,
@@ -155,54 +145,6 @@ def test_canonical_json_is_compact_sorted_utf8_lf_and_rejects_nonfinite() -> Non
         canonical_json_bytes({"bad": float("nan")})
 
 
-def test_final_outputs_do_not_overwrite_and_run_directory_does_not_collide(tmp_path: Path) -> None:
-    run = create_run_directory(tmp_path, "2024-01-01")
-    assert run == tmp_path / "2024-01-01"
-    with pytest.raises(PilotError, match="already_exists"):
-        create_run_directory(tmp_path, "2024-01-01")
-    output = tmp_path / "output.json"
-    write_json_once(output, {"a": 1})
-    with pytest.raises(PilotError, match="already_exists"):
-        write_json_once(output, {"a": 2})
-    text = tmp_path / "notes.txt"
-    write_text_once(text, "first")
-    with pytest.raises(PilotError, match="already_exists"):
-        write_text_once(text, "second")
-
-
-def test_partial_commit_is_unique_same_directory_and_never_replaces_final(tmp_path: Path) -> None:
-    final = tmp_path / "output.parquet"
-    first = partial_path(final)
-    second = partial_path(final)
-    assert first.parent == final.parent
-    assert first != second
-    first.write_bytes(b"first")
-    commit_partial(first, final)
-    assert final.read_bytes() == b"first"
-    second.write_bytes(b"second")
-    with pytest.raises(PilotError, match="already_exists"):
-        commit_partial(second, final)
-    assert final.read_bytes() == b"first"
-    assert second.exists()
-
-
-def test_checkpoint_replacement_is_atomic_overwrite_exception(tmp_path: Path) -> None:
-    checkpoint = tmp_path / "checkpoint.json"
-    write_text_once(checkpoint, "old")
-    replace_checkpoint(checkpoint, b"new")
-    assert checkpoint.read_bytes() == b"new"
-
-
-def test_checkpoint_replacement_cannot_overwrite_final_artifacts(tmp_path: Path) -> None:
-    manifest = tmp_path / "manifest.json"
-    write_text_once(manifest, "original")
-
-    with pytest.raises(PilotError, match="checkpoint_path_invalid"):
-        replace_checkpoint(manifest, b"replacement")
-
-    assert manifest.read_bytes() == b"original"
-
-
 @pytest.mark.parametrize("unsafe", [r"\\server\share\control.json", "//server/share/control.json", r"\\?\C:\control.json", "file:///C:/control.json"])
 def test_secure_local_reader_rejects_nonlocal_paths_before_filesystem_access(unsafe: str, monkeypatch: pytest.MonkeyPatch) -> None:
     reader = getattr(artifacts, "read_secure_local_file", None)
@@ -225,23 +167,3 @@ def test_secure_local_reader_delegates_to_the_capability_core(tmp_path: Path, mo
     with pytest.raises(PilotError, match="^control_invalid$"):
         reader(child, max_bytes=1024, error_code="control_invalid")
     assert calls
-
-
-def test_checksums_are_sorted_relative_and_exclude_self_and_partials(tmp_path: Path) -> None:
-    (tmp_path / "nested").mkdir()
-    (tmp_path / "z.txt").write_bytes(b"z")
-    (tmp_path / "nested" / "a.txt").write_bytes(b"a")
-    (tmp_path / "ignored.partial").write_bytes(b"ignore")
-    (tmp_path / "checksums.sha256").write_text("old", encoding="utf-8")
-    (tmp_path / "checksums.sha256").unlink()
-
-    checksums = write_checksums(tmp_path)
-
-    expected = "".join(
-        [
-            f"{hashlib.sha256(b'a').hexdigest()}  nested/a.txt\n",
-            f"{hashlib.sha256(b'z').hexdigest()}  z.txt\n",
-        ]
-    )
-    assert checksums == tmp_path / "checksums.sha256"
-    assert checksums.read_text(encoding="utf-8") == expected

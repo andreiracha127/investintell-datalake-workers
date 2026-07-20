@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import contextmanager
 from io import BytesIO
 import os
 from pathlib import Path
@@ -55,7 +56,7 @@ class _WindowsApiFake:
     def query_info(self, handle: str) -> secure_fs._WindowsFileInfo:
         return self.infos[handle]
 
-    def nt_create(self, parent: str, name: str, *, desired_access: int, share_access: int, disposition: int, options: int, attributes: int) -> str:
+    def nt_create(self, parent: str, name: str, *, desired_access: int, share_access: int, disposition: int, options: int, attributes: int, security_descriptor=None) -> str:
         handle = f"{parent}/{name}"
         self.records.append(("nt_create", parent, name, desired_access, share_access, disposition, options, attributes))
         directory = bool(options & secure_fs.FILE_DIRECTORY_FILE)
@@ -63,6 +64,25 @@ class _WindowsApiFake:
         attrs = secure_fs.FILE_ATTRIBUTE_DIRECTORY if directory else secure_fs.FILE_ATTRIBUTE_NORMAL
         self.infos.setdefault(handle, secure_fs._WindowsFileInfo(7, attrs, 0, (7, len(self.infos) + 1, mode, len(self.payloads.get(name, b"payload")), 20, 21)))
         return handle
+
+    def private_directory_sddl(self) -> str:
+        return "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-21-test)"
+
+    def _current_user_sid(self) -> str:
+        return "S-1-5-21-test"
+
+    def owner_sid_and_dacl_sddl(self, handle: str) -> tuple[str, str]:
+        return self._current_user_sid(), self.private_directory_sddl()
+
+    @contextmanager
+    def private_directory_security_descriptor(self):
+        yield None
+
+    def directory_dacl_sddl(self, handle: str) -> str:
+        return self.private_directory_sddl()
+
+    def filesystem_name(self, handle: str) -> str:
+        return "NTFS"
 
     def transfer_to_fd(self, handle: str, mode: str) -> int:
         fd = self.next_fd
@@ -176,6 +196,26 @@ def test_windows_traversal_uses_exact_relative_no_follow_flags_and_close_ownersh
     assert final[6] == secure_fs.FILE_NON_DIRECTORY_FILE | secure_fs.FILE_SYNCHRONOUS_IO_NONALERT | secure_fs.FILE_OPEN_REPARSE_POINT
     assert api.closed == ["root/safe", "root"]
     assert api.closed_fds == [100]
+
+
+@pytest.mark.parametrize(
+    ("owner", "dacl"),
+    [
+        ("S-1-5-21-wrong", "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;S-1-5-21-test)"),
+        ("S-1-5-21-test", "D:(A;OICI;FA;;;WD)"),
+    ],
+    ids=("wrong-owner", "wrong-dacl"),
+)
+def test_windows_private_validation_rejects_fake_owner_or_dacl(owner: str, dacl: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    api = _WindowsApiFake()
+    api.infos["private"] = secure_fs._WindowsFileInfo(7, secure_fs.FILE_ATTRIBUTE_DIRECTORY, 0, (7, 2, stat.S_IFDIR, 0, 20, 21))
+    backend = secure_fs._WindowsBackend(api)
+    directory = secure_fs.SecureDirectory(Path(r"C:\safe\private"), backend, "private", ["private"], 7, "unsafe")
+    monkeypatch.setattr(api, "owner_sid_and_dacl_sddl", lambda _handle: (owner, dacl))
+
+    with pytest.raises(PilotError, match="^incomplete_output$"):
+        directory.validate_private(error_code="incomplete_output")
+    directory.close()
 
 
 def test_secure_file_exposes_seekable_file_object_adapter_for_archive_readers(tmp_path: Path) -> None:

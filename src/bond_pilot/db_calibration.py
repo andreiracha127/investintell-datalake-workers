@@ -10,11 +10,14 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 from time import monotonic
 from typing import Callable, Mapping, Sequence
 
-from .artifacts import canonical_json_bytes, read_secure_local_file, replace_checkpoint
+from .artifacts import canonical_json_bytes, read_secure_local_file
+from ._secure_local_fs import SecureDirectory
 from .contracts import PilotError
+from .output_pack import OutputPack
 
 
 V2_RELATION = "public.sec_nport_holdings_v2_current"
@@ -52,6 +55,7 @@ _QUERY_SHA256 = hashlib.sha256((RESOLVER_SQL + "\n" + INITIAL_PAGE_SQL + "\n" + 
 _METHOD_SHA256 = hashlib.sha256(_METHOD_VERSION.encode()).hexdigest()
 _EMPTY_HASH = hashlib.sha256(b"").hexdigest()
 _CHECKPOINT_KEYS = frozenset({"schema_version", "run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "mode", "series_ids", "seam", "relation", "query_version", "query_sha256", "method_version", "method_sha256", "resolved_reports", "last_key", "pages", "rows", "elapsed_seconds", "output_hash", "output_state", "stop_reason"})
+_CHECKPOINT_NAME = re.compile(r"^checkpoint-(\d{12})\.json$")
 
 
 @dataclass(frozen=True, init=False)
@@ -338,14 +342,119 @@ def validate_calibration_checkpoint_bytes(raw: bytes, *, evidence: object, appro
     return _validate_checkpoint_value(value, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=_BUDGETS[mode])
 
 
-def _load_checkpoint(path: Path, *, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series: tuple[str, ...], run_id: str, budget: CalibrationBudget) -> dict[str, object]:
-    if not path.exists():
-        return _checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=(), last_key=None, pages=0, rows=0, elapsed_seconds=0.0, output_hash=_EMPTY_HASH, output_state="new", stop_reason=None)
+def _checkpoint_names(directory: SecureDirectory, *, error_code: str = "run_budget_required") -> tuple[tuple[int, str], ...]:
+    """Enumerate immutable checkpoint payloads through the retained pack handle."""
+    values: list[tuple[int, str]] = []
+    for name in directory.enumerate():
+        match = _CHECKPOINT_NAME.fullmatch(name)
+        if match is None:
+            if name.lower().startswith("checkpoint-"):
+                raise PilotError(error_code)
+            continue
+        sequence = int(match.group(1))
+        if sequence < 1:
+            raise PilotError(error_code)
+        values.append((sequence, name))
+    ordered = tuple(sorted(values))
+    if tuple(sequence for sequence, _name in ordered) != tuple(range(1, len(ordered) + 1)):
+        raise PilotError(error_code)
+    return ordered
+
+
+def _decode_checkpoint(
+    raw: bytes,
+    *,
+    evidence: Phase4V2Evidence,
+    approval: Phase4V2EvidenceApproval,
+    mode: str,
+    series: tuple[str, ...],
+    run_id: str | None,
+    budget: CalibrationBudget,
+    error_code: str,
+) -> dict[str, object]:
     try:
-        value, raw, _ = _read_json(path)
-    except PilotError as exc:
-        raise PilotError("run_budget_required") from exc
-    return _validate_checkpoint_value(value, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget)
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_duplicate, parse_constant=_nonfinite)
+        if canonical_json_bytes(value) != raw:
+            raise ValueError("non-canonical checkpoint")
+        return _validate_checkpoint_value(value, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget)
+    except (PilotError, UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise PilotError(error_code) from exc
+
+
+def _validate_checkpoint_transition(previous: dict[str, object], current: dict[str, object], *, error_code: str) -> None:
+    if current["run_id"] != previous["run_id"]:
+        raise PilotError(error_code)
+    previous_pages = int(previous["pages"])
+    current_pages = int(current["pages"])
+    previous_rows = int(previous["rows"])
+    current_rows = int(current["rows"])
+    previous_elapsed = float(previous["elapsed_seconds"])
+    current_elapsed = float(current["elapsed_seconds"])
+    if current_pages < previous_pages or current_rows < previous_rows or current_elapsed < previous_elapsed:
+        raise PilotError(error_code)
+    if previous["resolved_reports"] and current["resolved_reports"] != previous["resolved_reports"]:
+        raise PilotError(error_code)
+    if current_rows == previous_rows:
+        if current["last_key"] != previous["last_key"] or current["output_hash"] != previous["output_hash"]:
+            raise PilotError(error_code)
+    else:
+        previous_key = previous["last_key"]
+        current_key = current["last_key"]
+        if previous_key is not None and (current_key is None or current_key <= previous_key):
+            raise PilotError(error_code)
+    allowed = {
+        "new": {"new", "in_progress", "complete", "budget_reached", "stopped"},
+        "in_progress": {"in_progress", "complete", "budget_reached", "stopped"},
+        "complete": set(),
+        "budget_reached": set(),
+        "stopped": set(),
+    }
+    if current["output_state"] not in allowed[str(previous["output_state"])]:
+        raise PilotError(error_code)
+
+
+def _checkpoint_chain(
+    directory: SecureDirectory,
+    *,
+    evidence: Phase4V2Evidence,
+    approval: Phase4V2EvidenceApproval,
+    mode: str,
+    series: tuple[str, ...],
+    run_id: str | None,
+    budget: CalibrationBudget,
+    error_code: str,
+) -> tuple[tuple[bytes, dict[str, object]], ...]:
+    chain: list[tuple[bytes, dict[str, object]]] = []
+    for _sequence, name in _checkpoint_names(directory, error_code=error_code):
+        try:
+            with directory.open_file(name, error_code=error_code) as checkpoint_file:
+                raw = checkpoint_file.read_all(max_bytes=_MAX_GOVERNANCE_BYTES, too_large_code=error_code)
+        except PilotError as exc:
+            raise PilotError(error_code) from exc
+        value = _decode_checkpoint(raw, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget, error_code=error_code)
+        if chain:
+            _validate_checkpoint_transition(chain[-1][1], value, error_code=error_code)
+        chain.append((raw, value))
+    return tuple(chain)
+
+
+def _load_checkpoint(pack: OutputPack, *, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series: tuple[str, ...], run_id: str, budget: CalibrationBudget, initial_checkpoint: Mapping[str, object] | None = None) -> dict[str, object]:
+    """Use the highest immutable checkpoint only after validating its contiguous chain."""
+    chain = _checkpoint_chain(pack.directory, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget, error_code="run_budget_required")
+    if initial_checkpoint is not None:
+        if chain:
+            raise PilotError("run_budget_required")
+        try:
+            raw = canonical_json_bytes(initial_checkpoint)
+        except (PilotError, RecursionError, TypeError, ValueError) as exc:
+            raise PilotError("run_budget_required") from exc
+        checkpoint = _decode_checkpoint(raw, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget, error_code="run_budget_required")
+        if checkpoint["output_state"] != "stopped" or checkpoint["pages"] != 0 or checkpoint["rows"] != 0:
+            raise PilotError("run_budget_required")
+        return checkpoint
+    if chain:
+        return chain[-1][1]
+    return _checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=(), last_key=None, pages=0, rows=0, elapsed_seconds=0.0, output_hash=_EMPTY_HASH, output_state="new", stop_reason=None)
 
 
 def _assert_read_only(connection: object) -> None:
@@ -434,8 +543,46 @@ def _decode_page(rows: object, last_key: tuple[str, ...] | None) -> tuple[tuple[
     return tuple(decoded), keys[-1] if keys else last_key
 
 
-def _write(path: Path, *, run_id: str, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series: tuple[str, ...], reports: tuple[tuple[str, str, str, str], ...], key: tuple[str, ...] | None, pages: int, rows: int, elapsed: float, output_hash: str, state: str, reason: str | None) -> None:
-    replace_checkpoint(path, canonical_json_bytes(_checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=reports, last_key=key, pages=pages, rows=rows, elapsed_seconds=elapsed, output_hash=output_hash, output_state=state, stop_reason=reason)))
+def _write(pack: OutputPack, *, run_id: str, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series: tuple[str, ...], reports: tuple[tuple[str, str, str, str], ...], key: tuple[str, ...] | None, pages: int, rows: int, elapsed: float, output_hash: str, state: str, reason: str | None) -> None:
+    names = _checkpoint_names(pack.directory)
+    sequence = (names[-1][0] if names else 0) + 1
+    pack.write_payload(f"checkpoint-{sequence:012d}.json", canonical_json_bytes(_checkpoint_payload(run_id=run_id, evidence=evidence, approval=approval, mode=mode, series_ids=series, reports=reports, last_key=key, pages=pages, rows=rows, elapsed_seconds=elapsed, output_hash=output_hash, output_state=state, stop_reason=reason)))
+
+
+def validate_calibration_checkpoint_chain(
+    directory: SecureDirectory,
+    *,
+    evidence: object,
+    approval: object,
+    mode: str,
+    series_ids: Sequence[str],
+    run_id: str | None = None,
+    error_code: str = "calibration_checkpoint_invalid",
+) -> tuple[tuple[bytes, dict[str, object]], ...]:
+    """Validate every immutable checkpoint through one retained directory capability."""
+    try:
+        evidence, approval, series = _governance(evidence, approval, mode=mode, series_ids=series_ids)
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise PilotError(error_code)
+        chain = _checkpoint_chain(directory, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=_BUDGETS[mode], error_code=error_code)
+        if not chain:
+            raise PilotError(error_code)
+        return chain
+    except PilotError as exc:
+        if exc.code == error_code:
+            raise
+        raise PilotError(error_code) from exc
+
+
+def load_latest_calibration_checkpoint(pack: OutputPack, *, evidence: Phase4V2Evidence, approval: Phase4V2EvidenceApproval, mode: str, series_ids: Sequence[str], run_id: str | None = None) -> tuple[bytes, dict[str, object]]:
+    """Return the numerically latest checkpoint; finalization never rolls back."""
+    series = validate_v2_request(evidence, approval, mode, series_ids)
+    budget = _BUDGETS[mode]
+    expected_run_id = run_id or pack.run_id
+    chain = _checkpoint_chain(pack.directory, evidence=evidence, approval=approval, mode=mode, series=series, run_id=expected_run_id, budget=budget, error_code="calibration_checkpoint_invalid")
+    if not chain:
+        raise PilotError("calibration_checkpoint_invalid")
+    return chain[-1]
 
 
 def encode_calibration_scalar(value: object) -> object:
@@ -472,14 +619,14 @@ def _page_hash(previous: str, page: tuple[dict[str, object], ...]) -> str:
     return hashlib.sha256(bytes.fromhex(previous) + canonical_json_bytes(encode_calibration_rows(page))).hexdigest()
 
 
-def run_v2_calibration(connection: object, *, evidence: object, approval: object, series_ids: Sequence[str], mode: str, checkpoint_path: str | Path, run_id: str = "bond-pilot-calibration", clock: Callable[[], float] = monotonic) -> CalibrationResult:
+def run_v2_calibration(connection: object, *, evidence: object, approval: object, series_ids: Sequence[str], mode: str, checkpoint_pack: OutputPack, run_id: str | None = None, initial_checkpoint: Mapping[str, object] | None = None, clock: Callable[[], float] = monotonic) -> CalibrationResult:
     """Read the human-pinned immutable V2 publication under one bounded snapshot."""
     evidence, approval, series = _governance(evidence, approval, mode=mode, series_ids=series_ids)
+    run_id = checkpoint_pack.run_id if run_id is None else run_id
     if not isinstance(run_id, str) or not run_id:
         raise PilotError("run_budget_required")
     budget = _BUDGETS[mode]
-    path = Path(checkpoint_path)
-    checkpoint = _load_checkpoint(path, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget)
+    checkpoint = _load_checkpoint(checkpoint_pack, evidence=evidence, approval=approval, mode=mode, series=series, run_id=run_id, budget=budget, initial_checkpoint=initial_checkpoint)
     pages, rows_read, elapsed_before, output_hash, reports, last_key = checkpoint["pages"], checkpoint["rows"], float(checkpoint["elapsed_seconds"]), checkpoint["output_hash"], checkpoint["resolved_reports"], checkpoint["last_key"]
     if checkpoint["output_state"] == "complete":
         _governance(evidence, approval, mode=mode, series_ids=series)
@@ -552,17 +699,17 @@ def run_v2_calibration(connection: object, *, evidence: object, approval: object
                     reason = None
                     if not complete and (pages >= budget.max_pages or rows_read >= budget.max_rows):
                         state, reason = "budget_reached", "budget_reached"
-                    _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state=state, reason=reason)
+                    _write(checkpoint_pack, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state=state, reason=reason)
                     if complete or state == "budget_reached":
                         terminal_checkpoint_written = True
                         _governance(evidence, approval, mode=mode, series_ids=series)  # rehash before success
                         return CalibrationResult(tuple(result_rows), pages, rows_read, state != "complete", last_key, mode)
-                _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="budget_reached", reason="budget_reached")
+                _write(checkpoint_pack, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="budget_reached", reason="budget_reached")
                 terminal_checkpoint_written = True
                 _governance(evidence, approval, mode=mode, series_ids=series)
                 return CalibrationResult(tuple(result_rows), pages, rows_read, True, last_key, mode)
     except PilotError as exc:
         if terminal_checkpoint_written:
             raise
-        _write(path, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="stopped", reason=exc.code)
+        _write(checkpoint_pack, run_id=run_id, evidence=evidence, approval=approval, mode=mode, series=series, reports=reports, key=last_key, pages=pages, rows=rows_read, elapsed=elapsed(), output_hash=output_hash, state="stopped", reason=exc.code)
         raise

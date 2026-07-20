@@ -21,6 +21,19 @@ from src.bond_pilot.matching import (
     compute_series_metrics,
     match_holding,
 )
+from src.bond_pilot._secure_local_fs import secure_open_file
+
+
+_ObservationIndex = ObservationIndex
+
+
+class ObservationIndex:
+    @classmethod
+    def build(cls, panel_path, index_path, cohort_cusips):
+        if hasattr(panel_path, "read"):
+            return _ObservationIndex.build(panel_path, index_path, cohort_cusips)
+        with secure_open_file(panel_path, error_code="source_integrity_failed") as panel_capability:
+            return _ObservationIndex.build(panel_capability, index_path, cohort_cusips)
 
 
 def _holding(**changes: object) -> HoldingRecord:
@@ -191,25 +204,18 @@ def test_observation_index_asof_preserves_duplicates_and_latest_is_independent(t
         assert [row.source_row_number for row in observations.lookup_asof("123456789", "2024-01-15")] == [7, 8]
         assert [row.source_row_number for row in observations.latest_rows()] == [9]
         assert observations.is_universe_member("123456789")
-    with pytest.raises(PilotError, match="already_exists"):
-        ObservationIndex.build(panel, index, ["123456789"])
+    with ObservationIndex.build(panel, index, ["123456789"]) as second:
+        assert second.is_universe_member("123456789")
+    assert not index.exists()
 
 
-def test_observation_index_preserves_competing_final_during_publish_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_observation_index_never_publishes_a_sqlite_output(tmp_path: Path) -> None:
     panel = tmp_path / "panel.parquet"
     index = tmp_path / "index.sqlite"
     _write_panel(panel, [{"normalized_cusip9": "123456789", "observation_date": "2024-01-15", "source_row_number": 1, "pr": 100.0, "pr_state": "present", "ytm": None, "db_type": 3, "daily_key_state": "unique_in_matching_cohort"}])
-    original_commit = matching.commit_partial
-
-    def competing_commit(partial: Path, final: Path) -> Path:
-        final.write_text("competing-index", encoding="utf-8")
-        return original_commit(partial, final)
-
-    monkeypatch.setattr(matching, "commit_partial", competing_commit)
-    with pytest.raises(PilotError, match="already_exists"):
-        ObservationIndex.build(panel, index, ["123456789"])
-    assert index.read_text(encoding="utf-8") == "competing-index"
-    assert not list(tmp_path.glob(".index.sqlite.*.partial*"))
+    with ObservationIndex.build(panel, index, ["123456789"]) as observations:
+        assert observations.is_universe_member("123456789")
+    assert not index.exists()
 
 
 def test_observation_index_derives_universe_from_valid_panel_rows(tmp_path: Path, mapping: object) -> None:

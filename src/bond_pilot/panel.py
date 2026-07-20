@@ -6,17 +6,16 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 import math
+import os
 from numbers import Real
-from pathlib import Path
 import re
 import sqlite3
 from typing import BinaryIO, Iterable
-from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .artifacts import commit_partial, partial_path
+from ._secure_local_fs import CreatedFile
 from .contracts import FieldState, IdentifierState, PilotError
 from .identifiers import normalize_cusip9
 
@@ -156,10 +155,6 @@ def _normalize_cohort(values: Iterable[object]) -> set[str]:
     }
 
 
-def _temp_sqlite_path(output_path: Path) -> Path:
-    return output_path.parent / f".{output_path.name}.{uuid4().hex}.sqlite"
-
-
 def _count_matching_keys(parquet: pq.ParquetFile, cohort: set[str], database: sqlite3.Connection, batch_size: int) -> None:
     database.execute("CREATE TABLE daily_keys (cusip TEXT NOT NULL, day TEXT NOT NULL, count INTEGER NOT NULL, PRIMARY KEY (cusip, day))")
     if not cohort:
@@ -185,20 +180,6 @@ def _count_matching_keys(parquet: pq.ParquetFile, cohort: set[str], database: sq
 def _key_count(database: sqlite3.Connection, cusip: str, day: str) -> int:
     row = database.execute("SELECT count FROM daily_keys WHERE cusip = ? AND day = ?", (cusip, day)).fetchone()
     return 0 if row is None else int(row[0])
-
-
-def _cleanup(writer: object | None, partial: Path, sqlite_path: Path) -> None:
-    """Attempt every cleanup step without masking the operational failure."""
-    if writer is not None:
-        try:
-            writer.close()  # type: ignore[attr-defined]
-        except Exception:
-            pass
-    for path in (partial, sqlite_path):
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
 
 
 def _append_derived(
@@ -241,34 +222,38 @@ def _append_derived(
 
 
 def build_observed_panel(
-    source_parquet: str | Path | BinaryIO,
-    output_path: str | Path,
+    source_parquet: BinaryIO,
+    output_path: CreatedFile,
     cohort_cusips: Iterable[object],
     batch_size: int = 65_536,
 ) -> PanelBuildResult:
-    """Stream an observed panel without repairing, selecting, or averaging source rows."""
+    """Stream an observed panel into an OutputPack-created capability."""
     if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
         raise PilotError("invalid_batch_size", {"batch_size": batch_size})
-    source = source_parquet if hasattr(source_parquet, "read") else Path(source_parquet)
-    final_path = Path(output_path)
-    if final_path.exists():
-        raise PilotError("already_exists", {"path": str(final_path)})
+    if not all(hasattr(source_parquet, name) for name in ("read", "seek", "tell")):
+        raise PilotError("source_capability_required")
+    if not hasattr(output_path, "write"):
+        raise PilotError("output_pack_required")
     cohort = _normalize_cohort(cohort_cusips)
-    partial = partial_path(final_path)
-    sqlite_path = _temp_sqlite_path(final_path)
+    source_size: int | None = None
+    if hasattr(source_parquet, "verify_unchanged"):
+        position = source_parquet.tell()
+        source_parquet.seek(0, os.SEEK_END)
+        source_size = source_parquet.tell()
+        source_parquet.seek(position)
     writer: pq.ParquetWriter | None = None
     input_rows = 0
     try:
-        with pq.ParquetFile(source) as parquet:
+        with pq.ParquetFile(source_parquet) as parquet:
             source_columns = set(parquet.schema_arrow.names)
             missing = [field for field in ("cusip_id", "trd_exctn_dt") if field not in source_columns]
             if missing:
                 raise PilotError("missing_required_columns", {"columns": missing})
             schema = _derived_schema(parquet.schema_arrow)
-            database = sqlite3.connect(sqlite_path)
+            database = sqlite3.connect(":memory:")
             try:
                 _count_matching_keys(parquet, cohort, database, batch_size)
-                writer = _PARQUET_WRITER_FACTORY(partial, schema)
+                writer = _PARQUET_WRITER_FACTORY(output_path, schema)
                 for batch in parquet.iter_batches(batch_size=batch_size):
                     writer.write_batch(_append_derived(batch, source_columns, cohort, database, input_rows))
                     input_rows += batch.num_rows
@@ -279,7 +264,8 @@ def build_observed_panel(
                 ).fetchone()
             finally:
                 database.close()
-        commit_partial(partial, final_path)
+        if source_size is not None:
+            source_parquet.verify_unchanged(expected_size=source_size)
         return PanelBuildResult(
             input_rows=input_rows,
             output_rows=input_rows,
@@ -289,4 +275,5 @@ def build_observed_panel(
             checked_scope="matching_cohort_cusip_date_keys",
         )
     finally:
-        _cleanup(writer, partial, sqlite_path)
+        if writer is not None:
+            writer.close()

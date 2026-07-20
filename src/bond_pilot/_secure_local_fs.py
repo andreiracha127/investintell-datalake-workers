@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import ctypes
 from ctypes import wintypes
@@ -29,6 +30,7 @@ FILE_WRITE_DATA = 0x0002
 FILE_TRAVERSE = 0x0020
 FILE_READ_ATTRIBUTES = 0x0080
 DELETE = 0x00010000
+READ_CONTROL = 0x00020000
 SYNCHRONIZE = 0x00100000
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -46,14 +48,24 @@ FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
 FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 OBJ_CASE_INSENSITIVE = 0x00000040
 OBJ_DONT_REPARSE = 0x00001000
+TOKEN_QUERY = 0x0008
+TOKEN_USER = 1
+SDDL_REVISION_1 = 1
+SE_FILE_OBJECT = 1
+DACL_SECURITY_INFORMATION = 0x00000004
+OWNER_SECURITY_INFORMATION = 0x00000001
 
 _OPEN_EXISTING = 3
 _FILE_NAMES_INFORMATION = 12
 _FILE_RENAME_INFORMATION = 10
+_FILE_DISPOSITION_INFORMATION = 13
 _FILE_ATTRIBUTE_TAG_INFO = 9
 _FILE_REMOTE_PROTOCOL_INFO = 13
 _FILE_ID_INFO = 18
 _STATUS_NO_MORE_FILES = 0x80000006
+_STATUS_OBJECT_NAME_COLLISION = 0xC0000035
+_STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
+_STATUS_OBJECT_PATH_NOT_FOUND = 0xC000003A
 _REMOTE_DRIVES = frozenset({DRIVE_UNKNOWN, DRIVE_NO_ROOT_DIR, DRIVE_REMOTE})
 _LOCAL_NT_PREFIXES = (r"\device\harddiskvolume", r"\device\cdrom", r"\device\ramdisk")
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:\\")
@@ -254,6 +266,25 @@ class CreatedFile:
     def write(self, value: bytes) -> int:
         return self._stream.write(value)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def tell(self) -> int:
+        return self._stream.tell()
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        return self._stream.seek(offset, whence)
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    def seekable(self) -> bool:
+        return not self._closed and self._stream.seekable()
+
+    def writable(self) -> bool:
+        return not self._closed and self._stream.writable()
+
     def flush(self) -> None:
         self._stream.flush()
 
@@ -303,6 +334,10 @@ class SecureDirectory:
         self._require_open()
         return self._backend.open_relative_file(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
 
+    def open_dir(self, name: str, *, error_code: str | None = None) -> SecureDirectory:
+        self._require_open()
+        return self._backend.open_relative_dir(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
+
     def create_file(self, name: str, *, error_code: str | None = None) -> CreatedFile:
         self._require_open()
         return self._backend.create_file(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
@@ -311,9 +346,38 @@ class SecureDirectory:
         self._require_open()
         return self._backend.create_dir(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
 
+    def create_directory_no_replace(self, name: str, *, error_code: str | None = None) -> SecureDirectory:
+        """Create exactly one private child directory without path re-resolution."""
+        return self.create_dir(name, error_code=error_code)
+
+    def create_private_directory_no_replace(self, name: str, *, error_code: str | None = None) -> SecureDirectory:
+        """Create a no-replace child with the platform's private output ACL."""
+        self._require_open()
+        return self._backend.create_private_dir(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
+
     def publish_no_replace(self, created: CreatedFile, final_name: str, *, error_code: str | None = None) -> None:
         self._require_open()
         self._backend.publish_no_replace(self, created, _single_name(final_name, error_code or self.error_code), error_code=error_code or self.error_code)
+
+    def flush(self, *, error_code: str | None = None) -> None:
+        self._require_open()
+        self._backend.flush_dir(self, error_code=error_code or self.error_code)
+
+    def unlink_file(self, name: str, *, error_code: str | None = None) -> None:
+        self._require_open()
+        self._backend.unlink_file(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
+
+    def stable_identity(self) -> tuple[object, ...]:
+        self._require_open()
+        return self._backend.directory_identity(self)
+
+    def validate_private(self, *, error_code: str = "incomplete_output") -> None:
+        self._require_open()
+        self._backend.validate_private_directory(self, error_code=error_code)
+
+    def validate_private_file(self, file: SecureFile, *, error_code: str = "incomplete_output") -> None:
+        self._require_open()
+        self._backend.validate_private_file(self, file, error_code=error_code)
 
     def close(self) -> None:
         if self._closed:
@@ -340,6 +404,29 @@ class _PosixBackend:
         if status.st_dev != root_device or not expected:
             raise PilotError(error_code)
         return status
+
+    def directory_identity(self, directory: SecureDirectory) -> tuple[object, ...]:
+        try:
+            status = self.api.fstat(directory.native_handle)
+        except OSError as exc:
+            raise _error(directory.error_code, exc)
+        return (status.st_dev, status.st_ino)
+
+    def validate_private_directory(self, directory: SecureDirectory, *, error_code: str) -> None:
+        try:
+            status = self.api.fstat(directory.native_handle)
+        except OSError as exc:
+            raise _error(error_code, exc)
+        if status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) != 0o700:
+            raise PilotError(error_code)
+
+    def validate_private_file(self, directory: SecureDirectory, file: SecureFile, *, error_code: str) -> None:
+        try:
+            status = self.api.fstat(file.native_handle)
+        except OSError as exc:
+            raise _error(error_code, exc)
+        if status.st_dev != directory.root_device or status.st_uid != os.geteuid() or stat.S_IMODE(status.st_mode) != 0o600 or status.st_nlink != 1:
+            raise PilotError(error_code)
 
     def _root(self, error_code: str) -> tuple[int, int]:
         flags = os.O_RDONLY | O_DIRECTORY | O_CLOEXEC
@@ -418,6 +505,21 @@ class _PosixBackend:
                 raise
             raise _error(error_code, exc)
 
+    def open_relative_dir(self, directory: SecureDirectory, name: str, *, error_code: str) -> SecureDirectory:
+        handle: int | None = None
+        try:
+            handle = self.api.open(name, os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC, dir_fd=directory.native_handle)
+            self._status(handle, root_device=directory.root_device, directory=True, error_code=error_code)
+            result = SecureDirectory(directory.path / name, self, handle, [handle], directory.root_device, error_code)
+            handle = None
+            return result
+        except Exception as exc:
+            if handle is not None:
+                self.api.close(handle)
+            if isinstance(exc, PilotError):
+                raise
+            raise _error(error_code, exc)
+
     def create_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> CreatedFile:
         handle: int | None = None
         try:
@@ -449,9 +551,14 @@ class _PosixBackend:
         except Exception as exc:
             if handle is not None:
                 self.api.close(handle)
+            if isinstance(exc, FileExistsError):
+                raise PilotError("already_exists") from exc
             if isinstance(exc, PilotError):
                 raise
             raise _error(error_code, exc)
+
+    def create_private_dir(self, directory: SecureDirectory, name: str, *, error_code: str) -> SecureDirectory:
+        return self.create_dir(directory, name, error_code=error_code)
 
     def publish_no_replace(self, directory: SecureDirectory, created: CreatedFile, final_name: str, *, error_code: str) -> None:
         try:
@@ -459,6 +566,24 @@ class _PosixBackend:
             self.api.fsync(created.native_handle)
             source = self._proc_fd_source(created.native_handle)
             self._linkat(AT_FDCWD, source, directory.native_handle, final_name, AT_SYMLINK_FOLLOW)
+            self.api.fsync(directory.native_handle)
+        except OSError as exc:
+            raise _error(error_code, exc)
+
+    def flush_dir(self, directory: SecureDirectory, *, error_code: str) -> None:
+        try:
+            self.api.fsync(directory.native_handle)
+        except OSError as exc:
+            raise _error(error_code, exc)
+
+    def unlink_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> None:
+        try:
+            self.api.unlink(name, dir_fd=directory.native_handle)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise _error(error_code, exc)
+        try:
             self.api.fsync(directory.native_handle)
         except OSError as exc:
             raise _error(error_code, exc)
@@ -567,6 +692,7 @@ class _WindowsApi:
         _validate_windows_abi()
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.ntdll = ctypes.WinDLL("ntdll")
+        self.advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
         self._bind()
 
     def _bind(self) -> None:
@@ -582,6 +708,23 @@ class _WindowsApi:
         self.kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
         self.kernel32.FlushFileBuffers.argtypes = [wintypes.HANDLE]
         self.kernel32.FlushFileBuffers.restype = wintypes.BOOL
+        self.kernel32.GetVolumeInformationByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR, wintypes.DWORD]
+        self.kernel32.GetVolumeInformationByHandleW.restype = wintypes.BOOL
+        self.kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        self.kernel32.LocalFree.restype = ctypes.c_void_p
+        self.kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        self.advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        self.advapi32.OpenProcessToken.restype = wintypes.BOOL
+        self.advapi32.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        self.advapi32.GetTokenInformation.restype = wintypes.BOOL
+        self.advapi32.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+        self.advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+        self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.DWORD)]
+        self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+        self.advapi32.GetSecurityInfo.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p)]
+        self.advapi32.GetSecurityInfo.restype = wintypes.DWORD
+        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.argtypes = [ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(wintypes.LPWSTR), ctypes.POINTER(wintypes.DWORD)]
+        self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW.restype = wintypes.BOOL
         self.ntdll.NtCreateFile.argtypes = [ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, ctypes.POINTER(_OBJECT_ATTRIBUTES), ctypes.POINTER(_IO_STATUS_BLOCK), ctypes.c_void_p, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG]
         self.ntdll.NtCreateFile.restype = wintypes.LONG
         self.ntdll.NtQueryDirectoryFile.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(_IO_STATUS_BLOCK), ctypes.c_void_p, wintypes.ULONG, ctypes.c_int, wintypes.BOOLEAN, ctypes.c_void_p, wintypes.BOOLEAN]
@@ -639,16 +782,70 @@ class _WindowsApi:
         identity = (int(file_id.VolumeSerialNumber), bytes(file_id.FileId.Identifier), kind | int(basic.FileAttributes), int(standard.EndOfFile), int(basic.LastWriteTime), int(basic.ChangeTime))
         return _WindowsFileInfo(int(file_id.VolumeSerialNumber), int(tag.FileAttributes), int(tag.ReparseTag), identity)
 
-    def nt_create(self, parent: int, name: str, *, desired_access: int, share_access: int, disposition: int, options: int, attributes: int) -> int:
+    def nt_create(self, parent: int, name: str, *, desired_access: int, share_access: int, disposition: int, options: int, attributes: int, security_descriptor: ctypes.c_void_p | None = None) -> int:
         name_buffer = ctypes.create_unicode_buffer(name)
         object_name = _UNICODE_STRING(len(name.encode("utf-16-le")), ctypes.sizeof(name_buffer), ctypes.cast(name_buffer, wintypes.LPWSTR))
-        object_attributes = _OBJECT_ATTRIBUTES(ctypes.sizeof(_OBJECT_ATTRIBUTES), parent, ctypes.pointer(object_name), attributes, None, None)
+        object_attributes = _OBJECT_ATTRIBUTES(ctypes.sizeof(_OBJECT_ATTRIBUTES), parent, ctypes.pointer(object_name), attributes, security_descriptor, None)
         result = wintypes.HANDLE()
         iosb = _IO_STATUS_BLOCK()
         status = int(self.ntdll.NtCreateFile(ctypes.byref(result), desired_access, ctypes.byref(object_attributes), ctypes.byref(iosb), None, FILE_ATTRIBUTE_NORMAL, share_access, disposition, options, None, 0))
+        if status & 0xFFFFFFFF == _STATUS_OBJECT_NAME_COLLISION:
+            raise FileExistsError(name)
+        if status & 0xFFFFFFFF in {_STATUS_OBJECT_NAME_NOT_FOUND, _STATUS_OBJECT_PATH_NOT_FOUND}:
+            raise FileNotFoundError(name)
         if status < 0:
             self._raise_status(status)
         return int(result.value)
+
+    def delete_relative(self, parent: int, name: str) -> None:
+        handle = self.nt_create(parent, name, desired_access=DELETE | SYNCHRONIZE, share_access=FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, disposition=FILE_OPEN, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
+        try:
+            iosb = _IO_STATUS_BLOCK()
+            disposition = wintypes.BOOLEAN(True)
+            status = int(self.ntdll.NtSetInformationFile(handle, ctypes.byref(iosb), ctypes.byref(disposition), ctypes.sizeof(disposition), _FILE_DISPOSITION_INFORMATION))
+            if status < 0:
+                self._raise_status(status)
+        finally:
+            self.close(handle)
+
+    def _current_user_sid(self) -> str:
+        token = wintypes.HANDLE()
+        if not self.advapi32.OpenProcessToken(self.kernel32.GetCurrentProcess(), TOKEN_QUERY, ctypes.byref(token)):
+            self._raise_last_error()
+        try:
+            length = wintypes.DWORD()
+            self.advapi32.GetTokenInformation(token, TOKEN_USER, None, 0, ctypes.byref(length))
+            if ctypes.get_last_error() != 122 or not length.value:
+                self._raise_last_error()
+            buffer = ctypes.create_string_buffer(length.value)
+            if not self.advapi32.GetTokenInformation(token, TOKEN_USER, buffer, length.value, ctypes.byref(length)):
+                self._raise_last_error()
+            sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p)).contents.value
+            sid_text = wintypes.LPWSTR()
+            if not self.advapi32.ConvertSidToStringSidW(sid, ctypes.byref(sid_text)):
+                self._raise_last_error()
+            try:
+                return str(sid_text.value)
+            finally:
+                self.kernel32.LocalFree(sid_text)
+        finally:
+            self.close(int(token.value))
+
+    @contextmanager
+    def private_directory_security_descriptor(self) -> Iterator[ctypes.c_void_p]:
+        sddl = self.private_directory_sddl()
+        descriptor = ctypes.c_void_p()
+        size = wintypes.DWORD()
+        if not self.advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, ctypes.byref(descriptor), ctypes.byref(size)):
+            self._raise_last_error()
+        try:
+            yield descriptor
+        finally:
+            if descriptor.value:
+                self.kernel32.LocalFree(descriptor)
+
+    def private_directory_sddl(self) -> str:
+        return f"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;{self._current_user_sid()})"
 
     def transfer_to_fd(self, handle: int, mode: str) -> int:
         import msvcrt
@@ -682,6 +879,56 @@ class _WindowsApi:
     def flush(self, handle: int) -> None:
         if not self.kernel32.FlushFileBuffers(handle):
             self._raise_last_error()
+
+    def filesystem_name(self, handle: int) -> str:
+        name = ctypes.create_unicode_buffer(256)
+        if not self.kernel32.GetVolumeInformationByHandleW(handle, None, 0, None, None, None, name, len(name)):
+            self._raise_last_error()
+        return name.value
+
+    def directory_dacl_sddl(self, handle: int) -> str:
+        descriptor = ctypes.c_void_p()
+        result = self.advapi32.GetSecurityInfo(handle, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, None, None, ctypes.byref(descriptor))
+        if result:
+            raise ctypes.WinError(result)
+        try:
+            text = wintypes.LPWSTR()
+            length = wintypes.DWORD()
+            if not self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, ctypes.byref(text), ctypes.byref(length)):
+                self._raise_last_error()
+            try:
+                return str(text.value)
+            finally:
+                self.kernel32.LocalFree(text)
+        finally:
+            if descriptor.value:
+                self.kernel32.LocalFree(descriptor)
+
+    def owner_sid_and_dacl_sddl(self, handle: int) -> tuple[str, str]:
+        descriptor = ctypes.c_void_p()
+        owner = ctypes.c_void_p()
+        result = self.advapi32.GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, ctypes.byref(owner), None, None, None, ctypes.byref(descriptor))
+        if result:
+            raise ctypes.WinError(result)
+        try:
+            owner_text = wintypes.LPWSTR()
+            if not self.advapi32.ConvertSidToStringSidW(owner, ctypes.byref(owner_text)):
+                self._raise_last_error()
+            try:
+                owner_sid = str(owner_text.value)
+            finally:
+                self.kernel32.LocalFree(owner_text)
+            text = wintypes.LPWSTR()
+            length = wintypes.DWORD()
+            if not self.advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, ctypes.byref(text), ctypes.byref(length)):
+                self._raise_last_error()
+            try:
+                return owner_sid, str(text.value)
+            finally:
+                self.kernel32.LocalFree(text)
+        finally:
+            if descriptor.value:
+                self.kernel32.LocalFree(descriptor)
 
     def publish(self, file_handle: int, directory_handle: int, final_name: str, *, replace: bool) -> None:
         try:
@@ -731,6 +978,31 @@ class _WindowsBackend:
             raise PilotError(error_code)
         return info
 
+    def directory_identity(self, directory: SecureDirectory) -> tuple[object, ...]:
+        try:
+            identity = self.api.query_info(directory.native_handle).identity
+        except OSError as exc:
+            raise _error(directory.error_code, exc)
+        return identity[:2]
+
+    def _validate_private_security(self, handle: object, *, error_code: str) -> None:
+        try:
+            owner, dacl = self.api.owner_sid_and_dacl_sddl(handle)
+            expected_owner = self.api._current_user_sid()
+            expected_dacl = self.api.private_directory_sddl()
+        except OSError as exc:
+            raise _error(error_code, exc)
+        if owner != expected_owner or dacl != expected_dacl:
+            raise PilotError(error_code)
+
+    def validate_private_directory(self, directory: SecureDirectory, *, error_code: str) -> None:
+        self._check_info(directory.native_handle, root_volume=directory.root_device, directory=True, error_code=error_code)
+        self._validate_private_security(directory.native_handle, error_code=error_code)
+
+    def validate_private_file(self, directory: SecureDirectory, file: SecureFile, *, error_code: str) -> None:
+        self._check_info(file.native_handle, root_volume=directory.root_device, directory=False, error_code=error_code)
+        self._validate_private_security(file.native_handle, error_code=error_code)
+
     def _root(self, path: Path, error_code: str) -> tuple[object, int]:
         root = self._root_text(path)
         if self.api.get_drive_type(root) in _REMOTE_DRIVES:
@@ -759,10 +1031,14 @@ class _WindowsBackend:
         root, volume = self._root(path, error_code)
         handles = [root]
         try:
-            for component in str(path)[3:].split("\\") if len(str(path)) > 3 else ():
+            components = tuple(str(path)[3:].split("\\")) if len(str(path)) > 3 else ()
+            for index, component in enumerate(components):
+                desired_access = FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+                if index == len(components) - 1:
+                    desired_access |= FILE_WRITE_DATA
                 handle = self.api.nt_create(
                     handles[-1], component,
-                    desired_access=FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    desired_access=desired_access,
                     share_access=FILE_SHARE_READ | FILE_SHARE_WRITE,
                     disposition=FILE_OPEN,
                     options=FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT,
@@ -822,7 +1098,7 @@ class _WindowsBackend:
     def open_relative_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> SecureFile:
         final: object | None = None
         try:
-            final = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, share_access=FILE_SHARE_READ, disposition=FILE_OPEN, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
+            final = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE, share_access=FILE_SHARE_READ, disposition=FILE_OPEN, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
             info = self._check_info(final, root_volume=directory.root_device, directory=False, error_code=error_code)
             native_handle = final
             fd = self.api.transfer_to_fd(final, "rb")
@@ -840,11 +1116,30 @@ class _WindowsBackend:
                 raise
             raise _error(error_code, exc)
 
+    def open_relative_dir(self, directory: SecureDirectory, name: str, *, error_code: str) -> SecureDirectory:
+        handle: object | None = None
+        try:
+            handle = self.api.nt_create(directory.native_handle, name, desired_access=FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE, share_access=FILE_SHARE_READ | FILE_SHARE_WRITE, disposition=FILE_OPEN, options=FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
+            self._check_info(handle, root_volume=directory.root_device, directory=True, error_code=error_code)
+            result = SecureDirectory(directory.path / name, self, handle, [handle], directory.root_device, error_code)
+            handle = None
+            return result
+        except Exception as exc:
+            if handle is not None:
+                self.api.close(handle)
+            if isinstance(exc, FileExistsError):
+                raise PilotError("already_exists") from exc
+            if isinstance(exc, PilotError):
+                raise
+            raise _error(error_code, exc)
+
     def create_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> CreatedFile:
         handle: object | None = None
         try:
-            handle = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE, share_access=0, disposition=FILE_CREATE, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
+            with self.api.private_directory_security_descriptor() as descriptor:
+                handle = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | READ_CONTROL | SYNCHRONIZE, share_access=0, disposition=FILE_CREATE, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, security_descriptor=descriptor)
             self._check_info(handle, root_volume=directory.root_device, directory=False, error_code=error_code)
+            self._validate_private_security(handle, error_code=error_code)
             native_handle = handle
             fd = self.api.transfer_to_fd(handle, "w+b")
             handle = None
@@ -857,6 +1152,8 @@ class _WindowsBackend:
         except Exception as exc:
             if handle is not None:
                 self.api.close(handle)
+            if isinstance(exc, FileExistsError):
+                raise PilotError("already_exists") from exc
             if isinstance(exc, PilotError):
                 raise
             raise _error(error_code, exc)
@@ -870,6 +1167,27 @@ class _WindowsBackend:
         except Exception as exc:
             if handle is not None:
                 self.api.close(handle)
+            if isinstance(exc, FileExistsError):
+                raise PilotError("already_exists") from exc
+            if isinstance(exc, PilotError):
+                raise
+            raise _error(error_code, exc)
+
+    def create_private_dir(self, directory: SecureDirectory, name: str, *, error_code: str) -> SecureDirectory:
+        handle: object | None = None
+        try:
+            with self.api.private_directory_security_descriptor() as descriptor:
+                handle = self.api.nt_create(directory.native_handle, name, desired_access=FILE_LIST_DIRECTORY | FILE_WRITE_DATA | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE, share_access=FILE_SHARE_READ | FILE_SHARE_WRITE, disposition=FILE_CREATE, options=FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, security_descriptor=descriptor)
+            self._check_info(handle, root_volume=directory.root_device, directory=True, error_code=error_code)
+            self._validate_private_security(handle, error_code=error_code)
+            result = SecureDirectory(directory.path / name, self, handle, [handle], directory.root_device, error_code)
+            handle = None
+            return result
+        except Exception as exc:
+            if handle is not None:
+                self.api.close(handle)
+            if isinstance(exc, FileExistsError):
+                raise PilotError("already_exists") from exc
             if isinstance(exc, PilotError):
                 raise
             raise _error(error_code, exc)
@@ -879,8 +1197,26 @@ class _WindowsBackend:
             created.flush()
             self.api.flush(created.native_handle)
             self.api.publish(created.native_handle, directory.native_handle, final_name, replace=False)
+            self.api.flush(directory.native_handle)
         except OSError as exc:
             raise _error(error_code, exc)
+
+    def flush_dir(self, directory: SecureDirectory, *, error_code: str) -> None:
+        try:
+            if self.api.filesystem_name(directory.native_handle).upper() != "NTFS":
+                raise PilotError(error_code)
+            self.api.flush(directory.native_handle)
+        except OSError as exc:
+            raise _error(error_code, exc)
+
+    def unlink_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> None:
+        try:
+            self.api.delete_relative(directory.native_handle, name)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise _error(error_code, exc)
+        self.flush_dir(directory, error_code=error_code)
 
 
 def _backend() -> _WindowsBackend | _PosixBackend:

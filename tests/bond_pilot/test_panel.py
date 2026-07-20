@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from contextlib import nullcontext
 from pathlib import Path
 
 import pyarrow as pa
@@ -10,7 +11,23 @@ import pytest
 from src.bond_pilot.contracts import FieldState, IdentifierState, PilotError
 from src.bond_pilot.identifiers import normalize_cusip9
 from src.bond_pilot import panel
-from src.bond_pilot.panel import build_observed_panel
+from src.bond_pilot.panel import build_observed_panel as _build_observed_panel
+from src.bond_pilot._secure_local_fs import secure_open_dir, secure_open_file
+from src.bond_pilot.output_pack import OutputPack
+
+
+def build_observed_panel(source: object, output: Path, cohort: object, **kwargs: object):
+    """Run panel construction through a CreatedFile capability."""
+    source_context = nullcontext(source) if hasattr(source, "read") else secure_open_file(source, error_code="source_integrity_failed")
+    with source_context as source_capability:
+        with secure_open_dir(output.parent, error_code="unsafe_parent") as parent:
+            pack = OutputPack.create(parent, run_id=f"{output.stem}-pack", pack_schema_version="test", producer_version="test")
+            with pack.create_payload("panel.parquet") as created:
+                result = _build_observed_panel(source_capability, created, cohort, **kwargs)
+            with pack.directory.open_file("panel.parquet", error_code="missing_panel") as child:
+                output.write_bytes(child.read_all(max_bytes=1024**3))
+            pack.close()
+            return result
 
 
 def _write_source(path: Path, columns: dict[str, list[object]]) -> None:

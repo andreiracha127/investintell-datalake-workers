@@ -22,9 +22,56 @@ from src.bond_pilot.db_calibration import (
     V2_RELATION,
     load_phase4_v2_evidence,
     load_phase4_v2_evidence_approval,
-    run_v2_calibration,
+    run_v2_calibration as _run_v2_calibration,
     validate_v2_request,
 )
+from src.bond_pilot._secure_local_fs import secure_open_dir
+from src.bond_pilot.output_pack import OutputPack
+
+
+_TEST_CHECKPOINT_PACKS: dict[Path, OutputPack] = {}
+
+
+def _checkpoint_pack(path: Path) -> OutputPack:
+    """Bridge legacy byte fixtures into a retained OutputPack capability.
+
+    The calibration implementation is exercised exclusively through its pack
+    API; the path is only a fixture seed/inspection label for these tests.
+    """
+    key = path.resolve()
+    pack = _TEST_CHECKPOINT_PACKS.get(key)
+    if pack is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        parent = secure_open_dir(path.parent, error_code="unsafe_parent")
+        pack = OutputPack.create(parent, run_id=f"checkpoint-{len(_TEST_CHECKPOINT_PACKS):08d}", pack_schema_version="test", producer_version="test")
+        _TEST_CHECKPOINT_PACKS[key] = pack
+    if path.exists():
+        names = [name for name in pack.directory.enumerate() if name.startswith("checkpoint-")]
+        latest = max(names, default="checkpoint-000000000000.json")
+        latest_bytes = b""
+        if names:
+            with pack.directory.open_file(latest, error_code="checkpoint_invalid") as child:
+                latest_bytes = child.read_all(max_bytes=1024 * 1024)
+        if not names or latest_bytes != path.read_bytes():
+            pack.write_payload(f"checkpoint-{len(names) + 1:012d}.json", path.read_bytes())
+    return pack
+
+
+def _copy_checkpoint_to_fixture(pack: OutputPack, path: Path) -> None:
+    names = sorted(name for name in pack.directory.enumerate() if name.startswith("checkpoint-") and name.endswith(".json"))
+    if names:
+        with pack.directory.open_file(names[-1], error_code="checkpoint_invalid") as child:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(child.read_all(max_bytes=1024 * 1024))
+
+
+def run_v2_calibration(connection: object, *, checkpoint_path: Path, **kwargs: object):
+    """Run against an OutputPack while retaining byte-level checkpoint checks."""
+    pack = _checkpoint_pack(checkpoint_path)
+    try:
+        return _run_v2_calibration(connection, checkpoint_pack=pack, **kwargs)
+    finally:
+        _copy_checkpoint_to_fixture(pack, checkpoint_path)
 
 
 def _sha(char: str) -> str:
@@ -64,6 +111,30 @@ def _governance(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVAL_SHA256", hashlib.sha256(approval_path.read_bytes()).hexdigest())
     monkeypatch.setenv("BOND_PILOT_PHASE4_V2_APPROVER_ID", "human-approver")
     return load_phase4_v2_evidence(evidence_path), load_phase4_v2_evidence_approval(approval_path), evidence_path, approval_path
+
+
+def _checkpoint_bytes(calibration, evidence, approval, *, pages: int = 0, rows: int = 0, elapsed: float = 0.0, state: str = "new", key_suffix: str = "h-1") -> bytes:
+    populated = state != "new"
+    reports = (("S1", "2024-03-31", "pub-1", "acc-1"),) if populated else ()
+    key = ("S1", "2024-03-31", "pub-1", "acc-1", key_suffix, "run-1", "instrument-1") if rows else None
+    reason = "budget_reached" if state == "budget_reached" else None
+    return canonical_json_bytes(
+        calibration._checkpoint_payload(
+            run_id="run-1",
+            evidence=evidence,
+            approval=approval,
+            mode="calibration",
+            series_ids=("S1",),
+            reports=reports,
+            last_key=key,
+            pages=pages,
+            rows=rows,
+            elapsed_seconds=elapsed,
+            output_hash=_sha("f") if rows else hashlib.sha256(b"").hexdigest(),
+            output_state=state,
+            stop_reason=reason,
+        )
+    )
 
 
 def test_public_request_validation_rehashes_all_governance_without_a_connection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -329,8 +400,140 @@ def test_stopped_zero_row_checkpoint_round_trips_and_preserves_counters(reports:
 
     checkpoint = tmp_path / "checkpoint.json"
     checkpoint.write_bytes(canonical_json_bytes(calibration._checkpoint_payload(run_id="run-1", evidence=evidence, approval=approval, mode="calibration", series_ids=("S1",), reports=reports, last_key=None, pages=0, rows=0, elapsed_seconds=1.0, output_hash=hashlib.sha256(b"").hexdigest(), output_state="stopped", stop_reason="unsafe_query_plan")))
-    loaded = calibration._load_checkpoint(checkpoint, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+    loaded = calibration._load_checkpoint(_checkpoint_pack(checkpoint), evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
     assert loaded["pages"] == loaded["rows"] == 0
+
+
+def test_zero_row_initial_checkpoint_preserves_cumulative_wall_budget_and_reports(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    from src.bond_pilot import db_calibration as calibration
+
+    reports = [("S1", "2024-03-31", "pub-1", "acc-1")]
+    initial = calibration._checkpoint_payload(
+        run_id="run-1", evidence=evidence, approval=approval, mode="calibration", series_ids=("S1",),
+        reports=reports, last_key=None, pages=0, rows=0, elapsed_seconds=585.0,
+        output_hash=hashlib.sha256(b"").hexdigest(), output_state="stopped", stop_reason="unsafe_query_plan",
+    )
+    values = iter((0.0, 1.0, 2.0))
+    connection = TranscriptConnection([])
+    checkpoint = tmp_path / "checkpoint.json"
+    with pytest.raises(PilotError, match="calibration_timeout"):
+        run_v2_calibration(
+            connection, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration",
+            checkpoint_path=checkpoint, run_id="run-1", initial_checkpoint=initial, clock=lambda: next(values),
+        )
+    emitted = json.loads(checkpoint.read_text(encoding="utf-8"))
+    assert emitted["output_state"] == "stopped" and emitted["stop_reason"] == "calibration_timeout"
+    assert emitted["pages"] == emitted["rows"] == 0
+    assert emitted["elapsed_seconds"] == 587.0
+    assert emitted["resolved_reports"] == [{"series_id": "S1", "report_date": "2024-03-31", "publication_id": "pub-1", "accession_number": "acc-1"}]
+    for field in ("run_id", "evidence_sha256", "approval_sha256", "approval_authority_sha256", "publication_sha256", "query_sha256", "method_sha256", "output_hash"):
+        assert emitted[field] == initial[field]
+    loaded = calibration._load_checkpoint(_checkpoint_pack(checkpoint), evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+    assert loaded["elapsed_seconds"] == 587.0 and loaded["resolved_reports"] == (("S1", "2024-03-31", "pub-1", "acc-1"),)
+    connection.assert_exhausted()
+
+
+@pytest.mark.parametrize("conflict", ["existing_chain", "nonzero_seed"])
+def test_initial_checkpoint_rejects_pack_chain_and_nonzero_resume(conflict: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    from src.bond_pilot import db_calibration as calibration
+
+    checkpoint = tmp_path / "checkpoint.json"
+    if conflict == "existing_chain":
+        checkpoint.write_bytes(_checkpoint_bytes(calibration, evidence, approval))
+    reports = [("S1", "2024-03-31", "pub-1", "acc-1")]
+    initial = calibration._checkpoint_payload(
+        run_id="run-1", evidence=evidence, approval=approval, mode="calibration", series_ids=("S1",),
+        reports=reports, last_key=None, pages=0, rows=0, elapsed_seconds=1.0,
+        output_hash=hashlib.sha256(b"").hexdigest(), output_state="stopped", stop_reason="unsafe_query_plan",
+    )
+    if conflict == "nonzero_seed":
+        initial = calibration._checkpoint_payload(
+            run_id="run-1", evidence=evidence, approval=approval, mode="calibration", series_ids=("S1",),
+            reports=reports, last_key=("S1", "2024-03-31", "pub-1", "acc-1", "h-1000", "run-1", "instrument-1000"),
+            pages=1, rows=1000, elapsed_seconds=1.0, output_hash=_sha("f"), output_state="stopped", stop_reason="unsafe_query_plan",
+        )
+    with pytest.raises(PilotError, match="^run_budget_required$"):
+        run_v2_calibration(None, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=checkpoint, run_id="run-1", initial_checkpoint=initial)
+
+
+@pytest.mark.parametrize(
+    "payloads",
+    [
+        (("checkpoint-000000000001.json", "valid"), ("checkpoint-000000000002.json", "invalid")),
+        (("checkpoint-000000000001.json", "invalid"),),
+    ],
+    ids=("older-valid-newer-invalid", "only-invalid"),
+)
+def test_checkpoint_loader_never_falls_back_from_highest_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, payloads: tuple[tuple[str, str], ...]) -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    packs = tmp_path / "packs"
+    packs.mkdir()
+    with secure_open_dir(packs, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run-1", pack_schema_version="test", producer_version="test")
+        for name, kind in payloads:
+            pack.write_payload(name, _checkpoint_bytes(calibration, evidence, approval) if kind == "valid" else b"{")
+        with pytest.raises(PilotError, match="^run_budget_required$"):
+            calibration._load_checkpoint(pack, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+        with pytest.raises(PilotError, match="^calibration_checkpoint_invalid$"):
+            calibration.load_latest_calibration_checkpoint(pack, evidence=evidence, approval=approval, mode="calibration", series_ids=("S1",), run_id="run-1")
+        pack.close()
+
+
+def test_checkpoint_loader_initializes_only_when_no_checkpoint_is_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    packs = tmp_path / "packs"
+    packs.mkdir()
+    with secure_open_dir(packs, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run-1", pack_schema_version="test", producer_version="test")
+        initialized = calibration._load_checkpoint(pack, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+        assert initialized["output_state"] == "new"
+        assert initialized["pages"] == initialized["rows"] == 0
+        pack.close()
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("checkpoint-000000000001.json", "checkpoint-000000000003.json"),
+        ("checkpoint-1.json",),
+        ("Checkpoint-000000000001.json",),
+    ],
+    ids=("sequence-gap", "numeric-alias", "case-alias"),
+)
+def test_checkpoint_loader_rejects_gaps_and_noncanonical_numeric_aliases(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, names: tuple[str, ...]) -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    packs = tmp_path / "packs"
+    packs.mkdir()
+    with secure_open_dir(packs, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run-1", pack_schema_version="test", producer_version="test")
+        for name in names:
+            pack.write_payload(name, _checkpoint_bytes(calibration, evidence, approval))
+        with pytest.raises(PilotError, match="^run_budget_required$"):
+            calibration._load_checkpoint(pack, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+        pack.close()
+
+
+def test_checkpoint_loader_rejects_individually_valid_counter_regression(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.bond_pilot import db_calibration as calibration
+
+    evidence, approval, _, _ = _governance(tmp_path, monkeypatch)
+    packs = tmp_path / "packs"
+    packs.mkdir()
+    with secure_open_dir(packs, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run-1", pack_schema_version="test", producer_version="test")
+        pack.write_payload("checkpoint-000000000001.json", _checkpoint_bytes(calibration, evidence, approval, pages=2, rows=2000, elapsed=2.0, state="in_progress", key_suffix="h-2"))
+        pack.write_payload("checkpoint-000000000002.json", _checkpoint_bytes(calibration, evidence, approval, pages=1, rows=1000, elapsed=1.0, state="in_progress", key_suffix="h-1"))
+        with pytest.raises(PilotError, match="^run_budget_required$"):
+            calibration._load_checkpoint(pack, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+        pack.close()
 
 
 def test_checkpoint_foreign_last_key_and_malformed_report_are_normalized(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,7 +588,7 @@ def test_post_resolver_zero_row_stops_checkpoint_and_reload(failure: str, tmp_pa
     expected_code = "unsafe_query_plan" if failure == "unsafe_plan" else "calibration_timeout"
     with pytest.raises(PilotError, match=expected_code):
         run_v2_calibration(connection, evidence=evidence, approval=approval, series_ids=("S1",), mode="calibration", checkpoint_path=checkpoint, run_id="run-1")
-    loaded = calibration._load_checkpoint(checkpoint, evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
+    loaded = calibration._load_checkpoint(_checkpoint_pack(checkpoint), evidence=evidence, approval=approval, mode="calibration", series=("S1",), run_id="run-1", budget=calibration._BUDGETS["calibration"])
     assert loaded["pages"] == loaded["rows"] == 0 and loaded["resolved_reports"]
     connection.assert_exhausted()
 

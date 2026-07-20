@@ -6,23 +6,19 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 import math
 import os
-from pathlib import Path
 import re
-import shutil
-import stat
 from typing import Iterable, Mapping
-from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .artifacts import canonical_json_bytes, commit_partial, partial_path, replace_checkpoint, write_checksums, write_json_once, write_text_once
+from .artifacts import canonical_json_bytes
 from .contracts import PilotError, SourceApproval, SourceCandidate
 from .debt_mapping import DebtMapping
 from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric, compute_cross_series_summary, compute_series_metrics, validate_match_categories
 from .nport import FixtureLoadResult, load_fixture_result
 from .panel import PanelBuildResult
-from .source_artifact import _path_lexists, _publish_directory_no_replace
+from .output_pack import OutputPack
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -112,55 +108,6 @@ def _latest_rows(observations: Iterable[Observation]) -> list[dict[str, object]]
     return [{"cusip": row.cusip, "observation_date": row.observation_date, "source_row_number": row.source_row_number, "price": _finite(row.price), "price_raw": _json(row.price), "price_state": _text(row.price_state), "ytm_json": _json(row.ytm), "db_type": _text(row.db_type), "db_type_state": _text(row.db_type_state), "daily_key_state": _text(row.daily_key_state)} for row in observations]
 
 
-def _write_parquet_once(path: Path, schema: pa.Schema, rows: list[dict[str, object]]) -> Path:
-    partial = partial_path(path)
-    try:
-        pq.write_table(pa.Table.from_pylist(rows, schema=schema), partial)
-        return commit_partial(partial, path)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
-
-
-def _copy_panel_once(source: Path, destination: Path) -> Path:
-    partial = partial_path(destination)
-    try:
-        with source.open("rb") as input_file, partial.open("xb") as output_file:
-            for chunk in iter(lambda: input_file.read(1024 * 1024), b""):
-                output_file.write(chunk)
-        return commit_partial(partial, destination)
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
-
-
-def _create_reporting_attempt(run_dir: Path) -> Path:
-    if _path_lexists(run_dir):
-        raise PilotError("already_exists", {"path": str(run_dir)})
-    run_dir.parent.mkdir(parents=True, exist_ok=True)
-    for _ in range(3):
-        attempt = run_dir.parent / f".{run_dir.name}.reporting-{uuid4().hex}.partial-dir"
-        try:
-            attempt.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        if _POSIX_PERMISSIONS:
-            try:
-                attempt.chmod(0o700)
-                if stat.S_IMODE(attempt.stat().st_mode) != 0o700:
-                    raise OSError("reporting attempt permissions are not 0700")
-            except OSError as exc:
-                shutil.rmtree(attempt, ignore_errors=True)
-                raise PilotError("reporting_attempt_private_failed") from exc
-        return attempt
-    raise PilotError("attempt_directory_collision", {"path": str(run_dir)})
-
-
-def _publish_reporting_directory(attempt: Path, run_dir: Path) -> None:
-    """Adapter around the established no-replace directory publisher."""
-    _publish_directory_no_replace(attempt, run_dir)
-
-
 def _valid_sha(value: object) -> bool:
     return isinstance(value, str) and _SHA256.fullmatch(value) is not None
 
@@ -227,23 +174,13 @@ def _mapping_evidence(mapping: DebtMapping, provenance: Mapping[str, object]) ->
     return {"schema_version": mapping.schema_version, "mapping_version": mapping.mapping_version, "scope": mapping.scope, "mapping_sha256": mapping.mapping_sha256, "classification_fields": ["issuer_category", "asset_class", "instrument_structure"], "mapping_contract": provenance["mapping_contract"], "approval_reference": provenance["approval_reference"]}
 
 
-def _panel_is_inside_run(panel_path: Path, run_dir: Path) -> bool:
-    panel = panel_path.resolve()
-    root = run_dir.resolve()
-    return panel == root or root in panel.parents
-
-
-def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandidate, source_approval: SourceApproval, debt_mapping: DebtMapping, mapping_provenance: Mapping[str, object], nport_manifest: Mapping[str, object], panel_result: PanelBuildResult, panel_path: str | Path, matches: Iterable[MatchResult], series_metrics: Iterable[SeriesMetric], cross_series_summary: CrossSeriesSummary, latest_observations: Iterable[Observation], calibration_report: Mapping[str, object], checkpoint: Mapping[str, object] | None = None) -> Mapping[str, Path]:
+def write_internal_reports(*, run_dir: OutputPack, source_candidate: SourceCandidate, source_approval: SourceApproval, debt_mapping: DebtMapping, mapping_provenance: Mapping[str, object], nport_manifest: Mapping[str, object], panel_result: PanelBuildResult, panel_path: str, matches: Iterable[MatchResult], series_metrics: Iterable[SeriesMetric], cross_series_summary: CrossSeriesSummary, latest_observations: Iterable[Observation], calibration_report: Mapping[str, object], checkpoint: Mapping[str, object] | None = None) -> Mapping[str, str]:
     """Build a complete, unredacted internal evidence pack and publish it once."""
     source_approval.validate_for(source_candidate)
-    root = Path(run_dir)
-    panel = Path(panel_path)
-    if _panel_is_inside_run(panel, root):
-        raise PilotError("panel_path_inside_run_dir", {"path": str(panel)})
-    if _path_lexists(root):
-        raise PilotError("already_exists", {"path": str(root)})
-    if not panel.is_file():
-        raise PilotError("missing_panel", {"path": str(panel)})
+    if not isinstance(run_dir, OutputPack):
+        raise PilotError("output_pack_required")
+    if panel_path != "bond-observed-daily.parquet":
+        raise PilotError("missing_panel")
     match_values, metric_values, latest_values = tuple(matches), tuple(series_metrics), tuple(latest_observations)
     validated_matches = validate_match_categories(match_values, debt_mapping)
     fixture = _validate_nport_manifest(nport_manifest, len(match_values), len(metric_values))
@@ -268,23 +205,30 @@ def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandi
             dispositions["eligible"] += 1
     quality = {"internal_only": True, "source": source_manifest, "mapping": _mapping_evidence(debt_mapping, provenance), "nport": manifest, "panel": _plain(panel_result), "state_counts": {key: sum(1 for row in match_rows if row["state"] == key) for key in sorted({str(row["state"]) for row in match_rows})}, "disposition_counts": dispositions, "invalid_weight_diagnostics": {"by_series": [_plain(metric.denominator_diagnostics) for metric in metric_values]}, "market_diagnostics": {"by_series": [_plain(metric.market_value_diagnostics) for metric in metric_values], "currency_values_no_fx": [_plain(_known_currencies(metric.eligible_market_value_by_currency)) for metric in metric_values]}, "cross_series": _plain(cross_series_summary), "latest_lane": {"historical_input": False}, "db_reads": 0, "db_writes": 0, "representative": False}
     report = "# Bond pilot internal report\n\nInternal-only local/offline/no-write fixture run. Phase state: pre-backfill; representative: false. Full internal provenance is expected. Latest lane is isolated (`historical_input:false`). No frontend, API, or production claim.\n"
-    attempt = _create_reporting_attempt(root)
-    try:
-        paths: dict[str, Path] = {}
-        paths["source_manifest"] = write_json_once(attempt / "source-manifest.json", source_manifest)
-        paths["nport_extract_manifest"] = write_json_once(attempt / "nport-extract-manifest.json", manifest)
-        paths["calibration_report"] = write_json_once(attempt / "calibration-report.json", calibration)
-        paths["bond_observed_daily"] = _copy_panel_once(panel, attempt / "bond-observed-daily.parquet")
-        paths["fund_asof_match"] = _write_parquet_once(attempt / "fund-asof-match.parquet", _MATCH_SCHEMA, match_rows)
-        paths["fund_series_metrics"] = _write_parquet_once(attempt / "fund-series-metrics.parquet", _METRIC_SCHEMA, metric_rows)
-        paths["bond_latest"] = _write_parquet_once(attempt / "bond-latest.parquet", _LATEST_SCHEMA, latest_rows)
-        paths["quality_summary"] = write_json_once(attempt / "quality-summary.json", quality)
-        paths["pilot_report"] = write_text_once(attempt / "pilot-report.md", report)
-        if checkpoint is not None:
-            paths["checkpoint"] = replace_checkpoint(attempt / "checkpoint.json", canonical_json_bytes(_plain(checkpoint)))
-        paths["checksums"] = write_checksums(attempt)
-        _publish_reporting_directory(attempt, root)
-    except Exception:
-        shutil.rmtree(attempt, ignore_errors=True)
-        raise
-    return {key: root / path.name for key, path in paths.items()}
+    with run_dir.directory.open_file(panel_path, error_code="missing_panel"):
+        # Opening the retained capability is the existence/type check; the
+        # panel is already sealed and is not reopened through a path.
+        pass
+    payloads: dict[str, bytes] = {
+            "source-manifest.json": canonical_json_bytes(source_manifest),
+            "nport-extract-manifest.json": canonical_json_bytes(manifest),
+            "calibration-report.json": canonical_json_bytes(calibration),
+            "quality-summary.json": canonical_json_bytes(quality),
+            "pilot-report.md": report.encode("utf-8"),
+    }
+    for name, schema, rows in (("fund-asof-match.parquet", _MATCH_SCHEMA, match_rows), ("fund-series-metrics.parquet", _METRIC_SCHEMA, metric_rows), ("bond-latest.parquet", _LATEST_SCHEMA, latest_rows)):
+        sink = pa.BufferOutputStream()
+        pq.write_table(pa.Table.from_pylist(rows, schema=schema), sink)
+        payloads[name] = sink.getvalue().to_pybytes()
+    if checkpoint is not None:
+        payloads["checkpoint.json"] = canonical_json_bytes(_plain(checkpoint))
+    for name, payload in payloads.items():
+        run_dir.write_payload(name, payload)
+    run_dir.finalize()
+    names = (*payloads, panel_path, "checksums.sha256")
+    result = {
+        name.removesuffix(".json").removesuffix(".parquet").removesuffix(".md").replace("-", "_").replace(".", "_"): name
+        for name in names
+    }
+    result["checksums"] = "checksums.sha256"
+    return result

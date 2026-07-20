@@ -9,14 +9,14 @@ from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 import math
+import os
 from numbers import Real
 from pathlib import Path
 import sqlite3
-from typing import Iterable, Mapping
+from typing import BinaryIO, Iterable, Mapping
 
 import pyarrow.parquet as pq
 
-from .artifacts import commit_partial, partial_path
 from .contracts import DebtState, FieldState, MatchState, PilotError
 from .debt_mapping import DebtMapping, _is_loader_validated
 from .identifiers import normalize_cusip9
@@ -161,28 +161,29 @@ def _finite_number(value: object) -> float | None:
 
 
 class ObservationIndex(AbstractContextManager["ObservationIndex"]):
-    """On-disk as-of index that retains source-row multiplicity."""
+    """Ephemeral in-memory as-of index that retains source-row multiplicity."""
 
-    def __init__(self, index_path: str | Path, connection: sqlite3.Connection) -> None:
-        self.index_path = Path(index_path)
+    def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
     @classmethod
-    def build(cls, panel_path: str | Path, index_path: str | Path, cohort_cusips: Iterable[object]) -> "ObservationIndex":
-        destination = Path(index_path)
-        if destination.exists():
-            raise PilotError("already_exists", {"path": str(destination)})
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = partial_path(destination)
+    def build(cls, panel_path: BinaryIO, _index_path: str | Path | None, cohort_cusips: Iterable[object]) -> "ObservationIndex":
+        if not all(hasattr(panel_path, name) for name in ("read", "seek", "tell")):
+            raise PilotError("panel_capability_required")
         cohort = {
             item.normalized_cusip9
             for value in cohort_cusips
             if (item := normalize_cusip9(value)).normalized_cusip9 is not None
         }
         connection: sqlite3.Connection | None = None
+        panel_size: int | None = None
+        if hasattr(panel_path, "verify_unchanged"):
+            position = panel_path.tell()
+            panel_path.seek(0, os.SEEK_END)
+            panel_size = panel_path.tell()
+            panel_path.seek(position)
         try:
-            connection = sqlite3.connect(partial)
-            connection.execute("PRAGMA journal_mode=DELETE")
+            connection = sqlite3.connect(":memory:")
             connection.execute("CREATE TABLE universe (cusip TEXT PRIMARY KEY) WITHOUT ROWID")
             connection.execute(
                 "CREATE TABLE observations ("
@@ -231,16 +232,15 @@ class ObservationIndex(AbstractContextManager["ObservationIndex"]):
                     if rows:
                         connection.executemany("INSERT OR IGNORE INTO universe (cusip) VALUES (?)", universe_rows)
                         connection.executemany("INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+            if panel_size is not None:
+                panel_path.verify_unchanged(expected_size=panel_size)
             connection.commit()
-            connection.close()
+            result = cls(connection)
             connection = None
-            commit_partial(partial, destination)
-            return cls(destination, sqlite3.connect(destination))
+            return result
         except Exception:
             if connection is not None:
                 connection.close()
-            partial.unlink(missing_ok=True)
-            Path(f"{partial}-journal").unlink(missing_ok=True)
             raise
 
     def is_universe_member(self, cusip: str) -> bool:

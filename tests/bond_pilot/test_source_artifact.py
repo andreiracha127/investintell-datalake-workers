@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import errno
 import json
 import os
 import stat
@@ -13,6 +12,8 @@ import pytest
 
 from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
 from src.bond_pilot import artifacts, source_artifact
+from src.bond_pilot._secure_local_fs import secure_open_dir
+from src.bond_pilot.output_pack import OutputPack, validate_output_pack
 from src.bond_pilot.source_artifact import (
     load_candidate,
     load_source_approval,
@@ -21,6 +22,24 @@ from src.bond_pilot.source_artifact import (
 )
 
 from conftest import FakeClient
+
+
+_qualify_into_pack = qualify_source
+
+
+def qualify_source(locator, destination, **kwargs):
+    """Test boundary helper: create/finalize a source pack through capabilities."""
+    if isinstance(destination, OutputPack):
+        return _qualify_into_pack(locator, destination, **kwargs)
+    destination = Path(destination)
+    with secure_open_dir(destination.parent, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id=destination.name, pack_schema_version="bond-pilot-source-v1", producer_version="test")
+        try:
+            candidate = _qualify_into_pack(locator, pack, **kwargs)
+            pack.finalize()
+            return candidate
+        finally:
+            pack.close()
 
 
 def test_qualifies_local_nested_parquet_and_writes_unapproved_internal_manifests(make_source_zip, tmp_path: Path) -> None:
@@ -271,14 +290,66 @@ def test_initial_local_qualification_rejects_relative_user_input(make_source_zip
         qualify_source(relative, tmp_path / "run")
 
 
-def test_rejects_wrong_sha_and_removes_outputs_from_failed_attempt(make_source_zip, tmp_path: Path) -> None:
+def test_rejects_wrong_sha_leaves_an_incomplete_unconsumable_pack(make_source_zip, tmp_path: Path) -> None:
     archive = make_source_zip()
     run_dir = tmp_path / "run"
 
     with pytest.raises(PilotError, match="artifact_sha256_mismatch"):
         qualify_source(str(archive), run_dir, expected_sha256="0" * 64)
 
-    assert not run_dir.exists()
+    assert run_dir.is_dir()
+    with secure_open_dir(tmp_path, error_code="unsafe_parent") as parent:
+        with pytest.raises(PilotError, match="incomplete_output"):
+            validate_output_pack(parent, "run", expected_pack_schema_version="bond-pilot-source-v1", expected_payloads=("qualification-report.json", "source-manifest.json", "source.parquet", "source.zip"))
+
+
+def test_qualify_source_rejects_path_output(make_source_zip, tmp_path: Path) -> None:
+    with pytest.raises(PilotError, match="output_pack_required"):
+        source_artifact.qualify_source(make_source_zip(), tmp_path / "run")
+
+
+def test_qualification_rejects_in_place_source_zip_mutation_during_extraction(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = make_source_zip()
+    run_dir = tmp_path / "run"
+    real_zip = source_artifact.ZipFile
+
+    class MutatingZip(real_zip):
+        def open(self, *args, **kwargs):
+            stream = super().open(*args, **kwargs)
+            target = run_dir / "source.zip"
+            status = target.stat()
+            os.utime(target, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
+            return stream
+
+    monkeypatch.setattr(source_artifact, "ZipFile", MutatingZip)
+    with secure_open_dir(tmp_path, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run", pack_schema_version="bond-pilot-source-v1", producer_version="test")
+        try:
+            with pytest.raises(PilotError, match="source_integrity_failed"):
+                _qualify_into_pack(archive, pack)
+        finally:
+            pack.close()
+
+
+def test_qualification_rejects_in_place_source_parquet_mutation_during_consumer(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = make_source_zip()
+    run_dir = tmp_path / "run"
+    real_bounds = source_artifact._date_bounds
+
+    def mutate_then_read(source, chunk_size):
+        target = run_dir / "source.parquet"
+        status = target.stat()
+        os.utime(target, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
+        return real_bounds(source, chunk_size)
+
+    monkeypatch.setattr(source_artifact, "_date_bounds", mutate_then_read)
+    with secure_open_dir(tmp_path, error_code="unsafe_parent") as parent:
+        pack = OutputPack.create(parent, run_id="run", pack_schema_version="bond-pilot-source-v1", producer_version="test")
+        try:
+            with pytest.raises(PilotError, match="source_integrity_failed"):
+                _qualify_into_pack(archive, pack)
+        finally:
+            pack.close()
 
 
 def test_collision_keeps_existing_output_and_cleans_attempt_partial(make_source_zip, tmp_path: Path) -> None:
@@ -305,93 +376,10 @@ def test_rejects_existing_empty_final_directory_without_removing_it(make_source_
     assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
 
 
-def test_lexists_counts_a_dangling_final_symlink(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    try:
-        run_dir.symlink_to(tmp_path / "missing-target", target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable: {exc}")
-
-    assert source_artifact._path_lexists(run_dir)
-
-
-def test_linux_no_replace_uses_renameat2_flag_and_translates_collision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    attempt_dir = tmp_path / ".run.qualification-test.partial-dir"
-    run_dir = tmp_path / "run"
-    calls: list[tuple[bytes, bytes, int]] = []
-
-    def collision(old: bytes, new: bytes, flags: int) -> None:
-        calls.append((old, new, flags))
-        raise OSError(errno.EEXIST, "already exists")
-
-    monkeypatch.setattr(os.sys, "platform", "linux")
-    monkeypatch.setattr(source_artifact, "_renameat2", collision, raising=False)
-
+def test_repeated_run_id_is_already_exists(make_source_zip, tmp_path: Path) -> None:
+    qualify_source(str(make_source_zip()), tmp_path / "run")
     with pytest.raises(PilotError, match="already_exists"):
-        source_artifact._publish_directory_no_replace(attempt_dir, run_dir)
-
-    assert calls == [(os.fsencode(attempt_dir), os.fsencode(run_dir), 1)]
-
-
-def test_late_write_failure_leaves_no_final_or_attempt_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run_dir = tmp_path / "run"
-    original_write_json_once = source_artifact.write_json_once
-
-    def fail_late(path: Path, value: object) -> Path:
-        if path.name == "qualification-report.json":
-            raise RuntimeError("injected later failure")
-        return original_write_json_once(path, value)
-
-    monkeypatch.setattr(source_artifact, "write_json_once", fail_late)
-
-    with pytest.raises(RuntimeError, match="injected later failure"):
-        qualify_source(str(make_source_zip()), run_dir)
-
-    assert not run_dir.exists()
-    assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
-
-
-@pytest.mark.parametrize("platform", ["win32", "linux"])
-def test_publication_collision_preserves_competing_run_directory(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str) -> None:
-    run_dir = tmp_path / "run"
-
-    def create_competing_final(target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
-        target_path = Path(target)
-        target_path.mkdir()
-        (target_path / "source.parquet").write_bytes(b"replacement")
-
-    monkeypatch.setattr(source_artifact.sys, "platform", platform)
-    if platform == "win32":
-        def windows_collision(_source: str | bytes | os.PathLike[str] | os.PathLike[bytes], target: str | bytes | os.PathLike[str] | os.PathLike[bytes]) -> None:
-            create_competing_final(target)
-            raise FileExistsError(target)
-
-        monkeypatch.setattr(os, "rename", windows_collision)
-    else:
-        def linux_collision(_old: bytes, target: bytes, _flags: int) -> None:
-            create_competing_final(os.fsdecode(target))
-            raise OSError(errno.EEXIST, "already exists")
-
-        monkeypatch.setattr(source_artifact, "_renameat2", linux_collision)
-
-    with pytest.raises(PilotError, match="already_exists"):
-        qualify_source(str(make_source_zip()), run_dir)
-
-    assert (run_dir / "source.parquet").read_bytes() == b"replacement"
-    assert not list(tmp_path.glob(".run.qualification-*.partial-dir"))
-
-
-def test_unsupported_platform_fails_closed_without_publication(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    attempt_dir = tmp_path / ".run.qualification-test.partial-dir"
-    attempt_dir.mkdir()
-    run_dir = tmp_path / "run"
-    monkeypatch.setattr(source_artifact.sys, "platform", "darwin")
-
-    with pytest.raises(PilotError, match="atomic_no_replace_unavailable"):
-        source_artifact._publish_directory_no_replace(attempt_dir, run_dir)
-
-    assert attempt_dir.is_dir()
-    assert not run_dir.exists()
+        qualify_source(str(make_source_zip()), tmp_path / "run")
 
 
 def test_enforces_streaming_archive_and_member_caps(make_source_zip, tmp_path: Path) -> None:
