@@ -753,6 +753,11 @@ def test_preflight_collector_queries_complete_non_system_privilege_surfaces(monk
             assert params
             return {"non_sec_effective_write_privileges": []}
         if "'public_acl'" in query:
+            if "'trigger_write_targets'" in query:
+                assert "d.classid='pg_class'::regclass" in query
+                assert "d.objid=c.oid" in query
+                assert "d.refclassid='pg_extension'::regclass" in query
+                assert "d.deptype='e'" in query
             return {field: expected[field] for field in ("public_acl", "unsafe_security_definers", "trigger_write_targets")}
         raise AssertionError("unexpected preflight query")
 
