@@ -206,6 +206,36 @@ def _load_file(conn: psycopg.Connection, *, run_id: UUID, parser_version: str, p
             expected_count=0, data_count=0, lexical_count=0, typed_success_count=0,
             quarantine_count=0, reject_count=0, state="loading",
         )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT jsonb_build_object(
+                    'run_exists', r.run_id IS NOT NULL,
+                    'source_family_match', r.source_family = 'nport',
+                    'file_exists', f.source_file_id IS NOT NULL,
+                    'source_sha_match', f.sha256 = %s,
+                    'parser_version_match', r.parser_version = %s,
+                    'source_table_match', f.relative_path = %s,
+                    'contract_exists', c.source_table IS NOT NULL,
+                    'contract_columns_present', c.columns IS NOT NULL,
+                    'contract_required_columns_present', c.required_columns IS NOT NULL
+                )
+                FROM (SELECT 1) seed
+                LEFT JOIN sec_ingestion_runs r ON r.run_id = %s
+                LEFT JOIN sec_source_files f ON (f.run_id, f.source_file_id) = (%s, %s)
+                LEFT JOIN nport_contract_tables c ON c.source_table = %s
+                """,
+                (source_sha256, parser_version, table.source_file, run_id, run_id, source_file_id, table.source_file),
+            )
+            provenance = cur.fetchone()
+        if (
+            provenance is None
+            or len(provenance) != 1
+            or not isinstance(provenance[0], dict)
+            or not all(value is True for value in provenance[0].values())
+        ):
+            detail = provenance[0] if provenance and len(provenance) == 1 and isinstance(provenance[0], dict) else {"invalid_shape": True}
+            raise NportIngestionError("N-PORT raw provenance precheck failed: " + json.dumps(detail, sort_keys=True, separators=(",", ":")))
         for row_number, values in rows:
             parsed = parse_row(table.columns, values)
             lexical += 1
