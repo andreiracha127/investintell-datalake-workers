@@ -3167,7 +3167,10 @@ def cli(argv: Sequence[str] | None = None) -> int:
                     return 0
                 if args.action in {"start", "resume"} and isinstance(executor_authorization, Mapping) and executor_authorization.get("execution_mode") == "full" and (args.action == "start" or status_missing):
                     seeded_records = executor.promote_canary_certificate()
-                elif args.action == "resume" and status_missing:
+                elif args.action == "resume" and status_missing and not (
+                    isinstance(executor_authorization, Mapping)
+                    and executor_authorization.get("execution_mode") == "canary"
+                ):
                     raise BackfillSafetyError("missing status can be reconstructed only from a full certificate")
             outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash, boundary_stop_requested=boundary_stop.is_set, supervisor_run_id=supervisor_run_id, execution_identities=execution_identities, seeded_records=seeded_records)
             print(_canonical_json(outcome))
