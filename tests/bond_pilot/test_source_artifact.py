@@ -125,6 +125,34 @@ def test_matching_extracted_files_detects_a_file_race(tmp_path: Path, monkeypatc
         source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
 
 
+def test_local_archive_capture_rejects_a_symlink_before_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    capture = getattr(source_artifact, "capture_local_archive", None)
+    assert capture is not None
+    link = tmp_path / "archive-link.zip"
+    destination = tmp_path / "capture.zip"
+    monkeypatch.setattr(source_artifact.os, "lstat", lambda _path: SimpleNamespace(st_mode=stat.S_IFLNK, st_size=0))
+    monkeypatch.setattr(source_artifact.Path, "open", lambda *_args, **_kwargs: pytest.fail("symlink must not be opened"))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        capture(link, destination, expected_sha256="a" * 64)
+
+    assert not destination.exists()
+
+
+def test_local_archive_capture_rejects_a_reparse_point_before_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = tmp_path / "archive.zip"
+    destination = tmp_path / "capture.zip"
+    regular = SimpleNamespace(st_mode=stat.S_IFREG, st_size=1)
+    monkeypatch.setattr(source_artifact.os, "lstat", lambda _path: regular)
+    monkeypatch.setattr(source_artifact, "_reparse_point", lambda _status: True)
+    monkeypatch.setattr(source_artifact.Path, "open", lambda *_args, **_kwargs: pytest.fail("reparse point must not be opened"))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        source_artifact.capture_local_archive(archive, destination, expected_sha256="a" * 64)
+
+    assert not destination.exists()
+
+
 def test_qualifies_https_only_through_injected_client(make_source_zip, tmp_path: Path) -> None:
     archive = make_source_zip()
     client = FakeClient(archive.read_bytes())

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
 import hashlib
@@ -172,11 +173,11 @@ def test_fixture_run_consumes_only_requalified_staging_parquet_and_retains_appro
     candidate = load_candidate(source_manifest)
     real_panel = workflow.build_observed_panel
     real_reports = workflow.write_internal_reports
-    panel_sources: list[Path] = []
+    panel_sources: list[object] = []
     report_sources: list[object] = []
 
-    def capture_panel(source: str | Path, *args: object):
-        panel_sources.append(Path(source))
+    def capture_panel(source: object, *args: object):
+        panel_sources.append(source)
         return real_panel(source, *args)
 
     def capture_reports(*args: object, **kwargs: object):
@@ -194,8 +195,8 @@ def test_fixture_run_consumes_only_requalified_staging_parquet_and_retains_appro
     )
 
     assert panel_sources and panel_sources == [panel_sources[0]]
-    assert panel_sources[0] != Path(candidate.local_extracted_path)
-    assert panel_sources[0].parent.name == "verified-source"
+    assert hasattr(panel_sources[0], "read")
+    assert panel_sources[0] != candidate.local_extracted_path
     assert report_sources == [candidate]
     assert not list(tmp_path.glob(".fixture-run.fixture-work-*.partial-dir"))
 
@@ -224,6 +225,127 @@ def test_fixture_run_never_treats_candidate_local_archive_path_as_network_locato
     source_manifest.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("fixture run must not create an HTTP client"))
 
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+
+    assert not (tmp_path / "fixture-run").exists()
+
+
+@pytest.mark.parametrize("unsafe", [r"\\server\share\source.zip", "//server/share/source.zip", r"\\?\C:\source.zip", r"\\.\PhysicalDrive0", "https://example.test/source.zip", "file:///C:/source.zip"])
+@pytest.mark.parametrize("field", ["local_archive_path", "local_extracted_path"])
+def test_fixture_run_rejects_unc_device_and_uri_candidate_paths_before_filesystem_access(field: str, unsafe: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    manifest = json.loads(source_manifest.read_text(encoding="utf-8"))
+    manifest[field] = unsafe
+    source_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+    real_lstat = source_artifact.os.lstat
+    real_open = source_artifact.Path.open
+    real_is_file = source_artifact.Path.is_file
+
+    def guarded_lstat(path: object):
+        if str(path) == unsafe:
+            pytest.fail("unsafe candidate path must be rejected before lstat")
+        return real_lstat(path)
+
+    def guarded_open(path: Path, *args: object, **kwargs: object):
+        if str(path) == unsafe:
+            pytest.fail("unsafe candidate path must be rejected before open")
+        return real_open(path, *args, **kwargs)
+
+    def guarded_is_file(path: Path):
+        if str(path) == unsafe:
+            pytest.fail("unsafe candidate path must be rejected before stat")
+        return real_is_file(path)
+
+    monkeypatch.setattr(source_artifact.os, "lstat", guarded_lstat)
+    monkeypatch.setattr(source_artifact.Path, "open", guarded_open)
+    monkeypatch.setattr(source_artifact.Path, "is_file", guarded_is_file)
+    monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("fixture run must not create an HTTP client"))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+
+    assert not (tmp_path / "fixture-run").exists()
+
+
+def test_fixture_run_rejects_staged_path_replacement_after_descriptor_open(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    real_open_verified = workflow.open_verified_extracted_file
+    real_panel = workflow.build_observed_panel
+    sources: list[object] = []
+    replaced: list[bool] = []
+
+    @contextmanager
+    def replace_staged_path(*args: object, **kwargs: object):
+        with real_open_verified(*args, **kwargs) as handle:
+            verified = Path(args[1])
+            replacement = verified.with_name("replacement.parquet")
+            replacement.write_bytes(b"not a parquet file")
+            try:
+                os.replace(replacement, verified)
+            except PermissionError as exc:
+                replaced.append(False)
+                raise PilotError("source_integrity_failed") from exc
+            replaced.append(True)
+            yield handle
+
+    def capture_panel(source: object, *args: object):
+        sources.append(source)
+        return real_panel(source, *args)
+
+    monkeypatch.setattr(workflow, "open_verified_extracted_file", replace_staged_path)
+    monkeypatch.setattr(workflow, "build_observed_panel", capture_panel)
+    error: PilotError | None = None
+    try:
+        run_fixture(
+            source_manifest=source_manifest,
+            source_approval=source_approval,
+            fixture=_fixture(tmp_path / "fixture.json"),
+            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v1.json"),
+            run_dir=tmp_path / "fixture-run",
+        )
+    except PilotError as raised:
+        error = raised
+
+    if replaced == [False]:
+        assert error is not None and error.code == "source_integrity_failed"
+        assert sources == []
+        assert not (tmp_path / "fixture-run").exists()
+    else:
+        assert replaced == [True]
+        assert error is None
+        assert sources and hasattr(sources[0], "read")
+        assert (tmp_path / "fixture-run" / "quality-summary.json").is_file()
+
+
+def test_fixture_run_detects_staged_in_place_mutation_before_durable_report(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    real_open_verified = workflow.open_verified_extracted_file
+
+    @contextmanager
+    def mutate_staged_file(*args: object, **kwargs: object):
+        with real_open_verified(*args, **kwargs) as handle:
+            verified = Path(args[1])
+            with verified.open("r+b") as mutated:
+                first = mutated.read(1)
+                mutated.seek(0)
+                mutated.write(first)
+                mutated.flush()
+            yield handle
+
+    monkeypatch.setattr(workflow, "open_verified_extracted_file", mutate_staged_file)
     with pytest.raises(PilotError, match="^source_integrity_failed$"):
         run_fixture(
             source_manifest=source_manifest,

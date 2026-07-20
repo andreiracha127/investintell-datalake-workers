@@ -15,7 +15,7 @@ import shutil
 import stat
 import struct
 import sys
-from typing import Iterator, Mapping, Protocol
+from typing import BinaryIO, Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile, ZipInfo
@@ -62,7 +62,7 @@ def _create_attempt_directory(run_dir: Path) -> Path:
     for _ in range(3):
         attempt_dir = run_dir.parent / f".{run_dir.name}.qualification-{uuid4().hex}.partial-dir"
         try:
-            attempt_dir.mkdir()
+            attempt_dir.mkdir(mode=0o700)
         except FileExistsError:
             continue
         return attempt_dir
@@ -273,42 +273,142 @@ def _reparse_point(status: os.stat_result) -> bool:
     return bool(getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
-def _regular_file_digest(path: Path, *, limit: int, chunk_size: int) -> str:
+def _local_path(value: str | Path) -> Path:
+    locator = str(value)
+    normalized = locator.strip()
+    if normalized.startswith(("\\\\", "//")) or (urlsplit(normalized).scheme and not _WINDOWS_DRIVE.match(normalized)):
+        raise PilotError("source_integrity_failed")
+    return Path(locator)
+
+
+def _regular_file(status: os.stat_result, *, limit: int) -> None:
+    if not stat.S_ISREG(status.st_mode) or _reparse_point(status) or status.st_size > limit:
+        raise PilotError("source_integrity_failed")
+
+
+def _fingerprint(status: os.stat_result) -> tuple[int, int, int, int]:
+    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
+
+
+def _open_regular_file(value: str | Path, *, limit: int) -> tuple[Path, os.stat_result, BinaryIO]:
+    path = _local_path(value)
+    handle: BinaryIO | None = None
     try:
         before = os.lstat(path)
-        if not stat.S_ISREG(before.st_mode) or _reparse_point(before) or before.st_size > limit:
-            raise OSError("unsafe source file")
-        digest = hashlib.sha256()
-        total = 0
-        with path.open("rb") as source:
-            opened = os.fstat(source.fileno())
-            if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                raise OSError("source file changed")
-            for chunk in iter(lambda: source.read(chunk_size), b""):
-                total += len(chunk)
-                if total > limit:
-                    raise OSError("source file exceeded limit")
-                digest.update(chunk)
-            after = os.fstat(source.fileno())
-        if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) or total != before.st_size:
-            raise OSError("source file changed")
-        return digest.hexdigest()
+        _regular_file(before, limit=limit)
+        handle = path.open("rb")
+        opened = os.fstat(handle.fileno())
+        _regular_file(opened, limit=limit)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise PilotError("source_integrity_failed")
+        return path, before, handle
+    except Exception as exc:
+        if handle is not None:
+            handle.close()
+        if isinstance(exc, PilotError):
+            raise
+        if isinstance(exc, OSError):
+            raise PilotError("source_integrity_failed") from exc
+        raise
+
+
+def _digest_open_file(handle: BinaryIO, *, limit: int, chunk_size: int) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    total = 0
+    for chunk in iter(lambda: handle.read(chunk_size), b""):
+        total += len(chunk)
+        if total > limit:
+            raise PilotError("source_integrity_failed")
+        digest.update(chunk)
+    return digest.hexdigest(), total
+
+
+def _require_unchanged(handle: BinaryIO, before: os.stat_result, *, total: int) -> None:
+    try:
+        after = os.fstat(handle.fileno())
     except OSError as exc:
         raise PilotError("source_integrity_failed") from exc
+    if _fingerprint(after) != _fingerprint(before) or total != before.st_size:
+        raise PilotError("source_integrity_failed")
 
 
-def verify_matching_extracted_files(original: Path, verified: Path, *, limit: int, chunk_size: int) -> None:
+def _regular_file_digest(path: str | Path, *, limit: int, chunk_size: int) -> str:
+    _, before, handle = _open_regular_file(path, limit=limit)
+    try:
+        digest, total = _digest_open_file(handle, limit=limit, chunk_size=chunk_size)
+        _require_unchanged(handle, before, total=total)
+        return digest
+    finally:
+        handle.close()
+
+
+def verify_matching_extracted_files(original: str | Path, verified: str | Path, *, limit: int, chunk_size: int) -> None:
     """Require the approved extraction and staged re-extraction to be identical regular files."""
     if _regular_file_digest(original, limit=limit, chunk_size=chunk_size) != _regular_file_digest(verified, limit=limit, chunk_size=chunk_size):
         raise PilotError("source_integrity_failed")
 
 
-def qualify_local_source(archive_path: str | Path, run_dir: Path, *, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> SourceCandidate:
+def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> None:
+    """Copy a local archive once while binding its bytes to its approved SHA-256."""
+    _, before, source = _open_regular_file(archive_path, limit=limits.archive_bytes)
+    partial = partial_path(capture_path)
+    try:
+        try:
+            with partial.open("xb") as captured:
+                digest = hashlib.sha256()
+                total = 0
+                for chunk in iter(lambda: source.read(limits.streaming_chunk_bytes), b""):
+                    total += len(chunk)
+                    if total > limits.archive_bytes:
+                        raise PilotError("source_integrity_failed")
+                    digest.update(chunk)
+                    captured.write(chunk)
+            _require_unchanged(source, before, total=total)
+            if digest.hexdigest() != expected_sha256:
+                raise PilotError("source_integrity_failed")
+            commit_partial(partial, capture_path)
+        except Exception:
+            partial.unlink(missing_ok=True)
+            raise
+    finally:
+        source.close()
+
+
+@contextmanager
+def open_verified_extracted_file(original: str | Path, verified: str | Path, *, limit: int, chunk_size: int) -> Iterator[BinaryIO]:
+    """Yield a duplicate descriptor for the staged Parquet while retaining its guarded original handle."""
+    expected_digest = _regular_file_digest(original, limit=limit, chunk_size=chunk_size)
+    _, before, source = _open_regular_file(verified, limit=limit)
+    duplicate: BinaryIO | None = None
+    try:
+        digest, total = _digest_open_file(source, limit=limit, chunk_size=chunk_size)
+        _require_unchanged(source, before, total=total)
+        if digest != expected_digest:
+            raise PilotError("source_integrity_failed")
+        source.seek(0)
+        try:
+            duplicate = os.fdopen(os.dup(source.fileno()), "rb")
+        except OSError as exc:
+            raise PilotError("source_integrity_failed") from exc
+        yield duplicate
+    finally:
+        try:
+            if duplicate is not None:
+                duplicate.close()
+        finally:
+            try:
+                _require_unchanged(source, before, total=before.st_size)
+            finally:
+                source.close()
+
+
+def qualify_local_source(archive_path: str | Path, run_dir: Path, *, capture_path: Path, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> SourceCandidate:
     """Requalify an already-local archive without allowing a network locator."""
-    locator = str(archive_path)
-    if urlsplit(locator).scheme and not _WINDOWS_DRIVE.match(locator):
-        raise PilotError("source_integrity_failed")
-    return qualify_source(Path(locator), run_dir, expected_sha256=expected_sha256, limits=limits)
+    capture_local_archive(archive_path, capture_path, expected_sha256=expected_sha256, limits=limits)
+    try:
+        return qualify_source(capture_path, run_dir, expected_sha256=expected_sha256, limits=limits)
+    finally:
+        capture_path.unlink(missing_ok=True)
 
 
 def qualify_source(

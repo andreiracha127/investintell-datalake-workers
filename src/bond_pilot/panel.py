@@ -10,7 +10,7 @@ from numbers import Real
 from pathlib import Path
 import re
 import sqlite3
-from typing import Iterable
+from typing import BinaryIO, Iterable
 from uuid import uuid4
 
 import pyarrow as pa
@@ -241,7 +241,7 @@ def _append_derived(
 
 
 def build_observed_panel(
-    source_parquet: str | Path,
+    source_parquet: str | Path | BinaryIO,
     output_path: str | Path,
     cohort_cusips: Iterable[object],
     batch_size: int = 65_536,
@@ -249,7 +249,7 @@ def build_observed_panel(
     """Stream an observed panel without repairing, selecting, or averaging source rows."""
     if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
         raise PilotError("invalid_batch_size", {"batch_size": batch_size})
-    source_path = Path(source_parquet)
+    source = source_parquet if hasattr(source_parquet, "read") else Path(source_parquet)
     final_path = Path(output_path)
     if final_path.exists():
         raise PilotError("already_exists", {"path": str(final_path)})
@@ -259,7 +259,7 @@ def build_observed_panel(
     writer: pq.ParquetWriter | None = None
     input_rows = 0
     try:
-        with pq.ParquetFile(source_path) as parquet:
+        with pq.ParquetFile(source) as parquet:
             source_columns = set(parquet.schema_arrow.names)
             missing = [field for field in ("cusip_id", "trd_exctn_dt") if field not in source_columns]
             if missing:

@@ -61,6 +61,18 @@ def test_non_string_cusips_are_not_cohort_keys_or_source_identifiers(tmp_path: P
     assert result.cohort_valid_cusip_count == 0
 
 
+def test_build_panel_accepts_an_open_binary_parquet_file(tmp_path: Path) -> None:
+    source = tmp_path / "source.parquet"
+    output = tmp_path / "panel.parquet"
+    _write_source(source, {"cusip_id": ["123456789"], "trd_exctn_dt": ["2024-01-01"], "pr": [1.0]})
+
+    with source.open("rb") as handle:
+        result = build_observed_panel(handle, output, ["123456789"])
+
+    assert result.input_rows == 1
+    assert _read_output(output)["normalized_cusip9"] == ["123456789"]
+
+
 def test_build_panel_preserves_rows_columns_and_marks_ambiguity(tmp_path: Path) -> None:
     source = tmp_path / "source.parquet"
     output = tmp_path / "panel.parquet"
