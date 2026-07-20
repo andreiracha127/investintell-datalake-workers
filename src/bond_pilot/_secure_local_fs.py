@@ -63,7 +63,8 @@ O_CLOEXEC = getattr(os, "O_CLOEXEC", 0x00080000)
 O_NONBLOCK = getattr(os, "O_NONBLOCK", 0x00000004)
 O_TMPFILE = getattr(os, "O_TMPFILE", 0o20200000)
 _HAS_O_TMPFILE = hasattr(os, "O_TMPFILE")
-_AT_EMPTY_PATH = 0x1000
+AT_FDCWD = -100
+AT_SYMLINK_FOLLOW = 0x400
 
 
 def _error(code: str, cause: BaseException | None = None) -> PilotError:
@@ -73,7 +74,19 @@ def _error(code: str, cause: BaseException | None = None) -> PilotError:
     return error
 
 
-def _linkat_empty(source_fd: int, target: str, *, dst_dir_fd: int) -> None:
+def _proc_fd_source(source_fd: int) -> str:
+    source = f"/proc/self/fd/{source_fd}"
+    try:
+        source_status = os.stat(source)
+        handle_status = os.fstat(source_fd)
+    except OSError as exc:
+        raise OSError("verified proc descriptor source unavailable") from exc
+    if (source_status.st_dev, source_status.st_ino) != (handle_status.st_dev, handle_status.st_ino):
+        raise OSError("proc descriptor source identity mismatch")
+    return source
+
+
+def _linkat(source_dir_fd: int, source: str, dst_dir_fd: int, target: str, flags: int) -> None:
     if os.name == "nt":
         raise OSError("linkat unavailable")
     libc = ctypes.CDLL(None, use_errno=True)
@@ -83,7 +96,7 @@ def _linkat_empty(source_fd: int, target: str, *, dst_dir_fd: int) -> None:
         raise OSError("linkat unavailable") from exc
     linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
     linkat.restype = ctypes.c_int
-    if linkat(source_fd, b"", dst_dir_fd, os.fsencode(target), _AT_EMPTY_PATH) != 0:
+    if linkat(source_dir_fd, os.fsencode(source), dst_dir_fd, os.fsencode(target), flags) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
@@ -295,7 +308,8 @@ class SecureDirectory:
 class _PosixBackend:
     def __init__(self, api: object = os) -> None:
         self.api = api
-        self._linkat_empty = getattr(api, "linkat_empty", _linkat_empty)
+        self._proc_fd_source = getattr(api, "proc_fd_source", _proc_fd_source)
+        self._linkat = getattr(api, "linkat", _linkat)
 
     @staticmethod
     def _identity(status: os.stat_result) -> tuple[object, ...]:
@@ -424,7 +438,8 @@ class _PosixBackend:
         try:
             created.flush()
             self.api.fsync(created.native_handle)
-            self._linkat_empty(created.native_handle, final_name, dst_dir_fd=directory.native_handle)
+            source = self._proc_fd_source(created.native_handle)
+            self._linkat(AT_FDCWD, source, directory.native_handle, final_name, AT_SYMLINK_FOLLOW)
             self.api.fsync(directory.native_handle)
         except OSError as exc:
             raise _error(error_code, exc)
@@ -616,16 +631,11 @@ class _WindowsApi:
             self._raise_status(status)
         return int(result.value)
 
-    def fdopen(self, handle: int, mode: str) -> BinaryIO:
+    def transfer_to_fd(self, handle: int, mode: str) -> int:
         import msvcrt
 
         flags = os.O_BINARY | (os.O_RDONLY if mode == "rb" else os.O_RDWR)
-        fd = msvcrt.open_osfhandle(handle, flags)
-        try:
-            return os.fdopen(fd, mode, closefd=True)
-        except Exception:
-            os.close(fd)
-            raise
+        return msvcrt.open_osfhandle(handle, flags)
 
     def enumerate(self, handle: int) -> tuple[str, ...]:
         names: list[str] = []
@@ -683,6 +693,17 @@ class _WindowsBackend:
     @staticmethod
     def _root_text(path: Path) -> str:
         return f"{str(path)[0].upper()}:\\"
+
+    def _fdopen(self, fd: int, mode: str) -> BinaryIO:
+        opener = getattr(self.api, "fdopen", None)
+        return opener(fd, mode) if opener is not None else os.fdopen(fd, mode, closefd=True)
+
+    def _close_fd(self, fd: int) -> None:
+        closer = getattr(self.api, "close_fd", None)
+        if closer is None:
+            os.close(fd)
+        else:
+            closer(fd)
 
     def _check_info(self, handle: object, *, root_volume: int, directory: bool, error_code: str) -> _WindowsFileInfo:
         info = self.api.query_info(handle)
@@ -752,8 +773,13 @@ class _WindowsBackend:
             )
             info = self._check_info(final, root_volume=volume, directory=False, error_code=error_code)
             native_handle = final
-            stream = self.api.fdopen(final, "rb")
+            fd = self.api.transfer_to_fd(final, "rb")
             final = None
+            try:
+                stream = self._fdopen(fd, "rb")
+            except Exception:
+                self._close_fd(fd)
+                raise
             return SecureFile(path, stream, native_handle, info.identity, lambda handle: self.api.query_info(handle).identity, [(self.api, handle) for handle in handles], error_code)
         except Exception as exc:
             if final is not None:
@@ -780,8 +806,13 @@ class _WindowsBackend:
             final = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE, share_access=FILE_SHARE_READ, disposition=FILE_OPEN, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
             info = self._check_info(final, root_volume=directory.root_device, directory=False, error_code=error_code)
             native_handle = final
-            stream = self.api.fdopen(final, "rb")
+            fd = self.api.transfer_to_fd(final, "rb")
             final = None
+            try:
+                stream = self._fdopen(fd, "rb")
+            except Exception:
+                self._close_fd(fd)
+                raise
             return SecureFile(directory.path / name, stream, native_handle, info.identity, lambda handle: self.api.query_info(handle).identity, [], error_code)
         except Exception as exc:
             if final is not None:
@@ -796,8 +827,13 @@ class _WindowsBackend:
             handle = self.api.nt_create(directory.native_handle, name, desired_access=FILE_READ_DATA | FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE, share_access=0, disposition=FILE_CREATE, options=FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_REPARSE_POINT, attributes=OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE)
             self._check_info(handle, root_volume=directory.root_device, directory=False, error_code=error_code)
             native_handle = handle
-            stream = self.api.fdopen(handle, "w+b")
+            fd = self.api.transfer_to_fd(handle, "w+b")
             handle = None
+            try:
+                stream = self._fdopen(fd, "w+b")
+            except Exception:
+                self._close_fd(fd)
+                raise
             return CreatedFile(name, stream, native_handle)
         except Exception as exc:
             if handle is not None:

@@ -31,6 +31,9 @@ class _WindowsApiFake:
         self.protocol = 0
         self.records: list[tuple[object, ...]] = []
         self.closed: list[str] = []
+        self.closed_fds: list[int] = []
+        self.transferred: dict[int, str] = {}
+        self.next_fd = 100
         self.infos: dict[str, secure_fs._WindowsFileInfo] = {}
         self.payloads: dict[str, bytes] = {}
 
@@ -61,9 +64,22 @@ class _WindowsApiFake:
         self.infos.setdefault(handle, secure_fs._WindowsFileInfo(7, attrs, 0, (7, len(self.infos) + 1, mode, len(self.payloads.get(name, b"payload")), 20, 21)))
         return handle
 
-    def fdopen(self, handle: str, mode: str):
-        self.records.append(("fdopen", handle, mode))
-        return _ClosingBytesIO(self.payloads.get(handle.rsplit("/", 1)[-1], b"payload"), lambda: self.close(handle))
+    def transfer_to_fd(self, handle: str, mode: str) -> int:
+        fd = self.next_fd
+        self.next_fd += 1
+        self.transferred[fd] = handle
+        self.records.append(("transfer", handle, mode, fd))
+        return fd
+
+    def fdopen(self, fd: int, mode: str):
+        handle = self.transferred[fd]
+        self.records.append(("fdopen", fd, mode))
+        return _ClosingBytesIO(self.payloads.get(handle.rsplit("/", 1)[-1], b"payload"), lambda: self.close_fd(fd))
+
+    def close_fd(self, fd: int) -> None:
+        if fd in self.closed_fds:
+            raise AssertionError(f"double fd close: {fd}")
+        self.closed_fds.append(fd)
 
     def enumerate(self, handle: str) -> tuple[str, ...]:
         self.records.append(("enumerate", handle))
@@ -158,7 +174,57 @@ def test_windows_traversal_uses_exact_relative_no_follow_flags_and_close_ownersh
     assert final[3] & secure_fs.SYNCHRONIZE
     assert final[4] == secure_fs.FILE_SHARE_READ
     assert final[6] == secure_fs.FILE_NON_DIRECTORY_FILE | secure_fs.FILE_SYNCHRONOUS_IO_NONALERT | secure_fs.FILE_OPEN_REPARSE_POINT
+    assert api.closed == ["root/safe", "root"]
+    assert api.closed_fds == [100]
+
+
+def test_windows_open_osfhandle_failure_closes_native_handle_once() -> None:
+    api = _WindowsApiFake()
+
+    def transfer(handle: str, mode: str) -> int:
+        api.records.append(("transfer", handle, mode))
+        raise OSError("transfer failed")
+
+    api.transfer_to_fd = transfer
+
+    with pytest.raises(PilotError, match="unsafe"):
+        secure_fs._WindowsBackend(api).open_file(Path(r"C:\safe\input.json"), error_code="unsafe")
+
     assert api.closed == ["root/safe/input.json", "root/safe", "root"]
+    assert api.closed_fds == []
+    assert ("transfer", "root/safe/input.json", "rb") in api.records
+
+
+def test_windows_fdopen_failure_closes_only_transferred_crt_fd() -> None:
+    api = _WindowsApiFake()
+    api.fdopen = lambda *_args: (_ for _ in ()).throw(OSError("fdopen failed"))
+
+    with pytest.raises(PilotError, match="unsafe"):
+        secure_fs._WindowsBackend(api).open_file(Path(r"C:\safe\input.json"), error_code="unsafe")
+
+    assert api.closed == ["root/safe", "root"]
+    assert api.closed_fds == [100]
+
+
+@pytest.mark.parametrize(
+    ("name", "operation"),
+    [
+        ("input.json", lambda directory: directory.open_file("input.json", error_code="unsafe")),
+        (".pending", lambda directory: directory.create_file(".pending", error_code="unsafe")),
+    ],
+)
+def test_windows_relative_fdopen_failure_never_closes_transferred_native_handle(name: str, operation) -> None:
+    api = _WindowsApiFake()
+    directory = secure_fs._WindowsBackend(api).open_dir(Path(r"C:\safe"), error_code="unsafe")
+    api.fdopen = lambda *_args: (_ for _ in ()).throw(OSError("fdopen failed"))
+    try:
+        with pytest.raises(PilotError, match="unsafe"):
+            operation(directory)
+        assert f"root/safe/{name}" not in api.closed
+        assert api.closed_fds == [100]
+    finally:
+        directory.close()
+    assert api.closed == ["root/safe", "root"]
 
 
 @pytest.mark.parametrize(
@@ -297,8 +363,12 @@ class _PosixApiFake:
     def mkdir(self, name: str, mode: int = 0o777, *, dir_fd: int):
         self.records.append(("mkdir", name, mode, dir_fd))
 
-    def linkat_empty(self, source_fd: int, target: str, *, dst_dir_fd: int):
-        self.records.append(("linkat_empty", source_fd, target, dst_dir_fd))
+    def proc_fd_source(self, source_fd: int) -> str:
+        self.records.append(("proc_fd_source", source_fd))
+        return f"/proc/self/fd/{source_fd}"
+
+    def linkat(self, source_dir_fd: int, source: str, dst_dir_fd: int, target: str, flags: int):
+        self.records.append(("linkat", source_dir_fd, source, dst_dir_fd, target, flags))
 
     def fsync(self, fd: int):
         self.records.append(("fsync", fd))
@@ -339,11 +409,27 @@ def test_posix_publish_uses_anonymous_retained_fd_and_ignores_name_injection() -
     assert opens[-1][1] == "."
     assert opens[-1][2] & secure_fs.O_TMPFILE
     assert not opens[-1][2] & os.O_EXCL
-    assert ("linkat_empty", created.native_handle, "final.json", parent_fd) in api.records
+    assert ("proc_fd_source", created.native_handle) in api.records
+    assert ("linkat", secure_fs.AT_FDCWD, f"/proc/self/fd/{created.native_handle}", parent_fd, "final.json", secure_fs.AT_SYMLINK_FOLLOW) in api.records
     assert not [record for record in api.records if record[0] in {"link", "unlink"}]
     assert ("fsync", parent_fd) in api.records
     created.close()
     directory.close()
+
+
+def test_posix_publish_fails_closed_when_verified_proc_descriptor_is_unavailable() -> None:
+    api = _PosixApiFake()
+    directory = secure_fs._PosixBackend(api).open_dir(Path("/safe"), error_code="unsafe")
+    created = directory.create_file(".temp", error_code="unsafe")
+    api.proc_fd_source = lambda _fd: (_ for _ in ()).throw(OSError("proc unavailable"))
+    directory._backend._proc_fd_source = api.proc_fd_source
+    try:
+        with pytest.raises(PilotError, match="unsafe"):
+            directory.publish_no_replace(created, "final.json", error_code="unsafe")
+        assert not [record for record in api.records if record[0] == "linkat"]
+    finally:
+        created.close()
+        directory.close()
 
 
 def test_posix_create_dir_closes_new_handle_when_validation_fails() -> None:
