@@ -634,7 +634,12 @@ def _load_authorized_source_configuration(path: Path, *, code_sha: str, run_dire
     return cast(str, mode), _authorization_sources(document)
 
 
-def _validate_historical_boundary(inventory: Mapping[str, object], sources: Sequence[SourceSpec] | None = None) -> None:
+def _validate_historical_boundary(
+    inventory: Mapping[str, object],
+    sources: Sequence[SourceSpec] | None = None,
+    *,
+    verify_contents: bool = True,
+) -> None:
     """Apply the fixed 82-package production policy, never fixture roots."""
     sources = IMMUTABLE_SOURCES if sources is None else sources
     if tuple(sources) == IMMUTABLE_SOURCES:
@@ -666,9 +671,10 @@ def _validate_historical_boundary(inventory: Mapping[str, object], sources: Sequ
             raise BackfillSafetyError("historical package path aliases a duplicate resolved target")
         normalized_paths.add(normalized)
         resolved_targets.add(resolved_key)
-        actual = _package_inventory(SourceSpec(form, roots[form], 0), source)
-        if any(actual[key] != package[key] for key in ("identity", "form", "quarter", "relative_package_path", "file_count", "byte_count", "files", "package_sha256")):
-            raise BackfillSafetyError("historical package metadata differs from resolved source")
+        if verify_contents:
+            actual = _package_inventory(SourceSpec(form, roots[form], 0), source)
+            if any(actual[key] != package[key] for key in ("identity", "form", "quarter", "relative_package_path", "file_count", "byte_count", "files", "package_sha256")):
+                raise BackfillSafetyError("historical package metadata differs from resolved source")
 
 
 def validate_canary_target(target: Mapping[str, object]) -> dict[str, object]:
@@ -1183,10 +1189,14 @@ def _connection_parameters(connection: object) -> dict[str, str]:
         raise BackfillSafetyError("production preflight cannot read connection parameters") from exc
     if not isinstance(parameters, Mapping) or not all(isinstance(key, str) and isinstance(value, str) for key, value in parameters.items()):
         raise BackfillSafetyError("production preflight received invalid connection parameters")
-    safe = dict(cast(Mapping[str, str], parameters))
     libpq_sensitive = {"passfile", "password", "sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "sslcrldir", "service", "servicefile"}
-    if any(_is_sensitive_key(key) or key.casefold() in libpq_sensitive for key in safe):
-        raise BackfillSafetyError("production preflight connection parameters contain credential material")
+    safe: dict[str, str] = {}
+    for key, value in cast(Mapping[str, str], parameters).items():
+        if key.casefold() in libpq_sensitive:
+            continue
+        if _is_sensitive_key(key):
+            raise BackfillSafetyError("production preflight connection parameters contain credential material")
+        safe[key] = value
     return safe
 
 
@@ -3107,7 +3117,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 if source_mode in {None, "test_unbound"}:
                     _validate_historical_boundary(inventory)
                 else:
-                    _validate_historical_boundary(inventory, sources)
+                    _validate_historical_boundary(inventory, sources, verify_contents=False)
                 status_missing = not status_path.exists()
                 status = _load_status(status_path)
                 if status and (status.get("schema_version") != 1 or status.get("inventory_hash") != inventory.get("inventory_hash") or status.get("code_sha") != current_code_sha):

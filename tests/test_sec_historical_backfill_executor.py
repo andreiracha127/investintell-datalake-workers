@@ -50,8 +50,8 @@ def test_connection_parameter_adapter_requires_psycopg3_get_parameters() -> None
         _connection_parameters(type("Connection", (), {"info": object()})())
 
 
-@pytest.mark.parametrize("keyword", ("sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "servicefile"))
-def test_status_secret_scan_rejects_quoted_and_unquoted_libpq_paths_under_benign_keys(keyword: str) -> None:
+@pytest.mark.parametrize("keyword", ("password", "passfile", "sslpassword", "sslkey", "sslcert", "sslrootcert", "sslcrl", "servicefile"))
+def test_status_secret_scan_redacts_libpq_connection_parameters_and_rejects_values_under_benign_keys(keyword: str) -> None:
     from src.sec_regulatory.historical_backfill import BackfillSafetyError, _assert_no_secret
 
     for value in (f"{keyword}=C:/private/material.pem", f"host=db {keyword}='C:/private material.pem'"):
@@ -62,9 +62,8 @@ def test_status_secret_scan_rejects_quoted_and_unquoted_libpq_paths_under_benign
         def get_parameters(self) -> dict[str, str]:
             return {"host": "db", "sslmode": "verify-full", keyword: "C:/private/material.pem"}
 
-    with pytest.raises(BackfillSafetyError, match="credential material"):
-        from src.sec_regulatory.historical_backfill import _connection_parameters
-        _connection_parameters(type("Connection", (), {"info": Info()})())
+    from src.sec_regulatory.historical_backfill import _connection_parameters
+    assert _connection_parameters(type("Connection", (), {"info": Info()})()) == {"host": "db", "sslmode": "verify-full"}
 
 
 def test_psycopg3_connection_info_adapter_uses_real_disposable_connection() -> None:
