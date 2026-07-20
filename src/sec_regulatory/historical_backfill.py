@@ -1733,6 +1733,23 @@ def _governed_reconciliation_sha256(connection: object, *, run_id: UUID) -> str:
     return _sha256_bytes(_canonical_json([list(row) for row in rows]).encode("ascii"))
 
 
+def _has_committed_governed_outcome(
+    connection: object, *, run_id: UUID, package_sha256: str
+) -> bool:
+    """Confirm that an idempotently resumed package was already committed."""
+    with connection.cursor() as cursor:  # type: ignore[attr-defined]
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM sec_run_transitions "
+            "WHERE run_id=%s AND event_type='commit_outcome' "
+            "AND commit_outcome='committed' AND governed_package_sha256=%s)",
+            (run_id, package_sha256),
+        )
+        row = cursor.fetchone()
+    if not isinstance(row, tuple) or len(row) != 1 or not isinstance(row[0], bool):
+        raise BackfillSafetyError("existing governed commit evidence has an uncertain shape")
+    return row[0]
+
+
 def _get_recovery_governed_evidence(
     connection: object,
     *,
@@ -2140,6 +2157,25 @@ class AuthorizedPackageExecutor:
                 if callable(rollback):
                     rollback()
                 return safe
+            if result.get("resumed") is True and commit_fence is not None:
+                try:
+                    resumed_run_id = UUID(cast(str, safe.get("run_id")))
+                except (TypeError, ValueError) as exc:
+                    raise BackfillSafetyError("resumed package requires a typed ingestion run UUID") from exc
+                if lock_key is None or not _is_sha256(lock_key.split(":", 1)[-1]):
+                    raise BackfillSafetyError("resumed package requires a governed package hash")
+                resumed_package_sha256 = lock_key.split(":", 1)[-1]
+                if not _has_committed_governed_outcome(
+                    connection,
+                    run_id=resumed_run_id,
+                    package_sha256=resumed_package_sha256,
+                ):
+                    raise BackfillSafetyError("resumed package lacks a committed governed outcome")
+                reconciliation_hash = _governed_reconciliation_sha256(connection, run_id=resumed_run_id)
+                rollback = getattr(connection, "rollback", None)
+                if callable(rollback):
+                    rollback()
+                return {"state": "duplicate", "rows": 0, "reconciliation_hash": reconciliation_hash}
             commit = getattr(connection, "commit", None)
             if not callable(commit):
                 raise BackfillSafetyError("authorized executor connection cannot commit")

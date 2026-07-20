@@ -1552,6 +1552,38 @@ def test_protected_commit_fsyncs_issued_records_outcome_then_confirms(tmp_path: 
     assert connection.commits == 1 and connection.rollbacks == 0
 
 
+def test_protected_commit_treats_previously_committed_resume_as_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.sec_regulatory.historical_backfill as backfill
+
+    inventory, _ = _single_package_inventory(tmp_path)
+    artifact = _authorization(inventory_hash=str(inventory["inventory_hash"]))
+    artifact["supervisor_run_id"] = "11111111-1111-4111-8111-111111111111"
+    path = tmp_path / "authorization.json"
+    path.write_text(json.dumps(artifact), encoding="utf-8")
+    connection = _LockConnection([])
+    events: list[str] = []
+    monkeypatch.setenv("SEC_BACKFILL_FAKE_DSN", "postgresql://fake:secret@localhost/test")
+    monkeypatch.setattr(backfill, "_derive_form_lock_key", lambda *_args: f"nport:{'c' * 64}")
+    monkeypatch.setattr(backfill, "_has_committed_governed_outcome", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(backfill, "_governed_reconciliation_sha256", lambda *_args, **_kwargs: "f" * 64)
+    monkeypatch.setattr(backfill.manifests, "record_commit_outcome", lambda *_args, **_kwargs: pytest.fail("must not append a second commit outcome"))
+    executor = backfill.build_authorized_executor(
+        path, inventory=inventory, code_sha="code-v1", connection_factory=lambda _dsn: connection,
+        target_inspector=lambda _conn: {"database": "sec_backfill_test", "server_address": "127.0.0.1", "role": "sec_backfill_test", "postgresql_identity": "PostgreSQL 18", "timescaledb_identity": "TimescaleDB 2.27", "is_superuser": False, "owns_any_table": False, "writable_tables": ["sec_raw.nport_filings"]},
+        schema_installers={"manifest": lambda _conn: None, "nport": lambda _conn: None},
+        dispatchers={"nport": lambda _conn, *, package, source_root: {"package": package.relative_to(source_root).as_posix(), "state": "raw_validated", "run_id": "22222222-2222-4222-8222-222222222222", "resumed": True}},
+    )
+
+    result = executor.execute_with_fence(
+        dict(inventory["packages"][0]),
+        lambda state, _evidence: events.append(state),
+    )
+
+    assert result == {"state": "duplicate", "rows": 0, "reconciliation_hash": "f" * 64}
+    assert events == []
+    assert connection.commits == 0 and connection.rollbacks == 1
+
+
 def test_commit_exception_is_ambiguous_and_cleanup_does_not_retry_or_downgrade(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import src.sec_regulatory.historical_backfill as backfill
 
