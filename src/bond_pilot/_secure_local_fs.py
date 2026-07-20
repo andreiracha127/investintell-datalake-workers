@@ -61,6 +61,9 @@ O_DIRECTORY = getattr(os, "O_DIRECTORY", 0x00010000)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0x00020000)
 O_CLOEXEC = getattr(os, "O_CLOEXEC", 0x00080000)
 O_NONBLOCK = getattr(os, "O_NONBLOCK", 0x00000004)
+O_TMPFILE = getattr(os, "O_TMPFILE", 0o20200000)
+_HAS_O_TMPFILE = hasattr(os, "O_TMPFILE")
+_AT_EMPTY_PATH = 0x1000
 
 
 def _error(code: str, cause: BaseException | None = None) -> PilotError:
@@ -68,6 +71,21 @@ def _error(code: str, cause: BaseException | None = None) -> PilotError:
     if cause is not None:
         error.__cause__ = cause
     return error
+
+
+def _linkat_empty(source_fd: int, target: str, *, dst_dir_fd: int) -> None:
+    if os.name == "nt":
+        raise OSError("linkat unavailable")
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        linkat = libc.linkat
+    except AttributeError as exc:
+        raise OSError("linkat unavailable") from exc
+    linkat.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+    linkat.restype = ctypes.c_int
+    if linkat(source_fd, b"", dst_dir_fd, os.fsencode(target), _AT_EMPTY_PATH) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
 
 
 def _single_name(name: str, error_code: str) -> str:
@@ -194,7 +212,7 @@ class SecureFile:
 
 
 class CreatedFile:
-    def __init__(self, name: str, stream: BinaryIO, native_handle: object, close_parents: list[tuple[_FileApi, object]] | None = None) -> None:
+    def __init__(self, name: str | None, stream: BinaryIO, native_handle: object, close_parents: list[tuple[_FileApi, object]] | None = None) -> None:
         self.name = name
         self._stream = stream
         self.native_handle = native_handle
@@ -241,19 +259,28 @@ class SecureDirectory:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    def _require_open(self) -> None:
+        if self._closed:
+            raise ValueError("I/O operation on closed capability")
+
     def enumerate(self) -> tuple[str, ...]:
+        self._require_open()
         return self._backend.enumerate(self)
 
     def open_file(self, name: str, *, error_code: str | None = None) -> SecureFile:
+        self._require_open()
         return self._backend.open_relative_file(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
 
     def create_file(self, name: str, *, error_code: str | None = None) -> CreatedFile:
+        self._require_open()
         return self._backend.create_file(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
 
     def create_dir(self, name: str, *, error_code: str | None = None) -> SecureDirectory:
+        self._require_open()
         return self._backend.create_dir(self, _single_name(name, error_code or self.error_code), error_code=error_code or self.error_code)
 
     def publish_no_replace(self, created: CreatedFile, final_name: str, *, error_code: str | None = None) -> None:
+        self._require_open()
         self._backend.publish_no_replace(self, created, _single_name(final_name, error_code or self.error_code), error_code=error_code or self.error_code)
 
     def close(self) -> None:
@@ -268,6 +295,7 @@ class SecureDirectory:
 class _PosixBackend:
     def __init__(self, api: object = os) -> None:
         self.api = api
+        self._linkat_empty = getattr(api, "linkat_empty", _linkat_empty)
 
     @staticmethod
     def _identity(status: os.stat_result) -> tuple[object, ...]:
@@ -360,13 +388,15 @@ class _PosixBackend:
     def create_file(self, directory: SecureDirectory, name: str, *, error_code: str) -> CreatedFile:
         handle: int | None = None
         try:
-            handle = self.api.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600, dir_fd=directory.native_handle)
+            if self.api is os and not _HAS_O_TMPFILE:
+                raise PilotError(error_code)
+            handle = self.api.open(".", os.O_RDWR | O_TMPFILE | O_CLOEXEC, 0o600, dir_fd=directory.native_handle)
             status = self._status(handle, root_device=directory.root_device, directory=False, error_code=error_code)
             del status
             native_handle = handle
             stream = self.api.fdopen(handle, "w+b", closefd=True)
             handle = None
-            return CreatedFile(name, stream, native_handle)
+            return CreatedFile(None, stream, native_handle)
         except Exception as exc:
             if handle is not None:
                 self.api.close(handle)
@@ -394,8 +424,7 @@ class _PosixBackend:
         try:
             created.flush()
             self.api.fsync(created.native_handle)
-            self.api.link(created.name, final_name, src_dir_fd=directory.native_handle, dst_dir_fd=directory.native_handle, follow_symlinks=False)
-            self.api.unlink(created.name, dir_fd=directory.native_handle)
+            self._linkat_empty(created.native_handle, final_name, dst_dir_fd=directory.native_handle)
             self.api.fsync(directory.native_handle)
         except OSError as exc:
             raise _error(error_code, exc)
@@ -437,6 +466,22 @@ class _FILE_ATTRIBUTE_TAG_INFO_STRUCT(ctypes.Structure):
     _fields_ = [("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD)]
 
 
+class _FILE_REMOTE_PROTOCOL_INFO_STRUCT(ctypes.Structure):
+    _fields_ = [
+        ("StructureVersion", wintypes.USHORT),
+        ("StructureSize", wintypes.USHORT),
+        ("Protocol", wintypes.DWORD),
+        ("ProtocolMajorVersion", wintypes.USHORT),
+        ("ProtocolMinorVersion", wintypes.USHORT),
+        ("ProtocolRevision", wintypes.USHORT),
+        ("Reserved", wintypes.USHORT),
+        ("Flags", wintypes.DWORD),
+        ("GenericReserved", wintypes.DWORD * 8),
+        ("ProtocolSpecificReserved", wintypes.DWORD * 16),
+        ("ProtocolSpecific", wintypes.DWORD * 16),
+    ]
+
+
 class _FILE_BASIC_INFO_STRUCT(ctypes.Structure):
     _fields_ = [
         ("CreationTime", ctypes.c_longlong),
@@ -452,8 +497,8 @@ class _FILE_STANDARD_INFO_STRUCT(ctypes.Structure):
         ("AllocationSize", ctypes.c_longlong),
         ("EndOfFile", ctypes.c_longlong),
         ("NumberOfLinks", wintypes.DWORD),
-        ("DeletePending", wintypes.BOOL),
-        ("Directory", wintypes.BOOL),
+        ("DeletePending", ctypes.c_ubyte),
+        ("Directory", ctypes.c_ubyte),
     ]
 
 
@@ -466,7 +511,18 @@ def _validate_windows_abi() -> None:
     expected_root = 8 if pointer == 8 else 4
     expected_name = 20 if pointer == 8 else 12
     expected_iosb = 16 if pointer == 8 else 8
-    if _FILE_RENAME_INFORMATION_STRUCT.RootDirectory.offset != expected_root or _FILE_RENAME_INFORMATION_STRUCT.FileName.offset != expected_name or ctypes.sizeof(_IO_STATUS_BLOCK) != expected_iosb:
+    if (
+        _FILE_RENAME_INFORMATION_STRUCT.RootDirectory.offset != expected_root
+        or _FILE_RENAME_INFORMATION_STRUCT.FileName.offset != expected_name
+        or ctypes.sizeof(_IO_STATUS_BLOCK) != expected_iosb
+        or _FILE_REMOTE_PROTOCOL_INFO_STRUCT.StructureVersion.offset != 0
+        or _FILE_REMOTE_PROTOCOL_INFO_STRUCT.StructureSize.offset != 2
+        or _FILE_REMOTE_PROTOCOL_INFO_STRUCT.Protocol.offset != 4
+        or ctypes.sizeof(_FILE_REMOTE_PROTOCOL_INFO_STRUCT) != 180
+        or _FILE_STANDARD_INFO_STRUCT.DeletePending.offset != 20
+        or _FILE_STANDARD_INFO_STRUCT.Directory.offset != 21
+        or ctypes.sizeof(_FILE_STANDARD_INFO_STRUCT) != 24
+    ):
         raise RuntimeError("unsupported Windows native ABI layout")
 
 
@@ -524,13 +580,13 @@ class _WindowsApi:
         return buffer.value
 
     def remote_protocol(self, handle: int) -> int:
-        buffer = (ctypes.c_ubyte * 128)()
-        if not self.kernel32.GetFileInformationByHandleEx(handle, _FILE_REMOTE_PROTOCOL_INFO, buffer, ctypes.sizeof(buffer)):
+        info = _FILE_REMOTE_PROTOCOL_INFO_STRUCT()
+        if not self.kernel32.GetFileInformationByHandleEx(handle, _FILE_REMOTE_PROTOCOL_INFO, ctypes.byref(info), ctypes.sizeof(info)):
             error = ctypes.get_last_error()
             if error == 87:
                 return 0
             raise ctypes.WinError(error)
-        return int.from_bytes(bytes(buffer[8:12]), "little")
+        return int(info.Protocol)
 
     def _query(self, handle: int, info_class: int, structure: ctypes.Structure) -> None:
         if not self.kernel32.GetFileInformationByHandleEx(handle, info_class, ctypes.byref(structure), ctypes.sizeof(structure)):
@@ -599,16 +655,19 @@ class _WindowsApi:
             self._raise_last_error()
 
     def publish(self, file_handle: int, directory_handle: int, final_name: str, *, replace: bool) -> None:
-        encoded = final_name.encode("utf-16-le")
-        size = _FILE_RENAME_INFORMATION_STRUCT.FileName.offset + len(encoded)
-        buffer = ctypes.create_string_buffer(size)
-        header = _FILE_RENAME_INFORMATION_STRUCT.from_buffer(buffer)
-        header.ReplaceIfExists = bool(replace)
-        header.RootDirectory = directory_handle
-        header.FileNameLength = len(encoded)
-        ctypes.memmove(ctypes.addressof(buffer) + _FILE_RENAME_INFORMATION_STRUCT.FileName.offset, encoded, len(encoded))
+        try:
+            encoded = final_name.encode("utf-16-le")
+            length = ctypes.sizeof(_FILE_RENAME_INFORMATION_STRUCT) + len(encoded)
+            buffer = ctypes.create_string_buffer(length)
+            header = _FILE_RENAME_INFORMATION_STRUCT.from_buffer(buffer)
+            header.ReplaceIfExists = bool(replace)
+            header.RootDirectory = directory_handle
+            header.FileNameLength = len(encoded)
+            ctypes.memmove(ctypes.addressof(buffer) + _FILE_RENAME_INFORMATION_STRUCT.FileName.offset, encoded, len(encoded))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise OSError("invalid rename information") from exc
         iosb = _IO_STATUS_BLOCK()
-        status = int(self.ntdll.NtSetInformationFile(file_handle, ctypes.byref(iosb), buffer, size, _FILE_RENAME_INFORMATION))
+        status = int(self.ntdll.NtSetInformationFile(file_handle, ctypes.byref(iosb), buffer, length, _FILE_RENAME_INFORMATION))
         if status < 0:
             self._raise_status(status)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 from io import BytesIO
 import os
 from pathlib import Path
@@ -81,15 +82,60 @@ class _WindowsApiFake:
 
 
 def test_windows_remote_protocol_reads_protocol_field_not_structure_size() -> None:
-    def get_info(_handle, _info_class, buffer, _size) -> bool:
-        buffer[4:8] = (112).to_bytes(4, "little")
-        buffer[8:12] = (0x00020000).to_bytes(4, "little")
+    def get_info(_handle, _info_class, info, _size) -> bool:
+        result = ctypes.cast(info, ctypes.POINTER(secure_fs._FILE_REMOTE_PROTOCOL_INFO_STRUCT)).contents
+        result.StructureVersion = 2
+        result.StructureSize = ctypes.sizeof(secure_fs._FILE_REMOTE_PROTOCOL_INFO_STRUCT)
+        result.Protocol = 0x00020000
         return True
 
     api = object.__new__(secure_fs._WindowsApi)
     api.kernel32 = SimpleNamespace(GetFileInformationByHandleEx=get_info)
 
     assert api.remote_protocol(1) == 0x00020000
+
+
+def test_windows_native_structures_match_header_layout() -> None:
+    remote = secure_fs._FILE_REMOTE_PROTOCOL_INFO_STRUCT
+    standard = secure_fs._FILE_STANDARD_INFO_STRUCT
+
+    assert remote.StructureVersion.offset == 0
+    assert remote.StructureSize.offset == 2
+    assert remote.Protocol.offset == 4
+    assert ctypes.sizeof(remote) == 180
+    assert standard.DeletePending.offset == 20
+    assert standard.Directory.offset == 21
+    assert ctypes.sizeof(standard) == 24
+
+
+def test_windows_publish_one_character_uses_required_native_rename_length() -> None:
+    observed: dict[str, object] = {}
+
+    def set_information(_file, _iosb, buffer, length, info_class) -> int:
+        observed["buffer"] = bytes(buffer)
+        observed["length"] = length
+        observed["info_class"] = info_class
+        return 0
+
+    api = object.__new__(secure_fs._WindowsApi)
+    api.ntdll = SimpleNamespace(NtSetInformationFile=set_information)
+    api.publish(101, 202, "x", replace=False)
+
+    header = secure_fs._FILE_RENAME_INFORMATION_STRUCT.from_buffer_copy(observed["buffer"])
+    assert observed["length"] == ctypes.sizeof(secure_fs._FILE_RENAME_INFORMATION_STRUCT) + 2
+    assert observed["info_class"] == secure_fs._FILE_RENAME_INFORMATION
+    assert header.ReplaceIfExists == 0
+    assert header.RootDirectory == 202
+    assert header.FileNameLength == 2
+
+
+def test_windows_publish_translates_rename_buffer_construction_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = object.__new__(secure_fs._WindowsApi)
+    api.ntdll = SimpleNamespace()
+    monkeypatch.setattr(secure_fs.ctypes, "create_string_buffer", lambda _size: (_ for _ in ()).throw(ValueError("bad buffer")))
+
+    with pytest.raises(OSError, match="rename information"):
+        api.publish(101, 202, "x", replace=False)
 
 
 def test_windows_traversal_uses_exact_relative_no_follow_flags_and_close_ownership() -> None:
@@ -191,6 +237,31 @@ def test_windows_directory_enumeration_and_publish_stay_relative_and_no_replace(
     assert len(api.closed) == len(set(api.closed))
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        lambda directory, _created: directory.enumerate(),
+        lambda directory, _created: directory.open_file("child.json", error_code="unsafe"),
+        lambda directory, _created: directory.create_file("child.json", error_code="unsafe"),
+        lambda directory, _created: directory.create_dir("child", error_code="unsafe"),
+        lambda directory, created: directory.publish_no_replace(created, "child.json", error_code="unsafe"),
+    ],
+)
+def test_closed_directory_never_reuses_stale_handle_or_calls_backend(action) -> None:
+    api = _WindowsApiFake()
+    directory = secure_fs._WindowsBackend(api).open_dir(Path(r"C:\safe"), error_code="unsafe")
+    created = directory.create_file(".pending", error_code="unsafe")
+    directory.close()
+    api.infos["root/safe"] = secure_fs._WindowsFileInfo(7, secure_fs.FILE_ATTRIBUTE_DIRECTORY, 0, (7, 999, stat.S_IFDIR, 0, 20, 21))
+    records_before = list(api.records)
+    try:
+        with pytest.raises(ValueError, match="closed capability"):
+            action(directory, created)
+        assert api.records == records_before
+    finally:
+        created.close()
+
+
 class _PosixApiFake:
     def __init__(self, *, mismatch: str | None = None) -> None:
         self.mismatch = mismatch
@@ -226,11 +297,8 @@ class _PosixApiFake:
     def mkdir(self, name: str, mode: int = 0o777, *, dir_fd: int):
         self.records.append(("mkdir", name, mode, dir_fd))
 
-    def link(self, source: str, target: str, *, src_dir_fd: int, dst_dir_fd: int, follow_symlinks: bool):
-        self.records.append(("link", source, target, src_dir_fd, dst_dir_fd, follow_symlinks))
-
-    def unlink(self, name: str, *, dir_fd: int):
-        self.records.append(("unlink", name, dir_fd))
+    def linkat_empty(self, source_fd: int, target: str, *, dst_dir_fd: int):
+        self.records.append(("linkat_empty", source_fd, target, dst_dir_fd))
 
     def fsync(self, fd: int):
         self.records.append(("fsync", fd))
@@ -259,14 +327,20 @@ def test_posix_rejects_ancestor_or_final_device_mismatch_and_closes_all(mismatch
     assert api.closed[-1] == 10
 
 
-def test_posix_publish_uses_relative_link_unlink_and_directory_fsync() -> None:
+def test_posix_publish_uses_anonymous_retained_fd_and_ignores_name_injection() -> None:
     api = _PosixApiFake()
     directory = secure_fs._PosixBackend(api).open_dir(Path("/safe"), error_code="unsafe")
     created = directory.create_file(".temp", error_code="unsafe")
+    api.names[created.native_handle] = "attacker-replacement"
     directory.publish_no_replace(created, "final.json", error_code="unsafe")
     parent_fd = directory.native_handle
-    assert ("link", ".temp", "final.json", parent_fd, parent_fd, False) in api.records
-    assert ("unlink", ".temp", parent_fd) in api.records
+    opens = [record for record in api.records if record[0] == "open"]
+    assert created.name is None
+    assert opens[-1][1] == "."
+    assert opens[-1][2] & secure_fs.O_TMPFILE
+    assert not opens[-1][2] & os.O_EXCL
+    assert ("linkat_empty", created.native_handle, "final.json", parent_fd) in api.records
+    assert not [record for record in api.records if record[0] in {"link", "unlink"}]
     assert ("fsync", parent_fd) in api.records
     created.close()
     directory.close()
@@ -319,13 +393,42 @@ def test_real_windows_directory_enumeration_and_publish_never_replace(tmp_path: 
         created = directory.create_file(".pending", error_code="unsafe")
         try:
             created.write(b"new")
-            (tmp_path / "final.json").write_bytes(b"old")
-            with pytest.raises(PilotError, match="unsafe"):
-                directory.publish_no_replace(created, "final.json", error_code="unsafe")
-            assert (tmp_path / "final.json").read_bytes() == b"old"
+            directory.publish_no_replace(created, "x", error_code="unsafe")
         finally:
             created.close()
-        assert (tmp_path / ".pending").read_bytes() == b"new"
+        assert (tmp_path / "x").read_bytes() == b"new"
+        assert not (tmp_path / ".pending").exists()
+
+        collision = directory.create_file(".collision", error_code="unsafe")
+        try:
+            collision.write(b"collision")
+            (tmp_path / "final.json").write_bytes(b"old")
+            with pytest.raises(PilotError, match="unsafe"):
+                directory.publish_no_replace(collision, "final.json", error_code="unsafe")
+            assert (tmp_path / "final.json").read_bytes() == b"old"
+        finally:
+            collision.close()
+        assert (tmp_path / ".collision").read_bytes() == b"collision"
+    finally:
+        directory.close()
+
+
+@pytest.mark.skipif(os.name == "nt" or not secure_fs._HAS_O_TMPFILE, reason="real POSIX O_TMPFILE proof")
+def test_real_posix_publish_uses_anonymous_fd_and_never_uses_requested_temp_name(tmp_path: Path) -> None:
+    directory = secure_fs.secure_open_dir(tmp_path, error_code="unsafe")
+    try:
+        try:
+            created = directory.create_file("attacker-name", error_code="unsafe")
+        except PilotError:
+            pytest.skip("O_TMPFILE unavailable on active filesystem")
+        try:
+            created.write(b"original")
+            (tmp_path / "attacker-name").write_bytes(b"attacker")
+            directory.publish_no_replace(created, "final.json", error_code="unsafe")
+        finally:
+            created.close()
+        assert (tmp_path / "final.json").read_bytes() == b"original"
+        assert (tmp_path / "attacker-name").read_bytes() == b"attacker"
     finally:
         directory.close()
 
