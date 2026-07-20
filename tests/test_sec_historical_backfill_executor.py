@@ -562,7 +562,7 @@ def _least_privilege_production_preflight() -> dict[str, object]:
         "public.sec_source_files": ["SELECT", "INSERT", "UPDATE"],
         "public.sec_source_package_transitions": ["SELECT"],
         "public.sec_table_reconciliations": ["SELECT", "INSERT", "UPDATE"],
-        "public.sec_row_issues": ["SELECT", "INSERT"],
+        "public.sec_row_issues": ["SELECT", "INSERT", "UPDATE"],
         "public.sec_run_transitions": ["SELECT"],
         "public.sec_validated_raw_visibility": ["SELECT"],
         "public.sec_raw_validation_tokens": ["SELECT"],
