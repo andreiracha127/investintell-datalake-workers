@@ -125,11 +125,12 @@ def lexical_local_path(value: str | Path, *, error_code: str, platform: str | No
     normalized = locator.strip()
     if normalized.startswith(("\\", "//")) or urlsplit(normalized).scheme:
         raise PilotError(error_code)
-    absolute = locator if os.path.isabs(locator) else os.path.abspath(locator)
-    components = absolute.split(os.sep)[1:]
+    if not os.path.isabs(locator):
+        raise PilotError(error_code)
+    components = locator.split(os.sep)[1:]
     if any(component in {".", ".."} for component in components):
         raise PilotError(error_code)
-    return Path(absolute)
+    return Path(locator)
 
 
 @dataclass(frozen=True)

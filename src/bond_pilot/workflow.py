@@ -14,7 +14,7 @@ from uuid import uuid4
 import psycopg
 from src.db import connect, resolve_dsn
 
-from .artifacts import canonical_json_bytes, read_secure_local_file, validated_local_path, write_checksums, write_json_once
+from .artifacts import canonical_json_bytes, read_secure_local_file, validated_local_path, validated_output_path_nominal, write_checksums, write_json_once
 from ._secure_local_fs import secure_open_dir
 from .contracts import PilotError
 from .db_calibration import (
@@ -51,7 +51,7 @@ def _within(path: Path, root: Path) -> bool:
 
 def _output_path(value: str | Path) -> Path:
     """Require a new destination outside the checkout, including after symlink resolution."""
-    lexical = validated_local_path(value, error_code="invalid_output_path")
+    lexical = validated_output_path_nominal(value, error_code="invalid_output_path")
     if _within(lexical, _REPOSITORY_ROOT):
         raise PilotError("invalid_output_path")
     if os.path.lexists(lexical):

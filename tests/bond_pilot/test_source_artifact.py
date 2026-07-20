@@ -6,7 +6,9 @@ import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 
+import pyarrow.parquet as pq
 import pytest
 
 from src.bond_pilot.contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
@@ -138,6 +140,49 @@ def test_matching_extracted_files_opens_both_inputs_through_capabilities(tmp_pat
     monkeypatch.setattr(source_artifact, "secure_open_file", lambda path, **kwargs: opened.append(Path(path)) or real_open(path, **kwargs))
     source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
     assert opened == [original, verified]
+
+
+def test_archive_and_parquet_consumers_leave_supplied_secure_capabilities_open(make_source_zip, tmp_path: Path) -> None:
+    candidate = qualify_source(make_source_zip(), tmp_path / "qualified")
+    archive = source_artifact._open_regular_file(candidate.local_archive_path, limit=10_000)
+    try:
+        with ZipFile(archive) as reader:
+            assert reader.namelist() == [candidate.member_name]
+        assert archive.closed is False
+    finally:
+        archive.close()
+
+    with source_artifact.open_verified_extracted_file(candidate.local_extracted_path, candidate.local_extracted_path, limit=10_000, chunk_size=1024) as parquet_file:
+        with pq.ParquetFile(parquet_file) as reader:
+            assert reader.metadata.num_rows == candidate.row_count
+        assert parquet_file.closed is False
+
+
+def test_verified_extracted_file_rejects_post_consumer_integrity_failure(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    candidate = qualify_source(make_source_zip(), tmp_path / "qualified")
+    real_verify = source_artifact.SecureFile.verify_unchanged
+    calls = 0
+
+    def fail_after_consumer(self, *, expected_size: int) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise PilotError("source_integrity_failed")
+        real_verify(self, expected_size=expected_size)
+
+    monkeypatch.setattr(source_artifact.SecureFile, "verify_unchanged", fail_after_consumer)
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        with source_artifact.open_verified_extracted_file(candidate.local_extracted_path, candidate.local_extracted_path, limit=10_000, chunk_size=1024) as parquet_file:
+            with pq.ParquetFile(parquet_file) as reader:
+                assert reader.metadata.num_rows == candidate.row_count
+
+
+def test_verified_extracted_file_fails_closed_when_consumer_closes_capability(make_source_zip, tmp_path: Path) -> None:
+    candidate = qualify_source(make_source_zip(), tmp_path / "qualified")
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        with source_artifact.open_verified_extracted_file(candidate.local_extracted_path, candidate.local_extracted_path, limit=10_000, chunk_size=1024) as parquet_file:
+            parquet_file.close()
 
 
 def test_local_archive_capture_rejects_a_symlink_before_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

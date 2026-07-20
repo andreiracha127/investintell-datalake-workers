@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 from tempfile import NamedTemporaryFile
 from typing import Any
 from uuid import uuid4
@@ -17,6 +18,39 @@ from ._secure_local_fs import lexical_local_path, secure_read_file
 def validated_local_path(value: str | Path, *, error_code: str) -> Path:
     """Return only the lexical local label; callers must open it through a capability."""
     return lexical_local_path(value, error_code=error_code)
+
+
+def _nominal_reparse_point(path: Path, status: os.stat_result) -> bool:
+    attributes = getattr(status, "st_file_attributes", 0)
+    if stat.S_ISLNK(status.st_mode) or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        return True
+    isjunction = getattr(os.path, "isjunction", None)
+    return bool(callable(isjunction) and isjunction(path))
+
+
+def validated_output_path_nominal(value: str | Path, *, error_code: str) -> Path:
+    """Temporarily reject existing unsafe output ancestors before legacy path writes.
+
+    This is a static, nominal check only; Commit 3 will replace these output
+    path operations with handle-anchored capabilities.
+    """
+    path = lexical_local_path(value, error_code=error_code)
+    current = Path(path.anchor)
+    try:
+        status = os.lstat(current)
+        if not stat.S_ISDIR(status.st_mode) or _nominal_reparse_point(current, status):
+            raise OSError("unsafe output root")
+        for part in path.parent.parts[1:]:
+            current /= part
+            try:
+                status = os.lstat(current)
+            except FileNotFoundError:
+                break
+            if not stat.S_ISDIR(status.st_mode) or _nominal_reparse_point(current, status):
+                raise OSError("unsafe output ancestor")
+    except OSError as exc:
+        raise PilotError(error_code) from exc
+    return path
 
 
 def read_secure_local_file(value: str | Path, *, max_bytes: int, error_code: str, too_large_code: str | None = None) -> tuple[Path, bytes]:

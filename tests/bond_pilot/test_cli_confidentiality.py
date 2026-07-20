@@ -362,6 +362,26 @@ def test_fixture_run_detects_staged_in_place_mutation_before_durable_report(tmp_
     assert not (tmp_path / "fixture-run").exists()
 
 
+def test_fixture_run_rejects_post_consumer_source_integrity_failure_before_final_output(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
+    real_open_verified = workflow.open_verified_extracted_file
+    panel_calls: list[object] = []
+
+    @contextmanager
+    def fail_after_consumer(*args: object, **kwargs: object):
+        with real_open_verified(*args, **kwargs) as handle:
+            yield handle
+        raise PilotError("source_integrity_failed")
+
+    monkeypatch.setattr(workflow, "open_verified_extracted_file", fail_after_consumer)
+    monkeypatch.setattr(workflow, "build_observed_panel", lambda source, *_args: panel_calls.append(source))
+
+    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+        run_fixture(source_manifest=source_manifest, source_approval=source_approval, fixture=_fixture(tmp_path / "fixture.json"), mapping=_FIXTURE_MAPPING, run_dir=tmp_path / "fixture-run")
+
+    assert panel_calls and not (tmp_path / "fixture-run").exists()
+
+
 @pytest.mark.parametrize("missing", ["source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval"])
 def test_calibrate_prevalidates_every_governance_input_before_dsn_or_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch, missing: str) -> None:
     calls: list[str] = []
@@ -696,6 +716,17 @@ def test_resume_pack_is_validated_before_connection_and_keeps_source_pack_immuta
     with pytest.raises(PilotError, match="calibration_resume_invalid"):
         run_calibration(**{**kwargs, "run_dir": tmp_path / "tampered-output"}, resume_pack=tampered)
     assert calls == []
+
+
+def test_output_path_nominal_guard_rejects_existing_reparse_ancestor_before_staging(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir()
+    output = ancestor / "new-run"
+    monkeypatch.setattr(artifacts, "_nominal_reparse_point", lambda path, _status: Path(path) == ancestor, raising=False)
+    monkeypatch.setattr(workflow, "_staging", lambda *_args, **_kwargs: pytest.fail("unsafe output ancestor must block staging"))
+
+    with pytest.raises(PilotError, match="^invalid_output_path$"):
+        qualify(source=tmp_path / "missing.zip", run_dir=output)
 
 
 @pytest.mark.parametrize("field,value", [("evidence_sha256", "0" * 64), ("query_sha256", "0" * 64), ("method_sha256", "0" * 64), ("mode", "first_bounded")])

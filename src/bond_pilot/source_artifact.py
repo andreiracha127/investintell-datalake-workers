@@ -375,14 +375,23 @@ def open_verified_extracted_file(original: str | Path, verified: str | Path, *, 
     """Yield the verified staged capability after binding it to the approved extraction."""
     expected_digest = _regular_file_digest(original, limit=limit, chunk_size=chunk_size)
     source = _open_regular_file(verified, limit=limit)
+    verified_size: int | None = None
     try:
-        digest, _ = _digest_open_file(source, limit=limit, chunk_size=chunk_size)
+        digest, verified_size = _digest_open_file(source, limit=limit, chunk_size=chunk_size)
         if digest != expected_digest:
             raise PilotError("source_integrity_failed")
         source.seek(0)
         yield source
     finally:
-        source.close()
+        try:
+            if verified_size is not None:
+                if source.closed:
+                    raise PilotError("source_integrity_failed")
+                source.verify_unchanged(expected_size=verified_size)
+        except (OSError, PilotError, ValueError) as exc:
+            raise PilotError("source_integrity_failed") from exc
+        finally:
+            source.close()
 
 
 def qualify_local_source(archive_path: str | Path, run_dir: Path, *, capture_path: Path, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> SourceCandidate:

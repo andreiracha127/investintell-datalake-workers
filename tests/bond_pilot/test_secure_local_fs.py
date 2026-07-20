@@ -193,6 +193,15 @@ def test_secure_file_exposes_seekable_file_object_adapter_for_archive_readers(tm
         capability.tell()
 
 
+def test_posix_lexical_path_rejects_relative_sensitive_file_before_path_access(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    sensitive = tmp_path / "control.json"
+    sensitive.write_bytes(b"{}")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(PilotError, match="^unsafe$"):
+        secure_fs.lexical_local_path(sensitive.name, error_code="unsafe", platform="posix")
+
+
 def test_windows_open_osfhandle_failure_closes_native_handle_once() -> None:
     api = _WindowsApiFake()
 
