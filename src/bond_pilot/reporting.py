@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 from .artifacts import canonical_json_bytes, commit_partial, partial_path, replace_checkpoint, write_checksums, write_json_once, write_text_once
 from .contracts import PilotError, SourceApproval, SourceCandidate
 from .debt_mapping import DebtMapping
-from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric, compute_cross_series_summary, compute_series_metrics
+from .matching import CrossSeriesSummary, MatchResult, Observation, SeriesMetric, compute_cross_series_summary, compute_series_metrics, validate_match_categories
 from .nport import FixtureLoadResult, load_fixture_result
 from .panel import PanelBuildResult
 from .source_artifact import _path_lexists, _publish_directory_no_replace
@@ -81,16 +81,16 @@ def _known_currencies(values: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in values.items() if key != "UNKNOWN"}
 
 
-def _match_rows(matches: Iterable[MatchResult], mapping: DebtMapping) -> list[dict[str, object]]:
+def _match_rows(matches: Iterable[tuple[MatchResult, object]]) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    for match in matches:
+    for match, debt_state in matches:
         holding = match.holding
         rows.append({
             "publication_id": _text(holding.publication_id), "accession_number": _text(holding.accession_number), "holding_id": _text(holding.holding_id), "source_run_id": _text(holding.source_run_id),
             "report_date": _text(holding.report_date), "filing_date": _text(holding.filing_date), "series_id": _text(holding.series_id), "class_id": _text(holding.class_id),
             "instrument_id": _text(holding.instrument_id), "issuer_category": _text(holding.issuer_category), "asset_class": _text(holding.asset_class), "instrument_structure": _text(holding.instrument_structure), "original_cusip": _text(holding.original_cusip), "normalized_cusip9": match.normalized_cusip9,
             "signed_market_value_raw": _json(holding.signed_market_value), "signed_pct_of_nav_raw": _json(holding.signed_pct_of_nav), "currency": _text(holding.currency), "raw_values_json": _json(holding.raw_values or {}),
-            "debt_state": mapping.classify(holding.issuer_category, holding.asset_class, holding.instrument_structure).value, "state": match.state.value, "observation_date": match.observation_date, "observation_age_days": match.observation_age_days,
+            "debt_state": debt_state.value, "state": match.state.value, "observation_date": match.observation_date, "observation_age_days": match.observation_age_days,
             "is_144a": match.is_144a, "observation_price": _finite(match.observations[0].price) if match.observations else None, "observations_json": _json(match.observations),
         })
     return rows
@@ -234,27 +234,27 @@ def write_internal_reports(*, run_dir: str | Path, source_candidate: SourceCandi
     if not panel.is_file():
         raise PilotError("missing_panel", {"path": str(panel)})
     match_values, metric_values, latest_values = tuple(matches), tuple(series_metrics), tuple(latest_observations)
+    validated_matches = validate_match_categories(match_values, debt_mapping)
     fixture = _validate_nport_manifest(nport_manifest, len(match_values), len(metric_values))
     _validate_fixture_coverage(match_values, fixture)
     manifest = fixture.manifest()
     provenance = _validate_mapping_provenance(mapping_provenance, debt_mapping)
-    recomputed_metrics = compute_series_metrics(match_values)
+    recomputed_metrics = compute_series_metrics(match_values, debt_mapping)
     if metric_values != recomputed_metrics:
         raise PilotError("report_metrics_mismatch")
     if cross_series_summary != compute_cross_series_summary(recomputed_metrics):
         raise PilotError("report_summary_mismatch")
-    match_rows, metric_rows, latest_rows = _match_rows(match_values, debt_mapping), _metric_rows(metric_values), _latest_rows(latest_values)
+    match_rows, metric_rows, latest_rows = _match_rows(validated_matches), _metric_rows(metric_values), _latest_rows(latest_values)
     source_manifest = {**source_candidate.to_json_mapping(), "approval": source_approval.to_json_mapping(), "internal_only": True}
     calibration = {**dict(calibration_report), "status": "not_started", "phase4_state": "pre_backfill", "representative_post_backfill": False, "db_reads": 0, "db_writes": 0}
     dispositions = {"eligible": 0, "missing_category": 0, "ambiguous_category": 0, "non_debt_excluded": 0}
-    for row in match_values:
-        state = row.state.value
-        if state == "matched" or state not in {"missing_category", "ambiguous_category", "ineligible_non_debt"}:
-            dispositions["eligible"] += int(state not in {"missing_category", "ambiguous_category", "ineligible_non_debt"})
-        elif state == "ineligible_non_debt":
+    for _match, debt_state in validated_matches:
+        if debt_state.value == "ineligible_non_debt":
             dispositions["non_debt_excluded"] += 1
+        elif debt_state.value in {"missing_category", "ambiguous_category"}:
+            dispositions[debt_state.value] += 1
         else:
-            dispositions[state] += 1
+            dispositions["eligible"] += 1
     quality = {"internal_only": True, "source": source_manifest, "mapping": _mapping_evidence(debt_mapping, provenance), "nport": manifest, "panel": _plain(panel_result), "state_counts": {key: sum(1 for row in match_rows if row["state"] == key) for key in sorted({str(row["state"]) for row in match_rows})}, "disposition_counts": dispositions, "invalid_weight_diagnostics": {"by_series": [_plain(metric.denominator_diagnostics) for metric in metric_values]}, "market_diagnostics": {"by_series": [_plain(metric.market_value_diagnostics) for metric in metric_values], "currency_values_no_fx": [_plain(_known_currencies(metric.eligible_market_value_by_currency)) for metric in metric_values]}, "cross_series": _plain(cross_series_summary), "latest_lane": {"historical_input": False}, "db_reads": 0, "db_writes": 0, "representative": False}
     report = "# Bond pilot internal report\n\nInternal-only local/offline/no-write fixture run. Phase state: pre-backfill; representative: false. Full internal provenance is expected. Latest lane is isolated (`historical_input:false`). No frontend, API, or production claim.\n"
     attempt = _create_reporting_attempt(root)

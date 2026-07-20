@@ -121,7 +121,7 @@ def run_fixture(*, source_manifest: str | Path, source_approval: str | Path, fix
         with ObservationIndex.build(panel_path, index_path, (row.original_cusip for row in fixture_result.holdings)) as observations:
             matches = match_holdings_asof(fixture_result.holdings, debt_mapping, observations, candidate.global_start, candidate.global_cutoff)
             latest = observations.latest_rows()
-        metrics = compute_series_metrics(matches)
+        metrics = compute_series_metrics(matches, debt_mapping)
         write_internal_reports(run_dir=output, source_candidate=candidate, source_approval=approval, debt_mapping=debt_mapping, mapping_provenance=_fixture_provenance(debt_mapping), nport_manifest=fixture_result.manifest(), panel_result=panel_result, panel_path=panel_path, matches=matches, series_metrics=metrics, cross_series_summary=compute_cross_series_summary(metrics), latest_observations=latest, calibration_report={"execution": "fixture"})
     finally:
         shutil.rmtree(work, ignore_errors=True)

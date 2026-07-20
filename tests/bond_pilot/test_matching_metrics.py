@@ -14,6 +14,7 @@ from src.bond_pilot import matching
 from src.bond_pilot.debt_mapping import DebtMapping, load_approved_debt_mapping, load_fixture_debt_mapping
 from src.bond_pilot.matching import (
     HoldingRecord,
+    MatchResult,
     ObservationIndex,
     classify_weight,
     compute_cross_series_summary,
@@ -157,6 +158,22 @@ def test_issuer_only_and_duplicate_or_conflicting_composite_rules_are_rejected(t
     for path in (issuer_only, duplicate):
         with pytest.raises(PilotError, match="debt_mapping_unapproved"):
             load_fixture_debt_mapping(path)
+
+
+@pytest.mark.parametrize(
+    ("changes", "forged_state"),
+    [
+        ({"issuer_category": "fixture_non_debt"}, MatchState.MATCHED),
+        ({"issuer_category": None}, MatchState.MATCHED),
+        ({"issuer_category": "unknown"}, MatchState.MATCHED),
+        ({"asset_class": 7}, MatchState.MATCHED),
+        ({}, MatchState.MISSING_CATEGORY),
+    ],
+)
+def test_metrics_reject_forged_category_state_before_any_denominator(mapping: object, changes: dict[str, object], forged_state: MatchState) -> None:
+    forged = MatchResult(_holding(**changes), forged_state, "123456789")
+    with pytest.raises(PilotError, match="inconsistent_category_state"):
+        compute_series_metrics((forged,), mapping)
 
 
 def test_observation_index_asof_preserves_duplicates_and_latest_is_independent(tmp_path: Path) -> None:
@@ -303,7 +320,7 @@ def test_metrics_keep_series_and_currencies_separate(mapping: object, tmp_path: 
             match_holding(_holding(holding_id="d", signed_pct_of_nav=None, signed_market_value=7.0, currency=None), mapping, observations, "2024-01-01", "2024-01-31"),
             match_holding(_holding(holding_id="e", series_id="series-b", signed_pct_of_nav=30.0, signed_market_value=30.0), mapping, observations, "2024-01-01", "2024-01-31"),
         ]
-    metrics = compute_series_metrics(matches)
+    metrics = compute_series_metrics(matches, mapping)
     by_series = {metric.series_id: metric for metric in metrics}
     first = by_series["series-a"]
     assert first.nav_ratio == pytest.approx(1 / 3)
@@ -350,7 +367,7 @@ def test_overflow_is_diagnostic_and_never_serialized_as_non_finite(mapping: obje
             match_holding(_holding(holding_id=str(number), signed_pct_of_nav=1e308, signed_market_value=1e308), mapping, observations, "2024-01-01", "2024-01-31")
             for number in range(2)
         ]
-    metric = compute_series_metrics(rows)[0]
+    metric = compute_series_metrics(rows, mapping)[0]
     assert metric.nav_ratio is None
     assert metric.denominator_diagnostics["aggregate_non_finite"] >= 1
     assert metric.eligible_market_value_by_currency == {}

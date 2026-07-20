@@ -148,7 +148,7 @@ def test_reports_write_explicit_schemas_internal_provenance_and_no_enum_repr(tmp
     pq.write_table(pa.table({"normalized_cusip9": ["123456789"]}), panel_path)
     match = MatchResult(holding, MatchState.MATCHED, "123456789", "2024-03-29", (Observation("123456789", "2024-03-29", 7, 101.5, "present", None, "T", "present", "unique"),), 2, False)
     reports = write_internal_reports(
-        run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(1, 1, 1, 0, 0, "matching_cohort"), panel_path=panel_path, matches=(match,), series_metrics=compute_series_metrics((match,)), cross_series_summary=compute_cross_series_summary(compute_series_metrics((match,))), latest_observations=match.observations, calibration_report={}, checkpoint={"attempted": True},
+        run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(1, 1, 1, 0, 0, "matching_cohort"), panel_path=panel_path, matches=(match,), series_metrics=compute_series_metrics((match,), _mapping(tmp_path)), cross_series_summary=compute_cross_series_summary(compute_series_metrics((match,), _mapping(tmp_path))), latest_observations=match.observations, calibration_report={}, checkpoint={"attempted": True},
     )
     expected = {"source-manifest.json", "nport-extract-manifest.json", "calibration-report.json", "bond-observed-daily.parquet", "fund-asof-match.parquet", "fund-series-metrics.parquet", "bond-latest.parquet", "quality-summary.json", "pilot-report.md", "checksums.sha256", "checkpoint.json"}
     assert {path.name for path in reports.values()} == expected
@@ -191,11 +191,22 @@ def test_reports_do_not_emit_unknown_currency_aggregate(tmp_path: Path) -> None:
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
     match = MatchResult(holding, MatchState.MATCHED, "123456789")
-    reports = write_internal_reports(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(match,), series_metrics=compute_series_metrics((match,)), cross_series_summary=compute_cross_series_summary(compute_series_metrics((match,))), latest_observations=(), calibration_report={})
+    reports = write_internal_reports(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(match,), series_metrics=compute_series_metrics((match,), _mapping(tmp_path)), cross_series_summary=compute_cross_series_summary(compute_series_metrics((match,), _mapping(tmp_path))), latest_observations=(), calibration_report={})
     row = pq.read_table(reports["fund_series_metrics"]).to_pylist()[0]
     assert json.loads(row["eligible_market_value_by_currency_json"]) == {}
     quality = json.loads(reports["quality_summary"].read_text(encoding="utf-8"))
     assert quality["market_diagnostics"]["currency_values_no_fx"] == [{}]
+
+
+@pytest.mark.parametrize("changes", [{"issuer_category": "fixture_non_debt"}, {"issuer_category": None}, {"issuer_category": "unknown"}, {"asset_class": 3}])
+def test_reports_reject_forged_category_matches_without_durable_output(tmp_path: Path, changes: dict[str, object]) -> None:
+    fixture = _fixture(tmp_path / "fixture.json", [_row(weight=1.0)])
+    holding = replace(load_fixture_holdings(fixture)[0], **changes)
+    panel_path = tmp_path / "panel.parquet"
+    pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
+    with pytest.raises(PilotError, match="inconsistent_category_state"):
+        write_internal_reports(run_dir=tmp_path / "run", source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, load_fixture_holdings(fixture)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(MatchResult(holding, MatchState.MATCHED, "123456789"),), series_metrics=(), cross_series_summary=compute_cross_series_summary(()), latest_observations=(), calibration_report={})
+    assert not (tmp_path / "run").exists()
 
 
 @pytest.mark.parametrize("field", ["source_locator", "artifact_sha256", "schema_sha256", "cutoff"])
@@ -236,7 +247,7 @@ def test_reports_bind_fixture_hash_mapping_hash_and_recomputed_metrics(tmp_path:
     panel_path = tmp_path / "panel.parquet"
     pq.write_table(pa.table({"normalized_cusip9": []}), panel_path)
     match = MatchResult(holding, MatchState.MATCHED, "123456789")
-    metrics = compute_series_metrics((match,))
+    metrics = compute_series_metrics((match,), _mapping(tmp_path))
     summary = compute_cross_series_summary(metrics)
     args = dict(source_candidate=_candidate(), source_approval=_approval(), debt_mapping=_mapping(tmp_path), mapping_provenance=_provenance(tmp_path), nport_manifest=fixture_manifest(fixture, (holding,)), panel_result=PanelBuildResult(0, 0, 0, 0, 0, "scope"), panel_path=panel_path, matches=(match,), series_metrics=metrics, cross_series_summary=summary, latest_observations=(), calibration_report={})
     forged_manifest = dict(args["nport_manifest"])
@@ -312,7 +323,7 @@ def test_reports_require_exact_fixture_lot_coverage(tmp_path: Path) -> None:
 
     def call(run_name: str, holdings: tuple[object, ...]) -> None:
         matches = tuple(MatchResult(holding, MatchState.MATCHED, "123456789") for holding in holdings)
-        metrics = compute_series_metrics(matches)
+        metrics = compute_series_metrics(matches, _mapping(tmp_path))
         write_internal_reports(run_dir=tmp_path / run_name, matches=matches, series_metrics=metrics, cross_series_summary=compute_cross_series_summary(metrics), **base)
 
     with pytest.raises(PilotError, match="report_fixture_mismatch"):

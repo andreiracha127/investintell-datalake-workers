@@ -385,17 +385,38 @@ def _add_finite_amount(
     totals[currency] = total
 
 
-def _eligible(match: MatchResult) -> bool:
-    return (
-        normalize_cusip9(match.holding.original_cusip).normalized_cusip9 is not None
-        and match.state not in {MatchState.INELIGIBLE_NON_DEBT, MatchState.AMBIGUOUS_CATEGORY, MatchState.MISSING_CATEGORY, MatchState.INVALID_IDENTIFIER}
-    )
+_CATEGORY_TERMINAL_STATES = frozenset({MatchState.INELIGIBLE_NON_DEBT, MatchState.AMBIGUOUS_CATEGORY, MatchState.MISSING_CATEGORY})
 
 
-def compute_series_metrics(matches: Iterable[MatchResult]) -> tuple[SeriesMetric, ...]:
+def _validated_debt_state(match: MatchResult, debt_mapping: DebtMapping) -> DebtState:
+    debt_state = debt_mapping.classify(match.holding.issuer_category, match.holding.asset_class, match.holding.instrument_structure)
+    if debt_state is not DebtState.DEBT_LIKE_ELIGIBLE:
+        expected = _state_for_category(debt_state)
+        if match.state is not expected:
+            raise PilotError("inconsistent_category_state")
+    elif match.state in _CATEGORY_TERMINAL_STATES:
+        raise PilotError("inconsistent_category_state")
+    return debt_state
+
+
+def validate_match_categories(matches: Iterable[MatchResult], debt_mapping: DebtMapping) -> tuple[tuple[MatchResult, DebtState], ...]:
+    """Reclassify match inputs before metrics or durable internal evidence."""
+    debt_mapping = _require_valid_mapping(debt_mapping)
+    return tuple((match, _validated_debt_state(match, debt_mapping)) for match in matches)
+
+
+def _eligible(match: MatchResult, debt_state: DebtState) -> bool:
+    return debt_state is DebtState.DEBT_LIKE_ELIGIBLE and normalize_cusip9(match.holding.original_cusip).normalized_cusip9 is not None
+
+
+def compute_series_metrics(matches: Iterable[MatchResult], debt_mapping: DebtMapping) -> tuple[SeriesMetric, ...]:
+    """Compute metrics only from category states revalidated against an approved mapping."""
+    validated = validate_match_categories(matches, debt_mapping)
     groups: dict[tuple[object, object], list[MatchResult]] = defaultdict(list)
-    for match in matches:
+    category_states: dict[int, DebtState] = {}
+    for match, debt_state in validated:
         groups[(match.holding.series_id, match.holding.report_date)].append(match)
+        category_states[id(match)] = debt_state
     metrics: list[SeriesMetric] = []
     for (series_id, report_date), rows in groups.items():
         lineages = {(row.holding.publication_id, row.holding.source_run_id) for row in rows}
@@ -413,7 +434,7 @@ def compute_series_metrics(matches: Iterable[MatchResult]) -> tuple[SeriesMetric
         eligible_poisoned: set[str] = set()
         matched_poisoned: set[str] = set()
         for row in rows:
-            if not _eligible(row):
+            if not _eligible(row, category_states[id(row)]):
                 continue
             weight_state = classify_weight(row.holding.signed_pct_of_nav)
             if weight_state is WeightState.VALID:
