@@ -178,6 +178,21 @@ def test_windows_traversal_uses_exact_relative_no_follow_flags_and_close_ownersh
     assert api.closed_fds == [100]
 
 
+def test_secure_file_exposes_seekable_file_object_adapter_for_archive_readers(tmp_path: Path) -> None:
+    source = tmp_path / "input.bin"
+    source.write_bytes(b"payload")
+    capability = secure_fs.secure_open_file(source, error_code="unsafe")
+    assert capability.seekable() is True
+    assert capability.read(1) == b"p"
+    assert capability.tell() == 1
+    assert capability.seek(0) == 0
+    assert capability.fileno() >= 0
+    capability.close()
+    assert capability.closed is True
+    with pytest.raises(ValueError):
+        capability.tell()
+
+
 def test_windows_open_osfhandle_failure_closes_native_handle_once() -> None:
     api = _WindowsApiFake()
 

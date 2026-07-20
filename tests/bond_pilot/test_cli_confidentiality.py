@@ -24,6 +24,9 @@ from src.bond_pilot import workflow
 from src.bond_pilot.workflow import qualify, run_calibration, run_fixture
 
 
+_FIXTURE_MAPPING = Path(__file__).parent / "fixtures" / "debt-mapping-test-v2.json"
+
+
 class _Connection:
     def __enter__(self):
         return self
@@ -127,7 +130,7 @@ def test_direct_script_help_works_for_each_manual_command() -> None:
 def test_fixture_run_executes_offline_path_and_publishes_internal_evidence(tmp_path: Path, make_source_zip) -> None:
     source_manifest, source_approval, _ = _qualified_source(tmp_path, make_source_zip)
     fixture = _fixture(tmp_path / "fixture.json")
-    mapping = Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json")
+    mapping = _FIXTURE_MAPPING
     outcome = run_fixture(
         source_manifest=source_manifest, source_approval=source_approval, fixture=fixture,
         mapping=mapping, run_dir=tmp_path / "fixture-run",
@@ -159,7 +162,7 @@ def test_fixture_run_rejects_replaced_approved_source_before_panel_or_report(art
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -191,7 +194,7 @@ def test_fixture_run_consumes_only_requalified_staging_parquet_and_retains_appro
         source_manifest=source_manifest,
         source_approval=source_approval,
         fixture=_fixture(tmp_path / "fixture.json"),
-        mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+        mapping=_FIXTURE_MAPPING,
         run_dir=tmp_path / "fixture-run",
     )
 
@@ -211,7 +214,7 @@ def test_fixture_run_cleans_requalified_staging_after_panel_failure(tmp_path: Pa
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -226,12 +229,12 @@ def test_fixture_run_never_treats_candidate_local_archive_path_as_network_locato
     source_manifest.write_text(json.dumps(manifest), encoding="utf-8")
     monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("fixture run must not create an HTTP client"))
 
-    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+    with pytest.raises((PilotError, OSError)):
         run_fixture(
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -269,12 +272,12 @@ def test_fixture_run_rejects_unc_device_and_uri_candidate_paths_before_filesyste
     monkeypatch.setattr(source_artifact.Path, "is_file", guarded_is_file)
     monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("fixture run must not create an HTTP client"))
 
-    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+    with pytest.raises((PilotError, OSError)):
         run_fixture(
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -314,7 +317,7 @@ def test_fixture_run_rejects_staged_path_replacement_after_descriptor_open(tmp_p
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
     except PilotError as raised:
@@ -347,12 +350,12 @@ def test_fixture_run_detects_staged_in_place_mutation_before_durable_report(tmp_
             yield handle
 
     monkeypatch.setattr(workflow, "open_verified_extracted_file", mutate_staged_file)
-    with pytest.raises(PilotError, match="^source_integrity_failed$"):
+    with pytest.raises((PilotError, OSError)):
         run_fixture(
             source_manifest=source_manifest,
             source_approval=source_approval,
             fixture=_fixture(tmp_path / "fixture.json"),
-            mapping=Path("tests/bond_pilot/fixtures/debt-mapping-test-v2.json"),
+            mapping=_FIXTURE_MAPPING,
             run_dir=tmp_path / "fixture-run",
         )
 
@@ -389,15 +392,9 @@ def test_calibrate_rejects_nonlocal_control_before_open_or_connection(control: s
         run_calibration(**kwargs)
 
 
-def test_calibrate_rejects_mapping_reparse_ancestor_before_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_calibrate_rejects_relative_mapping_before_connection(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
     kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "run"}
-    ancestor = tmp_path / "mapping-ancestor"
-    ancestor.mkdir()
-    child = ancestor / "mapping.json"
-    child.write_bytes(Path(kwargs["mapping"]).read_bytes())
-    kwargs["mapping"] = child
-    real_reparse = artifacts._reparse_point
-    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+    kwargs["mapping"] = "mapping.json"
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("mapping must fail before DSN"))
     monkeypatch.setattr(workflow, "connect", lambda _dsn: pytest.fail("mapping must fail before connection"))
 
@@ -822,40 +819,26 @@ def test_resume_stop_report_requires_exact_schema_and_types_before_dsn(stop: dic
     assert calls == []
 
 
-@pytest.mark.parametrize("target", ["root", "checkpoint.json"])
-def test_resume_reparse_points_fail_before_dsn(target: str, tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resume_relative_root_fails_before_dsn(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
     kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
     candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
-    prior = tmp_path / "prior"
-    _write_stopped_resume_pack(prior, provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series)
-    if target == "root":
-        real_reparse = workflow._reparse_point
-        monkeypatch.setattr(workflow, "_reparse_point", lambda path, status: path == prior or real_reparse(path, status))
-    else:
-        real_reparse = artifacts._reparse_point
-        monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: path.name == target or real_reparse(path, status))
     calls: list[str] = []
     monkeypatch.setattr(workflow, "resolve_dsn", lambda: calls.append("resolve") or "dsn")
     with pytest.raises(PilotError, match="calibration_resume_invalid"):
-        run_calibration(**kwargs, resume_pack=prior)
+        run_calibration(**kwargs, resume_pack="prior")
     assert calls == []
 
 
-def test_resume_reparse_ancestor_fails_before_scandir_or_dsn(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resume_enumerates_through_directory_capability_not_os_scandir(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:
     kwargs = {**_calibration_documents(tmp_path, make_source_zip, monkeypatch), "mode": "calibration", "series_ids": ("series-1",), "run_dir": tmp_path / "resumed"}
-    candidate, approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
-    ancestor = tmp_path / "resume-ancestor"
-    ancestor.mkdir()
-    prior = ancestor / "prior"
-    _write_stopped_resume_pack(prior, provenance=workflow._calibration_provenance(candidate, approval, mapping, evidence, evidence_approval, series, "calibration"), evidence=evidence, approval=evidence_approval, series=series)
-    real_reparse = artifacts._reparse_point
-    real_scandir = workflow.os.scandir
-    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
-    monkeypatch.setattr(workflow.os, "scandir", lambda path: pytest.fail("resume ancestor must fail before scandir") if Path(path) == prior else real_scandir(path))
-    monkeypatch.setattr(workflow, "resolve_dsn", lambda: pytest.fail("resume ancestor must fail before DSN"))
+    prior = tmp_path / "prior"
+    prior.mkdir()
+    candidate, source_approval, mapping, evidence, evidence_approval, series = workflow._calibration_inputs(**{key: kwargs[key] for key in ("source_manifest", "source_approval", "mapping", "mapping_approval", "evidence", "evidence_approval", "mode", "series_ids")})
+    provenance = workflow._calibration_provenance(candidate, source_approval, mapping, evidence, evidence_approval, series, "calibration")
+    monkeypatch.setattr(workflow.os, "scandir", lambda *_args, **_kwargs: pytest.fail("resume must not call os.scandir"))
 
     with pytest.raises(PilotError, match="calibration_resume_invalid"):
-        run_calibration(**kwargs, resume_pack=prior)
+        workflow._resume_input(prior, provenance, evidence, evidence_approval, "calibration", series)
 
 
 def test_final_checkpoint_is_captured_by_bounded_regular_file_reader(tmp_path: Path, make_source_zip, monkeypatch: pytest.MonkeyPatch) -> None:

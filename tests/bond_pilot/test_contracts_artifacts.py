@@ -214,25 +214,17 @@ def test_secure_local_reader_rejects_nonlocal_paths_before_filesystem_access(uns
         reader(unsafe, max_bytes=1024, error_code="control_invalid")
 
 
-def test_secure_local_reader_rejects_reparse_ancestor_before_child_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_secure_local_reader_delegates_to_the_capability_core(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     reader = getattr(artifacts, "read_secure_local_file", None)
     assert reader is not None
-    ancestor = tmp_path / "ancestor"
-    ancestor.mkdir()
-    child = ancestor / "control.json"
+    child = tmp_path / "control.json"
     child.write_bytes(b"{}")
-    real_lstat = artifacts.os.lstat
-    real_reparse = getattr(artifacts, "_reparse_point", None)
-
-    def reparse(path: Path, status: object) -> bool:
-        return Path(path) == ancestor or (real_reparse(path, status) if real_reparse is not None else False)
-
-    monkeypatch.setattr(artifacts, "_reparse_point", reparse, raising=False)
-    monkeypatch.setattr(artifacts.os, "lstat", lambda path: real_lstat(path))
-    monkeypatch.setattr(artifacts.Path, "open", lambda path, *_args, **_kwargs: pytest.fail("child must not be opened") if path == child else Path.open(path, *_args, **_kwargs))
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(artifacts, "secure_read_file", lambda *args, **kwargs: calls.append((*args, kwargs)) or (_ for _ in ()).throw(PilotError("control_invalid")))
 
     with pytest.raises(PilotError, match="^control_invalid$"):
         reader(child, max_bytes=1024, error_code="control_invalid")
+    assert calls
 
 
 def test_checksums_are_sorted_relative_and_exclude_self_and_partials(tmp_path: Path) -> None:

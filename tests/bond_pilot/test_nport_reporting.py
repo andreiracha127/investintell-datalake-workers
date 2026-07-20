@@ -132,14 +132,10 @@ def test_fixture_rejects_final_symlink(tmp_path: Path) -> None:
         load_fixture_result(link)
 
 
-def test_fixture_rejects_reparse_ancestor_before_child_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ancestor = tmp_path / "ancestor"
-    ancestor.mkdir()
-    child = _fixture(ancestor / "fixture.json", [_row()])
-    real_reparse = artifacts._reparse_point
-    real_open = artifacts.Path.open
-    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
-    monkeypatch.setattr(artifacts.Path, "open", lambda path, *args, **kwargs: pytest.fail("fixture child must not open") if path == child else real_open(path, *args, **kwargs))
+def test_fixture_propagates_capability_rejection(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    child = _fixture(tmp_path / "fixture.json", [_row()])
+    import src.bond_pilot.nport as nport
+    monkeypatch.setattr(nport, "read_secure_local_file", lambda *_args, **_kwargs: (_ for _ in ()).throw(PilotError("nport_invalid_fixture")))
 
     with pytest.raises(PilotError, match="^nport_invalid_fixture$"):
         load_fixture_result(child)

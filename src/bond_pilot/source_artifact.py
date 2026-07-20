@@ -15,7 +15,7 @@ import shutil
 import stat
 import struct
 import sys
-from typing import BinaryIO, Iterator, Mapping, Protocol
+from typing import Iterator, Mapping, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile, ZipInfo
@@ -23,8 +23,9 @@ from zipfile import BadZipFile, ZipFile, ZipInfo
 import httpx
 import pyarrow.parquet as pq
 
-from .artifacts import commit_partial, partial_path, read_secure_local_file, validated_local_path, write_json_once
+from .artifacts import commit_partial, partial_path, read_secure_local_file, write_json_once
 from .contracts import ArtifactLimits, PilotError, SourceApproval, SourceCandidate
+from ._secure_local_fs import SecureFile, secure_open_file
 
 
 REQUIRED_COLUMNS = ("cusip_id", "trd_exctn_dt", "pr")
@@ -114,8 +115,9 @@ def _publish_directory_no_replace(attempt_dir: Path, run_dir: Path) -> None:
         raise PilotError("qualification_publish_failed", {"path": str(run_dir), "reason": str(exc)}) from exc
 
 
-def _raw_member_name(archive_path: Path, info: ZipInfo) -> str:
-    with archive_path.open("rb") as archive:
+def _raw_member_name(archive: SecureFile, info: ZipInfo) -> str:
+    position = archive.tell()
+    try:
         archive.seek(info.header_offset)
         header = archive.read(30)
         if len(header) != 30:
@@ -126,14 +128,16 @@ def _raw_member_name(archive_path: Path, info: ZipInfo) -> str:
         if signature != 0x04034B50:
             raise PilotError("invalid_zip_archive")
         encoded_name = archive.read(filename_length)
+    finally:
+        archive.seek(position)
     try:
         return encoded_name.decode("utf-8" if info.flag_bits & 0x800 else "cp437")
     except UnicodeDecodeError as exc:
         raise PilotError("invalid_zip_member", {"member_name": info.filename}) from exc
 
 
-def _safe_member(archive_path: Path, info: ZipInfo) -> None:
-    name = _raw_member_name(archive_path, info)
+def _safe_member(archive: SecureFile, info: ZipInfo) -> None:
+    name = _raw_member_name(archive, info)
     mode = info.external_attr >> 16
     file_type = stat.S_IFMT(mode)
     if (
@@ -194,11 +198,12 @@ def _iso_date(value: object) -> date:
     raise PilotError("invalid_trade_dates")
 
 
-def _date_bounds(parquet_path: Path, chunk_size: int) -> tuple[str, str]:
+def _date_bounds(parquet_file: SecureFile, chunk_size: int) -> tuple[str, str]:
     minimum: date | None = None
     maximum: date | None = None
     try:
-        with pq.ParquetFile(parquet_path) as parquet:
+        parquet_file.seek(0)
+        with pq.ParquetFile(parquet_file) as parquet:
             for batch in parquet.iter_batches(columns=["trd_exctn_dt"], batch_size=chunk_size):
                 for value in batch.column(0).to_pylist():
                     if value is None:
@@ -290,74 +295,39 @@ def _reparse_point(status: os.stat_result) -> bool:
     return bool(getattr(status, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
 
 
-def _local_path(value: str | Path) -> Path:
-    return validated_local_path(value, error_code="source_integrity_failed")
-
-
-def _regular_file(status: os.stat_result, *, limit: int, too_large_code: str = "source_integrity_failed") -> None:
-    if not stat.S_ISREG(status.st_mode) or _reparse_point(status):
-        raise PilotError("source_integrity_failed")
-    if status.st_size > limit:
-        details = {} if too_large_code == "source_integrity_failed" else {"limit": limit}
-        raise PilotError(too_large_code, details)
-
-
-def _fingerprint(status: os.stat_result) -> tuple[int, int, int, int]:
-    return status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns
-
-
 def _open_regular_file(
     value: str | Path,
     *,
     limit: int,
     too_large_code: str = "source_integrity_failed",
-) -> tuple[Path, os.stat_result, BinaryIO]:
-    path = _local_path(value)
-    handle: BinaryIO | None = None
+) -> SecureFile:
     try:
-        before = os.lstat(path)
-        _regular_file(before, limit=limit, too_large_code=too_large_code)
-        handle = path.open("rb")
-        opened = os.fstat(handle.fileno())
-        _regular_file(opened, limit=limit, too_large_code=too_large_code)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise PilotError("source_integrity_failed")
-        return path, before, handle
-    except Exception as exc:
-        if handle is not None:
-            handle.close()
-        if isinstance(exc, PilotError):
-            raise
-        if isinstance(exc, OSError):
-            raise PilotError("source_integrity_failed") from exc
+        source = secure_open_file(value, error_code="source_integrity_failed")
+        source.seek(0, 2)
+        size = source.tell()
+        source.seek(0)
+        if size > limit:
+            source.close()
+            details = {} if too_large_code == "source_integrity_failed" else {"limit": limit}
+            raise PilotError(too_large_code, details)
+        return source
+    except PilotError:
         raise
 
 
-def _digest_open_file(handle: BinaryIO, *, limit: int, chunk_size: int) -> tuple[str, int]:
+def _digest_open_file(handle: SecureFile, *, limit: int, chunk_size: int) -> tuple[str, int]:
     digest = hashlib.sha256()
     total = 0
-    for chunk in iter(lambda: handle.read(chunk_size), b""):
+    for chunk in handle.iter_chunks(chunk_size, max_bytes=limit):
         total += len(chunk)
-        if total > limit:
-            raise PilotError("source_integrity_failed")
         digest.update(chunk)
     return digest.hexdigest(), total
 
 
-def _require_unchanged(handle: BinaryIO, before: os.stat_result, *, total: int) -> None:
-    try:
-        after = os.fstat(handle.fileno())
-    except OSError as exc:
-        raise PilotError("source_integrity_failed") from exc
-    if _fingerprint(after) != _fingerprint(before) or total != before.st_size:
-        raise PilotError("source_integrity_failed")
-
-
 def _regular_file_digest(path: str | Path, *, limit: int, chunk_size: int) -> str:
-    _, before, handle = _open_regular_file(path, limit=limit)
+    handle = _open_regular_file(path, limit=limit)
     try:
-        digest, total = _digest_open_file(handle, limit=limit, chunk_size=chunk_size)
-        _require_unchanged(handle, before, total=total)
+        digest, _ = _digest_open_file(handle, limit=limit, chunk_size=chunk_size)
         return digest
     finally:
         handle.close()
@@ -371,7 +341,7 @@ def verify_matching_extracted_files(original: str | Path, verified: str | Path, 
 
 def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expected_sha256: str | None, limits: ArtifactLimits = ArtifactLimits()) -> tuple[int, str]:
     """Copy a local archive once while binding its bytes to its approved SHA-256."""
-    _, before, source = _open_regular_file(
+    source = _open_regular_file(
         archive_path,
         limit=limits.archive_bytes,
         too_large_code="archive_size_exceeded",
@@ -382,13 +352,12 @@ def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expec
             with partial.open("xb") as captured:
                 digest = hashlib.sha256()
                 total = 0
-                for chunk in iter(lambda: source.read(limits.streaming_chunk_bytes), b""):
+                for chunk in source.iter_chunks(limits.streaming_chunk_bytes, max_bytes=limits.archive_bytes):
                     total += len(chunk)
                     if total > limits.archive_bytes:
                         raise PilotError("archive_size_exceeded", {"limit": limits.archive_bytes})
                     digest.update(chunk)
                     captured.write(chunk)
-            _require_unchanged(source, before, total=total)
             artifact_sha = digest.hexdigest()
             if expected_sha256 is not None and artifact_sha != expected_sha256:
                 raise PilotError("artifact_sha256_mismatch", {"expected": expected_sha256, "actual": artifact_sha})
@@ -402,38 +371,25 @@ def capture_local_archive(archive_path: str | Path, capture_path: Path, *, expec
 
 
 @contextmanager
-def open_verified_extracted_file(original: str | Path, verified: str | Path, *, limit: int, chunk_size: int) -> Iterator[BinaryIO]:
-    """Yield a duplicate descriptor for the staged Parquet while retaining its guarded original handle."""
+def open_verified_extracted_file(original: str | Path, verified: str | Path, *, limit: int, chunk_size: int) -> Iterator[SecureFile]:
+    """Yield the verified staged capability after binding it to the approved extraction."""
     expected_digest = _regular_file_digest(original, limit=limit, chunk_size=chunk_size)
-    _, before, source = _open_regular_file(verified, limit=limit)
-    duplicate: BinaryIO | None = None
+    source = _open_regular_file(verified, limit=limit)
     try:
-        digest, total = _digest_open_file(source, limit=limit, chunk_size=chunk_size)
-        _require_unchanged(source, before, total=total)
+        digest, _ = _digest_open_file(source, limit=limit, chunk_size=chunk_size)
         if digest != expected_digest:
             raise PilotError("source_integrity_failed")
         source.seek(0)
-        try:
-            duplicate = os.fdopen(os.dup(source.fileno()), "rb")
-        except OSError as exc:
-            raise PilotError("source_integrity_failed") from exc
-        yield duplicate
+        yield source
     finally:
-        try:
-            if duplicate is not None:
-                duplicate.close()
-        finally:
-            try:
-                _require_unchanged(source, before, total=before.st_size)
-            finally:
-                source.close()
+        source.close()
 
 
 def qualify_local_source(archive_path: str | Path, run_dir: Path, *, capture_path: Path, expected_sha256: str, limits: ArtifactLimits = ArtifactLimits()) -> SourceCandidate:
     """Requalify an already-local archive without allowing a network locator."""
     capture_local_archive(archive_path, capture_path, expected_sha256=expected_sha256, limits=limits)
     try:
-        return qualify_source(capture_path, run_dir, expected_sha256=expected_sha256, limits=limits)
+        return qualify_source(os.path.abspath(capture_path), run_dir, expected_sha256=expected_sha256, limits=limits)
     finally:
         capture_path.unlink(missing_ok=True)
 
@@ -480,12 +436,12 @@ def qualify_source(
             )
 
         try:
-            with ZipFile(archive_final) as archive:
+            with secure_open_file(archive_final, error_code="source_integrity_failed") as archive_file, ZipFile(archive_file) as archive:
                 members = archive.infolist()
                 if len(members) != 1:
                     raise PilotError("invalid_zip_member_count", {"count": len(members)})
                 member = members[0]
-                _safe_member(archive_final, member)
+                _safe_member(archive_file, member)
                 if member.file_size > limits.member_uncompressed_bytes:
                     raise PilotError("member_size_exceeded", {"limit": limits.member_uncompressed_bytes})
                 partial = partial_path(extracted_final)
@@ -506,7 +462,7 @@ def qualify_source(
         except BadZipFile as exc:
             raise PilotError("invalid_zip_archive") from exc
 
-        with pq.ParquetFile(extracted_final) as parquet:
+        with secure_open_file(extracted_final, error_code="source_integrity_failed") as extracted_file, pq.ParquetFile(extracted_file) as parquet:
             columns = tuple(parquet.schema_arrow.names)
             missing = [column for column in REQUIRED_COLUMNS if column not in columns]
             if missing:
@@ -514,7 +470,7 @@ def qualify_source(
             schema_sha256 = hashlib.sha256(parquet.schema_arrow.serialize().to_pybytes()).hexdigest()
             row_count = parquet.metadata.num_rows
             row_group_count = parquet.metadata.num_row_groups
-        global_start, global_cutoff = _date_bounds(extracted_final, limits.streaming_chunk_bytes)
+            global_start, global_cutoff = _date_bounds(extracted_file, limits.streaming_chunk_bytes)
         candidate = SourceCandidate(
             schema_version="source-candidate-v1",
             source_locator=locator_text,

@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-import stat
 import shutil
 from typing import Mapping, Sequence
 from uuid import uuid4
@@ -16,6 +15,7 @@ import psycopg
 from src.db import connect, resolve_dsn
 
 from .artifacts import canonical_json_bytes, read_secure_local_file, validated_local_path, write_checksums, write_json_once
+from ._secure_local_fs import secure_open_dir
 from .contracts import PilotError
 from .db_calibration import (
     load_phase4_v2_evidence,
@@ -150,14 +150,6 @@ _CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  ([^\\/]+(?:/[^\\/]+)*)$")
 _MAX_RESUME_CONTROL_BYTES = 1024 * 1024
 
 
-def _reparse_point(path: Path, status: os.stat_result) -> bool:
-    isjunction = getattr(os.path, "isjunction", None)
-    if callable(isjunction) and isjunction(path):
-        return True
-    attributes = getattr(status, "st_file_attributes", 0)
-    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
-
-
 def _strict_captured_json(raw: bytes) -> dict[str, object]:
     def duplicate(pairs: list[tuple[str, object]]) -> dict[str, object]:
         value: dict[str, object] = {}
@@ -202,21 +194,15 @@ def _read_captured_regular_file(path: Path, *, error_code: str) -> bytes:
 
 def _resume_input(path: str | Path, provenance: Mapping[str, object], evidence: object, approval: object, mode: str, series: tuple[str, ...]) -> tuple[bytes, dict[str, object], str]:
     root = validated_local_path(path, error_code="calibration_resume_invalid")
-    try:
-        root_status = os.lstat(root)
-    except OSError as exc:
-        raise PilotError("calibration_resume_invalid") from exc
-    if not stat.S_ISDIR(root_status.st_mode) or _reparse_point(root, root_status):
-        raise PilotError("calibration_resume_invalid")
     if _within(root, _REPOSITORY_ROOT):
         raise PilotError("calibration_resume_invalid")
-    try:
-        entries = list(os.scandir(root))
-    except OSError as exc:
-        raise PilotError("calibration_resume_invalid") from exc
-    if {item.name for item in entries} != _RESUME_FILES or any(item.is_symlink() or not item.is_file(follow_symlinks=False) for item in entries):
-        raise PilotError("calibration_resume_invalid")
-    captured = {name: _read_captured_regular_file(root / name, error_code="calibration_resume_invalid") for name in _RESUME_FILES}
+    with secure_open_dir(root, error_code="calibration_resume_invalid") as directory:
+        if set(directory.enumerate()) != _RESUME_FILES:
+            raise PilotError("calibration_resume_invalid")
+        captured: dict[str, bytes] = {}
+        for name in _RESUME_FILES:
+            with directory.open_file(name, error_code="calibration_resume_invalid") as child:
+                captured[name] = child.read_all(max_bytes=_MAX_RESUME_CONTROL_BYTES)
     try:
         manifest = captured["checksums.sha256"].decode("utf-8")
     except UnicodeDecodeError as exc:

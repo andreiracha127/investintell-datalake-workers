@@ -181,6 +181,24 @@ class SecureFile:
             raise ValueError("I/O operation on closed capability")
         return self._stream.read(size)
 
+    def seek(self, offset: int, whence: int = 0) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed capability")
+        return self._stream.seek(offset, whence)
+
+    def tell(self) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed capability")
+        return self._stream.tell()
+
+    def fileno(self) -> int:
+        if self._closed:
+            raise ValueError("I/O operation on closed capability")
+        return self._stream.fileno()
+
+    def seekable(self) -> bool:
+        return not self._closed and self._stream.seekable()
+
     def iter_chunks(self, chunk_size: int, *, max_bytes: int) -> Iterator[bytes]:
         if not isinstance(chunk_size, int) or isinstance(chunk_size, bool) or chunk_size <= 0 or max_bytes < 0:
             raise PilotError(self._error_code)

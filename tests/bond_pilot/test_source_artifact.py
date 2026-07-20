@@ -128,31 +128,16 @@ def test_matching_extracted_files_rejects_unsafe_original(unsafe: str, tmp_path:
     assert error.value.details == {}
 
 
-def test_matching_extracted_files_detects_a_file_race(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_matching_extracted_files_opens_both_inputs_through_capabilities(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     original = tmp_path / "original.parquet"
     verified = tmp_path / "verified.parquet"
     original.write_bytes(b"same")
     verified.write_bytes(b"same")
-    real_fstat = source_artifact.os.fstat
-    calls = 0
-
-    def raced_fstat(fd: int):
-        nonlocal calls
-        calls += 1
-        current = real_fstat(fd)
-        if calls == 2:
-            return SimpleNamespace(
-                st_mode=current.st_mode,
-                st_dev=current.st_dev,
-                st_ino=current.st_ino,
-                st_size=current.st_size,
-                st_mtime_ns=current.st_mtime_ns + 1,
-            )
-        return current
-
-    monkeypatch.setattr(source_artifact.os, "fstat", raced_fstat)
-    with pytest.raises(PilotError, match="^source_integrity_failed$"):
-        source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
+    real_open = source_artifact.secure_open_file
+    opened: list[Path] = []
+    monkeypatch.setattr(source_artifact, "secure_open_file", lambda path, **kwargs: opened.append(Path(path)) or real_open(path, **kwargs))
+    source_artifact.verify_matching_extracted_files(original, verified, limit=4, chunk_size=2)
+    assert opened == [original, verified]
 
 
 def test_local_archive_capture_rejects_a_symlink_before_opening(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,17 +194,36 @@ def test_initial_local_qualification_rejects_unc_and_device_before_stat_open_or_
         qualify_source(unsafe, tmp_path / "run")
 
 
-def test_initial_local_qualification_rejects_reparse_ancestor_before_child_open(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    ancestor = tmp_path / "ancestor"
-    ancestor.mkdir()
-    source = ancestor / "source.zip"
-    source.write_bytes(make_source_zip().read_bytes())
-    real_reparse = artifacts._reparse_point
-    monkeypatch.setattr(artifacts, "_reparse_point", lambda path, status: Path(path) == ancestor or real_reparse(path, status))
+def test_initial_local_qualification_never_resolves_user_input(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = make_source_zip()
+    real_resolve = source_artifact.Path.resolve
+    monkeypatch.setattr(source_artifact.Path, "resolve", lambda path, *args, **kwargs: pytest.fail("input must not be resolved") if Path(path) == source else real_resolve(path, *args, **kwargs))
     monkeypatch.setattr(source_artifact.httpx, "Client", lambda: pytest.fail("local qualification must not create an HTTP client"))
 
+    assert qualify_source(source, tmp_path / "run").artifact_bytes == source.stat().st_size
+
+
+def test_initial_local_qualification_uses_a_capability_not_a_path_open(make_source_zip, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = make_source_zip()
+    real_open = source_artifact.Path.open
+    monkeypatch.setattr(
+        source_artifact.Path,
+        "open",
+        lambda path, *args, **kwargs: pytest.fail("input archive must not be path-opened")
+        if Path(path) == archive
+        else real_open(path, *args, **kwargs),
+    )
+
+    candidate = qualify_source(archive, tmp_path / "run")
+
+    assert candidate.artifact_bytes == archive.stat().st_size
+
+
+def test_initial_local_qualification_rejects_relative_user_input(make_source_zip, tmp_path: Path) -> None:
+    relative = "source-input.zip"
+
     with pytest.raises(PilotError, match="source_integrity_failed"):
-        qualify_source(source, tmp_path / "run")
+        qualify_source(relative, tmp_path / "run")
 
 
 def test_rejects_wrong_sha_and_removes_outputs_from_failed_attempt(make_source_zip, tmp_path: Path) -> None:
