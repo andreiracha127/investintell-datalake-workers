@@ -101,6 +101,10 @@ jobs:
           src/workers/_yahoo_sector.py
           scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
+          src/bond_pilot
+          scripts/run_bond_pilot.py
+          tests/bond_pilot
+          tests/test_ci_path_scope.py
           tests/test_nport_lookthrough.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
@@ -118,6 +122,10 @@ jobs:
           src/workers/_yahoo_sector.py
           scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
+          src/bond_pilot
+          scripts/run_bond_pilot.py
+          tests/bond_pilot
+          tests/test_ci_path_scope.py
 
       - name: Verify certified input pack
         if: steps.changes.outputs.quant_changed == 'true'

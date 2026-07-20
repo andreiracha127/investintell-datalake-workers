@@ -43,7 +43,7 @@ def test_nport_enrichment_helpers_select_only_nport(path: str) -> None:
         "src/bond_pilot/panel.py",
         "scripts/run_bond_pilot.py",
         "tests/bond_pilot/test_panel.py",
-        "tests/bond_pilot/fixtures/debt-mapping-test-v1.json",
+        "tests/bond_pilot/fixtures/debt-mapping-test-v2.json",
         "docs/bond-pilot-option-a.md",
     ],
 )
@@ -77,6 +77,24 @@ def test_nport_dependency_install_precedes_bond_pilot_tests() -> None:
 
     assert install_step in workflow
     assert workflow.index(install_step) < workflow.index(bond_tests_step)
+
+
+@pytest.mark.parametrize(
+    ("step_name", "command"),
+    [
+        ("Lint N-PORT modules", "ruff check"),
+        ("Compile N-PORT modules", "python -m compileall -q"),
+    ],
+)
+def test_nport_static_gates_cover_bond_pilot_and_path_scope(step_name: str, command: str) -> None:
+    workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    start = workflow.index(f"      - name: {step_name}")
+    end = workflow.find("\n      - name:", start + 1)
+    step = workflow[start:] if end < 0 else workflow[start:end]
+
+    assert command in step
+    for path in ("src/bond_pilot", "scripts/run_bond_pilot.py", "tests/bond_pilot", "tests/test_ci_path_scope.py"):
+        assert path in step
 
 
 def test_stage_a_compute_path_selects_quant_only() -> None:

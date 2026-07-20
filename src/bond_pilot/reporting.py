@@ -5,9 +5,11 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from enum import Enum
 import math
+import os
 from pathlib import Path
 import re
 import shutil
+import stat
 from typing import Iterable, Mapping
 from uuid import uuid4
 
@@ -24,6 +26,7 @@ from .source_artifact import _path_lexists, _publish_directory_no_replace
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_POSIX_PERMISSIONS = os.name == "posix"
 _MATCH_SCHEMA = pa.schema([
     pa.field("publication_id", pa.string()), pa.field("accession_number", pa.string()), pa.field("holding_id", pa.string()), pa.field("source_run_id", pa.string()),
     pa.field("report_date", pa.string()), pa.field("filing_date", pa.string()), pa.field("series_id", pa.string()), pa.field("class_id", pa.string()),
@@ -138,9 +141,17 @@ def _create_reporting_attempt(run_dir: Path) -> Path:
     for _ in range(3):
         attempt = run_dir.parent / f".{run_dir.name}.reporting-{uuid4().hex}.partial-dir"
         try:
-            attempt.mkdir()
+            attempt.mkdir(mode=0o700)
         except FileExistsError:
             continue
+        if _POSIX_PERMISSIONS:
+            try:
+                attempt.chmod(0o700)
+                if stat.S_IMODE(attempt.stat().st_mode) != 0o700:
+                    raise OSError("reporting attempt permissions are not 0700")
+            except OSError as exc:
+                shutil.rmtree(attempt, ignore_errors=True)
+                raise PilotError("reporting_attempt_private_failed") from exc
         return attempt
     raise PilotError("attempt_directory_collision", {"path": str(run_dir)})
 

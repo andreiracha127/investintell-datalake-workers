@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 from dataclasses import replace
 from pathlib import Path
 
@@ -289,6 +291,36 @@ def test_reports_publish_whole_run_or_leave_no_trace(tmp_path: Path, monkeypatch
     assert not list(tmp_path.glob(".run.reporting-*.partial-dir"))
     monkeypatch.setattr(reporting, "write_text_once", original)
     assert write_internal_reports(run_dir=run, **args)["checksums"].is_file()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits do not define Windows ACLs")
+def test_reporting_attempt_is_private_independent_of_umask(tmp_path: Path) -> None:
+    previous_umask = os.umask(0)
+    try:
+        attempt = reporting._create_reporting_attempt(tmp_path / "run")
+    finally:
+        os.umask(previous_umask)
+    assert stat.S_IMODE(attempt.stat().st_mode) == 0o700
+
+
+def test_reporting_attempt_permission_failure_cleans_partial_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_chmod(_path: Path, _mode: int) -> None:
+        raise OSError("permission hardening failed")
+
+    monkeypatch.setattr(reporting, "_POSIX_PERMISSIONS", True)
+    monkeypatch.setattr(Path, "chmod", fail_chmod)
+    with pytest.raises(PilotError, match="reporting_attempt_private_failed"):
+        reporting._create_reporting_attempt(tmp_path / "run")
+    assert not list(tmp_path.glob(".run.reporting-*.partial-dir"))
+
+
+def test_reporting_attempt_does_not_treat_windows_mode_as_acl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject_chmod(_path: Path, _mode: int) -> None:
+        raise AssertionError("Windows reporting attempts must not claim ACL hardening via chmod")
+
+    monkeypatch.setattr(reporting, "_POSIX_PERMISSIONS", False)
+    monkeypatch.setattr(Path, "chmod", reject_chmod)
+    assert reporting._create_reporting_attempt(tmp_path / "run").is_dir()
 
 
 @pytest.mark.parametrize("with_contents", [False, True])

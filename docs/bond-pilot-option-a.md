@@ -36,6 +36,14 @@ that allowlist. Internal failures must become neutral typed public states withou
 their source-specific text. No frontend-facing example in this runbook names a
 source.
 
+The internal pack parent and storage must be restricted to the operational
+identity that runs and reviews the pilot. On POSIX, each reporting attempt is
+explicitly hardened and verified as mode `0700` before any unredacted evidence
+is written. On Windows, mode bits do not establish an ACL: the operator must use
+a parent directory and storage restricted to that identity. Random attempt
+names and no-replace publication remain mandatory on both platforms, but do not
+substitute for the storage access controls.
+
 ## Approval order and manual commands
 
 Run these commands from the workers repository root in PowerShell. Values marked
