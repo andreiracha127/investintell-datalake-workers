@@ -364,6 +364,11 @@ def _package_status(conn: psycopg.Connection, *, relative_path: str) -> tuple[st
 def _resolve_holding_parents(conn: psycopg.Connection, *, run_id: UUID, contract) -> None:
     """Resolve filhos apenas por mapa one-to-one validado em SQL."""
     with conn.cursor() as cur:
+        # All rows for a large package are uncommitted here, so planner statistics
+        # cannot see the actual cardinality.  A nested-loop plan makes the
+        # child-to-holding reconciliation grow catastrophically; keep this local
+        # to the package transaction and use the indexed/hash alternatives.
+        cur.execute("SET LOCAL enable_nestloop = off")
         cur.execute("DELETE FROM nport_holding_accession_map WHERE ingestion_run_id = %s", (run_id,))
         cur.execute(
             """SELECT holding_id FROM nport_raw_rows

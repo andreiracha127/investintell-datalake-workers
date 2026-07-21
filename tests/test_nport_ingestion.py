@@ -100,6 +100,14 @@ def test_nport_contract_is_closed_and_has_thirty_tables() -> None:
     assert contract.table_for_filename("SUBMISSION.tsv").raw_target == "nport_submission_raw"
 
 
+def test_holding_parent_reconciliation_avoids_nested_loop_plan() -> None:
+    import src.nport.ingestion as ingestion
+
+    assert 'cur.execute("SET LOCAL enable_nestloop = off")' in inspect.getsource(
+        ingestion._resolve_holding_parents,
+    )
+
+
 def test_streamer_does_not_need_full_file_reads(tmp_path: Path) -> None:
     from src.sec_regulatory.tsv import stream_tsv
 
