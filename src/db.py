@@ -143,3 +143,6 @@ LOCK_EOD_PRICES_WARMER = 900_335
 # 900_336 is the next free id in the market/identity ingestion band (900_3xx),
 # immediately after eod_prices_warmer's 900_335; no collision with any worker above.
 LOCK_TIINGO_FUND_META = 900_336
+# mixed_quant_v1 point-in-time publication worker. Serializes the build of one
+# inactive publication; 900_337 is the next free id after tiingo_fund_meta.
+LOCK_MIXED_QUANT_PUBLICATION = 900_337
