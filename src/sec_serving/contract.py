@@ -191,9 +191,10 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         "state_map": _NCEN_STATE_MAP,
         "payload_schema_id": "ncen_etf_primary_market_v1",
         "payload_keys": ("etf_primary_market",),
-        # forward-note 4: never repass the snapshot's coerced net_primary_market_flow;
-        # drop it and degrade when it was present (a leg was coerced).
-        "degraded_rule": "drop_coerced_net_flow_degrade_if_present",
+        # forward-note 4: a net flow from two PRESENT legs is legitimate and served
+        # as-is; degrade and drop the net ONLY when the snapshot flagged an incomplete
+        # (one-legged) AP (derived.leg_incomplete). A missing leg is never coerced to 0.
+        "degraded_rule": "serve_net_when_legs_complete_degrade_if_leg_incomplete",
     },
     {
         "family": "ncen_closed_end",
@@ -236,7 +237,10 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         "state_map": _RR1_STATE_MAP,
         "payload_schema_id": "rr1_fee_v1",
         # forward-note 10 / Constraint 5: fractions stored, unit DECLARED here.
-        "payload_keys": ("canonical_concept", "value_numeric", "declared_unit"),
+        # forward-notes 12 & 15: crosswalk_evidence (canonical_concept + crosswalk_version
+        # + confidence) rides here for a fact resolved from a custom tag; never the tag.
+        "payload_keys": ("canonical_concept", "value_numeric", "declared_unit",
+                         "crosswalk_evidence"),
         "degraded_rule": "snapshot_status_passthrough",
     },
     {
@@ -320,9 +324,11 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         "payload_schema_id": "rr1_reported_performance_v1",
         # forward-notes 11 & 16: standalone reported-performance; treatment carries
         # the load/tax signal (incl. 'unclassified'); no fabricated boolean.
+        # forward-notes 12 & 15: crosswalk_evidence rides here for a fact resolved from
+        # a custom tag (canonical_concept + crosswalk_version + confidence; never the tag).
         "payload_keys": (
             "canonical_concept", "value_kind", "value_numeric", "value_date",
-            "value_label", "declared_unit", "treatment",
+            "value_label", "declared_unit", "treatment", "crosswalk_evidence",
         ),
         "degraded_rule": "snapshot_status_passthrough",
     },
@@ -366,7 +372,7 @@ CROSSWALK_MIN_CONFIDENCE = 0.80
 
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.sec_regulatory_serving_v1.SURFACE_DIGEST`` byte-for-byte.
-SURFACE_DIGEST = "sha256:bb51512f03a682d1d68f06693f3c73e6bff6e9ddaf06bf9c265b6fc9cfbd36e3"
+SURFACE_DIGEST = "sha256:1dfe1a393fa50ed174b4b4f68323b1ca1049c87d7d4150d32f0ac65aec8cba01"
 
 
 def _family_surface(family: dict[str, Any]) -> dict[str, Any]:

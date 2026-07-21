@@ -147,10 +147,11 @@ def _synthetic_snapshots(cur) -> None:
     )
     ncen_fund("sec_current_ncen_etf_primary_market_profiles", "etf_primary_market_state",
               "etf_primary_market_reason_code", "etf_primary_market")
-    # available with a coerced net flow -> forward-note 4 -> drop net + degrade.
+    # both legs present (leg_incomplete false) -> forward-note 4 -> serve the net as-is.
     etf_payload = {
         "authorized_participants": [{"entity_key": SENT_ROW, "purchase_value": 10}],
-        "derived": {"net_primary_market_flow": 999, "authorized_participant_count": 1},
+        "derived": {"net_primary_market_flow": 4000000, "leg_incomplete": False,
+                    "authorized_participant_count": 1},
         **LEAK_BLOB,
     }
     cur.execute(
@@ -182,17 +183,20 @@ def _synthetic_snapshots(cur) -> None:
                 status text, reason_code text, provenance jsonb, coverage jsonb {value_cols})
         """)
 
-    rr1_fact("sec_current_rr1_fee_profiles", ", canonical_concept text, value_numeric numeric")
+    # original_tag/original_version mirror the real fee view (rr taxonomy tag + version);
+    # these RR-namespaced sidecars never match a custom-tag crosswalk row (Constraint 5).
+    rr1_fact("sec_current_rr1_fee_profiles",
+             ", canonical_concept text, value_numeric numeric, original_tag text, original_version text")
     cur.execute(
         "INSERT INTO sec_current_rr1_fee_profiles VALUES "
         "('S1','C1','ACC-9','2025-12-31','2025-12-31','2026-02-01','D1','M1','','0',"
-        "'available',NULL,%s,'{}','net_expense',0.0075)",
+        "'available',NULL,%s,'{}','net_expense',0.0075,'ExpensesOverAssets','rr/2023')",
         (PROV,),
     )
     cur.execute(
         "INSERT INTO sec_current_rr1_fee_profiles VALUES "
         "('S1','C2','ACC-9','2025-12-31','2025-12-31','2026-02-01','D1','M1','','0',"
-        "'unavailable','source_filing_unavailable',%s,'{}','net_expense',NULL)",
+        "'unavailable','source_filing_unavailable',%s,'{}','net_expense',NULL,NULL,NULL)",
         (PROV,),
     )
     rr1_fact("sec_current_rr1_shareholder_cost_profiles",
@@ -228,12 +232,13 @@ def _synthetic_snapshots(cur) -> None:
     )
     rr1_fact("sec_current_rr1_reported_performance_profiles",
              ", canonical_concept text, value_kind text, value_numeric numeric, value_date date, "
-             "value_label text, declared_unit text, treatment text")
+             "value_label text, declared_unit text, treatment text, "
+             "original_tag text, original_version text")
     cur.execute(
         "INSERT INTO sec_current_rr1_reported_performance_profiles VALUES "
         "('S1','C1','ACC-9','2025-12-31','2025-12-31','2026-02-01','D1','M1','','0',"
         "'available',NULL,%s,'{}','avg_annual_return','numeric',0.123,NULL,NULL,'pure',"
-        "'after_tax_distributions_and_sales')",
+        "'after_tax_distributions_and_sales','AvgAnnlRtrPct','rr/2023')",
         (PROV,),
     )
     # dispersion: series grain, 3-state.
@@ -332,10 +337,11 @@ def test_state_mapping_and_forward_notes() -> None:
             ).fetchone()
             return {"state": row[0], "reason": row[1], "snap": row[2], "payload": row[3]}
 
-        # forward-note 4: etf net flow dropped + degraded.
+        # forward-note 4: both legs present (leg_incomplete false) -> stays available and
+        # the legitimate net flow is SERVED as-is (never dropped, never coerced).
         etf = one("ncen_etf_primary_market")
-        assert etf["state"] == "degraded"
-        assert "net_primary_market_flow" not in etf["payload"]
+        assert etf["state"] == "available"
+        assert '"net_primary_market_flow": 4000000' in etf["payload"]
         # forward-note 8: expense all-null legs -> degraded.
         assert one("ncen_expense_brokerage")["state"] == "degraded"
         # forward-note 7: closed-end not_applicable preserves the typed snapshot reason.
@@ -428,6 +434,117 @@ def test_serving_data_contains_no_internal_identifiers() -> None:
             assert token not in dump, f"leaked internal token {token!r}"
         # the neutralised entity-key fallback is present as the honest sentinel.
         assert "unavailable" in dump
+    finally:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_etf_leg_incomplete_degrades_and_drops_net() -> None:
+    """forward-note 4: a snapshot with an incomplete (one-legged) AP degrades and the
+    untrustworthy net is never served -- even though a net value is present upstream."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        schema, _run, _pkg = _setup(cur)
+        payload = {
+            "authorized_participants": [],
+            "derived": {"net_primary_market_flow": 700, "leg_incomplete": True,
+                        "authorized_participant_count": 2},
+        }
+        cur.execute(
+            "INSERT INTO sec_current_ncen_etf_primary_market_profiles VALUES "
+            "('S9','F9','ACC-1','2025-12-31','2025-12-31','available',NULL,%s,%s,'{}')",
+            (json.dumps(payload), PROV),
+        )
+        _materialize(cur)
+        row = cur.execute(
+            "SELECT state, payload::text FROM sec_current_regulatory_serving_facts "
+            "WHERE family='ncen_etf_primary_market' AND fund_id='F9'"
+        ).fetchone()
+        assert row[0] == "degraded"
+        assert "net_primary_market_flow" not in row[1]
+    finally:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_fee_crosswalk_evidence_is_confidence_gated_and_tag_free() -> None:
+    """forward-notes 12 & 15: a fee fact resolved from an APPROVED high-confidence custom
+    mapping surfaces crosswalk evidence (concept + version + confidence, never the tag);
+    approved-but-low-confidence and proposed mappings surface nothing."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        schema, _run, _pkg = _setup(cur)
+        # class -> (custom original tag, canonical concept) matched against the setup's
+        # synthetic crosswalk: X=approved 0.95, Y=approved 0.50, Z=proposed 0.99.
+        for class_id, tag, concept in (
+            ("CWH", "CustomTagLeakX", "management_fee"),
+            ("CWL", "CustomTagLeakY", "net_expense"),
+            ("CWP", "CustomTagLeakZ", "other_expense"),
+        ):
+            cur.execute(
+                "INSERT INTO sec_current_rr1_fee_profiles VALUES "
+                "('S1',%s,'ACC-9','2025-12-31','2025-12-31','2026-02-01','D1','M1','','0',"
+                "'available',NULL,%s,'{}',%s,0.005,%s,'v1')",
+                (class_id, PROV, concept, tag),
+            )
+        _materialize(cur)
+
+        def payload_for(class_id: str) -> str:
+            row = cur.execute(
+                "SELECT payload::text FROM sec_current_regulatory_serving_facts "
+                "WHERE family='rr1_fee' AND class_id=%s",
+                (class_id,),
+            ).fetchone()
+            return row[0] if row else ""
+
+        high = payload_for("CWH")
+        assert '"crosswalk_evidence"' in high
+        assert '"crosswalk_version": "cw1"' in high
+        assert '"canonical_concept": "management_fee"' in high
+        assert "CustomTagLeak" not in high  # the internal tag name never leaks
+        # gated out -> no crosswalk_evidence key at all.
+        assert "crosswalk_evidence" not in payload_for("CWL")
+        assert "crosswalk_evidence" not in payload_for("CWP")
+    finally:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_partial_family_surface_fails_and_promotes_nothing() -> None:
+    """A missing family source view must fail closed: nothing validated, nothing
+    promoted (the current pointer is never set)."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        schema, _run, _pkg = _setup(cur)
+        cur.execute("DROP TABLE sec_current_ncen_closed_end_profiles")
+        with pytest.raises(materializer.ServingFamilyCoverageError):
+            _materialize(cur)
+        pointer = cur.execute(
+            "SELECT publication_id FROM sec_derived_current_pointers "
+            "WHERE product='sec_regulatory_serving_v1'"
+        ).fetchone()
+        assert pointer is None
+    finally:
+        conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_allow_missing_families_opts_out_of_the_coverage_gate() -> None:
+    """The explicit opt-out lets a deliberately partial setup materialize + promote."""
+    conn = _connect()
+    try:
+        cur = conn.cursor()
+        schema, _run, _pkg = _setup(cur)
+        cur.execute("DROP TABLE sec_current_ncen_closed_end_profiles")
+        result = materializer.materialize(
+            cur.connection, as_of=date(2025, 12, 31), code_revision="test",
+            allow_missing_families=True,
+        )
+        assert result["state"] == "current"
+        assert "ncen_closed_end" not in result["families_written"]
     finally:
         conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         conn.close()

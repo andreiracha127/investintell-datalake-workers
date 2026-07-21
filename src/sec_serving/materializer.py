@@ -34,6 +34,17 @@ ROOT = Path(__file__).resolve().parents[2]
 
 _NAMESPACE = UUID("9e2b7a54-1c3d-5e6f-8a90-1b2c3d4e5f60")
 
+
+class ServingFamilyCoverageError(RuntimeError):
+    """Raised when a serving build would promote a PARTIAL family surface.
+
+    The serving publication is one complete, atomically promoted surface: every
+    contract-declared family whose source snapshot is missing would silently drop
+    that family from the served publication. Failing closed here prevents a partial
+    promotion; ``materialize(..., allow_missing_families=True)`` opts out for tests
+    that deliberately exercise a subset of families.
+    """
+
 _SCHEMA_FILES = (
     "sec_derived_publications.sql",
     "sec_regulatory_serving.sql",
@@ -83,22 +94,64 @@ def _ncen_fund_sql(
     """
 
 
+# Natural/numeric crosswalk-version ordering (v2 < v10): rank by the digit run, with
+# a lexical tiebreak, so the HIGHEST approved version wins. Mirrors the SQL resolver
+# ``rr1_crosswalk_resolve`` (schemas/rr1_custom_tag_crosswalk.sql).
+_CROSSWALK_VERSION_ORDER = (
+    "NULLIF(regexp_replace(x.crosswalk_version, '[^0-9]', '', 'g'), '')::numeric DESC NULLS LAST, "
+    "x.crosswalk_version DESC"
+)
+
+# forward-notes 12 & 15: the confidence-gated crosswalk evidence for a fact resolved
+# from a custom (non-canonical) tag. Public evidence is canonical_concept +
+# crosswalk_version + confidence ONLY -- NEVER the internal custom/original tag name.
+# Approved + confidence>=threshold, highest crosswalk_version. Joins on the fact's
+# preserved (original_tag, original_version) sidecar for the SAME canonical_concept.
+_CROSSWALK_EVIDENCE_JOIN = f"""
+    LEFT JOIN LATERAL (
+        SELECT jsonb_build_object(
+                   'canonical_concept', x.canonical_concept,
+                   'crosswalk_version', x.crosswalk_version,
+                   'confidence', x.confidence) AS evidence
+        FROM rr1_custom_tag_crosswalk x
+        WHERE x.custom_tag = s.original_tag
+          AND x.custom_version = s.original_version
+          AND x.canonical_concept = s.canonical_concept
+          AND x.review_status = 'approved'
+          AND x.confidence >= %(min_conf)s
+        ORDER BY {_CROSSWALK_VERSION_ORDER}
+        LIMIT 1
+    ) cw ON true
+"""
+
+
 def _rr1_fact_sql(
     family: str, view: str, payload_build: str, fact_key: str, *,
     accession: str = "accession_number", filing: str = "filed_date",
     source_date: str = "data_date", grain_origin: str = "class",
     class_id: str = "COALESCE(class_id,'')", series_id: str = "COALESCE(series_id,'')",
     document: str = "COALESCE(document_id,'')",
+    crosswalk_evidence: bool = False,
 ) -> str:
     # RR1 status is already the 4-state serving vocabulary -> pass through.
+    if crosswalk_evidence:
+        payload_expr = (
+            f"({payload_build} || CASE WHEN cw.evidence IS NOT NULL "
+            "THEN jsonb_build_object('crosswalk_evidence', cw.evidence) "
+            "ELSE '{}'::jsonb END)"
+        )
+        join_clause = _CROSSWALK_EVIDENCE_JOIN
+    else:
+        payload_expr = payload_build
+        join_clause = ""
     return f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, '{family}', {series_id}, {class_id}, '', {fact_key}, '{grain_origin}',
            srv_state, {_REASON}, reason_code, {_COVERAGE}, {source_date},
            {accession}, {document}, {filing}, effective_date,
            CASE WHEN srv_state IN ('available','degraded')
-                THEN sec_serving_scrub({payload_build}) ELSE NULL END
-    FROM (SELECT s.*, status AS srv_state FROM {view} s) s
+                THEN sec_serving_scrub({payload_expr}) ELSE NULL END
+    FROM (SELECT s.*, status AS srv_state FROM {view} s) s{join_clause}
     ON CONFLICT DO NOTHING
     """
 
@@ -147,16 +200,19 @@ def _family_sql() -> dict[str, str]:
         "expense_brokerage_state", "expense_brokerage_reason_code", "s.expense_brokerage",
         degraded=expense_degraded,
     )
-    # forward-note 4: never repass the coerced net_primary_market_flow; drop it and
-    # degrade when it was present (a purchase/redeem leg was coerced to 0).
+    # forward-note 4: a net flow computed from two PRESENT legs is legitimate and is
+    # served as-is; degrade ONLY when the snapshot flagged an incomplete leg (>=1 AP
+    # row carried a single leg), and in that case never serve the untrustworthy net.
     etf_degraded = (
         "WHEN etf_primary_market_state='available' "
-        "AND s.etf_primary_market#>>'{derived,net_primary_market_flow}' IS NOT NULL THEN 'degraded' "
+        "AND (s.etf_primary_market#>>'{derived,leg_incomplete}')::boolean THEN 'degraded' "
     )
     sql["ncen_etf_primary_market"] = _ncen_fund_sql(
         "ncen_etf_primary_market", "sec_current_ncen_etf_primary_market_profiles",
         "etf_primary_market_state", "etf_primary_market_reason_code",
-        "(s.etf_primary_market #- '{derived,net_primary_market_flow}')",
+        "(CASE WHEN (s.etf_primary_market#>>'{derived,leg_incomplete}')::boolean "
+        "THEN s.etf_primary_market #- '{derived,net_primary_market_flow}' "
+        "ELSE s.etf_primary_market END)",
         degraded=etf_degraded,
     )
 
@@ -186,6 +242,7 @@ def _family_sql() -> dict[str, str]:
         "'value_numeric', s.value_numeric, 'declared_unit', 'fraction')",
         "concat_ws('|', s.canonical_concept, s.measure_id, s.document_id, s.dimensions, "
         "s.occurrence, s.data_date::text)",
+        crosswalk_evidence=True,
     )
     sql["rr1_shareholder_cost"] = _rr1_fact_sql(
         "rr1_shareholder_cost", "sec_current_rr1_shareholder_cost_profiles",
@@ -226,6 +283,7 @@ def _family_sql() -> dict[str, str]:
         "'value_label', s.value_label, 'declared_unit', s.declared_unit, 'treatment', s.treatment)",
         "concat_ws('|', s.canonical_concept, s.measure_id, s.document_id, s.dimensions, "
         "s.occurrence, s.data_date::text)",
+        crosswalk_evidence=True,
     )
     # forward-note 9: use post-rename names; numeric_class_count is never the class count.
     sql["rr1_class_cost_dispersion"] = f"""
@@ -319,8 +377,15 @@ def materialize(
     code_revision: str,
     source_run_id: UUID | None = None,
     source_package_id: UUID | None = None,
+    allow_missing_families: bool = False,
 ) -> dict[str, Any]:
-    """Prepare -> project every present family -> validate -> current, atomically."""
+    """Prepare -> project every present family -> validate -> current, atomically.
+
+    Fails closed (``ServingFamilyCoverageError``) and promotes NOTHING when any
+    contract-declared family's ``source_view`` is missing, so a partial surface can
+    never be silently promoted. Pass ``allow_missing_families=True`` only for tests
+    that deliberately seed a subset of the family snapshots.
+    """
     publication_id = publication_id_for(as_of, code_revision)
     product = contract.SERVING_PRODUCT
 
@@ -362,6 +427,14 @@ def materialize(
             ).fetchone()
             if pub_row is not None:
                 consumed[family["family"]] = str(pub_row[0])
+        missing_families = [f for f in contract.family_names() if f not in set(families_written)]
+        if missing_families and not allow_missing_families:
+            # Fail closed BEFORE the build pin, validation and current-pointer flip:
+            # nothing is validated and nothing is promoted for a partial surface.
+            raise ServingFamilyCoverageError(
+                "serving build would promote a partial surface; missing family source "
+                f"views {missing_families}"
+            )
         conn.execute(
             "INSERT INTO sec_regulatory_serving_builds"
             "(publication_id,as_of_date,input_fingerprint,consumed_family_publications)"
