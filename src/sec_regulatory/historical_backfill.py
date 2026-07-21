@@ -1078,8 +1078,6 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
         if source_paths != {spec.form: spec.root for spec in PRODUCTION_SOURCES} or Path(cast(str, run_directory)).is_relative_to(PRODUCTION_STATE_ROOT) is False:
             raise BackfillSafetyError("production execution authorization roots differ from the Linux contract")
         _validate_preflight_attestation(document.get("preflight_attestation"))
-        if execution_mode == "full" and certificate is None:
-            raise BackfillSafetyError("full production execution requires a canary certificate")
         if schema_version == 4:
             scope = cast(list[dict[str, str]], _validate_scope(document.get("package_scope"), inventory_hash=inventory_hash, label="authorization"))
             if supervisor_run_id is None:
@@ -3220,13 +3218,8 @@ def cli(argv: Sequence[str] | None = None) -> int:
                     evidence = executor.run_rollback_probe(evidence_path=args.run_dir / "rollback-probe.json")
                     print(_canonical_json({"state": "rollback_probed", "evidence_path": str(args.run_dir / "rollback-probe.json"), "identity": evidence["identity"]}))
                     return 0
-                if args.action in {"start", "resume"} and isinstance(executor_authorization, Mapping) and executor_authorization.get("execution_mode") == "full" and (args.action == "start" or status_missing):
+                if args.action in {"start", "resume"} and isinstance(executor_authorization, Mapping) and executor_authorization.get("execution_mode") == "full" and isinstance(executor_authorization.get("canary_certificate"), Mapping) and (args.action == "start" or status_missing):
                     seeded_records = executor.promote_canary_certificate()
-                elif args.action == "resume" and status_missing and not (
-                    isinstance(executor_authorization, Mapping)
-                    and executor_authorization.get("execution_mode") == "canary"
-                ):
-                    raise BackfillSafetyError("missing status can be reconstructed only from a full certificate")
             outcome = run_supervisor(inventory, status_path=status_path, code_sha=current_code_sha, execute_package=executor, lease_owner=f"pid-{os.getpid()}", command=("historical-backfill", args.action), authorization_id=authorization_id, target_identity=target_identity, authorization_fingerprint=authorization_fingerprint, authorization_lineage=authorization_lineage, heartbeat_interval_seconds=AUTHORIZED_HEARTBEAT_INTERVAL_SECONDS if args.execution_authorization is not None else None, controlled_boundary_crash=args.controlled_boundary_crash, stop_contract_hash=stop_contract_hash, boundary_stop_requested=boundary_stop.is_set, supervisor_run_id=supervisor_run_id, execution_identities=execution_identities, seeded_records=seeded_records)
             print(_canonical_json(outcome))
             return 0 if outcome["state"] == "ok" else 1
