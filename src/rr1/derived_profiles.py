@@ -38,6 +38,7 @@ PRODUCTS: dict[str, str] = {
     "rr1_class_cost_dispersion_v1": "build_rr1_class_cost_dispersion",
     "rr1_turnover_profile_v1": "build_rr1_turnover_profiles",
     "rr1_reported_performance_profile_v1": "build_rr1_reported_performance_profiles",
+    "rr1_benchmark_profile_v1": "build_rr1_benchmark_profiles",
 }
 
 _SCHEMA_FILES = (
@@ -50,6 +51,7 @@ _SCHEMA_FILES = (
     "rr1_class_cost_dispersion.sql",
     "rr1_turnover_profiles.sql",
     "rr1_reported_performance_profiles.sql",
+    "rr1_benchmark_profiles.sql",
 )
 
 
