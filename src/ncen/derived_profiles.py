@@ -34,6 +34,8 @@ PRODUCTS: dict[str, str] = {
     "ncen_liquidity_backstop_v1": "build_ncen_liquidity_backstop_profiles",
     "ncen_securities_lending_v1": "build_ncen_securities_lending_profiles",
     "ncen_etf_primary_market_v1": "build_ncen_etf_primary_market_profiles",
+    "ncen_closed_end_v1": "build_ncen_closed_end_profiles",
+    "ncen_expense_brokerage_v1": "build_ncen_expense_brokerage_profiles",
 }
 
 _SCHEMA_FILES = (
@@ -46,6 +48,8 @@ _SCHEMA_FILES = (
     "ncen_liquidity_backstop_profiles.sql",
     "ncen_securities_lending_profiles.sql",
     "ncen_etf_primary_market_profiles.sql",
+    "ncen_closed_end_profiles.sql",
+    "ncen_expense_brokerage_profiles.sql",
 )
 
 
