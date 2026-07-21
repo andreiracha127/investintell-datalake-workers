@@ -1048,7 +1048,7 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
     if not _is_sha256(document.get("stop_contract_hash")) or not _is_sha256(document.get("reconciliation_contract_hash")):
         raise BackfillSafetyError("invalid execution authorization contract hash")
     execution_mode = document.get("execution_mode")
-    if execution_mode not in {"canary", "full"}:
+    if execution_mode not in {"canary", "full", "shard"}:
         raise BackfillSafetyError("invalid execution authorization mode")
     _validate_scope(document.get("package_scope"), inventory_hash=inventory_hash, label="authorization")
     _validate_runner_attestation(document.get("runner_attestation"))
@@ -1086,6 +1086,8 @@ def _validate_execution_authorization(document: Mapping[str, object], *, code_sh
                 raise BackfillSafetyError("production canary scope must be exactly one package per form")
             if execution_mode == "full" and len(scope) != 82:
                 raise BackfillSafetyError("production full scope must bind exactly 82 packages")
+            if execution_mode == "shard" and (not scope or len(scope) >= 82 or certificate is not None):
+                raise BackfillSafetyError("production shard scope must bind a nonempty strict inventory subset without a canary certificate")
     if mode == "local_disposable" and document.get("preflight_attestation") is not None:
         raise BackfillSafetyError("local disposable authorization cannot carry production preflight attestation")
     return dict(document)

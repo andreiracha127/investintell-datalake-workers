@@ -554,6 +554,28 @@ def _production_authorization(inventory_hash: str) -> dict[str, object]:
     return artifact
 
 
+def test_production_shard_authorization_accepts_a_strict_inventory_subset() -> None:
+    from src.sec_regulatory import historical_backfill as backfill
+
+    artifact = _production_authorization("a" * 64)
+    artifact.update({
+        "schema_version": 4,
+        "execution_mode": "shard",
+        "supervisor_run_id": "11111111-1111-4111-8111-111111111111",
+        "package_scope": [
+            {"identity": "nport:2020Q2:2020q2_nport", "package_sha256": "b" * 64},
+        ],
+    })
+
+    validated = backfill._validate_execution_authorization(
+        artifact,
+        code_sha="code-v1",
+        inventory_hash="a" * 64,
+    )
+
+    assert validated["execution_mode"] == "shard"
+
+
 def _least_privilege_production_preflight() -> dict[str, object]:
     valid = _production_preflight()
     table_privileges = {
