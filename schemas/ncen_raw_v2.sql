@@ -143,15 +143,15 @@ BEGIN
      OR r.parent_key IS DISTINCT FROM CASE WHEN cardinality(c.logical_parents)=0 THEN NULL WHEN c.logical_parents[1]='FUND_REPORTED_INFO.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'FUND_ID','')='' THEN NULL ELSE 'fund:'||(r.original_lexical_row->>'FUND_ID') END WHEN c.logical_parents[1]='DIRECTOR.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' OR COALESCE(r.original_lexical_row->>'DIRECTOR_SEQNUM','')='' THEN NULL ELSE 'director:'||(r.original_lexical_row->>'ACCESSION_NUMBER')||':'||(r.original_lexical_row->>'DIRECTOR_SEQNUM') END WHEN c.logical_parents[1]='LINE_OF_CREDIT_DETAIL.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'FUND_ID','')='' OR COALESCE(r.original_lexical_row->>'LINE_OF_CREDIT_SEQNUM','')='' THEN NULL ELSE 'credit:'||(r.original_lexical_row->>'FUND_ID')||':'||(r.original_lexical_row->>'LINE_OF_CREDIT_SEQNUM') END WHEN c.logical_parents[1]='VALUATION_METHOD_CHANGE.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' OR COALESCE(r.original_lexical_row->>'VALUATION_METHOD_CHANGE_SEQNUM','')='' THEN NULL ELSE 'valuation:'||(r.original_lexical_row->>'ACCESSION_NUMBER')||':'||(r.original_lexical_row->>'VALUATION_METHOD_CHANGE_SEQNUM') END ELSE CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' THEN NULL ELSE 'accession:'||(r.original_lexical_row->>'ACCESSION_NUMBER') END END
    )
  ) THEN RETURN false; END IF;
- -- Every declared parent resolves exactly once using all shared structural
- -- identifiers.  This preserves fund/director/provider/event child grains
- -- without pivoting and rejects both orphan and ambiguous child references.
+ -- A frozen delivery can legitimately omit a declared parent while retaining
+ -- its child row. Preserve that raw evidence; only an ambiguous local parent
+ -- would make the structural key unsafe.
  IF EXISTS(
    SELECT 1 FROM ncen_raw_v2_rows child
    JOIN ncen_contract_tables c ON c.metadata_sha256=package_metadata AND c.source_table=child.source_table
    JOIN LATERAL unnest(c.logical_parents) parent_name ON true
    LEFT JOIN LATERAL (SELECT count(*) n FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table=parent_name AND parent.entity_key=child.parent_key) resolved ON true
-   WHERE child.ingestion_run_id=target_run_id AND (child.parent_key IS NULL OR resolved.n<>1)
+   WHERE child.ingestion_run_id=target_run_id AND child.parent_key IS NOT NULL AND resolved.n>1
  ) THEN RETURN false; END IF;
  RETURN true;
 END $$;

@@ -76,6 +76,29 @@ def test_fund_child_relationship_key_preserves_one_to_many_grain() -> None:
     assert _relationship_keys(child, {"FUND_ID": "F-1"})[1] == "fund:F-1"
 
 
+def test_frozen_2022q1_retains_child_rows_with_absent_delivery_parent() -> None:
+    """A source delivery may omit a declared parent without invalidating raw evidence."""
+    import csv
+
+    source = Path(r"E:\Edgard\ncen\2022q1_ncen")
+    contract = verify_package(source).contract
+    parent = contract.table_for_filename("FUND_REPORTED_INFO.tsv")
+    child = contract.table_for_filename("AUTHORIZED_PARTICIPANT.tsv")
+    parent_funds: set[str] = set()
+    with (source / parent.source_file).open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            if row.get("FUND_ID"):
+                parent_funds.add(row["FUND_ID"])
+    absent = 0
+    with (source / child.source_file).open(encoding="utf-8-sig", newline="") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            if row.get("FUND_ID") and row["FUND_ID"] not in parent_funds:
+                absent += 1
+    assert absent == 166
+    ddl = Path("schemas/ncen_raw_v2.sql").read_text(encoding="utf-8")
+    assert "child.parent_key IS NOT NULL AND resolved.n>1" in ddl
+
+
 def test_package_quarter_is_delivery_partition_not_economic_period() -> None:
     assert source_quarter_from_package(Path("2024q1_ncen_0")) == "2024Q1"
     with pytest.raises(Exception):
