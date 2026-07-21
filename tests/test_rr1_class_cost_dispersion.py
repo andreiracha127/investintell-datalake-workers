@@ -33,13 +33,13 @@ def test_dispersion_spans_net_expense_across_classes_with_per_class_evidence():
         fact(cur, run_id, NET, "0.80", class_id="C3", document="D3", raw_row_id=3)
         assert _build(cur, publication_id) == 1  # one series-grain row
         cur.execute(
-            """SELECT series_id,class_count,net_min,net_max,net_spread,
+            """SELECT series_id,numeric_class_count,class_total,net_min,net_max,net_spread,
                       net_min_class_id,net_max_class_id,status,reason_code,
                       jsonb_array_length(per_class_evidence)
                FROM rr1_class_cost_dispersion"""
         )
         assert cur.fetchone() == (
-            "S1", 3, Decimal("0.70"), Decimal("0.90"), Decimal("0.20"),
+            "S1", 3, 3, Decimal("0.70"), Decimal("0.90"), Decimal("0.20"),
             "C1", "C2", "available", None, 3,
         )
         # Per-class evidence preserves each class's document context and net value.
@@ -64,10 +64,10 @@ def test_single_class_series_is_not_applicable_and_spread_is_null_not_zero():
         fact(cur, run_id, NET, "0.75", class_id="C1", raw_row_id=1)
         _build(cur, publication_id)
         cur.execute(
-            "SELECT class_count,net_min,net_max,net_spread,status,reason_code FROM rr1_class_cost_dispersion"
+            "SELECT numeric_class_count,class_total,net_min,net_max,net_spread,status,reason_code FROM rr1_class_cost_dispersion"
         )
         # A single class is not a dispersion; the spread is NULL, never a synthetic 0.
-        assert cur.fetchone() == (1, Decimal("0.75"), Decimal("0.75"), None, "not_applicable", "single_class_series")
+        assert cur.fetchone() == (1, 1, Decimal("0.75"), Decimal("0.75"), None, "not_applicable", "single_class_series")
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -80,8 +80,9 @@ def test_non_numeric_net_is_excluded_from_stats_but_kept_in_evidence():
         fact(cur, run_id, NET, "0.90", class_id="C2", raw_row_id=2)
         fact(cur, run_id, NET, "n/a", class_id="C3", raw_row_id=3)
         _build(cur, publication_id)
-        cur.execute("SELECT class_count,net_min,net_max,net_spread,status FROM rr1_class_cost_dispersion")
-        assert cur.fetchone() == (2, Decimal("0.70"), Decimal("0.90"), Decimal("0.20"), "available")
+        cur.execute("SELECT numeric_class_count,class_total,net_min,net_max,net_spread,status FROM rr1_class_cost_dispersion")
+        # 2 numeric classes drive the spread; the non-numeric C3 still counts toward class_total.
+        assert cur.fetchone() == (2, 3, Decimal("0.70"), Decimal("0.90"), Decimal("0.20"), "available")
         cur.execute(
             """SELECT e->>'class_id', e->>'net_expense', e->>'net_state'
                FROM rr1_class_cost_dispersion, jsonb_array_elements(per_class_evidence) e
@@ -99,8 +100,9 @@ def test_all_non_numeric_net_yields_unavailable_dispersion():
         fact(cur, run_id, NET, "n/a", class_id="C1", raw_row_id=1)
         fact(cur, run_id, NET, "", class_id="C2", raw_row_id=2)
         _build(cur, publication_id)
-        cur.execute("SELECT class_count,net_min,net_max,net_spread,status,reason_code FROM rr1_class_cost_dispersion")
-        assert cur.fetchone() == (0, None, None, None, "unavailable", "no_numeric_net_expense")
+        cur.execute("SELECT numeric_class_count,class_total,net_min,net_max,net_spread,status,reason_code FROM rr1_class_cost_dispersion")
+        # No numeric class -> unavailable; both non-numeric classes still count toward class_total.
+        assert cur.fetchone() == (0, 2, None, None, None, "unavailable", "no_numeric_net_expense")
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 

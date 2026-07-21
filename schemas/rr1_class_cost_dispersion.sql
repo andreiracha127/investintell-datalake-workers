@@ -17,7 +17,12 @@ CREATE TABLE IF NOT EXISTS rr1_class_cost_dispersion (
     effective_date date NOT NULL,
     filed_date date NOT NULL,
     form text NOT NULL,
-    class_count integer NOT NULL CHECK (class_count >= 0),
+    -- numeric_class_count = classes whose net expense parsed to a number (the
+    -- dispersion population).  class_total = every class that reported the net
+    -- fact for the series (numeric or not); a non-numeric class still counts
+    -- toward the series' class total but not toward the spread population.
+    numeric_class_count integer NOT NULL CHECK (numeric_class_count >= 0),
+    class_total integer NOT NULL CHECK (class_total >= 0),
     net_min numeric,
     net_max numeric,
     net_spread numeric,
@@ -39,10 +44,13 @@ CREATE TABLE IF NOT EXISTS rr1_class_cost_dispersion (
     -- was computed; reason is present exactly when it is not available.
     CHECK ((status = 'available') = (net_spread IS NOT NULL)),
     CHECK ((status = 'available') = (reason_code IS NULL)),
-    CHECK ((status = 'unavailable') = (class_count = 0)),
+    CHECK ((status = 'unavailable') = (numeric_class_count = 0)),
+    -- Every numeric class is one of the series' classes; the total never trails
+    -- the numeric subset.
+    CHECK (class_total >= numeric_class_count),
     -- The extrema exist iff at least one class reported a numeric net; a single
     -- class keeps min = max but the spread stays NULL, never a synthetic 0.
-    CHECK ((net_min IS NULL) = (class_count = 0)),
+    CHECK ((net_min IS NULL) = (numeric_class_count = 0)),
     CHECK ((net_min IS NULL) = (net_max IS NULL)),
     CHECK ((net_min_class_id IS NULL) = (net_min IS NULL)),
     CHECK ((net_max_class_id IS NULL) = (net_max IS NULL))
@@ -165,6 +173,14 @@ BEGIN
     -- data_date) context, and every net fact must carry series+class identity.
     -- A class reported twice (e.g. under two documents) is a hard failure, never
     -- a double-counted class in the roll-up.
+    --
+    -- NOTE ON GRAIN: this dispersion snapshot deliberately rolls a class up to
+    -- the SERIES grain on (series_id, data_date) only -- it does NOT preserve the
+    -- measure/document/dimensions/occurrence context the class-grain snapshots
+    -- (fee / shareholder-cost / waiver) keep, because a cross-class spread is a
+    -- series-level statistic.  That is why a single class reported under two
+    -- documents is a conflict here (it would double-count the class) even though
+    -- the class-grain snapshots would treat those two documents as distinct rows.
     WITH selected AS (
         SELECT f.*
         FROM rr1_effective_facts f
@@ -212,11 +228,11 @@ BEGIN
     )
     INSERT INTO rr1_class_cost_dispersion(
         publication_id,source_run_id,accession_number,series_id,data_date,effective_date,filed_date,form,
-        class_count,net_min,net_max,net_spread,net_min_class_id,net_max_class_id,status,reason_code,
+        numeric_class_count,class_total,net_min,net_max,net_spread,net_min_class_id,net_max_class_id,status,reason_code,
         per_class_evidence,provenance,coverage
     )
     SELECT target_publication_id,a.ingestion_run_id,a.accession_number,a.series_id,a.data_date,a.effective_date,a.filed_date,a.form,
-           a.numeric_count,a.net_min,a.net_max,
+           a.numeric_count,a.class_fact_count,a.net_min,a.net_max,
            CASE WHEN a.numeric_count >= 2 THEN rr1_safe_diff(a.net_max, a.net_min) END,
            a.net_min_class_id,a.net_max_class_id,
            CASE WHEN a.numeric_count >= 2 THEN 'available'
