@@ -29,8 +29,7 @@ CREATE TABLE IF NOT EXISTS ncen_contract_tables (
  metadata_sha256 char(64) NOT NULL CHECK(metadata_sha256 ~ '^[0-9a-f]{64}$'),
  source_table text NOT NULL, raw_target text NOT NULL, logical_parents text[] NOT NULL,
  candidate_key text[] NOT NULL, headers text[] NOT NULL DEFAULT ARRAY[]::text[],
- column_contract jsonb NOT NULL DEFAULT '[]'::jsonb, PRIMARY KEY(metadata_sha256,source_table),
- UNIQUE(metadata_sha256,raw_target)
+ column_contract jsonb NOT NULL DEFAULT '[]'::jsonb, PRIMARY KEY(metadata_sha256,source_table)
 );
 ALTER TABLE ncen_contract_tables ADD COLUMN IF NOT EXISTS headers text[] NOT NULL DEFAULT ARRAY[]::text[];
 ALTER TABLE ncen_contract_tables ADD COLUMN IF NOT EXISTS column_contract jsonb NOT NULL DEFAULT '[]'::jsonb;
