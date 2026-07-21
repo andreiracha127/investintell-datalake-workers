@@ -206,11 +206,14 @@ BEGIN
                    'purchase_value', purchase_value, 'redeem_value', redeem_value) ORDER BY raw_row_id) AS aps,
                count(*) AS ap_count,
                sum(purchase_value) AS total_purchase,
-               sum(redeem_value) AS total_redeem
+               sum(redeem_value) AS total_redeem,
+               -- True when >=1 AP row reported exactly one leg (purchase XOR redeem):
+               -- the aggregate net is then untrustworthy even if both sums are non-null.
+               bool_or((purchase_value IS NOT NULL) <> (redeem_value IS NOT NULL)) AS leg_incomplete
         FROM _ncen_etf_aps GROUP BY 1,2,3
     )
     SELECT a.source_run_id, a.accession_number, a.fund_id, a.aps, a.ap_count,
-           a.total_purchase, a.total_redeem, h.ap_concentration_hhi
+           a.total_purchase, a.total_redeem, a.leg_incomplete, h.ap_concentration_hhi
     FROM agg a JOIN hhi h USING (source_run_id, accession_number, fund_id);
 
     INSERT INTO ncen_etf_primary_market_profiles(
@@ -265,9 +268,14 @@ BEGIN
                'derived', jsonb_build_object(
                     'authorized_participant_count', COALESCE(m.ap_count, 0),
                     'ap_concentration_hhi', m.ap_concentration_hhi,
+                    -- Net flow is legitimate ONLY when BOTH aggregate legs are present.
+                    -- A missing leg is NEVER coerced to 0 (Task 3's original sin) -> NULL.
                     'net_primary_market_flow',
-                        CASE WHEN COALESCE(m.ap_count,0) > 0
-                             THEN COALESCE(m.total_purchase,0) - COALESCE(m.total_redeem,0) ELSE NULL END,
+                        CASE WHEN m.total_purchase IS NOT NULL AND m.total_redeem IS NOT NULL
+                             THEN m.total_purchase - m.total_redeem ELSE NULL END,
+                    -- Data-quality flag: >=1 AP row carried exactly one leg (see agg CTE).
+                    -- The serving layer degrades and drops the net when this is true.
+                    'leg_incomplete', COALESCE(m.leg_incomplete, false),
                     'fee_attributable_tracking_drag',
                         CASE WHEN NULLIF(btrim(sf.etf_evidence->>'ANNUAL_DIFF_AFTER_FEE_EXPENSE'),'') IS NOT NULL
                               AND NULLIF(btrim(sf.etf_evidence->>'ANNUAL_DIFF_B4_FEE_EXPENSE'),'') IS NOT NULL

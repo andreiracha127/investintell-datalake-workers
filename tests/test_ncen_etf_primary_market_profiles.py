@@ -68,6 +68,8 @@ def test_etf_primary_market_aps_creation_unit_mix_fees_tracking():
         assert d["authorized_participant_count"] == 2
         # net flow = (6M+1M purchases) - (2M+1M redemptions) = 4,000,000
         assert float(d["net_primary_market_flow"]) == 4000000
+        # both APs reported both legs -> the net is trustworthy (not flagged).
+        assert d["leg_incomplete"] is False
         # HHI over total AP value: shares (8M,2M)/10M -> 0.8^2 + 0.2^2 = 0.68
         assert abs(float(d["ap_concentration_hhi"]) - 0.68) < 1e-6
         # fee-attributable tracking drag = after - before = 0.25
@@ -150,6 +152,52 @@ def test_etf_primary_market_zero_and_missing_denominators_not_coerced():
         assert payload["derived"]["fee_attributable_tracking_drag"] is None  # after-fee missing
         # net flow is a real 0 here (source reported zeros on both legs)
         assert float(payload["derived"]["net_primary_market_flow"]) == 0.0
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_etf_primary_market_single_missing_leg_nulls_net_and_flags_incomplete():
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _, publication_id = _fixture(cur)
+        submission(cur, run_id, "A1")
+        fund(cur, run_id, "A1", "F1", "S1", IS_ETF="Y")
+        _etf(cur, run_id, "F1", NUM_SHARES_PER_CREATION_UNIT="25000")
+        # The only AP reports a purchase leg but NO redeem leg: the missing leg must
+        # never be coerced to 0, so the aggregate net is left NULL (Task 3's sin), and
+        # the one-legged row flags leg_incomplete.
+        _ap(cur, run_id, "F1", PARTICIPANT_NAME="AP0", PARTICIPANT_LEI="LEI-AP0",
+            PURCHASE_VALUE="5000000")
+        cur.execute("SELECT build_ncen_etf_primary_market_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute("SELECT etf_primary_market_state, etf_primary_market FROM ncen_etf_primary_market_profiles")
+        state, payload = cur.fetchone()
+        assert state == "available"  # the snapshot stays available; the serving degrades.
+        d = payload["derived"]
+        assert d["net_primary_market_flow"] is None
+        assert d["leg_incomplete"] is True
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_etf_primary_market_one_legged_ap_flags_incomplete_even_with_both_totals():
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _, publication_id = _fixture(cur)
+        submission(cur, run_id, "A1")
+        fund(cur, run_id, "A1", "F1", "S1", IS_ETF="Y")
+        _etf(cur, run_id, "F1", NUM_SHARES_PER_CREATION_UNIT="25000")
+        # AP A reports both legs; AP B reports only a purchase leg.  BOTH aggregate legs
+        # are then non-null (net computable = 7M - 2M = 5M) but a one-legged row makes
+        # the net untrustworthy -> leg_incomplete flags it for the serving to drop.
+        _ap(cur, run_id, "F1", PARTICIPANT_NAME="AP A", PARTICIPANT_LEI="LEI-A",
+            PURCHASE_VALUE="6000000", REDEEM_VALUE="2000000")
+        _ap(cur, run_id, "F1", PARTICIPANT_NAME="AP B", PARTICIPANT_LEI="LEI-B",
+            PURCHASE_VALUE="1000000")
+        cur.execute("SELECT build_ncen_etf_primary_market_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute("SELECT etf_primary_market FROM ncen_etf_primary_market_profiles")
+        d = cur.fetchone()[0]["derived"]
+        assert float(d["net_primary_market_flow"]) == 5000000
+        assert d["leg_incomplete"] is True
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
