@@ -38,7 +38,7 @@ class ParseTask:
     relative_package_path: str
     output: str
     inventory_files: tuple[tuple[str, str, int], ...] = ()
-    expected_package_sha256: str | None = None
+    expected_inventory_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -300,9 +300,15 @@ def _parse_task(task: ParseTask) -> dict[str, Any]:
         package,
         governed_file_hashes,
     )
+    if task.expected_inventory_sha256 is not None:
+        inventory_files = [
+            {"relative_path": name, "sha256": sha256, "byte_count": byte_size}
+            for name, sha256, byte_size in task.inventory_files
+        ]
+        inventory_digest = hashlib.sha256(_canonical(inventory_files).encode("ascii")).hexdigest()
+        if inventory_digest != task.expected_inventory_sha256:
+            raise FastBackfillError(f"inventory package digest mismatch: {task.relative_package_path}")
     package_sha = _package_digest(task.form, verified)
-    if task.expected_package_sha256 is not None and package_sha != task.expected_package_sha256:
-        raise FastBackfillError(f"inventory package digest mismatch: {task.relative_package_path}")
     identity = f"{task.form}:{quarter}:{task.relative_package_path}"
     directory = output / "packages" / _safe_name(identity)
     directory.mkdir(parents=True, exist_ok=True)
@@ -394,7 +400,7 @@ def _discover_tasks(root: Path, inventory: Path | None, forms: Sequence[str], id
                 and isinstance(file_entry.get("sha256"), str)
                 and isinstance(file_entry.get("byte_count"), int)
             )
-            expected_package_sha256 = item.get("package_sha256")
+            expected_inventory_sha256 = item.get("package_sha256")
             tasks.append(ParseTask(
                 form,
                 str(source_root),
@@ -402,7 +408,7 @@ def _discover_tasks(root: Path, inventory: Path | None, forms: Sequence[str], id
                 relative,
                 str(output),
                 inventory_files,
-                expected_package_sha256 if isinstance(expected_package_sha256, str) else None,
+                expected_inventory_sha256 if isinstance(expected_inventory_sha256, str) else None,
             ))
     else:
         for form in sorted(selected_forms):
