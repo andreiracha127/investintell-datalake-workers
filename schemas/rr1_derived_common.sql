@@ -47,3 +47,23 @@ RETURNS numeric LANGUAGE sql IMMUTABLE AS $$
         ELSE round(numerator / denominator, 6)
     END
 $$;
+
+-- Strict ISO (YYYY-MM-DD) date parse for date-typed text facts (e.g. a fee-waiver
+-- termination date carried in txt.tsv).  Anything else -- absent, malformed, or a
+-- non-ISO lexical -- yields NULL so the caller can flag it honestly rather than
+-- fabricate a date.  The raw parser already quarantines malformed selection dates
+-- upstream; this guards the value leg of a text date fact.
+CREATE OR REPLACE FUNCTION rr1_safe_iso_date(raw_value text)
+RETURNS date LANGUAGE plpgsql IMMUTABLE AS $$
+DECLARE parsed date;
+BEGIN
+    IF raw_value IS NULL OR raw_value !~ '^\d{4}-\d{2}-\d{2}$' THEN
+        RETURN NULL;
+    END IF;
+    BEGIN
+        parsed := raw_value::date;
+    EXCEPTION WHEN SQLSTATE '22007' OR SQLSTATE '22008' THEN
+        RETURN NULL;
+    END;
+    RETURN parsed;
+END $$;
