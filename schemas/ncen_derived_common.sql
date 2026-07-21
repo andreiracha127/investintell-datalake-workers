@@ -15,6 +15,18 @@ RETURNS text LANGUAGE sql IMMUTABLE AS $$
     END
 $$;
 
+-- Safe ratio for derived intensities/utilizations/yields.  Returns NULL -- never
+-- a synthetic zero -- whenever the denominator is missing or zero, or the
+-- numerator is missing.  A genuine reported zero numerator over a real non-zero
+-- denominator still yields a real 0 (e.g. an unused-but-existing credit line).
+CREATE OR REPLACE FUNCTION ncen_safe_ratio(numerator numeric, denominator numeric)
+RETURNS numeric LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN numerator IS NULL OR denominator IS NULL OR denominator = 0 THEN NULL
+        ELSE round(numerator / denominator, 6)
+    END
+$$;
+
 -- Stable provider identity.  Identifier precedence is LEI, then CRD, then PCAOB,
 -- with the reported name as the last-resort fallback.  The chosen kind is
 -- surfaced so downstream consumers can weigh a name-only match differently from
