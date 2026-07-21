@@ -78,6 +78,15 @@ def _seed_full_fee_table(cur, run_id):
     # Class C2 net expense -> gives the dispersion snapshot >=2 classes.
     _fact(cur, run_id, "A1", "ManagementFeesOverAssets", "0.45", class_id="C2", document="D2")
     _fact(cur, run_id, "A1", "NetExpensesOverAssets", "0.90", class_id="C2", document="D2")
+    # Turnover: numeric rate + narrative -> the turnover snapshot.
+    _fact(cur, run_id, "A1", "PortfolioTurnoverRate", "0.45", class_id="C1")
+    _fact(cur, run_id, "A1", "PortfolioTurnoverTextBlock", "portfolio turnover was 45%",
+          source_table="txt.tsv", uom=None, class_id="C1")
+    # Reported performance: a class return + a declared broad-based-index benchmark
+    # return -> the reported-performance and benchmark snapshots.
+    _fact(cur, run_id, "A1", "AvgAnnlRtrPct", "0.10", class_id="C1", otherdims="PeriodAxis=Year01")
+    _fact(cur, run_id, "A1", "AvgAnnlRtrPct", "0.12", class_id="", measure="BroadBasedIndexMember",
+          otherdims="IndexAxis=SP500Member")
 
 
 def test_materializer_publishes_every_product_prepared_to_validated_to_current():
@@ -98,7 +107,9 @@ def test_materializer_publishes_every_product_prepared_to_validated_to_current()
             cur.execute("SELECT lifecycle_state FROM sec_current_derived_publications WHERE product=%s", (product,))
             assert cur.fetchone() == ("validated",), product
         for view in ("sec_current_rr1_fee_profiles", "sec_current_rr1_shareholder_cost_profiles",
-                     "sec_current_rr1_waiver_profiles", "sec_current_rr1_class_cost_dispersion"):
+                     "sec_current_rr1_waiver_profiles", "sec_current_rr1_class_cost_dispersion",
+                     "sec_current_rr1_turnover_profiles", "sec_current_rr1_reported_performance_profiles",
+                     "sec_current_rr1_benchmark_profiles"):
             cur.execute(f"SELECT count(*) FROM {view}")
             assert cur.fetchone()[0] >= 1, view
 
