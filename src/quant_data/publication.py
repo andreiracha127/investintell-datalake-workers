@@ -151,6 +151,45 @@ def write_exposure(
     )
 
 
+def write_holding_link(
+    conn: psycopg.Connection,
+    publication_id: uuid.UUID,
+    instrument_id: uuid.UUID,
+    security_instrument_id: uuid.UUID,
+    *,
+    alias_type: str,
+    alias_value: str,
+    weight_pct: float,
+    coverage: Mapping[str, Any],
+    source_lineage: Mapping[str, Any],
+) -> None:
+    conn.execute(
+        "INSERT INTO quant_holding_link_v1 "
+        "(publication_id, instrument_id, security_instrument_id, alias_type, alias_value, "
+        " weight_pct, coverage, source_lineage) "
+        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (publication_id, instrument_id, security_instrument_id) DO UPDATE SET "
+        "alias_type=EXCLUDED.alias_type, alias_value=EXCLUDED.alias_value, "
+        "weight_pct=EXCLUDED.weight_pct, coverage=EXCLUDED.coverage, source_lineage=EXCLUDED.source_lineage",
+        (publication_id, instrument_id, security_instrument_id, alias_type, alias_value,
+         float(weight_pct), Jsonb(dict(coverage)), Jsonb(require_lineage(source_lineage))),
+    )
+
+
+def merge_instrument_coverage(
+    conn: psycopg.Connection,
+    publication_id: uuid.UUID,
+    instrument_id: uuid.UUID,
+    patch: Mapping[str, Any],
+) -> None:
+    """Shallow-merge a coverage patch into an instrument (non-active only)."""
+    conn.execute(
+        "UPDATE quant_instrument_v1 SET coverage = coverage || %s "
+        "WHERE publication_id=%s AND instrument_id=%s",
+        (Jsonb(dict(patch)), publication_id, instrument_id),
+    )
+
+
 def write_income(
     conn: psycopg.Connection,
     publication_id: uuid.UUID,
@@ -215,6 +254,7 @@ def count_rows(conn: psycopg.Connection, publication_id: uuid.UUID) -> dict[str,
         ("quant_return_v1", "returns"),
         ("quant_exposure_v1", "exposures"),
         ("quant_income_v1", "income"),
+        ("quant_holding_link_v1", "links"),
     ):
         counts[key] = conn.execute(
             f"SELECT count(*) FROM {table} WHERE publication_id=%s", (publication_id,)

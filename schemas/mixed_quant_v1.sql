@@ -84,6 +84,46 @@ CREATE TABLE IF NOT EXISTS mixed_quant_holding_observation (
     UNIQUE (as_of, series_id)
 );
 
+-- Observed, return-estimated class-factor evidence (fund/equity). Produced by
+-- the governed offline class-factor runner (sec_class_factors); this table
+-- carries its per-factor results into the publication. measurement_type keeps
+-- the app's observed-vs-estimated distinction; evidence preserves the model
+-- fit/version (e.g. instrumented_pca / latent factor evidence).
+CREATE TABLE IF NOT EXISTS mixed_quant_class_factor_observation (
+    observation_id   uuid PRIMARY KEY,
+    as_of            date NOT NULL,
+    alias_type       text NOT NULL CHECK (alias_type IN ('cusip', 'isin', 'ticker')),
+    alias_value      text NOT NULL CHECK (alias_value <> ''),
+    factor           text NOT NULL CHECK (factor <> ''),
+    value            double precision NOT NULL,
+    method           text NOT NULL CHECK (method <> ''),
+    measurement_type text NOT NULL CHECK (measurement_type IN ('observed', 'estimated')),
+    quality_status   text NOT NULL CHECK (quality_status <> ''),
+    quality_flags    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    evidence         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    observed_at      timestamptz NOT NULL,
+    source_lineage   jsonb NOT NULL,
+    CHECK (jsonb_typeof(quality_flags) = 'array'),
+    CHECK (jsonb_typeof(evidence) = 'object'),
+    CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
+);
+
+-- Observed named bond factor inputs. The vocabulary is fixed to the five named
+-- factors; the publication publishes only observed factors and declares the
+-- rest ABSENT via instrument coverage. No inferred analytics are stored here.
+CREATE TABLE IF NOT EXISTS mixed_quant_bond_factor_observation (
+    observation_id   uuid PRIMARY KEY,
+    as_of            date NOT NULL,
+    alias_type       text NOT NULL CHECK (alias_type IN ('cusip', 'isin', 'ticker')),
+    alias_value      text NOT NULL CHECK (alias_value <> ''),
+    factor           text NOT NULL CHECK (factor IN ('curve', 'duration', 'credit', 'inflation', 'liquidity')),
+    value            double precision NOT NULL,
+    method           text NOT NULL CHECK (method <> ''),
+    observed_at      timestamptz NOT NULL,
+    source_lineage   jsonb NOT NULL,
+    CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
+);
+
 -- ---------------------------------------------------------------------------
 -- Publication snapshot.
 -- ---------------------------------------------------------------------------
@@ -186,6 +226,28 @@ CREATE TABLE IF NOT EXISTS quant_income_v1 (
     CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
 );
 
+-- Canonical direct-security linkage: a fund's direct holding resolved (through
+-- the alias/identity machinery) to a security identity that is itself an
+-- instrument in this publication. Only unambiguous resolutions are linked;
+-- collisions/unresolved holdings are intentionally left unlinked.
+CREATE TABLE IF NOT EXISTS quant_holding_link_v1 (
+    publication_id         uuid NOT NULL,
+    instrument_id          uuid NOT NULL,   -- the holding fund
+    security_instrument_id uuid NOT NULL,   -- the resolved direct security
+    alias_type             text NOT NULL CHECK (alias_type IN ('cusip', 'isin', 'ticker')),
+    alias_value            text NOT NULL CHECK (alias_value <> ''),
+    weight_pct             double precision NOT NULL,
+    coverage               jsonb NOT NULL DEFAULT '{}'::jsonb,
+    source_lineage         jsonb NOT NULL,
+    PRIMARY KEY (publication_id, instrument_id, security_instrument_id),
+    FOREIGN KEY (publication_id, instrument_id)
+        REFERENCES quant_instrument_v1(publication_id, instrument_id) ON DELETE CASCADE,
+    FOREIGN KEY (publication_id, security_instrument_id)
+        REFERENCES quant_instrument_v1(publication_id, instrument_id) ON DELETE CASCADE,
+    CHECK (instrument_id <> security_instrument_id),
+    CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
+);
+
 CREATE TABLE IF NOT EXISTS active_quant_publication_v1 (
     product         text PRIMARY KEY CHECK (product <> ''),
     publication_id  uuid NOT NULL UNIQUE REFERENCES quant_publication_v1(publication_id) ON DELETE RESTRICT,
@@ -225,6 +287,9 @@ CREATE TRIGGER quant_exposure_v1_guard BEFORE INSERT OR UPDATE OR DELETE ON quan
 FOR EACH ROW EXECUTE FUNCTION quant_reject_active_publication_write();
 DROP TRIGGER IF EXISTS quant_income_v1_guard ON quant_income_v1;
 CREATE TRIGGER quant_income_v1_guard BEFORE INSERT OR UPDATE OR DELETE ON quant_income_v1
+FOR EACH ROW EXECUTE FUNCTION quant_reject_active_publication_write();
+DROP TRIGGER IF EXISTS quant_holding_link_v1_guard ON quant_holding_link_v1;
+CREATE TRIGGER quant_holding_link_v1_guard BEFORE INSERT OR UPDATE OR DELETE ON quant_holding_link_v1
 FOR EACH ROW EXECUTE FUNCTION quant_reject_active_publication_write();
 
 -- ---------------------------------------------------------------------------

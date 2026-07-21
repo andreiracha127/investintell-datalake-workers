@@ -15,8 +15,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
+import math
 from typing import Any, Iterable, Mapping
 import uuid
+
+# Reuse the governed class-factor quality vocabulary from the ported offline
+# runner so the publication and the runner cannot drift apart.
+from src.workers.sec_class_factors import _QUALITY as CLASS_FACTOR_QUALITY
 
 # Fixed namespace so uuid5 identities are reproducible across runs and machines.
 NAMESPACE_INSTRUMENT = uuid.UUID("6f9619ff-8b86-d011-b42d-00cf4fc964ff")
@@ -33,6 +38,13 @@ INFERRED_YIELD_FIELDS = frozenset({
 })
 
 _REQUIRED_INCOME_FIELDS = ("event_date", "cash_amount", "currency", "event_type")
+
+# Fixed vocabulary of named bond factor inputs. A factor absent from observed
+# data is published as an ABSENT coverage state, never as a fabricated value.
+NAMED_BOND_FACTORS = ("credit", "curve", "duration", "inflation", "liquidity")
+
+# Observed look-through vs return-estimated (regression/latent) exposures.
+MEASUREMENT_TYPES = frozenset({"observed", "estimated"})
 
 
 class ContractError(ValueError):
@@ -209,3 +221,69 @@ def validate_income_event(event: Mapping[str, Any]) -> None:
     if missing:
         raise ContractError(f"income event missing observed fields: {missing}")
     require_lineage(event.get("source_lineage"))
+
+
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def validate_class_factor_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one governed class-factor (return-estimated) exposure row.
+
+    The regression itself is computed by the governed offline runner; here we
+    only guarantee the carried result is well-formed (finite value, a known
+    measurement type and quality state, a method, and lineage) so the publication
+    faithfully transports it without inventing anything.
+    """
+    factor = row.get("factor")
+    if not isinstance(factor, str) or not factor:
+        raise ContractError("class factor requires a non-empty factor name")
+    if not _finite_number(row.get("value")):
+        raise ContractError(f"class factor {factor!r} value must be finite")
+    method = row.get("method")
+    if not isinstance(method, str) or not method:
+        raise ContractError(f"class factor {factor!r} requires a method")
+    if row.get("measurement_type") not in MEASUREMENT_TYPES:
+        raise ContractError(f"class factor {factor!r} measurement_type must be one of {sorted(MEASUREMENT_TYPES)}")
+    if row.get("quality_status") not in CLASS_FACTOR_QUALITY:
+        raise ContractError(f"class factor {factor!r} quality_status must be one of {sorted(CLASS_FACTOR_QUALITY)}")
+    flags = row.get("quality_flags", [])
+    if not isinstance(flags, (list, tuple)) or any(not isinstance(f, str) or not f for f in flags):
+        raise ContractError(f"class factor {factor!r} quality_flags must be non-empty strings")
+    evidence = row.get("evidence", {})
+    if not isinstance(evidence, Mapping):
+        raise ContractError(f"class factor {factor!r} evidence must be an object")
+    require_lineage(row.get("source_lineage"))
+    return {
+        "factor": factor,
+        "value": float(row["value"]),
+        "method": method,
+        "measurement_type": row["measurement_type"],
+        "quality_status": row["quality_status"],
+        "quality_flags": list(flags),
+        "evidence": dict(evidence),
+        "source_lineage": dict(row["source_lineage"]),
+    }
+
+
+def validate_bond_factor_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate one observed named bond factor input.
+
+    Only the five named factors are admissible and the value must be a finite
+    observation with lineage; nothing is ever inferred or fabricated.
+    """
+    factor = row.get("factor")
+    if factor not in NAMED_BOND_FACTORS:
+        raise ContractError(f"bond factor {factor!r} not in named vocabulary {NAMED_BOND_FACTORS}")
+    if not _finite_number(row.get("value")):
+        raise ContractError(f"bond factor {factor!r} value must be finite")
+    method = row.get("method")
+    if not isinstance(method, str) or not method:
+        raise ContractError(f"bond factor {factor!r} requires a method")
+    require_lineage(row.get("source_lineage"))
+    return {
+        "factor": factor,
+        "value": float(row["value"]),
+        "method": method,
+        "source_lineage": dict(row["source_lineage"]),
+    }

@@ -22,8 +22,16 @@ import uuid
 
 from src.db import LOCK_MIXED_QUANT_PUBLICATION, advisory_lock, connect, resolve_dsn
 from src.quant_data import publication as pub
-from src.quant_data.contracts import IdentityObservation, ResolvedInstrument, mint_instrument_id, resolve_identities
-from src.workers.nport_v2_lookthrough import _exposure_rows, expand_series
+from src.quant_data.contracts import (
+    NAMED_BOND_FACTORS,
+    IdentityObservation,
+    ResolvedInstrument,
+    mint_instrument_id,
+    resolve_identities,
+    validate_bond_factor_row,
+    validate_class_factor_row,
+)
+from src.workers.nport_v2_lookthrough import SYNTHETIC_PREFIXES, _exposure_rows, expand_series
 
 PRODUCT = pub.PRODUCT
 _OBSERVATION_TABLES = (
@@ -31,6 +39,8 @@ _OBSERVATION_TABLES = (
     "mixed_quant_return_observation",
     "mixed_quant_income_observation",
     "mixed_quant_holding_observation",
+    "mixed_quant_class_factor_observation",
+    "mixed_quant_bond_factor_observation",
 )
 
 
@@ -164,6 +174,7 @@ def _stage_exposures(conn: Any, publication_id: uuid.UUID, as_of: date, resolved
                 value=float(row["direct_pct"]) + float(row["indirect_pct"]),
                 method="nport_v2_lookthrough",
                 coverage={
+                    "measurement_type": "observed",
                     "direct_pct": row["direct_pct"],
                     "indirect_pct": row["indirect_pct"],
                     "label": row["label"],
@@ -173,6 +184,167 @@ def _stage_exposures(conn: Any, publication_id: uuid.UUID, as_of: date, resolved
             )
             written += 1
     pub.record_checkpoint(conn, publication_id, "exposures", {"written": written})
+
+
+def _link_targets(holding: dict[str, Any]) -> list[tuple[str, str]]:
+    """Alias lookups a direct holding may resolve to (skips synthetic ids)."""
+    out: list[tuple[str, str]] = []
+    cusip = (holding.get("cusip") or "").strip()
+    isin = (holding.get("isin") or "").strip()
+    if cusip and not cusip.upper().startswith(SYNTHETIC_PREFIXES):
+        out.append(("cusip", cusip))
+    if isin:
+        out.append(("isin", isin))
+    return out
+
+
+def _stage_linkage(
+    conn: Any,
+    publication_id: uuid.UUID,
+    as_of: date,
+    resolved: list[ResolvedInstrument],
+    index: dict[tuple[str, str], list[uuid.UUID]],
+) -> None:
+    """Link each fund's direct holdings to the security identities they resolve to.
+
+    Only unambiguous resolutions (a holding alias resolving to exactly one
+    instrument other than the fund itself) are linked; collisions and unresolved
+    holdings are intentionally left unlinked rather than guessed at.
+    """
+    if pub.get_checkpoint(conn, publication_id, "linkage") is not None:
+        return
+    present = {inst.instrument_id for inst in resolved}
+    get_holdings, series_ids = _holdings_reader(conn, as_of)
+    written = 0
+    for series_id in series_ids:
+        fund_id = mint_instrument_id(f"series:{series_id}")
+        if fund_id not in present:
+            continue
+        record = get_holdings(series_id)
+        if record is None:
+            continue
+        report_date, holdings = record
+        # Aggregate direct weight per resolved security (a security may appear
+        # under several holding lines).
+        links: dict[uuid.UUID, dict[str, Any]] = {}
+        for holding in holdings:
+            if holding.get("pct_of_nav") is None:
+                continue
+            for alias_type, alias_value in _link_targets(holding):
+                security_id = _unique_instrument(index, alias_type, alias_value)
+                if security_id is None or security_id == fund_id or security_id not in present:
+                    continue
+                entry = links.setdefault(
+                    security_id,
+                    {"alias_type": alias_type, "alias_value": alias_value, "weight_pct": 0.0},
+                )
+                entry["weight_pct"] += float(holding["pct_of_nav"])
+                break  # one resolution per holding line
+        for security_id, entry in links.items():
+            pub.write_holding_link(
+                conn, publication_id, fund_id, security_id,
+                alias_type=entry["alias_type"], alias_value=entry["alias_value"],
+                weight_pct=entry["weight_pct"],
+                coverage={"resolution": "direct_security", "report_date": report_date.isoformat()},
+                source_lineage={"engine": "alias_resolution", "series_id": series_id, "as_of": as_of.isoformat()},
+            )
+            written += 1
+    pub.record_checkpoint(conn, publication_id, "linkage", {"written": written})
+
+
+def _stage_class_factors(
+    conn: Any,
+    publication_id: uuid.UUID,
+    as_of: date,
+    index: dict[tuple[str, str], list[uuid.UUID]],
+) -> None:
+    """Publish governed return-estimated class-factor exposures with evidence."""
+    if pub.get_checkpoint(conn, publication_id, "class_factors") is not None:
+        return
+    rows = conn.execute(
+        "SELECT alias_type, alias_value, factor, value, method, measurement_type, "
+        "       quality_status, quality_flags, evidence, source_lineage "
+        "FROM mixed_quant_class_factor_observation WHERE as_of=%s ORDER BY observation_id",
+        (as_of,),
+    ).fetchall()
+    written = 0
+    for (alias_type, alias_value, factor, value, method, measurement_type,
+         quality_status, quality_flags, evidence, lineage) in rows:
+        instrument_id = _unique_instrument(index, alias_type, alias_value)
+        if instrument_id is None:
+            continue
+        clean = validate_class_factor_row({
+            "factor": factor, "value": value, "method": method,
+            "measurement_type": measurement_type, "quality_status": quality_status,
+            "quality_flags": quality_flags, "evidence": evidence, "source_lineage": lineage,
+        })
+        pub.write_exposure(
+            conn, publication_id, instrument_id,
+            factor=f"class_factor:{clean['factor']}",
+            value=clean["value"],
+            method=clean["method"],
+            coverage={
+                "measurement_type": clean["measurement_type"],
+                "quality_status": clean["quality_status"],
+                "quality_flags": clean["quality_flags"],
+                "evidence": clean["evidence"],
+            },
+            source_lineage=clean["source_lineage"],
+        )
+        written += 1
+    pub.record_checkpoint(conn, publication_id, "class_factors", {"written": written, "seen": len(rows)})
+
+
+def _stage_bond_factors(
+    conn: Any,
+    publication_id: uuid.UUID,
+    as_of: date,
+    resolved: list[ResolvedInstrument],
+    index: dict[tuple[str, str], list[uuid.UUID]],
+) -> None:
+    """Publish named bond factors ONLY where observed; declare the rest absent.
+
+    Every bond instrument gets an explicit coverage map over the five named
+    factors: 'observed' where a value was published, 'absent' otherwise. Absent
+    factors carry no exposure row (never a fabricated value).
+    """
+    if pub.get_checkpoint(conn, publication_id, "bond_factors") is not None:
+        return
+    bonds = {inst.instrument_id for inst in resolved if inst.instrument_type == "bond"}
+    rows = conn.execute(
+        "SELECT alias_type, alias_value, factor, value, method, source_lineage "
+        "FROM mixed_quant_bond_factor_observation WHERE as_of=%s ORDER BY observation_id",
+        (as_of,),
+    ).fetchall()
+    observed: dict[uuid.UUID, set[str]] = {}
+    written = 0
+    for alias_type, alias_value, factor, value, method, lineage in rows:
+        instrument_id = _unique_instrument(index, alias_type, alias_value)
+        if instrument_id is None or instrument_id not in bonds:
+            continue
+        clean = validate_bond_factor_row({
+            "factor": factor, "value": value, "method": method, "source_lineage": lineage,
+        })
+        pub.write_exposure(
+            conn, publication_id, instrument_id,
+            factor=f"bond_factor:{clean['factor']}",
+            value=clean["value"],
+            method=clean["method"],
+            coverage={"measurement_type": "observed", "named_factor": clean["factor"]},
+            source_lineage=clean["source_lineage"],
+        )
+        observed.setdefault(instrument_id, set()).add(clean["factor"])
+        written += 1
+    # Declare coverage (observed/absent) for every bond instrument.
+    for bond_id in bonds:
+        seen = observed.get(bond_id, set())
+        pub.merge_instrument_coverage(
+            conn, publication_id, bond_id,
+            {"bond_factor_coverage": {
+                name: ("observed" if name in seen else "absent") for name in NAMED_BOND_FACTORS
+            }},
+        )
+    pub.record_checkpoint(conn, publication_id, "bond_factors", {"written": written, "seen": len(rows)})
 
 
 def _stage_income(conn: Any, publication_id: uuid.UUID, as_of: date, index: dict[tuple[str, str], list[uuid.UUID]]) -> None:
@@ -224,6 +396,12 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             _stage_returns(conn, publication_id, as_of, index)
             conn.commit()
             _stage_exposures(conn, publication_id, as_of, resolved)
+            conn.commit()
+            _stage_linkage(conn, publication_id, as_of, resolved, index)
+            conn.commit()
+            _stage_class_factors(conn, publication_id, as_of, index)
+            conn.commit()
+            _stage_bond_factors(conn, publication_id, as_of, resolved, index)
             conn.commit()
             _stage_income(conn, publication_id, as_of, index)
             conn.commit()
