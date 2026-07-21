@@ -509,9 +509,13 @@ def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
         source_table = file_entry["source_table"]
         file_id = file_ids[source_table]
         counts = {key: file_entry[key] for key in ("expected_count", "data_count", "lexical_count", "typed_success_count", "quarantine_count", "reject_count")}
+        reconciliation_counts = {
+            ("source_count" if key == "data_count" else key): value
+            for key, value in counts.items()
+        }
         if source_table in files_to_copy:
             register_file(conn, run_id=run.run_id, source_file_id=file_id, relative_path=source_table, sha256=file_entry["source_sha256"], byte_size=file_entry["byte_size"], schema_metadata={"headers": file_entry["headers"]}, state="accounted", **counts)
-            register_table_reconciliation(conn, run_id=run.run_id, source_file_id=file_id, table_name=source_table, state="accounted", **counts)
+            register_table_reconciliation(conn, run_id=run.run_id, source_file_id=file_id, table_name=source_table, state="accounted", **reconciliation_counts)
     if entry["explicit_zero_tables"]:
         metadata_file_id = register_file(conn, run_id=run.run_id, relative_path=entry["metadata_filename"], sha256=entry["metadata_sha256"], byte_size=entry["metadata_byte_size"], schema_metadata={"metadata_for_absent_declared_tables": True}, state="accounted")
         for source_table in entry["explicit_zero_tables"]:
