@@ -458,6 +458,17 @@ def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
         run = transition_run(conn, run_id=run.run_id, expected_state="discovered", target_state="loading")
     if run.current_state != "loading":
         raise FastBackfillError(f"cannot load prepared package in {run.current_state}")
+    register_package_discovery(
+        conn,
+        source_family=form,
+        source_quarter=entry["quarter"],
+        package_relative_path=entry["relative_package_path"],
+        package_sha256=entry["package_sha256"],
+        metadata_sha256=entry["metadata_sha256"],
+        readme_sha256=entry["readme_sha256"],
+        package_state="discovered",
+        run_id=run.run_id,
+    )
     file_ids: dict[str, Any] = {}
     files_to_copy: set[str] = set()
     for file_entry in entry["files"]:
