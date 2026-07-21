@@ -18,7 +18,7 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 DEFAULT_WORKERS = 10
 RAW_TABLES = {"nport": "nport_raw_rows", "ncen": "ncen_raw_v2_rows", "rr1": "rr1_raw_v2_rows"}
@@ -37,6 +37,8 @@ class ParseTask:
     package: str
     relative_package_path: str
     output: str
+    inventory_files: tuple[tuple[str, str, int], ...] = ()
+    expected_package_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -188,14 +190,18 @@ def _write_prepared_package(prepared: PreparedPackage, output: Path) -> dict[str
     return entry
 
 
-def _adapter(form: str, package: Path) -> tuple[Any, Any, Any, Any, str, tuple[str, ...], str, int]:
+def _adapter(
+    form: str,
+    package: Path,
+    governed_file_hashes: Mapping[str, str] | None = None,
+) -> tuple[Any, Any, Any, Any, str, tuple[str, ...], str, int]:
     """Return verified tables plus the family parser primitives without DB access."""
     if form == "nport":
         from src.nport.ingestion import source_quarter_from_package
         from src.nport.schema import json_typed_projection, load_nport_contract, parse_row, verify_package
 
         contract = load_nport_contract()
-        verified = verify_package(package, contract)
+        verified = verify_package(package, contract, governed_file_hashes=governed_file_hashes)
         zeros = tuple(table.source_file for table in contract.tables if table.source_file not in verified.file_hashes)
         return verified, contract.tables, parse_row, json_typed_projection, source_quarter_from_package(package), zeros, "nport_metadata.json", (package / "nport_metadata.json").stat().st_size
     if form == "ncen":
@@ -205,8 +211,48 @@ def _adapter(form: str, package: Path) -> tuple[Any, Any, Any, Any, str, tuple[s
         return verified, verified.contract.tables, parse_row, json_typed_projection, source_quarter_from_package(package), verified.explicit_zero_tables, "ncen_metadata.json", (package / "ncen_metadata.json").stat().st_size
     if form == "rr1":
         from src.rr1.ingestion import source_quarter_from_package
-        from src.rr1.schema import json_typed_projection, parse_row, verify_package
-        verified = verify_package(package)
+        from src.rr1.schema import (
+            DATA_FILES,
+            VerifiedPackage,
+            json_typed_projection,
+            load_rr1_contract,
+            parse_row,
+            verify_package,
+        )
+
+        if governed_file_hashes is None:
+            verified = verify_package(package)
+        else:
+            metadata_names = sorted(name for name in governed_file_hashes if name.endswith("-metadata.json"))
+            if len(metadata_names) != 1 or "readme.htm" not in governed_file_hashes:
+                raise FastBackfillError(f"RR1 inventory metadata is incomplete: {package}")
+            metadata_filename = metadata_names[0]
+            metadata_hash = governed_file_hashes[metadata_filename]
+            contract = load_rr1_contract(metadata_hash)
+            actual = {path.name for path in package.iterdir() if path.is_file() and path.suffix.lower() == ".tsv"}
+            if actual != DATA_FILES or actual != contract.required_filenames:
+                raise FastBackfillError(f"RR1 physical file set changed: {package}")
+            file_hashes: dict[str, str] = {}
+            from src.rr1.tsv import stream_tsv
+
+            for table in contract.tables:
+                expected_sha256 = governed_file_hashes.get(table.source_file)
+                if not expected_sha256:
+                    raise FastBackfillError(f"RR1 inventory hash missing: {package / table.source_file}")
+                header, rows = stream_tsv(package / table.source_file)
+                try:
+                    if header != table.headers:
+                        raise FastBackfillError(f"RR1 header changed: {package / table.source_file}")
+                finally:
+                    rows.close()
+                file_hashes[table.source_file] = expected_sha256
+            verified = VerifiedPackage(
+                contract,
+                file_hashes,
+                metadata_hash,
+                governed_file_hashes["readme.htm"],
+                metadata_filename,
+            )
         return verified, verified.contract.tables, parse_row, json_typed_projection, source_quarter_from_package(package), (), verified.metadata_filename, (package / verified.metadata_filename).stat().st_size
     raise FastBackfillError(f"unsupported SEC form: {form}")
 
@@ -248,8 +294,15 @@ def _parse_task(task: ParseTask) -> dict[str, Any]:
             payload = output / entry.get("payload_path", "")
             if entry.get("identity") == identity and payload.is_file() and _sha256_file(payload) == entry.get("payload_sha256"):
                 return entry
-    verified, tables, parse_row, typed_projection, quarter, explicit_zero_tables, metadata_filename, metadata_size = _adapter(task.form, package)
+    governed_file_hashes = {name: sha256 for name, sha256, _byte_size in task.inventory_files} or None
+    verified, tables, parse_row, typed_projection, quarter, explicit_zero_tables, metadata_filename, metadata_size = _adapter(
+        task.form,
+        package,
+        governed_file_hashes,
+    )
     package_sha = _package_digest(task.form, verified)
+    if task.expected_package_sha256 is not None and package_sha != task.expected_package_sha256:
+        raise FastBackfillError(f"inventory package digest mismatch: {task.relative_package_path}")
     identity = f"{task.form}:{quarter}:{task.relative_package_path}"
     directory = output / "packages" / _safe_name(identity)
     directory.mkdir(parents=True, exist_ok=True)
@@ -333,7 +386,24 @@ def _discover_tasks(root: Path, inventory: Path | None, forms: Sequence[str], id
             source_root = Path(configured_root) if isinstance(configured_root, str) else root / ROOT_NAMES[form]
             package_path = item.get("package_path") or item.get("absolute_package_path")
             package = Path(package_path) if isinstance(package_path, str) else source_root / relative
-            tasks.append(ParseTask(form, str(source_root), str(package), relative, str(output)))
+            inventory_files = tuple(
+                (file_entry["relative_path"], file_entry["sha256"], file_entry["byte_count"])
+                for file_entry in item.get("files", [])
+                if isinstance(file_entry, dict)
+                and isinstance(file_entry.get("relative_path"), str)
+                and isinstance(file_entry.get("sha256"), str)
+                and isinstance(file_entry.get("byte_count"), int)
+            )
+            expected_package_sha256 = item.get("package_sha256")
+            tasks.append(ParseTask(
+                form,
+                str(source_root),
+                str(package),
+                relative,
+                str(output),
+                inventory_files,
+                expected_package_sha256 if isinstance(expected_package_sha256, str) else None,
+            ))
     else:
         for form in sorted(selected_forms):
             source_root = root / ROOT_NAMES[form]
