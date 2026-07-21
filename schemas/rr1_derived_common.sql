@@ -48,6 +48,28 @@ RETURNS numeric LANGUAGE sql IMMUTABLE AS $$
     END
 $$;
 
+-- Mechanical narrative corroboration: does a decimal/percentage rendering of the
+-- reported numeric fraction appear as a substring of a narrative text block?  It
+-- returns NULL when either leg is missing or the value is non-numeric; TRUE/FALSE
+-- otherwise.  This is an OBSERVATION, never a judgement of correctness -- a FALSE
+-- means only that the number was not found verbatim in the prose, not that the two
+-- disclosures disagree.  The narrative text itself is never persisted by callers.
+CREATE OR REPLACE FUNCTION rr1_number_in_text(raw_value text, text_value text)
+RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN raw_value IS NULL OR text_value IS NULL OR rr1_numeric_value(raw_value) IS NULL THEN NULL
+        ELSE EXISTS (
+            SELECT 1 FROM unnest(ARRAY[
+                btrim(raw_value),
+                rr1_numeric_value(raw_value)::text,
+                (rr1_numeric_value(raw_value) * 100)::text,
+                trunc(rr1_numeric_value(raw_value) * 100)::text
+            ]) AS c(candidate)
+            WHERE c.candidate <> '' AND position(c.candidate IN text_value) > 0
+        )
+    END
+$$;
+
 -- Strict ISO (YYYY-MM-DD) date parse for date-typed text facts (e.g. a fee-waiver
 -- termination date carried in txt.tsv).  Anything else -- absent, malformed, or a
 -- non-ISO lexical -- yields NULL so the caller can flag it honestly rather than

@@ -36,6 +36,7 @@ PRODUCTS: dict[str, str] = {
     "rr1_shareholder_cost_profile_v1": "build_rr1_shareholder_cost_profiles",
     "rr1_waiver_profile_v1": "build_rr1_waiver_profiles",
     "rr1_class_cost_dispersion_v1": "build_rr1_class_cost_dispersion",
+    "rr1_turnover_profile_v1": "build_rr1_turnover_profiles",
 }
 
 _SCHEMA_FILES = (
@@ -46,6 +47,7 @@ _SCHEMA_FILES = (
     "rr1_shareholder_cost_profiles.sql",
     "rr1_waiver_profiles.sql",
     "rr1_class_cost_dispersion.sql",
+    "rr1_turnover_profiles.sql",
 )
 
 
