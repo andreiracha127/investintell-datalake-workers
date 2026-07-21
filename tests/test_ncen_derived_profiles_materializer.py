@@ -21,6 +21,9 @@ ALL_DDL = (
     "ncen_structure_profiles.sql",
     "ncen_provider_network_profiles.sql",
     "ncen_operational_event_profiles.sql",
+    "ncen_liquidity_backstop_profiles.sql",
+    "ncen_securities_lending_profiles.sql",
+    "ncen_etf_primary_market_profiles.sql",
 )
 
 
@@ -45,7 +48,8 @@ def test_materializer_publishes_every_product_prepared_to_validated_to_current()
             cur.execute("SELECT lifecycle_state FROM sec_current_derived_publications WHERE product=%s", (product,))
             assert cur.fetchone() == ("validated",)
         for view in ("sec_current_ncen_structure_profiles", "sec_current_ncen_provider_network_profiles",
-                     "sec_current_ncen_operational_event_profiles"):
+                     "sec_current_ncen_operational_event_profiles", "sec_current_ncen_liquidity_backstop_profiles",
+                     "sec_current_ncen_securities_lending_profiles", "sec_current_ncen_etf_primary_market_profiles"):
             cur.execute(f"SELECT count(*) FROM {view}")
             assert cur.fetchone()[0] == 1
 
