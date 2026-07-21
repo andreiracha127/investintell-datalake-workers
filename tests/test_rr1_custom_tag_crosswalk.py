@@ -86,6 +86,19 @@ def test_latest_approved_crosswalk_version_wins():
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_crosswalk_version_ordering_is_natural_not_lexical():
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, *_ = base_fixture(cur, None, DDL, create_publication=False)
+        # v10 is a LATER version than v2; a plain text sort would wrongly pick 'v2'
+        # (because '2' > '1' lexically). Natural/numeric ordering resolves to v10.
+        _insert(cur, xver="v2", concept="turnover_rate", confidence="0.95", review="approved")
+        _insert(cur, xver="v10", concept="avg_annual_return", confidence="0.95", review="approved")
+        assert _resolve(cur, min_conf="0.80") == "avg_annual_return"
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_an_rr_namespaced_version_can_never_be_registered_as_custom():
     import psycopg
 

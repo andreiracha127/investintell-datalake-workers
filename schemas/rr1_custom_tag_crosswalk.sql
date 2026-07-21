@@ -66,6 +66,9 @@ CREATE OR REPLACE FUNCTION rr1_crosswalk_resolve(
       AND custom_version = p_custom_version
       AND review_status = 'approved'
       AND confidence >= p_min_confidence
-    ORDER BY crosswalk_version DESC
+    -- Natural/numeric version ordering so v10 outranks v2 (a plain text sort would
+    -- pick v2). Rank by the digit run, with a lexical tiebreak for equal/absent digits.
+    ORDER BY NULLIF(regexp_replace(crosswalk_version, '[^0-9]', '', 'g'), '')::numeric DESC NULLS LAST,
+             crosswalk_version DESC
     LIMIT 1
 $$;
