@@ -138,6 +138,11 @@ LOCK_NCEN_INGESTION = 900_310
 # snapshots).  Distinct from the raw-landing lane above; 900_338 is the next
 # free id after mixed_quant (900_337) and clear of the reserved 900_311/312.
 LOCK_NCEN_DERIVED_PROFILES = 900_338
+# RR1 derived-profile publication worker (fee waterfall / shareholder costs,
+# waiver durability, share-class cost dispersion).  Distinct from the RR1
+# raw-landing lane below; 900_339 is the next free id after the N-CEN derived
+# lock (900_338).
+LOCK_RR1_DERIVED_PROFILES = 900_339
 # RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
 # and 900_312 remain reserved by the ESMA workers.
 LOCK_RR1_INGESTION = 900_313
