@@ -22,11 +22,13 @@ def dsn() -> str:
     return os.environ["SEC_TEST_DATABASE_URL"]
 
 
-def base_fixture(cur, product: str, ddl_files: tuple[str, ...]):
+def base_fixture(cur, product: str | None, ddl_files: tuple[str, ...], *, create_publication: bool = True):
     """Stand up an isolated schema, raw surface, and a prepared publication.
 
     ``ddl_files`` are applied in order (twice, proving idempotency) after the
-    shared publication and effective-selection DDL.
+    shared publication and effective-selection DDL.  When ``create_publication``
+    is False (e.g. the materializer owns publication identity), the publication
+    row is left for the caller and the returned ``publication_id`` is None.
     """
     schema = f"ncen_derived_fixture_{uuid4().hex}"
     run_id, package_id, publication_id = uuid4(), uuid4(), uuid4()
@@ -48,12 +50,15 @@ def base_fixture(cur, product: str, ddl_files: tuple[str, ...]):
         cur.execute(ddl)
     cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
     cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
-    cur.execute(
-        """INSERT INTO sec_derived_publications
-        (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
-        VALUES(%s,%s,1,%s,%s,%s)""",
-        (publication_id, product, run_id, package_id, "a" * 64),
-    )
+    if create_publication:
+        cur.execute(
+            """INSERT INTO sec_derived_publications
+            (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
+            VALUES(%s,%s,1,%s,%s,%s)""",
+            (publication_id, product, run_id, package_id, "a" * 64),
+        )
+    else:
+        publication_id = None
     return schema, run_id, package_id, publication_id
 
 

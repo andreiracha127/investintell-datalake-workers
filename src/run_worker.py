@@ -25,7 +25,7 @@ def main() -> None:
             "|macro_vintage|treasury_ingestion|benchmark_ingest|instrument_ingestion"
             "|eod_prices_warmer|sec_13f_ingestion|form345_ingestion"
             "|sec_company_tickers_mf|nport_cusip_enrichment"
-            "|nport_ingestion|ncen_ingestion|rr1_ingestion"
+            "|nport_ingestion|ncen_ingestion|ncen_derived_profiles|rr1_ingestion"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics|open_macro_v03"

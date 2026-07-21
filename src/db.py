@@ -134,6 +134,10 @@ LOCK_NPORT_INGESTION = 900_307
 # N-CEN V2 raw/shadow landing owns its package-level worker lock.  Deliberately
 # distinct from N-PORT and the 13F/Form345 SEC ingestion lanes.
 LOCK_NCEN_INGESTION = 900_310
+# N-CEN derived-profile publication worker (structure/provider/operational
+# snapshots).  Distinct from the raw-landing lane above; 900_338 is the next
+# free id after mixed_quant (900_337) and clear of the reserved 900_311/312.
+LOCK_NCEN_DERIVED_PROFILES = 900_338
 # RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
 # and 900_312 remain reserved by the ESMA workers.
 LOCK_RR1_INGESTION = 900_313
