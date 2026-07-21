@@ -1,0 +1,142 @@
+{
+  "bundle_sha256": "sha256:6a0a88730c44fb543af137093131ff41a2d27740df1a3bf7747d5f7e4d2adc95",
+  "contract_version": "1.0.0",
+  "files": [
+    {
+      "path": "api/capability-state.schema.json",
+      "sha256": "7f9da20657eb2f9edc3283eebbe372ab11d93dc935907ccc814fe59d4c263d2a"
+    },
+    {
+      "path": "api/fixtures/invalid/capability-available-null-evidence.json",
+      "sha256": "97f995fd963b2d16ccc4745502365f3205136524a36ca4c1dd59b45fb563e98d"
+    },
+    {
+      "path": "api/fixtures/invalid/capability-unknown-state.json",
+      "sha256": "0be2c8f8653b6970f67989a03a4ccb436849ebdbbd61288652d1e2678695ad0b"
+    },
+    {
+      "path": "api/fixtures/invalid/legacy-fund-profile-bad-holding.json",
+      "sha256": "bd782c2dc1618aac904ed63024059932315c4bf266bed0bbd23ccf6bf0cb2be1"
+    },
+    {
+      "path": "api/fixtures/invalid/legacy-fund-profile-invalid-formats.json",
+      "sha256": "2fc10ad09c2b0cbaab1cad16f1e1564a2f45a65edea48032b6808f69c94ed38c"
+    },
+    {
+      "path": "api/fixtures/legacy/fund-profile-alternatives.json",
+      "sha256": "afad51381e276ee88ed94901db1432c38b02f65ef3679f95ca9bbba7ecd13501"
+    },
+    {
+      "path": "api/fixtures/legacy/fund-profile-cash.json",
+      "sha256": "e9911968ee2e238b82f67f46f20f66d205bfb13b4ca6aefac083943facf1854c"
+    },
+    {
+      "path": "api/fixtures/legacy/fund-profile-equity.json",
+      "sha256": "e36af1599a5ef239c743242100a199bb0d38a85ffd48c4fc2c8082cd5c5d9b2d"
+    },
+    {
+      "path": "api/fixtures/legacy/fund-profile-fixed-income.json",
+      "sha256": "74658c81eb095f457b2fed2186fbbcfb1c32baea903e1e94fe1332579efe2192"
+    },
+    {
+      "path": "api/fixtures/legacy/fund-profile-multi-asset.json",
+      "sha256": "40a090ac0f0f26883f7a5e6b190a9baa430e7984d42711de6d448c4768efff2f"
+    },
+    {
+      "path": "api/fixtures/valid/capability-available.json",
+      "sha256": "9ce1c0ace379c434e41542e5b36b54176e32cdfab9a0f6db4e5a82e55e22aad1"
+    },
+    {
+      "path": "api/fixtures/valid/capability-degraded.json",
+      "sha256": "005bb38d2f675d6604c2affbe0f5a88ad3b2f67873473b0846e97a68375a193e"
+    },
+    {
+      "path": "api/fixtures/valid/capability-not-applicable.json",
+      "sha256": "5e04382b698a37bd01758b85f3808a7f81f457b1cd437fe757504e5bcc15b45a"
+    },
+    {
+      "path": "api/fixtures/valid/capability-unavailable.json",
+      "sha256": "b94868a2065911a8dd3021c3053e4b81155153f0c8a709a59195a9a1cafa608a"
+    },
+    {
+      "path": "api/fixtures/valid/fund-family-alternatives.json",
+      "sha256": "6ee993f14d962d11c3dec9ae21426ded05d224f0e88c5a2fb239203f2179138c"
+    },
+    {
+      "path": "api/fixtures/valid/fund-family-cash.json",
+      "sha256": "23a9e204c93314262d6bd7fce40569b60b74739e26366bc110eb20535f4b560b"
+    },
+    {
+      "path": "api/fixtures/valid/fund-family-equity.json",
+      "sha256": "6989ea2717a693cf54900ccd5d134abbda442af10738a1398446030eb9c41eb8"
+    },
+    {
+      "path": "api/fixtures/valid/fund-family-fixed-income.json",
+      "sha256": "19fa6c87fd27019993a54c71cf1dfa5ba181a0b398844fdd18f6cde9b6cf8259"
+    },
+    {
+      "path": "api/fixtures/valid/fund-family-multi-asset.json",
+      "sha256": "751038ebb4263edb754ff52a90a1e7685cae8c023a68fec0024458074ef22a88"
+    },
+    {
+      "path": "api/fund-family-baseline.schema.json",
+      "sha256": "86606900f3acb2a0519e3ca1ba3bd06a22b19eec0d4e89566ae21630ac85be4c"
+    },
+    {
+      "path": "api/legacy-fund-profile.schema.json",
+      "sha256": "9bdf7f79b81be61f5d3814399fbf0b314482c0d54cba7d7c062fb6f89b578540"
+    },
+    {
+      "path": "governance-lock.json",
+      "sha256": "ec8e6bc6398408ba57932a9baea30e60a67161608e6d8bb27566ae3e092bbd13"
+    },
+    {
+      "path": "rr1-sub-header-order-evidence.json",
+      "sha256": "b8f57084f2c9735b2082ae27dcfb7ee95f3bac8af91b444c57f9de9629c017fa"
+    },
+    {
+      "path": "rr1-txt-key-correction-evidence.json",
+      "sha256": "8f130362dc1b25081dfc2528419fe0e6243787b4b84a47232da6196d8875b866"
+    },
+    {
+      "path": "sec-code-dictionaries.json",
+      "sha256": "15060f81e71c9c7a54a3cce53d585cd5447e7a697e797028cf9a6a1c448d39ad"
+    },
+    {
+      "path": "sec-current-gcloud-db-audit-evidence.json",
+      "sha256": "569bb52904f4ec552097bd641c51823517108ce4f94588a42a03f8f6f97e4503"
+    },
+    {
+      "path": "sec-field-mapping.csv",
+      "sha256": "7f8294ddc6838a5b8875c8b350b91ce60ed686562cc578e0988d273ebf6aa55c"
+    },
+    {
+      "path": "sec-quality-gate-registry.yaml",
+      "sha256": "70ef97d0be648ec11e6c5cf6692e74a5411202ef62a66531497bf7f0dd45d6a0"
+    },
+    {
+      "path": "sec-source-inventory.json",
+      "sha256": "50a3ed4ae481d465dfd05e3f8cb6a7c9a2726407eb0c60bfa32bfb01d5dae175"
+    },
+    {
+      "path": "source-tables/13f.json",
+      "sha256": "b503c925bd0573884abcfe968974b92f028254ed07822944d4db4f9cf2375ce9"
+    },
+    {
+      "path": "source-tables/ncen.json",
+      "sha256": "3c1ad7e2abf6909da1f198f51e50ae44d5ac53e4ad35fa19b8779f44a8b4ad02"
+    },
+    {
+      "path": "source-tables/nport.json",
+      "sha256": "55438c38f1dec796ff675bc47740de722a301b1ac49005ee6f50f6302f2de68d"
+    },
+    {
+      "path": "source-tables/rr1.json",
+      "sha256": "b27bda9db57ad351b89bd024e5faa2e42dcaa9a16b8ebff0372f2e9e80cda330"
+    },
+    {
+      "path": "SOURCE.json",
+      "sha256": "79e462d12314e8e7502cb2e089e28ee112a927df40dc1103edb939a98eb9a3e7"
+    }
+  ]
+}

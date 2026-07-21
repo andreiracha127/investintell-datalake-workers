@@ -1,0 +1,18 @@
+{
+  "instrument_id": "not-a-uuid",
+  "series_id": "S000000098",
+  "class_id": null,
+  "ticker": "FMT",
+  "name": "Invalid format-only fixture",
+  "fund_type": "mutual_fund",
+  "asset_class": "fixed_income",
+  "strategy_label": "Bond",
+  "classification_note": "",
+  "holdings": {
+    "report_date": "2026-99-99",
+    "items": [],
+    "pct_of_nav_total": 100.0
+  },
+  "classes": [],
+  "nav": []
+}

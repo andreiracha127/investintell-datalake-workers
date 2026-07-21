@@ -1,0 +1,23 @@
+{
+  "schema_version": "sec-fund-family-baseline/v1",
+  "fixture_id": "fund-cash-mmf-v1",
+  "instrument_id": "00000000-0000-4000-8000-000000000005",
+  "series_id": "S000000005",
+  "class_id": "C000000005",
+  "asset_family": "cash",
+  "vehicle": "mmf",
+  "classification_policy_version": "portfolio-composition-v3",
+  "source_dates": {"nport": "2026-01-31", "ncen": "2025-07-31", "rr1": null, "nav": "2026-07-16"},
+  "capabilities": {
+    "holdings": {"state": "available", "source_applicable": true, "as_of": "2026-01-31", "coverage_pct": 99.8, "source": "nport", "reason_code": null, "methodology_version": "holdings-v2"},
+    "equity_style": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "fixed_income_profile": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "cash_profile_has_distinct_contract", "methodology_version": null},
+    "multi_asset_allocation": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "alternatives_profile": {"state": "not_applicable", "source_applicable": false, "as_of": null, "coverage_pct": null, "source": null, "reason_code": "asset_family_not_applicable", "methodology_version": null},
+    "cash_profile": {"state": "available", "source_applicable": true, "as_of": "2026-01-31", "coverage_pct": 99.8, "source": "nport", "reason_code": null, "methodology_version": "cash-profile-v1"},
+    "fees_and_share_classes": {"state": "unavailable", "source_applicable": true, "as_of": null, "coverage_pct": null, "source": "rr1", "reason_code": "source_filing_unavailable", "methodology_version": null},
+    "prospectus_disclosures": {"state": "unavailable", "source_applicable": true, "as_of": null, "coverage_pct": null, "source": "rr1", "reason_code": "source_filing_unavailable", "methodology_version": null},
+    "prospectus_performance": {"state": "unavailable", "source_applicable": true, "as_of": null, "coverage_pct": null, "source": "rr1", "reason_code": "source_filing_unavailable", "methodology_version": null},
+    "operating_profile": {"state": "available", "source_applicable": true, "as_of": "2025-07-31", "coverage_pct": 100.0, "source": "ncen", "reason_code": null, "methodology_version": "ncen-operating-v1"}
+  }
+}

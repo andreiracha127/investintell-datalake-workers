@@ -1,0 +1,24 @@
+{
+  "canonical_producer_repository": "andreiracha127/investintell-datalake-workers",
+  "captured_at_utc": "2026-07-18T01:14:27Z",
+  "consumer_repository": "andreiracha127/investintell-light",
+  "contract_version": "1.0.0",
+  "governance": {
+    "database_mutation": false,
+    "deployment_authorized": false,
+    "operational_storage_profile_approved": true,
+    "owner_decisions_approved": true,
+    "phase": 0,
+    "phase_1_source_readiness": "verified_original_sec_state",
+    "runtime_activation": false
+  },
+  "notes": [
+    "The application repository stores the frozen Phase 0 consumer mirror.",
+    "Phase 1 canonical ingestion contracts must be synchronized from the worker repository.",
+    "ADR approval does not authorize Phase 1 implementation or deployment.",
+    "The approved storage profile does not authorize GCS provisioning or IAM changes.",
+    "Local N-PORT, N-CEN, and RR1 bytes are preserved as originally published by the SEC; conditional source absence is not synthesized as an empty file.",
+    "Absolute workstation source paths are excluded from business identity."
+  ],
+  "producer_commit": "e9cb812a9c22a88dc86e9a7d71742f5f9ad18b62"
+}

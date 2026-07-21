@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/sec-regulatory/v1/fund-family-baseline.schema.json",
+  "title": "FundFamilyBaselineV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "instrument_id",
+    "series_id",
+    "asset_family",
+    "classification_policy_version",
+    "source_dates",
+    "capabilities"
+  ],
+  "properties": {
+    "schema_version": {"const": "sec-fund-family-baseline/v1"},
+    "fixture_id": {"type": "string", "minLength": 1},
+    "instrument_id": {"type": "string", "format": "uuid"},
+    "series_id": {"type": "string", "pattern": "^S[0-9]{9}$"},
+    "class_id": {"type": ["string", "null"]},
+    "asset_family": {
+      "enum": ["equity", "fixed_income", "multi_asset", "alternatives", "cash"]
+    },
+    "vehicle": {"enum": ["etf", "mutual_fund", "interval_fund", "mmf"]},
+    "classification_policy_version": {"const": "portfolio-composition-v3"},
+    "source_dates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nport", "ncen", "rr1", "nav"],
+      "properties": {
+        "nport": {"type": ["string", "null"], "format": "date"},
+        "ncen": {"type": ["string", "null"], "format": "date"},
+        "rr1": {"type": ["string", "null"], "format": "date"},
+        "nav": {"type": ["string", "null"], "format": "date"}
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "holdings",
+        "equity_style",
+        "fixed_income_profile",
+        "multi_asset_allocation",
+        "alternatives_profile",
+        "cash_profile",
+        "fees_and_share_classes",
+        "prospectus_disclosures",
+        "prospectus_performance",
+        "operating_profile"
+      ],
+      "properties": {
+        "holdings": {"$ref": "capability-state.schema.json"},
+        "equity_style": {"$ref": "capability-state.schema.json"},
+        "fixed_income_profile": {"$ref": "capability-state.schema.json"},
+        "multi_asset_allocation": {"$ref": "capability-state.schema.json"},
+        "alternatives_profile": {"$ref": "capability-state.schema.json"},
+        "cash_profile": {"$ref": "capability-state.schema.json"},
+        "fees_and_share_classes": {"$ref": "capability-state.schema.json"},
+        "prospectus_disclosures": {"$ref": "capability-state.schema.json"},
+        "prospectus_performance": {"$ref": "capability-state.schema.json"},
+        "operating_profile": {"$ref": "capability-state.schema.json"}
+      }
+    }
+  }
+}

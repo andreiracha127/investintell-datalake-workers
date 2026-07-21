@@ -1,0 +1,142 @@
+{
+  "dictionary_version": "sec-code-dictionaries-v1",
+  "authority": "local SEC readme and CSVW metadata files frozen in sec-source-inventory.json",
+  "rules": [
+    "Only literal_closed domains may be normalized by exact source code.",
+    "Descriptive categories do not authorize guessed serialized literals.",
+    "Open domains preserve the original lexical value and require a versioned crosswalk before normalization.",
+    "Nullable-column Y/N markers in N-CEN README files are schema-nullability metadata, not business values."
+  ],
+  "families": {
+    "13f": {
+      "source": "local-sec-bulk/13f/FORM13F_readme.htm",
+      "literal_closed": {
+        "INFOTABLE.SSHPRNAMTTYPE": {"SH": "shares", "PRN": "principal amount"},
+        "INFOTABLE.PUTCALL": {"PUT": "put", "CALL": "call"}
+      },
+      "descriptive_without_serialized_codes": {
+        "SUBMISSION.SUBMISSIONTYPE": ["initial quarterly holdings report", "notice report", "amendment"],
+        "COVERPAGE.REPORTTYPE": ["13F holdings report", "13F notice", "13F combination report"],
+        "COVERPAGE.AMENDMENTTYPE": ["restatement", "adds new holdings entries"]
+      },
+      "open_domains": [
+        "COVERPAGE.ISAMENDMENT",
+        "COVERPAGE.AMENDMENTNO",
+        "INFOTABLE.INVESTMENTDISCRETION"
+      ]
+    },
+    "ncen": {
+      "source": "local-sec-bulk/ncen/ncen_readme.htm",
+      "literal_closed": {
+        "SUBMISSION.SUBMISSION_TYPE": ["N-CEN", "N-CEN/A", "NT N-CEN", "NT N-CEN/A"],
+        "ADVISER.SOURCE": {
+          "Part C": "managementInvestmentQuestion",
+          "Part D": "closedEndManagementInvestment"
+        },
+        "ADVISER.ADVISER_TYPE": [
+          "Adviser",
+          "Subadviser",
+          "Terminated Adviser",
+          "Terminated Subadviser"
+        ],
+        "CUSTODIAN.CUSTODY_TYPE": {
+          "1": "Bank - section 17(f)(1)",
+          "2": "Member national securities exchange - rule 17f-1",
+          "3": "Self - rule 17f-2",
+          "4": "Securities depository - rule 17f-4",
+          "5": "Foreign custodian - rule 17f-5",
+          "6": "Futures commission merchants and commodity clearing organizations - rule 17f-6",
+          "7": "Foreign securities depository - rule 17f-7",
+          "8": "Insurance company sponsor - rule 26a-2",
+          "9": "Other"
+        }
+      },
+      "conditional_positive_literal": {
+        "literal": "Y",
+        "fields": {
+          "FUND_REPORTED_INFO.IS_ETF": "Exchange-Traded Fund",
+          "FUND_REPORTED_INFO.IS_ETMF": "Exchange-Traded Managed Fund",
+          "FUND_REPORTED_INFO.IS_INDEX": "Index Fund",
+          "FUND_REPORTED_INFO.IS_MULTI_INVERSE_INDEX": "Multi Inverse Index",
+          "FUND_REPORTED_INFO.IS_INTERVAL": "Interval Fund",
+          "FUND_REPORTED_INFO.IS_FUND_OF_FUND": "Fund of Funds",
+          "FUND_REPORTED_INFO.IS_MASTER_FEEDER": "Master-Feeder Fund",
+          "FUND_REPORTED_INFO.IS_MONEY_MARKET": "Money Market Fund",
+          "FUND_REPORTED_INFO.IS_TARGET_DATE": "Target Date Fund",
+          "FUND_REPORTED_INFO.IS_UNDERLYING_FUND": "Underlying fund",
+          "FUND_REPORTED_INFO.IS_FUND_TYPE_NA": "N/A"
+        },
+        "warning": "N, blank, and mutual-exclusivity semantics are not declared by the official source dictionary."
+      },
+      "descriptive_without_serialized_codes": {
+        "LINE_OF_CREDIT_DETAIL.IS_CREDIT_LINE_COMMITTED": ["committed", "uncommitted"],
+        "LINE_OF_CREDIT_DETAIL.CREDIT_TYPE": ["fund-only", "shared among multiple funds"]
+      },
+      "open_domains": [
+        "REGISTRANT.INVESTMENT_COMPANY_TYPE",
+        "general CHAR(1) business flags",
+        "ETF boolean questions",
+        "provider names, identifiers, and common provider category"
+      ]
+    },
+    "nport": {
+      "source": "local-sec-bulk/nport/nport_readme.htm",
+      "literal_closed": {
+        "SUBMISSION.SUB_TYPE": ["NPORT-P", "NPORT-P/A", "NT NPORT-P"]
+      },
+      "descriptive_without_serialized_codes": {
+        "MONTHLY_RETURN_CAT_INSTRUMENT.INSTRUMENT_KIND": ["forward", "future", "option", "swaption", "swap", "warrant", "other"],
+        "FUND_REPORTED_HOLDING.PAYOFF_PROFILE": ["long", "short", "N/A"],
+        "FUND_REPORTED_HOLDING.UNIT": ["number of shares", "principal amount", "other units"],
+        "DEBT_SECURITY.COUPON_TYPE": ["fixed", "floating", "variable", "none"],
+        "SWAPTION_OPTION_WARNT_DERIV.PUT_OR_CALL": ["put", "call"],
+        "SWAPTION_OPTION_WARNT_DERIV.WRITTEN_OR_PURCHASED": ["written", "purchased"],
+        "NONFOREIGN_EXCHANGE_SWAP.FIXED_OR_FLOATING_RECEIPT": ["fixed", "floating", "other"],
+        "NONFOREIGN_EXCHANGE_SWAP.FIXED_OR_FLOATING_PAYMENT": ["fixed", "floating", "other"],
+        "FLOATING_RATE_RESET_TENOR.RECEIPT_OR_PAYMENT": ["receipt", "payment"]
+      },
+      "open_domains": [
+        "MONTHLY_RETURN_CAT_INSTRUMENT.ASSET_CAT",
+        "FUND_REPORTED_HOLDING.ASSET_CAT",
+        "FUND_REPORTED_HOLDING.ISSUER_TYPE",
+        "FUND_REPORTED_HOLDING.FAIR_VALUE_LEVEL",
+        "FUND_REPORTED_HOLDING.DERIVATIVE_CAT",
+        "DEBT_SECURITY CHAR(1) flags",
+        "NONFOREIGN_EXCHANGE_SWAP.SWAP_FLAG"
+      ],
+      "naming_correction": {
+        "invalid_planned_name": "ISSUER_CAT",
+        "official_field": "FUND_REPORTED_HOLDING.ISSUER_TYPE",
+        "domain_status": "open"
+      }
+    },
+    "rr1": {
+      "source": "local-sec-bulk/rr1/readme.htm",
+      "literal_closed": {
+        "TAG.iord": {"I": "point in time", "D": "duration", "null": "abstract tag"},
+        "TAG.custom": {"1": "custom tag", "0": "standard tag"},
+        "TAG.abstract": {"1": "abstract", "0": "non-abstract"},
+        "TXT.escaped": {"1": "HTML/XML tags removed", "0": "tags not removed"}
+      },
+      "descriptive_without_serialized_codes": {
+        "NUM.measure": [
+          "Before Taxes",
+          "After Taxes on Distributions",
+          "After Taxes on Distributions and Sales",
+          "pre-tax broad-market-index return"
+        ]
+      },
+      "open_domains": [
+        "SUB.form",
+        "TAG.datatype",
+        "NUM.uom",
+        "NUM.measure non-null member names",
+        "NUM.document",
+        "TXT.measure",
+        "TXT.document",
+        "TXT.context",
+        "otherdims"
+      ]
+    }
+  }
+}
