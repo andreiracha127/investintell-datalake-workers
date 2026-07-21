@@ -1695,6 +1695,24 @@ def _derive_form_lock_key(form: str, package: Path) -> str:
     return f"{form}:{digest}"
 
 
+def _derive_nport_lock_key_from_governed_files(
+    package: Path, governed_file_hashes: Mapping[str, str],
+) -> str:
+    """Derive the N-PORT lock from the just-verified frozen inventory."""
+    schema = importlib.import_module("src.nport.schema")
+    verified = schema.verify_package(
+        package,
+        schema.load_nport_contract(),
+        governed_file_hashes=governed_file_hashes,
+    )
+    digest = schema.package_sha256(
+        verified.file_hashes,
+        metadata_sha256=verified.metadata_sha256,
+        readme_sha256=verified.readme_sha256,
+    )
+    return f"nport:{digest}"
+
+
 def _try_form_advisory_lock(connection: object, key: str) -> bool:
     with connection.cursor() as cursor:  # type: ignore[attr-defined]
         cursor.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (key,))
@@ -2133,7 +2151,15 @@ class AuthorizedPackageExecutor:
             self._validate_connected_target(self.target_inspector(connection))
             self._validate_production_preflight(connection)
             source_package = root_by_form[form] / Path(cast(str, expected["relative_package_path"]))
-            lock_key = _derive_form_lock_key(form, source_package)
+            governed_file_hashes = {
+                cast(str, item["relative_path"]): cast(str, item["sha256"])
+                for item in cast(list[Mapping[str, object]], expected["files"])
+            }
+            lock_key = (
+                _derive_nport_lock_key_from_governed_files(source_package, governed_file_hashes)
+                if form == "nport" and self.dispatchers is None
+                else _derive_form_lock_key(form, source_package)
+            )
             if not _try_form_advisory_lock(connection, lock_key):
                 lock_key = None
                 raise BackfillSafetyError("lock_busy")
@@ -2148,7 +2174,10 @@ class AuthorizedPackageExecutor:
                 raise BackfillSafetyError("authorized executor dispatcher is unavailable")
             root = root_by_form[form]
             dispatch_connection = _ProtectedTransactionConnection(connection) if commit_fence is not None else connection
-            result = dict(dispatcher(dispatch_connection, package=source_package, source_root=root))
+            dispatch_kwargs: dict[str, object] = {"package": source_package, "source_root": root}
+            if form == "nport" and self.dispatchers is None:
+                dispatch_kwargs["_governed_file_hashes"] = governed_file_hashes
+            result = dict(dispatcher(dispatch_connection, **dispatch_kwargs))
             safe = self._terminal_result(result, cast(str, expected["relative_package_path"]))
             if safe.get("state") == "failed" and commit_fence is not None:
                 rollback = getattr(connection, "rollback", None)

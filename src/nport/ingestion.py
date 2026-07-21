@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from uuid import UUID
 
@@ -16,7 +16,6 @@ from src.sec_regulatory.manifests import (
     fail_run,
     register_file,
     register_table_reconciliation,
-    record_issue,
     register_package_discovery,
     retry_package_discovery,
     retry_run,
@@ -26,10 +25,9 @@ from src.sec_regulatory.manifests import (
 from src.sec_regulatory.tsv import stream_tsv
 
 from .schema import json_typed_projection, load_nport_contract, package_sha256, parse_row, verify_package
-from .storage import install_schema
 
 
-BATCH_SIZE = 1_000
+COPY_BATCH_SIZE = 10_000
 
 
 class NportIngestionError(RuntimeError):
@@ -54,13 +52,14 @@ def ingest_package(
     source_root: Path,
     parser_version: str = "nport-v1",
     _locked_package_digest: str | None = None,
+    _governed_file_hashes: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Carrega um pacote numa transação; linhas só aparecem após raw validation."""
     contract = load_nport_contract()
     relative_path = package.relative_to(source_root).as_posix()
     quarter = source_quarter_from_package(package)
     try:
-        verified = verify_package(package, contract)
+        verified = verify_package(package, contract, governed_file_hashes=_governed_file_hashes)
     except (ContractError, ValueError) as error:
         existing = _package_status(conn, relative_path=relative_path)
         if existing is not None and existing[1] == "loaded":
@@ -84,7 +83,7 @@ def ingest_package(
         with _package_advisory_lock(conn, digest):
             return ingest_package(
                 conn, package=package, source_root=source_root, parser_version=parser_version,
-                _locked_package_digest=digest,
+                _locked_package_digest=digest, _governed_file_hashes=_governed_file_hashes,
             )
     if digest != _locked_package_digest:
         return {
@@ -154,10 +153,16 @@ def ingest_package(
             # arquivos completamente reconciliados, nunca lotes parciais.
             conn.commit()
         with conn.transaction():
-            # Re-check the exact governed package after every physical stream.
-            # This also catches metadata/readme or filename-set swaps that do
-            # not affect the TSV currently being consumed.
-            if verify_package(package, contract) != verified:
+            # Re-check the closed filename/header contract after all streams.
+            # Each loaded TSV was already hashed while it was streamed against
+            # the frozen inventory; local ungoverned callers retain a full
+            # package rehash here.
+            if verify_package(
+                package,
+                contract,
+                governed_file_hashes=_governed_file_hashes,
+                rehash_non_streamed_files=_governed_file_hashes is not None,
+            ) != verified:
                 raise NportIngestionError("bytes do pacote mudaram durante o carregamento")
             _resolve_holding_parents(conn, run_id=run.run_id, contract=contract)
             _validate_candidate_keys(conn, run_id=run.run_id)
@@ -198,7 +203,6 @@ def _load_file(conn: psycopg.Connection, *, run_id: UUID, parser_version: str, p
     if header != table.headers:
         raise NportIngestionError(f"cabeçalho ou ordem divergente: {table.source_file}")
     lexical = typed = quarantined = 0
-    batch: list[tuple[object, ...]] = []
     with conn.transaction():
         source_file_id = register_file(
             conn, run_id=run_id, relative_path=table.source_file, sha256=source_sha256,
@@ -236,31 +240,38 @@ def _load_file(conn: psycopg.Connection, *, run_id: UUID, parser_version: str, p
         ):
             detail = provenance[0] if provenance and len(provenance) == 1 and isinstance(provenance[0], dict) else {"invalid_shape": True}
             raise NportIngestionError("N-PORT raw provenance precheck failed: " + json.dumps(detail, sort_keys=True, separators=(",", ":")))
-        for row_number, values in rows:
-            parsed = parse_row(table.columns, values)
-            lexical += 1
-            typed += int(parsed.parse_status == "typed")
-            quarantined += int(parsed.parse_status == "quarantined")
-            batch.append((
-                run_id, source_file_id, row_number, source_sha256, parser_version, table.source_file,
-                json.dumps(parsed.lexical, sort_keys=True), json.dumps(json_typed_projection(parsed.typed), sort_keys=True),
-                parsed.parse_status,
-                json.dumps([issue.__dict__ for issue in parsed.issues], sort_keys=True),
-                json.dumps(parsed.candidate_key_evidence, sort_keys=True),
-                parsed.lexical.get("ACCESSION_NUMBER") or None, parsed.lexical.get("HOLDING_ID") or None,
-            ))
-            if len(batch) >= BATCH_SIZE:
+        def serialized_rows() -> Iterable[tuple[object, ...]]:
+            nonlocal lexical, typed, quarantined
+            for row_number, values in rows:
+                parsed = parse_row(table.columns, values)
+                lexical += 1
+                typed += int(parsed.parse_status == "typed")
+                quarantined += int(parsed.parse_status == "quarantined")
+                yield (
+                    run_id, source_file_id, row_number, source_sha256, parser_version, table.source_file,
+                    json.dumps(parsed.lexical, sort_keys=True), json.dumps(json_typed_projection(parsed.typed), sort_keys=True),
+                    parsed.parse_status,
+                    json.dumps([issue.__dict__ for issue in parsed.issues], sort_keys=True),
+                    json.dumps(parsed.candidate_key_evidence, sort_keys=True),
+                    parsed.lexical.get("ACCESSION_NUMBER") or None, parsed.lexical.get("HOLDING_ID") or None,
+                )
+
+        # Keep transition tables bounded while reducing COPY statements and
+        # statement-trigger executions by 10x versus the former 1,000-row path.
+        batch: list[tuple[object, ...]] = []
+        for row in serialized_rows():
+            batch.append(row)
+            if len(batch) >= COPY_BATCH_SIZE:
                 _insert_rows(conn, batch)
                 batch.clear()
-            for sequence, issue in enumerate(parsed.issues, start=1):
-                record_issue(
-                    conn, source_file_id=source_file_id, source_row_number=row_number,
-                    issue_sequence=sequence, table_name=table.source_file, column_name=issue.column_name,
-                    raw_lexical_value=issue.raw_value, typed_error_code=issue.code,
-                    typed_error_detail=issue.detail, status="quarantined",
-                )
         if batch:
             _insert_rows(conn, batch)
+        _insert_issues_from_raw(
+            conn,
+            run_id=run_id,
+            source_file_id=source_file_id,
+            source_table=table.source_file,
+        )
         register_file(
             conn, run_id=run_id, relative_path=table.source_file, sha256=source_sha256,
             byte_size=path.stat().st_size, schema_metadata={"headers": list(table.headers)},
@@ -286,6 +297,32 @@ def _insert_rows(conn: psycopg.Connection, rows: Iterable[tuple[object, ...]]) -
         ) as copy:
             for row in rows:
                 copy.write_row(row)
+
+
+def _insert_issues_from_raw(
+    conn: psycopg.Connection,
+    *,
+    run_id: UUID,
+    source_file_id: UUID,
+    source_table: str,
+) -> None:
+    """Materializa issues em uma operação set-based a partir do raw já copiado."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO sec_row_issues
+                   (source_file_id, source_row_number, issue_sequence, table_name, column_name,
+                    raw_lexical_value, typed_error_code, typed_error_detail, status)
+               SELECT r.source_file_id, r.source_row_number, issue.ordinality::integer,
+                      r.source_table, issue.value->>'column_name', issue.value->>'raw_value',
+                      issue.value->>'code', issue.value->>'detail', 'quarantined'
+               FROM nport_raw_rows r
+               CROSS JOIN LATERAL jsonb_array_elements(r.parse_errors)
+                    WITH ORDINALITY AS issue(value, ordinality)
+               WHERE r.ingestion_run_id = %s AND r.source_table = %s
+                 AND r.source_file_id = %s
+                 AND jsonb_array_length(r.parse_errors) > 0""",
+            (run_id, source_table, source_file_id),
+        )
 
 
 def _file_is_complete(

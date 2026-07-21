@@ -108,6 +108,56 @@ def test_holding_parent_reconciliation_avoids_nested_loop_plan() -> None:
     )
 
 
+def test_governed_inventory_hashes_avoid_rehashing_the_same_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.nport import schema
+    from src.sec_regulatory.contracts import sha256_file
+
+    contract, package = _package(tmp_path, "2029q1_nport", accession="NO-REHASH")
+    governed = {
+        path.name: sha256_file(path)
+        for path in package.iterdir()
+        if path.is_file()
+    }
+    monkeypatch.setattr(
+        schema,
+        "sha256_file",
+        lambda _path: pytest.fail("governed files must not be hashed again"),
+    )
+
+    verified = schema.verify_package(
+        package,
+        contract,
+        governed_file_hashes=governed,
+    )
+
+    assert verified.file_hashes["SUBMISSION.tsv"] == governed["SUBMISSION.tsv"]
+
+
+def test_governed_inventory_rehashes_small_non_streamed_files_at_final_gate(
+    tmp_path: Path,
+) -> None:
+    from src.nport import schema
+    from src.sec_regulatory.contracts import ContractError, sha256_file
+
+    contract, package = _package(tmp_path, "2029q2_nport", accession="FINAL-REHASH")
+    governed = {
+        path.name: sha256_file(path)
+        for path in package.iterdir()
+        if path.is_file()
+    }
+    (package / "nport_readme.htm").write_text("changed", encoding="utf-8")
+
+    with pytest.raises(ContractError, match="nport_readme.htm mudou"):
+        schema.verify_package(
+            package,
+            contract,
+            governed_file_hashes=governed,
+            rehash_non_streamed_files=True,
+        )
+
+
 def test_streamer_does_not_need_full_file_reads(tmp_path: Path) -> None:
     from src.sec_regulatory.tsv import stream_tsv
 
@@ -240,12 +290,15 @@ def test_real_db_nport_catalog_is_frozen_exact_contract_projection() -> None:
 
 
 def test_copy_and_tsv_code_paths_are_bounded_streaming_primitives() -> None:
-    from src.nport.ingestion import _insert_rows
+    from src.nport.ingestion import COPY_BATCH_SIZE, _insert_issues_from_raw, _insert_rows, _load_file
     from src.nport.schema import verify_package
     from src.sec_regulatory.tsv import stream_tsv
 
     assert "cur.copy" in inspect.getsource(_insert_rows)
     assert "executemany" not in inspect.getsource(_insert_rows)
+    assert COPY_BATCH_SIZE == 10_000
+    assert "if len(batch) >= COPY_BATCH_SIZE" in inspect.getsource(_load_file)
+    assert "jsonb_array_elements" in inspect.getsource(_insert_issues_from_raw)
     assert ".read_text" not in inspect.getsource(stream_tsv)
     assert ".read_text" not in inspect.getsource(verify_package)
 

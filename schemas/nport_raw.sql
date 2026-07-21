@@ -584,7 +584,7 @@ END $$;
 
 DROP TRIGGER IF EXISTS nport_raw_publication_gate ON sec_ingestion_runs;
 
--- COPY escreve batches de 1.000 linhas: a guarda é por statement, nunca um
+-- COPY escreve batches limitados: a guarda é por statement, nunca um
 -- SELECT/FOR UPDATE por linha física.
 CREATE OR REPLACE FUNCTION nport_lock_raw_insert_statement()
 RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN

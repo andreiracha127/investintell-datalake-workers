@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from collections.abc import Mapping
 from pathlib import Path
 import re
 from typing import Any
@@ -82,17 +83,46 @@ class VerifiedPackage:
     readme_sha256: str
 
 
-def verify_package(package: Path, contract: SourceTableContract) -> VerifiedPackage:
+def verify_package(
+    package: Path,
+    contract: SourceTableContract,
+    *,
+    governed_file_hashes: Mapping[str, str] | None = None,
+    rehash_non_streamed_files: bool = False,
+) -> VerifiedPackage:
     """Valida a família fechada antes de qualquer parsing de linha."""
     metadata = package / "nport_metadata.json"
     if not metadata.is_file():
         raise ContractError("nport_metadata.json ausente")
-    metadata_hash = sha256_file(metadata)
+    governed_metadata_hash = governed_file_hashes.get("nport_metadata.json") if governed_file_hashes else None
+    if governed_file_hashes is not None and (
+        not isinstance(governed_metadata_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", governed_metadata_hash)
+    ):
+        raise ContractError("SHA-256 governado de nport_metadata.json ausente ou inválido")
+    actual_metadata_hash = sha256_file(metadata) if governed_file_hashes is None or rehash_non_streamed_files else None
+    if rehash_non_streamed_files and actual_metadata_hash != governed_metadata_hash:
+        raise ContractError("nport_metadata.json mudou após a verificação governada")
+    metadata_hash = governed_metadata_hash if governed_file_hashes is not None else actual_metadata_hash
+    if not isinstance(metadata_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", metadata_hash):
+        raise ContractError("SHA-256 governado de nport_metadata.json ausente ou inválido")
     if metadata_hash != contract.metadata_sha256:
         raise ContractError("SHA-256 de nport_metadata.json diverge do contrato")
     readme = package / "nport_readme.htm"
     if not readme.is_file():
         raise ContractError("nport_readme.htm ausente")
+    governed_readme_hash = governed_file_hashes.get("nport_readme.htm") if governed_file_hashes else None
+    if governed_file_hashes is not None and (
+        not isinstance(governed_readme_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", governed_readme_hash)
+    ):
+        raise ContractError("SHA-256 governado de nport_readme.htm ausente ou inválido")
+    actual_readme_hash = sha256_file(readme) if governed_file_hashes is None or rehash_non_streamed_files else None
+    if rehash_non_streamed_files and actual_readme_hash != governed_readme_hash:
+        raise ContractError("nport_readme.htm mudou após a verificação governada")
+    readme_hash = governed_readme_hash if governed_file_hashes is not None else actual_readme_hash
+    if not isinstance(readme_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", readme_hash):
+        raise ContractError("SHA-256 governado de nport_readme.htm ausente ou inválido")
     actual = {path.name for path in package.iterdir() if path.is_file() and path.suffix.lower() == ".tsv"}
     required_filenames = {table.source_file for table in contract.tables if table.required_table}
     # FUND_REPORTED_HOLDING pode faltar apenas em pacote sem qualquer filho
@@ -123,8 +153,14 @@ def verify_package(package: Path, contract: SourceTableContract) -> VerifiedPack
         close = getattr(rows, "close", None)
         if close:
             close()
-        hashes[table.source_file] = sha256_file(package / table.source_file)
-    return VerifiedPackage(file_hashes=hashes, metadata_sha256=metadata_hash, readme_sha256=sha256_file(readme))
+        if governed_file_hashes is None:
+            hashes[table.source_file] = sha256_file(package / table.source_file)
+        else:
+            governed_hash = governed_file_hashes.get(table.source_file)
+            if not isinstance(governed_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", governed_hash):
+                raise ContractError(f"SHA-256 governado ausente ou inválido: {table.source_file}")
+            hashes[table.source_file] = governed_hash
+    return VerifiedPackage(file_hashes=hashes, metadata_sha256=metadata_hash, readme_sha256=readme_hash)
 
 
 def package_sha256(file_hashes: dict[str, str], *, metadata_sha256: str, readme_sha256: str) -> str:
