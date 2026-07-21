@@ -70,6 +70,25 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     END
 $$;
 
+-- Classify the RR "Performance Measure" axis member (the num/txt ``measure``
+-- column) into the tax/load treatment it denotes.  Per the frozen source-table
+-- contract the axis distinguishes Before Taxes (empty), After Taxes on
+-- Distributions, After Taxes on Distributions and Sales, or a pre-tax broadly
+-- available market index.  Anything unrecognised stays ``unclassified`` -- an
+-- honest tri-state, never a guessed treatment.  The raw member is preserved
+-- verbatim by the caller; this is only a derived label.
+CREATE OR REPLACE FUNCTION rr1_performance_measure_treatment(measure_id text)
+RETURNS text LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN NULLIF(btrim(measure_id), '') IS NULL THEN 'before_taxes'
+        WHEN measure_id ILIKE '%aftertaxesondistributionsandsale%' THEN 'after_tax_distributions_and_sales'
+        WHEN measure_id ILIKE '%aftertaxesondistributions%' THEN 'after_tax_distributions'
+        WHEN measure_id ILIKE '%broadbasedindex%' OR measure_id ILIKE '%broadmarket%'
+             OR measure_id ILIKE '%broadbasedsecuritiesindex%' THEN 'broad_market_index'
+        ELSE 'unclassified'
+    END
+$$;
+
 -- Strict ISO (YYYY-MM-DD) date parse for date-typed text facts (e.g. a fee-waiver
 -- termination date carried in txt.tsv).  Anything else -- absent, malformed, or a
 -- non-ISO lexical -- yields NULL so the caller can flag it honestly rather than
