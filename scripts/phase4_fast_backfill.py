@@ -448,7 +448,7 @@ def _prepared_json(value: object) -> str:
 
 
 def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
-    from src.sec_regulatory.manifests import create_or_resume_run, register_file, register_package_discovery, register_table_reconciliation, transition_run, validate_raw_run
+    from src.sec_regulatory.manifests import create_or_resume_run, get_run_status, register_file, register_package_discovery, register_table_reconciliation, transition_run, validate_raw_run
     form = entry["form"]
     register_package_discovery(conn, source_family=form, source_quarter=entry["quarter"], package_relative_path=entry["relative_package_path"], package_sha256=entry["package_sha256"], metadata_sha256=entry["metadata_sha256"], readme_sha256=entry["readme_sha256"], package_state="discovered")
     run = create_or_resume_run(conn, source_family=form, package_sha256=entry["package_sha256"], parser_version=entry["parser_version"], source_quarter=entry["quarter"], package_relative_path=entry["relative_package_path"])
@@ -529,7 +529,16 @@ def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
         from src.ncen.ingestion import _resolve_accession_parents
         from src.ncen.schema import load_ncen_contract
         _resolve_accession_parents(conn, run.run_id, load_ncen_contract(entry["metadata_sha256"]))
-    validated = validate_raw_run(conn, run_id=run.run_id)
+    if os.environ.get("SEC_FAST_LOCAL_FINALIZE") == "1":
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT sec_fast_finalize_local_backfill_v1(%s)", (run.run_id,))
+            if cursor.fetchone() is None:
+                raise FastBackfillError(f"fast finalize did not return a timestamp: {entry['identity']}")
+        validated = get_run_status(conn, run_id=run.run_id)
+        if validated is None or validated.current_state != "raw_validated":
+            raise FastBackfillError(f"fast finalize did not validate run: {entry['identity']}")
+    else:
+        validated = validate_raw_run(conn, run_id=run.run_id)
     register_package_discovery(conn, source_family=form, source_quarter=entry["quarter"], package_relative_path=entry["relative_package_path"], package_sha256=entry["package_sha256"], metadata_sha256=entry["metadata_sha256"], readme_sha256=entry["readme_sha256"], package_state="loaded", run_id=run.run_id)
     conn.commit()
     return validated.current_state
