@@ -143,6 +143,10 @@ LOCK_NCEN_DERIVED_PROFILES = 900_338
 # raw-landing lane below; 900_339 is the next free id after the N-CEN derived
 # lock (900_338).
 LOCK_RR1_DERIVED_PROFILES = 900_339
+# Public serving projection worker (sec_regulatory_serving_v1). Projects the
+# current N-CEN/RR1 snapshots into the public-only serving surface consumed by the
+# app. 900_340 is the next free id after the RR1 derived lock (900_339).
+LOCK_SEC_REGULATORY_SERVING = 900_340
 # RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
 # and 900_312 remain reserved by the ESMA workers.
 LOCK_RR1_INGESTION = 900_313
