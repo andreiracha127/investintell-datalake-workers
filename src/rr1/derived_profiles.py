@@ -52,6 +52,9 @@ _SCHEMA_FILES = (
     "rr1_turnover_profiles.sql",
     "rr1_reported_performance_profiles.sql",
     "rr1_benchmark_profiles.sql",
+    # Versioned governance infra (no snapshot build function): installed with the
+    # RR1 derived surface but deliberately absent from PRODUCTS.
+    "rr1_custom_tag_crosswalk.sql",
 )
 
 
