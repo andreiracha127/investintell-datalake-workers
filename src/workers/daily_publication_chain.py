@@ -310,14 +310,20 @@ def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
     from src.quant_data import publication as pub
 
     if prior is not None:
-        # Re-activate the prior publication (it was superseded on promotion).
-        conn.execute("UPDATE quant_publication_v1 SET status='ready' WHERE publication_id=%s", (prior,))
+        # Re-activate the prior publication (it was retired to 'superseded' on the
+        # promotion we are undoing). Clear activated_at when moving it back to 'ready'
+        # so the publication lifecycle CHECK ((status='active') = (activated_at IS NOT
+        # NULL) OR status='superseded') holds, then re-promote it atomically.
+        conn.execute(
+            "UPDATE quant_publication_v1 SET status='ready', activated_at=NULL "
+            "WHERE publication_id=%s AND status <> 'active'", (prior,))
         pub.promote(conn, product, prior)
         return
     # No prior active pointer: drop the active row and make the current publication
-    # writable again (back to 'ready').
+    # writable again (back to 'ready'); activated_at is cleared for the same CHECK.
     conn.execute(
-        "UPDATE quant_publication_v1 SET status='ready' WHERE product=%s AND status='active'", (product,))
+        "UPDATE quant_publication_v1 SET status='ready', activated_at=NULL "
+        "WHERE product=%s AND status='active'", (product,))
     conn.execute("DELETE FROM active_quant_publication_v1 WHERE product=%s", (product,))
 
 

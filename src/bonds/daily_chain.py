@@ -281,6 +281,34 @@ def _load_stage_runs(conn: psycopg.Connection, run_id: uuid.UUID) -> dict[str, d
     return {r[0]: dict(zip(keys, r)) for r in rows}
 
 
+def _load_run_promotions(conn: psycopg.Connection, run_id: uuid.UUID) -> dict[str, dict[str, Any]]:
+    """Products THIS run promoted, net of rollbacks, from the promotion ledger.
+
+    The crash-safe compensation set. After a restart the in-memory advance tracking
+    is empty, but ``bond_daily_chain_promotions`` still records what this run made
+    current (``action='promote'``) and the pre-run pointer it moved from
+    (``previous_publication_id``). A product later rolled back (``action='rollback'``)
+    is already compensated and drops out. Returns
+    ``{product: {"previous", "current", "stage"}}`` (stage is ``"recovered"`` because
+    the ledger does not record which stage promoted it).
+    """
+    rows = conn.execute(
+        "SELECT product, action, publication_id, previous_publication_id "
+        "FROM bond_daily_chain_promotions WHERE run_id=%s ORDER BY promotion_id",
+        (run_id,),
+    ).fetchall()
+    net: dict[str, dict[str, Any]] = {}
+    for product, action, pub_id, prev_id in rows:
+        if action == "promote":
+            if product in net:
+                net[product]["current"] = pub_id
+            else:
+                net[product] = {"previous": prev_id, "current": pub_id, "stage": "recovered"}
+        elif action == "rollback":
+            net.pop(product, None)
+    return net
+
+
 def _record_stage(
     conn: psycopg.Connection, *, run_id: uuid.UUID, stage: str, order: int,
     outcome: StageOutcome, attempts: int, started_at: datetime,
@@ -351,6 +379,14 @@ def _run_stage(
             classification = classify_exception(exc)
             outcome = StageOutcome.failed(str(exc) or type(exc).__name__,
                                           classification=classification)
+            # A stage that ran SQL on the chain's own connection may have left its
+            # transaction aborted; roll it back so the checkpoint write (and any
+            # retry) runs cleanly instead of raising InFailedSqlTransaction — which
+            # would crash out of the run and skip compensation entirely.
+            try:
+                ctx.conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
         else:
             outcome = _reconcile_skip(stage, outcome)
         if outcome.status is StageStatus.FAILED and outcome.classification == "transient" and retriable:
@@ -436,11 +472,24 @@ def _run_one_day(
                        chain=chain, code_revision=code_revision, config_version=config_version)
 
     track = snapshot_pointers is not None and restore_pointer is not None
+    # Ledger-derived compensation set (crash-safe): every product THIS run already
+    # promoted, net of rollbacks, read from ``bond_daily_chain_promotions``. After a
+    # process crash the in-memory advance tracking is gone, but the ledger still
+    # records the pre-crash promotion together with its authoritative pre-run pointer
+    # (``previous_publication_id``). Reconciling those orphan promotions here means a
+    # later terminal failure compensates them too — closing the crash-window the
+    # Inc.2 final review flagged (a re-snapshot would wrongly treat the crashed
+    # attempt's promotion as the baseline and leave it current on a failed run).
+    ledger_advanced = _load_run_promotions(conn, run_id) if track else {}
     # baseline = the pre-run current pointers; the restore target for compensation.
-    baseline: dict[str, uuid.UUID] = dict(snapshot_pointers(ctx)) if track else {}
-    last_seen: dict[str, uuid.UUID] = dict(baseline)
+    # For a product this run already promoted, the LEDGER's previous_publication_id
+    # is the authoritative pre-run pointer (never the re-snapshotted current).
+    baseline: dict[str, uuid.UUID | None] = dict(snapshot_pointers(ctx)) if track else {}
+    for product, info in ledger_advanced.items():
+        baseline[product] = info["previous"]
+    last_seen: dict[str, uuid.UUID] = dict(snapshot_pointers(ctx)) if track else {}
     # product -> {previous (pre-run), current (latest), stage}
-    advanced: dict[str, dict[str, Any]] = {}
+    advanced: dict[str, dict[str, Any]] = dict(ledger_advanced)
 
     stage_records: list[dict[str, Any]] = []
     failed = False
@@ -467,10 +516,13 @@ def _run_one_day(
             after = dict(snapshot_pointers(ctx))
             for product, pub_id in after.items():
                 if last_seen.get(product) != pub_id:
-                    advanced[product] = {"previous": baseline.get(product),
-                                         "current": pub_id, "stage": stage.name}
+                    # Preserve the ORIGINAL pre-run pointer if this run already
+                    # tracked the product (a re-promotion must not overwrite the true
+                    # restore target — ledger-seeded or first-seen — with an interim).
+                    previous = advanced[product]["previous"] if product in advanced else baseline.get(product)
+                    advanced[product] = {"previous": previous, "current": pub_id, "stage": stage.name}
                     record_promotion(conn, product=product, publication_id=pub_id,
-                                     previous_publication_id=baseline.get(product),
+                                     previous_publication_id=previous,
                                      run_id=run_id, action="promote")
             last_seen = after
             conn.commit()
@@ -521,6 +573,7 @@ def _compensate(
     compensations: list[dict[str, Any]] = []
     compensation_failures: list[dict[str, Any]] = []
     reset_stages: set[str] = set()
+    reset_all = False
     for product, info in advanced.items():
         prior_target = info["previous"]
         try:
@@ -532,13 +585,22 @@ def _compensate(
                 "product": product, "restored_to": _str_or_none(prior_target),
                 "rolled_back_from": _str_or_none(info["current"]), "stage": info["stage"],
             })
-            reset_stages.add(info["stage"])
+            if info["stage"] == "recovered":
+                # Ledger-derived orphan (a promotion recovered from a prior crashed
+                # invocation): the promoting stage is unknown, so reset the whole
+                # run's checkpoints to force a clean, idempotent re-run that
+                # re-promotes on restart rather than resuming past the undone advance.
+                reset_all = True
+            else:
+                reset_stages.add(info["stage"])
         except Exception as exc:  # noqa: BLE001 — recorded, never silent
             compensation_failures.append({
                 "product": product, "attempted_restore_to": _str_or_none(prior_target),
                 "still_current": _str_or_none(info["current"]), "error": str(exc) or type(exc).__name__,
             })
-    if reset_stages:
+    if reset_all:
+        conn.execute("DELETE FROM bond_daily_chain_stage_runs WHERE run_id=%s", (run_id,))
+    elif reset_stages:
         _delete_stage_checkpoints(conn, run_id, reset_stages)
     return compensations, compensation_failures
 

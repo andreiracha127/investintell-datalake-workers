@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _daily_chain_fixtures import (  # noqa: E402
     admin_connect,
+    base_dsn,
     install_derived_protocol,
     make_validated_publication,
     new_schema,
@@ -44,6 +45,16 @@ from src.bonds.daily_chain import (  # noqa: E402
     StageOutcome,
     TransientStageError,
 )
+from src.quant_data import publication as quant_pub  # noqa: E402
+from src.workers import daily_publication_chain as chain_worker  # noqa: E402
+
+
+def _search_path_dsn(schema: str) -> str:
+    base = base_dsn()
+    if base.startswith("postgres"):
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}options=-c%20search_path%3D{schema}"
+    return f"{base} options='-c search_path={schema}'"
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL not set"
@@ -520,6 +531,152 @@ def test_compensation_failure_is_flagged_distinctly_never_silent(env):
     failed = {c["product"] for c in s["compensation_failures"]}
     assert pp in failed
     assert "COMPENSATION FAILED" in (s["alert"] or "")
+
+
+# --------------------------------------------------------------------------- #
+# Crash-safe compensation: ledger-derived set + restart-with-orphan handled
+# --------------------------------------------------------------------------- #
+
+def test_restart_compensates_orphan_promotion_derived_from_ledger(env):
+    """The crash-window the Inc.2 final review flagged.
+
+    A process crash after a stage promoted leaves the promotion committed (in
+    ``bond_daily_chain_promotions`` with the run's id and pre-run pointer) but the
+    in-memory advance tracking gone and no compensation performed. On restart the
+    compensation set is DERIVED FROM THE LEDGER (net of rollbacks), so a later
+    terminal failure rolls the orphan promotion back to its pre-run pointer instead
+    of leaving it current on a failed run.
+    """
+    conn, _, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    product = "bond_serving_v1"
+    a1 = make_validated_publication(conn, product, 1)
+    a2 = make_validated_publication(conn, product, 2)
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, a1))
+    conn.commit()
+
+    run_id = daily_chain.chain_run_id_for(daily_chain.DEFAULT_CHAIN, D1, REV, CFG)
+    # Reconstruct the crashed run: run row 'running', the advancing stage
+    # checkpointed 'succeeded', the product promoted for real + a ledger 'promote'
+    # (previous=a1), and NO compensation — exactly the state a crash leaves behind.
+    daily_chain._open_run(conn, run_id=run_id, chain=daily_chain.DEFAULT_CHAIN,
+                          source_day=D1, code_revision=REV, config_version=CFG, watermarks={})
+    daily_chain._record_stage(conn, run_id=run_id, stage="pit_update", order=0,
+                              outcome=StageOutcome.succeeded(), attempts=1,
+                              started_at=daily_chain._now())
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, a2))
+    daily_chain.record_promotion(conn, product=product, publication_id=a2,
+                                 previous_publication_id=a1, run_id=run_id, action="promote")
+    conn.commit()
+    assert daily_chain.current_pointer(conn, product) == a2
+
+    def refresh_fail(ctx: StageContext) -> StageOutcome:
+        return StageOutcome.failed("boom", classification="terminal")
+
+    # Restart the SAME identity: pit_update honoured from its checkpoint (never
+    # re-run, so its promotion is invisible to in-memory tracking), refresh fails.
+    stages = [ok_stage("pit_update"), Stage("refresh", refresh_fail)]
+    summaries = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        snapshot_pointers=_pointer_snapshot, restore_pointer=_pointer_restore,
+    )
+    s = summaries[0]
+    assert s["run_id"] == str(run_id)
+    assert s["status"] == "failed"
+    # The orphan pre-crash promotion is rolled back to its pre-run pointer via the
+    # ledger — without the ledger-derived set it would stay a2 on a failed run.
+    assert daily_chain.current_pointer(conn, product) == a1
+    comp = {c["product"]: c for c in s["compensations"]}
+    assert comp[product]["restored_to"] == str(a1)
+    assert comp[product]["rolled_back_from"] == str(a2)
+    assert s["promoted"] == []
+    # Rollback recorded; the orphan is now net-absent from the ledger set.
+    assert daily_chain._load_run_promotions(conn, run_id) == {}
+
+
+def test_e2e_fail_compensate_restart_repromote_success(env):
+    """One end-to-end scenario with the REAL worker restore routing:
+
+    run -> two products self-promote FOR REAL -> terminal failure -> compensation
+    -> RESTART same run identity -> re-promote -> success. Coverage includes the
+    prior-is-None restore path (a derived product with NO previous current -- T6a)
+    and the mixed ``active_quant_publication_v1`` restore path (a product with a
+    prior active pointer -- T6b), exercised through ``_restore_pointer``'s real
+    derived-vs-mixed routing rather than a stand-in.
+    """
+    conn, schema, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    quant_pub.install_schema(conn)
+    conn.commit()
+    dsn = _search_path_dsn(schema)
+
+    derived = "bond_serving_v1"          # derived product, NO prior pointer (T6a)
+    d1 = make_validated_publication(conn, derived, 1)
+
+    mixed = quant_pub.PRODUCT            # 'mixed_quant_v1', HAS a prior active (T6b)
+    m0 = quant_pub.open_publication(conn, product=mixed, as_of=date(2024, 12, 31),
+                                    code_revision="r0", config_version="v")
+    quant_pub.mark_ready(conn, m0, {})
+    quant_pub.promote(conn, mixed, m0)   # m0 is the prior active (current) pointer
+    m1 = quant_pub.open_publication(conn, product=mixed, as_of=D1,
+                                    code_revision="r1", config_version="v")
+    quant_pub.mark_ready(conn, m1, {})
+    conn.commit()
+    assert quant_pub.active_publication_id(conn, mixed) == m0
+
+    def promote_derived_stage(ctx: StageContext) -> StageOutcome:
+        ctx.conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (derived, d1))
+        return StageOutcome.succeeded(product=derived)
+
+    def promote_mixed_stage(ctx: StageContext) -> StageOutcome:
+        # A rebuild leaves the target 'ready' before the promote stage flips it active
+        # (on restart the target was retired to 'superseded' by the prior promotion;
+        # clearing activated_at keeps the publication lifecycle CHECK satisfied).
+        ctx.conn.execute(
+            "UPDATE quant_publication_v1 SET status='ready', activated_at=NULL "
+            "WHERE publication_id=%s AND status <> 'active'", (m1,))
+        quant_pub.promote(ctx.conn, mixed, m1)
+        return StageOutcome.succeeded(product=mixed)
+
+    fail = {"on": True}
+
+    def refresh(ctx: StageContext) -> StageOutcome:
+        if fail["on"]:
+            return StageOutcome.failed("serving_coverage_below_threshold", classification="terminal")
+        return StageOutcome.succeeded()
+
+    stages = [Stage("pit_update", promote_derived_stage),
+              Stage("promote", promote_mixed_stage),
+              Stage("refresh", refresh)]
+    kw = dict(source_days=[D1], code_revision=REV, config_version=CFG, dsn=dsn,
+              snapshot_pointers=chain_worker._snapshot_pointers,
+              restore_pointer=chain_worker._restore_pointer)
+
+    # Phase 1: promote both for real, then a terminal failure -> compensate BOTH.
+    first = daily_chain.run_chain(conn, stages=stages, **kw)[0]
+    assert first["status"] == "failed"
+    # T6a: prior-is-None restore cleared the derived pointer entirely.
+    assert daily_chain.current_pointer(conn, derived) is None
+    # T6b: the mixed active pointer is restored to the prior active publication.
+    assert quant_pub.active_publication_id(conn, mixed) == m0
+    comp = {c["product"]: c for c in first["compensations"]}
+    assert comp[derived]["restored_to"] is None and comp[derived]["rolled_back_from"] == str(d1)
+    assert comp[mixed]["restored_to"] == str(m0) and comp[mixed]["rolled_back_from"] == str(m1)
+    assert first["promoted"] == []
+
+    # Phase 2: restart the SAME identity; refresh now succeeds -> re-promote -> success.
+    fail["on"] = False
+    second = daily_chain.run_chain(conn, stages=stages, **kw)[0]
+    assert second["run_id"] == first["run_id"]           # same deterministic identity
+    assert second["status"] == "completed"
+    assert daily_chain.current_pointer(conn, derived) == d1
+    assert quant_pub.active_publication_id(conn, mixed) == m1
+    promoted = {p["product"] for p in second["promoted"]}
+    assert derived in promoted and mixed in promoted
+    assert second["compensations"] == []
 
 
 # --------------------------------------------------------------------------- #
