@@ -14,6 +14,188 @@ permissions:
   contents: read
 
 jobs:
+  workers-new-surfaces-no-dsn:
+    name: workers-new-surfaces-no-dsn
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install worker test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Compile mixed production modules
+        run: >-
+          python -m compileall -q
+          scripts/verify_mixed_quant_contract.py
+          src/db.py
+          src/nport
+          src/quant_data
+          src/run.py
+          src/run_worker.py
+          src/sec_regulatory
+          src/workers/mixed_quant_publication.py
+          src/workers/nport_v2_lookthrough.py
+          src/workers/sec_class_factors.py
+          src/workers/sec_class_peers_scoring.py
+          src/workers/sec_class_shadow_readiness.py
+
+      - name: Run mixed tests without a database DSN
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            tests/test_mixed_quant_contract_version.py
+            tests/test_mixed_quant_contracts.py
+            tests/test_mixed_quant_factor_inputs.py
+            tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_publication.py
+            tests/test_nport_ingestion.py
+            tests/test_nport_v2_lookthrough.py
+            tests/test_sec_class_factors.py
+            tests/test_sec_class_peers_scoring.py
+            tests/test_sec_class_shadow_readiness.py
+          )
+          printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
+          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          collected=${collected:-0}
+          printf 'collected_count=%s\n' "$collected"
+          test "$collected" -gt 0
+          set +e
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" -q -rA | tee results.log
+          status=${PIPESTATUS[0]}
+          set -e
+          passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          failed=$( (grep -Eo '[0-9]+ failed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          skipped=$( (grep -Eo '[0-9]+ skipped' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          printf 'executed_count=%s failures=%s skips=%s\n' "$((passed + failed))" "$failed" "$skipped"
+          test "$status" -eq 0
+          test "$skipped" -gt 0
+
+  workers-new-surfaces-postgres:
+    name: workers-new-surfaces-postgres
+    runs-on: ubuntu-latest
+    env:
+      PYTHONPATH: .
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      SEC_TEST_DATABASE_URL: host=127.0.0.1 port=65431 dbname=postgres user=postgres
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 65431:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install worker test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Compile mixed production modules
+        run: >-
+          python -m compileall -q
+          scripts/verify_mixed_quant_contract.py
+          src/db.py
+          src/nport
+          src/quant_data
+          src/run.py
+          src/run_worker.py
+          src/sec_regulatory
+          src/workers/mixed_quant_publication.py
+          src/workers/nport_v2_lookthrough.py
+          src/workers/sec_class_factors.py
+          src/workers/sec_class_peers_scoring.py
+          src/workers/sec_class_shadow_readiness.py
+
+      - name: Run mixed tests with PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            tests/test_mixed_quant_contract_version.py
+            tests/test_mixed_quant_contracts.py
+            tests/test_mixed_quant_factor_inputs.py
+            tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_publication.py
+            tests/test_nport_composition_features.py
+            tests/test_nport_fixed_income_features.py
+            tests/test_nport_holdings_v2.py
+            tests/test_nport_ingestion.py
+            tests/test_nport_v2_lookthrough.py
+            tests/test_sec_class_factors.py
+            tests/test_sec_class_peers_scoring.py
+            tests/test_sec_class_shadow_readiness.py
+          )
+          db_tests=(
+            tests/test_mixed_quant_factor_inputs.py
+            tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_publication.py
+            tests/test_nport_composition_features.py
+            tests/test_nport_fixed_income_features.py
+            tests/test_nport_holdings_v2.py
+          )
+          printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
+          python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
+          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          collected=${collected:-0}
+          printf 'collected_count=%s\n' "$collected"
+          test "$collected" -gt 0
+          set +e
+          python -m pytest "${tests[@]}" -q -rA | tee results.log
+          status=${PIPESTATUS[0]}
+          set -e
+          passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          failed=$( (grep -Eo '[0-9]+ failed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          skipped=$( (grep -Eo '[0-9]+ skipped' results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          printf 'executed_count=%s failures=%s skips=%s\n' "$((passed + failed))" "$failed" "$skipped"
+          test "$status" -eq 0
+          printf 'database_scope=%s\n' "${db_tests[*]}"
+          python -m pytest "${db_tests[@]}" --collect-only -q | tee db-collect.log
+          db_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' db-collect.log | tail -1)
+          db_collected=${db_collected:-0}
+          printf 'database_collected_count=%s\n' "$db_collected"
+          test "$db_collected" -gt 0
+          set +e
+          python -m pytest "${db_tests[@]}" -q -rA | tee db-results.log
+          db_status=${PIPESTATUS[0]}
+          set -e
+          db_passed=$( (grep -Eo '[0-9]+ passed' db-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          db_failed=$( (grep -Eo '[0-9]+ failed' db-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          db_skipped=$( (grep -Eo '[0-9]+ skipped' db-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          db_executed=$((db_passed + db_failed))
+          printf 'database_executed_count=%s database_failures=%s database_skips=%s\n' "$db_executed" "$db_failed" "$db_skipped"
+          test "$db_status" -eq 0
+          test "$db_executed" -gt 0
+
   quant-engine:
     name: quant-engine
     runs-on: ubuntu-latest
