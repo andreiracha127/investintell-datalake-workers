@@ -56,8 +56,21 @@ _COLUMNS = (
     "accession_number, document_id, filing_date, effective_date, payload"
 )
 
-# Reason code derived deterministically from the serving state.
-_REASON = (
+# Reason code derived deterministically from the serving state.  A ``degraded``
+# state carries a reason that names WHY it degraded, and the two degrade paths are
+# distinct (Increment 2 Task 1c):
+#   * N-CEN families never carry a native ``degraded`` snapshot state; the serving
+#     computes ``degraded`` ONLY from a qualitative disclosure-completeness rule
+#     (etf ``leg_incomplete``; expense all-null legs) -> ``disclosure_quality_degraded``.
+#   * RR1 families pass through the snapshot ``status='degraded'`` (a quantitative
+#     coverage shortfall) -> ``coverage_below_certified_threshold``.
+_REASON_NCEN = (
+    "CASE srv_state WHEN 'available' THEN NULL "
+    "WHEN 'degraded' THEN 'disclosure_quality_degraded' "
+    "WHEN 'not_applicable' THEN 'asset_family_not_applicable' "
+    "ELSE 'source_filing_unavailable' END"
+)
+_REASON_RR1 = (
     "CASE srv_state WHEN 'available' THEN NULL "
     "WHEN 'degraded' THEN 'coverage_below_certified_threshold' "
     "WHEN 'not_applicable' THEN 'asset_family_not_applicable' "
@@ -82,7 +95,7 @@ def _ncen_fund_sql(
     return f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, '{family}', COALESCE(series_id,''), '', fund_id, '', 'fund',
-           srv_state, {_REASON}, {reason_col}, {_COVERAGE}, measured_at,
+           srv_state, {_REASON_NCEN}, {reason_col}, {_COVERAGE}, measured_at,
            accession_number, '', NULL, effective_date,
            CASE WHEN srv_state IN ('available','degraded')
                 THEN sec_serving_scrub({payload_build}) ELSE NULL END
@@ -147,7 +160,7 @@ def _rr1_fact_sql(
     return f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, '{family}', {series_id}, {class_id}, '', {fact_key}, '{grain_origin}',
-           srv_state, {_REASON}, reason_code, {_COVERAGE}, {source_date},
+           srv_state, {_REASON_RR1}, reason_code, {_COVERAGE}, {source_date},
            {accession}, {document}, {filing}, effective_date,
            CASE WHEN srv_state IN ('available','degraded')
                 THEN sec_serving_scrub({payload_expr}) ELSE NULL END
@@ -222,7 +235,7 @@ def _family_sql() -> dict[str, str]:
     sql["ncen_operational_event"] = f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, 'ncen_operational_event', COALESCE(roster.series_id,''), '',
-           roster.fund_id, '', 'registrant', srv_state, {_REASON},
+           roster.fund_id, '', 'registrant', srv_state, {_REASON_NCEN},
            oe.operational_event_reason_code, {_COVERAGE}, oe.measured_at,
            oe.accession_number, '', NULL, oe.effective_date,
            CASE WHEN srv_state IN ('available','degraded')
@@ -289,7 +302,7 @@ def _family_sql() -> dict[str, str]:
     sql["rr1_class_cost_dispersion"] = f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, 'rr1_class_cost_dispersion', COALESCE(series_id,''), '', '', '', 'series',
-           srv_state, {_REASON}, reason_code, {_COVERAGE}, data_date,
+           srv_state, {_REASON_RR1}, reason_code, {_COVERAGE}, data_date,
            accession_number, '', filed_date, effective_date,
            CASE WHEN srv_state IN ('available','degraded') THEN sec_serving_scrub(
                jsonb_build_object('numeric_class_count', s.numeric_class_count,
@@ -303,7 +316,7 @@ def _family_sql() -> dict[str, str]:
     sql["rr1_benchmark"] = f"""
     INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
     SELECT %(pub)s, 'rr1_benchmark', COALESCE(series_id,''), COALESCE(class_id,''), '', '', 'class',
-           srv_state, {_REASON}, reason_code, {_COVERAGE}, latest_effective_date,
+           srv_state, {_REASON_RR1}, reason_code, {_COVERAGE}, latest_effective_date,
            latest_accession_number, '', latest_filed_date, latest_effective_date,
            CASE WHEN srv_state IN ('available','degraded') THEN sec_serving_scrub(
                jsonb_build_object('primary_benchmark', s.primary_benchmark,

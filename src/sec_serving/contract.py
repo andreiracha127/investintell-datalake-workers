@@ -26,6 +26,19 @@ PINNED SERVING BOUNDARY (documented here so both repos carry the decision):
   * The app-owned composition layer (``fund_regulatory_serving_*``) that pins one
     immutable worker publication is a composition/backfill (ops) responsibility,
     not the app request path. Consistent with Global Constraints 7, 8 and 13.
+
+COVERAGE_PCT SEMANTICS (contract note; carried in both repos -- Increment 2 Task 1e):
+  ``coverage_pct`` is a per-FAMILY quantity and its denominator differs by family;
+  it is a coarse completeness signal, NOT a single cross-family ratio:
+    * N-CEN families -- RAW STATE PASS-THROUGH: the serving materializer derives it
+      from the serving state only (available -> 100, degraded -> 50, otherwise NULL).
+      There is no per-fact usable/total fraction; the number reflects the state band.
+    * ``rr1_fee`` (app composite) -- USABLE / 7: the fraction of the seven closed-world
+      over-assets fee concepts that resolved to a usable value for the class.
+    * ``rr1_reported_performance`` (app composite) -- USABLE / ROWS: the fraction of the
+      reported-performance rows that carried a usable numeric value.
+  A consumer must read ``coverage_pct`` against the family it came from and never
+  compare it across families as if it were one normalised ratio.
 """
 
 from __future__ import annotations
@@ -65,10 +78,20 @@ SERVING_FACT_COLUMNS: tuple[str, ...] = (
 SERVING_STATES: tuple[str, ...] = ("available", "degraded", "unavailable", "not_applicable")
 
 # Typed reason vocabulary shared with the app CapabilityReasonCode.
+#   * ``coverage_below_certified_threshold`` is a QUANTITATIVE degrade (an RR1
+#     snapshot ``status='degraded'`` passed through -- fewer usable facts than the
+#     certified threshold).
+#   * ``disclosure_quality_degraded`` is a QUALITATIVE degrade computed on an
+#     N-CEN family whose snapshot state is ``available`` but whose disclosure is
+#     internally incomplete (an ETF with a one-/zero-legged authorized participant
+#     so the aggregate net is untrustworthy; an expense fund with every expense leg
+#     NULL).  These are NOT coverage-threshold shortfalls and must not collapse
+#     into ``coverage_below_certified_threshold`` (Increment 2 Task 1c).
 SERVING_REASON_CODES: tuple[str, ...] = (
     "asset_family_not_applicable",
     "class_context_ambiguous",
     "coverage_below_certified_threshold",
+    "disclosure_quality_degraded",
     "publication_not_ready",
     "source_filing_unavailable",
     "source_stale",
@@ -372,7 +395,7 @@ CROSSWALK_MIN_CONFIDENCE = 0.80
 
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.sec_regulatory_serving_v1.SURFACE_DIGEST`` byte-for-byte.
-SURFACE_DIGEST = "sha256:1dfe1a393fa50ed174b4b4f68323b1ca1049c87d7d4150d32f0ac65aec8cba01"
+SURFACE_DIGEST = "sha256:aa134a7e8e70c0a5b2e577121fa3a3aeb8311404b6aaa9e992173b789d5e1db4"
 
 
 def _family_surface(family: dict[str, Any]) -> dict[str, Any]:

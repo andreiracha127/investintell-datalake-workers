@@ -50,7 +50,12 @@ BEGIN
                 '[]'::jsonb
             );
         WHEN 'string' THEN
-            IF (data #>> '{}') ~ '^row:' THEN
+            -- Neutralise internal entity-key fallbacks that survive in a public
+            -- (non-blocklisted) key position: the ``row:<raw_row_id>`` entity-key
+            -- fallback AND any ``cik:<registrant_cik>`` identifier value.  A blocked
+            -- KEY is stripped above, but a cik:/row: VALUE under a public key must
+            -- never reach the serving surface verbatim.
+            IF (data #>> '{}') ~ '^(row|cik):' THEN
                 RETURN to_jsonb('unavailable'::text);
             END IF;
             RETURN data;
@@ -79,8 +84,8 @@ CREATE TABLE IF NOT EXISTS sec_regulatory_serving_facts (
     state text NOT NULL CHECK (state IN ('available', 'degraded', 'unavailable', 'not_applicable')),
     reason_code text CHECK (reason_code IS NULL OR reason_code IN (
         'asset_family_not_applicable', 'class_context_ambiguous',
-        'coverage_below_certified_threshold', 'publication_not_ready',
-        'source_filing_unavailable', 'source_stale'
+        'coverage_below_certified_threshold', 'disclosure_quality_degraded',
+        'publication_not_ready', 'source_filing_unavailable', 'source_stale'
     )),
     snapshot_reason_code text,
     coverage_pct numeric CHECK (coverage_pct IS NULL OR (coverage_pct >= 0 AND coverage_pct <= 100)),

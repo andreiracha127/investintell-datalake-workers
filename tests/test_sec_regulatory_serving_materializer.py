@@ -43,7 +43,10 @@ FORBIDDEN = [
 ]
 
 # A nested internal blob attached to every family payload; the scrub must remove
-# every key of it and neutralise the ``row:`` entity value.
+# every blocklisted KEY and neutralise the ``row:`` / ``cik:`` entity VALUES that
+# survive under a public (non-blocklisted) key.  ``issuer_ref`` carries a ``cik:``
+# value under a public key: its KEY is not blocked, so only the value rule can
+# neutralise it (item 1a).
 LEAK_BLOB = {
     "evidence": {
         "raw_row_id": SENT_RAW,
@@ -51,7 +54,8 @@ LEAK_BLOB = {
         "text_block_md5": SENT_MD5,
         "registrant_cik": SENT_CIK,
         "fund_raw_row_id": SENT_RAW,
-        "nested": {"submission_raw_row_id": SENT_RAW, "entity_key": SENT_ROW},
+        "nested": {"submission_raw_row_id": SENT_RAW, "entity_key": SENT_ROW,
+                   "issuer_ref": SENT_CIK},
     }
 }
 # A full internal provenance column (must never be projected at all).
@@ -342,8 +346,11 @@ def test_state_mapping_and_forward_notes() -> None:
         etf = one("ncen_etf_primary_market")
         assert etf["state"] == "available"
         assert '"net_primary_market_flow": 4000000' in etf["payload"]
-        # forward-note 8: expense all-null legs -> degraded.
-        assert one("ncen_expense_brokerage")["state"] == "degraded"
+        # forward-note 8: expense all-null legs -> degraded.  Task 1c: a QUALITATIVE
+        # N-CEN degrade carries ``disclosure_quality_degraded`` (never the coverage code).
+        expense = one("ncen_expense_brokerage")
+        assert expense["state"] == "degraded"
+        assert expense["reason"] == "disclosure_quality_degraded"
         # forward-note 7: closed-end not_applicable preserves the typed snapshot reason.
         ce = one("ncen_closed_end")
         assert ce["state"] == "not_applicable"
@@ -357,7 +364,10 @@ def test_state_mapping_and_forward_notes() -> None:
             ).fetchall()
         }
         assert fee_states == {"available", "unavailable"}
-        assert one("rr1_waiver")["state"] == "degraded"
+        # Task 1c: an RR1 status pass-through degrade is a QUANTITATIVE coverage shortfall.
+        waiver = one("rr1_waiver")
+        assert waiver["state"] == "degraded"
+        assert waiver["reason"] == "coverage_below_certified_threshold"
         # forward-note 5: liquidity keeps available with sub-block states in payload.
         liq = one("ncen_liquidity_backstop")
         assert liq["state"] == "available" and "loc_state" in liq["payload"]
@@ -432,7 +442,11 @@ def test_serving_data_contains_no_internal_identifiers() -> None:
         assert dump  # non-empty
         for token in FORBIDDEN:
             assert token not in dump, f"leaked internal token {token!r}"
-        # the neutralised entity-key fallback is present as the honest sentinel.
+        # item 1a: a ``cik:`` value under a PUBLIC key (issuer_ref) is neutralised by
+        # the scrubber's value rule (not merely stripped by a blocked key), so no raw
+        # ``cik:`` identifier survives anywhere in the served data.
+        assert "cik:" not in dump
+        # the neutralised entity-key fallbacks (row:/cik:) surface the honest sentinel.
         assert "unavailable" in dump
     finally:
         conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
@@ -458,11 +472,13 @@ def test_etf_leg_incomplete_degrades_and_drops_net() -> None:
         )
         _materialize(cur)
         row = cur.execute(
-            "SELECT state, payload::text FROM sec_current_regulatory_serving_facts "
+            "SELECT state, reason_code, payload::text FROM sec_current_regulatory_serving_facts "
             "WHERE family='ncen_etf_primary_market' AND fund_id='F9'"
         ).fetchone()
         assert row[0] == "degraded"
-        assert "net_primary_market_flow" not in row[1]
+        # Task 1c: leg_incomplete is a QUALITATIVE degrade, not a coverage shortfall.
+        assert row[1] == "disclosure_quality_degraded"
+        assert "net_primary_market_flow" not in row[2]
     finally:
         conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         conn.close()
