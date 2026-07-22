@@ -32,5 +32,20 @@ def test_module_reads_no_wall_clock() -> None:
     source = (
         Path(__file__).resolve().parents[2] / "src" / "bonds" / "cashflows.py"
     ).read_text(encoding="utf-8")
-    for forbidden in ("date.today", "datetime.today", "datetime.now", "time.time"):
+    # Every temporal anchor (settlement, horizon) is an explicit argument; the
+    # module must never sample the wall clock. Scan for the full family of
+    # clock/epoch readers, not just the three most common ones.
+    for forbidden in (
+        "date.today",
+        "datetime.today",
+        "datetime.now",
+        "datetime.utcnow",
+        "utcnow",
+        "fromtimestamp",
+        "time.time",
+        "time.monotonic",
+        "time.perf_counter",
+        "perf_counter",
+        "monotonic",
+    ):
         assert forbidden not in source, forbidden

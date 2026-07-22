@@ -154,10 +154,17 @@ class AccruedInterest:
 # Day counts
 # --------------------------------------------------------------------------- #
 def _thirty_360_us_days(start: date, end: date) -> int:
-    """30/360 US (bond basis), basic variant (no end-of-February refinement).
+    """30/360 (bond basis), basic variant — no end-of-February refinement.
 
-    SIFMA "Standard Securities Calculation Methods" / ISDA 2006 Definitions
-    §4.16(f). D1=31 -> 30; then D2=31 -> 30 only when D1 (post-adjustment) is 30.
+    Follows ISDA 2006 Definitions §4.16(f) "30/360" (a.k.a. Bond Basis):
+    D1=31 -> 30; then D2=31 -> 30 only when D1 (post-adjustment) is 30.
+
+    Note (honest scope): SIFMA's "Standard Securities Calculation Methods"
+    30U/360 adds an end-of-February refinement (both dates on the last day of
+    February collapse to day 30, and a February month-end D1 forces D2). That
+    refinement is deliberately NOT applied here, so this variant is cited to
+    ISDA §4.16(f) only, not to SIFMA. A licensed 30U/360 would be a distinct
+    ``DayCount`` member rather than a mutation of this one.
     """
     d1, d2 = start.day, end.day
     if d1 == 31:
@@ -231,6 +238,14 @@ def coupon_dates(terms: BondTerms) -> tuple[date, ...]:
 
     Dates are anchored on the maturity day-of-month (clamped to shorter months)
     and include maturity as the final coupon. A zero-coupon bond has none.
+
+    The retrograde grid must land exactly on ``issue_date`` (the dated date):
+    the first regular coupon period is ``[issue_date, first_coupon]``. If the
+    grid instead steps *past* ``issue_date`` — i.e. the issue/dated date sits
+    inside a coupon period — the instrument has an irregular (short or long)
+    FIRST coupon (a "front stub"). This motor does not model odd-first-coupon
+    accrual, so rather than silently emit a FULL first coupon it raises a typed
+    :class:`~src.bonds.errors.BondError` with code ``front_stub_unsupported``.
     """
     if terms.is_zero_coupon:
         return ()
@@ -240,9 +255,20 @@ def coupon_dates(terms: BondTerms) -> tuple[date, ...]:
     while True:
         candidate = _shift_months(terms.maturity_date, -step * k)
         if candidate <= terms.issue_date:
+            grid_start = candidate
             break
         dates.append(candidate)
         k += 1
+    if grid_start != terms.issue_date:
+        # The (month-end-clamped) grid stepped past the dated date: front stub.
+        raise BondError(
+            "front_stub_unsupported",
+            {
+                "issue_date": terms.issue_date.isoformat(),
+                "grid_period_start": grid_start.isoformat(),
+                "first_coupon": dates[-1].isoformat() if dates else None,
+            },
+        )
     dates.reverse()
     return tuple(dates)
 

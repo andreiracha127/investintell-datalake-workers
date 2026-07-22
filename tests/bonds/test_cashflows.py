@@ -51,14 +51,14 @@ TOL_MONEY = 1e-9  # accrued-interest amounts, per 100 face
 
 # --------------------------------------------------------------------------- #
 # 30/360 US (Bond Basis) day counts
-# Rule (convention_derived): SIFMA "Standard Securities Calculation Methods" /
-# ISDA 2006 Definitions §4.16(f) 30/360 (bond basis), basic variant:
+# Rule (convention_derived): ISDA 2006 Definitions §4.16(f) "30/360" (bond
+# basis), basic variant:
 #   D1 = day(start); D2 = day(end)
 #   if D1 == 31: D1 = 30
 #   if D2 == 31 and D1 == 30: D2 = 30
 #   days = 360*(Y2-Y1) + 30*(M2-M1) + (D2-D1)
-# (The optional end-of-February refinement of "30U/360" is intentionally NOT
-#  applied; the motor documents this exact variant.)
+# (The optional end-of-February refinement of SIFMA "30U/360" is intentionally
+#  NOT applied; the motor documents and cites this exact ISDA variant only.)
 # --------------------------------------------------------------------------- #
 THIRTY_360_VECTORS = [
     # (start, end, expected_days) — expected derived by the rule above.
@@ -229,6 +229,30 @@ def test_callable_terms_do_not_change_base_schedule() -> None:
     assert base.cashflows == called.cashflows
 
 
+def test_front_stub_issue_off_grid_is_typed_error() -> None:
+    # An issue/dated date that does NOT fall on the coupon grid stepped back from
+    # maturity implies an irregular (short/long) FIRST coupon period. The motor
+    # does not support odd-first-coupon accrual, so instead of silently emitting a
+    # FULL first coupon it raises a typed guard (regression: Task-2 review probe).
+    # Grid from 2025-01-15 semiannual lands on 2020-07-15, 2020-01-15, ...; an
+    # issue of 2020-02-10 sits inside a period -> front stub.
+    off_grid = _bullet(coupon_rate=0.05, issue=date(2020, 2, 10), maturity=date(2025, 1, 15))
+    with pytest.raises(BondError) as excinfo:
+        coupon_dates(off_grid)
+    assert excinfo.value.code == "front_stub_unsupported"
+    with pytest.raises(BondError) as excinfo2:
+        generate_schedule(off_grid)
+    assert excinfo2.value.code == "front_stub_unsupported"
+
+
+def test_on_grid_issue_is_accepted() -> None:
+    # The mirror GREEN case: an issue that DOES land on the retrograde grid
+    # (2020-01-15) yields a regular first period and a full set of coupons.
+    on_grid = _bullet(coupon_rate=0.05, issue=date(2020, 1, 15), maturity=date(2025, 1, 15))
+    assert coupon_dates(on_grid)[0] == date(2020, 7, 15)
+    assert len(coupon_dates(on_grid)) == 10
+
+
 # --------------------------------------------------------------------------- #
 # Accrued interest
 # --------------------------------------------------------------------------- #
@@ -285,8 +309,9 @@ def test_accrued_icma_partial_period_convention_derived() -> None:
 
 
 def test_accrued_act_360_convention_derived() -> None:
-    # convention_derived (ACT/360 money-market accrual): annual coupon 6% face 100,
-    # prev coupon 2022-01-15, settle 2022-02-14 -> actual 30 days.
+    # convention_derived (ACT/360 money-market accrual): semiannual 6% coupon,
+    # face 100, prev coupon 2022-01-15, settle 2022-02-14 -> actual 30 days.
+    # ACT/360 accrual is frequency-independent (rate * face * days/360):
     #   accrued = coupon_rate * face * 30/360 = 0.06 * 100 * 30/360 = 0.5.
     terms = _bullet(coupon_rate=0.06, frequency=Frequency.SEMIANNUAL, day_count=DayCount.ACT_360)
     ai = accrued_interest(terms, date(2022, 2, 14))
