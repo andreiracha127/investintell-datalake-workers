@@ -244,6 +244,15 @@ authority.** At activation, verify the live scheduling wiring against GCP
 (`gcloud`/Cloud Run/Cloud Scheduler) before creating any schedule. This delivery
 creates **no** cron/schedule/deploy artifact.
 
+## Worktree note
+
+When checking this repo out on Windows or into a fresh worktree, set
+`git config core.autocrlf false`. With autocrlf on, Git rewrites LF→CRLF on checkout
+(the "LF will be replaced by CRLF" warnings), which perturbs the SQL/py line endings
+the chain reads verbatim via `SCHEMA_PATH.read_text()` and can shift byte-for-byte
+digest/handshake comparisons. The chain suites import without a manual `PYTHONPATH`
+(a `tests/conftest.py` shim prepends the repo root and the tests directory).
+
 ## Tests
 
 `tests/test_daily_publication_chain.py` (engine: lock/replay/restart/catch-up/

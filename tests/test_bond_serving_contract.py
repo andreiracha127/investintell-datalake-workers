@@ -61,6 +61,15 @@ def test_serving_states_are_the_four_state_vocabulary() -> None:
     assert set(contract.SERVING_STATES) == {"available", "degraded", "unavailable", "not_applicable"}
 
 
+def test_ambiguity_states_are_the_two_state_vocabulary() -> None:
+    # Lock-step with the sibling vocabularies (states/reasons/lanes): the ambiguity
+    # axis is exactly {resolved, ambiguous}, in that order, and is hashed into the
+    # cross-repo digest so it cannot drift from the app mirror silently.
+    assert contract.AMBIGUITY_STATES == ("resolved", "ambiguous")
+    assert set(contract.AMBIGUITY_STATES) == {"resolved", "ambiguous"}
+    assert contract.surface()["ambiguity_states"] == sorted(contract.AMBIGUITY_STATES)
+
+
 def test_catalog_carries_searchable_alias_arrays() -> None:
     catalog = next(s for s in contract.SURFACES if s["surface"] == "catalog")
     assert {"aliases_cusip9", "aliases_isin"} <= set(catalog["payload_keys"])

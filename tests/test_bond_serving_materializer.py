@@ -163,9 +163,12 @@ def test_observations_carry_lane_freshness_and_ambiguity() -> None:
         assert len(sec1_asof) == 1
         assert sec1_asof[0][2] == "degraded" and sec1_asof[0][3] == "observation_stale"
         assert '"is_stale": true' in sec1_asof[0][5]
-        # SEC1 latest is unique and fresh -> available.
+        # SEC1 latest is unique and fresh -> available. Staleness is a fund_asof
+        # concept, so the latest lane carries an HONEST NULL is_stale (never false).
         sec1_latest = [r for r in rows if r[0] == SEC1 and r[1] == "latest"]
         assert len(sec1_latest) == 1 and sec1_latest[0][2] == "available"
+        assert '"is_stale": null' in sec1_latest[0][5]
+        assert '"is_stale": false' not in sec1_latest[0][5]
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

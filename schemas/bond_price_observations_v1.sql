@@ -197,6 +197,9 @@ FOR EACH ROW EXECUTE FUNCTION bond_price_observation_v1_write_guard();
 -- Lane 1: latest (INFORMATIVE). Most-recent observation per security. The lane
 -- literal is hardcoded and typed by bond_price_lane; this view can only ever emit
 -- 'latest'-stamped rows. It is NEVER a point-in-time source (see build_pit_index).
+-- Staleness is a fund_asof concept: the latest lane has no as_of anchor to measure
+-- against, so observation_age_days/is_stale are an HONEST NULL (absence) here — never
+-- a fabricated 0/false — keeping the lane column-compatible with fund_asof.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE VIEW bond_price_latest_v1 AS
 SELECT
@@ -213,7 +216,9 @@ SELECT
     s.db_type,
     s.db_type_state,
     s.is_144a,
-    s.daily_key_state
+    s.daily_key_state,
+    NULL::integer AS observation_age_days,
+    NULL::boolean AS is_stale
 FROM sec_derived_current_pointers c
 JOIN bond_price_observation_v1 s ON s.publication_id = c.publication_id
 JOIN (

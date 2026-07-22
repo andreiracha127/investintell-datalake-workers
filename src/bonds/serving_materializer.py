@@ -188,7 +188,10 @@ SELECT %(pub)s, 'observations', o.security_id, o.lane, '',
 FROM (
     SELECT lane, security_id, observation_date, source_row_number, price, price_type,
            accrued_treatment, price_state, ytm, is_144a, daily_key_state,
-           NULL::integer AS observation_age_days, false AS is_stale,
+           -- latest is INFORMATIVE only: with no fund as_of anchor there is nothing to
+           -- measure staleness against, so is_stale/observation_age_days are an HONEST
+           -- NULL (absence), never a fabricated ``false``.
+           NULL::integer AS observation_age_days, NULL::boolean AS is_stale,
            row_number() OVER (PARTITION BY security_id, observation_date ORDER BY source_row_number) AS rn,
            CASE WHEN daily_key_state = 'duplicate_in_matching_cohort'
                 THEN 'degraded' ELSE 'available' END AS state,

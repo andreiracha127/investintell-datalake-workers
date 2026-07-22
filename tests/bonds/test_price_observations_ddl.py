@@ -46,6 +46,10 @@ def test_ddl_lane_discriminator_is_typed_and_lanes_hardcode_their_literal() -> N
     # Point-in-time, no look-ahead + STALE at age >= 31 days.
     assert "s.observation_date <= fund_as_of" in ddl
     assert "(fund_as_of - s.observation_date) >= 31) AS is_stale" in ddl
+    # The latest lane is INFORMATIVE: staleness has no as_of anchor, so it declares
+    # observation_age_days/is_stale as an HONEST NULL (absence), never a fabricated 0/false.
+    assert "NULL::integer AS observation_age_days" in ddl
+    assert "NULL::boolean AS is_stale" in ddl
     # Lanes read only through the current pointer, never raw/observation rows.
     assert "sec_derived_current_pointers" in ddl
 
