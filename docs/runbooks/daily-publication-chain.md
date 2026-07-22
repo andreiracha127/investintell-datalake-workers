@@ -41,7 +41,11 @@ so stages 5–7 for those products are satisfied inside their stage; the explici
 - **Deterministic run identity** `uuid5(chain, source_day, code_revision,
   config_version)` (`chain_run_id_for`, mirroring `publication_id_for`). A replay
   resolves to the same `run_id` and never forks a second run row.
-- **Watermarks per source** recorded on the run row (`input_watermarks`).
+- **Watermarks per source**: the engine supports per-source input watermarks via
+  the `watermarks_for` hook (persisted to `input_watermarks`). No production wiring
+  passes it yet, so today `input_watermarks` is `{}`; the real wiring plus a
+  staleness metric/alert land at the pre-activation gate (see "Scheduling path" and
+  the deferred pre-activation items).
 - **Per-stage checkpoints** (`bond_daily_chain_stage_runs`): a restart honours a
   stage already at `succeeded`/`skipped` and resumes at the first unfinished
   stage. Replay of a `completed` run re-invokes nothing.
@@ -209,7 +213,7 @@ and validated, so it is always restorable.
   `f38544a` are stale relative to the serving projection; a serving build over
   them would publish stale ETF facts. Rebuild the ETF snapshots on the
   post-`f38544a` code first, then let the chain's `refresh` stage run.
-- **No production price/holdings source is authorized** (the TRACE 144A pilot
+- **No production price/holdings source is authorized** (the 144A pricing pilot
   authorizes none). Until a source is authorized, activation keeps the chain in
   dark mode.
 - **Set a build stamp for `code_revision`.** The run identity includes
