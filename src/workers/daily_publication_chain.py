@@ -29,7 +29,9 @@ Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 from __future__ import annotations
 
 import importlib
+import os
 import subprocess
+import uuid
 from datetime import date
 from typing import Any, Callable
 
@@ -44,16 +46,27 @@ from src.db import LOCK_DAILY_PUBLICATION_CHAIN, advisory_lock, connect, resolve
 
 CHAIN = daily_chain.DEFAULT_CHAIN
 
+# Build stamps a deploy may inject (checked before shelling out to git, which is
+# often unavailable in a container). See the runbook's ACTIVATION NOTE.
+_REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+
 
 def _code_revision() -> str:
+    for var in _REVISION_ENV_VARS:
+        value = os.getenv(var)
+        if value:
+            return value.strip()
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5, check=False,
         )
-        return out.stdout.strip() or "unknown"
+        stamped = out.stdout.strip()
+        if stamped:
+            return stamped
     except Exception:
-        return "unknown"
+        pass
+    return "unknown"
 
 
 def _worker(name: str) -> Callable[..., dict[str, Any]]:
@@ -232,6 +245,82 @@ def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
     return ordered[:limit] if limit is not None else ordered
 
 
+def _snapshot_pointers(ctx: StageContext) -> dict[str, uuid.UUID]:
+    """Current derived + mixed_quant pointers keyed by product (read on the dsn).
+
+    The chain diffs this before/after each stage to enumerate what a worker's
+    atomic self-promotion made current, and to know the compensation targets.
+    """
+    snapshot: dict[str, uuid.UUID] = {}
+    with connect(ctx.dsn) as conn:
+        if conn.execute("SELECT to_regclass('sec_derived_current_pointers') IS NOT NULL").fetchone()[0]:
+            for product, pub_id in conn.execute(
+                "SELECT product, publication_id FROM sec_derived_current_pointers"
+            ):
+                snapshot[product] = pub_id
+        if conn.execute("SELECT to_regclass('active_quant_publication_v1') IS NOT NULL").fetchone()[0]:
+            for product, pub_id in conn.execute(
+                "SELECT product, publication_id FROM active_quant_publication_v1"
+            ):
+                snapshot[product] = pub_id
+        conn.commit()
+    return snapshot
+
+
+def _restore_pointer(ctx: StageContext, product: str, prior: uuid.UUID | None) -> bool:
+    """Restore ``product``'s current pointer to ``prior`` (or clear it if None).
+
+    Routes to the correct pointer mechanism by which table owns the product:
+    derived products via the validated-only ``sec_set_current_derived_publication``;
+    the mixed_quant active pointer via ``promote_quant_publication``. Raises on any
+    failure so the engine records a compensation FAILURE (distinct alert), never a
+    silent partial restore.
+    """
+    with connect(ctx.dsn) as conn:
+        mixed = False
+        if conn.execute("SELECT to_regclass('quant_publication_v1') IS NOT NULL").fetchone()[0]:
+            mixed = bool(conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM quant_publication_v1 WHERE product=%s)", (product,)
+            ).fetchone()[0])
+        if mixed:
+            _restore_mixed(conn, product, prior)
+        else:
+            _restore_derived(conn, product, prior)
+        conn.commit()
+    return True
+
+
+def _restore_derived(conn: Any, product: str, prior: uuid.UUID | None) -> None:
+    if prior is not None:
+        conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, prior))
+        return
+    # First publication of this product this run: clear the pointer through the
+    # protocol's own sanctioned token path (the guard permits the mutation while
+    # the product's backend_pid token is present).
+    conn.execute(
+        "INSERT INTO sec_derived_pointer_tokens(product, backend_pid) VALUES (%s, pg_backend_pid()) "
+        "ON CONFLICT (product) DO UPDATE SET backend_pid=EXCLUDED.backend_pid", (product,))
+    conn.execute("DELETE FROM sec_derived_current_pointers WHERE product=%s", (product,))
+    conn.execute(
+        "DELETE FROM sec_derived_pointer_tokens WHERE product=%s AND backend_pid=pg_backend_pid()",
+        (product,))
+
+
+def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
+    from src.quant_data import publication as pub
+
+    if prior is not None:
+        # Re-activate the prior publication (it was superseded on promotion).
+        conn.execute("UPDATE quant_publication_v1 SET status='ready' WHERE publication_id=%s", (prior,))
+        pub.promote(conn, product, prior)
+        return
+    # No prior active pointer: drop the active row and make the current publication
+    # writable again (back to 'ready').
+    conn.execute(
+        "UPDATE quant_publication_v1 SET status='ready' WHERE product=%s AND status='active'", (product,))
+    conn.execute("DELETE FROM active_quant_publication_v1 WHERE product=%s", (product,))
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Drive the daily publication chain under the chain-run advisory lock.
 
@@ -255,6 +344,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         summaries = daily_chain.run_chain(
             conn, stages=build_default_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
+            snapshot_pointers=_snapshot_pointers, restore_pointer=_restore_pointer,
         )
     failed = any(s["status"] == "failed" for s in summaries)
     return {
