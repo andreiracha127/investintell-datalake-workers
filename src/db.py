@@ -159,3 +159,8 @@ LOCK_TIINGO_FUND_META = 900_336
 # mixed_quant_v1 point-in-time publication worker. Serializes the build of one
 # inactive publication; 900_337 is the next free id after tiingo_fund_meta.
 LOCK_MIXED_QUANT_PUBLICATION = 900_337
+# bond_security_v1 point-in-time security master materializer (Increment 2).
+# Serializes the single prepared->validated->current build under the shared
+# derived-publication protocol. 900_341 is the next free id in the ingestion band
+# (900_3xx) after LOCK_SEC_REGULATORY_SERVING (900_340).
+LOCK_BOND_SECURITY_MASTER = 900_341
