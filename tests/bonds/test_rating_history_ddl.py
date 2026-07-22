@@ -38,6 +38,8 @@ def test_ddl_declares_license_gate_and_opaque_agency() -> None:
         # Guarded snapshot + build under the shared protocol.
         "bond_rating_history_v1 build requires a prepared bond_rating_history_v1 publication",
         "bond_rating_history_v1 snapshot requires a prepared bond_rating_history_v1 publication",
+        # DB-level cross-table license enforcement (row cannot coexist with unlicensed build).
+        "bond_rating_history_v1 snapshot requires a license-verified build",
         "sec_derived_current_pointers",
     ):
         assert token in ddl, token

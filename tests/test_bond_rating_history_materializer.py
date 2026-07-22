@@ -147,6 +147,64 @@ def test_observation_rows_are_immutable():
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_snapshot_row_cannot_coexist_with_unlicensed_build_db_level():
+    """MANDATORY (DB-level): a rating row cannot be inserted under an unlicensed build.
+
+    Even bypassing the Python materializer, the cross-table write guard forbids a
+    snapshot row from coexisting with a not_applicable / license_verified=false build,
+    so "no verified license => zero rating rows" is enforced by the DB itself.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id = base_fixture(cur)
+
+        def _prepared_pub(license_verified, product_state, reason):
+            pub = uuid4()
+            version = cur.execute(
+                "SELECT COALESCE(max(publication_version),0)+1 FROM sec_derived_publications "
+                "WHERE product='bond_rating_history_v1'"
+            ).fetchone()[0]
+            cur.execute(
+                "INSERT INTO sec_derived_publications"
+                "(publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint) "
+                "VALUES(%s,'bond_rating_history_v1',%s,%s,%s,%s)",
+                (pub, version, run_id, package_id, "b" * 64),
+            )
+            cur.execute(
+                "INSERT INTO bond_rating_history_v1_builds"
+                "(publication_id,input_fingerprint,as_of_date,observation_input_count,product_state,"
+                " reason_code,license_verified) VALUES(%s,%s,%s,0,%s,%s,%s)",
+                (pub, "b" * 64, AS_OF, product_state, reason, license_verified),
+            )
+            return pub
+
+        def _insert_row(pub):
+            cur.execute(
+                "INSERT INTO bond_rating_history_v1"
+                "(publication_id,source_run_id,subject_kind,subject_ref,security_id,agency_code,rating,"
+                " valid_from,license_verified,licensed_source_ref,measured_at,provenance) "
+                "VALUES(%s,%s,'security',%s,%s,%s,'R_A',%s,true,'lic:x',%s,'{}')",
+                (pub, run_id, str(SEC_ID), SEC_ID, AGENCY_A, date(2025, 1, 1), AS_OF),
+            )
+
+        # Unlicensed build -> the row is refused DB-side.
+        unlicensed = _prepared_pub(False, "not_applicable", "no_licensed_source")
+        with pytest.raises(psycopg.Error, match="requires a license-verified build"):
+            _insert_row(unlicensed)
+        conn.rollback()
+        cur.execute(f'SET search_path TO "{schema}"')
+        cur.execute("SELECT count(*) FROM bond_rating_history_v1")
+        assert cur.fetchone()[0] == 0
+
+        # Licensed build -> the identical row is accepted (licensed path unchanged).
+        licensed = _prepared_pub(True, "active", None)
+        _insert_row(licensed)
+        cur.execute("SELECT count(*) FROM bond_rating_history_v1 WHERE publication_id=%s", (licensed,))
+        assert cur.fetchone()[0] == 1
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_partial_non_validated_build_can_never_become_current():
     import psycopg
 

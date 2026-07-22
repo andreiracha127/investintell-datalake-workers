@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS bond_rating_agency_map (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 REVOKE ALL ON bond_rating_agency_map FROM PUBLIC;
+-- NOTE: REVOKE FROM PUBLIC does NOT restrict the table owner or a superuser;
+-- effective opacity depends on downstream reads running under a NON-OWNER role
+-- (the same posture as the sibling sec_derived_*_tokens token tables).
 
 -- ---------------------------------------------------------------------------
 -- Immutable rating observations (publication inputs). licensed_source_ref is the
@@ -158,6 +161,8 @@ CREATE OR REPLACE FUNCTION bond_rating_history_v1_write_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent_state text;
         pinned_as_of date;
+        pinned_license boolean;
+        pinned_product_state text;
 BEGIN
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'bond_rating_history_v1 snapshot is immutable';
@@ -169,9 +174,21 @@ BEGIN
     IF parent_state IS DISTINCT FROM 'prepared' THEN
         RAISE EXCEPTION 'bond_rating_history_v1 snapshot requires a prepared bond_rating_history_v1 publication';
     END IF;
-    SELECT as_of_date INTO pinned_as_of FROM bond_rating_history_v1_builds WHERE publication_id = NEW.publication_id;
+    SELECT as_of_date, license_verified, product_state
+      INTO pinned_as_of, pinned_license, pinned_product_state
+    FROM bond_rating_history_v1_builds WHERE publication_id = NEW.publication_id;
     IF pinned_as_of IS DISTINCT FROM NEW.measured_at THEN
         RAISE EXCEPTION 'bond_rating_history_v1 snapshot requires matching pinned build metadata';
+    END IF;
+    -- LICENSE GATE (DB-level, cross-table): a rating snapshot row can exist ONLY
+    -- under a build whose license is verified (product_state='active').  This
+    -- forbids rows from coexisting with a not_applicable / license_verified=false
+    -- build, so the "no verified license => zero rating rows" invariant is enforced
+    -- by the DB, not only by the Python materializer.  The row's own license_verified
+    -- CHECK forces the flag true; this trigger ties the row to its build so the flag
+    -- can never be forged past an unlicensed product.
+    IF pinned_license IS DISTINCT FROM true OR pinned_product_state IS DISTINCT FROM 'active' THEN
+        RAISE EXCEPTION 'bond_rating_history_v1 snapshot requires a license-verified build';
     END IF;
     RETURN NEW;
 END $$;
