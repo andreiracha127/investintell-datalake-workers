@@ -31,6 +31,18 @@ from enum import IntEnum, StrEnum
 
 from .errors import BondError
 
+# --------------------------------------------------------------------------- #
+# Validation status (code marker consumed by the Phase-10 gate — Increment 3).
+# --------------------------------------------------------------------------- #
+# The cash-flow motor's numbers (day counts, coupon dates, accrued) are validated
+# in ``tests/bonds/test_cashflows.py`` against DOCUMENTED CONVENTIONS (ISDA 2006
+# 30/360, ACT/360, ACT/365F, ICMA Rule 251) — the convention IS the ground truth
+# for a cash-flow schedule; there is no separate "market" cash flow to reconcile
+# against.  The honest status is therefore ``convention_derived`` (validated by
+# convention, not by a printed market sample).  The Phase-10 gate reads this exact
+# string as ``cashflow_validated``; it never reinterprets it.
+VALIDATION_STATUS = "convention_derived"
+
 
 class Frequency(IntEnum):
     """Coupon payments per year. The integer value is the frequency itself."""

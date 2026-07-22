@@ -83,6 +83,32 @@ DEFAULT_YIELD_BUMP = 1e-4
 # Curve discounting uses ACT/365F calendar time.
 _CURVE_DAYS_PER_YEAR = 365.0
 
+# --------------------------------------------------------------------------- #
+# Validation status (code markers consumed by the Phase-10 gate — Increment 3).
+# --------------------------------------------------------------------------- #
+# The honest, per-family validation state as ``tests/bonds/test_pricing.py``
+# actually establishes it (Global Constraint #4 — never over-claim).  The Phase-10
+# gate reads these exact strings as ``model_validated``; it never reinterprets them.
+#
+# * YIELD family (YTM and the price<->yield solve it anchors, plus current yield,
+#   Z-spread, carry/rolldown): validated against a CANONICAL PUBLISHED worked
+#   example (Fabozzi, *Bond Markets, Analysis and Strategies* — 10% coupon, 5y,
+#   semiannual, price 96.23 <-> yield 11%), cross-checked to the closed-form
+#   annuity price.  Status ``authoritative_published``.
+# * DURATION family (modified / effective duration, and every duration-shaped
+#   risk that inherits the bump-and-reprice machinery): the suite validates it
+#   only ``convention_derived`` (Macaulay/(1+i)) and by internal-consistency
+#   ``property`` — NO authoritative PRINTED duration sample is reproduced yet.
+#   That printed sample is an OPEN PROGRAM ITEM, so the status stays
+#   ``authoritative_sample_pending``; the gate surfaces it as
+#   ``authoritative_duration_sample_pending``.
+VALIDATION_STATUS_AUTHORITATIVE = "authoritative_published"
+VALIDATION_STATUS_SAMPLE_PENDING = "authoritative_sample_pending"
+PRICING_VALIDATION_STATUS: dict[str, str] = {
+    "yield": VALIDATION_STATUS_AUTHORITATIVE,
+    "duration": VALIDATION_STATUS_SAMPLE_PENDING,
+}
+
 
 # --------------------------------------------------------------------------- #
 # Result / input value objects
