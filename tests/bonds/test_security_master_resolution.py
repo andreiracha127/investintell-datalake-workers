@@ -75,16 +75,58 @@ def test_synthetic_cusip_without_isin_is_rejected() -> None:
 
 def test_placeholder_cusip_with_valid_isin_keys_on_isin_and_drops_cusip() -> None:
     result = resolve_securities(
-        [_obs("o1", date(2026, 6, 30), cusip9_input="000000000", isin_input="US0378331005")]
+        # A non-US/CA ISIN carries no embedded CUSIP9 to anchor on.
+        [_obs("o1", date(2026, 6, 30), cusip9_input="000000000", isin_input="DE000BAY0017")]
     )
     assert result.rejected == ()
     sec = result.securities[0]
-    assert sec.identity_key == "isin:US0378331005"
+    assert sec.identity_key == "isin:DE000BAY0017"
     # The rejected placeholder CUSIP is never emitted as an alias.
     assert all(a.alias_kind != "cusip9" for a in sec.aliases)
     isin_aliases = [a for a in sec.aliases if a.alias_kind == "isin"]
-    assert isin_aliases[0].alias_value == "US0378331005"
+    assert isin_aliases[0].alias_value == "DE000BAY0017"
     assert isin_aliases[0].valid_to is None
+
+
+def test_isin_only_then_cusip9_arrival_yields_same_security_id() -> None:
+    # (i) A US ISIN embeds its CUSIP9; the id is stable across the arrival of the
+    # explicit CUSIP9 field in a later observation/snapshot.
+    isin_only = resolve_securities([_obs("o1", date(2026, 3, 31), isin_input="US0378331005")])
+    cusip_arrives = resolve_securities([_obs("o2", date(2026, 6, 30), cusip9_input="037833100")])
+    assert isin_only.securities[0].identity_key == "cusip9:037833100"
+    assert isin_only.securities[0].security_id == cusip_arrives.securities[0].security_id
+
+
+def test_us_isin_and_cusip9_in_same_snapshot_collapse_to_one_security() -> None:
+    # (ii) US ISIN lot + explicit CUSIP9 lot are the SAME instrument -> ONE security.
+    result = resolve_securities(
+        [
+            _obs("o1", date(2026, 6, 30), isin_input="US0378331005"),
+            _obs("o2", date(2026, 6, 30), cusip9_input="037833100"),
+        ]
+    )
+    assert len(result.securities) == 1
+    sec = result.securities[0]
+    assert sec.identity_key == "cusip9:037833100"
+    assert sorted(sec.contributing_observation_ids) == ["o1", "o2"]
+    kinds = sorted(a.alias_kind for a in sec.aliases)
+    assert kinds == ["cusip9", "isin"]
+
+
+def test_non_us_ca_isin_keeps_isin_keying_unchanged() -> None:
+    # (iii) A non-US/CA ISIN is never anchored to a CUSIP9.
+    result = resolve_securities([_obs("o1", date(2026, 6, 30), isin_input="DE000BAY0017")])
+    assert result.securities[0].identity_key == "isin:DE000BAY0017"
+    assert all(a.alias_kind != "cusip9" for a in result.securities[0].aliases)
+
+
+def test_us_isin_with_nsin_rejected_by_normalize_falls_back_to_isin_keying() -> None:
+    # (iv) US ISIN whose embedded NSIN is a placeholder -> normalize_cusip9 rejects
+    # it -> no repair, keying stays isin: (never a fabricated cusip9).
+    result = resolve_securities([_obs("o1", date(2026, 6, 30), isin_input="US0000000005")])
+    sec = result.securities[0]
+    assert sec.identity_key == "isin:US0000000005"
+    assert all(a.alias_kind != "cusip9" for a in sec.aliases)
 
 
 def test_conflicting_isin_same_date_is_ambiguous_with_evidence_no_winner() -> None:
@@ -116,6 +158,11 @@ def test_conflicting_issuer_same_date_is_ambiguous() -> None:
     sec = result.securities[0]
     assert sec.identity_state == "ambiguous"
     assert "issuer_name" in sec.identity_evidence["conflicts"]
+    # A conflicting summary term exposes no arbitrary winner: it is nulled out,
+    # while the full conflicting set stays in identity_evidence.conflicts.
+    assert sec.measured_terms["issuer_name"] is None
+    assert sec.terms["issuer_name"] is None
+    assert sorted(sec.identity_evidence["conflicts"]["issuer_name"]) == ["Acme Corp", "Beta Corp"]
 
 
 def test_isin_alias_window_closes_when_superseded_across_dates() -> None:

@@ -28,8 +28,10 @@ def test_ddl_declares_immutable_observation_and_guarded_snapshot() -> None:
         assert token in ddl, token
     # A reason code exists exactly when the identity is not resolved.
     assert "(identity_state = 'resolved') = (identity_reason_code IS NULL)" in ddl
-    # PIT window sanity: valid_to closes at/after valid_from.
-    assert "valid_to IS NULL OR valid_to >= valid_from" in ddl
+    # PIT window is half-open [valid_from, valid_to); the boundary is documented
+    # and the CHECK forbids empty windows (valid_to strictly after valid_from).
+    assert "HALF-OPEN [valid_from, valid_to)" in ddl
+    assert "valid_to IS NULL OR valid_to > valid_from" in ddl
     # The published snapshot never reaches back into raw/observation rows.
     assert "sec_derived_current_pointers" in ddl
 

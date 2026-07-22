@@ -16,11 +16,17 @@
 -- Identity key (spec §1), materialized by src/bonds/security_master.py:
 --     security_id = uuid5(NAMESPACE_BOND_SECURITY, identity_key)
 --   where identity_key is the first qualified identifier in this precedence:
---     1. 'cusip9:' || <lossless normalized CUSIP9>   (primary security key)
---     2. 'isin:'   || <qualified ISIN>               (only when no valid CUSIP9)
---   The key derives purely from the qualified identifier (independent of as_of,
---   source run, or terms) so a security keeps the SAME security_id across every
---   republication. Placeholders/synthetic prefixes are rejected upstream by
+--     1. 'cusip9:' || <directly observed lossless normalized CUSIP9>
+--     2. 'cusip9:' || <CUSIP9 anchored from a US/CA ISIN: positional NSIN
+--                      (chars 3-11) re-qualified through normalize_cusip9>
+--     3. 'isin:'   || <qualified ISIN>   (non-US/CA ISIN, or a US/CA ISIN whose
+--                      embedded NSIN normalize_cusip9 rejects)
+--   Because a US/CA ISIN embeds its CUSIP9, anchoring makes the key cusip9-based
+--   regardless of which field carried the identifier, so security_id is stable
+--   across the ISIN-only -> CUSIP9 arrival transition (one instrument never
+--   splits into two securities). A security identified only by a non-US/CA ISIN
+--   keeps a stable 'isin:' key. The key never depends on as_of, source run, or
+--   terms. Placeholders/synthetic prefixes are rejected upstream by
 --   normalize_cusip9 and never become an identity or an alias. Conflicting
 --   evidence for one identity (e.g. one CUSIP9 with two ISINs at a point in time)
 --   is published as an explicit 'ambiguous' state with the conflicting values in
@@ -156,8 +162,12 @@ CREATE TABLE IF NOT EXISTS bond_security_alias_v1 (
     created_at      timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (publication_id, security_id, alias_kind, alias_value, valid_from),
     FOREIGN KEY (publication_id, security_id) REFERENCES bond_security_v1(publication_id, security_id) ON DELETE RESTRICT,
-    -- PIT window: valid_to is open (NULL) or closes at/after valid_from.
-    CHECK (valid_to IS NULL OR valid_to >= valid_from),
+    -- PIT window convention: HALF-OPEN [valid_from, valid_to). valid_from is
+    -- INCLUSIVE; valid_to is EXCLUSIVE and open when NULL. A window closes at the
+    -- successor's valid_from, i.e. a superseded alias's valid_to EQUALS the next
+    -- alias's valid_from (the boundary date belongs to the successor). Windows are
+    -- therefore non-empty: valid_to (when present) is strictly after valid_from.
+    CHECK (valid_to IS NULL OR valid_to > valid_from),
     CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
 );
 

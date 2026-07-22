@@ -111,6 +111,25 @@ def test_same_cusip_collapses_and_alias_window_closes_on_supersession():
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_us_isin_only_and_cusip9_collapse_to_one_published_security():
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id = base_fixture(cur)
+        # Same instrument: one lot carries only the US ISIN, another the CUSIP9.
+        observe(cur, run_id, as_of=AS_OF, observation_date=AS_OF, isin="US0378331005")
+        observe(cur, run_id, as_of=AS_OF, observation_date=AS_OF, cusip9="037833100")
+        security_master.materialize(
+            conn, as_of=AS_OF, source_run_id=run_id,
+            source_package_id=package_id, code_revision="testrev",
+        )
+        cur.execute("SELECT identity_key FROM sec_current_bond_security_v1")
+        assert cur.fetchall() == [("cusip9:037833100",)]  # anchored -> one security
+        cur.execute("SELECT DISTINCT alias_kind FROM sec_current_bond_security_alias_v1 ORDER BY alias_kind")
+        assert [r[0] for r in cur.fetchall()] == ["cusip9", "isin"]
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_conflicting_isin_publishes_ambiguous_with_evidence_and_no_isin_alias():
     import psycopg
 

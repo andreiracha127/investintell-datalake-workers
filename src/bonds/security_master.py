@@ -23,14 +23,22 @@ Identity key (spec §1), documented once here and mirrored in
 
 where ``identity_key`` is the FIRST qualified identifier in this precedence:
 
-    1. ``"cusip9:" + <lossless normalized CUSIP9>``   (primary security key)
-    2. ``"isin:" + <qualified ISIN>``                 (only when no valid CUSIP9)
+    1. ``"cusip9:" + <lossless normalized CUSIP9>``   (directly observed CUSIP9)
+    2. ``"cusip9:" + <CUSIP9 anchored from a US/CA ISIN>``  (positional NSIN,
+       chars 3-11, re-qualified through normalize_cusip9 — not a repair)
+    3. ``"isin:" + <qualified ISIN>``                 (non-US/CA ISIN, or a US/CA
+       ISIN whose embedded NSIN normalize_cusip9 rejects)
 
-The key is derived purely from the qualified identifier — independent of the
-as-of date, source run, or observed terms — so the same security keeps the same
-``security_id`` across every republication.  Observations whose only identifier
-is a placeholder/synthetic/invalid value carry no fabricated key and are
-reported as rejected rather than published.
+Because a US/CA ISIN embeds its CUSIP9, anchoring makes the key ``cusip9:``-based
+regardless of which field first carried the identifier.  So the ``security_id``
+is stable across the ISIN-only -> CUSIP9 arrival transition, and one CUSIP9-bearing
+instrument never splits into two securities within or across snapshots.  (A
+security identified only by a non-US/CA ISIN keeps a ``isin:`` key, stable as long
+as that ISIN is its identifier — this resolver does not claim to unify an
+identity across a change of identifier scheme.)  The key never depends on the
+as-of date, source run, or observed terms.  Observations whose only identifier is
+a placeholder/synthetic/invalid value carry no fabricated key and are reported as
+rejected rather than published.
 """
 
 from __future__ import annotations
@@ -169,12 +177,42 @@ def qualify_isin(value: object) -> tuple[str | None, str]:
     return normalized, "valid_isin"
 
 
+def _anchor_cusip9_from_isin(isin_value: str) -> str | None:
+    """CUSIP-anchor a US/CA ISIN: extract the positional NSIN (chars 3-11) and
+    pass it through the lossless ``normalize_cusip9`` gate.
+
+    Positional extraction is NOT a repair — a US/CA ISIN embeds its CUSIP9
+    literally as its NSIN.  ``normalize_cusip9`` stays the sole gate: if it
+    rejects the extracted value (placeholder/synthetic/invalid), no CUSIP9 is
+    anchored and the caller keeps ``isin:`` keying.  This makes ``identity_key``
+    ``cusip9:``-anchored regardless of which field first carried the identifier,
+    so the ``security_id`` is stable across the ISIN-only -> CUSIP9 arrival
+    transition (and one instrument never splits into two securities).
+    """
+    if isin_value[:2] not in ("US", "CA"):
+        return None
+    anchored = normalize_cusip9(isin_value[2:11])
+    if anchored.state is IdentifierState.VALID_CUSIP9 and anchored.normalized_cusip9 is not None:
+        return anchored.normalized_cusip9
+    return None
+
+
 def _identity_key(observation: SecurityObservation) -> tuple[str | None, str, str, str | None, str]:
-    """Return (identity_key, cusip9_state, isin_state, qualified_cusip9, qualified_isin)."""
+    """Return (identity_key, cusip9_state, isin_state, qualified_cusip9, qualified_isin).
+
+    Precedence: a directly observed valid CUSIP9 wins; otherwise a US/CA ISIN is
+    CUSIP-anchored; otherwise a qualified ISIN keys ``isin:``; otherwise the
+    observation carries no identity and is rejected.
+    """
     cusip = normalize_cusip9(observation.cusip9_input)
     isin_value, isin_state = qualify_isin(observation.isin_input)
+    qualified_cusip: str | None = None
     if cusip.state is IdentifierState.VALID_CUSIP9 and cusip.normalized_cusip9 is not None:
-        return f"cusip9:{cusip.normalized_cusip9}", cusip.state.value, isin_state, cusip.normalized_cusip9, isin_value
+        qualified_cusip = cusip.normalized_cusip9
+    elif isin_value is not None:
+        qualified_cusip = _anchor_cusip9_from_isin(isin_value)
+    if qualified_cusip is not None:
+        return f"cusip9:{qualified_cusip}", cusip.state.value, isin_state, qualified_cusip, isin_value
     if isin_value is not None:
         return f"isin:{isin_value}", cusip.state.value, isin_state, None, isin_value
     return None, cusip.state.value, isin_state, None, isin_value
@@ -301,6 +339,14 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
                 aliases.append(SecurityAlias("isin", value, vfrom, vto, dict(lineage)))
 
         summary, terms = _resolve_terms(members)
+        # On an ambiguous identity, never expose a "chosen" value for a summary
+        # term that itself conflicts: null it out (the full conflicting set lives
+        # in identity_evidence.conflicts) so a naive consumer sees no winner.
+        for conflicting_term in conflicts:
+            if conflicting_term in summary:
+                summary[conflicting_term] = None
+            if conflicting_term in terms:
+                terms[conflicting_term] = None
         evidence = {
             "contributing_observation_ids": sorted(str(o.observation_id) for o in members),
             "observation_dates": sorted({o.observation_date.isoformat() for o in members}),
