@@ -164,3 +164,8 @@ LOCK_MIXED_QUANT_PUBLICATION = 900_337
 # derived-publication protocol. 900_341 is the next free id in the ingestion band
 # (900_3xx) after LOCK_SEC_REGULATORY_SERVING (900_340).
 LOCK_BOND_SECURITY_MASTER = 900_341
+# bond_price_observation_v1 point-in-time price/trade observation materializer
+# (Increment 2, Task 4). Serializes the single prepared->validated->current build
+# of the price lanes under the shared derived-publication protocol. 900_342 is the
+# next free id in the ingestion band (900_3xx) after LOCK_BOND_SECURITY_MASTER.
+LOCK_BOND_PRICE_OBSERVATIONS = 900_342
