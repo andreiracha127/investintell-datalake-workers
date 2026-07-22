@@ -9,8 +9,8 @@ inputs, under an advisory lock, through the shared derived-publication protocol
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 Global Constraint: this ships without running any production backfill or
 authorizing any production price source. When no validated source run exists, or
-when no observations are present, the worker is a no-op. FIXTURES ONLY — the TRACE
-144A pilot does not authorize a production price source (handoff warning).
+when no observations are present, the worker is a no-op. FIXTURES ONLY — the 144A
+pricing pilot does not authorize a production price source (handoff warning).
 """
 from __future__ import annotations
 

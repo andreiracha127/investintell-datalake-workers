@@ -4,8 +4,8 @@ DSN-agnostic by design (Global Constraint): every caller reads the disposable
 Postgres endpoint from ``SEC_TEST_DATABASE_URL`` so the suite runs identically
 under the keyword and URL DSN conventions.  The leading underscore keeps pytest
 from collecting this module as a test file.  Observations are synthetic price/
-trade rows only — no production price source exists or is authorized (the TRACE
-144A pilot does not authorize one).
+trade rows only — no production price source exists or is authorized (the 144A
+pricing pilot does not authorize one).
 """
 from __future__ import annotations
 

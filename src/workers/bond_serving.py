@@ -10,7 +10,7 @@ app pins an exact publication of this product.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 Global Constraint: ships without running any production backfill or authorizing
-any production price/holdings source (the TRACE 144A pilot authorizes none). When
+any production price/holdings source (the 144A pricing pilot authorizes none). When
 no current bond snapshot / validated source anchor exists the worker is a no-op.
 """
 from __future__ import annotations
