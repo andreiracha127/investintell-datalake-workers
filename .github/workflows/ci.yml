@@ -143,9 +143,9 @@ jobs:
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
-            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages'
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages,test_synthetic_submission_package_materializes_all_53_reconciliations,test_real_db_reconciles_candidate_parse_error_and_exponent_decimal'
           env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
             --collect-only -q | tee collect.log
           collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
@@ -153,7 +153,7 @@ jobs:
           test "$collected" -gt 0
           set +e
           env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
             -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
@@ -330,9 +330,9 @@ jobs:
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
           printf 'excluded_corpus_only_nodes=%s\n' \
-            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages'
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages,test_synthetic_submission_package_materializes_all_53_reconciliations,test_real_db_reconciles_candidate_parse_error_and_exponent_decimal'
           python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
             --collect-only -q | tee collect.log
           collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
@@ -340,7 +340,7 @@ jobs:
           test "$collected" -gt 0
           set +e
           python -m pytest "${tests[@]}" \
-            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
             -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
