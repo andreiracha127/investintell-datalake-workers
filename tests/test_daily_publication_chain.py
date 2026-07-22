@@ -679,6 +679,85 @@ def test_e2e_fail_compensate_restart_repromote_success(env):
     assert second["compensations"] == []
 
 
+def test_poisoned_chain_connection_still_records_and_compensates(env):
+    """Discriminant test for the chain-connection rollback.
+
+    A stage that runs FAILING SQL on the chain's own connection aborts its
+    transaction. The engine must roll it back so the failed-stage checkpoint write AND
+    the compensation still run. Without the rollback in ``_run_stage`` the run crashes
+    out of ``_record_stage`` with ``InFailedSqlTransaction`` — skipping the checkpoint
+    AND the compensation and leaving the already-promoted product current. (RED is
+    proven by reverting only that rollback: the run then raises / leaves ps at a2.)
+    """
+    conn, _, _ = env
+    ps, _pp, a1, a2, _b1, _b2 = _seed_two_products(conn)
+
+    def poison_then_fail(ctx: StageContext) -> StageOutcome:
+        # Abort the chain connection's transaction, then let it propagate (terminal).
+        ctx.conn.execute("SELECT 1 / 0")  # division_by_zero -> tx aborted + raises
+        return StageOutcome.succeeded()  # unreachable
+
+    stages = [_self_promote_stage("pit_update", ps, a2), Stage("refresh", poison_then_fail)]
+    summaries = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        snapshot_pointers=_pointer_snapshot, restore_pointer=_pointer_restore,
+    )
+    s = summaries[0]
+    assert s["status"] == "failed"
+    # The failed-stage checkpoint write ran (the poisoned tx was rolled back first).
+    stage_status = {r[0]: r[1] for r in conn.execute(
+        "SELECT stage, status FROM bond_daily_chain_stage_runs WHERE run_id=%s",
+        (UUID(s["run_id"]),)).fetchall()}
+    assert stage_status.get("refresh") == "failed"
+    # Compensation still ran: the advanced product is restored to its prior pointer.
+    assert daily_chain.current_pointer(conn, ps) == a1
+    comp = {c["product"]: c for c in s["compensations"]}
+    assert comp[ps]["restored_to"] == str(a1)
+    assert s["promoted"] == []
+
+
+def test_restore_mixed_no_prior_active_drops_the_active_pointer(env):
+    """The mixed restore branch when the product had NO prior active publication.
+
+    ``_restore_mixed(None)`` drops the active row and returns the promoted publication
+    to 'ready' (clearing activated_at so the lifecycle CHECK holds). Covers the second
+    activated_at fix, which the e2e (always seeded with a prior m0) does not reach.
+    """
+    conn, schema, _ = env
+    quant_pub.install_schema(conn)
+    conn.commit()
+    dsn = _search_path_dsn(schema)
+    mixed = quant_pub.PRODUCT
+    m1 = quant_pub.open_publication(conn, product=mixed, as_of=D1,
+                                    code_revision="r1", config_version="v")
+    quant_pub.mark_ready(conn, m1, {})
+    conn.commit()
+    assert quant_pub.active_publication_id(conn, mixed) is None   # NO prior active
+
+    def promote_mixed_stage(ctx: StageContext) -> StageOutcome:
+        quant_pub.promote(ctx.conn, mixed, m1)
+        return StageOutcome.succeeded(product=mixed)
+
+    def refresh_fail(ctx: StageContext) -> StageOutcome:
+        return StageOutcome.failed("boom", classification="terminal")
+
+    stages = [Stage("promote", promote_mixed_stage), Stage("refresh", refresh_fail)]
+    s = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        dsn=dsn, snapshot_pointers=chain_worker._snapshot_pointers,
+        restore_pointer=chain_worker._restore_pointer,
+    )[0]
+    assert s["status"] == "failed"
+    # No-prior restore: active pointer dropped entirely, publication back to writable.
+    assert quant_pub.active_publication_id(conn, mixed) is None
+    comp = {c["product"]: c for c in s["compensations"]}
+    assert comp[mixed]["restored_to"] is None and comp[mixed]["rolled_back_from"] == str(m1)
+    assert s["compensation_failures"] == []
+    status = conn.execute(
+        "SELECT status FROM quant_publication_v1 WHERE publication_id=%s", (m1,)).fetchone()[0]
+    assert status == "ready"
+
+
 # --------------------------------------------------------------------------- #
 # Real watermarks + freshness metric + distinct staleness alert
 # --------------------------------------------------------------------------- #

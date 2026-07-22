@@ -139,6 +139,19 @@ live "current" resolution for serving a request). The only consumer of the
 auto-promotion and its compensation is invisible to readers — no request is served
 from a to-be-rolled-back pointer.
 
+**Residual crash window (named, not eliminated).** The compensation set is derived
+from the `bond_daily_chain_promotions` ledger, so an orphan promotion from a crashed
+invocation is compensated on restart. One residual remains: the worker flips the
+pointer on its **own** connection while the chain records the ledger row on a
+**separate, later** transaction, so a crash between the checkpoint-succeeded commit
+and the ledger-insert commit leaves a pointer orphan **invisible to
+`_load_run_promotions`** (no ledger row, checkpoint present → restart skips the
+stage, so a later failure will not compensate it). This is **bounded, not fixed**:
+readers pin an exact `publication_id` and no Phase 10 value reaches serving, so the
+orphan is invisible to consumers. Real elimination would require the worker to record
+its own promotion in the **same transaction** as the pointer flip (future candidate,
+not in this delivery).
+
 ### Manual per-product fallback
 
 If `compensation_failures` is non-empty (or you must intervene), roll back each

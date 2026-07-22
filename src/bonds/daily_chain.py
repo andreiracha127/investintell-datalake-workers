@@ -26,6 +26,18 @@ bookkeeping the spec requires:
   flagged with a distinct alert, never silence. Readers pin an exact
   publication_id, so the brief window between an auto-promotion and its
   compensation is safe by design (a pinned reader never resolves "current");
+* crash-safe compensation: the compensation set is derived from the
+  ``bond_daily_chain_promotions`` ledger (promotes net of rollbacks) for the run,
+  so an orphan promotion from a crashed invocation is reconciled and compensated on
+  restart rather than left current on a failed run. RESIDUAL (named, not eliminated):
+  the worker flips the pointer on its OWN connection and the chain records the ledger
+  row on a SEPARATE, later transaction, so a crash between the checkpoint-succeeded
+  commit and the ledger-insert commit leaves a pointer orphan INVISIBLE to
+  ``_load_run_promotions`` (no ledger row, checkpoint present -> restart skips the
+  stage). This is bounded, not fixed: readers pin an exact publication_id (never a
+  live "current") and no Phase 10 value reaches serving, so the orphan is invisible
+  to consumers; real elimination would require the worker to record its own promotion
+  in the SAME transaction as the pointer flip (future candidate);
 * per-product promotion enumeration in the summary (every product the run made
   current: product, previous -> new publication_id, stage);
 * pointer rollback available (``rollback_pointer``);
