@@ -141,13 +141,19 @@ jobs:
             tests/test_sec_source_manifests.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
-          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
+          printf 'excluded_corpus_only_nodes=%s\n' \
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages'
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            --collect-only -q | tee collect.log
           collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
           set +e
-          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" -q -rA | tee results.log
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
           passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
@@ -299,7 +305,6 @@ jobs:
             tests/test_rr1_turnover_profiles.py
             tests/test_rr1_waiver_profiles.py
             tests/test_sec_derived_publications.py
-            tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_mandate.py
             tests/test_sec_regulatory_serving_contract.py
@@ -336,6 +341,26 @@ jobs:
           skipped=$( (grep -Eo '[0-9]+ skipped' results.log || true) | awk '{sum += $1} END {print sum + 0}')
           printf 'executed_count=%s failures=%s skips=%s\n' "$((passed + failed))" "$failed" "$skipped"
           test "$status" -eq 0
+          url_dsn_tests=(
+            tests/test_sec_derived_work_units.py
+          )
+          printf 'url_dsn_scope=%s\n' "${url_dsn_tests[*]}"
+          SEC_TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:65431/postgres' \
+            python -m pytest "${url_dsn_tests[@]}" --collect-only -q | tee url-dsn-collect.log
+          url_dsn_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' url-dsn-collect.log | tail -1)
+          url_dsn_collected=${url_dsn_collected:-0}
+          printf 'url_dsn_collected_count=%s\n' "$url_dsn_collected"
+          test "$url_dsn_collected" -gt 0
+          set +e
+          SEC_TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:65431/postgres' \
+            python -m pytest "${url_dsn_tests[@]}" -q -rA | tee url-dsn-results.log
+          url_dsn_status=${PIPESTATUS[0]}
+          set -e
+          url_dsn_passed=$( (grep -Eo '[0-9]+ passed' url-dsn-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          url_dsn_failed=$( (grep -Eo '[0-9]+ failed' url-dsn-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          printf 'url_dsn_executed_count=%s url_dsn_failures=%s\n' "$((url_dsn_passed + url_dsn_failed))" "$url_dsn_failed"
+          test "$url_dsn_status" -eq 0
+          test "$url_dsn_passed" -gt 0
           printf 'database_scope=%s\n' "${db_tests[*]}"
           python -m pytest "${db_tests[@]}" --collect-only -q | tee db-collect.log
           db_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' db-collect.log | tail -1)
