@@ -169,3 +169,9 @@ LOCK_BOND_SECURITY_MASTER = 900_341
 # of the price lanes under the shared derived-publication protocol. 900_342 is the
 # next free id in the ingestion band (900_3xx) after LOCK_BOND_SECURITY_MASTER.
 LOCK_BOND_PRICE_OBSERVATIONS = 900_342
+# bond_serving_v1 public serving projection worker (Increment 2, Task 5). Projects
+# the current bond security / price-lane / N-PORT reverse-lookup snapshots into the
+# public-only bond serving surface consumed by the app. Sibling product to
+# sec_regulatory_serving_v1. 900_343 is the next free id in the ingestion band
+# (900_3xx) after LOCK_BOND_PRICE_OBSERVATIONS.
+LOCK_BOND_SERVING = 900_343
