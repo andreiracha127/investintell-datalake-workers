@@ -182,3 +182,8 @@ LOCK_BOND_SERVING = 900_343
 # each of which still takes its own lock. 900_344 is the next free id in the
 # ingestion band (900_3xx) after LOCK_BOND_SERVING.
 LOCK_DAILY_PUBLICATION_CHAIN = 900_344
+# bond_curve_v1 point-in-time spot/par curve materializer (Increment 3, Task 5).
+# Serializes the single prepared->validated->current build of the curve snapshot
+# under the shared derived-publication protocol. 900_345 is the next free id in the
+# ingestion band (900_3xx) after LOCK_DAILY_PUBLICATION_CHAIN.
+LOCK_BOND_CURVE = 900_345
