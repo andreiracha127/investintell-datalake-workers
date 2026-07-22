@@ -327,13 +327,19 @@ jobs:
             tests/test_sec_regulatory_mandate.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
-          python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
+          printf 'excluded_corpus_only_nodes=%s\n' \
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages'
+          python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            --collect-only -q | tee collect.log
           collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
           set +e
-          python -m pytest "${tests[@]}" -q -rA | tee results.log
+          python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
+            -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
           passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
@@ -378,6 +384,34 @@ jobs:
           printf 'database_executed_count=%s database_failures=%s database_skips=%s\n' "$db_executed" "$db_failed" "$db_skipped"
           test "$db_status" -eq 0
           test "$db_executed" -gt 0
+          declare -A db_scope_tests=(
+            [mixed]=tests/test_mixed_quant_publication.py
+            [sec]=tests/test_sec_regulatory_serving_materializer.py
+            [ncen]=tests/test_ncen_derived_profiles_materializer.py
+            [rr1]=tests/test_rr1_derived_profiles_materializer.py
+            [bonds]=tests/test_bond_serving_materializer.py
+            [daily_chain]=tests/test_daily_publication_chain.py
+            [phase10]=tests/test_phase10_gate_machine.py
+          )
+          for scope in mixed sec ncen rr1 bonds daily_chain phase10; do
+            test_path=${db_scope_tests[$scope]}
+            printf 'database_scope_%s=%s\n' "$scope" "$test_path"
+            python -m pytest "$test_path" --collect-only -q | tee "$scope-collect.log"
+            scope_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' "$scope-collect.log" | tail -1)
+            scope_collected=${scope_collected:-0}
+            printf 'database_scope_%s_collected_count=%s\n' "$scope" "$scope_collected"
+            test "$scope_collected" -gt 0
+            set +e
+            python -m pytest "$test_path" -q -rA | tee "$scope-results.log"
+            scope_status=${PIPESTATUS[0]}
+            set -e
+            scope_passed=$( (grep -Eo '[0-9]+ passed' "$scope-results.log" || true) | awk '{sum += $1} END {print sum + 0}')
+            scope_failed=$( (grep -Eo '[0-9]+ failed' "$scope-results.log" || true) | awk '{sum += $1} END {print sum + 0}')
+            scope_executed=$((scope_passed + scope_failed))
+            printf 'database_scope_%s_executed_count=%s database_scope_%s_failures=%s\n' "$scope" "$scope_executed" "$scope" "$scope_failed"
+            test "$scope_status" -eq 0
+            test "$scope_executed" -gt 0
+          done
 
   quant-engine:
     name: quant-engine
