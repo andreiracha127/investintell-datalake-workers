@@ -47,6 +47,16 @@ LANE DISCRIMINATOR (spec §2 / plan Global Constraint 3):
   (informative) and ``fund_asof`` (point-in-time, ``observation_date <= as_of``,
   no look-ahead) are NEVER interchangeable; the DDL forbids a non-observations row
   from carrying a lane and forbids an observations payload without one.
+
+FRESHNESS ANCHOR (Phase 10 precondition -- documented in both mirrors):
+  The ``fund_asof`` lane's freshness (``is_stale`` / ``observation_age_days``) is
+  anchored at the publication's BUILD ``as_of``: the materializer measures staleness
+  against the build as_of, not the caller's requested as_of. RE-ANCHORING freshness at
+  the REQUESTED as_of (so a reader asking "as of date X" sees staleness measured
+  against X) is a PRECONDITION for the ``fund_asof`` lane becoming LOAD-BEARING in
+  Phase 10. Until then the lane is informative-only and the ``latest`` lane carries
+  ``is_stale = NULL`` (honest absence -- no as_of anchor to measure against). This note
+  is docstring-only and does NOT enter ``surface()``, so it does not move the digest.
 """
 
 from __future__ import annotations
