@@ -175,3 +175,10 @@ LOCK_BOND_PRICE_OBSERVATIONS = 900_342
 # sec_regulatory_serving_v1. 900_343 is the next free id in the ingestion band
 # (900_3xx) after LOCK_BOND_PRICE_OBSERVATIONS.
 LOCK_BOND_SERVING = 900_343
+# Daily publication chain orchestrator (Increment 2, Task 6). A single chain-run
+# advisory lock held for the whole run so overlapping runs cannot interleave the
+# eight publication stages (spec §5). It is a level ABOVE the per-worker locks
+# above: while the chain lock is held the chain invokes the individual workers,
+# each of which still takes its own lock. 900_344 is the next free id in the
+# ingestion band (900_3xx) after LOCK_BOND_SERVING.
+LOCK_DAILY_PUBLICATION_CHAIN = 900_344
