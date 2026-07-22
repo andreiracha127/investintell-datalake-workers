@@ -21,7 +21,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bond_curve_fixtures import base_fixture, curve_input, dsn  # noqa: E402
 
 from src.bonds import curves  # noqa: E402
-from src.bonds.pricing import SpotCurve  # noqa: E402
+from src.bonds.cashflows import BondTerms, DayCount, Frequency, generate_schedule  # noqa: E402
+from src.bonds.pricing import SpotCurve, curve_price  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente"
@@ -123,6 +124,18 @@ def test_published_snapshot_round_trips_into_spotcurve():
         assert spot.rate(3.5) == pytest.approx(0.035 + (0.040 - 0.035) * (3.5 - 2.0) / (5.0 - 2.0))
         assert spot.rate(0.1) == pytest.approx(0.028)  # flat below first node
         assert spot.rate(30.0) == pytest.approx(0.040)  # flat above last node
+        # End-to-end: the snapshot-derived curve prices a bond IDENTICALLY to a
+        # hand-built SpotCurve with the same nodes (feeds pricing.curve_price unadapted).
+        terms = BondTerms(
+            issue_date=date(2024, 6, 30), maturity_date=date(2029, 6, 30), coupon_rate=0.04,
+            frequency=Frequency.SEMIANNUAL, day_count=DayCount.THIRTY_360_US, face=100.0,
+        )
+        schedule = generate_schedule(terms)
+        settlement = date(2026, 6, 30)
+        by_hand = SpotCurve(nodes=tuple(nodes))
+        assert curve_price(schedule, settlement, spot) == pytest.approx(
+            curve_price(schedule, settlement, by_hand)
+        )
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 

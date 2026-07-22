@@ -29,9 +29,8 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     return row[0] if row else None
 
 
-def install_and_count(conn: Any, *, as_of: date | None) -> dict[str, Any]:
-    """Install the predicate and count eligible/total observations at ``as_of``."""
-    eligibility.install_schema(conn)
+def _count(conn: Any, *, as_of: date | None) -> dict[str, Any]:
+    """Count eligible/total observations at ``as_of`` (predicate must be installed)."""
     if as_of is None:
         return {"product": PRODUCT, "as_of": None, "eligible": 0, "observations": 0}
     total, eligible = conn.execute(
@@ -43,12 +42,18 @@ def install_and_count(conn: Any, *, as_of: date | None) -> dict[str, Any]:
             "observations": int(total)}
 
 
+def install_and_count(conn: Any, *, as_of: date | None) -> dict[str, Any]:
+    """Install the predicate then count eligible/total observations at ``as_of``."""
+    eligibility.install_schema(conn)
+    return _count(conn, as_of=as_of)
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     with connect(resolve_dsn(dsn)) as conn, advisory_lock(conn, LOCK_BOND_PRICE_ELIGIBILITY) as acquired:
         if not acquired:
             return {"state": "locked", "product": PRODUCT}
-        eligibility.install_schema(conn)
+        eligibility.install_schema(conn)  # single install for this run path
         as_of = _resolve_as_of(conn, calc_date)
-        result = install_and_count(conn, as_of=as_of)
+        result = _count(conn, as_of=as_of)
         conn.commit()
     return {"state": "ok", **result}
