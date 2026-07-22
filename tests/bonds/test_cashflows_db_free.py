@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-_PURE_MODULES = ("cashflows", "pricing")
+_PURE_MODULES = ("cashflows", "pricing", "oas")
 
 
 @pytest.mark.parametrize("module", _PURE_MODULES)

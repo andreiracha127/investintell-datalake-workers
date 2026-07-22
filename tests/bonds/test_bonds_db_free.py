@@ -15,7 +15,7 @@ def test_fresh_import_is_db_free() -> None:
     program = (
         "import sys;"
         "import src.bonds;"
-        "import src.bonds.identifiers, src.bonds.debt_mapping, src.bonds.panel_states, src.bonds.matching, src.bonds.cashflows, src.bonds.pricing;"
+        "import src.bonds.identifiers, src.bonds.debt_mapping, src.bonds.panel_states, src.bonds.matching, src.bonds.cashflows, src.bonds.pricing, src.bonds.oas;"
         "assert 'src.db' not in sys.modules, sorted(m for m in sys.modules if m.startswith('src.'));"
         "assert 'psycopg' not in sys.modules;"
         "assert not any(m == 'psycopg' or m.startswith('psycopg.') for m in sys.modules);"
@@ -69,5 +69,11 @@ def test_public_exports_are_importable() -> None:
         "curve_price",
         "rolldown",
         "z_spread",
+        "HoLeeLattice",
+        "LatticeInputs",
+        "MODEL_VALIDATION_STATUS",
+        "build_lattice",
+        "solve_oas",
+        "oas_from_price",
     ):
         assert hasattr(bonds, name), name
