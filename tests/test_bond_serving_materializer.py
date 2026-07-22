@@ -109,10 +109,14 @@ def test_catalog_and_detail_state_mapping_and_neutral_ambiguity() -> None:
         assert cat1["state"] == "available" and cat1["reason"] is None
         assert cat1["identity_state"] == "resolved" and cat1["coverage"] == 100
         assert '"display": "Acme Corp 5.25% 2030-06-30"' in cat1["payload"]
+        # searchable public alias arrays (only VALID aliases; ISIN absent -> []).
+        assert '"aliases_cusip9": ["037833100"]' in cat1["payload"]
+        assert '"aliases_isin": []' in cat1["payload"]
 
         cat2 = one("catalog", SEC2)
         assert cat2["state"] == "degraded" and cat2["reason"] == "identity_ambiguous"
         assert cat2["ambiguity_state"] == "ambiguous" and cat2["coverage"] == 50
+        assert '"aliases_cusip9": ["459200101"]' in cat2["payload"]
 
         det1 = one("detail", SEC1)
         assert det1["state"] == "available"

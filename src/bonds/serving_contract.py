@@ -146,9 +146,12 @@ SURFACES: tuple[dict[str, Any], ...] = (
         "state_rule": "identity_state_to_serving",
         "payload_schema_id": "bond_catalog_v1",
         # search-ready identity + summary terms + data state. Neutral keys only.
+        # aliases_cusip9 / aliases_isin are arrays of PUBLIC normalized identifiers
+        # (identity != source; only VALID aliases, never rejected/placeholder) so the
+        # app catalog can be searched by CUSIP9/ISIN (spec §3 query por identificador).
         "payload_keys": (
-            "coupon_rate", "coupon_type", "currency", "display", "identity_state",
-            "is_144a", "issuer_name", "maturity_date",
+            "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
+            "display", "identity_state", "is_144a", "issuer_name", "maturity_date",
         ),
     },
     {
@@ -202,7 +205,7 @@ SURFACES: tuple[dict[str, Any], ...] = (
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Independent of
 # the regulatory ``sec_regulatory_serving_v1`` digest (sibling product decision).
-SURFACE_DIGEST = "sha256:e8309d637f2f8fac0c38a6bfd176b5b75e2f550218022ded92186cd0deb59595"
+SURFACE_DIGEST = "sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b50771a35"
 
 
 def _surface_surface(surface: dict[str, Any]) -> dict[str, Any]:

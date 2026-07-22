@@ -18,7 +18,7 @@ _SCHEMA_SQL = (
 
 # The shared handshake value; MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte.
-SHARED_SURFACE_DIGEST = "sha256:e8309d637f2f8fac0c38a6bfd176b5b75e2f550218022ded92186cd0deb59595"
+SHARED_SURFACE_DIGEST = "sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b50771a35"
 
 
 def test_workers_declare_serving_product() -> None:
@@ -59,6 +59,11 @@ def test_only_observations_requires_a_lane() -> None:
 
 def test_serving_states_are_the_four_state_vocabulary() -> None:
     assert set(contract.SERVING_STATES) == {"available", "degraded", "unavailable", "not_applicable"}
+
+
+def test_catalog_carries_searchable_alias_arrays() -> None:
+    catalog = next(s for s in contract.SURFACES if s["surface"] == "catalog")
+    assert {"aliases_cusip9", "aliases_isin"} <= set(catalog["payload_keys"])
 
 
 def test_no_payload_key_is_an_internal_identifier() -> None:

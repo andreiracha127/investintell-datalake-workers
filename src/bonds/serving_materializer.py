@@ -55,7 +55,8 @@ _COLUMNS = (
 # A surface is 'present' iff ALL its required relations exist; a missing surface
 # fails the coverage gate closed (all declared surfaces or nothing).
 _SURFACE_REQUIRED_RELATIONS: dict[str, tuple[str, ...]] = {
-    "catalog": ("sec_current_bond_security_v1",),
+    # catalog now also reads the alias view for the searchable aliases_cusip9/isin arrays.
+    "catalog": ("sec_current_bond_security_v1", "sec_current_bond_security_alias_v1"),
     "detail": ("sec_current_bond_security_v1", "sec_current_bond_security_alias_v1"),
     "observations": ("bond_price_latest_v1",),
     "fund_exposure": (
@@ -109,6 +110,14 @@ SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
            'coupon_rate', s.coupon_rate,
            'maturity_date', s.maturity_date,
            'is_144a', s.is_144a,
+           -- public normalized identifiers for CUSIP9/ISIN search (only VALID aliases
+           -- reach the alias view; rejected/placeholder identifiers never do).
+           'aliases_cusip9', (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
+               FROM (SELECT DISTINCT a.alias_value AS v FROM sec_current_bond_security_alias_v1 a
+                     WHERE a.security_id = s.security_id AND a.alias_kind = 'cusip9') c),
+           'aliases_isin', (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
+               FROM (SELECT DISTINCT a.alias_value AS v FROM sec_current_bond_security_alias_v1 a
+                     WHERE a.security_id = s.security_id AND a.alias_kind = 'isin') c),
            'identity_state', s.identity_state))
 FROM sec_current_bond_security_v1 s
 ON CONFLICT DO NOTHING
