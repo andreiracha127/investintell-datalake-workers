@@ -191,3 +191,8 @@ LOCK_BOND_CURVE = 900_345
 # Task 5) with an explicit license gate. Serializes the single build. 900_346 is
 # the next free id after LOCK_BOND_CURVE.
 LOCK_BOND_RATING_HISTORY = 900_346
+# bond_price_eligibility_v1 additive price-eligibility predicate installer
+# (Increment 3, Task 5). Serializes the idempotent DDL install of the eligibility
+# view/function over bond_price_observation. 900_347 is the next free id after
+# LOCK_BOND_RATING_HISTORY.
+LOCK_BOND_PRICE_ELIGIBILITY = 900_347
