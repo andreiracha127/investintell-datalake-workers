@@ -41,11 +41,21 @@ so stages 5–7 for those products are satisfied inside their stage; the explici
 - **Deterministic run identity** `uuid5(chain, source_day, code_revision,
   config_version)` (`chain_run_id_for`, mirroring `publication_id_for`). A replay
   resolves to the same `run_id` and never forks a second run row.
-- **Watermarks per source**: the engine supports per-source input watermarks via
-  the `watermarks_for` hook (persisted to `input_watermarks`). No production wiring
-  passes it yet, so today `input_watermarks` is `{}`; the real wiring plus a
-  staleness metric/alert land at the pre-activation gate (see "Scheduling path" and
-  the deferred pre-activation items).
+- **Watermarks per source (real)**: the worker builds per-source input watermarks —
+  `max(observation/effective date)` per source product (`bond_security_observation`,
+  `bond_price_observation`, `ncen_effective_filings`, `rr1_effective_facts`) — and
+  passes them via `watermarks_for`; they are persisted to `input_watermarks` on the
+  run row and echoed in the summary. A present-but-empty or absent source contributes
+  `None`/is omitted (honest absence), never a fabricated date, so a dark run records
+  no false freshness.
+- **Freshness metric + staleness alert**: the summary carries a `freshness` metric
+  (per-source `lags_days` behind the processed source-day, `max_lag_days`,
+  `stale_sources`) and a DISTINCT `staleness_alert` — separate from the pipeline
+  failure `alert` — raised when any source's lag reaches the threshold. Staleness
+  never fails the run (a run can be `ok` yet stale). The threshold is configurable via
+  `DAILY_CHAIN_STALENESS_THRESHOLD_DAYS` (default 3; a negative value disables the
+  alert). The worker result envelope surfaces `staleness_alerts` so a fresh-but-stale
+  run is visible even when `state=ok`.
 - **Per-stage checkpoints** (`bond_daily_chain_stage_runs`): a restart honours a
   stage already at `succeeded`/`skipped` and resumes at the first unfinished
   stage. Replay of a `completed` run re-invokes nothing.
@@ -80,7 +90,8 @@ so stages 5–7 for those products are satisfied inside their stage; the explici
 - **One summary per run** (`bond_daily_chain_runs.summary`) with per-stage
   status/timings/attempts/detail/watermarks, a `promoted` enumeration, a
   `compensations` list, a `compensation_failures` list, `skips`/`failures` lists,
-  and a single actionable `alert` line on failure/compensation/dark mode.
+  the `input_watermarks`, a `freshness` metric, a distinct `staleness_alert`, and a
+  single actionable `alert` line on failure/compensation/dark mode.
 
 ## Skip vs. failure (the one distinction that matters)
 

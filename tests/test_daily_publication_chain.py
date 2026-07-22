@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from uuid import UUID
 
@@ -677,6 +677,58 @@ def test_e2e_fail_compensate_restart_repromote_success(env):
     promoted = {p["product"] for p in second["promoted"]}
     assert derived in promoted and mixed in promoted
     assert second["compensations"] == []
+
+
+# --------------------------------------------------------------------------- #
+# Real watermarks + freshness metric + distinct staleness alert
+# --------------------------------------------------------------------------- #
+
+def _wm_for(_conn, day: date) -> dict:
+    # One source 2 days behind the processed day, one 15 days behind.
+    return {
+        "bond_price_observation": (day - timedelta(days=2)).isoformat(),
+        "ncen_effective_filings": (day - timedelta(days=15)).isoformat(),
+    }
+
+
+def test_watermarks_recorded_and_freshness_below_threshold_no_alert(env):
+    conn, _, _ = env
+    day = date(2025, 3, 20)
+    summaries = daily_chain.run_chain(
+        conn, stages=_stages(["ingest", "probe"]), source_days=[day],
+        code_revision=REV, config_version=CFG, watermarks_for=_wm_for,
+        staleness_threshold_days=30,
+    )
+    s = summaries[0]
+    # input_watermarks are populated on the run row AND in the summary.
+    assert s["input_watermarks"] == _wm_for(None, day)
+    row_wm = conn.execute(
+        "SELECT input_watermarks FROM bond_daily_chain_runs WHERE run_id=%s",
+        (UUID(s["run_id"]),),
+    ).fetchone()[0]
+    assert row_wm == _wm_for(None, day)
+    # Freshness metric over the source watermarks; max lag 15 < 30 -> no staleness.
+    assert s["freshness"]["lags_days"] == {"bond_price_observation": 2, "ncen_effective_filings": 15}
+    assert s["freshness"]["max_lag_days"] == 15
+    assert s["freshness"]["stale_sources"] == []
+    assert s["staleness_alert"] is None
+
+
+def test_freshness_above_threshold_raises_distinct_staleness_alert(env):
+    conn, _, _ = env
+    day = date(2025, 3, 21)  # distinct source-day -> distinct run identity
+    summaries = daily_chain.run_chain(
+        conn, stages=_stages(["ingest", "probe"]), source_days=[day],
+        code_revision=REV, config_version=CFG, watermarks_for=_wm_for,
+        staleness_threshold_days=10,
+    )
+    s = summaries[0]
+    assert s["status"] == "completed"          # staleness never fails the run
+    assert s["alert"] is None                   # the pipeline (failure/dark) alert
+    assert s["freshness"]["stale_sources"] == ["ncen_effective_filings"]  # 15 >= 10
+    # The staleness alert is a DISTINCT field, never the failure alert.
+    assert "STALE INPUT" in (s["staleness_alert"] or "")
+    assert "ncen_effective_filings" in s["staleness_alert"]
 
 
 # --------------------------------------------------------------------------- #

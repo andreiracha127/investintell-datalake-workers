@@ -61,6 +61,36 @@ def test_build_stages_subset_preserves_frozen_order():
     assert names == ["ingest", "refresh", "probe"]
 
 
+def test_build_watermarks_reports_max_date_per_source_and_dark_is_empty():
+    admin = admin_connect()
+    schema = new_schema(admin)
+    conn = worker_conn(schema)
+    try:
+        # Dark: no source tables exist -> empty watermarks, never a fabricated date.
+        assert chain_worker.build_watermarks(conn, D1) == {}
+        # A present source with rows -> its max observed date (isoformat).
+        conn.execute("CREATE TABLE bond_price_observation (as_of date)")
+        conn.execute("INSERT INTO bond_price_observation VALUES ('2025-01-10'),('2025-02-15')")
+        # A present-but-empty source -> honest None (no rows to date from).
+        conn.execute("CREATE TABLE ncen_effective_filings (effective_date date)")
+        conn.commit()
+        wm = chain_worker.build_watermarks(conn, D1)
+        assert wm == {"bond_price_observation": "2025-02-15", "ncen_effective_filings": None}
+    finally:
+        conn.close()
+        admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_staleness_threshold_is_env_configurable(monkeypatch):
+    monkeypatch.delenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", raising=False)
+    assert chain_worker._staleness_threshold() == chain_worker._DEFAULT_STALENESS_THRESHOLD_DAYS
+    monkeypatch.setenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", "7")
+    assert chain_worker._staleness_threshold() == 7
+    monkeypatch.setenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", "-1")  # negative disables
+    assert chain_worker._staleness_threshold() is None
+
+
 def test_classify_worker_result_mapping():
     assert classify_worker_result({"state": "ok", "rows": 3}).status is StageStatus.SUCCEEDED
     assert classify_worker_result({"status": "ready"}).status is StageStatus.SUCCEEDED

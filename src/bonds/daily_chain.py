@@ -416,6 +416,7 @@ def run_chain(
     backoff: Callable[[int], float] = default_backoff,
     sleep: Callable[[float], None] = time.sleep,
     classify_exception: Callable[[BaseException], str] = default_classify_exception,
+    staleness_threshold_days: int | None = None,
 ) -> list[dict[str, Any]]:
     """Drive the chain over ``source_days`` (deterministic catch-up = ascending).
 
@@ -430,6 +431,11 @@ def run_chain(
     enumerates every product the run made current, and — on a terminal mid-chain
     failure — rolls each advanced product back to its pre-run pointer. Omit them
     (injected-stage tests that never promote) to disable compensation.
+
+    ``watermarks_for`` records the per-source input watermarks on the run row;
+    ``staleness_threshold_days`` (when set) turns those watermarks into a freshness
+    metric and a distinct staleness alert (separate from the failure alert) when any
+    source's lag behind the processed source-day reaches the threshold.
     """
     install_schema(conn)
     conn.commit()
@@ -441,6 +447,7 @@ def run_chain(
             watermarks_for=watermarks_for, snapshot_pointers=snapshot_pointers,
             restore_pointer=restore_pointer, max_attempts=max_attempts, backoff=backoff,
             sleep=sleep, classify_exception=classify_exception,
+            staleness_threshold_days=staleness_threshold_days,
         ))
     return summaries
 
@@ -453,6 +460,7 @@ def _run_one_day(
     restore_pointer: Callable[[StageContext, str, uuid.UUID | None], bool] | None,
     max_attempts: int, backoff: Callable[[int], float], sleep: Callable[[float], None],
     classify_exception: Callable[[BaseException], str],
+    staleness_threshold_days: int | None = None,
 ) -> dict[str, Any]:
     run_id = chain_run_id_for(chain, source_day, code_revision, config_version)
 
@@ -544,11 +552,13 @@ def _run_one_day(
          "publication_id": _str_or_none(info["current"]), "stage": info["stage"]}
         for p, info in advanced.items()
     ]
+    freshness = _freshness(source_day, watermarks, staleness_threshold_days)
     summary = _build_summary(
         run_id=run_id, chain=chain, source_day=source_day, code_revision=code_revision,
         config_version=config_version, status=status, watermarks=watermarks,
         stage_records=stage_records, promoted=promoted,
         compensations=compensations, compensation_failures=compensation_failures,
+        freshness=freshness, staleness_alert=_staleness_alert(chain, source_day, freshness),
     )
     _finish_run(conn, run_id=run_id, status=status, summary=summary)
     conn.commit()
@@ -640,6 +650,59 @@ def _stage_summary(name: str, order: int, checkpoint: Mapping[str, Any], *, resu
     }
 
 
+def _as_date(value: Any) -> date | None:
+    """Parse a watermark value into a date (ISO date/datetime string or date), else None."""
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value:
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _freshness(
+    source_day: date, watermarks: Mapping[str, Any], threshold_days: int | None,
+) -> dict[str, Any]:
+    """Freshness of the chain's source inputs relative to the processed source-day.
+
+    For every watermark that is a date, the lag in days behind ``source_day`` is
+    measured; a source whose lag reaches ``threshold_days`` (when configured) is
+    stale. Non-date/None watermarks (a dark source with no data) are ignored, so the
+    metric is empty in dark mode and never fabricates freshness.
+    """
+    lags: dict[str, int] = {}
+    stale: list[str] = []
+    for source, value in watermarks.items():
+        wm_date = _as_date(value)
+        if wm_date is None:
+            continue
+        lag = (source_day - wm_date).days
+        lags[source] = lag
+        if threshold_days is not None and lag >= threshold_days:
+            stale.append(source)
+    return {
+        "source_day": source_day.isoformat(),
+        "threshold_days": threshold_days,
+        "lags_days": lags,
+        "max_lag_days": max(lags.values()) if lags else None,
+        "stale_sources": sorted(stale),
+    }
+
+
+def _staleness_alert(chain: str, source_day: date, freshness: Mapping[str, Any]) -> str | None:
+    """A distinct staleness alert (separate from the failure alert); None when fresh."""
+    stale = list(freshness.get("stale_sources") or [])
+    if not stale:
+        return None
+    return (
+        f"[{chain}] run for {source_day.isoformat()} STALE INPUT: {len(stale)} "
+        f"source(s) at/over {freshness.get('threshold_days')}d [{', '.join(stale)}]; "
+        f"max lag {freshness.get('max_lag_days')}d"
+    )
+
+
 def _build_summary(
     *, run_id: uuid.UUID, chain: str, source_day: date, code_revision: str,
     config_version: str, status: str, watermarks: Mapping[str, Any],
@@ -647,6 +710,8 @@ def _build_summary(
     promoted: Sequence[Mapping[str, Any]],
     compensations: Sequence[Mapping[str, Any]],
     compensation_failures: Sequence[Mapping[str, Any]],
+    freshness: Mapping[str, Any],
+    staleness_alert: str | None,
 ) -> dict[str, Any]:
     failures = [
         {"stage": s["stage"], "reason": s["reason"], "classification": s["classification"]}
@@ -670,6 +735,10 @@ def _build_summary(
         "compensations": [dict(c) for c in compensations],
         "compensation_failures": [dict(c) for c in compensation_failures],
         "input_watermarks": dict(watermarks),
+        # Freshness of the source inputs vs the processed source-day + a staleness
+        # alert kept DISTINCT from the pipeline failure ``alert`` below.
+        "freshness": dict(freshness),
+        "staleness_alert": staleness_alert,
         "stages": [dict(s) for s in stage_records],
         "skips": skips,
         "failures": failures,

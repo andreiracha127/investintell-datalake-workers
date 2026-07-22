@@ -228,21 +228,60 @@ def build_stages(names: list[str]) -> list[Stage]:
     return [Stage(name, STAGE_BUILDERS[name]) for name in ordered]
 
 
+# The chain's source products and the column carrying each one's observation/effective
+# date. The watermark per source is max(date); the same set drives eligible source-days.
+_WATERMARK_SOURCES: tuple[tuple[str, str], ...] = (
+    ("bond_security_observation", "as_of"),
+    ("bond_price_observation", "as_of"),
+    ("ncen_effective_filings", "effective_date"),
+    ("rr1_effective_facts", "effective_date"),
+)
+
+# Staleness threshold (days) for the freshness alert; operators override it with
+# DAILY_CHAIN_STALENESS_THRESHOLD_DAYS. A source whose latest input lags the processed
+# source-day by at least this many days raises a staleness alert distinct from failure.
+_DEFAULT_STALENESS_THRESHOLD_DAYS = 3
+
+
+def _staleness_threshold() -> int | None:
+    raw = os.getenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_STALENESS_THRESHOLD_DAYS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_STALENESS_THRESHOLD_DAYS
+    return value if value >= 0 else None  # a negative value disables the alert
+
+
 def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
     """Watermark-driven eligible source-days (ascending). Absent tables -> []."""
     days: set[date] = set()
-    for table, col in (
-        ("bond_security_observation", "as_of"),
-        ("bond_price_observation", "as_of"),
-        ("ncen_effective_filings", "effective_date"),
-        ("rr1_effective_facts", "effective_date"),
-    ):
+    for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
         for (day,) in conn.execute(f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL"):
             days.add(day)
     ordered = sorted(days)
     return ordered[:limit] if limit is not None else ordered
+
+
+def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
+    """Per-source input watermarks: the latest observed/effective date per source product.
+
+    Recorded on the run row (``input_watermarks``) and turned into the run summary's
+    freshness metric + staleness alert. Absent source tables are skipped and a source
+    with no rows contributes ``None`` (honest absence, never a fabricated date), so a
+    fully dark run records ``{}`` / all-``None`` and raises no false staleness.
+    """
+    watermarks: dict[str, Any] = {}
+    for table, col in _WATERMARK_SOURCES:
+        if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
+            continue
+        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        wm = row[0] if row else None
+        watermarks[table] = wm.isoformat() if isinstance(wm, date) else None
+    return watermarks
 
 
 def _snapshot_pointers(ctx: StageContext) -> dict[str, uuid.UUID]:
@@ -350,12 +389,18 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         summaries = daily_chain.run_chain(
             conn, stages=build_default_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
+            watermarks_for=build_watermarks,
             snapshot_pointers=_snapshot_pointers, restore_pointer=_restore_pointer,
+            staleness_threshold_days=_staleness_threshold(),
         )
     failed = any(s["status"] == "failed" for s in summaries)
+    stale = [s["staleness_alert"] for s in summaries if s.get("staleness_alert")]
     return {
         "state": "failed" if failed else "ok",
         "chain": CHAIN,
         "runs_processed": len(summaries),
+        # Freshness is surfaced separately from failure: a run can be 'ok' yet carry
+        # a staleness alert operators should see.
+        "staleness_alerts": stale,
         "runs": summaries,
     }
