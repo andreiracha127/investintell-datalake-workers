@@ -10,6 +10,22 @@ the package imports no database driver or connection module.
 
 from __future__ import annotations
 
+from .cashflows import (
+    AccruedInterest,
+    BondTerms,
+    CallOption,
+    CashFlow,
+    CashFlowKind,
+    DayCount,
+    Frequency,
+    Schedule,
+    accrued_interest,
+    coupon_dates,
+    day_count_days,
+    generate_schedule,
+    icma_period_fraction,
+    year_fraction,
+)
 from .debt_mapping import DebtMapping
 from .errors import BondError
 from .identifiers import NormalizedCusip, normalize_cusip9
@@ -33,6 +49,20 @@ from .states import DebtState, FieldState, IdentifierState, MatchState
 
 __all__ = [
     "BondError",
+    "Frequency",
+    "DayCount",
+    "CashFlowKind",
+    "CallOption",
+    "BondTerms",
+    "CashFlow",
+    "Schedule",
+    "AccruedInterest",
+    "day_count_days",
+    "year_fraction",
+    "icma_period_fraction",
+    "coupon_dates",
+    "generate_schedule",
+    "accrued_interest",
     "FieldState",
     "IdentifierState",
     "DebtState",
