@@ -58,7 +58,18 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             return {"state": "no_securities", "rows": 0}
         try:
             result = materializer.materialize(conn, as_of=as_of, code_revision=_code_revision())
+        except (
+            materializer.BondFundExposureMultiplicationError,
+            materializer.BondServingSurfaceCoverageError,
+        ):
+            # Integrity/coverage violations are ACTIONABLE failures (spec §5: never a
+            # silent success). Roll back the partial build but let the typed error
+            # PROPAGATE -- it must never be laundered into the empty-source dark state
+            # below, which is indistinguishable from a genuinely absent source.
+            conn.rollback()
+            raise
         except RuntimeError:
+            # No validated source run/package anchor yet -> dark until backfill.
             conn.rollback()
             return {"state": "no_source", "rows": 0}
         conn.commit()

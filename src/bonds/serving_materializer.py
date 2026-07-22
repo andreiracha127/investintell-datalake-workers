@@ -298,8 +298,18 @@ def _relation_exists(conn: psycopg.Connection, name: str) -> bool:
     return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (name,)).fetchone()[0]
 
 
+def _function_exists(conn: psycopg.Connection, signature: str) -> bool:
+    return conn.execute("SELECT to_regprocedure(%s) IS NOT NULL", (signature,)).fetchone()[0]
+
+
 def _surface_present(conn: psycopg.Connection, surface: str) -> bool:
-    return all(_relation_exists(conn, rel) for rel in _SURFACE_REQUIRED_RELATIONS[surface])
+    if not all(_relation_exists(conn, rel) for rel in _SURFACE_REQUIRED_RELATIONS[surface]):
+        return False
+    # observations reads BOTH lanes: the latest view AND the point-in-time function.
+    # to_regclass never resolves a function, so the fund_asof lane is gated here.
+    if surface == "observations":
+        return _function_exists(conn, "bond_price_fund_asof_v1(date)")
+    return True
 
 
 def _resolve_anchor(

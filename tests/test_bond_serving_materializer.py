@@ -2,8 +2,9 @@
 
 Uses synthetic bond snapshot stand-ins (``sec_current_bond_security_v1`` (+aliases),
 the ``bond_price_latest_v1`` / ``bond_price_fund_asof_v1`` price lanes, and the
-N-PORT ``sec_nport_holdings_v2_current`` reverse-lookup source) so the serving
-projection is exercised independently of the Task 3/4 build machinery. Proves:
+N-PORT ``sec_nport_holdings_v2_current`` reverse-lookup source; see
+``_bond_serving_fixtures``) so the serving projection is exercised independently of
+the Task 3/4 build machinery. Proves:
   * every present surface projects into the public serving surface + atomic promote;
   * catalog/detail identity_state -> serving state mapping incl. ambiguous -> degraded
     with NEUTRAL identity evidence (never the internal contributing_observation_ids);
@@ -11,6 +12,7 @@ projection is exercised independently of the Task 3/4 build machinery. Proves:
     (fund_asof stale >= 31d) and ambiguity (duplicate cohort) states;
   * fund_exposure reverse lookup aggregates at fund (series) grain and HARD-FAILS
     on holding->security row multiplication;
+  * the coverage gate spans BOTH observation lanes (the fund_asof function too);
   * DATA leak absence: no raw_row_id/source_run_id/hashes/vendor/.tsv names, no
     ``cik:``/``row:`` identifiers, no internal provenance/lineage.
 
@@ -20,191 +22,29 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date, timedelta
-from uuid import UUID, uuid4
+import sys
+from pathlib import Path
+from uuid import UUID
 
-import psycopg
 import pytest
 
 from src.bonds import serving_contract as contract
 from src.bonds import serving_materializer as materializer
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _bond_serving_fixtures import (  # noqa: E402
+    AS_OF,
+    FORBIDDEN,
+    SEC1,
+    SEC2,
+    SENT_OBS,
+    connect,
+    setup,
+)
+
 pytestmark = pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente"
 )
-
-AS_OF = date(2025, 12, 31)
-
-SEC1 = UUID("11111111-1111-5111-8111-111111111111")
-SEC2 = UUID("22222222-2222-5222-8222-222222222222")
-
-# Internal-identifier sentinels embedded in every synthetic snapshot payload/provenance.
-SENT_RAW = "RAWROWLEAK123"
-SENT_SRC = "SRCRUNLEAK456"
-SENT_MD5 = "d41d8cd98f00b204e9800998ecf8427e"
-SENT_CIK = "cik:LEAKCIK789"
-SENT_ROW = "row:ROWKEYLEAK000"
-SENT_FILE = "HOLDINGS_INTERNAL.tsv"
-SENT_VENDOR = "InternalVendorNameX"
-SENT_OBS = "OBSIDLEAK555"
-FORBIDDEN = [
-    SENT_RAW, SENT_SRC, SENT_MD5, "LEAKCIK789", "ROWKEYLEAK000", SENT_FILE, SENT_VENDOR,
-    SENT_OBS, "raw_row_id", "source_run_id", "source_lineage", "provenance",
-    "contributing_observation_ids", "source_typed_projection", "holding_id",
-    "accession_number", "identity_key",
-]
-
-# Internal provenance blob (must never be projected at all).
-PROV = json.dumps({
-    "source_run_id": SENT_SRC, "raw_row_id": SENT_RAW, "text_block_md5": SENT_MD5,
-    "source_table": SENT_FILE, "vendor": SENT_VENDOR, "registrant_cik": SENT_CIK,
-})
-
-
-def _connect() -> psycopg.Connection:
-    return psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"])
-
-
-def _terms(**extra: object) -> str:
-    # coupon/call/put schedules ride here; a nested blocklisted key + a row:/cik:
-    # VALUE under a public key must be stripped/neutralised by the scrub.
-    base = {
-        "coupon_schedule": [{"date": "2026-06-30", "rate": 5.25}],
-        "call_schedule": [{"call_date": "2028-01-01", "call_price": 101.0,
-                           "raw_row_id": SENT_RAW, "note": SENT_ROW}],
-        "put_schedule": None,
-    }
-    base.update(extra)
-    return json.dumps(base)
-
-
-def _setup(cur) -> str:
-    schema = f"bond_serving_{uuid4().hex}"
-    run_id, package_id = uuid4(), uuid4()
-    cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
-    cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
-    cur.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid NOT NULL)")
-    cur.execute(
-        "CREATE VIEW sec_validated_raw_runs AS "
-        "SELECT run_id, raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
-    )
-    materializer.install_schema(cur.connection)
-    cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s, now())", (run_id,))
-    cur.execute("INSERT INTO sec_source_packages VALUES(%s, %s)", (package_id, run_id))
-    _synthetic_snapshots(cur)
-    return schema
-
-
-def _synthetic_snapshots(cur) -> None:
-    # --- securities (catalog/detail source) --------------------------------
-    cur.execute("""
-        CREATE TABLE sec_current_bond_security_v1(
-            security_id uuid, identity_state text, identity_reason_code text,
-            issuer_name text, currency text, coupon_type text, coupon_rate numeric,
-            maturity_date date, seniority text, secured text, is_144a text,
-            day_count text, settlement_convention text, terms jsonb,
-            identity_evidence jsonb, measured_at date, provenance jsonb)
-    """)
-    # resolved security
-    cur.execute(
-        "INSERT INTO sec_current_bond_security_v1 VALUES "
-        "(%s,'resolved',NULL,'Acme Corp','USD','fixed',5.25,'2030-06-30','senior',"
-        "'unsecured','true','30/360','T+2',%s,%s,%s,%s)",
-        (SEC1, _terms(),
-         json.dumps({"distinct_cusip9": ["037833100"], "distinct_isin": [],
-                     "distinct_issuer_name": ["Acme Corp"], "conflicts": {},
-                     "contributing_observation_ids": [SENT_OBS]}),
-         AS_OF, PROV),
-    )
-    # ambiguous security: conflicting ISIN. Neutral evidence must surface the
-    # conflicting VALUES only; a cik: value hides under distinct_issuer_name.
-    cur.execute(
-        "INSERT INTO sec_current_bond_security_v1 VALUES "
-        "(%s,'ambiguous','conflicting_isin_evidence',NULL,'USD','fixed',3.10,"
-        "'2029-03-15','senior','secured','false','30/360','T+2',%s,%s,%s,%s)",
-        (SEC2, _terms(),
-         json.dumps({"distinct_cusip9": ["459200101"],
-                     "distinct_isin": ["US4592001014", "US4592001099"],
-                     "distinct_issuer_name": ["Real Issuer Inc", SENT_CIK],
-                     "conflicts": {"isin": ["US4592001014", "US4592001099"]},
-                     "contributing_observation_ids": [SENT_OBS]}),
-         AS_OF, PROV),
-    )
-    # --- aliases (detail + fund_exposure) ----------------------------------
-    cur.execute("""
-        CREATE TABLE sec_current_bond_security_alias_v1(
-            security_id uuid, alias_kind text, alias_value text,
-            valid_from date, valid_to date)
-    """)
-    cur.execute(
-        "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
-        "(%s,'cusip9','037833100','2020-01-01',NULL),"
-        "(%s,'cusip9','459200101','2020-01-01',NULL)",
-        (SEC1, SEC2),
-    )
-    # --- price lanes (observations) ----------------------------------------
-    # latest lane: SEC1 unique; SEC2 duplicate cohort (both rows retained).
-    cur.execute("""
-        CREATE TABLE bond_price_latest_v1(
-            lane text, security_id uuid, observation_date date, source_row_number integer,
-            price numeric, price_type text, accrued_treatment text, price_state text,
-            ytm numeric, is_144a boolean, daily_key_state text)
-    """)
-    cur.execute(
-        "INSERT INTO bond_price_latest_v1 VALUES "
-        "('latest',%s,%s,0,99.5,'evaluated','clean','present',0.053,true,'unique_in_matching_cohort'),"
-        "('latest',%s,%s,0,100.2,'trade','dirty','present',0.031,false,'duplicate_in_matching_cohort'),"
-        "('latest',%s,%s,1,100.4,'trade','dirty','present',0.032,false,'duplicate_in_matching_cohort')",
-        (SEC1, AS_OF, SEC2, AS_OF, SEC2, AS_OF),
-    )
-    # fund_asof lane function stand-in over a backing table: SEC1 stale (>=31d),
-    # SEC2 fresh. It filters observation_date <= fund_as_of (no look-ahead).
-    cur.execute("""
-        CREATE TABLE _fund_asof_backing(
-            security_id uuid, observation_date date, source_row_number integer,
-            price numeric, price_type text, accrued_treatment text, price_state text,
-            ytm numeric, is_144a boolean, daily_key_state text)
-    """)
-    cur.execute(
-        "INSERT INTO _fund_asof_backing VALUES "
-        "(%s,%s,0,98.0,'evaluated','clean','present',0.055,true,'unique_in_matching_cohort'),"
-        "(%s,%s,0,100.1,'trade','dirty','present',0.031,false,'unique_in_matching_cohort')",
-        (SEC1, AS_OF - timedelta(days=40), SEC2, AS_OF - timedelta(days=3)),
-    )
-    cur.execute("""
-        CREATE FUNCTION bond_price_fund_asof_v1(fund_as_of date)
-        RETURNS TABLE(lane text, security_id uuid, observation_date date,
-            source_row_number integer, price numeric, price_type text,
-            accrued_treatment text, price_state text, ytm numeric, is_144a boolean,
-            daily_key_state text, observation_age_days integer, is_stale boolean)
-        LANGUAGE sql STABLE AS $$
-            SELECT 'fund_asof', b.security_id, b.observation_date, b.source_row_number,
-                   b.price, b.price_type, b.accrued_treatment, b.price_state, b.ytm,
-                   b.is_144a, b.daily_key_state,
-                   (fund_as_of - b.observation_date)::integer,
-                   ((fund_as_of - b.observation_date) >= 31)
-            FROM _fund_asof_backing b WHERE b.observation_date <= fund_as_of
-        $$
-    """)
-    # --- N-PORT reverse-lookup source (fund_exposure) ----------------------
-    # SEC1 (cusip 037833100) held by series S1 in two lots; a bridge class fan-out
-    # duplicates lot H1 across two classes (same value) -> DISTINCT collapses it.
-    cur.execute("""
-        CREATE TABLE sec_nport_holdings_v2_current(
-            series_id text, class_id text, cusip text, isin text,
-            signed_market_value numeric, signed_pct_of_nav numeric,
-            report_date date, accession_number text, holding_id text,
-            source_typed_projection jsonb)
-    """)
-    rpt = AS_OF - timedelta(days=5)
-    proj = json.dumps({"raw_row_id": SENT_RAW, "vendor": SENT_VENDOR})
-    cur.execute(
-        "INSERT INTO sec_nport_holdings_v2_current VALUES "
-        "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1',%s),"
-        "('S1','C2','037833100',NULL,100.0,0.10,%s,'A1','H1',%s),"
-        "('S1','C1','037833100',NULL,50.0,0.05,%s,'A1','H2',%s)",
-        (rpt, proj, rpt, proj, rpt, proj),
-    )
 
 
 def _materialize(cur, **kw) -> dict:
@@ -221,11 +61,11 @@ def _dump(cur) -> str:
 
 
 def test_materialize_projects_every_surface_and_promotes_current() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         result = _materialize(cur)
         assert result["state"] == "current"
         assert set(result["surfaces_written"]) == set(contract.surface_names())
@@ -248,11 +88,11 @@ def test_materialize_projects_every_surface_and_promotes_current() -> None:
 
 
 def test_catalog_and_detail_state_mapping_and_neutral_ambiguity() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         _materialize(cur)
 
         def one(surface: str, security_id: UUID) -> dict:
@@ -293,11 +133,11 @@ def test_catalog_and_detail_state_mapping_and_neutral_ambiguity() -> None:
 
 
 def test_observations_carry_lane_freshness_and_ambiguity() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         _materialize(cur)
         rows = cur.execute(
             "SELECT security_id, lane, state, reason_code, ambiguity_state, payload::text "
@@ -329,11 +169,11 @@ def test_observations_carry_lane_freshness_and_ambiguity() -> None:
 
 
 def test_fund_exposure_reverse_lookup_aggregates_at_series_grain() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         _materialize(cur)
         rows = cur.execute(
             "SELECT security_id, fund_key, payload::text FROM sec_current_bond_serving_facts "
@@ -355,11 +195,11 @@ def test_fund_exposure_reverse_lookup_aggregates_at_series_grain() -> None:
 
 
 def test_fund_exposure_multiplication_hard_fails_and_promotes_nothing() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         # SEC2 now shares SEC1's CUSIP -> holding H1 maps to two securities.
         cur.execute(
             "UPDATE sec_current_bond_security_alias_v1 SET alias_value='037833100' "
@@ -379,11 +219,11 @@ def test_fund_exposure_multiplication_hard_fails_and_promotes_nothing() -> None:
 
 
 def test_serving_data_contains_no_internal_identifiers() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         _materialize(cur)
         dump = _dump(cur)
         assert dump  # non-empty
@@ -400,11 +240,11 @@ def test_serving_data_contains_no_internal_identifiers() -> None:
 
 
 def test_partial_surface_set_fails_closed() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         cur.execute("DROP TABLE bond_price_latest_v1")  # observations surface source gone
         with pytest.raises(materializer.BondServingSurfaceCoverageError):
             _materialize(cur)
@@ -418,12 +258,33 @@ def test_partial_surface_set_fails_closed() -> None:
         conn.close()
 
 
-def test_allow_missing_surfaces_opts_out_of_the_coverage_gate() -> None:
-    conn = _connect()
+def test_missing_fund_asof_function_fails_the_coverage_gate() -> None:
+    """The observations surface reads BOTH lanes; the point-in-time function is part
+    of the coverage gate (to_regclass never resolves it) -- dropping it fails closed."""
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
+        cur.execute("DROP FUNCTION bond_price_fund_asof_v1(date)")
+        with pytest.raises(materializer.BondServingSurfaceCoverageError):
+            _materialize(cur)
+        pointer = cur.execute(
+            "SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_serving_v1'"
+        ).fetchone()
+        assert pointer is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_allow_missing_surfaces_opts_out_of_the_coverage_gate() -> None:
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
         cur.execute("DROP TABLE sec_nport_holdings_v2_current")  # fund_exposure gone
         result = _materialize(cur, allow_missing_surfaces=True)
         assert result["state"] == "current"
@@ -436,11 +297,11 @@ def test_allow_missing_surfaces_opts_out_of_the_coverage_gate() -> None:
 
 
 def test_materialize_is_idempotent() -> None:
-    conn = _connect()
+    conn = connect()
     schema = None
     try:
         cur = conn.cursor()
-        schema = _setup(cur)
+        schema = setup(cur)
         first = _materialize(cur)
         second = _materialize(cur)
         assert first["publication_id"] == second["publication_id"]

@@ -7,7 +7,14 @@ sibling product owns its OWN digest, independent of ``sec_regulatory_serving_v1`
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from src.bonds import serving_contract as contract
+
+_SCHEMA_SQL = (
+    Path(__file__).resolve().parents[1] / "schemas" / "bond_serving_v1.sql"
+).read_text(encoding="utf-8")
 
 # The shared handshake value; MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte.
@@ -57,6 +64,17 @@ def test_serving_states_are_the_four_state_vocabulary() -> None:
 def test_no_payload_key_is_an_internal_identifier() -> None:
     for surface in contract.SURFACES:
         assert not (set(surface["payload_keys"]) & set(contract.SCRUB_BLOCKLIST)), surface["surface"]
+
+
+def test_sql_scrub_blocklist_matches_the_contract_blocklist() -> None:
+    """The plpgsql scrub blocklist and the Python contract blocklist are one source
+    of truth (both hashed into the digest) -- assert they cannot silently diverge."""
+    array_body = re.search(
+        r"blocked text\[\]\s*:=\s*ARRAY\[(.*?)\]", _SCHEMA_SQL, re.DOTALL
+    )
+    assert array_body, "scrub blocklist ARRAY literal not found in DDL"
+    sql_keys = set(re.findall(r"'([^']+)'", array_body.group(1)))
+    assert sql_keys == set(contract.SCRUB_BLOCKLIST)
 
 
 def test_digest_moves_when_surface_changes(monkeypatch) -> None:
