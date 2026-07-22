@@ -17,8 +17,17 @@ bookkeeping the spec requires:
   failures fail closed immediately;
 * deterministic catch-up: missed source-days are processed in ascending order,
   same mechanism, no special mode;
-* promotion only of a complete run — a failing stage aborts the run BEFORE
-  promotion, leaving the prior current pointer intact;
+* chain-level "a partial run never stays current" delivered by COMPENSATION: each
+  product self-promotes atomically per-publication inside its own stage (the
+  Inc.1-approved architecture; "partial never becomes current" holds
+  per-publication). If a later stage fails terminally, the chain rolls back EVERY
+  product it advanced during THIS run to its prior current pointer, so the stable
+  post-failure state is "no product advanced". A rollback that itself fails is
+  flagged with a distinct alert, never silence. Readers pin an exact
+  publication_id, so the brief window between an auto-promotion and its
+  compensation is safe by design (a pinned reader never resolves "current");
+* per-product promotion enumeration in the summary (every product the run made
+  current: product, previous -> new publication_id, stage);
 * pointer rollback available (``rollback_pointer``);
 * the required-stage-skipped rule reconciled with dark mode: a no-op because
   there is NO AUTHORIZED SOURCE is a REPORTED skip (``dark_no_source``); a
@@ -69,6 +78,12 @@ STAGE_ORDER: tuple[str, ...] = (
 #   input_unchanged -> the stage's inputs are unchanged vs the current pinned
 #                      fingerprint, so the product is deliberately not rebuilt.
 # Any other "skip" of a required stage is upgraded to a run failure.
+#
+# NOTE (deliberate future-proofing): no stage unit emits ``input_unchanged``
+# today — the existing workers rebuild-or-dark and never report an unchanged-input
+# skip. It is in the allow-list now so that a future fingerprint-pinned "skip a
+# product whose inputs are unchanged" (spec §5) is a REPORTED skip the moment a
+# worker starts emitting it, without re-touching this frozen policy.
 ALLOWED_SKIP_REASONS: frozenset[str] = frozenset({"dark_no_source", "input_unchanged"})
 
 # Worker result vocabulary (state/status keys) -> chain classification.
@@ -318,9 +333,13 @@ def _run_stage(
     backoff: Callable[[int], float], sleep: Callable[[float], None],
     classify_exception: Callable[[BaseException], str],
 ) -> tuple[StageOutcome, int]:
-    """Run one stage with bounded retries. Returns (outcome, attempts_used)."""
-    last: StageOutcome | None = None
+    """Run one stage with bounded retries. Returns (outcome, attempts_used).
+
+    On the final attempt no branch continues, so the loop always returns from its
+    body; there is no post-loop path.
+    """
     for attempt in range(1, max_attempts + 1):
+        retriable = attempt < max_attempts
         stage_ctx = StageContext(
             conn=ctx.conn, dsn=ctx.dsn, source_day=ctx.source_day, run_id=ctx.run_id,
             chain=ctx.chain, code_revision=ctx.code_revision,
@@ -330,23 +349,15 @@ def _run_stage(
             outcome = stage.run(stage_ctx)
         except BaseException as exc:  # noqa: BLE001 — classified, not swallowed
             classification = classify_exception(exc)
-            if classification == "transient" and attempt < max_attempts:
-                sleep(backoff(attempt))
-                last = StageOutcome.failed(str(exc) or type(exc).__name__,
-                                           classification="transient")
-                continue
-            return (StageOutcome.failed(str(exc) or type(exc).__name__,
-                                        classification=classification), attempt)
-        outcome = _reconcile_skip(stage, outcome)
-        if outcome.status is StageStatus.FAILED and outcome.classification == "transient" \
-                and attempt < max_attempts:
+            outcome = StageOutcome.failed(str(exc) or type(exc).__name__,
+                                          classification=classification)
+        else:
+            outcome = _reconcile_skip(stage, outcome)
+        if outcome.status is StageStatus.FAILED and outcome.classification == "transient" and retriable:
             sleep(backoff(attempt))
-            last = outcome
             continue
         return (outcome, attempt)
-    # Retries exhausted on a transient outcome.
-    assert last is not None
-    return (last, max_attempts)
+    raise AssertionError("unreachable: the loop returns on the final attempt")
 
 
 # --------------------------------------------------------------------------- #
@@ -363,6 +374,8 @@ def run_chain(
     chain: str = DEFAULT_CHAIN,
     dsn: str | None = None,
     watermarks_for: Callable[[psycopg.Connection, date], Mapping[str, Any]] | None = None,
+    snapshot_pointers: Callable[[StageContext], Mapping[str, uuid.UUID]] | None = None,
+    restore_pointer: Callable[[StageContext, str, uuid.UUID | None], bool] | None = None,
     max_attempts: int = 3,
     backoff: Callable[[int], float] = default_backoff,
     sleep: Callable[[float], None] = time.sleep,
@@ -375,6 +388,12 @@ def run_chain(
     chain's own bookkeeping connection; it is committed after each stage so a
     restart resumes from the last checkpoint. The individual workers open their
     own connections via ``dsn`` (or the injected stage does its own I/O).
+
+    ``snapshot_pointers`` / ``restore_pointer`` enable the compensation guarantee:
+    when both are given the chain snapshots the current pointers around each stage,
+    enumerates every product the run made current, and — on a terminal mid-chain
+    failure — rolls each advanced product back to its pre-run pointer. Omit them
+    (injected-stage tests that never promote) to disable compensation.
     """
     install_schema(conn)
     conn.commit()
@@ -383,7 +402,8 @@ def run_chain(
         summaries.append(_run_one_day(
             conn, stages=stages, source_day=source_day, code_revision=code_revision,
             config_version=config_version, chain=chain, dsn=dsn,
-            watermarks_for=watermarks_for, max_attempts=max_attempts, backoff=backoff,
+            watermarks_for=watermarks_for, snapshot_pointers=snapshot_pointers,
+            restore_pointer=restore_pointer, max_attempts=max_attempts, backoff=backoff,
             sleep=sleep, classify_exception=classify_exception,
         ))
     return summaries
@@ -393,6 +413,8 @@ def _run_one_day(
     conn: psycopg.Connection, *, stages: Sequence[Stage], source_day: date,
     code_revision: str, config_version: str, chain: str, dsn: str | None,
     watermarks_for: Callable[[psycopg.Connection, date], Mapping[str, Any]] | None,
+    snapshot_pointers: Callable[[StageContext], Mapping[str, uuid.UUID]] | None,
+    restore_pointer: Callable[[StageContext, str, uuid.UUID | None], bool] | None,
     max_attempts: int, backoff: Callable[[int], float], sleep: Callable[[float], None],
     classify_exception: Callable[[BaseException], str],
 ) -> dict[str, Any]:
@@ -413,6 +435,13 @@ def _run_one_day(
     ctx = StageContext(conn=conn, dsn=dsn, source_day=source_day, run_id=run_id,
                        chain=chain, code_revision=code_revision, config_version=config_version)
 
+    track = snapshot_pointers is not None and restore_pointer is not None
+    # baseline = the pre-run current pointers; the restore target for compensation.
+    baseline: dict[str, uuid.UUID] = dict(snapshot_pointers(ctx)) if track else {}
+    last_seen: dict[str, uuid.UUID] = dict(baseline)
+    # product -> {previous (pre-run), current (latest), stage}
+    advanced: dict[str, dict[str, Any]] = {}
+
     stage_records: list[dict[str, Any]] = []
     failed = False
     for order, stage in enumerate(stages):
@@ -431,21 +460,94 @@ def _run_one_day(
                       outcome=outcome, attempts=attempts, started_at=started_at)
         conn.commit()
         stage_records.append(_stage_summary_from_outcome(stage.name, order, outcome, attempts))
+
+        if track and outcome.status is StageStatus.SUCCEEDED:
+            # A worker self-promotes atomically inside its stage; detect which
+            # products this stage made current by diffing the pointer snapshot.
+            after = dict(snapshot_pointers(ctx))
+            for product, pub_id in after.items():
+                if last_seen.get(product) != pub_id:
+                    advanced[product] = {"previous": baseline.get(product),
+                                         "current": pub_id, "stage": stage.name}
+                    record_promotion(conn, product=product, publication_id=pub_id,
+                                     previous_publication_id=baseline.get(product),
+                                     run_id=run_id, action="promote")
+            last_seen = after
+            conn.commit()
+
         if outcome.status is StageStatus.FAILED:
-            # Fail closed: abort BEFORE any later stage (promotion is unreachable),
-            # leaving the prior current pointer intact.
             failed = True
             break
 
+    compensations: list[dict[str, Any]] = []
+    compensation_failures: list[dict[str, Any]] = []
+    if failed and track and advanced:
+        compensations, compensation_failures = _compensate(
+            conn, ctx, advanced=advanced, restore_pointer=restore_pointer, run_id=run_id)
+        conn.commit()
+
     status = "failed" if failed else "completed"
+    promoted = [] if failed else [
+        {"product": p, "previous_publication_id": _str_or_none(info["previous"]),
+         "publication_id": _str_or_none(info["current"]), "stage": info["stage"]}
+        for p, info in advanced.items()
+    ]
     summary = _build_summary(
         run_id=run_id, chain=chain, source_day=source_day, code_revision=code_revision,
         config_version=config_version, status=status, watermarks=watermarks,
-        stage_records=stage_records,
+        stage_records=stage_records, promoted=promoted,
+        compensations=compensations, compensation_failures=compensation_failures,
     )
     _finish_run(conn, run_id=run_id, status=status, summary=summary)
     conn.commit()
     return summary
+
+
+def _str_or_none(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _compensate(
+    conn: psycopg.Connection, ctx: StageContext, *, advanced: Mapping[str, dict[str, Any]],
+    restore_pointer: Callable[[StageContext, str, uuid.UUID | None], bool], run_id: uuid.UUID,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Roll each product the run advanced back to its pre-run pointer.
+
+    Stable post-failure state = "no product advanced". A restore that itself
+    raises is captured as a compensation FAILURE (surfaced via a distinct alert),
+    never silently dropped. The advancing stages' checkpoints are reset so a
+    restart re-executes (re-promotes) them consistently.
+    """
+    compensations: list[dict[str, Any]] = []
+    compensation_failures: list[dict[str, Any]] = []
+    reset_stages: set[str] = set()
+    for product, info in advanced.items():
+        prior_target = info["previous"]
+        try:
+            restore_pointer(ctx, product, prior_target)
+            record_promotion(conn, product=product, publication_id=prior_target,
+                             previous_publication_id=info["current"], run_id=run_id,
+                             action="rollback")
+            compensations.append({
+                "product": product, "restored_to": _str_or_none(prior_target),
+                "rolled_back_from": _str_or_none(info["current"]), "stage": info["stage"],
+            })
+            reset_stages.add(info["stage"])
+        except Exception as exc:  # noqa: BLE001 — recorded, never silent
+            compensation_failures.append({
+                "product": product, "attempted_restore_to": _str_or_none(prior_target),
+                "still_current": _str_or_none(info["current"]), "error": str(exc) or type(exc).__name__,
+            })
+    if reset_stages:
+        _delete_stage_checkpoints(conn, run_id, reset_stages)
+    return compensations, compensation_failures
+
+
+def _delete_stage_checkpoints(conn: psycopg.Connection, run_id: uuid.UUID, stages: set[str]) -> None:
+    conn.execute(
+        "DELETE FROM bond_daily_chain_stage_runs WHERE run_id=%s AND stage = ANY(%s)",
+        (run_id, list(stages)),
+    )
 
 
 def _stage_summary_from_outcome(name: str, order: int, outcome: StageOutcome, attempts: int) -> dict[str, Any]:
@@ -480,10 +582,10 @@ def _build_summary(
     *, run_id: uuid.UUID, chain: str, source_day: date, code_revision: str,
     config_version: str, status: str, watermarks: Mapping[str, Any],
     stage_records: Sequence[Mapping[str, Any]],
+    promoted: Sequence[Mapping[str, Any]],
+    compensations: Sequence[Mapping[str, Any]],
+    compensation_failures: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    promoted = any(
-        s["stage"] == "promote" and s["status"] == "succeeded" for s in stage_records
-    )
     failures = [
         {"stage": s["stage"], "reason": s["reason"], "classification": s["classification"]}
         for s in stage_records if s["status"] == "failed"
@@ -499,28 +601,47 @@ def _build_summary(
         "code_revision": code_revision,
         "config_version": config_version,
         "status": status,
-        "promoted": promoted,
+        # Enumeration of every product the run made current (product, prev->new,
+        # stage). Empty on a failed run (all advances were compensated).
+        "promoted": [dict(p) for p in promoted],
+        "promoted_count": len(promoted),
+        "compensations": [dict(c) for c in compensations],
+        "compensation_failures": [dict(c) for c in compensation_failures],
         "input_watermarks": dict(watermarks),
         "stages": [dict(s) for s in stage_records],
         "skips": skips,
         "failures": failures,
         # A single actionable alert string when the run did not cleanly complete
-        # its full pipeline (failure OR a stage staleness/dark skip worth noting).
-        "alert": _alert_line(chain, source_day, status, failures, skips),
+        # its full pipeline (failure/compensation OR a dark skip worth noting).
+        "alert": _alert_line(chain, source_day, status, failures, skips,
+                             compensations, compensation_failures),
     }
 
 
 def _alert_line(
     chain: str, source_day: date, status: str,
     failures: Sequence[Mapping[str, Any]], skips: Sequence[Mapping[str, Any]],
+    compensations: Sequence[Mapping[str, Any]] = (),
+    compensation_failures: Sequence[Mapping[str, Any]] = (),
 ) -> str | None:
+    tag = f"[{chain}] run for {source_day.isoformat()}"
     if status == "failed":
         first = failures[0] if failures else {"stage": "?", "reason": "?"}
-        return (f"[{chain}] run for {source_day.isoformat()} FAILED at stage "
-                f"{first['stage']} ({first.get('classification')}: {first['reason']})")
+        line = (f"{tag} FAILED at stage {first['stage']} "
+                f"({first.get('classification')}: {first['reason']})")
+        if compensation_failures:
+            # Distinct, louder alert: some pointers could NOT be rolled back.
+            products = ", ".join(c["product"] for c in compensation_failures)
+            return (f"{line}; COMPENSATION FAILED for {len(compensation_failures)} "
+                    f"product(s) [{products}] — MANUAL rollback required")
+        if compensations:
+            products = ", ".join(c["product"] for c in compensations)
+            return (f"{line}; {len(compensations)} product(s) auto-rolled back to prior "
+                    f"current [{products}] — no product advanced")
+        return line
     dark = [s for s in skips if s["reason"] == "dark_no_source"]
     if dark:
-        return (f"[{chain}] run for {source_day.isoformat()} completed in DARK mode "
+        return (f"{tag} completed in DARK mode "
                 f"({len(dark)} stage(s) had no authorized source): nothing promoted")
     return None
 
