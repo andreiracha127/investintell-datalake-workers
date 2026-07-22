@@ -172,3 +172,21 @@ def test_expense_brokerage_prefers_amendment_and_ddl_is_native():
         assert banned not in lower
     current_view = lower.split("create or replace view sec_current_ncen_expense_brokerage_profiles", 1)[1]
     assert "ncen_raw_v2_rows" not in current_view
+
+
+def test_expense_brokerage_duplicate_registrant_fails_closed():
+    """Task 1b: the parent CTE folds one REGISTRANT surface onto each fund 1:1.  A
+    filing exposing two REGISTRANT rows would multiply the fund grain and the fund PK
+    would keep an arbitrary registrant -- so the build must fail closed instead."""
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _, publication_id = _fixture(cur)
+        submission(cur, run_id, "A1")
+        fund(cur, run_id, "A1", "F1", "S1", MANAGEMENT_FEE="150000")
+        # two REGISTRANT rows under the SAME accession -> ambiguous registrant identity.
+        registrant(cur, run_id, "A1", IS_ACCT_OPINION_QUALIFIED="Y")
+        registrant(cur, run_id, "A1", IS_ACCT_OPINION_QUALIFIED="N")
+        with pytest.raises(psycopg.errors.RaiseException, match="ambiguous N-CEN registrant identity"):
+            cur.execute("SELECT build_ncen_expense_brokerage_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

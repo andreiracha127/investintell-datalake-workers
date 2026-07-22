@@ -132,6 +132,26 @@ BEGIN
 
     PERFORM ncen_assert_effective_fund_identity(as_of_date);
 
+    -- Fan-out guard (Increment 2 Task 1b): the parent CTE LEFT JOINs REGISTRANT 1:1
+    -- to fold registrant-level audit disclosures onto each fund row.  If a filing ever
+    -- exposed more than one REGISTRANT surface, that join would multiply the fund grain
+    -- and the fund-grain PK would keep an ARBITRARY registrant row -- a silent wrong
+    -- choice.  Assert at most one REGISTRANT per effective filing (mirrors the
+    -- ncen_operational_event_profiles template) so it fails closed instead.
+    IF EXISTS (
+        SELECT 1
+        FROM ncen_effective_filings e
+        JOIN ncen_raw_v2_rows r ON r.ingestion_run_id=e.ingestion_run_id
+                               AND r.source_table='REGISTRANT.tsv'
+                               AND r.parse_status='typed'
+                               AND r.accession_number=e.accession_number
+        WHERE e.effective_date <= as_of_date
+        GROUP BY e.ingestion_run_id, e.accession_number
+        HAVING count(*) <> 1
+    ) THEN
+        RAISE EXCEPTION 'ambiguous N-CEN registrant identity for effective filing';
+    END IF;
+
     INSERT INTO ncen_expense_brokerage_builds
         (publication_id, input_fingerprint, as_of_date, effective_input_count)
     VALUES (target_publication_id, computed_fingerprint, as_of_date, selected_count)

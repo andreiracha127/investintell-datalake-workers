@@ -201,6 +201,32 @@ def test_etf_primary_market_one_legged_ap_flags_incomplete_even_with_both_totals
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_etf_primary_market_both_legs_null_ap_flags_incomplete_not_silently_covered():
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _, publication_id = _fixture(cur)
+        submission(cur, run_id, "A1")
+        fund(cur, run_id, "A1", "F1", "S1", IS_ETF="Y")
+        _etf(cur, run_id, "F1", NUM_SHARES_PER_CREATION_UNIT="25000")
+        # AP A reports both legs; AP B is listed but reported NEITHER leg (both NULL) --
+        # a data gap carrying no activity signal.  Task 1d (flag-as-data-gap): the row is
+        # retained in ap_count (roster stays faithful) but leg_incomplete flags the gap so
+        # the aggregate net -- which silently omits AP B -- is never presented as complete.
+        _ap(cur, run_id, "F1", PARTICIPANT_NAME="AP A", PARTICIPANT_LEI="LEI-A",
+            PURCHASE_VALUE="6000000", REDEEM_VALUE="2000000")
+        _ap(cur, run_id, "F1", PARTICIPANT_NAME="AP B", PARTICIPANT_LEI="LEI-B")
+        cur.execute("SELECT build_ncen_etf_primary_market_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute("SELECT etf_primary_market FROM ncen_etf_primary_market_profiles")
+        d = cur.fetchone()[0]["derived"]
+        # both APs remain counted -- the both-NULL row is never silently excluded.
+        assert d["authorized_participant_count"] == 2
+        # the both-NULL AP flags the disclosure as incomplete (was silently unflagged
+        # under the old purchase-XOR-redeem predicate).
+        assert d["leg_incomplete"] is True
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_etf_primary_market_prefers_amendment_and_ddl_is_native():
     import psycopg
 

@@ -207,9 +207,15 @@ BEGIN
                count(*) AS ap_count,
                sum(purchase_value) AS total_purchase,
                sum(redeem_value) AS total_redeem,
-               -- True when >=1 AP row reported exactly one leg (purchase XOR redeem):
-               -- the aggregate net is then untrustworthy even if both sums are non-null.
-               bool_or((purchase_value IS NOT NULL) <> (redeem_value IS NOT NULL)) AS leg_incomplete
+               -- Task 1d (flag-as-data-gap; honesty principle): TRUE when >=1 AP row did
+               -- NOT report BOTH legs -- one leg missing (purchase XOR redeem) OR BOTH legs
+               -- missing (a listed AP with no reported purchase/redemption activity at all).
+               -- A both-NULL AP row carries no activity signal; leaving it unflagged would
+               -- read as "covered" while the aggregate net silently omits that participant.
+               -- The row is still retained in ap_count (never silently excluded, so the
+               -- disclosed roster stays faithful); the serving degrades and drops the
+               -- untrustworthy net when this flag is true.
+               bool_or(NOT (purchase_value IS NOT NULL AND redeem_value IS NOT NULL)) AS leg_incomplete
         FROM _ncen_etf_aps GROUP BY 1,2,3
     )
     SELECT a.source_run_id, a.accession_number, a.fund_id, a.aps, a.ap_count,
@@ -273,8 +279,9 @@ BEGIN
                     'net_primary_market_flow',
                         CASE WHEN m.total_purchase IS NOT NULL AND m.total_redeem IS NOT NULL
                              THEN m.total_purchase - m.total_redeem ELSE NULL END,
-                    -- Data-quality flag: >=1 AP row carried exactly one leg (see agg CTE).
-                    -- The serving layer degrades and drops the net when this is true.
+                    -- Data-quality flag: >=1 AP row did not report both legs -- one leg
+                    -- missing, or both legs missing (see agg CTE, Task 1d).  The serving
+                    -- layer degrades and drops the net when this is true.
                     'leg_incomplete', COALESCE(m.leg_incomplete, false),
                     'fee_attributable_tracking_drag',
                         CASE WHEN NULLIF(btrim(sf.etf_evidence->>'ANNUAL_DIFF_AFTER_FEE_EXPENSE'),'') IS NOT NULL
