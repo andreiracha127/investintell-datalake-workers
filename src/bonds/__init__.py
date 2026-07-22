@@ -48,6 +48,14 @@ from .pricing import (
     yield_to_worst,
     z_spread,
 )
+from .oas import (
+    HoLeeLattice,
+    LatticeInputs,
+    MODEL_VALIDATION_STATUS,
+    build_lattice,
+    oas_from_price,
+    solve_oas,
+)
 from .matching import (
     CrossSeriesSummary,
     HoldingRecord,
@@ -99,6 +107,12 @@ __all__ = [
     "curve_price",
     "rolldown",
     "z_spread",
+    "HoLeeLattice",
+    "LatticeInputs",
+    "MODEL_VALIDATION_STATUS",
+    "build_lattice",
+    "solve_oas",
+    "oas_from_price",
     "FieldState",
     "IdentifierState",
     "DebtState",
