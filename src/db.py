@@ -187,3 +187,7 @@ LOCK_DAILY_PUBLICATION_CHAIN = 900_344
 # under the shared derived-publication protocol. 900_345 is the next free id in the
 # ingestion band (900_3xx) after LOCK_DAILY_PUBLICATION_CHAIN.
 LOCK_BOND_CURVE = 900_345
+# bond_rating_history_v1 point-in-time rating history materializer (Increment 3,
+# Task 5) with an explicit license gate. Serializes the single build. 900_346 is
+# the next free id after LOCK_BOND_CURVE.
+LOCK_BOND_RATING_HISTORY = 900_346
