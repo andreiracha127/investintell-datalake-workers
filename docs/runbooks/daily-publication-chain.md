@@ -55,16 +55,28 @@ so stages 5–7 for those products are satisfied inside their stage; the explici
 - **Deterministic catch-up**: eligible source-days are processed in ascending
   order, same mechanism, no special mode. Already-completed days are replayed as
   no-ops.
-- **Promotion only of a complete run**: a failing stage aborts the run BEFORE the
-  `promote`/`refresh` stages are reachable, so a partial build never becomes
-  current and the prior current pointer stays intact.
+- **"A partial run never stays current" by COMPENSATION**: each product
+  self-promotes atomically per-publication inside its own stage (the Inc.1-approved
+  architecture — `pit_update`, `materialize` and the serving `refresh` products
+  promote through `sec_set_current_derived_publication`; `mixed_quant_v1` through
+  `promote_quant_publication`; "partial never becomes current" holds
+  per-publication). If a LATER stage fails terminally, the chain rolls back EVERY
+  product it advanced during THIS run to its pre-run pointer, so the stable
+  post-failure state is "no product advanced". See "Compensation & visibility"
+  below — this replaces any notion that a mid-chain failure "promoted nothing".
+- **Per-product promotion enumeration**: the summary's `promoted` lists every
+  product the run made current (`product`, `previous_publication_id` →
+  `publication_id`, `stage`) plus a `promoted_count`. It is `[]` on a failed run
+  (all advances were compensated).
 - **Pointer rollback available**: `daily_chain.rollback_pointer(conn, product)`
   restores the product's prior current pointer via the atomic, validated-only
   `sec_set_current_derived_publication`, using the promotion ledger
-  (`bond_daily_chain_promotions`) recorded by `promote_derived`.
+  (`bond_daily_chain_promotions`). The automatic compensation above uses the same
+  ledger; this manual entry point is the operator fallback.
 - **One summary per run** (`bond_daily_chain_runs.summary`) with per-stage
-  status/timings/attempts/detail/watermarks, a `skips` list, a `failures` list,
-  a `promoted` flag, and a single actionable `alert` line on failure/dark mode.
+  status/timings/attempts/detail/watermarks, a `promoted` enumeration, a
+  `compensations` list, a `compensation_failures` list, `skips`/`failures` lists,
+  and a single actionable `alert` line on failure/compensation/dark mode.
 
 ## Skip vs. failure (the one distinction that matters)
 
@@ -83,7 +95,60 @@ explicit allow-list — `ALLOWED_SKIP_REASONS = {dark_no_source, input_unchanged
 
 Under Global Constraint 9 (no production source authorized; fixtures only) every
 stage currently reports `dark_no_source` and the run completes in DARK mode with
-nothing promoted. That is the expected steady state until activation.
+nothing promoted (in dark mode there is genuinely nothing to promote). That is the
+expected steady state until activation.
+
+## Compensation & the safe visibility window
+
+Because each product self-promotes atomically inside its stage, a terminal failure
+in a LATER stage can occur *after* one or more products were already made current.
+The chain closes this at the run level by **compensation**:
+
+1. Around each stage the chain snapshots the current pointers (`sec_derived_current_pointers`
+   + `active_quant_publication_v1`) and enumerates what the stage made current.
+2. On a terminal failure it rolls each advanced product back to its **pre-run**
+   pointer (derived via `sec_set_current_derived_publication`; mixed via
+   `promote_quant_publication`), recording each restoration in
+   `summary.compensations` + the ledger. Stable post-failure state = **no product
+   advanced**.
+3. The advancing stages' checkpoints are reset, so a **restart** re-executes
+   (re-promotes) them consistently rather than resuming past an undone promotion.
+4. A rollback that itself fails is recorded in `summary.compensation_failures` and
+   raises a **distinct, louder `alert`** (`COMPENSATION FAILED … MANUAL rollback
+   required`) — never silence.
+
+**Visibility window is safe by design.** App readers pin an **exact
+`publication_id`** (families/bonds repositories read a pinned publication, never a
+live "current" resolution for serving a request). The only consumer of the
+"current" pointer is the next publication cycle. So the brief interval between an
+auto-promotion and its compensation is invisible to readers — no request is served
+from a to-be-rolled-back pointer.
+
+### Manual per-product fallback
+
+If `compensation_failures` is non-empty (or you must intervene), roll back each
+at-risk product by hand:
+
+```python
+from src.bonds import daily_chain
+from src.db import connect
+with connect(DSN) as conn:
+    daily_chain.rollback_pointer(conn, "<product>")   # restore prior current
+    conn.commit()
+```
+
+Products at risk **by stage** (what each stage can make current, so what to check
+after a terminal failure downstream of it):
+
+| Advancing stage | Products it can make current |
+|---|---|
+| `pit_update`  | `bond_security_v1`, `bond_price_observation_v1` |
+| `materialize` | `ncen_*` derived profiles, `rr1_*` derived profiles |
+| `promote`     | `mixed_quant_v1` (active pointer) |
+| `refresh`     | `sec_regulatory_serving_v1`, `bond_serving_v1` |
+
+Cross-check `summary.promoted` and `summary.compensations` against this table to
+confirm every advanced product is back to its prior pointer.
 
 ---
 
@@ -104,7 +169,8 @@ Result envelope: `{"state": "ok"|"failed"|"locked"|"no_source_days", "runs": [<s
 | Symptom | Meaning | Action |
 |---|---|---|
 | `state=locked` | another chain run holds `900_344` | wait; do not force. Overlap is prevented by design |
-| a stage `status=failed`, `classification=terminal` | coverage/integrity/contract gate tripped (e.g. `BondServingSurfaceCoverageError`, `BondFundExposureMultiplicationError`, `required_stage_skipped`) | investigate the source data; the run promoted NOTHING and the prior pointer is intact. Fix inputs, then **restart** (below) |
+| a stage `status=failed`, `classification=terminal`, `compensations` non-empty | coverage/integrity/contract gate tripped (e.g. `BondServingSurfaceCoverageError`, `BondFundExposureMultiplicationError`, `required_stage_skipped`) after some products were promoted | the chain already rolled every advanced product back to its prior pointer (check `summary.compensations`); stable state = no product advanced. Fix inputs, then **restart** (below) |
+| `alert` contains `COMPENSATION FAILED` / `compensation_failures` non-empty | a self-promoted product could NOT be auto-rolled-back | **act now**: roll back each listed product with the manual per-product fallback above, then restart |
 | a stage `status=failed`, `classification=transient`, `attempts=max` | transient (DB blip / busy sub-lock) exhausted its retries | re-run the same command; the checkpoint resumes at that stage |
 | all stages `status=skipped`, `reason=dark_no_source` | dark mode: no authorized source | expected pre-activation; nothing to do |
 
@@ -146,6 +212,13 @@ and validated, so it is always restorable.
 - **No production price/holdings source is authorized** (the TRACE 144A pilot
   authorizes none). Until a source is authorized, activation keeps the chain in
   dark mode.
+- **Set a build stamp for `code_revision`.** The run identity includes
+  `code_revision`; the worker reads it from `CODE_REVISION` / `GIT_SHA` /
+  `SOURCE_COMMIT` / `RAILWAY_GIT_COMMIT_SHA` (in that order) before falling back to
+  `git rev-parse`, and only then to the literal `"unknown"`. Containers usually
+  lack a git checkout, so inject one of those env vars at deploy time — otherwise
+  every run identity collapses onto `code_revision="unknown"` and a genuine code
+  change will not mint a fresh run for the same source-day.
 
 ## Scheduling path (verify LIVE at activation — do not schedule now)
 
@@ -159,10 +232,12 @@ creates **no** cron/schedule/deploy artifact.
 ## Tests
 
 `tests/test_daily_publication_chain.py` (engine: lock/replay/restart/catch-up/
-retry-backoff/terminal-fail-closed/skip-vs-failure/one-summary/partial-promotion/
-rollback) and `tests/test_daily_publication_chain_wiring.py` (stage order,
-worker-result classification, ingest dark handling, lock-overlap via the worker,
-real bond-lane dark smoke). DSN-agnostic; run against the disposable PG:
+retry-backoff/terminal-fail-closed/skip-vs-failure/one-summary/rollback/
+per-product promotion enumeration/multi-product compensation on terminal
+mid-chain failure/compensation-failure alerting) and
+`tests/test_daily_publication_chain_wiring.py` (stage order, worker-result
+classification, ingest dark handling, lock-overlap via the worker, real bond-lane
+dark smoke). DSN-agnostic; run against the disposable PG:
 
 ```
 SEC_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:65431/postgres \
