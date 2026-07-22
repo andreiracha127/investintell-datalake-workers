@@ -45,6 +45,11 @@ ENVELOPE = {
     "diagnostics",
 }
 
+# The fixture is deliberately near the condition-number gate.  The Linux OpenBLAS
+# runner has produced a 0.594% HAC-SE delta from this reference, so 1% admits that
+# numerical variation while still rejecting a material covariance-scale regression.
+NEAR_LIMIT_HAC_SE_REL_TOLERANCE = 0.01
+
 def phase4() -> dict:
     packages = [
         {"package_id": f"{form}-{index}", "form": form, "state": "successful"}
@@ -691,14 +696,22 @@ def test_hac_svd_reference_is_stable_at_near_limit_condition() -> None:
         1.898745e7, rel=1e-5
     )
     assert x1_metric["diagnostics"]["condition_number"] < factors._CONDITION_MAX
-    # x1 and x2 are intentionally almost collinear.  Their individual SVD/HAC
-    # coefficients and standard errors vary with BLAS/LAPACK implementation, but their
-    # identifiable common exposure stays pinned to the fixture's 1.2 - 0.4 signal.
+    # x1 and x2 are intentionally almost collinear. Their individual SVD/HAC
+    # coefficients vary with BLAS/LAPACK implementation, but the common exposure is
+    # identifiable and the HAC scale must remain within the measured cross-platform band.
+    assert x1_metric["value"] == pytest.approx(158.62340522206406, rel=1e-8)
+    assert x2_metric["value"] == pytest.approx(-157.82341722136064, rel=1e-8)
     assert x1_metric["value"] + x2_metric["value"] == pytest.approx(0.8, abs=2e-4)
-    for metric, expected_sign in ((x1_metric, 1), (x2_metric, -1)):
+    for metric, expected_sign, expected_hac_se in (
+        (x1_metric, 1, 765.5792889065175),
+        (x2_metric, -1, 761.220480494333),
+    ):
         assert math.isfinite(metric["value"])
         assert math.isfinite(metric["hac_standard_error"])
         assert metric["hac_standard_error"] > 0
+        assert metric["hac_standard_error"] == pytest.approx(
+            expected_hac_se, rel=NEAR_LIMIT_HAC_SE_REL_TOLERANCE
+        )
         assert metric["value"] * expected_sign > 0
         interval = metric["confidence_interval"]
         assert interval["lower"] < 0 < interval["upper"]
