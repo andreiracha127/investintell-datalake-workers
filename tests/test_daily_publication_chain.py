@@ -248,7 +248,7 @@ def test_dark_no_source_is_reported_skip_not_failure(env):
     s = summaries[0]
     assert s["status"] == "completed"  # reported skip, not a failure
     assert all(st["status"] == "skipped" and st["reason"] == "dark_no_source" for st in s["stages"])
-    assert s["promoted"] is False
+    assert s["promoted"] == []  # nothing made current this run
     assert "DARK mode" in (s["alert"] or "")
 
 
@@ -346,7 +346,7 @@ def test_partial_promotion_impossible_prior_pointer_intact(env):
     summaries = daily_chain.run_chain(conn, stages=stages, source_days=[D1],
                                       code_revision=REV, config_version=CFG)
     assert summaries[0]["status"] == "failed"
-    assert summaries[0]["promoted"] is False
+    assert summaries[0]["promoted"] == []
     # promote stage never executed; prior current pointer intact.
     assert promote_called["n"] == 0
     assert daily_chain.current_pointer(conn, product) == pub_a
@@ -392,6 +392,134 @@ def test_rollback_pointer_without_prior_raises(env):
     conn.commit()
     with pytest.raises(daily_chain.TerminalStageError):
         daily_chain.rollback_pointer(conn, product)
+
+
+# --------------------------------------------------------------------------- #
+# Per-product promotion enumeration + auto-rollback compensation (spec §5 via
+# per-product atomic self-promotion; chain-level guarantee by compensation)
+# --------------------------------------------------------------------------- #
+
+def _pointer_snapshot(ctx: StageContext) -> dict:
+    return {p: pid for p, pid in ctx.conn.execute(
+        "SELECT product, publication_id FROM sec_derived_current_pointers").fetchall()}
+
+
+def _pointer_restore(ctx: StageContext, product: str, prior) -> bool:
+    if prior is None:
+        return False
+    ctx.conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, prior))
+    return True
+
+
+def _self_promote_stage(name: str, product: str, pub):
+    def _fn(ctx: StageContext) -> StageOutcome:
+        # A worker self-promotes atomically inside its own stage (Inc.1 architecture).
+        ctx.conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, pub))
+        return StageOutcome.succeeded(product=product)
+    return Stage(name, _fn)
+
+
+def _seed_two_products(conn):
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    ps, pp = "bond_security_v1", "bond_price_observation_v1"
+    a1 = make_validated_publication(conn, ps, 1)
+    a2 = make_validated_publication(conn, ps, 2)
+    b1 = make_validated_publication(conn, pp, 1)
+    b2 = make_validated_publication(conn, pp, 2)
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (ps, a1))
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (pp, b1))
+    conn.commit()
+    return ps, pp, a1, a2, b1, b2
+
+
+def test_clean_run_enumerates_every_product_made_current(env):
+    conn, _, _ = env
+    ps, pp, a1, a2, b1, b2 = _seed_two_products(conn)
+    stages = [_self_promote_stage("pit_update", ps, a2),
+              _self_promote_stage("materialize", pp, b2),
+              ok_stage("refresh")]
+    summaries = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        snapshot_pointers=_pointer_snapshot, restore_pointer=_pointer_restore,
+    )
+    s = summaries[0]
+    assert s["status"] == "completed"
+    promoted = {p["product"]: p for p in s["promoted"]}
+    # Enumeration names every product the chain made current, prev->new + stage.
+    assert promoted[ps]["previous_publication_id"] == str(a1)
+    assert promoted[ps]["publication_id"] == str(a2)
+    assert promoted[ps]["stage"] == "pit_update"
+    assert promoted[pp]["publication_id"] == str(b2) and promoted[pp]["stage"] == "materialize"
+    assert s["promoted_count"] == 2
+    assert s["compensations"] == []
+
+
+def test_terminal_failure_after_autopromotions_compensates_all_products(env):
+    conn, _, _ = env
+    ps, pp, a1, a2, b1, b2 = _seed_two_products(conn)
+
+    def refresh_fail(ctx: StageContext) -> StageOutcome:
+        return StageOutcome.failed("serving_coverage_below_threshold", classification="terminal")
+
+    stages = [_self_promote_stage("pit_update", ps, a2),
+              _self_promote_stage("materialize", pp, b2),
+              Stage("refresh", refresh_fail)]
+    summaries = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        snapshot_pointers=_pointer_snapshot, restore_pointer=_pointer_restore,
+    )
+    s = summaries[0]
+    assert s["status"] == "failed"
+    # EVERY advanced pointer restored to its prior current -> no product advanced.
+    assert daily_chain.current_pointer(conn, ps) == a1
+    assert daily_chain.current_pointer(conn, pp) == b1
+    comp = {c["product"]: c for c in s["compensations"]}
+    assert comp[ps]["restored_to"] == str(a1) and comp[ps]["rolled_back_from"] == str(a2)
+    assert comp[pp]["restored_to"] == str(b1) and comp[pp]["rolled_back_from"] == str(b2)
+    assert s["compensation_failures"] == []
+    assert s["promoted"] == []  # nothing STAYS current from a failed run
+    assert "rolled back" in (s["alert"] or "").lower()
+    assert "no product advanced" in (s["alert"] or "").lower()
+    # The rollbacks are recorded in the promotion ledger.
+    n_rollback = conn.execute(
+        "SELECT count(*) FROM bond_daily_chain_promotions WHERE action='rollback'"
+    ).fetchone()[0]
+    assert n_rollback == 2
+    # Compensated advancing stages are reset so a restart re-runs (re-promotes) them.
+    remaining = {r[0] for r in conn.execute(
+        "SELECT stage FROM bond_daily_chain_stage_runs WHERE run_id=%s",
+        (UUID(s["run_id"]),)).fetchall()}
+    assert "pit_update" not in remaining and "materialize" not in remaining
+
+
+def test_compensation_failure_is_flagged_distinctly_never_silent(env):
+    conn, _, _ = env
+    ps, pp, a1, a2, b1, b2 = _seed_two_products(conn)
+
+    def restore_that_fails(ctx: StageContext, product: str, prior) -> bool:
+        if product == pp:
+            raise RuntimeError("pointer restore blew up")
+        return _pointer_restore(ctx, product, prior)
+
+    def refresh_fail(ctx: StageContext) -> StageOutcome:
+        return StageOutcome.failed("boom", classification="terminal")
+
+    stages = [_self_promote_stage("pit_update", ps, a2),
+              _self_promote_stage("materialize", pp, b2),
+              Stage("refresh", refresh_fail)]
+    summaries = daily_chain.run_chain(
+        conn, stages=stages, source_days=[D1], code_revision=REV, config_version=CFG,
+        snapshot_pointers=_pointer_snapshot, restore_pointer=restore_that_fails,
+    )
+    s = summaries[0]
+    assert s["status"] == "failed"
+    # ps restored; pp restore failed -> flagged distinctly, never silent.
+    assert daily_chain.current_pointer(conn, ps) == a1
+    failed = {c["product"] for c in s["compensation_failures"]}
+    assert pp in failed
+    assert "COMPENSATION FAILED" in (s["alert"] or "")
 
 
 # --------------------------------------------------------------------------- #

@@ -149,7 +149,7 @@ def test_real_bond_lane_runs_dark_and_promotes_nothing():
         assert by_stage["probe"]["status"] == "succeeded"
         # Reported, not silent: completed in dark mode, nothing promoted.
         assert s["status"] == "completed"
-        assert s["promoted"] is False
+        assert s["promoted"] == []
         assert "DARK mode" in (s["alert"] or "")
         pointer = admin.execute(
             f'SELECT count(*) FROM "{dark_schema}".sec_derived_current_pointers'
