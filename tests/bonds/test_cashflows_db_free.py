@@ -1,10 +1,10 @@
-"""The cash-flow motor is a pure, DB-free algorithm module.
+"""The cash-flow and pricing motors are pure, DB-free algorithm modules.
 
-Same fresh-interpreter idiom as ``test_bonds_db_free.py``: importing the module
-must not pull in any database driver, connection module, or pyarrow, and must
-not read the wall clock (settlement is always an explicit input, never a clock
-read — proven by asserting the module source never touches ``datetime.today`` /
-``date.today`` / ``datetime.now``).
+Same fresh-interpreter idiom as ``test_bonds_db_free.py``: importing either
+module must not pull in any database driver, connection module, pyarrow, or
+numpy, and must not read the wall clock (settlement / horizon are always
+explicit inputs, never a clock read — proven by asserting the module source
+never touches any clock/epoch reader).
 """
 
 from __future__ import annotations
@@ -13,11 +13,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 
-def test_fresh_import_is_db_free() -> None:
+_PURE_MODULES = ("cashflows", "pricing")
+
+
+@pytest.mark.parametrize("module", _PURE_MODULES)
+def test_fresh_import_is_db_free(module: str) -> None:
     program = (
         "import sys;"
-        "import src.bonds.cashflows;"
+        f"import src.bonds.{module};"
         "assert 'src.db' not in sys.modules, sorted(m for m in sys.modules if m.startswith('src.'));"
         "assert 'psycopg' not in sys.modules;"
         "assert not any(m == 'psycopg' or m.startswith('psycopg.') for m in sys.modules);"
@@ -28,9 +33,10 @@ def test_fresh_import_is_db_free() -> None:
     assert completed.returncode == 0
 
 
-def test_module_reads_no_wall_clock() -> None:
+@pytest.mark.parametrize("module", _PURE_MODULES)
+def test_module_reads_no_wall_clock(module: str) -> None:
     source = (
-        Path(__file__).resolve().parents[2] / "src" / "bonds" / "cashflows.py"
+        Path(__file__).resolve().parents[2] / "src" / "bonds" / f"{module}.py"
     ).read_text(encoding="utf-8")
     # Every temporal anchor (settlement, horizon) is an explicit argument; the
     # module must never sample the wall clock. Scan for the full family of
@@ -48,4 +54,4 @@ def test_module_reads_no_wall_clock() -> None:
         "perf_counter",
         "monotonic",
     ):
-        assert forbidden not in source, forbidden
+        assert forbidden not in source, f"{module}: {forbidden}"

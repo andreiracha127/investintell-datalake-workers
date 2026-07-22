@@ -15,11 +15,12 @@ def test_fresh_import_is_db_free() -> None:
     program = (
         "import sys;"
         "import src.bonds;"
-        "import src.bonds.identifiers, src.bonds.debt_mapping, src.bonds.panel_states, src.bonds.matching, src.bonds.cashflows;"
+        "import src.bonds.identifiers, src.bonds.debt_mapping, src.bonds.panel_states, src.bonds.matching, src.bonds.cashflows, src.bonds.pricing;"
         "assert 'src.db' not in sys.modules, sorted(m for m in sys.modules if m.startswith('src.'));"
         "assert 'psycopg' not in sys.modules;"
         "assert not any(m == 'psycopg' or m.startswith('psycopg.') for m in sys.modules);"
-        "assert 'pyarrow' not in sys.modules"
+        "assert 'pyarrow' not in sys.modules;"
+        "assert 'numpy' not in sys.modules"
     )
     completed = subprocess.run([sys.executable, "-c", program], check=False)
     assert completed.returncode == 0
@@ -51,5 +52,22 @@ def test_public_exports_are_importable() -> None:
         "accrued_interest",
         "day_count_days",
         "year_fraction",
+        "SpotCurve",
+        "PriceQuote",
+        "YieldToWorst",
+        "dirty_price",
+        "clean_price",
+        "price_quote",
+        "yield_to_maturity",
+        "current_yield",
+        "yield_to_call",
+        "yield_to_worst",
+        "modified_duration",
+        "effective_duration",
+        "convexity",
+        "carry",
+        "curve_price",
+        "rolldown",
+        "z_spread",
     ):
         assert hasattr(bonds, name), name
