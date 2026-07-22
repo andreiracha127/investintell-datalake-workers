@@ -62,6 +62,7 @@ jobs:
           src/workers/mixed_quant_publication.py
           src/workers/ncen_derived_profiles.py
           src/workers/ncen_ingestion.py
+          src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
           src/workers/rr1_derived_profiles.py
           src/workers/rr1_ingestion.py
@@ -146,7 +147,7 @@ jobs:
           env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
             -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
             --collect-only -q | tee collect.log
-          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
@@ -224,6 +225,7 @@ jobs:
           src/workers/mixed_quant_publication.py
           src/workers/ncen_derived_profiles.py
           src/workers/ncen_ingestion.py
+          src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
           src/workers/rr1_derived_profiles.py
           src/workers/rr1_ingestion.py
@@ -332,7 +334,7 @@ jobs:
           python -m pytest "${tests[@]}" \
             -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages' \
             --collect-only -q | tee collect.log
-          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
