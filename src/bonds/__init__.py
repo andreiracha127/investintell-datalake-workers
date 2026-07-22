@@ -1,6 +1,6 @@
 """Pure, DB-free bond identity / matching / classification library.
 
-Mined from the TRACE 144A bond pilot as production algorithms only: identifier
+Mined from the bond pilot as production algorithms only: identifier
 qualification, exact composite debt classification, observed-panel daily-key
 state derivation, and no-look-ahead as-of matching with the full ``MatchState``
 precedence and isolated ``latest`` / ``fund_asof`` lanes. None of the pilot's

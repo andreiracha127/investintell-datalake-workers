@@ -76,6 +76,12 @@ def test_mapping_accepts_dict_rules() -> None:
     assert mapping.classify("corp", "debt", "bond") is DebtState.DEBT_LIKE_ELIGIBLE
 
 
+def test_empty_rules_are_rejected() -> None:
+    # Donor parity: an empty composite table is never a valid mapping.
+    with pytest.raises(BondError, match="invalid_debt_mapping"):
+        DebtMapping(rules=[])
+
+
 def test_duplicate_composite_rules_are_rejected() -> None:
     with pytest.raises(BondError, match="duplicate_debt_rule"):
         DebtMapping(

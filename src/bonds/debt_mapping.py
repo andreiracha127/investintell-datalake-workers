@@ -30,7 +30,7 @@ def _invalid() -> BondError:
 
 def _normalize_rules(value: object) -> tuple[tuple[str, str, str, str], ...]:
     """Validate rules given as dicts or 4-tuples; reject duplicate composite keys."""
-    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or not value:
         raise _invalid()
     output: list[tuple[str, str, str, str]] = []
     seen: set[tuple[str, str, str]] = set()
