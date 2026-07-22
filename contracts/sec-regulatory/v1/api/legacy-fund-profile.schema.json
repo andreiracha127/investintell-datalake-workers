@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/sec-regulatory/v1/legacy-fund-profile.schema.json",
+  "title": "LegacyFundProfileBaselineV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instrument_id",
+    "series_id",
+    "name",
+    "fund_type",
+    "asset_class",
+    "strategy_label",
+    "holdings",
+    "classes",
+    "nav"
+  ],
+  "properties": {
+    "instrument_id": {"type": "string", "format": "uuid"},
+    "series_id": {"type": "string"},
+    "class_id": {"type": ["string", "null"]},
+    "ticker": {"type": ["string", "null"]},
+    "name": {"type": "string"},
+    "fund_type": {"enum": ["etf", "mutual_fund", "mmf"]},
+    "asset_class": {
+      "enum": ["equity", "fixed_income", "multi_asset", "alternatives", "cash"]
+    },
+    "strategy_label": {"type": ["string", "null"]},
+    "classification_note": {"type": "string"},
+    "holdings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["report_date", "items", "pct_of_nav_total"],
+      "properties": {
+        "report_date": {"type": ["string", "null"], "format": "date"},
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["rank", "issuer_name", "cusip", "isin", "asset_class", "sector", "gics_sector", "market_value", "pct_of_nav"],
+            "properties": {
+              "rank": {"type": "integer", "minimum": 1},
+              "issuer_name": {"type": ["string", "null"]},
+              "cusip": {"type": ["string", "null"]},
+              "isin": {"type": ["string", "null"]},
+              "asset_class": {"type": ["string", "null"]},
+              "sector": {"type": ["string", "null"]},
+              "gics_sector": {"type": ["string", "null"]},
+              "market_value": {"type": ["number", "null"]},
+              "pct_of_nav": {"type": ["number", "null"]}
+            }
+          }
+        },
+        "pct_of_nav_total": {"type": ["number", "null"]}
+      }
+    },
+    "classes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["class_id", "class_name", "ticker", "expense_ratio"],
+        "properties": {
+          "class_id": {"type": "string"},
+          "class_name": {"type": ["string", "null"]},
+          "ticker": {"type": ["string", "null"]},
+          "expense_ratio": {"type": ["number", "null"]}
+        }
+      }
+    },
+    "nav": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["date", "nav"],
+        "properties": {
+          "date": {"type": "string", "format": "date"},
+          "nav": {"type": ["number", "null"]}
+        }
+      }
+    }
+  }
+}

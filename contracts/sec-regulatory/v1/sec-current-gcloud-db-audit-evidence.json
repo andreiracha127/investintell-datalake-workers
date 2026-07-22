@@ -1,0 +1,109 @@
+{
+  "evidence_version": "sec-current-gcloud-db-audit-evidence-v1",
+  "captured_at_utc": "2026-07-17T22:30:00Z",
+  "execution_mode": "structured read-only PostgreSQL MCP queries plus read-only gcloud describe commands",
+  "audit_sql_sha256": "7667f9c804f613c3b3af2b5bfff8f2a67cff48e835e8a870ce297de68e375637",
+  "read_only_controls": {
+    "database_reported_transaction_read_only": true,
+    "versioned_sql_uses_read_only_transaction": true,
+    "database_mutation_performed": false,
+    "deployment_performed": false
+  },
+  "database": {
+    "name": "market",
+    "role": "app_runtime",
+    "postgresql_version": "18.4",
+    "timescaledb_version": "2.27.2",
+    "database_bytes": 101051078335,
+    "sec_object_count": 94,
+    "sec_object_bytes": 14043627520,
+    "objects_without_indexes": 62,
+    "ncen_raw_objects": 53,
+    "ncen_raw_indexes": 0,
+    "ncen_raw_constraints": 0,
+    "rr1_raw_objects": 6,
+    "rr1_raw_indexes": 0,
+    "rr1_raw_constraints": 0
+  },
+  "source_counts": {
+    "sec_nport_holdings": {
+      "rows": 96398851,
+      "series": 18139,
+      "report_date_min": "2019-09-30",
+      "report_date_max": "2026-01-31"
+    },
+    "ncen_raw_submission": {"rows": 11787, "accessions": 11787},
+    "ncen_raw_fund_reported_info": {"rows": 49052, "series": 14588},
+    "rr1_raw_sub": {"rows": 52024, "accessions": 52024}
+  },
+  "eligible_series_coverage": {
+    "eligible_series": 7366,
+    "ncen_raw": 7366,
+    "adviser": 7365,
+    "prospectus_stats": 7357,
+    "strategy": 7045,
+    "risk": 7039,
+    "objective": 6684,
+    "classes": 6939,
+    "prospectus_returns": 1586,
+    "registered": 343
+  },
+  "classification_run": {
+    "run_id": "37ff7121-d108-4f66-9563-8e34fab5d48f",
+    "policy_version": "portfolio-composition-v3",
+    "as_of_date": "2026-01-31",
+    "completed_at": "2026-07-17T13:42:48.403Z",
+    "fund_count": 7375,
+    "persisted_rows": 7375,
+    "classified_count": 5440,
+    "broad_classified_count": 7375,
+    "broad_class_coverage_pct": 100.0,
+    "baseline_strategic_count": 5851,
+    "optimizer_minimum": 5266,
+    "prior_completed_fund_count": null
+  },
+  "cloud": {
+    "project": "investintell-research-analisys",
+    "region": "southamerica-east1",
+    "zone": "southamerica-east1-a",
+    "timescale_vm": {"name": "timescale-sp", "status": "RUNNING", "machine_type": "n2-standard-8"},
+    "load_balancer": {"name": "timescale-nlb-fr", "scheme": "EXTERNAL", "protocol": "TCP", "port_range": "5432-5432"},
+    "cloud_run": {
+      "api_revision": "hub-api-00024-c4f",
+      "web_revision": "hub-web-00018-4rn"
+    }
+  },
+  "known_blockers": [
+    "RR1 implausible dates require parser quarantine.",
+    "The canonical worker sec-regulatory contract is not present at the pinned commit."
+  ],
+  "local_source_recheck": {
+    "captured_at_utc": "2026-07-18T01:14:27Z",
+    "package_counts": {"13f": 53, "ncen": 17, "nport": 26, "rr1": 39},
+    "nport_2023q4": {"status": "valid", "actual_tsv_count": 30, "declared_table_count": 30},
+    "nport_2025q1": {"status": "valid", "actual_tsv_count": 30, "declared_table_count": 30},
+    "ncen_2023q4": {"status": "valid", "actual_tsv_count": 53, "declared_table_count": 53},
+    "ncen_2024q1": {
+      "status": "valid_conditional",
+      "actual_tsv_count": 51,
+      "declared_table_count": 53,
+      "conditional_absent_tables": ["DIVIDENDS_IN_ARREAR.tsv", "LONGTERM_DEBT_DEFAULT.tsv"]
+    },
+    "provenance": "original SEC-published bundle state; no local source file was deleted or rewritten"
+  },
+  "approved_storage_recovery_profile": {
+    "platform": "gcs",
+    "location": "southamerica-east1",
+    "dedicated_bucket_required": true,
+    "object_versioning": true,
+    "automatic_deletion": false,
+    "nearline_after_days": 90,
+    "coldline_after_days": 365,
+    "database_backup_frequency_hours": 24,
+    "database_backup_retention_days": 30,
+    "rpo_hours": 24,
+    "rto_hours": 8,
+    "provisioning_authorized": false
+  },
+  "raw_transport_note": "The MCP returned structured rows directly; no credential-bearing raw terminal transcript was created. This curated evidence file is itself bound by the contract manifest."
+}

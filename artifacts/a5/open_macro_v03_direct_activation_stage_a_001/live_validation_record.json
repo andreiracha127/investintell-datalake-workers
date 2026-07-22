@@ -66,7 +66,7 @@
    "harness.phase0q.decision",
    "harness.phase0q.sleeve"
   ],
-  "worker_commit": "b64414955ea5dd3be0de12a5eb7b8093c387e806"
+  "worker_commit": "251a17e3bf46ff8d1123d6dff57f8525622b5eae"
  },
  "schema_version": 1,
  "stage": "A",

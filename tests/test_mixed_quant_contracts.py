@@ -83,7 +83,7 @@ def test_income_event_rejects_inferred_yield_metrics() -> None:
         "cash_amount": "1.25",
         "currency": "USD",
         "event_type": "coupon",
-        "source_lineage": {"source": "trace"},
+        "source_lineage": {"source": "pilot"},
     }
     contracts.validate_income_event(good)  # does not raise
     for bad_key in ("ytm", "ytw", "oas", "z_spread", "yield", "price"):

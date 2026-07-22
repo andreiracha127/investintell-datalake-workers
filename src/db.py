@@ -134,6 +134,19 @@ LOCK_NPORT_INGESTION = 900_307
 # N-CEN V2 raw/shadow landing owns its package-level worker lock.  Deliberately
 # distinct from N-PORT and the 13F/Form345 SEC ingestion lanes.
 LOCK_NCEN_INGESTION = 900_310
+# N-CEN derived-profile publication worker (structure/provider/operational
+# snapshots).  Distinct from the raw-landing lane above; 900_338 is the next
+# free id after mixed_quant (900_337) and clear of the reserved 900_311/312.
+LOCK_NCEN_DERIVED_PROFILES = 900_338
+# RR1 derived-profile publication worker (fee waterfall / shareholder costs,
+# waiver durability, share-class cost dispersion).  Distinct from the RR1
+# raw-landing lane below; 900_339 is the next free id after the N-CEN derived
+# lock (900_338).
+LOCK_RR1_DERIVED_PROFILES = 900_339
+# Public serving projection worker (sec_regulatory_serving_v1). Projects the
+# current N-CEN/RR1 snapshots into the public-only serving surface consumed by the
+# app. 900_340 is the next free id after the RR1 derived lock (900_339).
+LOCK_SEC_REGULATORY_SERVING = 900_340
 # RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
 # and 900_312 remain reserved by the ESMA workers.
 LOCK_RR1_INGESTION = 900_313
@@ -146,3 +159,40 @@ LOCK_TIINGO_FUND_META = 900_336
 # mixed_quant_v1 point-in-time publication worker. Serializes the build of one
 # inactive publication; 900_337 is the next free id after tiingo_fund_meta.
 LOCK_MIXED_QUANT_PUBLICATION = 900_337
+# bond_security_v1 point-in-time security master materializer (Increment 2).
+# Serializes the single prepared->validated->current build under the shared
+# derived-publication protocol. 900_341 is the next free id in the ingestion band
+# (900_3xx) after LOCK_SEC_REGULATORY_SERVING (900_340).
+LOCK_BOND_SECURITY_MASTER = 900_341
+# bond_price_observation_v1 point-in-time price/trade observation materializer
+# (Increment 2, Task 4). Serializes the single prepared->validated->current build
+# of the price lanes under the shared derived-publication protocol. 900_342 is the
+# next free id in the ingestion band (900_3xx) after LOCK_BOND_SECURITY_MASTER.
+LOCK_BOND_PRICE_OBSERVATIONS = 900_342
+# bond_serving_v1 public serving projection worker (Increment 2, Task 5). Projects
+# the current bond security / price-lane / N-PORT reverse-lookup snapshots into the
+# public-only bond serving surface consumed by the app. Sibling product to
+# sec_regulatory_serving_v1. 900_343 is the next free id in the ingestion band
+# (900_3xx) after LOCK_BOND_PRICE_OBSERVATIONS.
+LOCK_BOND_SERVING = 900_343
+# Daily publication chain orchestrator (Increment 2, Task 6). A single chain-run
+# advisory lock held for the whole run so overlapping runs cannot interleave the
+# eight publication stages (spec §5). It is a level ABOVE the per-worker locks
+# above: while the chain lock is held the chain invokes the individual workers,
+# each of which still takes its own lock. 900_344 is the next free id in the
+# ingestion band (900_3xx) after LOCK_BOND_SERVING.
+LOCK_DAILY_PUBLICATION_CHAIN = 900_344
+# bond_curve_v1 point-in-time spot/par curve materializer (Increment 3, Task 5).
+# Serializes the single prepared->validated->current build of the curve snapshot
+# under the shared derived-publication protocol. 900_345 is the next free id in the
+# ingestion band (900_3xx) after LOCK_DAILY_PUBLICATION_CHAIN.
+LOCK_BOND_CURVE = 900_345
+# bond_rating_history_v1 point-in-time rating history materializer (Increment 3,
+# Task 5) with an explicit license gate. Serializes the single build. 900_346 is
+# the next free id after LOCK_BOND_CURVE.
+LOCK_BOND_RATING_HISTORY = 900_346
+# bond_price_eligibility_v1 additive price-eligibility predicate installer
+# (Increment 3, Task 5). Serializes the idempotent DDL install of the eligibility
+# view/function over bond_price_observation. 900_347 is the next free id after
+# LOCK_BOND_RATING_HISTORY.
+LOCK_BOND_PRICE_ELIGIBILITY = 900_347

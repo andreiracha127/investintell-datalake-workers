@@ -40,17 +40,36 @@ jobs:
         run: >-
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
+          scripts/sync_sec_regulatory_contract.py
+          scripts/verify_sec_regulatory_contract.py
+          src/bonds
           src/db.py
+          src/ncen
           src/nport
           src/quant_data
+          src/rr1
           src/run.py
           src/run_worker.py
           src/sec_regulatory
+          src/sec_serving
+          src/workers/bond_curves.py
+          src/workers/bond_price_eligibility.py
+          src/workers/bond_price_observations.py
+          src/workers/bond_rating_history.py
+          src/workers/bond_security_master.py
+          src/workers/bond_serving.py
+          src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
+          src/workers/ncen_derived_profiles.py
+          src/workers/ncen_ingestion.py
+          src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
+          src/workers/rr1_derived_profiles.py
+          src/workers/rr1_ingestion.py
           src/workers/sec_class_factors.py
           src/workers/sec_class_peers_scoring.py
           src/workers/sec_class_shadow_readiness.py
+          src/workers/sec_regulatory_serving.py
 
       - name: Run mixed tests without a database DSN
         shell: bash
@@ -67,15 +86,75 @@ jobs:
             tests/test_sec_class_factors.py
             tests/test_sec_class_peers_scoring.py
             tests/test_sec_class_shadow_readiness.py
+            tests/bonds/test_bonds_db_free.py
+            tests/bonds/test_cashflows.py
+            tests/bonds/test_cashflows_db_free.py
+            tests/bonds/test_curve_ddl.py
+            tests/bonds/test_curves_resolution.py
+            tests/bonds/test_debt_mapping.py
+            tests/bonds/test_identifiers.py
+            tests/bonds/test_matching.py
+            tests/bonds/test_oas.py
+            tests/bonds/test_panel_states.py
+            tests/bonds/test_phase10_gate.py
+            tests/bonds/test_price_eligibility.py
+            tests/bonds/test_price_observations_ddl.py
+            tests/bonds/test_price_observations_resolution.py
+            tests/bonds/test_pricing.py
+            tests/bonds/test_rating_history_ddl.py
+            tests/bonds/test_security_master_ddl.py
+            tests/bonds/test_security_master_resolution.py
+            tests/test_bond_curve_materializer.py
+            tests/test_bond_price_eligibility_view.py
+            tests/test_bond_price_observations_materializer.py
+            tests/test_bond_rating_history_materializer.py
+            tests/test_bond_security_master_materializer.py
+            tests/test_bond_serving_contract.py
+            tests/test_bond_serving_materializer.py
+            tests/test_bond_serving_worker.py
+            tests/test_daily_publication_chain.py
+            tests/test_daily_publication_chain_wiring.py
+            tests/test_ncen_closed_end_profiles.py
+            tests/test_ncen_derived_profiles_materializer.py
+            tests/test_ncen_etf_primary_market_profiles.py
+            tests/test_ncen_expense_brokerage_profiles.py
+            tests/test_ncen_ingestion.py
+            tests/test_ncen_liquidity_backstop_profiles.py
+            tests/test_ncen_operational_event_profiles.py
+            tests/test_ncen_provider_network_profiles.py
+            tests/test_ncen_securities_lending_profiles.py
+            tests/test_ncen_structure_profiles.py
+            tests/test_nport_schema.py
+            tests/test_phase10_gate_machine.py
+            tests/test_rr1_benchmark_profiles.py
+            tests/test_rr1_class_cost_dispersion.py
+            tests/test_rr1_custom_tag_crosswalk.py
+            tests/test_rr1_derived_profiles_materializer.py
+            tests/test_rr1_ingestion.py
+            tests/test_rr1_reported_performance_profiles.py
+            tests/test_rr1_shareholder_cost_profiles.py
+            tests/test_rr1_turnover_profiles.py
+            tests/test_rr1_waiver_profiles.py
+            tests/test_sec_derived_work_units.py
+            tests/test_sec_regulatory_contract.py
+            tests/test_sec_regulatory_serving_contract.py
+            tests/test_sec_regulatory_serving_materializer.py
+            tests/test_sec_source_manifests.py
           )
           printf 'environment_mode=no-dsn\nselected_scope=%s\n' "${tests[*]}"
-          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
-          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          printf 'excluded_corpus_only_nodes=%s\n' \
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages,test_synthetic_submission_package_materializes_all_53_reconciliations,test_real_db_reconciles_candidate_parse_error_and_exponent_decimal'
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            --collect-only -q | tee collect.log
+          collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
           set +e
-          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" -q -rA | tee results.log
+          env -u SEC_TEST_DATABASE_URL python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
           passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
@@ -124,17 +203,36 @@ jobs:
         run: >-
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
+          scripts/sync_sec_regulatory_contract.py
+          scripts/verify_sec_regulatory_contract.py
+          src/bonds
           src/db.py
+          src/ncen
           src/nport
           src/quant_data
+          src/rr1
           src/run.py
           src/run_worker.py
           src/sec_regulatory
+          src/sec_serving
+          src/workers/bond_curves.py
+          src/workers/bond_price_eligibility.py
+          src/workers/bond_price_observations.py
+          src/workers/bond_rating_history.py
+          src/workers/bond_security_master.py
+          src/workers/bond_serving.py
+          src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
+          src/workers/ncen_derived_profiles.py
+          src/workers/ncen_ingestion.py
+          src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
+          src/workers/rr1_derived_profiles.py
+          src/workers/rr1_ingestion.py
           src/workers/sec_class_factors.py
           src/workers/sec_class_peers_scoring.py
           src/workers/sec_class_shadow_readiness.py
+          src/workers/sec_regulatory_serving.py
 
       - name: Run mixed tests with PostgreSQL
         shell: bash
@@ -154,23 +252,96 @@ jobs:
             tests/test_sec_class_factors.py
             tests/test_sec_class_peers_scoring.py
             tests/test_sec_class_shadow_readiness.py
+            tests/bonds/test_bonds_db_free.py
+            tests/bonds/test_cashflows.py
+            tests/bonds/test_cashflows_db_free.py
+            tests/bonds/test_curve_ddl.py
+            tests/bonds/test_curves_resolution.py
+            tests/bonds/test_debt_mapping.py
+            tests/bonds/test_identifiers.py
+            tests/bonds/test_matching.py
+            tests/bonds/test_oas.py
+            tests/bonds/test_panel_states.py
+            tests/bonds/test_phase10_gate.py
+            tests/bonds/test_price_eligibility.py
+            tests/bonds/test_price_observations_ddl.py
+            tests/bonds/test_price_observations_resolution.py
+            tests/bonds/test_pricing.py
+            tests/bonds/test_rating_history_ddl.py
+            tests/bonds/test_security_master_ddl.py
+            tests/bonds/test_security_master_resolution.py
+            tests/test_bond_curve_materializer.py
+            tests/test_bond_price_eligibility_view.py
+            tests/test_bond_price_observations_materializer.py
+            tests/test_bond_rating_history_materializer.py
+            tests/test_bond_security_master_materializer.py
+            tests/test_bond_serving_contract.py
+            tests/test_bond_serving_materializer.py
+            tests/test_bond_serving_worker.py
+            tests/test_daily_publication_chain.py
+            tests/test_daily_publication_chain_wiring.py
+            tests/test_ncen_closed_end_profiles.py
+            tests/test_ncen_derived_profiles_materializer.py
+            tests/test_ncen_effective_views.py
+            tests/test_ncen_etf_primary_market_profiles.py
+            tests/test_ncen_expense_brokerage_profiles.py
+            tests/test_ncen_ingestion.py
+            tests/test_ncen_liquidity_backstop_profiles.py
+            tests/test_ncen_operating_profiles.py
+            tests/test_ncen_operational_event_profiles.py
+            tests/test_ncen_provider_network_profiles.py
+            tests/test_ncen_securities_lending_profiles.py
+            tests/test_ncen_structure_profiles.py
+            tests/test_nport_effective_views.py
+            tests/test_nport_schema.py
+            tests/test_phase10_gate_machine.py
+            tests/test_rr1_benchmark_profiles.py
+            tests/test_rr1_class_cost_dispersion.py
+            tests/test_rr1_custom_tag_crosswalk.py
+            tests/test_rr1_derived_profiles_materializer.py
+            tests/test_rr1_effective_views.py
+            tests/test_rr1_fee_profiles.py
+            tests/test_rr1_ingestion.py
+            tests/test_rr1_reported_performance_profiles.py
+            tests/test_rr1_shareholder_cost_profiles.py
+            tests/test_rr1_turnover_profiles.py
+            tests/test_rr1_waiver_profiles.py
+            tests/test_sec_derived_publications.py
+            tests/test_sec_regulatory_contract.py
+            tests/test_sec_regulatory_mandate.py
+            tests/test_sec_regulatory_serving_contract.py
+            tests/test_sec_regulatory_serving_materializer.py
+            tests/test_sec_source_manifests.py
           )
           db_tests=(
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_publication.py
             tests/test_nport_composition_features.py
+            tests/test_ncen_effective_views.py
+            tests/test_ncen_operating_profiles.py
             tests/test_nport_fixed_income_features.py
             tests/test_nport_holdings_v2.py
+            tests/test_nport_effective_views.py
+            tests/test_rr1_effective_views.py
+            tests/test_rr1_fee_profiles.py
+            tests/test_sec_derived_publications.py
+            tests/test_sec_regulatory_mandate.py
           )
           printf 'environment_mode=postgres\nselected_scope=%s\n' "${tests[*]}"
-          python -m pytest "${tests[@]}" --collect-only -q | tee collect.log
-          collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
+          printf 'excluded_corpus_only_nodes=%s\n' \
+            'test_real_frozen_packages_select_both_metadata_variants,test_canonical_inventory_closes_all_17_real_packages,test_synthetic_submission_package_materializes_all_53_reconciliations,test_real_db_reconciles_candidate_parse_error_and_exponent_decimal'
+          python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            --collect-only -q | tee collect.log
+          collected=$(sed -nE 's/^([0-9]+)(\/[0-9]+)? (test|tests|item|items) collected.*$/\1/p' collect.log | tail -1)
           collected=${collected:-0}
           printf 'collected_count=%s\n' "$collected"
           test "$collected" -gt 0
           set +e
-          python -m pytest "${tests[@]}" -q -rA | tee results.log
+          python -m pytest "${tests[@]}" \
+            -k 'not test_real_frozen_packages_select_both_metadata_variants and not test_canonical_inventory_closes_all_17_real_packages and not test_synthetic_submission_package_materializes_all_53_reconciliations and not test_real_db_reconciles_candidate_parse_error_and_exponent_decimal' \
+            -q -rA | tee results.log
           status=${PIPESTATUS[0]}
           set -e
           passed=$( (grep -Eo '[0-9]+ passed' results.log || true) | awk '{sum += $1} END {print sum + 0}')
@@ -178,6 +349,26 @@ jobs:
           skipped=$( (grep -Eo '[0-9]+ skipped' results.log || true) | awk '{sum += $1} END {print sum + 0}')
           printf 'executed_count=%s failures=%s skips=%s\n' "$((passed + failed))" "$failed" "$skipped"
           test "$status" -eq 0
+          url_dsn_tests=(
+            tests/test_sec_derived_work_units.py
+          )
+          printf 'url_dsn_scope=%s\n' "${url_dsn_tests[*]}"
+          SEC_TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:65431/postgres' \
+            python -m pytest "${url_dsn_tests[@]}" --collect-only -q | tee url-dsn-collect.log
+          url_dsn_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' url-dsn-collect.log | tail -1)
+          url_dsn_collected=${url_dsn_collected:-0}
+          printf 'url_dsn_collected_count=%s\n' "$url_dsn_collected"
+          test "$url_dsn_collected" -gt 0
+          set +e
+          SEC_TEST_DATABASE_URL='postgresql://postgres@127.0.0.1:65431/postgres' \
+            python -m pytest "${url_dsn_tests[@]}" -q -rA | tee url-dsn-results.log
+          url_dsn_status=${PIPESTATUS[0]}
+          set -e
+          url_dsn_passed=$( (grep -Eo '[0-9]+ passed' url-dsn-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          url_dsn_failed=$( (grep -Eo '[0-9]+ failed' url-dsn-results.log || true) | awk '{sum += $1} END {print sum + 0}')
+          printf 'url_dsn_executed_count=%s url_dsn_failures=%s\n' "$((url_dsn_passed + url_dsn_failed))" "$url_dsn_failed"
+          test "$url_dsn_status" -eq 0
+          test "$url_dsn_passed" -gt 0
           printf 'database_scope=%s\n' "${db_tests[*]}"
           python -m pytest "${db_tests[@]}" --collect-only -q | tee db-collect.log
           db_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' db-collect.log | tail -1)
@@ -195,6 +386,34 @@ jobs:
           printf 'database_executed_count=%s database_failures=%s database_skips=%s\n' "$db_executed" "$db_failed" "$db_skipped"
           test "$db_status" -eq 0
           test "$db_executed" -gt 0
+          declare -A db_scope_tests=(
+            [mixed]=tests/test_mixed_quant_publication.py
+            [sec]=tests/test_sec_regulatory_serving_materializer.py
+            [ncen]=tests/test_ncen_derived_profiles_materializer.py
+            [rr1]=tests/test_rr1_derived_profiles_materializer.py
+            [bonds]=tests/test_bond_serving_materializer.py
+            [daily_chain]=tests/test_daily_publication_chain.py
+            [phase10]=tests/test_phase10_gate_machine.py
+          )
+          for scope in mixed sec ncen rr1 bonds daily_chain phase10; do
+            test_path=${db_scope_tests[$scope]}
+            printf 'database_scope_%s=%s\n' "$scope" "$test_path"
+            python -m pytest "$test_path" --collect-only -q | tee "$scope-collect.log"
+            scope_collected=$(sed -nE 's/^([0-9]+) (test|tests|item|items) collected.*$/\1/p' "$scope-collect.log" | tail -1)
+            scope_collected=${scope_collected:-0}
+            printf 'database_scope_%s_collected_count=%s\n' "$scope" "$scope_collected"
+            test "$scope_collected" -gt 0
+            set +e
+            python -m pytest "$test_path" -q -rA | tee "$scope-results.log"
+            scope_status=${PIPESTATUS[0]}
+            set -e
+            scope_passed=$( (grep -Eo '[0-9]+ passed' "$scope-results.log" || true) | awk '{sum += $1} END {print sum + 0}')
+            scope_failed=$( (grep -Eo '[0-9]+ failed' "$scope-results.log" || true) | awk '{sum += $1} END {print sum + 0}')
+            scope_executed=$((scope_passed + scope_failed))
+            printf 'database_scope_%s_executed_count=%s database_scope_%s_failures=%s\n' "$scope" "$scope_executed" "$scope" "$scope_failed"
+            test "$scope_status" -eq 0
+            test "$scope_executed" -gt 0
+          done
 
   quant-engine:
     name: quant-engine

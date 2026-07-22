@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://investintell.local/contracts/sec-regulatory/v1/capability-state.schema.json",
+  "title": "FundCapabilityStateV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["state", "source_applicable"],
+  "properties": {
+    "state": {
+      "enum": ["available", "degraded", "unavailable", "not_applicable"]
+    },
+    "source_applicable": {"type": "boolean"},
+    "as_of": {"type": ["string", "null"], "format": "date"},
+    "coverage_pct": {"type": ["number", "null"], "minimum": 0, "maximum": 100},
+    "source": {"type": ["string", "null"], "minLength": 1},
+    "reason_code": {"type": ["string", "null"], "minLength": 1},
+    "methodology_version": {"type": ["string", "null"], "minLength": 1}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"state": {"const": "available"}}},
+      "then": {
+        "required": ["as_of", "coverage_pct", "source", "methodology_version"],
+        "properties": {
+          "source_applicable": {"const": true},
+          "as_of": {"type": "string", "format": "date"},
+          "coverage_pct": {"type": "number", "minimum": 0, "maximum": 100},
+          "source": {"type": "string", "minLength": 1},
+          "reason_code": {"type": "null"},
+          "methodology_version": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "degraded"}}},
+      "then": {
+        "required": ["as_of", "coverage_pct", "source", "reason_code", "methodology_version"],
+        "properties": {
+          "source_applicable": {"const": true},
+          "as_of": {"type": "string", "format": "date"},
+          "coverage_pct": {"type": "number", "minimum": 0, "maximum": 100},
+          "source": {"type": "string", "minLength": 1},
+          "reason_code": {"type": "string", "minLength": 1},
+          "methodology_version": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "unavailable"}}},
+      "then": {
+        "required": ["source", "reason_code"],
+        "properties": {
+          "source_applicable": {"const": true},
+          "as_of": {"type": "null"},
+          "coverage_pct": {"type": "null"},
+          "source": {"type": "string", "minLength": 1},
+          "reason_code": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"state": {"const": "not_applicable"}}},
+      "then": {
+        "required": ["reason_code"],
+        "properties": {
+          "source_applicable": {"const": false},
+          "as_of": {"type": "null"},
+          "coverage_pct": {"type": "null"},
+          "source": {"type": "null"},
+          "reason_code": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  ]
+}
