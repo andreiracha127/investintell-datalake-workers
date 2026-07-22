@@ -492,19 +492,20 @@ def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
                     if row["source_table"] not in files_to_copy:
                         continue
                     copy.write_row(tuple([run.run_id, file_ids[row["source_table"]], row["source_row_number"], row["source_sha256"], entry["parser_version"], row["source_table"], _prepared_json(row["original_lexical_row"]), _prepared_json(row["typed_projection"]), row["parse_status"], _prepared_json(row["parse_errors"]), _prepared_json(row["candidate_key_evidence"])] + [row.get(name) for name in columns[11:]]))
-        for source_table in files_to_copy:
-            if form == "nport":
-                from src.nport.ingestion import _insert_issues_from_raw
-                _insert_issues_from_raw(conn, run_id=run.run_id, source_file_id=file_ids[source_table], source_table=source_table)
-            else:
-                with conn.cursor() as cursor:
-                    cursor.execute(
-                        f"""INSERT INTO sec_row_issues (source_file_id,source_row_number,issue_sequence,table_name,column_name,raw_lexical_value,typed_error_code,typed_error_detail,status)
-                    SELECT r.source_file_id,r.source_row_number,issue.ordinality::integer,r.source_table,issue.value->>'column_name',issue.value->>'raw_value',issue.value->>'code',issue.value->>'detail','quarantined'
-                    FROM {entry['raw_table']} r CROSS JOIN LATERAL jsonb_array_elements(r.parse_errors) WITH ORDINALITY AS issue(value,ordinality)
-                    WHERE r.ingestion_run_id=%s AND r.source_file_id=%s AND jsonb_array_length(r.parse_errors)>0""",
-                        (run.run_id, file_ids[source_table]),
-                    )
+        if os.environ.get("SEC_FAST_LOCAL_FINALIZE") != "1":
+            for source_table in files_to_copy:
+                if form == "nport":
+                    from src.nport.ingestion import _insert_issues_from_raw
+                    _insert_issues_from_raw(conn, run_id=run.run_id, source_file_id=file_ids[source_table], source_table=source_table)
+                else:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            f"""INSERT INTO sec_row_issues (source_file_id,source_row_number,issue_sequence,table_name,column_name,raw_lexical_value,typed_error_code,typed_error_detail,status)
+                        SELECT r.source_file_id,r.source_row_number,issue.ordinality::integer,r.source_table,issue.value->>'column_name',issue.value->>'raw_value',issue.value->>'code',issue.value->>'detail','quarantined'
+                        FROM {entry['raw_table']} r CROSS JOIN LATERAL jsonb_array_elements(r.parse_errors) WITH ORDINALITY AS issue(value,ordinality)
+                        WHERE r.ingestion_run_id=%s AND r.source_file_id=%s AND jsonb_array_length(r.parse_errors)>0""",
+                            (run.run_id, file_ids[source_table]),
+                        )
     for file_entry in entry["files"]:
         source_table = file_entry["source_table"]
         file_id = file_ids[source_table]
@@ -520,12 +521,12 @@ def _load_package(conn: Any, output: Path, entry: dict[str, Any]) -> str:
         metadata_file_id = register_file(conn, run_id=run.run_id, relative_path=entry["metadata_filename"], sha256=entry["metadata_sha256"], byte_size=entry["metadata_byte_size"], schema_metadata={"metadata_for_absent_declared_tables": True}, state="accounted")
         for source_table in entry["explicit_zero_tables"]:
             register_table_reconciliation(conn, run_id=run.run_id, source_file_id=metadata_file_id, table_name=source_table, state="accounted")
-    if form == "nport":
+    if form == "nport" and os.environ.get("SEC_FAST_LOCAL_FINALIZE") != "1":
         from src.nport.ingestion import _resolve_holding_parents, _validate_candidate_keys
         from src.nport.schema import load_nport_contract
         _resolve_holding_parents(conn, run_id=run.run_id, contract=load_nport_contract())
         _validate_candidate_keys(conn, run_id=run.run_id)
-    elif form == "ncen":
+    elif form == "ncen" and os.environ.get("SEC_FAST_LOCAL_FINALIZE") != "1":
         from src.ncen.ingestion import _resolve_accession_parents
         from src.ncen.schema import load_ncen_contract
         _resolve_accession_parents(conn, run.run_id, load_ncen_contract(entry["metadata_sha256"]))
