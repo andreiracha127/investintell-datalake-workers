@@ -17,7 +17,10 @@ from src.db import resolve_dsn
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("worker", help="module name under src/workers (e.g. risk_metrics)")
+    ap.add_argument(
+        "worker",
+        help="module name under src/workers (e.g. risk_metrics, mixed_quant_publication)",
+    )
     ap.add_argument("--calc-date", default=None)
     ap.add_argument("--limit", type=int, default=None)
     args = ap.parse_args()
