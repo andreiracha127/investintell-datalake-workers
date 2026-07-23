@@ -42,6 +42,9 @@ def env():
 def _identity(conn, *, alias_type="ticker", alias_value="AAA", instrument_type="fund",
               deterministic_key="series:S1", valid_from=AS_OF, valid_to=None,
               security_id=None, currency="USD"):
+    lineage = dict(LINEAGE)
+    if instrument_type == "fund" and deterministic_key and deterministic_key.startswith("series:"):
+        lineage["series_id"] = deterministic_key.removeprefix("series:")
     conn.execute(
         "INSERT INTO mixed_quant_identity_observation "
         "(observation_id, as_of, instrument_type, currency, issuer_id, security_id, "
@@ -49,7 +52,7 @@ def _identity(conn, *, alias_type="ticker", alias_value="AAA", instrument_type="
         "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
         (uuid4(), AS_OF, instrument_type, currency, None, security_id, alias_type,
          alias_value, deterministic_key, datetime(2024, 4, 1, tzinfo=timezone.utc),
-         valid_from, valid_to, Jsonb(LINEAGE)),
+         valid_from, valid_to, Jsonb(lineage)),
     )
 
 

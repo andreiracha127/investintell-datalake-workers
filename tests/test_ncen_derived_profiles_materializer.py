@@ -18,6 +18,7 @@ pytestmark = pytest.mark.skipif(
 
 ALL_DDL = (
     "ncen_derived_common.sql",
+    "ncen_operating_profiles.sql",
     "ncen_structure_profiles.sql",
     "ncen_provider_network_profiles.sql",
     "ncen_operational_event_profiles.sql",
@@ -49,7 +50,7 @@ def test_materializer_publishes_every_product_prepared_to_validated_to_current()
         for product in derived_profiles.PRODUCTS:
             cur.execute("SELECT lifecycle_state FROM sec_current_derived_publications WHERE product=%s", (product,))
             assert cur.fetchone() == ("validated",)
-        for view in ("sec_current_ncen_structure_profiles", "sec_current_ncen_provider_network_profiles",
+        for view in ("sec_current_ncen_operating_profiles", "sec_current_ncen_structure_profiles", "sec_current_ncen_provider_network_profiles",
                      "sec_current_ncen_operational_event_profiles", "sec_current_ncen_liquidity_backstop_profiles",
                      "sec_current_ncen_securities_lending_profiles", "sec_current_ncen_etf_primary_market_profiles",
                      "sec_current_ncen_closed_end_profiles", "sec_current_ncen_expense_brokerage_profiles"):
