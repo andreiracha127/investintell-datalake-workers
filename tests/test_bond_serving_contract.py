@@ -128,6 +128,55 @@ def test_sql_scrub_blocklist_matches_the_contract_blocklist() -> None:
     assert sql_keys == set(contract.SCRUB_BLOCKLIST)
 
 
+def test_latest_price_inline_eligibility_matches_the_canonical_predicate() -> None:
+    """Review IMP-2: the materializer's inline latest_price_pct eligibility and the
+    canonical ``bond_price_is_eligible`` predicate
+    (schemas/bond_price_eligibility_v1.sql) are one source of truth -- same idiom
+    as the scrub-blocklist parity test above: regex-extract each per-column
+    condition from the DDL and from the inline SQL and require them identical
+    after whitespace normalization, so future drift (a price_type widened, an
+    accrued_treatment or price_state arm dropped) fails loud instead of silently
+    serving a price the canonical predicate would reject.
+
+    DELIBERATE, STRUCTURALLY SOUND omission -- ``identity_state``: the inline
+    predicate reads ``bond_price_latest_v1``, which projects the PUBLISHED
+    observation snapshot; published rows are resolved by construction (an
+    unresolved identifier never reaches a lane, and the lane view carries no
+    identity_state column). The parity check therefore requires identity_state to
+    be the ONLY canonical condition without an inline counterpart.
+    """
+    from src.bonds import serving_materializer as materializer
+
+    eligibility_sql = (
+        Path(__file__).resolve().parents[1] / "schemas" / "bond_price_eligibility_v1.sql"
+    ).read_text(encoding="utf-8")
+    body = re.search(
+        r"FUNCTION bond_price_is_eligible\(.*?\$\$(.*?)\$\$", eligibility_sql, re.DOTALL
+    )
+    assert body, "bond_price_is_eligible body not found in the eligibility DDL"
+
+    def conditions(sql: str, column_prefix: str) -> dict[str, str]:
+        pairs = re.findall(column_prefix + r"(\w+)\s+(IN\s*\([^)]*\)|=\s*'[^']*')", sql)
+        return {column: re.sub(r"\s+", " ", condition) for column, condition in pairs}
+
+    canonical = conditions(body.group(1), r"p_")
+    inline = conditions(materializer._LATEST_PRICE_PCT_SQL, r"p\.")
+
+    assert set(canonical) - set(inline) == {"identity_state"}, (
+        "the inline predicate may omit ONLY identity_state (resolved by lane construction)"
+    )
+    assert set(inline) <= set(canonical), (
+        "the inline predicate tests a column the canonical predicate does not"
+    )
+    for column, condition in inline.items():
+        assert condition == canonical[column], (
+            f"eligibility drift on {column!r}: inline {condition!r} "
+            f"!= canonical {canonical[column]!r}"
+        )
+    # exactly price_type, accrued_treatment, daily_key_state, price_state.
+    assert len(inline) == 4
+
+
 def test_digest_moves_when_surface_changes(monkeypatch) -> None:
     baseline = contract.compute_surface_digest()
     monkeypatch.setattr(

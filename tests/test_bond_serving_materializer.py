@@ -148,6 +148,12 @@ def test_catalog_serves_computed_metrics_and_latest_price_null_honest() -> None:
     SEC2's latest cohort is a DUPLICATE (no unambiguous latest price) and its
     metric rows are non-available statuses -> every new key is present with an
     honest JSON null, never a synthetic 0.
+
+    MUTATION LOCK (review IMP-1): SEC2's security_ytm row is POISONED (status
+    'no_eligible_price' with value 0.9999 -- a state the real bond_metric_v1
+    CHECK forbids, deliberately permitted by the stand-in). The null assertion
+    below therefore FAILS if the serving-side ``status = 'available'`` filter is
+    removed from ``_metric_value_sql`` -- the guard has coverage of its own.
     """
     conn = connect()
     schema = None
@@ -184,6 +190,12 @@ def test_detail_serves_computed_metrics_null_honest() -> None:
     SEC2 exercises every null-honest arm: no_eligible_price / gate_not_passed /
     engine_typed_error rows AND a completely ABSENT current_yield row all project
     the key as JSON null (present, never 0).
+
+    MUTATION LOCK (review IMP-1): SEC2's security_ytm (0.9999) and wal (99.9)
+    rows are POISONED -- non-available status with a NON-NULL value, which the
+    real bond_metric_v1 CHECK forbids but the stand-in deliberately permits.
+    Removing ``status = 'available'`` from ``_metric_value_sql`` serves those
+    poisoned values and FAILS the null assertions below.
     """
     conn = connect()
     schema = None

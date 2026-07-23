@@ -126,9 +126,11 @@ _WAVE1_SERVED_METRICS = ("security_ytm", "security_ytw", "current_yield", "wal")
 def _metric_value_sql(metric_id: str) -> str:
     """Scalar subquery serving one Wave-1 metric value from the PROMOTED current view.
 
-    'available' is the ONLY value-bearing status (CHECK-enforced upstream): any
-    other status -- or no row at all -- projects an honest JSON null under the
-    contract key, never a synthetic 0 (plan Global Constraint 4).
+    'available' is the ONLY value-bearing status: any other status -- or no row
+    at all -- projects an honest JSON null under the contract key, never a
+    synthetic 0 (plan Global Constraint 4). The status filter is a serving-side
+    guard in its own right (mutation-locked by poisoned fixture rows), not a free
+    ride on the upstream bond_metric_v1 CHECK.
     """
     if metric_id not in _WAVE1_SERVED_METRICS:  # closed vocabulary, fail loud
         raise ValueError(f"metric {metric_id!r} is not a served Wave-1 metric")
@@ -142,6 +144,8 @@ def _metric_value_sql(metric_id: str) -> str:
 # The sole ELIGIBLE latest observation's price (% of par) or an honest NULL.
 # Mirrors bond_price_is_eligible (bond_price_eligibility_v1.sql) column-wise;
 # identity is resolved by lane construction (only resolved observations publish).
+# Parity with the canonical predicate is regex-locked by
+# test_latest_price_inline_eligibility_matches_the_canonical_predicate.
 # A duplicate cohort has NO unambiguous latest price -> NULL, never an arbitrary
 # winner; at most one row can match (unique cohort), so the subquery is scalar.
 _LATEST_PRICE_PCT_SQL = """(

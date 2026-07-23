@@ -159,11 +159,19 @@ def synthetic_snapshots(cur) -> None:
         $$
     """)
     # --- computed per-security metrics (catalog/detail computed values) -----
-    # Stand-in for the promoted current view over bond_metric_v1 (Task 3): one
-    # row per (security, metric); value NON-NULL exactly when status='available'.
-    # SEC2 exercises every null-honest arm: non-available statuses AND a missing
-    # row (no current_yield) — plus a vendor-looking engine_error_code/provenance
+    # Stand-in for the promoted current view over bond_metric_v1 (Task 3). SEC2
+    # exercises every null-honest arm: non-available statuses AND a missing row
+    # (no current_yield) — plus a vendor-looking engine_error_code/provenance
     # token that must never be served.
+    #
+    # MUTATION LOCK (review IMP-1): two SEC2 rows are POISONED — a non-available
+    # status carrying a NON-NULL value. The real bond_metric_v1 CHECK
+    # ((status='available') = (value IS NOT NULL)) forbids this state, and this
+    # stand-in deliberately has NO such CHECK: the serving-side
+    # ``status = 'available'`` filter must be a guard in its own right (defense
+    # in depth), never a free ride on the upstream constraint. Removing the
+    # filter from ``_metric_value_sql`` serves 0.9999/99.9 and FAILS the
+    # projection tests instead of passing silently.
     cur.execute("""
         CREATE TABLE sec_current_bond_metric_v1(
             security_id uuid, metric_id text, value numeric, status text,
@@ -176,9 +184,9 @@ def synthetic_snapshots(cur) -> None:
         "(%s,'security_ytw',0.0518,'available',NULL,%s,%s),"
         "(%s,'current_yield',0.0531,'available',NULL,%s,%s),"
         "(%s,'wal',4.37,'available',NULL,%s,%s),"
-        "(%s,'security_ytm',NULL,'no_eligible_price',NULL,%s,%s),"
+        "(%s,'security_ytm',0.9999,'no_eligible_price',NULL,%s,%s),"  # POISONED
         "(%s,'security_ytw',NULL,'gate_not_passed',NULL,%s,%s),"
-        "(%s,'wal',NULL,'engine_typed_error',%s,%s,%s)",
+        "(%s,'wal',99.9,'engine_typed_error',%s,%s,%s)",  # POISONED
         (SEC1, AS_OF, metric_prov, SEC1, AS_OF, metric_prov,
          SEC1, AS_OF, metric_prov, SEC1, AS_OF, metric_prov,
          SEC2, AS_OF, metric_prov, SEC2, AS_OF, metric_prov,
