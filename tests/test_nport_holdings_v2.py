@@ -32,6 +32,7 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
                 VALUES(%s,'sec_nport_holdings_v2',1,%s,%s,%s)""",
                 (publication_id, run_id, package_id, "a" * 64))
             for holding, state, instrument, series, klass, start, end in (
+                ("H0", "resolved", None, "S1", None, "2024-01-01", None),
                 ("H1", "resolved", "I1", "S1", "C1", "2024-01-01", None),
                 ("H2", "ambiguous", "I2", None, None, "2024-01-01", None),
                 ("H3", "orphan", "I3", None, None, "2024-02-01", None),
@@ -48,6 +49,10 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
             cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
                 (publication_id,accession_number,holding_id,instrument_id,valid_from,resolution_state)
                 VALUES(%s,'A1','H4','I4','2024-01-01','orphan')""", (publication_id,))
+            with pytest.raises(psycopg.errors.CheckViolation):
+                cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
+                    (publication_id,accession_number,holding_id,instrument_id,series_id,class_id,valid_from,resolution_state)
+                    VALUES(%s,'A1','MISSING-SERIES',NULL,'',NULL,'2024-01-01','resolved')""", (publication_id,))
             cur.execute("""SELECT column_default FROM information_schema.columns
                 WHERE table_schema=%s AND table_name='sec_nport_holdings_v2'
                   AND column_name='source_typed_projection'""", (schema,))
@@ -60,10 +65,14 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
 
             cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
             cur.execute("SELECT sec_set_current_derived_publication('sec_nport_holdings_v2',%s)", (publication_id,))
-            cur.execute("SELECT holding_id,series_id,class_id,instrument_id,issuer_category,signed_market_value,signed_pct_of_nav FROM sec_nport_holdings_v2_current")
-            assert cur.fetchall() == [("H1", "S1", "C1", "I1", "Corporate", 100, 10)]
+            cur.execute("""SELECT holding_id,series_id,class_id,instrument_id,issuer_category,signed_market_value,signed_pct_of_nav
+                FROM sec_nport_holdings_v2_current ORDER BY holding_id""")
+            assert cur.fetchall() == [
+                ("H0", "S1", None, None, "Corporate", -1, -1),
+                ("H1", "S1", "C1", "I1", "Corporate", 100, 10),
+            ]
             cur.execute("SELECT resolution_state,count(*) FROM sec_nport_holdings_v2_bridge_status GROUP BY resolution_state ORDER BY resolution_state")
-            assert cur.fetchall() == [("ambiguous", 1), ("orphan", 1), ("resolved", 1)]
+            assert cur.fetchall() == [("ambiguous", 1), ("orphan", 1), ("resolved", 2)]
 
             with pytest.raises(psycopg.errors.RaiseException, match="prepared sec_nport_holdings_v2"):
                 cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
@@ -82,12 +91,12 @@ def test_holdings_v2_current_only_publishes_resolved_temporal_bridge_rows() -> N
             ):
                 with pytest.raises(psycopg.errors.RaiseException, match="immutable after insert"):
                     cur.execute(statement)
-            cur.execute("SELECT holding_id,issuer_name,instrument_id FROM sec_nport_holdings_v2_current")
-            assert cur.fetchall() == [("H1", "H1", "I1")]
+            cur.execute("SELECT holding_id,issuer_name,instrument_id FROM sec_nport_holdings_v2_current ORDER BY holding_id")
+            assert cur.fetchall() == [("H0", "H0", None), ("H1", "H1", "I1")]
             cur.execute("SELECT count(*) FROM sec_nport_instrument_class_bridge")
-            assert cur.fetchone() == (4,)
+            assert cur.fetchone() == (5,)
             cur.execute("SELECT count(*) FROM sec_nport_holdings_v2")
-            assert cur.fetchone() == (3,)
+            assert cur.fetchone() == (4,)
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -101,3 +110,47 @@ def test_holdings_v2_uses_versioned_publication_and_never_relabels_issuer_catego
     assert "source_typed_projection jsonb NOT NULL DEFAULT" not in ddl
     assert "UPDATE nport_raw_rows" not in ddl
     assert "DELETE FROM nport_raw_rows" not in ddl
+
+
+def test_holdings_v2_upgrades_empty_legacy_bridge_schema_idempotently() -> None:
+    import psycopg
+
+    schema = f"nport_holdings_v2_upgrade_{uuid4().hex}"
+    ddl = (ROOT / "schemas" / "nport_holdings_v2.sql").read_text(encoding="utf-8")
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
+        cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
+        cur.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid)")
+        cur.execute((ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8"))
+        cur.execute("""CREATE TABLE sec_nport_instrument_class_bridge (
+            publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+            accession_number text NOT NULL CHECK (accession_number <> ''),
+            holding_id text NOT NULL CHECK (holding_id <> ''),
+            instrument_id text NOT NULL CHECK (instrument_id <> ''),
+            series_id text,
+            class_id text,
+            valid_from date NOT NULL,
+            valid_to date,
+            resolution_state text NOT NULL CHECK (resolution_state IN ('resolved', 'ambiguous', 'orphan')),
+            source_candidate_key_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+            PRIMARY KEY (publication_id, accession_number, holding_id),
+            CHECK (valid_to IS NULL OR valid_to >= valid_from),
+            CHECK (resolution_state <> 'resolved'
+                   OR (NULLIF(series_id, '') IS NOT NULL AND NULLIF(class_id, '') IS NOT NULL))
+        )""")
+        cur.execute(ddl)
+        cur.execute(ddl)
+        cur.execute("""SELECT is_nullable FROM information_schema.columns
+            WHERE table_schema=%s AND table_name='sec_nport_instrument_class_bridge'
+              AND column_name='instrument_id'""", (schema,))
+        assert cur.fetchone() == ("YES",)
+        cur.execute("""SELECT pg_get_constraintdef(oid) FROM pg_constraint
+            WHERE conrelid='sec_nport_instrument_class_bridge'::regclass
+              AND conname='sec_nport_instrument_class_bridge_resolved_series_check'""")
+        assert cur.fetchone() == ("CHECK (((resolution_state <> 'resolved'::text) OR (NULLIF(series_id, ''::text) IS NOT NULL)))",)
+        cur.execute("""SELECT count(*) FROM pg_constraint
+            WHERE conrelid='sec_nport_instrument_class_bridge'::regclass
+              AND conname='sec_nport_instrument_class_bridge_check1'""")
+        assert cur.fetchone() == (0,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

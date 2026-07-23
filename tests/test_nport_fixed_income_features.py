@@ -228,6 +228,35 @@ def test_quality_threshold_boundaries_are_inclusive_and_age_is_pinned():
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_fixed_income_keeps_resolved_positions_without_security_identity():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        projection = '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"COUPON_TYPE":"fixed","ANNUALIZED_RATE":"2","MATURITY_DATE":"2028-01-31"}}'
+        _holding(cur, holdings_id, run_id, "IDENTIFIED", "FI-NULL-IDENTITY", "2026-01-31", 100, projection, cusip="111111111")
+        cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
+            (publication_id,accession_number,holding_id,instrument_id,series_id,class_id,valid_from,resolution_state)
+            VALUES(%s,'A1','UNIDENTIFIED',NULL,'FI-NULL-IDENTITY',NULL,'2020-01-01','resolved')""", (holdings_id,))
+        cur.execute("""INSERT INTO sec_nport_holdings_v2
+            (publication_id,accession_number,holding_id,source_run_id,report_date,filing_date,source_series_id,
+             signed_market_value,signed_pct_of_nav,source_typed_projection)
+            VALUES(%s,'A1','UNIDENTIFIED',%s,'2026-01-31','2026-01-31','FI-NULL-IDENTITY',50,5,%s::jsonb)""",
+            (holdings_id, run_id, projection))
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (1,)
+        cur.execute("""SELECT position_count,debt_position_count,debt_gross_market_value,
+            source_holdings_publication_id FROM nport_fixed_income_features WHERE publication_id=%s""", (features_id,))
+        position_count, debt_position_count, gross_market_value, pinned_source = cur.fetchone()
+        assert (position_count, debt_position_count, gross_market_value, pinned_source) == (2, 2, 150, holdings_id)
+        cur.execute("""SELECT source_holdings_publication_id FROM nport_fixed_income_feature_builds
+            WHERE publication_id=%s""", (features_id,))
+        assert cur.fetchone() == (holdings_id,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics():
     ddl = (ROOT / "schemas" / "nport_fixed_income_features.sql").read_text(encoding="utf-8").lower()
     for required in ("sec_nport_holdings_v2_current", "debt_security", "coupon_type", "maturity_date", "methodology_version", "reason_codes", "provenance"):
