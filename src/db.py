@@ -202,3 +202,10 @@ LOCK_BOND_PRICE_ELIGIBILITY = 900_347
 # price materializer discovers via sec_validated_raw_runs. 900_348 is the next
 # free id in the ingestion band (900_3xx) after LOCK_BOND_PRICE_ELIGIBILITY.
 LOCK_BOND_PRICE_INGEST = 900_348
+# bond_source_qualify owner-authorized source-qualification worker (activation
+# Wave 1, Task 2). Serializes the self-installing bond_source_qualification DDL
+# and the idempotent qualification INSERT: CREATE TABLE IF NOT EXISTS is not
+# race-safe on first concurrent creation, so the lock is taken BEFORE
+# install_gate_schema (same idiom as the sibling ingest worker). 900_349 is the
+# next free id after LOCK_BOND_PRICE_INGEST.
+LOCK_BOND_SOURCE_QUALIFY = 900_349

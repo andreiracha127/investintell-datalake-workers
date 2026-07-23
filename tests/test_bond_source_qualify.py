@@ -245,6 +245,34 @@ def test_second_run_is_idempotent_and_reports_already_active(
 
 
 @pytestmark_db
+def test_contended_lock_returns_locked_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A concurrent run must not race the self-installing DDL / INSERT: when the
+    # worker's advisory lock is already held, the worker reports locked and
+    # writes nothing (same serialization idiom as the sibling ingest worker).
+    from src.db import LOCK_BOND_SOURCE_QUALIFY
+
+    _env(monkeypatch, metrics=",".join(WAVE1_METRICS), source_ref=TOKEN)
+
+    with psycopg.connect(_db_dsn(), autocommit=True) as holder:
+        acquired = holder.execute(
+            "SELECT pg_try_advisory_lock(%s)", (LOCK_BOND_SOURCE_QUALIFY,)
+        ).fetchone()[0]
+        assert acquired is True
+        try:
+            assert bond_source_qualify.run(_db_dsn()) == {"state": "locked"}
+        finally:
+            holder.execute("SELECT pg_advisory_unlock(%s)", (LOCK_BOND_SOURCE_QUALIFY,))
+
+    with psycopg.connect(_db_dsn(), autocommit=True) as conn:
+        assert (
+            conn.execute("SELECT count(*) FROM bond_source_qualification").fetchone()[0]
+            == 0
+        )
+
+
+@pytestmark_db
 def test_unknown_metric_refusal_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

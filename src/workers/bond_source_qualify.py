@@ -39,7 +39,7 @@ import os
 from typing import Any
 
 from src.bonds.phase10_gate import REQUIREMENTS, install_gate_schema
-from src.db import connect, resolve_dsn
+from src.db import LOCK_BOND_SOURCE_QUALIFY, advisory_lock, connect, resolve_dsn
 
 # Environment contract (fail-closed; both are mandatory).
 ENV_METRICS = "QUALIFY_METRICS"  # csv of Phase-10 metric ids
@@ -100,21 +100,27 @@ def run(dsn: str | None = None) -> dict[str, Any]:
     qualified: list[str] = []
     already_active: list[str] = []
     with connect(resolve_dsn(dsn)) as conn:
-        install_gate_schema(conn)  # Req 5 — self-installing DDL, first.
-        for metric in metrics:
-            # Req 3 — the authorized, idempotent INSERT. RETURNING yields a row
-            # only when this run actually inserted it; an ON CONFLICT skip yields
-            # None, so the metric is reported as already_active instead.
-            row = conn.execute(
-                "INSERT INTO bond_source_qualification "
-                "(metric_id, source_contract_ref, qualified_from, qualified_to) "
-                "VALUES (%s, %s, now(), NULL) "
-                "ON CONFLICT (metric_id, source_contract_ref) DO NOTHING "
-                "RETURNING metric_id",
-                (metric, source_ref),
-            ).fetchone()
-            (qualified if row is not None else already_active).append(metric)
-        conn.commit()
+        with advisory_lock(conn, LOCK_BOND_SOURCE_QUALIFY) as acquired:
+            # Serialize BEFORE the self-installing DDL: CREATE TABLE IF NOT EXISTS
+            # is not race-safe on first concurrent creation, and the INSERT must
+            # not interleave with a peer run. A contended run writes nothing.
+            if not acquired:
+                return {"state": "locked"}
+            install_gate_schema(conn)  # Req 5 — self-installing DDL, first.
+            for metric in metrics:
+                # Req 3 — the authorized, idempotent INSERT. RETURNING yields a
+                # row only when this run actually inserted it; an ON CONFLICT
+                # skip yields None, so the metric is reported already_active.
+                row = conn.execute(
+                    "INSERT INTO bond_source_qualification "
+                    "(metric_id, source_contract_ref, qualified_from, qualified_to) "
+                    "VALUES (%s, %s, now(), NULL) "
+                    "ON CONFLICT (metric_id, source_contract_ref) DO NOTHING "
+                    "RETURNING metric_id",
+                    (metric, source_ref),
+                ).fetchone()
+                (qualified if row is not None else already_active).append(metric)
+            conn.commit()
 
     return {
         "state": "ok",
