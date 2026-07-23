@@ -63,9 +63,65 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         if as_of is None:
             conn.commit()
             return {"state": "no_effective_filings", "products": 0}
-        results = derived_profiles.materialize_all(
-            conn, as_of=as_of, source_run_id=source_run_id,
-            source_package_id=source_package_id, code_revision=_code_revision(),
+        conn.execute(
+            """
+            CREATE TEMP TABLE ncen_effective_filings ON COMMIT PRESERVE ROWS AS
+            SELECT e.*
+            FROM public.ncen_effective_filings e
+            WHERE EXISTS (
+                SELECT 1 FROM ncen_raw_v2_rows f
+                WHERE f.ingestion_run_id=e.ingestion_run_id
+                  AND f.accession_number=e.accession_number
+                  AND f.source_table='FUND_REPORTED_INFO.tsv'
+                  AND f.parse_status='typed'
+                  AND nullif(btrim(f.fund_id),'') IS NOT NULL
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM ncen_raw_v2_rows f
+                WHERE f.ingestion_run_id=e.ingestion_run_id
+                  AND f.accession_number=e.accession_number
+                  AND f.source_table='FUND_REPORTED_INFO.tsv'
+                  AND f.parse_status='typed'
+                  AND nullif(btrim(f.fund_id),'') IS NULL
+            )
+              AND NOT EXISTS (
+                SELECT 1
+                FROM ncen_raw_v2_rows f
+                WHERE f.ingestion_run_id=e.ingestion_run_id
+                  AND f.accession_number=e.accession_number
+                  AND f.source_table='FUND_REPORTED_INFO.tsv'
+                  AND f.parse_status='typed'
+                GROUP BY f.fund_id
+                HAVING count(*)<>1
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX ON ncen_effective_filings(ingestion_run_id,accession_number,effective_date)"
         )
         conn.commit()
-    return {"state": "ok", "products": len(results), "as_of": as_of.isoformat(), "results": results}
+        results: list[dict[str, object]] = []
+        failures: dict[str, str] = {}
+        revision = _code_revision()
+        for product in derived_profiles.PRODUCTS:
+            try:
+                result = derived_profiles.materialize_product(
+                    conn,
+                    product=product,
+                    as_of=as_of,
+                    source_run_id=source_run_id,
+                    source_package_id=source_package_id,
+                    code_revision=revision,
+                )
+                conn.commit()
+                results.append(result)
+            except Exception as error:
+                conn.rollback()
+                failures[product] = f"{type(error).__name__}: {error}".splitlines()[0]
+    return {
+        "state": "ok" if not failures else "partial",
+        "products": len(results),
+        "failed_products": failures,
+        "as_of": as_of.isoformat(),
+        "results": results,
+    }

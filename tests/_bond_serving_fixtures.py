@@ -163,7 +163,7 @@ def synthetic_snapshots(cur) -> None:
             source_typed_projection jsonb)
     """)
     rpt = AS_OF - timedelta(days=5)
-    proj = json.dumps({"raw_row_id": SENT_RAW, "vendor": SENT_VENDOR})
+    proj = json.dumps({"ASSET_CAT": "DBT", "raw_row_id": SENT_RAW, "vendor": SENT_VENDOR})
     cur.execute(
         "INSERT INTO sec_nport_holdings_v2_current VALUES "
         "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1',%s),"

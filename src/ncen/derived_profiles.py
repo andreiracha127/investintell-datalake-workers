@@ -28,6 +28,7 @@ _NAMESPACE = UUID("7c0f4d4e-9b2a-5f3c-8d1e-2a6b9c4e7f10")
 
 # product -> SQL build function.  One complete version per product is promoted.
 PRODUCTS: dict[str, str] = {
+    "ncen_operating_profile_v1": "build_ncen_operating_profiles",
     "ncen_structure_profile_v1": "build_ncen_structure_profiles",
     "ncen_provider_network_v1": "build_ncen_provider_network_profiles",
     "ncen_operational_event_v1": "build_ncen_operational_event_profiles",
@@ -42,6 +43,7 @@ _SCHEMA_FILES = (
     "sec_derived_publications.sql",
     "ncen_effective_views.sql",
     "ncen_derived_common.sql",
+    "ncen_operating_profiles.sql",
     "ncen_structure_profiles.sql",
     "ncen_provider_network_profiles.sql",
     "ncen_operational_event_profiles.sql",

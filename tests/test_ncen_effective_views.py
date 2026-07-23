@@ -42,6 +42,8 @@ def test_ncen_effective_view_uses_validated_typed_submission_rows_and_rejects_no
         "sec_validated_raw_runs",
         "SUBMISSION.tsv",
         "parse_status='typed'",
+        "IS_REPORT_PERIOD_LT_12MONTH",
+        "jsonb_array_length(to_jsonb(r)->'parse_errors')=1",
         "N-CEN/A",
         "NT N-CEN",
         "ambiguous",
@@ -78,7 +80,7 @@ def test_ncen_effective_selection_prefers_amendment_excludes_unvalidated_and_mar
             cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
             cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
             cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
-            cur.execute("CREATE TABLE ncen_raw_v2_rows(raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ingestion_run_id uuid, source_table text, parse_status text, typed_projection jsonb)")
+            cur.execute("CREATE TABLE ncen_raw_v2_rows(raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ingestion_run_id uuid, source_table text, parse_status text, typed_projection jsonb, parse_errors jsonb NOT NULL DEFAULT '[]', original_lexical_row jsonb NOT NULL DEFAULT '{}')")
             cur.executemany("INSERT INTO sec_ingestion_runs VALUES(%s,now())", [(run_a,), (run_b,)])
             cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,NULL)", (invalid,))
             cur.executemany("INSERT INTO ncen_raw_v2_rows(ingestion_run_id,source_table,parse_status,typed_projection) VALUES(%s,'SUBMISSION.tsv','typed',%s::jsonb)", [(run, json.dumps(body)) for run, body in rows])
@@ -113,7 +115,7 @@ def test_ncen_effective_views_upgrade_from_prior_column_contract() -> None:
             cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
             cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
             cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
-            cur.execute("CREATE TABLE ncen_raw_v2_rows(raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ingestion_run_id uuid, source_table text, parse_status text, typed_projection jsonb)")
+            cur.execute("CREATE TABLE ncen_raw_v2_rows(raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ingestion_run_id uuid, source_table text, parse_status text, typed_projection jsonb, parse_errors jsonb NOT NULL DEFAULT '[]', original_lexical_row jsonb NOT NULL DEFAULT '{}')")
             cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
             cur.executemany("""INSERT INTO ncen_raw_v2_rows(ingestion_run_id,source_table,parse_status,typed_projection)
                 VALUES(%s,'SUBMISSION.tsv','typed',%s::jsonb)""", [(run_id, json.dumps(row)) for row in rows])
@@ -125,3 +127,54 @@ def test_ncen_effective_views_upgrade_from_prior_column_contract() -> None:
             cur.execute("SELECT base_accession_count,selection_state FROM ncen_effective_filing_selection WHERE accession_number='BA'")
             assert cur.fetchone() == (2, "ambiguous")
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_ncen_effective_view_admits_only_the_known_boolean_contract_quarantine() -> None:
+    import psycopg
+
+    schema = f"ncen_quarantine_fixture_{uuid4().hex}"
+    run_id = uuid4()
+    dsn = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
+    body = {
+        "ACCESSION_NUMBER": "KNOWN",
+        "CIK": "C1",
+        "SUBMISSION_TYPE": "N-CEN",
+        "FILING_DATE": "2024-01-10",
+        "REPORT_ENDING_PERIOD": "2023-12-31",
+    }
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
+        cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
+        cur.execute("CREATE TABLE ncen_raw_v2_rows(raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, ingestion_run_id uuid, source_table text, parse_status text, typed_projection jsonb, parse_errors jsonb NOT NULL, original_lexical_row jsonb NOT NULL)")
+        cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
+        cur.execute(
+            """INSERT INTO ncen_raw_v2_rows
+               (ingestion_run_id,source_table,parse_status,typed_projection,parse_errors,original_lexical_row)
+               VALUES(%s,'SUBMISSION.tsv','quarantined',%s::jsonb,%s::jsonb,%s::jsonb)""",
+            (
+                run_id,
+                json.dumps(body),
+                json.dumps([{
+                    "code": "invalid_date",
+                    "column_name": "IS_REPORT_PERIOD_LT_12MONTH",
+                }]),
+                json.dumps({"IS_REPORT_PERIOD_LT_12MONTH": "N"}),
+            ),
+        )
+        other = dict(body, ACCESSION_NUMBER="OTHER", CIK="C2")
+        cur.execute(
+            """INSERT INTO ncen_raw_v2_rows
+               (ingestion_run_id,source_table,parse_status,typed_projection,parse_errors,original_lexical_row)
+               VALUES(%s,'SUBMISSION.tsv','quarantined',%s::jsonb,%s::jsonb,%s::jsonb)""",
+            (
+                run_id,
+                json.dumps(other),
+                json.dumps([{"code": "invalid_date", "column_name": "TERMINATION_DATE"}]),
+                json.dumps({"TERMINATION_DATE": "not-a-date"}),
+            ),
+        )
+        cur.execute((ROOT / "schemas" / "ncen_effective_views.sql").read_text(encoding="utf-8"))
+        cur.execute("SELECT accession_number FROM ncen_effective_filings ORDER BY accession_number")
+        assert cur.fetchall() == [("KNOWN",)]
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

@@ -186,6 +186,44 @@ def test_isin_alias_window_closes_when_superseded_across_dates() -> None:
     assert (cusip.valid_from, cusip.valid_to) == (date(2026, 3, 31), None)
 
 
+def test_cross_identity_isin_collision_is_ambiguous_and_withheld() -> None:
+    result = resolve_securities(
+        [
+            _obs("o1", date(2026, 6, 30), cusip9_input="037833100", isin_input="GB0000000001"),
+            _obs("o2", date(2026, 6, 30), cusip9_input="459200101", isin_input="GB0000000001"),
+        ]
+    )
+    assert len(result.securities) == 2
+    for security in result.securities:
+        assert security.identity_state == "ambiguous"
+        assert security.identity_reason_code == "cross_identity_alias_collision"
+        assert [alias.alias_kind for alias in security.aliases] == ["cusip9"]
+        assert security.identity_evidence["conflicts"]["cross_identity_alias"] == [
+            "isin:GB0000000001"
+        ]
+
+
+def test_cross_identity_isin_reassignment_keeps_non_overlapping_windows() -> None:
+    result = resolve_securities(
+        [
+            _obs("o1", date(2026, 3, 31), cusip9_input="037833100", isin_input="GB0000000001"),
+            _obs("o2", date(2026, 6, 30), cusip9_input="037833100", isin_input="GB0000000002"),
+            _obs("o3", date(2026, 6, 30), cusip9_input="459200101", isin_input="GB0000000001"),
+        ]
+    )
+    assert len(result.securities) == 2
+    assert all(security.identity_reason_code is None for security in result.securities)
+    first = next(security for security in result.securities if security.identity_key == "cusip9:037833100")
+    second = next(security for security in result.securities if security.identity_key == "cusip9:459200101")
+    assert [(alias.alias_value, alias.valid_from, alias.valid_to) for alias in first.aliases if alias.alias_kind == "isin"] == [
+        ("GB0000000001", date(2026, 3, 31), date(2026, 6, 30)),
+        ("GB0000000002", date(2026, 6, 30), None),
+    ]
+    assert [(alias.alias_value, alias.valid_from, alias.valid_to) for alias in second.aliases if alias.alias_kind == "isin"] == [
+        ("GB0000000001", date(2026, 6, 30), None)
+    ]
+
+
 def test_terms_use_latest_observation_and_absent_terms_are_not_fabricated() -> None:
     result = resolve_securities(
         [

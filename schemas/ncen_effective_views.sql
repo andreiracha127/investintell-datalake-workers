@@ -9,7 +9,21 @@ WITH typed_submissions AS (
            (r.typed_projection->>'REPORT_ENDING_PERIOD')::date AS effective_date
     FROM ncen_raw_v2_rows r
     JOIN sec_validated_raw_runs v ON v.run_id=r.ingestion_run_id
-    WHERE r.source_table='SUBMISSION.tsv' AND r.parse_status='typed'
+    WHERE r.source_table='SUBMISSION.tsv'
+      AND (
+          r.parse_status='typed'
+          OR (
+              -- Historical N-CEN contracts accidentally classified this Y/N
+              -- indicator as a date. Keep the exception fail-closed: admit only
+              -- the single known parser issue and preserve every other
+              -- quarantined row as ineligible.
+              r.parse_status='quarantined'
+              AND jsonb_array_length(to_jsonb(r)->'parse_errors')=1
+              AND to_jsonb(r)->'parse_errors'
+                    @> '[{"code":"invalid_date","column_name":"IS_REPORT_PERIOD_LT_12MONTH"}]'::jsonb
+              AND to_jsonb(r)->'original_lexical_row'->>'IS_REPORT_PERIOD_LT_12MONTH' IN ('Y','N')
+          )
+      )
 ), eligible AS (
     SELECT *, NULL::timestamptz AS accepted_at,
            CASE WHEN form='N-CEN/A' THEN 1 ELSE 0 END AS is_amendment

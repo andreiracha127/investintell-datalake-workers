@@ -44,7 +44,7 @@ rejected rather than published.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -262,6 +262,88 @@ def _resolve_terms(observations: list[SecurityObservation]) -> tuple[dict[str, A
     return summary, measured
 
 
+def _windows_overlap(left: SecurityAlias, right: SecurityAlias) -> bool:
+    return (
+        (right.valid_to is None or left.valid_from < right.valid_to)
+        and (left.valid_to is None or right.valid_from < left.valid_to)
+    )
+
+
+def _withhold_cross_identity_alias_collisions(
+    securities: list[ResolvedSecurity],
+) -> list[ResolvedSecurity]:
+    """Withhold PIT aliases that overlap across distinct security identities.
+
+    The security rows remain available with explicit ambiguity evidence, while
+    reverse lookup can never multiply a source holding through a shared alias.
+    Non-overlapping historical reassignment remains representable.
+    """
+    by_alias: dict[tuple[str, str], list[tuple[UUID, SecurityAlias]]] = {}
+    for security in securities:
+        for alias in security.aliases:
+            by_alias.setdefault((alias.alias_kind, alias.alias_value), []).append(
+                (security.security_id, alias)
+            )
+
+    colliding: set[tuple[UUID, str, str, date, date | None]] = set()
+    for candidates in by_alias.values():
+        for index, (left_id, left) in enumerate(candidates):
+            for right_id, right in candidates[index + 1 :]:
+                if left_id != right_id and _windows_overlap(left, right):
+                    colliding.add(
+                        (left_id, left.alias_kind, left.alias_value, left.valid_from, left.valid_to)
+                    )
+                    colliding.add(
+                        (right_id, right.alias_kind, right.alias_value, right.valid_from, right.valid_to)
+                    )
+
+    if not colliding:
+        return securities
+
+    resolved: list[ResolvedSecurity] = []
+    for security in securities:
+        withheld = [
+            alias
+            for alias in security.aliases
+            if (
+                security.security_id,
+                alias.alias_kind,
+                alias.alias_value,
+                alias.valid_from,
+                alias.valid_to,
+            )
+            in colliding
+        ]
+        if not withheld:
+            resolved.append(security)
+            continue
+        evidence = dict(security.identity_evidence)
+        conflicts = dict(evidence.get("conflicts", {}))
+        conflicts["cross_identity_alias"] = sorted(
+            {f"{alias.alias_kind}:{alias.alias_value}" for alias in withheld}
+        )
+        evidence["conflicts"] = conflicts
+        evidence["withheld_aliases"] = [
+            {
+                "alias_kind": alias.alias_kind,
+                "alias_value": alias.alias_value,
+                "valid_from": alias.valid_from.isoformat(),
+                "valid_to": alias.valid_to.isoformat() if alias.valid_to else None,
+            }
+            for alias in withheld
+        ]
+        resolved.append(
+            replace(
+                security,
+                identity_state="ambiguous",
+                identity_reason_code="cross_identity_alias_collision",
+                identity_evidence=evidence,
+                aliases=tuple(alias for alias in security.aliases if alias not in withheld),
+            )
+        )
+    return resolved
+
+
 def resolve_securities(observations: Iterable[SecurityObservation]) -> ResolutionResult:
     """Fold identity/terms observations into deterministic securities + aliases."""
     groups: dict[str, list[SecurityObservation]] = {}
@@ -369,6 +451,7 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
             )
         )
 
+    securities = _withhold_cross_identity_alias_collisions(securities)
     return ResolutionResult(securities=tuple(securities), rejected=tuple(rejected))
 
 

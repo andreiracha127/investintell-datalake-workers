@@ -221,45 +221,62 @@ ON CONFLICT DO NOTHING
 # alias -> N-PORT holding (report_date <= as_of). Bridge class fan-out is collapsed
 # by DISTINCT to the holding lot before aggregating at (security, series) grain.
 # ---------------------------------------------------------------------------
-_FUND_EXPOSURE_BASE_JOIN = """
+_FUND_EXPOSURE_MATCHES = """
+matched AS (
+    SELECT sec.security_id, h.series_id, h.accession_number, h.holding_id,
+           h.report_date, h.signed_market_value, h.signed_pct_of_nav
     FROM sec_current_bond_security_v1 sec
     JOIN sec_current_bond_security_alias_v1 al
       ON al.security_id = sec.security_id
      AND al.valid_from <= %(as_of)s
      AND (al.valid_to IS NULL OR al.valid_to > %(as_of)s)
-    JOIN sec_nport_holdings_v2_current h
-      ON ((al.alias_kind = 'cusip9' AND h.cusip = al.alias_value)
-       OR (al.alias_kind = 'isin'  AND h.isin  = al.alias_value))
-    WHERE h.report_date <= %(as_of)s
+    JOIN _bond_fund_holdings h
+      ON al.alias_kind = 'cusip9' AND h.cusip = al.alias_value
+    UNION ALL
+    SELECT sec.security_id, h.series_id, h.accession_number, h.holding_id,
+           h.report_date, h.signed_market_value, h.signed_pct_of_nav
+    FROM sec_current_bond_security_v1 sec
+    JOIN sec_current_bond_security_alias_v1 al
+      ON al.security_id = sec.security_id
+     AND al.valid_from <= %(as_of)s
+     AND (al.valid_to IS NULL OR al.valid_to > %(as_of)s)
+    JOIN _bond_fund_holdings h
+      ON al.alias_kind = 'isin' AND h.isin = al.alias_value
+)
 """
 
-# Guard A: a single source holding lot must map to at most one security_id.
-_FUND_EXPOSURE_GUARD_IDENTITY = f"""
+# Guard A: active PIT aliases must be unique across security identities. The
+# security master withholds every cross-identity collision before publication.
+_FUND_EXPOSURE_GUARD_IDENTITY = """
 SELECT 1
-{_FUND_EXPOSURE_BASE_JOIN}
-GROUP BY h.accession_number, h.holding_id
-HAVING count(DISTINCT sec.security_id) > 1
+FROM sec_current_bond_security_alias_v1
+WHERE valid_from <= %(as_of)s
+  AND (valid_to IS NULL OR valid_to > %(as_of)s)
+GROUP BY alias_kind, alias_value
+HAVING count(DISTINCT security_id) > 1
 LIMIT 1
 """
 
 # Guard B: after collapsing the bridge class fan-out to the lot, a single
 # (security, series, lot, report) must not carry more than one distinct value.
-_FUND_EXPOSURE_GUARD_ROWS = f"""
-SELECT 1 FROM (
-    SELECT DISTINCT sec.security_id, h.series_id, h.accession_number, h.holding_id,
-           h.report_date, h.signed_market_value, h.signed_pct_of_nav
-    {_FUND_EXPOSURE_BASE_JOIN}
-) lots
-GROUP BY security_id, series_id, accession_number, holding_id, report_date
+_FUND_EXPOSURE_GUARD_ROWS = """
+WITH lots AS (
+    SELECT DISTINCT series_id, accession_number, holding_id, report_date,
+           signed_market_value, signed_pct_of_nav
+    FROM _bond_fund_holdings
+)
+SELECT 1
+FROM lots
+GROUP BY series_id, accession_number, holding_id, report_date
 HAVING count(*) > 1
 LIMIT 1
 """
 
-_FUND_EXPOSURE_SQL = f"""
-WITH lots AS (
-    SELECT DISTINCT sec.security_id, h.series_id, h.accession_number, h.holding_id,
-           h.report_date, h.signed_market_value AS mv, h.signed_pct_of_nav AS pct
-    {_FUND_EXPOSURE_BASE_JOIN}
+_FUND_EXPOSURE_SQL = f"""WITH {_FUND_EXPOSURE_MATCHES},
+lots AS (
+    SELECT DISTINCT security_id, series_id, accession_number, holding_id,
+           report_date, signed_market_value AS mv, signed_pct_of_nav AS pct
+    FROM matched
 ), latest AS (
     SELECT security_id, series_id, max(report_date) AS report_date
     FROM lots GROUP BY security_id, series_id
@@ -358,6 +375,33 @@ def _guard_fund_exposure(conn: psycopg.Connection, params: dict[str, Any]) -> No
         )
 
 
+def _prepare_fund_exposure_source(
+    conn: psycopg.Connection, params: dict[str, Any],
+) -> None:
+    """Materialize and index the current DBT holding cohort once per build."""
+    conn.execute("DROP TABLE IF EXISTS _bond_fund_holdings")
+    conn.execute(
+        """
+        CREATE TEMP TABLE _bond_fund_holdings ON COMMIT DROP AS
+        SELECT series_id, accession_number, holding_id, report_date,
+               signed_market_value, signed_pct_of_nav, cusip, isin
+        FROM sec_nport_holdings_v2_current
+        WHERE report_date <= %(as_of)s
+          AND upper(btrim(coalesce(source_typed_projection->>'ASSET_CAT',''))) = 'DBT'
+        """,
+        params,
+    )
+    conn.execute(
+        "CREATE INDEX _bond_fund_holdings_cusip_idx "
+        "ON _bond_fund_holdings(cusip) WHERE cusip IS NOT NULL"
+    )
+    conn.execute(
+        "CREATE INDEX _bond_fund_holdings_isin_idx "
+        "ON _bond_fund_holdings(isin) WHERE isin IS NOT NULL"
+    )
+    conn.execute("ANALYZE _bond_fund_holdings")
+
+
 def materialize(
     conn: psycopg.Connection,
     *,
@@ -406,6 +450,7 @@ def materialize(
             if not _surface_present(conn, name):
                 continue
             if name == "fund_exposure":
+                _prepare_fund_exposure_source(conn, params)
                 _guard_fund_exposure(conn, params)
             conn.execute(_SURFACE_SQL[name], params)
             surfaces_written.append(name)

@@ -49,6 +49,42 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     return row[0] if row else None
 
 
+def _materialize_effective_cache(conn: Any, as_of: date) -> None:
+    """Evaluate the amendment-aware RR1 fact view once for the whole build.
+
+    Every RR1 product computes fingerprints, rows, and closure checks over the
+    same effective fact set. Letting each SQL function expand the view again
+    multiplies the full raw scan many times. A transaction-local table shadows
+    the public view for this session, preserves identical row semantics, and is
+    discarded automatically on commit/rollback.
+    """
+    tags = [
+        row[0]
+        for row in conn.execute(
+            "SELECT original_tag FROM rr1_fee_profile_concept_map()"
+            " UNION SELECT original_tag FROM rr1_shareholder_cost_concept_map()"
+            " UNION SELECT original_tag FROM rr1_waiver_concept_map()"
+            " UNION SELECT original_tag FROM rr1_turnover_concept_map()"
+            " UNION SELECT original_tag FROM rr1_reported_performance_concept_map()"
+            " UNION SELECT 'AvgAnnlRtrPct'"
+            " UNION SELECT 'NetExpensesOverAssets'"
+        ).fetchall()
+    ]
+    conn.execute(
+        "CREATE TEMP TABLE rr1_effective_facts ON COMMIT PRESERVE ROWS AS "
+        "SELECT * FROM public.rr1_effective_facts "
+        "WHERE effective_date<=%s AND tag=ANY(%s) "
+        "AND nullif(btrim(series_id),'') IS NOT NULL "
+        "AND nullif(btrim(class_id),'') IS NOT NULL",
+        (as_of, tags),
+    )
+    conn.execute(
+        "CREATE INDEX ON rr1_effective_facts"
+        "(source_table,tag,version,effective_date,series_id,class_id)"
+    )
+    conn.execute("ANALYZE rr1_effective_facts")
+
+
 def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, object]:
     with connect(dsn) as conn, advisory_lock(conn, LOCK_RR1_DERIVED_PROFILES) as acquired:
         if not acquired:
@@ -63,9 +99,30 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         if as_of is None:
             conn.commit()
             return {"state": "no_effective_facts", "products": 0}
-        results = derived_profiles.materialize_all(
-            conn, as_of=as_of, source_run_id=source_run_id,
-            source_package_id=source_package_id, code_revision=_code_revision(),
-        )
+        _materialize_effective_cache(conn, as_of)
         conn.commit()
-    return {"state": "ok", "products": len(results), "as_of": as_of.isoformat(), "results": results}
+        results: list[dict[str, object]] = []
+        failures: dict[str, str] = {}
+        revision = _code_revision()
+        for product in derived_profiles.PRODUCTS:
+            try:
+                result = derived_profiles.materialize_product(
+                    conn,
+                    product=product,
+                    as_of=as_of,
+                    source_run_id=source_run_id,
+                    source_package_id=source_package_id,
+                    code_revision=revision,
+                )
+                conn.commit()
+                results.append(result)
+            except Exception as error:
+                conn.rollback()
+                failures[product] = f"{type(error).__name__}: {error}".splitlines()[0]
+    return {
+        "state": "ok" if not failures else "partial",
+        "products": len(results),
+        "failed_products": failures,
+        "as_of": as_of.isoformat(),
+        "results": results,
+    }
