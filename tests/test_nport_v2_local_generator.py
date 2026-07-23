@@ -131,10 +131,14 @@ def test_generator_selects_effective_filing_preserves_lots_and_projects_debt(tmp
     assert json.loads((tmp_path / "output" / "manifest.json").read_text(encoding="utf-8"))["counts"] == {
         "bridge_rows": 3,
         "duplicate_primary_keys": 0,
+        "eligible_filing_candidates": 2,
+        "excluded_ineligible_filings": 0,
+        "filing_candidates": 2,
         "holdings_rows": 3,
         "identified_rows": 2,
         "report_dates": 1,
         "resolved_rows": 3,
+        "selected_filings": 1,
         "series": 1,
         "unidentified_rows": 1,
     }
@@ -168,6 +172,64 @@ def test_generator_rejects_duplicate_publication_primary_keys(tmp_path: Path) ->
 
     with pytest.raises(generator.DuplicatePrimaryKeyError, match="CUSIP"):
         _run(source_dir, tmp_path / "output", _source_hashes(source_dir))
+    assert not (tmp_path / "output").exists()
+
+
+def test_generator_rejects_missing_series_without_publishing(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _fixture(source_dir)
+    info = source_dir / "FUND_REPORTED_INFO.tsv"
+    info.write_text(info.read_text(encoding="utf-8").replace("S000001234", ""), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no eligible N-PORT holdings"):
+        _run(source_dir, tmp_path / "output", _source_hashes(source_dir))
+
+    assert not (tmp_path / "output").exists()
+
+
+def test_generator_cleans_staging_when_compression_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _fixture(source_dir)
+    real_gzip = generator._gzip_payload
+    calls = 0
+
+    def fail_second_compression(source: Path, destination: Path) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected compression failure")
+        return real_gzip(source, destination)
+
+    monkeypatch.setattr(generator, "_gzip_payload", fail_second_compression)
+    with pytest.raises(OSError, match="injected compression failure"):
+        _run(source_dir, tmp_path / "output", _source_hashes(source_dir))
+
+    assert not (tmp_path / "output").exists()
+    assert not list(tmp_path.glob(".output.tmp-*"))
+
+
+def test_generator_iterates_across_arrow_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    _fixture(source_dir)
+    monkeypatch.setattr(generator, "_BATCH_SIZE", 2)
+
+    result = _run(source_dir, tmp_path / "output", _source_hashes(source_dir))
+
+    assert [row["holding_id"] for row in _read_payload(result.holdings_path)] == ["AMBIG", "CUSIP", "ISIN"]
+
+
+def test_normalize_cusip_rejects_nonnumeric_check_character() -> None:
+    assert generator.normalize_cusip("03783310A") is None
+    assert generator.normalize_cusip("03783310*") is None
 
 
 def test_generator_uses_bounded_duckdb_batches_not_full_corpus_fetchall() -> None:

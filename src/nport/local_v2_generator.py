@@ -6,6 +6,8 @@ import datetime as dt
 import gzip
 import hashlib
 import json
+import shutil
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -84,7 +86,11 @@ def _decimal_text(value: str | None, payoff: str | None) -> str | None:
 
 def normalize_cusip(value: str | None) -> str | None:
     candidate = "".join((value or "").upper().split())
-    if len(candidate) != 9 or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789*@#" for char in candidate):
+    if (
+        len(candidate) != 9
+        or any(char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789*@#" for char in candidate)
+        or not candidate[8].isdigit()
+    ):
         return None
 
     def digit(char: str) -> int:
@@ -145,21 +151,56 @@ def _install_views(connection: duckdb.DuckDBPyConnection, source_dir: Path) -> N
         connection.execute(
             f"CREATE TEMP VIEW {name} AS SELECT * FROM read_csv('{sql_path}', header=true, delim='\\t', all_varchar=true)",
         )
+    connection.execute(
+        """
+        CREATE TEMP TABLE filing_candidates AS
+        SELECT trim(i.SERIES_ID) AS SERIES_ID,
+               s.ACCESSION_NUMBER,
+               s.REPORT_DATE,
+               s.FILING_DATE,
+               s.SUB_TYPE,
+               s.source_ordinal,
+               nullif(trim(i.SERIES_ID), '') IS NOT NULL
+                 AND upper(trim(s.SUB_TYPE)) IN ('NPORT-P', 'NPORT-P/A')
+                 AND try_strptime(s.FILING_DATE, '%d-%b-%Y') IS NOT NULL
+                 AND try_strptime(s.REPORT_DATE, '%d-%b-%Y') IS NOT NULL AS eligible
+        FROM (SELECT *, row_number() OVER () AS source_ordinal FROM submission) s
+        JOIN info i USING (ACCESSION_NUMBER)
+        """
+    )
+    connection.execute(
+        """
+        CREATE TEMP TABLE selected_filings AS
+        SELECT SERIES_ID, ACCESSION_NUMBER, REPORT_DATE, FILING_DATE
+        FROM (
+          SELECT *,
+                 row_number() OVER (
+                   PARTITION BY SERIES_ID, REPORT_DATE
+                   ORDER BY CASE WHEN upper(SUB_TYPE) LIKE '%/A' THEN 1 ELSE 0 END DESC,
+                            try_strptime(FILING_DATE, '%d-%b-%Y') DESC,
+                            ACCESSION_NUMBER DESC,
+                            source_ordinal DESC
+                 ) AS selection_rank
+          FROM filing_candidates
+          WHERE eligible
+        ) ranked
+        WHERE selection_rank = 1
+        """
+    )
+    connection.execute(
+        """
+        CREATE TEMP TABLE selected_holding_keys AS
+        SELECT h.ACCESSION_NUMBER, h.HOLDING_ID
+        FROM holding h
+        JOIN selected_filings USING (ACCESSION_NUMBER)
+        """
+    )
 
 
 def _assert_unambiguous(connection: duckdb.DuckDBPyConnection) -> None:
     duplicate = connection.execute(
         """
-        WITH ranked AS (
-          SELECT i.SERIES_ID, s.ACCESSION_NUMBER, s.REPORT_DATE,
-                 row_number() OVER (PARTITION BY i.SERIES_ID,s.REPORT_DATE
-                  ORDER BY CASE WHEN upper(s.SUB_TYPE) LIKE '%/A' THEN 1 ELSE 0 END DESC,
-                           try_strptime(s.FILING_DATE, '%d-%b-%Y') DESC, s.ACCESSION_NUMBER DESC, s.source_ordinal DESC) rank
-          FROM (SELECT *,row_number() OVER () source_ordinal FROM submission) s
-          JOIN info i USING (ACCESSION_NUMBER)
-        ), selected AS (SELECT ACCESSION_NUMBER FROM ranked WHERE rank=1),
-        selected_holding AS (SELECT h.ACCESSION_NUMBER,h.HOLDING_ID FROM holding h JOIN selected USING (ACCESSION_NUMBER))
-        SELECT HOLDING_ID, count(DISTINCT ACCESSION_NUMBER) FROM selected_holding
+        SELECT HOLDING_ID, count(DISTINCT ACCESSION_NUMBER) FROM selected_holding_keys
         GROUP BY HOLDING_ID HAVING count(DISTINCT ACCESSION_NUMBER)>1 LIMIT 1
         """
     ).fetchone()
@@ -167,30 +208,15 @@ def _assert_unambiguous(connection: duckdb.DuckDBPyConnection) -> None:
         raise ValueError(f"ambiguous selected parent for child HOLDING_ID {duplicate[0]}")
     duplicate_pk = connection.execute(
         """
-        WITH ranked AS (
-          SELECT i.SERIES_ID,s.ACCESSION_NUMBER,s.REPORT_DATE,
-                 row_number() OVER (PARTITION BY i.SERIES_ID,s.REPORT_DATE
-                  ORDER BY CASE WHEN upper(s.SUB_TYPE) LIKE '%/A' THEN 1 ELSE 0 END DESC,
-                           try_strptime(s.FILING_DATE, '%d-%b-%Y') DESC,s.ACCESSION_NUMBER DESC,s.source_ordinal DESC) rank
-          FROM (SELECT *,row_number() OVER () source_ordinal FROM submission) s JOIN info i USING (ACCESSION_NUMBER)
-        ), selected AS (SELECT ACCESSION_NUMBER FROM ranked WHERE rank=1)
-        SELECT h.ACCESSION_NUMBER,h.HOLDING_ID FROM holding h JOIN selected USING (ACCESSION_NUMBER)
-        GROUP BY h.ACCESSION_NUMBER,h.HOLDING_ID HAVING count(*)>1 LIMIT 1
+        SELECT ACCESSION_NUMBER, HOLDING_ID FROM selected_holding_keys
+        GROUP BY ACCESSION_NUMBER, HOLDING_ID HAVING count(*)>1 LIMIT 1
         """
     ).fetchone()
     if duplicate_pk:
         raise DuplicatePrimaryKeyError(f"duplicate V2 publication primary key for {duplicate_pk[0]}/{duplicate_pk[1]}")
     duplicate_debt = connection.execute(
         """
-        WITH ranked AS (
-          SELECT i.SERIES_ID,s.ACCESSION_NUMBER,s.REPORT_DATE,
-                 row_number() OVER (PARTITION BY i.SERIES_ID,s.REPORT_DATE
-                  ORDER BY CASE WHEN upper(s.SUB_TYPE) LIKE '%/A' THEN 1 ELSE 0 END DESC,
-                           try_strptime(s.FILING_DATE, '%d-%b-%Y') DESC,s.ACCESSION_NUMBER DESC,s.source_ordinal DESC) rank
-          FROM (SELECT *,row_number() OVER () source_ordinal FROM submission) s JOIN info i USING (ACCESSION_NUMBER)
-        ), selected AS (SELECT ACCESSION_NUMBER FROM ranked WHERE rank=1),
-        selected_holding AS (SELECT h.HOLDING_ID FROM holding h JOIN selected USING (ACCESSION_NUMBER))
-        SELECT d.HOLDING_ID FROM debt d JOIN selected_holding USING (HOLDING_ID)
+        SELECT d.HOLDING_ID FROM debt d JOIN selected_holding_keys USING (HOLDING_ID)
         GROUP BY d.HOLDING_ID HAVING count(*)>1 LIMIT 1
         """
     ).fetchone()
@@ -201,14 +227,7 @@ def _assert_unambiguous(connection: duckdb.DuckDBPyConnection) -> None:
 def _selected_rows(connection: duckdb.DuckDBPyConnection) -> Iterator[dict[str, Any]]:
     cursor = connection.execute(
         """
-        WITH ranked AS (
-          SELECT i.SERIES_ID,s.ACCESSION_NUMBER,s.REPORT_DATE,s.FILING_DATE,
-                 row_number() OVER (PARTITION BY i.SERIES_ID,s.REPORT_DATE
-                  ORDER BY CASE WHEN upper(s.SUB_TYPE) LIKE '%/A' THEN 1 ELSE 0 END DESC,
-                           try_strptime(s.FILING_DATE, '%d-%b-%Y') DESC,s.ACCESSION_NUMBER DESC,s.source_ordinal DESC) rank
-          FROM (SELECT *,row_number() OVER () source_ordinal FROM submission) s JOIN info i USING (ACCESSION_NUMBER)
-        ), selected AS (SELECT * FROM ranked WHERE rank=1),
-        isin_sets AS (
+        WITH isin_sets AS (
           SELECT HOLDING_ID,list_sort(list(DISTINCT nport_norm_isin(IDENTIFIER_ISIN))
                    FILTER (WHERE nport_norm_isin(IDENTIFIER_ISIN) IS NOT NULL)) AS values
           FROM identifiers GROUP BY HOLDING_ID
@@ -217,7 +236,7 @@ def _selected_rows(connection: duckdb.DuckDBPyConnection) -> Iterator[dict[str, 
                h.HOLDING_ID,h.ISSUER_NAME,h.ISSUER_TYPE,h.ISSUER_CUSIP,h.ISSUER_LEI,h.ASSET_CAT,
                h.PAYOFF_PROFILE,h.PERCENTAGE,h.CURRENCY_VALUE,to_json(h) AS holding_json,
                isin_sets.values AS isin_values,debt_rows.debt_json
-        FROM selected JOIN holding h USING (ACCESSION_NUMBER)
+        FROM selected_filings selected JOIN holding h USING (ACCESSION_NUMBER)
         LEFT JOIN isin_sets USING (HOLDING_ID) LEFT JOIN debt_rows USING (HOLDING_ID)
         ORDER BY selected.SERIES_ID,selected.REPORT_DATE,selected.ACCESSION_NUMBER,h.HOLDING_ID
         """
@@ -260,79 +279,125 @@ def generate(
 ) -> GenerationResult:
     """Build pinned V2 payloads using local DuckDB and bounded record batches only."""
     source_dir, output_dir = Path(source_dir), Path(output_dir)
+    if output_dir.exists():
+        raise FileExistsError(f"output directory already exists: {output_dir}")
     source_hashes = _hashes(source_dir, expected_hashes)
-    connection = duckdb.connect(":memory:")
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staging_dir = output_dir.parent / f".{output_dir.name}.tmp-{uuid.uuid4().hex}"
+    staging_dir.mkdir()
     try:
-        _install_views(connection, source_dir)
-        _assert_unambiguous(connection)
-        bridge_plain = output_dir / "sec_nport_instrument_class_bridge.tsv"
-        holdings_plain = output_dir / "sec_nport_holdings_v2.tsv"
-        counts = {"bridge_rows": 0, "holdings_rows": 0, "identified_rows": 0, "unidentified_rows": 0,
-                  "resolved_rows": 0, "duplicate_primary_keys": 0}
-        series: set[str] = set()
-        report_dates: set[str] = set()
-        with _open_tsv(bridge_plain, BRIDGE_COLUMNS) as bridge, _open_tsv(holdings_plain, HOLDINGS_COLUMNS) as holdings:
-            for raw in _selected_rows(connection):
-                accession, holding_id = raw["ACCESSION_NUMBER"], raw["HOLDING_ID"]
-                report_date = _parse_date(raw["REPORT_DATE"]).isoformat()
-                filing_date = _parse_date(raw["FILING_DATE"]).isoformat()
-                cusip = normalize_cusip(raw["ISSUER_CUSIP"])
-                isins = sorted(set(raw["isin_values"] or []))
-                unique_isin = isins[0] if len(isins) == 1 else None
-                instrument_id = f"CUSIP:{cusip}" if cusip else (f"ISIN:{unique_isin}" if unique_isin else None)
-                projection = json.loads(raw["holding_json"])
-                if raw["debt_json"]:
-                    debt_projection = json.loads(raw["debt_json"])
-                    debt_projection.pop("HOLDING_ID", None)
-                    maturity_date = debt_projection.get("MATURITY_DATE")
-                    if maturity_date:
-                        try:
-                            debt_projection["MATURITY_DATE"] = _parse_date(maturity_date).isoformat()
-                        except ValueError:
-                            debt_projection.pop("MATURITY_DATE")
-                    projection["DEBT_SECURITY"] = debt_projection
-                evidence = {"accession_number": accession, "holding_id": holding_id,
-                            "identifier_candidates": {"cusip": cusip, "isin": isins},
-                            "security_identity": instrument_id}
-                _write_row(bridge, BRIDGE_COLUMNS, {
-                    "publication_id": publication_id, "accession_number": accession, "holding_id": holding_id,
-                    "instrument_id": instrument_id, "series_id": raw["SERIES_ID"], "class_id": None,
-                    "valid_from": report_date, "valid_to": None, "resolution_state": "resolved",
-                    "source_candidate_key_evidence": _canonical_json(evidence),
-                })
-                _write_row(holdings, HOLDINGS_COLUMNS, {
-                    "publication_id": publication_id, "accession_number": accession, "holding_id": holding_id,
-                    "source_run_id": source_run_id, "report_date": report_date, "filing_date": filing_date,
-                    "source_series_id": raw["SERIES_ID"], "issuer_name": raw["ISSUER_NAME"] or None,
-                    "issuer_category": raw["ISSUER_TYPE"] or None, "cusip": cusip, "isin": unique_isin,
-                    "issuer_lei": normalize_lei(raw["ISSUER_LEI"]),
-                    "signed_market_value": _decimal_text(raw["CURRENCY_VALUE"], raw["PAYOFF_PROFILE"]),
-                    "signed_pct_of_nav": _decimal_text(raw["PERCENTAGE"], raw["PAYOFF_PROFILE"]),
-                    "payoff_profile": raw["PAYOFF_PROFILE"] or None, "source_typed_projection": _canonical_json(projection),
-                })
-                counts["bridge_rows"] += 1
-                counts["holdings_rows"] += 1
-                counts["resolved_rows"] += 1
-                counts["identified_rows" if instrument_id else "unidentified_rows"] += 1
-                series.add(raw["SERIES_ID"])
-                report_dates.add(report_date)
-    finally:
-        connection.close()
+        connection = duckdb.connect(":memory:")
+        try:
+            _install_views(connection, source_dir)
+            _assert_unambiguous(connection)
+            selected_holdings = connection.execute("SELECT count(*) FROM selected_holding_keys").fetchone()[0]
+            if not selected_holdings:
+                raise ValueError("no eligible N-PORT holdings found")
+            candidate_counts = connection.execute(
+                """
+                SELECT count(*) AS candidates,
+                       count(*) FILTER (WHERE eligible) AS eligible,
+                       count(*) FILTER (WHERE NOT eligible) AS excluded,
+                       (SELECT count(*) FROM selected_filings) AS selected
+                FROM filing_candidates
+                """
+            ).fetchone()
+            bridge_plain = staging_dir / "sec_nport_instrument_class_bridge.tsv"
+            holdings_plain = staging_dir / "sec_nport_holdings_v2.tsv"
+            counts = {
+                "bridge_rows": 0,
+                "holdings_rows": 0,
+                "identified_rows": 0,
+                "unidentified_rows": 0,
+                "resolved_rows": 0,
+                "duplicate_primary_keys": 0,
+                "filing_candidates": candidate_counts[0],
+                "eligible_filing_candidates": candidate_counts[1],
+                "excluded_ineligible_filings": candidate_counts[2],
+                "selected_filings": candidate_counts[3],
+            }
+            series: set[str] = set()
+            report_dates: set[str] = set()
+            with (
+                _open_tsv(bridge_plain, BRIDGE_COLUMNS) as bridge,
+                _open_tsv(holdings_plain, HOLDINGS_COLUMNS) as holdings,
+            ):
+                for raw in _selected_rows(connection):
+                    accession, holding_id = raw["ACCESSION_NUMBER"], raw["HOLDING_ID"]
+                    report_date = _parse_date(raw["REPORT_DATE"]).isoformat()
+                    filing_date = _parse_date(raw["FILING_DATE"]).isoformat()
+                    cusip = normalize_cusip(raw["ISSUER_CUSIP"])
+                    isins = sorted(set(raw["isin_values"] or []))
+                    unique_isin = isins[0] if len(isins) == 1 else None
+                    instrument_id = f"CUSIP:{cusip}" if cusip else (f"ISIN:{unique_isin}" if unique_isin else None)
+                    projection = json.loads(raw["holding_json"])
+                    if raw["debt_json"]:
+                        debt_projection = json.loads(raw["debt_json"])
+                        debt_projection.pop("HOLDING_ID", None)
+                        maturity_date = debt_projection.get("MATURITY_DATE")
+                        if maturity_date:
+                            try:
+                                debt_projection["MATURITY_DATE"] = _parse_date(maturity_date).isoformat()
+                            except ValueError:
+                                debt_projection.pop("MATURITY_DATE")
+                        projection["DEBT_SECURITY"] = debt_projection
+                    evidence = {
+                        "accession_number": accession,
+                        "holding_id": holding_id,
+                        "identifier_candidates": {"cusip": cusip, "isin": isins},
+                        "security_identity": instrument_id,
+                    }
+                    _write_row(bridge, BRIDGE_COLUMNS, {
+                        "publication_id": publication_id, "accession_number": accession, "holding_id": holding_id,
+                        "instrument_id": instrument_id, "series_id": raw["SERIES_ID"], "class_id": None,
+                        "valid_from": report_date, "valid_to": None, "resolution_state": "resolved",
+                        "source_candidate_key_evidence": _canonical_json(evidence),
+                    })
+                    _write_row(holdings, HOLDINGS_COLUMNS, {
+                        "publication_id": publication_id, "accession_number": accession, "holding_id": holding_id,
+                        "source_run_id": source_run_id, "report_date": report_date, "filing_date": filing_date,
+                        "source_series_id": raw["SERIES_ID"], "issuer_name": raw["ISSUER_NAME"] or None,
+                        "issuer_category": raw["ISSUER_TYPE"] or None, "cusip": cusip, "isin": unique_isin,
+                        "issuer_lei": normalize_lei(raw["ISSUER_LEI"]),
+                        "signed_market_value": _decimal_text(raw["CURRENCY_VALUE"], raw["PAYOFF_PROFILE"]),
+                        "signed_pct_of_nav": _decimal_text(raw["PERCENTAGE"], raw["PAYOFF_PROFILE"]),
+                        "payoff_profile": raw["PAYOFF_PROFILE"] or None,
+                        "source_typed_projection": _canonical_json(projection),
+                    })
+                    counts["bridge_rows"] += 1
+                    counts["holdings_rows"] += 1
+                    counts["resolved_rows"] += 1
+                    counts["identified_rows" if instrument_id else "unidentified_rows"] += 1
+                    series.add(raw["SERIES_ID"])
+                    report_dates.add(report_date)
+        finally:
+            connection.close()
+
+        bridge_staged = staging_dir / "sec_nport_instrument_class_bridge.tsv.gz"
+        holdings_staged = staging_dir / "sec_nport_holdings_v2.tsv.gz"
+        payload_hashes = {
+            "bridge": _gzip_payload(bridge_plain, bridge_staged),
+            "holdings": _gzip_payload(holdings_plain, holdings_staged),
+        }
+        values = sorted(report_dates)
+        counts.update({"series": len(series), "report_dates": len(values)})
+        manifest = {
+            "generator_version": generator_version, "config_version": config_version,
+            "fingerprints": {"generator_code_sha256": _sha256_file(Path(__file__)),
+                             "config_sha256": hashlib.sha256(_canonical_json({"config_version": config_version}).encode()).hexdigest()},
+            "lineage": {"source_run_id": source_run_id, "package_id": package_id, "package_sha256": package_sha256,
+                        "parser_version": parser_version, "publication_id": publication_id},
+            "source_hashes": source_hashes, "payload_hashes": payload_hashes,
+            "report_dates": {"values": values, "min": values[0] if values else None, "max": values[-1] if values else None},
+            "counts": counts,
+        }
+        (staging_dir / "manifest.json").write_text(_canonical_json(manifest) + "\n", encoding="utf-8")
+        staging_dir.rename(output_dir)
+    except Exception:
+        shutil.rmtree(staging_dir, ignore_errors=True)
+        raise
+
     bridge_path = output_dir / "sec_nport_instrument_class_bridge.tsv.gz"
     holdings_path = output_dir / "sec_nport_holdings_v2.tsv.gz"
-    payload_hashes = {"bridge": _gzip_payload(bridge_plain, bridge_path), "holdings": _gzip_payload(holdings_plain, holdings_path)}
-    values = sorted(report_dates)
-    counts.update({"series": len(series), "report_dates": len(values)})
-    manifest = {
-        "generator_version": generator_version, "config_version": config_version,
-        "fingerprints": {"generator_code_sha256": _sha256_file(Path(__file__)),
-                         "config_sha256": hashlib.sha256(_canonical_json({"config_version": config_version}).encode()).hexdigest()},
-        "lineage": {"source_run_id": source_run_id, "package_id": package_id, "package_sha256": package_sha256,
-                    "parser_version": parser_version, "publication_id": publication_id},
-        "source_hashes": source_hashes, "payload_hashes": payload_hashes,
-        "report_dates": {"values": values, "min": values[0] if values else None, "max": values[-1] if values else None},
-        "counts": counts,
-    }
     manifest_path = output_dir / "manifest.json"
-    manifest_path.write_text(_canonical_json(manifest) + "\n", encoding="utf-8")
     return GenerationResult(bridge_path=bridge_path, holdings_path=holdings_path, manifest_path=manifest_path)
