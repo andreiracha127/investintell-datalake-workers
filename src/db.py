@@ -209,3 +209,11 @@ LOCK_BOND_PRICE_INGEST = 900_348
 # install_gate_schema (same idiom as the sibling ingest worker). 900_349 is the
 # next free id after LOCK_BOND_PRICE_INGEST.
 LOCK_BOND_SOURCE_QUALIFY = 900_349
+# bond_metric_v1 compute+persist worker (activation Wave 1, Task 3). Runs the
+# validated pure pricing/cashflow engines per security over the current security
+# terms + eligible latest price and publishes the bond_metric_v1 product through
+# the shared derived-publication protocol. The lock is taken BEFORE the
+# self-installing DDL (fleet idiom: CREATE TABLE IF NOT EXISTS is not race-safe
+# on first concurrent creation). 900_350 is the next free id after
+# LOCK_BOND_SOURCE_QUALIFY.
+LOCK_BOND_METRICS = 900_350
