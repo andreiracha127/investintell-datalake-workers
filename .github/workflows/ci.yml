@@ -53,6 +53,7 @@ jobs:
           src/sec_regulatory
           src/sec_serving
           src/workers/bond_curves.py
+          src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
           src/workers/bond_price_ingest.py
           src/workers/bond_price_observations.py
@@ -95,6 +96,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_matching.py
+            tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
             tests/bonds/test_panel_states.py
             tests/bonds/test_phase10_gate.py
@@ -107,6 +109,7 @@ jobs:
             tests/bonds/test_security_master_resolution.py
             tests/bonds/test_source_artifact.py
             tests/test_bond_curve_materializer.py
+            tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
             tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py
@@ -219,6 +222,7 @@ jobs:
           src/sec_regulatory
           src/sec_serving
           src/workers/bond_curves.py
+          src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
           src/workers/bond_price_ingest.py
           src/workers/bond_price_observations.py
@@ -264,6 +268,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_matching.py
+            tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
             tests/bonds/test_panel_states.py
             tests/bonds/test_phase10_gate.py
@@ -276,6 +281,7 @@ jobs:
             tests/bonds/test_security_master_resolution.py
             tests/bonds/test_source_artifact.py
             tests/test_bond_curve_materializer.py
+            tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
             tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py

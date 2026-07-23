@@ -24,7 +24,7 @@ import os
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -820,3 +820,230 @@ def test_run_identity_is_deterministic_uuid5():
     c = daily_chain.chain_run_id_for("bond_daily_publication", D2, REV, CFG)
     assert a == b and a != c
     assert a.version == 5
+
+
+# --------------------------------------------------------------------------- #
+# Wave 1, Task 3: bond_metrics joins the materialize stage worker set
+# --------------------------------------------------------------------------- #
+
+_SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
+
+
+def test_materialize_stage_worker_set_includes_bond_metrics(monkeypatch):
+    """The materialize stage invokes bond_metrics after the ncen/rr1 units."""
+    invoked: list[str] = []
+
+    def fake_worker(name):
+        def _run(dsn, *, calc_date=None):
+            invoked.append(name)
+            return {"state": "no_source"}
+        return _run
+
+    monkeypatch.setattr(chain_worker, "_worker", fake_worker)
+    ctx = StageContext(conn=None, dsn="unused", source_day=D1,
+                       run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
+                       chain="c", code_revision="r", config_version="v")
+    outcome = chain_worker.stage_materialize(ctx)
+    assert invoked == ["ncen_derived_profiles", "rr1_derived_profiles", "bond_metrics"]
+    # A fully dark worker set is still a REPORTED skip, never a silent success.
+    assert outcome.status.value == "skipped" and outcome.reason == "dark_no_source"
+
+
+def test_classify_recognises_the_protocol_current_success_state():
+    """The materializer envelope ``{"state": "ok", **result}`` is overridden by
+    the protocol's ``state='current'`` (self-promoted publication). Latent until
+    Wave 1 (every earlier run was dark); a live run must classify it a SUCCESS,
+    never an unrecognised terminal failure."""
+    from src.bonds.daily_chain import StageStatus, classify_worker_result
+
+    outcome = classify_worker_result(
+        {"state": "current", "product": "bond_metric_v1", "rows": 4}
+    )
+    assert outcome.status is StageStatus.SUCCEEDED
+
+
+def _seed_wave1_public_data() -> None:
+    """Wave-1 fixture data in the PUBLIC schema (truncate-isolated).
+
+    The manifests lifecycle triggers are SECURITY DEFINER with
+    ``search_path = pg_catalog, public``, so the REAL provenance protocol lives
+    in public (the Task-1 ingest suite's idiom: install + TRUNCATE). Seeds one
+    fixed 10% semiannual bond (Fabozzi-style) with a clean trade price of 96.23
+    landed for D1, one validated ``bond_price`` run+package pair through the
+    REAL lifecycle (family-invisible to the ncen/rr1 materialize units,
+    discovered by the bond lane's family-agnostic SELECT), and all four Wave-1
+    metrics qualified. The SECURITY UNIVERSE is deliberately NOT published
+    here: the chain's pit_update stage must publish it before materialize can
+    serve metrics — proving the stage ordering causally.
+    """
+    import json
+    from decimal import Decimal
+
+    import psycopg
+
+    from _bond_price_fixtures import price_input
+    from src.bonds import price_observations
+    from src.sec_regulatory import manifests
+
+    with psycopg.connect(base_dsn()) as conn:
+        manifests.install_schema(conn)
+        # The ncen/rr1 materialize units' self-installing effective views need
+        # the raw tables their INGEST stage installs in a real run (ingest is
+        # not part of this focused stage subset).
+        for ddl_name in (
+            "sec_derived_publications.sql",
+            "ncen_raw_v2.sql",
+            "rr1_raw_v2.sql",
+            "bond_security_v1.sql",
+            "bond_price_observations_v1.sql",
+            "bond_price_eligibility_v1.sql",
+            "bond_source_qualification.sql",
+            "bond_metric_v1.sql",
+        ):
+            conn.execute((_SCHEMAS / ddl_name).read_text(encoding="utf-8"))
+        conn.execute(
+            "TRUNCATE sec_source_package_transitions, sec_source_packages, "
+            "sec_row_issues, sec_table_reconciliations, sec_source_files, "
+            "sec_validated_raw_visibility, sec_run_transitions, sec_ingestion_runs, "
+            "bond_security_observation, bond_price_observation, "
+            "bond_source_qualification CASCADE"
+        )
+        sha = "ab" * 32
+        run = manifests.create_or_resume_run(
+            conn, source_family="bond_price", package_sha256=sha,
+            parser_version="ingest_v1", source_quarter="2025Q1",
+            package_relative_path="bond_price/source.parquet",
+        )
+        manifests.transition_run(conn, run_id=run.run_id,
+                                 expected_state="discovered", target_state="loading")
+        manifests.register_file(conn, run_id=run.run_id, relative_path="source.parquet",
+                                sha256=sha, byte_size=1)
+        manifests.validate_raw_run(conn, run_id=run.run_id)
+        manifests.register_package_discovery(
+            conn, source_family="bond_price", source_quarter="2025Q1",
+            package_relative_path="bond_price/source.parquet", package_state="loaded",
+            package_sha256=sha, run_id=run.run_id,
+        )
+        oid = uuid4()
+        conn.execute(
+            "INSERT INTO bond_security_observation "
+            "(observation_id, as_of, observation_date, source_run_id, cusip9_input, coupon_type, "
+            " coupon_rate, maturity_date, day_count, coupon_schedule, source_lineage) "
+            "VALUES (%s,%s,%s,%s,'BNDFIX001','fixed',10.0,'2030-01-01','30/360 US',%s::jsonb,%s::jsonb)",
+            (
+                oid, D1, D1, run.run_id,
+                json.dumps([{"date": "2025-07-01", "rate": 10.0},
+                            {"date": "2026-01-01", "rate": 10.0}]),
+                json.dumps({"engine": "fixture", "observation_id": str(oid)}),
+            ),
+        )
+        price_observations.load_price_observations(
+            conn,
+            [price_input(observation_date=D1, cusip9="BNDFIX001", price=Decimal("96.23"),
+                         price_type="trade", accrued_treatment="clean", ytm=0.076)],
+            as_of=D1, source_run_id=run.run_id,
+        )
+        for metric in ("security_ytm", "security_ytw", "current_yield", "wal"):
+            conn.execute(
+                "INSERT INTO bond_source_qualification "
+                "(metric_id, source_contract_ref, qualified_from, qualified_to) "
+                "VALUES (%s, 'bond_price_source_v1@aaaaaaaaaaaa', now(), NULL)",
+                (metric,),
+            )
+        conn.commit()
+
+
+def test_chain_materialize_runs_bond_metrics_and_promotes_available_ytm():
+    """Requirement 5: a chain run over fixture data yields a promoted
+    bond_metric_v1 with >=1 available (recomputed) YTM row, produced by the
+    materialize stage AFTER the pit_update security/price publications."""
+    admin = admin_connect()
+    book_schema = None
+    try:
+        _seed_wave1_public_data()
+        book_schema = new_schema(admin)
+        book = worker_conn(book_schema)
+        # The chain's own conn sees the data lane too (in production both live
+        # in the same schema); the ledger still lands in the isolated schema.
+        book.execute(f'SET search_path TO "{book_schema}", public')
+        book.commit()
+        stages = chain_worker.build_stages(["pit_update", "materialize", "validate", "probe"])
+        s = daily_chain.run_chain(
+            book, stages=stages, source_days=[D1], code_revision="revw1",
+            config_version=CFG, dsn=base_dsn(),
+            snapshot_pointers=chain_worker._snapshot_pointers,
+            restore_pointer=chain_worker._restore_pointer,
+        )[0]
+        book.close()
+
+        assert s["status"] == "completed"
+        by_stage = {st["stage"]: st for st in s["stages"]}
+        assert by_stage["pit_update"]["status"] == "succeeded"
+        assert by_stage["materialize"]["status"] == "succeeded"
+        assert by_stage["validate"]["status"] == "succeeded"
+        # Inside materialize the ncen/rr1 units ran dark (no source of their
+        # family); the SUCCESS was carried by the bond_metrics unit.
+        units = by_stage["materialize"]["detail"]["units"]
+        assert units["unit_0"]["status"] == "skipped"
+        assert units["unit_1"]["status"] == "skipped"
+        assert units["unit_2"]["status"] == "succeeded"
+        assert units["unit_2"]["product"] == "bond_metric_v1"
+
+        promoted = {p["product"]: p for p in s["promoted"]}
+        assert promoted["bond_metric_v1"]["stage"] == "materialize"
+        assert "bond_security_v1" in promoted and "bond_price_observation_v1" in promoted
+
+        rows = admin.execute(
+            "SELECT metric_id, value, status FROM public.sec_current_bond_metric_v1"
+        ).fetchall()
+        available = {r[0]: float(r[1]) for r in rows if r[2] == "available"}
+        assert "security_ytm" in available
+        # Recomputed by the engine (Fabozzi ~11%), never the source's raw 0.076.
+        assert abs(available["security_ytm"] - 0.11) < 1e-3
+    finally:
+        if book_schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{book_schema}" CASCADE')
+        admin.close()
+
+
+def test_later_stage_failure_compensates_bond_metric_v1_automatically():
+    """Requirement 5 (compensation): the compensation set is table-driven
+    (pointer-snapshot diff over sec_derived_current_pointers), so an injected
+    later-stage terminal failure rolls the NEW product's pointer back with NO
+    product-specific chain code."""
+    admin = admin_connect()
+    book_schema = None
+    try:
+        _seed_wave1_public_data()
+        book_schema = new_schema(admin)
+        book = worker_conn(book_schema)
+
+        def failing_validate(ctx: StageContext) -> StageOutcome:
+            return StageOutcome.failed("injected_terminal", classification="terminal")
+
+        stages = chain_worker.build_stages(["pit_update", "materialize"]) + [
+            Stage("validate", failing_validate)
+        ]
+        s = daily_chain.run_chain(
+            book, stages=stages, source_days=[D1], code_revision="revw1c",
+            config_version=CFG, dsn=base_dsn(),
+            snapshot_pointers=chain_worker._snapshot_pointers,
+            restore_pointer=chain_worker._restore_pointer,
+        )[0]
+        book.close()
+
+        assert s["status"] == "failed"
+        comp = {c["product"]: c for c in s["compensations"]}
+        assert "bond_metric_v1" in comp
+        assert comp["bond_metric_v1"]["stage"] == "materialize"
+        assert comp["bond_metric_v1"]["restored_to"] is None  # first publication
+        assert s["promoted"] == []
+        pointer_rows = admin.execute(
+            "SELECT count(*) FROM public.sec_derived_current_pointers "
+            "WHERE product='bond_metric_v1'"
+        ).fetchone()[0]
+        assert pointer_rows == 0
+    finally:
+        if book_schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{book_schema}" CASCADE')
+        admin.close()

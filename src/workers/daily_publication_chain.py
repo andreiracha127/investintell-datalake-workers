@@ -10,7 +10,7 @@ the result. Nothing here creates a schedule or deploys anything (SEM deploy).
 Stage -> existing worker mapping (spec §5):
   1. ingest      -> ncen_ingestion / rr1_ingestion / nport_ingestion (raw landing)
   2. pit_update  -> bond_security_master + bond_price_observations
-  3. materialize -> ncen_derived_profiles + rr1_derived_profiles
+  3. materialize -> ncen_derived_profiles + rr1_derived_profiles + bond_metrics
   4. mixed_build -> mixed_quant_publication (builds inactive; promote is separate)
   5. validate    -> read-only reconciliation of the current derived pointers
   6. promote     -> promote the ready mixed_quant_v1 publication (the derived and
@@ -124,7 +124,14 @@ def stage_pit_update(ctx: StageContext) -> StageOutcome:
 
 
 def stage_materialize(ctx: StageContext) -> StageOutcome:
-    return _compose([_invoke(ctx, "ncen_derived_profiles"), _invoke(ctx, "rr1_derived_profiles")])
+    # bond_metrics runs AFTER the pit_update stage published the security/price
+    # snapshots it consumes; it self-promotes bond_metric_v1 atomically, so the
+    # chain's table-driven pointer-diff compensation covers it automatically.
+    return _compose([
+        _invoke(ctx, "ncen_derived_profiles"),
+        _invoke(ctx, "rr1_derived_profiles"),
+        _invoke(ctx, "bond_metrics"),
+    ])
 
 
 def stage_mixed_build(ctx: StageContext) -> StageOutcome:
