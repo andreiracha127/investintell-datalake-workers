@@ -338,6 +338,75 @@ def test_per_security_typed_statuses_never_a_fabricated_value(env):
     assert bad == 0
 
 
+def test_future_observation_never_enters_and_yields_settle_on_the_stale_date(env):
+    """Negative no-look-ahead + settlement-anchor pin (review IMP).
+
+    One security, TWO eligible observations with DIFFERENT prices: a stale one
+    (as_of - 10d) and a FUTURE one (as_of + 5d). Discriminates two silent
+    regressions: (1) dropping the ``observation_date <= as_of`` predicate would
+    make the future print win as most recent (different values); (2) silently
+    re-anchoring the yield settlement from the observation date to as_of would
+    shift the yields. Expected values are pinned with DIRECT engine calls at
+    the stale settlement (anchor-independent ground truth).
+    """
+    from datetime import timedelta
+
+    from src.bonds import cashflows, pricing
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    as_of = date(2025, 2, 1)
+    stale_date = as_of - timedelta(days=10)   # 2025-01-22, inside the bond's life
+    future_date = as_of + timedelta(days=5)   # 2025-02-06, must NEVER enter
+
+    observe_security(conn, run_id, cusip9=CUSIP_FIX, coupon_type="fixed",
+                     coupon_rate=Decimal("10.0"), maturity=date(2030, 1, 1),
+                     day_count="30/360 US", coupon_schedule=FIX_SCHEDULE, as_of=as_of)
+    publish_security_master(conn, run_id, package_id, as_of=as_of)
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"),
+               observation_date=stale_date, as_of=as_of)
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("55.0"),
+               observation_date=future_date, as_of=as_of)
+    # BOTH observations are eligible: only the <= as_of predicate excludes the
+    # future one (the eligibility view knows nothing about the calc-date).
+    eligible = conn.execute(
+        "SELECT count(*) FROM bond_price_eligibility_v1 WHERE is_eligible"
+    ).fetchone()[0]
+    assert eligible == 2
+    qualify(conn, WAVE1_METRICS)
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=as_of.isoformat())
+    assert result["state"] == "ok" and result["available"] == 4
+
+    rows = rows_by_metric(current_rows(conn, SEC_FIX))
+    engine_terms = cashflows.BondTerms(
+        issue_date=date(2025, 1, 1), maturity_date=date(2030, 1, 1),
+        coupon_rate=0.10, frequency=cashflows.Frequency.SEMIANNUAL,
+        day_count=cashflows.DayCount.THIRTY_360_US,
+    )
+    schedule = cashflows.generate_schedule(engine_terms)
+    expected_ytm_stale = pricing.yield_to_maturity(schedule, stale_date, 96.23)
+    anchored_at_as_of = pricing.yield_to_maturity(schedule, as_of, 96.23)
+    future_print_ytm = pricing.yield_to_maturity(schedule, future_date, 55.0)
+    # Sanity: the three candidate anchors are genuinely distinguishable.
+    assert abs(expected_ytm_stale - anchored_at_as_of) > 1e-6
+    assert abs(expected_ytm_stale - future_print_ytm) > 1e-3
+
+    served_ytm = float(rows["security_ytm"][2])
+    # (a) NO LOOK-AHEAD: the future print's price never enters the build.
+    assert served_ytm != pytest.approx(future_print_ytm, rel=1e-6)
+    # (b) SETTLEMENT ANCHOR: yields settle at the STALE observation date...
+    assert served_ytm == pytest.approx(expected_ytm_stale, rel=1e-9)
+    assert float(rows["security_ytw"][2]) == pytest.approx(expected_ytm_stale, rel=1e-9)
+    assert float(rows["current_yield"][2]) == pytest.approx(
+        pricing.current_yield(schedule, 96.23), rel=1e-9)
+    # ...NOT at as_of (a silent re-anchor would land exactly here).
+    assert served_ytm != pytest.approx(anchored_at_as_of, rel=1e-9)
+    # WAL alone settles at the chain calc-date, from the schedule (no price).
+    assert float(rows["wal"][2]) == pytest.approx(
+        (date(2030, 1, 1) - as_of).days / 365.0, rel=1e-9)
+
+
 # --------------------------------------------------------------------------- #
 # Dark ladder (sibling dark_no_source semantics: nothing published)
 # --------------------------------------------------------------------------- #
