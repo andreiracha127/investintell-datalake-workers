@@ -147,7 +147,7 @@ def parse_observation_date(value: object) -> date | None:
     return None
 
 
-def _require_pin(expected_sha256: object) -> str:
+def require_pin(expected_sha256: object) -> str:
     """Fail-closed pin gate: absent or malformed pins refuse before any I/O."""
     if not expected_sha256 or not isinstance(expected_sha256, str):
         raise BondError(REFUSAL_SHA256_MISMATCH, {"detail": "pin_missing"})
@@ -236,7 +236,7 @@ def validate_artifact(
     Returns a descriptor ready for :func:`iter_price_rows`. The caller owns the
     descriptor's extraction workspace — release it with :func:`cleanup_artifact`.
     """
-    pin = _require_pin(expected_sha256)
+    pin = require_pin(expected_sha256)
     artifact = Path(path)
     if not artifact.is_file():
         raise BondError(REFUSAL_ARTIFACT_UNAVAILABLE, {"detail": "artifact_not_found"})

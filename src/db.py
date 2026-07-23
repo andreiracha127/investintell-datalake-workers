@@ -196,3 +196,9 @@ LOCK_BOND_RATING_HISTORY = 900_346
 # view/function over bond_price_observation. 900_347 is the next free id after
 # LOCK_BOND_RATING_HISTORY.
 LOCK_BOND_PRICE_ELIGIBILITY = 900_347
+# bond_price_ingest artifact-pinned source ingest worker (activation Wave 1,
+# Task 1). Lands pinned source-artifact rows into the immutable
+# bond_price_observation table and registers the validated source pair the
+# price materializer discovers via sec_validated_raw_runs. 900_348 is the next
+# free id in the ingestion band (900_3xx) after LOCK_BOND_PRICE_ELIGIBILITY.
+LOCK_BOND_PRICE_INGEST = 900_348
