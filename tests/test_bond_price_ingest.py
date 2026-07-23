@@ -164,6 +164,16 @@ def test_missing_locator_refuses_artifact_unavailable(monkeypatch: pytest.Monkey
     assert envelope == {"state": "refused", "reason": "artifact_unavailable", "detail": {"detail": "no_artifact_locator"}}
 
 
+def test_unreachable_remote_locator_refuses_artifact_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    _pin_env(monkeypatch, path=None, pin="0" * 64)
+    # Nothing listens on port 9: the streaming fetch fails fast, and neither
+    # the locator nor any env var name may surface in the refusal envelope.
+    monkeypatch.setenv(bond_price_ingest.ENV_ARTIFACT_URL, "https://127.0.0.1:9/a.bin")
+    envelope = bond_price_ingest.run(UNREACHABLE_DSN)
+    assert envelope == {"state": "refused", "reason": "artifact_unavailable", "detail": {"detail": "fetch_failed"}}
+    _assert_envelope_is_grep_clean(envelope)
+
+
 def test_absent_artifact_file_refuses_artifact_unavailable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _pin_env(monkeypatch, path=tmp_path / "missing.parquet", pin="0" * 64)
     envelope = bond_price_ingest.run(UNREACHABLE_DSN)

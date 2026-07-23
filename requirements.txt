@@ -2,6 +2,9 @@ psycopg[binary]>=3.2
 duckdb>=1.5,<2
 numpy>=1.26
 pandas>=2.2
+# pyarrow: justified third-party dep (Inc.3 constraint) — parquet ETL for the
+# bonds price source-artifact ingest (src/bonds/source_artifact.py, streamed
+# record batches; also used by the quant data lanes).
 pyarrow>=15.0
 PyYAML>=6.0
 jsonschema>=4.23
