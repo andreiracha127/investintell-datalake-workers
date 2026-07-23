@@ -5,7 +5,9 @@ CREATE TABLE IF NOT EXISTS sec_nport_instrument_class_bridge (
     publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     accession_number text NOT NULL CHECK (accession_number <> ''),
     holding_id text NOT NULL CHECK (holding_id <> ''),
-    instrument_id text NOT NULL CHECK (instrument_id <> ''),
+    -- Security identity is optional.  A resolved holding can be attributed to a
+    -- series without a resolved security identity or share class.
+    instrument_id text CHECK (instrument_id <> ''),
     series_id text,
     class_id text,
     valid_from date NOT NULL,
@@ -14,12 +16,35 @@ CREATE TABLE IF NOT EXISTS sec_nport_instrument_class_bridge (
     source_candidate_key_evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
     PRIMARY KEY (publication_id, accession_number, holding_id),
     CHECK (valid_to IS NULL OR valid_to >= valid_from),
-    CHECK (resolution_state <> 'resolved'
-           OR (NULLIF(series_id, '') IS NOT NULL AND NULLIF(class_id, '') IS NOT NULL))
+    CONSTRAINT sec_nport_instrument_class_bridge_resolved_series_check
+        CHECK (resolution_state <> 'resolved' OR NULLIF(series_id, '') IS NOT NULL)
 );
 
 ALTER TABLE sec_nport_instrument_class_bridge
     ADD COLUMN IF NOT EXISTS source_candidate_key_evidence jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+-- Upgrade the already-created, empty V2 schema from the original DDL.  The
+-- production caller guards this DDL with an explicit empty-table check; this
+-- file intentionally does not attempt a populated-table migration.
+ALTER TABLE sec_nport_instrument_class_bridge
+    ALTER COLUMN instrument_id DROP NOT NULL;
+
+ALTER TABLE sec_nport_instrument_class_bridge
+    DROP CONSTRAINT IF EXISTS sec_nport_instrument_class_bridge_check1;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'sec_nport_instrument_class_bridge'::regclass
+          AND conname = 'sec_nport_instrument_class_bridge_resolved_series_check'
+    ) THEN
+        ALTER TABLE sec_nport_instrument_class_bridge
+            ADD CONSTRAINT sec_nport_instrument_class_bridge_resolved_series_check
+            CHECK (resolution_state <> 'resolved' OR NULLIF(series_id, '') IS NOT NULL);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS sec_nport_instrument_class_bridge_instrument_validity_idx
     ON sec_nport_instrument_class_bridge (instrument_id, valid_from, valid_to);

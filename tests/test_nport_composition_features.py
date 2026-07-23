@@ -160,6 +160,38 @@ def test_composition_quality_boundaries_and_immutable_build_pin():
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
+def test_composition_includes_null_security_identity_in_denominator_only():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed(cur)
+        _holding(cur, holdings_id, run_id, "IDENTIFIED", "COMP-NULL-IDENTITY", "2026-01-31", 100,
+                 issuer="ONE", category="Corporate", payoff="Long", cusip="111111111", nav=10)
+        cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
+            (publication_id,accession_number,holding_id,instrument_id,series_id,class_id,valid_from,resolution_state)
+            VALUES(%s,'A1','UNIDENTIFIED',NULL,'COMP-NULL-IDENTITY',NULL,'2020-01-01','resolved')""", (holdings_id,))
+        cur.execute("""INSERT INTO sec_nport_holdings_v2
+            (publication_id,accession_number,holding_id,source_run_id,report_date,filing_date,source_series_id,
+             issuer_name,issuer_category,signed_market_value,signed_pct_of_nav,payoff_profile,source_typed_projection)
+            VALUES(%s,'A1','UNIDENTIFIED',%s,'2026-01-31','2026-01-31','COMP-NULL-IDENTITY',
+                   'TWO','Corporate',50,5,'Long','{}'::jsonb)""", (holdings_id, run_id))
+        _publish_holdings(cur, holdings_id)
+        _prepare_features(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (features_id,))
+        assert cur.fetchone() == (1,)
+        cur.execute("""SELECT position_count,security_identity_market_value_coverage,security_hhi,
+            source_holdings_publication_id FROM nport_composition_features WHERE publication_id=%s""", (features_id,))
+        position_count, identity_coverage, security_hhi, pinned_source = cur.fetchone()
+        assert position_count == 2
+        assert float(identity_coverage) == pytest.approx(100 / 150)
+        assert security_hhi is None
+        assert pinned_source == holdings_id
+        cur.execute("""SELECT source_holdings_publication_id,methodology_revision
+            FROM nport_composition_feature_builds WHERE publication_id=%s""", (features_id,))
+        assert cur.fetchone() == (holdings_id, "security_identity_v2")
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def test_composition_uses_only_v2_sidecar_fields_and_never_relabels_sector():
     ddl = (ROOT / "schemas" / "nport_composition_features.sql").read_text(encoding="utf-8").lower()
     for required in ("sec_nport_holdings_v2", "issuer_category", "payoff_profile", "identifier_availability", "reason_codes", "provenance"):
