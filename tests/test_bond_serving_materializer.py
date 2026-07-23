@@ -12,7 +12,11 @@ the Task 3/4 build machinery. Proves:
     (fund_asof stale >= 31d) and ambiguity (duplicate cohort) states;
   * fund_exposure reverse lookup aggregates at fund (series) grain and HARD-FAILS
     on holding->security row multiplication;
-  * the coverage gate spans BOTH observation lanes (the fund_asof function too);
+  * Wave 1: catalog serves latest_price_pct/security_ytm/security_ytw and detail
+    serves current_yield/security_ytm/security_ytw/wal from the promoted current
+    metric view, null-honest (absent/non-available => JSON null, never 0);
+  * the coverage gate spans BOTH observation lanes (the fund_asof function too)
+    AND the current metric view (all-or-nothing);
   * DATA leak absence: no raw_row_id/source_run_id/hashes/vendor/.tsv names, no
     ``cik:``/``row:`` identifiers, no internal provenance/lineage.
 
@@ -130,6 +134,103 @@ def test_catalog_and_detail_state_mapping_and_neutral_ambiguity() -> None:
         assert "US4592001014" in det2["payload"]
         assert "contributing_observation_ids" not in det2["payload"]
         assert SENT_OBS not in det2["payload"]
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_catalog_serves_computed_metrics_and_latest_price_null_honest() -> None:
+    """Wave 1 catalog extension: latest_price_pct + security_ytm + security_ytw.
+
+    SEC1 has one ELIGIBLE latest observation (unique cohort, trade/evaluated,
+    clean/dirty, price present) and 'available' metric rows -> values served.
+    SEC2's latest cohort is a DUPLICATE (no unambiguous latest price) and its
+    metric rows are non-available statuses -> every new key is present with an
+    honest JSON null, never a synthetic 0.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        _materialize(cur)
+
+        def payload(security_id: UUID) -> dict:
+            return json.loads(cur.execute(
+                "SELECT payload::text FROM sec_current_bond_serving_facts "
+                "WHERE surface='catalog' AND security_id=%s", (security_id,)
+            ).fetchone()[0])
+
+        p1 = payload(SEC1)
+        assert p1["latest_price_pct"] == 99.5   # % of par, from the latest lane
+        assert p1["security_ytm"] == 0.0525     # decimal fraction from metric view
+        assert p1["security_ytw"] == 0.0518
+
+        p2 = payload(SEC2)
+        for key in ("latest_price_pct", "security_ytm", "security_ytw"):
+            assert key in p2, f"catalog key {key!r} must be present even when absent"
+            assert p2[key] is None, f"catalog key {key!r} must be NULL, never fabricated"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_detail_serves_computed_metrics_null_honest() -> None:
+    """Wave 1 detail extension: current_yield + security_ytm + security_ytw + wal.
+
+    SEC1 serves all four 'available' values (yields as fractions, wal in years).
+    SEC2 exercises every null-honest arm: no_eligible_price / gate_not_passed /
+    engine_typed_error rows AND a completely ABSENT current_yield row all project
+    the key as JSON null (present, never 0).
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        _materialize(cur)
+
+        def payload(security_id: UUID) -> dict:
+            return json.loads(cur.execute(
+                "SELECT payload::text FROM sec_current_bond_serving_facts "
+                "WHERE surface='detail' AND security_id=%s", (security_id,)
+            ).fetchone()[0])
+
+        d1 = payload(SEC1)
+        assert d1["current_yield"] == 0.0531
+        assert d1["security_ytm"] == 0.0525
+        assert d1["security_ytw"] == 0.0518
+        assert d1["wal"] == 4.37
+        # coupon stays a reported TERM, independent of the computed yields.
+        assert d1["coupon_rate"] == 5.25
+
+        d2 = payload(SEC2)
+        for key in ("current_yield", "security_ytm", "security_ytw", "wal"):
+            assert key in d2, f"detail key {key!r} must be present even when absent"
+            assert d2[key] is None, f"detail key {key!r} must be NULL, never fabricated"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_missing_metric_view_fails_the_coverage_gate() -> None:
+    """catalog/detail now read the promoted current metric view; a build without it
+    would silently serve a payload MISSING the contract keys -- all-or-nothing."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute("DROP TABLE sec_current_bond_metric_v1")
+        with pytest.raises(materializer.BondServingSurfaceCoverageError):
+            _materialize(cur)
+        pointer = cur.execute(
+            "SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_serving_v1'"
+        ).fetchone()
+        assert pointer is None
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

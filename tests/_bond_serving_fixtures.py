@@ -33,11 +33,15 @@ SENT_ROW = "row:ROWKEYLEAK000"
 SENT_FILE = "HOLDINGS_INTERNAL.tsv"
 SENT_VENDOR = "InternalVendorNameX"
 SENT_OBS = "OBSIDLEAK555"
+# Wave 1: vendor-looking token seeded on the metric snapshot rows (provenance +
+# engine_error_code) — the serving projects ONLY the numeric value, so this token
+# must never reach a served payload.
+SENT_METRIC_VENDOR = "MetricVendorNameZ7"
 FORBIDDEN = [
     SENT_RAW, SENT_SRC, SENT_MD5, "LEAKCIK789", "ROWKEYLEAK000", SENT_FILE, SENT_VENDOR,
-    SENT_OBS, "raw_row_id", "source_run_id", "source_lineage", "provenance",
-    "contributing_observation_ids", "source_typed_projection", "holding_id",
-    "accession_number", "identity_key",
+    SENT_OBS, SENT_METRIC_VENDOR, "raw_row_id", "source_run_id", "source_lineage",
+    "provenance", "contributing_observation_ids", "source_typed_projection",
+    "holding_id", "accession_number", "identity_key", "engine_error_code",
 ]
 
 # Internal provenance blob (must never be projected at all).
@@ -154,6 +158,32 @@ def synthetic_snapshots(cur) -> None:
             FROM _fund_asof_backing b WHERE b.observation_date <= fund_as_of
         $$
     """)
+    # --- computed per-security metrics (catalog/detail computed values) -----
+    # Stand-in for the promoted current view over bond_metric_v1 (Task 3): one
+    # row per (security, metric); value NON-NULL exactly when status='available'.
+    # SEC2 exercises every null-honest arm: non-available statuses AND a missing
+    # row (no current_yield) — plus a vendor-looking engine_error_code/provenance
+    # token that must never be served.
+    cur.execute("""
+        CREATE TABLE sec_current_bond_metric_v1(
+            security_id uuid, metric_id text, value numeric, status text,
+            engine_error_code text, as_of date, provenance jsonb)
+    """)
+    metric_prov = json.dumps({"source_run_id": SENT_SRC, "vendor": SENT_METRIC_VENDOR})
+    cur.execute(
+        "INSERT INTO sec_current_bond_metric_v1 VALUES "
+        "(%s,'security_ytm',0.0525,'available',NULL,%s,%s),"
+        "(%s,'security_ytw',0.0518,'available',NULL,%s,%s),"
+        "(%s,'current_yield',0.0531,'available',NULL,%s,%s),"
+        "(%s,'wal',4.37,'available',NULL,%s,%s),"
+        "(%s,'security_ytm',NULL,'no_eligible_price',NULL,%s,%s),"
+        "(%s,'security_ytw',NULL,'gate_not_passed',NULL,%s,%s),"
+        "(%s,'wal',NULL,'engine_typed_error',%s,%s,%s)",
+        (SEC1, AS_OF, metric_prov, SEC1, AS_OF, metric_prov,
+         SEC1, AS_OF, metric_prov, SEC1, AS_OF, metric_prov,
+         SEC2, AS_OF, metric_prov, SEC2, AS_OF, metric_prov,
+         SEC2, SENT_METRIC_VENDOR, AS_OF, metric_prov),
+    )
     # --- N-PORT reverse-lookup source (fund_exposure) ----------------------
     cur.execute("""
         CREATE TABLE sec_nport_holdings_v2_current(
