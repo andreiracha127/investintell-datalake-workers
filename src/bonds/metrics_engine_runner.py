@@ -58,7 +58,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from numbers import Real
-from typing import Any, Mapping
+from typing import Mapping
 from uuid import UUID
 
 from .cashflows import (
