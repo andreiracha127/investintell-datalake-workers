@@ -849,6 +849,38 @@ def test_materialize_stage_worker_set_includes_bond_metrics(monkeypatch):
     assert outcome.status.value == "skipped" and outcome.reason == "dark_no_source"
 
 
+def test_compose_stage_precedence_one_success_beats_dark_skips(monkeypatch):
+    """Aggregation-precedence pin (PR #51 triage): with MIXED unit outcomes —
+    dark skips plus one success — the STAGE is succeeded; dark units never mask
+    a delivered publication. ``_compose`` already implements the correct
+    precedence (a unit exception fails the whole stage via the engine; >=1
+    success wins over skips; all-skip is a reported ``dark_no_source``), so
+    this is a regression pin, not a fix: the observed CI 'skipped' came from
+    EVERY unit going dark on the merge tree (see ``_seed_wave1_public_data``),
+    not from the aggregation."""
+    states = {
+        "ncen_derived_profiles": {"state": "no_source"},
+        "rr1_derived_profiles": {"state": "ok", "products": 2},
+        "bond_metrics": {"state": "no_securities"},
+    }
+
+    def fake_worker(name):
+        def _run(dsn, *, calc_date=None):
+            return states[name]
+        return _run
+
+    monkeypatch.setattr(chain_worker, "_worker", fake_worker)
+    ctx = StageContext(conn=None, dsn="unused", source_day=D1,
+                       run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
+                       chain="c", code_revision="r", config_version="v")
+    outcome = chain_worker.stage_materialize(ctx)
+    assert outcome.status.value == "succeeded"
+    units = outcome.detail["units"]
+    assert units["unit_0"]["status"] == "skipped"
+    assert units["unit_1"]["status"] == "succeeded"
+    assert units["unit_2"]["status"] == "skipped"
+
+
 def test_classify_recognises_the_protocol_current_success_state():
     """The materializer envelope ``{"state": "ok", **result}`` is overridden by
     the protocol's ``state='current'`` (self-promoted publication). Latent until
@@ -919,10 +951,32 @@ def _seed_wave1_public_data() -> None:
         manifests.register_file(conn, run_id=run.run_id, relative_path="source.parquet",
                                 sha256=sha, byte_size=1)
         manifests.validate_raw_run(conn, run_id=run.run_id)
-        manifests.register_package_discovery(
+        package = manifests.register_package_discovery(
             conn, source_family="bond_price", source_quarter="2025Q1",
             package_relative_path="bond_price/source.parquet", package_state="loaded",
             package_sha256=sha, run_id=run.run_id,
+        )
+        # The MERGED security master (origin/main post-fork) pins its debt-cohort
+        # source to the EXACT current validated sec_nport_holdings_v2 publication
+        # (worker _current_nport_source); without one it is honestly dark and the
+        # whole bond lane cascades dark (the exact PR #51 CI failure). Seed one
+        # current validated publication whose lineage is this fixture's validated
+        # run/package. Its N-PORT loader is a no-op here (no matching
+        # sec_nport_holdings_v2_current rows for this publication), so the
+        # universe still comes from the directly landed observation below. On the
+        # pre-merge tree (family-agnostic discovery) this row is inert.
+        nport_pub = uuid4()
+        conn.execute(
+            "INSERT INTO sec_derived_publications "
+            "(publication_id, product, publication_version, source_run_id, "
+            " source_package_id, build_fingerprint) "
+            "VALUES (%s, 'sec_nport_holdings_v2', 1, %s, %s, %s)",
+            (nport_pub, run.run_id, package.package_id, "cd" * 32),
+        )
+        conn.execute("SELECT sec_validate_derived_publication(%s)", (nport_pub,))
+        conn.execute(
+            "SELECT sec_set_current_derived_publication('sec_nport_holdings_v2', %s)",
+            (nport_pub,),
         )
         oid = uuid4()
         conn.execute(
