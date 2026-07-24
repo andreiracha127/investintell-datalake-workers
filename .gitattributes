@@ -1,4 +1,5 @@
 contracts/quant-engine/v1/**/*.json text eol=lf
+contracts/nport-fixed-income-features/**/*.json text eol=lf
 docker/quant-engine/entrypoint.sh text eol=lf
 fixtures/input_packs/**/*.json text eol=lf
 fixtures/p1_packs/**/*.json text eol=lf

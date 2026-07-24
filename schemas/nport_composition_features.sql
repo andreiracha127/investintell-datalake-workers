@@ -79,6 +79,32 @@ CREATE TABLE IF NOT EXISTS nport_composition_dimension_features (
         REFERENCES nport_composition_features(publication_id, series_id, report_date) ON DELETE RESTRICT
 );
 
+-- Additive raw holding dimensions.  This intentionally does not widen the
+-- established v1 dimension enum, so existing consumers retain their exact
+-- three-dimension result shape while v2 readers get governed source literals.
+CREATE TABLE IF NOT EXISTS nport_composition_governed_dimensions_v2 (
+    publication_id uuid NOT NULL,
+    series_id text NOT NULL,
+    report_date date NOT NULL,
+    dimension_type text NOT NULL CHECK (dimension_type IN ('asset_category','currency_code','investment_country','restricted_security','fair_value_level')),
+    dimension_key text NOT NULL CHECK (dimension_key <> ''),
+    position_count integer NOT NULL CHECK (position_count >= 0),
+    unknown_market_value_position_count integer NOT NULL DEFAULT 0 CHECK (unknown_market_value_position_count >= 0),
+    gross_market_value numeric,
+    gross_market_value_share numeric CHECK (gross_market_value_share IS NULL OR gross_market_value_share BETWEEN 0 AND 1),
+    known_gross_market_value numeric,
+    gross_market_value_denominator numeric,
+    market_value_coverage numeric CHECK (market_value_coverage IS NULL OR market_value_coverage BETWEEN 0 AND 1),
+    PRIMARY KEY (publication_id, series_id, report_date, dimension_type, dimension_key),
+    FOREIGN KEY (publication_id, series_id, report_date)
+        REFERENCES nport_composition_features(publication_id, series_id, report_date) ON DELETE RESTRICT
+);
+
+ALTER TABLE nport_composition_governed_dimensions_v2
+    ADD COLUMN IF NOT EXISTS gross_market_value_share numeric,
+    ADD COLUMN IF NOT EXISTS known_gross_market_value numeric,
+    ADD COLUMN IF NOT EXISTS gross_market_value_denominator numeric;
+
 CREATE TABLE IF NOT EXISTS nport_composition_feature_builds (
     publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
@@ -205,6 +231,11 @@ END $$;
 DROP TRIGGER IF EXISTS nport_composition_dimension_features_write_guard ON nport_composition_dimension_features;
 CREATE TRIGGER nport_composition_dimension_features_write_guard
 BEFORE INSERT OR UPDATE OR DELETE ON nport_composition_dimension_features
+FOR EACH ROW EXECUTE FUNCTION nport_composition_dimension_features_write_guard();
+
+DROP TRIGGER IF EXISTS nport_composition_governed_dimensions_v2_write_guard ON nport_composition_governed_dimensions_v2;
+CREATE TRIGGER nport_composition_governed_dimensions_v2_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_composition_governed_dimensions_v2
 FOR EACH ROW EXECUTE FUNCTION nport_composition_dimension_features_write_guard();
 
 CREATE OR REPLACE FUNCTION build_nport_composition_features(
@@ -391,6 +422,49 @@ BEGIN
 
     WITH positions AS (
         SELECT b.series_id,h.report_date,h.signed_market_value,
+               NULLIF(btrim(h.source_typed_projection->>'ASSET_CAT'),'') AS asset_category,
+               NULLIF(btrim(h.source_typed_projection->>'CURRENCY_CODE'),'') AS currency_code,
+               NULLIF(btrim(h.source_typed_projection->>'INVESTMENT_COUNTRY'),'') AS investment_country,
+               NULLIF(btrim(h.source_typed_projection->>'IS_RESTRICTED_SECURITY'),'') AS restricted_security,
+               NULLIF(btrim(h.source_typed_projection->>'FAIR_VALUE_LEVEL'),'') AS fair_value_level
+        FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b
+          ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
+        WHERE h.publication_id=source_publication_id AND h.report_date<=as_of_date AND b.resolution_state='resolved'
+          AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
+    ), dimensioned AS (
+        SELECT series_id,report_date,'asset_category'::text AS dimension_type,COALESCE(asset_category,'not_reported') AS dimension_key,signed_market_value FROM positions
+        UNION ALL SELECT series_id,report_date,'currency_code',COALESCE(currency_code,'not_reported'),signed_market_value FROM positions
+        UNION ALL SELECT series_id,report_date,'investment_country',COALESCE(investment_country,'not_reported'),signed_market_value FROM positions
+        UNION ALL SELECT series_id,report_date,'restricted_security',COALESCE(restricted_security,'not_reported'),signed_market_value FROM positions
+        UNION ALL SELECT series_id,report_date,'fair_value_level',COALESCE(fair_value_level,'not_reported'),signed_market_value FROM positions
+    ), grouped AS (
+        SELECT series_id,report_date,dimension_type,dimension_key,count(*)::integer AS position_count,
+               count(*) FILTER (WHERE signed_market_value IS NULL)::integer AS unknown_market_value_position_count,
+               sum(abs(signed_market_value)) AS gross_market_value
+        FROM dimensioned
+        GROUP BY series_id,report_date,dimension_type,dimension_key
+    ), coverage AS (
+        SELECT series_id,report_date,dimension_type,
+               sum(abs(signed_market_value)) FILTER (WHERE dimension_key<>'not_reported') AS known_gross_market_value,
+               sum(abs(signed_market_value)) AS gross_market_value_denominator,
+               count(*) FILTER (WHERE signed_market_value IS NULL)::integer AS unknown_market_value_position_count
+        FROM dimensioned GROUP BY series_id,report_date,dimension_type
+    )
+    INSERT INTO nport_composition_governed_dimensions_v2 (
+        publication_id,series_id,report_date,dimension_type,dimension_key,position_count,unknown_market_value_position_count,
+        gross_market_value,gross_market_value_share,known_gross_market_value,gross_market_value_denominator,market_value_coverage)
+    SELECT target_publication_id,g.series_id,g.report_date,g.dimension_type,g.dimension_key,g.position_count,g.unknown_market_value_position_count,
+           CASE WHEN g.unknown_market_value_position_count=0 THEN g.gross_market_value END,
+           CASE WHEN g.unknown_market_value_position_count=0 AND f.gross_market_value>0 THEN g.gross_market_value/f.gross_market_value END,
+           CASE WHEN c.unknown_market_value_position_count=0 THEN c.known_gross_market_value END,
+           CASE WHEN c.unknown_market_value_position_count=0 THEN c.gross_market_value_denominator END,
+           CASE WHEN c.unknown_market_value_position_count=0 AND c.gross_market_value_denominator>0 THEN c.known_gross_market_value/c.gross_market_value_denominator END
+    FROM grouped g JOIN coverage c USING(series_id,report_date,dimension_type) JOIN nport_composition_features f
+      ON (f.publication_id,f.series_id,f.report_date)=(target_publication_id,g.series_id,g.report_date)
+    ON CONFLICT (publication_id,series_id,report_date,dimension_type,dimension_key) DO NOTHING;
+
+    WITH positions AS (
+        SELECT b.series_id,h.report_date,h.signed_market_value,
                NULLIF(btrim(h.issuer_category),'') AS issuer_category,
                NULLIF(btrim(h.payoff_profile),'') AS payoff_profile,
                CASE WHEN NULLIF(btrim(h.cusip),'') IS NOT NULL OR NULLIF(btrim(h.isin),'') IS NOT NULL OR NULLIF(btrim(h.issuer_lei),'') IS NOT NULL
@@ -435,6 +509,14 @@ CREATE OR REPLACE VIEW sec_current_nport_composition_dimension_features AS
 SELECT d.*
 FROM sec_derived_current_pointers c
 JOIN nport_composition_dimension_features d ON d.publication_id=c.publication_id
+JOIN nport_composition_feature_builds b ON b.publication_id=d.publication_id
+WHERE c.product='nport_composition_features_v1'
+  AND b.methodology_revision='security_identity_v2';
+
+CREATE OR REPLACE VIEW sec_current_nport_composition_governed_dimensions_v2 AS
+SELECT d.*
+FROM sec_derived_current_pointers c
+JOIN nport_composition_governed_dimensions_v2 d ON d.publication_id=c.publication_id
 JOIN nport_composition_feature_builds b ON b.publication_id=d.publication_id
 WHERE c.product='nport_composition_features_v1'
   AND b.methodology_revision='security_identity_v2';

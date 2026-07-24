@@ -18,6 +18,23 @@ def _seed_fixture(cur):
     cur.execute("CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, raw_validated_at timestamptz)")
     cur.execute("CREATE TABLE sec_source_packages(package_id uuid PRIMARY KEY, run_id uuid NOT NULL)")
     cur.execute("CREATE VIEW sec_validated_raw_runs AS SELECT run_id,raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL")
+    cur.execute("""CREATE TABLE nport_raw_rows(
+        raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        ingestion_run_id uuid NOT NULL, source_file_id uuid NOT NULL, source_row_number bigint NOT NULL,
+        source_table text NOT NULL, accession_number text, holding_id text, typed_projection jsonb NOT NULL,
+        UNIQUE(source_file_id,source_row_number))""")
+    for relation, source_table in (
+        ("nport_interest_rate_risk_raw", "INTEREST_RATE_RISK.tsv"),
+        ("nport_fund_reported_info_raw", "FUND_REPORTED_INFO.tsv"),
+        ("nport_borrow_aggregate_raw", "BORROW_AGGREGATE.tsv"),
+        ("nport_repurchase_agreement_raw", "REPURCHASE_AGREEMENT.tsv"),
+        ("nport_repurchase_collateral_raw", "REPURCHASE_COLLATERAL.tsv"),
+        ("nport_repurchase_counterparty_raw", "REPURCHASE_COUNTERPARTY.tsv"),
+        ("nport_securities_lending_raw", "SECURITIES_LENDING.tsv"),
+    ):
+        cur.execute(f"""CREATE VIEW {relation} AS
+            SELECT r.* FROM nport_raw_rows r JOIN sec_validated_raw_runs v ON v.run_id=r.ingestion_run_id
+            WHERE r.source_table='{source_table}'""")
     for ddl_name in ("sec_derived_publications.sql", "nport_holdings_v2.sql", "nport_fixed_income_features.sql"):
         ddl = (ROOT / "schemas" / ddl_name).read_text(encoding="utf-8")
         cur.execute(ddl)
@@ -52,6 +69,12 @@ def _prepare_features_publication(cur, publication_id, run_id, package_id):
         (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
         VALUES(%s,'nport_fixed_income_features_v1',1,%s,%s,%s)""",
         (publication_id, run_id, package_id, "b" * 64))
+
+
+def _raw(cur, run_id, source_table, accession, projection, *, holding_id=None):
+    cur.execute("""INSERT INTO nport_raw_rows
+        (ingestion_run_id,source_file_id,source_row_number,source_table,accession_number,holding_id,typed_projection)
+        VALUES(%s,%s,2,%s,%s,%s,%s::jsonb)""", (run_id, uuid4(), source_table, accession, holding_id, projection))
 
 
 def test_fixed_income_features_builds_complete_degraded_insufficient_and_unavailable_rows():
@@ -267,3 +290,262 @@ def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics(
     assert "sec_nport_holdings_v2_current h" not in ddl
     assert "for share of c" in ddl
     assert "from sec_nport_holdings_v2 h" in ddl
+
+
+def test_fixed_income_adds_weighted_maturity_statistics_without_zero_fill():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        for holding_id, value, maturity in (("M1", 10, "2027-01-31"), ("M2", 80, "2030-01-31"), ("M3", 10, "2035-01-31")):
+            _holding(cur, holdings_id, run_id, holding_id, "RICH", "2026-01-31", value,
+                     f'{{"ASSET_CAT":"DBT","DEBT_SECURITY":{{"MATURITY_DATE":"{maturity}"}}}}')
+        _holding(cur, holdings_id, run_id, "S1", "SPARSE", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{}}')
+        _holding(cur, holdings_id, run_id, "F1", "FLAG_NULL", "2026-01-31", None,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"IS_DEFAULT":"maybe"}}')
+        _holding(cur, holdings_id, run_id, "F2", "FLAG_ZERO", "2026-01-31", 0,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"IS_DEFAULT":" yes "}}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT series_id,maturity_weighted_mean_years,maturity_weighted_p25_years,
+            maturity_weighted_median_years,maturity_weighted_p75_years,maturity_statistics_market_value_coverage
+            FROM nport_fixed_income_features ORDER BY series_id""")
+        rows = {row[0]: row[1:] for row in cur.fetchall()}
+        rich = rows["RICH"]
+        assert rich[0] is not None and rich[1] <= rich[2] <= rich[3]
+        assert float(rich[4]) == pytest.approx(1)
+        assert rows["SPARSE"] == (None, None, None, None, 0)
+        cur.execute("""SELECT reported_state,gross_market_value_coverage
+            FROM nport_fixed_income_debt_flag_features_v2
+            WHERE publication_id=%s AND series_id='SPARSE' AND flag_key='is_default'""", (features_id,))
+        assert cur.fetchone() == ("not_reported", 0)
+        cur.execute("""SELECT flag_key,reported_state FROM nport_fixed_income_repo_lending_reported_flags_v2
+            WHERE publication_id=%s AND series_id='SPARSE' ORDER BY flag_key""", (features_id,))
+        assert cur.fetchall() == [
+            ("is_cash_collateral", "not_reported"),
+            ("is_loan_by_fund", "not_reported"),
+            ("is_non_cash_collateral", "not_reported"),
+        ]
+        cur.execute("""SELECT reported_state,unknown_gross_market_value_position_count,gross_market_value_coverage
+            FROM nport_fixed_income_debt_flag_features_v2
+            WHERE publication_id=%s AND series_id='FLAG_NULL' AND flag_key='is_default'""", (features_id,))
+        assert cur.fetchone() == ("not_reported", 1, None)
+        cur.execute("""SELECT reported_state FROM nport_fixed_income_debt_flag_features_v2
+            WHERE publication_id=%s AND series_id='FLAG_ZERO' AND flag_key='is_default'""", (features_id,))
+        assert cur.fetchone() == ("reported_true",)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_fixed_income_v2_materializes_governed_raw_facts_with_run_isolation():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "H1", "RAW", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{"MATURITY_DATE":"2030-01-31",'
+                 '"IS_DEFAULT":"Y","ARE_ANY_INTEREST_PAYMENT":"Y",'
+                 '"IS_CONVTIBLE_MANDATORY":"N","IS_CONVTIBLE_CONTINGENT":"Y"}}')
+        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"CURRENCY_CODE":"USD",'
+             '"INTEREST_RATE_RISK_ID":"RISK-1","INTRST_RATE_CHANGE_3MON_DV01":"-12","INTRST_RATE_CHANGE_3MON_DV100":"-120"}')
+        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"CURRENCY_CODE":"USD",'
+             '"INTEREST_RATE_RISK_ID":"RISK-2","INTRST_RATE_CHANGE_3MON_DV01":"-8"}')
+        _raw(cur, run_id, "FUND_REPORTED_INFO.tsv", "A1", '{"NET_ASSETS":"200",'
+             '"CREDIT_SPREAD_3MON_INVEST":"3","CREDIT_SPREAD_3MON_NONINVEST":"-4",'
+             '"BORROWING_PAY_WITHIN_1YR":"10","STANDBY_COMMITMENT":"5"}')
+        _raw(cur, run_id, "BORROW_AGGREGATE.tsv", "A1", '{"AMOUNT":"10","COLLATERAL":"4","INVESTMENT_CAT":"DBT"}')
+        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"NAME":"CP ONE","LEI":"LEI-1"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"REPURCHASE_COUNTERPARTY_ID":"CP-2","NAME":"CP TWO","LEI":"LEI-2"}', holding_id="H1")
+        _raw(cur, run_id, "SECURITIES_LENDING.tsv", "A1", '{"LOAN_VALUE":"7","CASH_COLLATERAL_AMOUNT":"5",'
+             '"IS_CASH_COLLATERAL":" y ","IS_NON_CASH_COLLATERAL":"No","IS_LOAN_BY_FUND":"wat"}', holding_id="H1")
+        other_run = uuid4()
+        cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (other_run,))
+        _raw(cur, other_run, "INTEREST_RATE_RISK.tsv", "A1", '{"CURRENCY_CODE":"USD",'
+             '"INTRST_RATE_CHANGE_3MON_DV01":"999","INTRST_RATE_CHANGE_3MON_DV100":"9999"}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT interest_rate_risk_id,raw_value,normalized_to_net_assets,unit,sign_semantics
+            FROM nport_fixed_income_key_rate_sensitivities_v2
+            WHERE publication_id=%s AND sensitivity='dv01' ORDER BY interest_rate_risk_id""", (features_id,))
+        rows = cur.fetchall()
+        assert (rows[0][0], rows[0][1], float(rows[0][2]), rows[0][3:]) == ("RISK-1", -12, pytest.approx(-0.06), ("reported_currency_value_per_1bp", "reported_signed"))
+        assert rows[1][0:2] == ("RISK-2", -8)
+        cur.execute("""SELECT metric_key,numerator,denominator,coverage_ratio,availability_state,missing_reason
+            FROM nport_fixed_income_metric_coverage_v2 WHERE publication_id=%s ORDER BY metric_key,source_raw_row_id""", (features_id,))
+        coverage_rows = cur.fetchall()
+        assert ("key_rate.dv01.3mon", 1, 1, 1, "reported_numeric", None) in coverage_rows
+        assert ("key_rate.dv100.3mon", 0, 1, 0, "field_missing_or_invalid", "named_field_missing_or_invalid") in coverage_rows
+        cur.execute("""SELECT availability_state,numerator,coverage_ratio,missing_reason
+            FROM nport_fixed_income_metric_coverage_v2
+            WHERE publication_id=%s AND metric_key='repo.is_loan_by_fund'""", (features_id,))
+        assert cur.fetchone() == ("field_missing_or_invalid", 0, 0, "named_field_missing_or_invalid")
+        cur.execute("""SELECT investment_bucket,raw_value,measurement_type
+                FROM nport_fixed_income_credit_spread_sensitivities_v2
+                WHERE publication_id=%s AND raw_value IS NOT NULL ORDER BY investment_bucket""", (features_id,))
+        assert cur.fetchall() == [("investment", 3, "reported_credit_spread_sensitivity"), ("noninvestment", -4, "reported_credit_spread_sensitivity")]
+        cur.execute("""SELECT primitive_key,raw_value,net_assets_denominator
+            FROM nport_fixed_income_balance_sheet_primitives_v2
+            WHERE publication_id=%s ORDER BY primitive_key""", (features_id,))
+        assert ("net_assets", 200, 200) in cur.fetchall()
+        cur.execute("""SELECT flag_key,gross_market_value_coverage FROM nport_fixed_income_debt_flag_features_v2
+            WHERE publication_id=%s ORDER BY flag_key""", (features_id,))
+        assert ("is_default", 1) in cur.fetchall()
+        cur.execute("""SELECT primitive_type,raw_value FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s ORDER BY primitive_type""", (features_id,))
+        assert ("securities_lending_loan_value", 7) in cur.fetchall()
+        cur.execute("""SELECT source_child_id,counterparty_name FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s AND primitive_type='repurchase_counterparty' ORDER BY source_child_id""", (features_id,))
+        assert cur.fetchall() == [("CP-2", "CP TWO"), (None, "CP ONE")]
+        cur.execute("""SELECT flag_key,reported_state FROM nport_fixed_income_repo_lending_reported_flags_v2
+            WHERE publication_id=%s ORDER BY flag_key""", (features_id,))
+        assert cur.fetchall() == [
+            ("is_cash_collateral", "reported_true"),
+            ("is_loan_by_fund", "not_reported"),
+            ("is_non_cash_collateral", "reported_false"),
+        ]
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_fixed_income_v2_key_rates_do_not_require_fund_reported_info():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "H1", "NO_FUND", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{}}')
+        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"INTEREST_RATE_RISK_ID":"RISK-ONLY",'
+             '"INTRST_RATE_CHANGE_3MON_DV01":"-9","INTRST_RATE_CHANGE_3MON_DV100":"-90"}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT source_raw_row_id,source_file_id,source_row_number,raw_value,
+            normalized_to_net_assets,net_assets_denominator
+            FROM nport_fixed_income_key_rate_sensitivities_v2
+            WHERE publication_id=%s AND interest_rate_risk_id='RISK-ONLY'
+            ORDER BY sensitivity""", (features_id,))
+        rows = cur.fetchall()
+        assert len(rows) == 2
+        assert {row[3:] for row in rows} == {(-9, None, None), (-90, None, None)}
+        assert len({row[0] for row in rows}) == 1 and rows[0][0] is not None
+        assert len({row[1] for row in rows}) == 1 and rows[0][1] is not None
+        assert {row[2] for row in rows} == {2}
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_fixed_income_v2_preserves_physical_raw_identity_and_full_coverage_states():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "H1", "IDENTITY", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{}}')
+        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"INTRST_RATE_CHANGE_3MON_DV01":"0"}')
+        _raw(cur, run_id, "FUND_REPORTED_INFO.tsv", "A1", '{"NET_ASSETS":"100","TOTAL_ASSETS":"bad"}')
+        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"NAME":"one"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"NAME":"two"}', holding_id="H1")
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT source_raw_row_id,source_file_id,source_row_number,counterparty_name
+            FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s AND primitive_type='repurchase_counterparty'
+            ORDER BY source_raw_row_id""", (features_id,))
+        facts = cur.fetchall()
+        assert len(facts) == 2
+        assert facts[0][0] != facts[1][0] and facts[0][1:] != facts[1][1:]
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s AND primitive_type='repurchase_counterparty'""", (features_id,))
+        assert cur.fetchone() == (2,)
+        cur.execute("""SELECT metric_family,availability_state,raw_value
+            FROM nport_fixed_income_metric_coverage_v2 c
+            LEFT JOIN nport_fixed_income_balance_sheet_primitives_v2 b
+              ON b.publication_id=c.publication_id AND b.source_raw_row_id=c.source_raw_row_id
+             AND b.primitive_key='total_assets'
+            WHERE c.publication_id=%s AND c.metric_key IN ('key_rate.dv01.3mon','key_rate.dv100.3mon','balance.total_assets','repo.repurchase_counterparty','repo.securities_lending_loan_value')
+            ORDER BY metric_key,c.source_raw_row_id NULLS FIRST""", (features_id,))
+        states = {(row[0], row[1]) for row in cur.fetchall()}
+        assert ('key_rate_sensitivity', 'reported_numeric') in states
+        assert ('key_rate_sensitivity', 'field_missing_or_invalid') in states
+        assert ('balance_sheet', 'field_missing_or_invalid') in states
+        assert ('repo_lending', 'reported_numeric') in states
+        assert ('repo_lending', 'source_row_absent') in states
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_fixed_income_v2_covers_all_repo_collateral_and_borrow_primitives_without_identity_loss():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        _holding(cur, holdings_id, run_id, "H1", "REPO", "2026-01-31", 100,
+                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{}}')
+        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"INTRST_RATE_CHANGE_3MON_DV01":"0"}')
+        _raw(cur, run_id, "REPURCHASE_AGREEMENT.tsv", "A1", '{"REPURCHASE_RATE":"0"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_AGREEMENT.tsv", "A1", '{"REPURCHASE_RATE":"bad"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_COLLATERAL.tsv", "A1", '{"PRINCIPAL_AMOUNT":"bad","COLLATERAL_AMOUNT":"0"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_COLLATERAL.tsv", "A1", '{"PRINCIPAL_AMOUNT":"1","COLLATERAL_AMOUNT":"2"}', holding_id="H1")
+        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"NAME":"counterparty"}', holding_id="H1")
+        _raw(cur, run_id, "SECURITIES_LENDING.tsv", "A1", '{"LOAN_VALUE":"5","CASH_COLLATERAL_AMOUNT":"0",'
+             '"NON_CASH_COLLATERAL_VALUE":"7","IS_CASH_COLLATERAL":"Y",'
+             '"IS_NON_CASH_COLLATERAL":"N","IS_LOAN_BY_FUND":"Y"}', holding_id="H1")
+        _raw(cur, run_id, "BORROW_AGGREGATE.tsv", "A1", '{"AMOUNT":"","COLLATERAL":"0"}')
+        _raw(cur, run_id, "BORROW_AGGREGATE.tsv", "A1", '{"AMOUNT":"3","COLLATERAL":"4"}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT metric_key,availability_state,numerator,source_raw_row_id,missing_reason
+            FROM nport_fixed_income_metric_coverage_v2
+            WHERE publication_id=%s AND metric_key IN (
+              'repo.repurchase_rate','repo.repurchase_collateral_principal_amount',
+              'repo.repurchase_collateral_value','repo.borrow_aggregate_amount',
+              'repo.borrow_aggregate_collateral')
+            ORDER BY metric_key,source_raw_row_id""", (features_id,))
+        coverage = cur.fetchall()
+        assert ("repo.repurchase_rate", "reported_numeric", 1) in [row[:3] for row in coverage]
+        assert ("repo.repurchase_rate", "field_missing_or_invalid", 0, "named_field_missing_or_invalid") in [row[:3] + (row[4],) for row in coverage]
+        assert ("repo.repurchase_collateral_principal_amount", "field_missing_or_invalid", 0) in [row[:3] for row in coverage]
+        assert ("repo.repurchase_collateral_value", "reported_numeric", 1) in [row[:3] for row in coverage]
+        assert ("repo.borrow_aggregate_amount", "field_missing_or_invalid", 0) in [row[:3] for row in coverage]
+        assert ("repo.borrow_aggregate_collateral", "reported_numeric", 1) in [row[:3] for row in coverage]
+        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_rate"}) == 2
+        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_collateral_value"}) == 2
+        assert len({row[3] for row in coverage if row[0] == "repo.borrow_aggregate_collateral"}) == 2
+        cur.execute("""SELECT DISTINCT metric_key FROM nport_fixed_income_metric_coverage_v2
+            WHERE publication_id=%s AND metric_family='repo_lending' ORDER BY metric_key""", (features_id,))
+        assert {row[0] for row in cur.fetchall()} == {
+            "repo.borrow_aggregate_amount",
+            "repo.borrow_aggregate_collateral",
+            "repo.is_cash_collateral",
+            "repo.is_loan_by_fund",
+            "repo.is_non_cash_collateral",
+            "repo.repurchase_collateral_principal_amount",
+            "repo.repurchase_collateral_value",
+            "repo.repurchase_counterparty",
+            "repo.repurchase_rate",
+            "repo.securities_lending_cash_collateral",
+            "repo.securities_lending_loan_value",
+            "repo.securities_lending_non_cash_collateral",
+        }
+        cur.execute("""SELECT primitive_type,count(*),count(DISTINCT source_raw_row_id)
+            FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s AND primitive_type IN (
+              'repurchase_rate','repurchase_collateral_principal_amount',
+              'repurchase_collateral_value','borrow_aggregate_amount','borrow_aggregate_collateral')
+            GROUP BY primitive_type ORDER BY primitive_type""", (features_id,))
+        assert cur.fetchall() == [
+            ("borrow_aggregate_amount", 2, 2),
+            ("borrow_aggregate_collateral", 2, 2),
+            ("repurchase_collateral_principal_amount", 2, 2),
+            ("repurchase_collateral_value", 2, 2),
+            ("repurchase_rate", 2, 2),
+        ]
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_primitives_v2
+            WHERE publication_id=%s AND primitive_type IN (
+              'repurchase_rate','repurchase_collateral_principal_amount',
+              'repurchase_collateral_value','borrow_aggregate_amount','borrow_aggregate_collateral')""", (features_id,))
+        assert cur.fetchone() == (10,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

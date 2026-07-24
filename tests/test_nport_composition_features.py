@@ -29,7 +29,7 @@ def _seed(cur):
     return schema, run_id, package_id, holdings_id, features_id
 
 
-def _holding(cur, publication_id, run_id, holding_id, series_id, report_date, value, *, issuer="", category=None, payoff=None, cusip=None, isin=None, lei=None, nav=None):
+def _holding(cur, publication_id, run_id, holding_id, series_id, report_date, value, *, issuer="", category=None, payoff=None, cusip=None, isin=None, lei=None, nav=None, projection="{}"):
     cur.execute("""INSERT INTO sec_nport_instrument_class_bridge
         (publication_id,accession_number,holding_id,instrument_id,series_id,class_id,valid_from,resolution_state)
         VALUES(%s,'A1',%s,%s,%s,'C1','2020-01-01','resolved')""",
@@ -37,8 +37,8 @@ def _holding(cur, publication_id, run_id, holding_id, series_id, report_date, va
     cur.execute("""INSERT INTO sec_nport_holdings_v2
         (publication_id,accession_number,holding_id,source_run_id,report_date,filing_date,source_series_id,
          issuer_name,issuer_category,cusip,isin,issuer_lei,signed_market_value,signed_pct_of_nav,payoff_profile,source_typed_projection)
-        VALUES(%s,'A1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'{}'::jsonb)""",
-        (publication_id, holding_id, run_id, report_date, report_date, series_id, issuer, category, cusip, isin, lei, value, nav, payoff))
+        VALUES(%s,'A1',%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)""",
+        (publication_id, holding_id, run_id, report_date, report_date, series_id, issuer, category, cusip, isin, lei, value, nav, payoff, projection))
 
 
 def _publish_holdings(cur, publication_id):
@@ -381,4 +381,28 @@ def test_upgrade_from_legacy_security_hhi_fails_closed_and_serves_only_corrected
         assert revision == "security_identity_v2"
         cur.execute("SELECT count(*) FROM sec_current_nport_composition_dimension_features")
         assert cur.fetchone() == (3,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_composition_publishes_governed_holding_dimensions_in_a_separate_v2_relation():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed(cur)
+        _holding(cur, holdings_id, run_id, "H1", "GOV", "2026-01-31", 100,
+                 issuer="ONE", category="Corporate", payoff="Long", cusip="111111111", nav=10,
+                 projection='{"ASSET_CAT":"DBT","CURRENCY_CODE":"USD","INVESTMENT_COUNTRY":"US",'
+                            '"IS_RESTRICTED_SECURITY":"Y","FAIR_VALUE_LEVEL":"2"}')
+        _publish_holdings(cur, holdings_id)
+        _prepare_features(cur, features_id, run_id, package_id)
+        cur.execute("SELECT build_nport_composition_features(%s,'2026-06-30')", (features_id,))
+        cur.execute("""SELECT dimension_type,dimension_key,gross_market_value,market_value_coverage
+            FROM nport_composition_governed_dimensions_v2 WHERE publication_id=%s ORDER BY dimension_type""", (features_id,))
+        assert cur.fetchall() == [
+            ("asset_category", "DBT", 100, 1), ("currency_code", "USD", 100, 1),
+            ("fair_value_level", "2", 100, 1), ("investment_country", "US", 100, 1),
+            ("restricted_security", "Y", 100, 1),
+        ]
+        cur.execute("SELECT count(*) FROM sec_current_nport_composition_features")
+        assert cur.fetchone() == (0,)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
