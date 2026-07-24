@@ -53,11 +53,14 @@ jobs:
           src/sec_regulatory
           src/sec_serving
           src/workers/bond_curves.py
+          src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
+          src/workers/bond_price_ingest.py
           src/workers/bond_price_observations.py
           src/workers/bond_rating_history.py
           src/workers/bond_security_master.py
           src/workers/bond_serving.py
+          src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_derived_profiles.py
@@ -94,6 +97,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_matching.py
+            tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
             tests/bonds/test_panel_states.py
             tests/bonds/test_phase10_gate.py
@@ -104,14 +108,18 @@ jobs:
             tests/bonds/test_rating_history_ddl.py
             tests/bonds/test_security_master_ddl.py
             tests/bonds/test_security_master_resolution.py
+            tests/bonds/test_source_artifact.py
             tests/test_bond_curve_materializer.py
+            tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
+            tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py
             tests/test_bond_rating_history_materializer.py
             tests/test_bond_security_master_materializer.py
             tests/test_bond_serving_contract.py
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
+            tests/test_bond_source_qualify.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_ncen_closed_end_profiles.py
@@ -216,11 +224,14 @@ jobs:
           src/sec_regulatory
           src/sec_serving
           src/workers/bond_curves.py
+          src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
+          src/workers/bond_price_ingest.py
           src/workers/bond_price_observations.py
           src/workers/bond_rating_history.py
           src/workers/bond_security_master.py
           src/workers/bond_serving.py
+          src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_derived_profiles.py
@@ -260,6 +271,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_matching.py
+            tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
             tests/bonds/test_panel_states.py
             tests/bonds/test_phase10_gate.py
@@ -270,14 +282,18 @@ jobs:
             tests/bonds/test_rating_history_ddl.py
             tests/bonds/test_security_master_ddl.py
             tests/bonds/test_security_master_resolution.py
+            tests/bonds/test_source_artifact.py
             tests/test_bond_curve_materializer.py
+            tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
+            tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py
             tests/test_bond_rating_history_materializer.py
             tests/test_bond_security_master_materializer.py
             tests/test_bond_serving_contract.py
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
+            tests/test_bond_source_qualify.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_ncen_closed_end_profiles.py

@@ -103,7 +103,14 @@ _DARK_STATES: frozenset[str] = frozenset({
     "no_source", "no_observations", "no_securities",
     "no_effective_filings", "no_effective_facts",
 })
-_SUCCESS_STATES: frozenset[str] = frozenset({"ok", "ready"})
+# ``current`` is the shared publication protocol's own success state: the
+# materializer workers build their envelope as ``{"state": "ok", **result}``
+# where ``result`` carries the protocol's ``state='current'`` (self-promoted
+# publication), which overrides the literal. A live (non-dark) run therefore
+# reports ``current`` — a success, not an unrecognised result. (Latent until
+# Wave 1: every earlier chain run was dark, so no materializer envelope ever
+# reached this classification with a promoted state.)
+_SUCCESS_STATES: frozenset[str] = frozenset({"ok", "ready", "current"})
 
 # Namespace for reproducible chain run ids (distinct from the publication one).
 _NAMESPACE_CHAIN_RUN = uuid.UUID("00000000-0000-5000-a000-636861696e01")

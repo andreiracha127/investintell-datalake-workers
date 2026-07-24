@@ -17,8 +17,9 @@ _SCHEMA_SQL = (
 ).read_text(encoding="utf-8")
 
 # The shared handshake value; MUST equal the app repo's
-# ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte.
-SHARED_SURFACE_DIGEST = "sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b50771a35"
+# ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Re-synced for
+# Bonds Activation Wave 1 (catalog + detail computed metric keys).
+SHARED_SURFACE_DIGEST = "sha256:96d2f0317be3ae287fdae393a3851122321e65cb26b8aa0094e819085a971e0d"
 
 
 def test_workers_declare_serving_product() -> None:
@@ -75,6 +76,42 @@ def test_catalog_carries_searchable_alias_arrays() -> None:
     assert {"aliases_cusip9", "aliases_isin"} <= set(catalog["payload_keys"])
 
 
+def test_catalog_payload_serves_computed_metric_keys_in_order() -> None:
+    """Wave 1: the catalog payload gains EXACTLY latest_price_pct + security_ytm +
+    security_ytw, each in its alphabetical position (the contract's key-ordering
+    convention). Pinned as a full-tuple equality so a drive-by key can't ride in."""
+    catalog = next(s for s in contract.SURFACES if s["surface"] == "catalog")
+    assert catalog["payload_keys"] == (
+        "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
+        "display", "identity_state", "is_144a", "issuer_name", "latest_price_pct",
+        "maturity_date", "security_ytm", "security_ytw",
+    )
+
+
+def test_detail_payload_serves_computed_metric_keys_in_order() -> None:
+    """Wave 1: the detail payload gains EXACTLY current_yield + security_ytm +
+    security_ytw + wal, each in its alphabetical position (full-tuple pin)."""
+    detail = next(s for s in contract.SURFACES if s["surface"] == "detail")
+    assert detail["payload_keys"] == (
+        "aliases", "call_schedule", "coupon_rate", "coupon_schedule", "coupon_type",
+        "currency", "current_yield", "day_count", "identity_evidence", "identity_state",
+        "is_144a", "issuer_name", "maturity_date", "put_schedule", "secured",
+        "security_ytm", "security_ytw", "seniority", "settlement_convention", "wal",
+    )
+
+
+def test_observations_raw_ytm_surface_is_untouched() -> None:
+    """The observations surface (raw ``ytm`` included) is NOT part of the Wave-1
+    extension — belt and suspenders: the app drops raw ytm, the workers keep
+    serving it unchanged. Full-tuple pin so any drift moves this test first."""
+    observations = next(s for s in contract.SURFACES if s["surface"] == "observations")
+    assert observations["payload_keys"] == (
+        "accrued_treatment", "daily_key_state", "is_144a", "is_stale", "lane",
+        "observation_age_days", "observation_date", "price", "price_state",
+        "price_type", "ytm",
+    )
+
+
 def test_no_payload_key_is_an_internal_identifier() -> None:
     for surface in contract.SURFACES:
         assert not (set(surface["payload_keys"]) & set(contract.SCRUB_BLOCKLIST)), surface["surface"]
@@ -89,6 +126,55 @@ def test_sql_scrub_blocklist_matches_the_contract_blocklist() -> None:
     assert array_body, "scrub blocklist ARRAY literal not found in DDL"
     sql_keys = set(re.findall(r"'([^']+)'", array_body.group(1)))
     assert sql_keys == set(contract.SCRUB_BLOCKLIST)
+
+
+def test_latest_price_inline_eligibility_matches_the_canonical_predicate() -> None:
+    """Review IMP-2: the materializer's inline latest_price_pct eligibility and the
+    canonical ``bond_price_is_eligible`` predicate
+    (schemas/bond_price_eligibility_v1.sql) are one source of truth -- same idiom
+    as the scrub-blocklist parity test above: regex-extract each per-column
+    condition from the DDL and from the inline SQL and require them identical
+    after whitespace normalization, so future drift (a price_type widened, an
+    accrued_treatment or price_state arm dropped) fails loud instead of silently
+    serving a price the canonical predicate would reject.
+
+    DELIBERATE, STRUCTURALLY SOUND omission -- ``identity_state``: the inline
+    predicate reads ``bond_price_latest_v1``, which projects the PUBLISHED
+    observation snapshot; published rows are resolved by construction (an
+    unresolved identifier never reaches a lane, and the lane view carries no
+    identity_state column). The parity check therefore requires identity_state to
+    be the ONLY canonical condition without an inline counterpart.
+    """
+    from src.bonds import serving_materializer as materializer
+
+    eligibility_sql = (
+        Path(__file__).resolve().parents[1] / "schemas" / "bond_price_eligibility_v1.sql"
+    ).read_text(encoding="utf-8")
+    body = re.search(
+        r"FUNCTION bond_price_is_eligible\(.*?\$\$(.*?)\$\$", eligibility_sql, re.DOTALL
+    )
+    assert body, "bond_price_is_eligible body not found in the eligibility DDL"
+
+    def conditions(sql: str, column_prefix: str) -> dict[str, str]:
+        pairs = re.findall(column_prefix + r"(\w+)\s+(IN\s*\([^)]*\)|=\s*'[^']*')", sql)
+        return {column: re.sub(r"\s+", " ", condition) for column, condition in pairs}
+
+    canonical = conditions(body.group(1), r"p_")
+    inline = conditions(materializer._LATEST_PRICE_PCT_SQL, r"p\.")
+
+    assert set(canonical) - set(inline) == {"identity_state"}, (
+        "the inline predicate may omit ONLY identity_state (resolved by lane construction)"
+    )
+    assert set(inline) <= set(canonical), (
+        "the inline predicate tests a column the canonical predicate does not"
+    )
+    for column, condition in inline.items():
+        assert condition == canonical[column], (
+            f"eligibility drift on {column!r}: inline {condition!r} "
+            f"!= canonical {canonical[column]!r}"
+        )
+    # exactly price_type, accrued_treatment, daily_key_state, price_state.
+    assert len(inline) == 4
 
 
 def test_digest_moves_when_surface_changes(monkeypatch) -> None:

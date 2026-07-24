@@ -7,9 +7,15 @@ and projects ONLY public columns into ``bond_serving_facts`` across the four bon
 serving surfaces under one atomically promoted derived publication:
 
   * catalog       -- one row per security: search-ready identity + summary terms
-                     + data state.
+                     + data state + computed summary values (Wave 1):
+                     latest_price_pct (% of par, sole ELIGIBLE latest observation)
+                     and security_ytm / security_ytw (decimal fractions from the
+                     promoted ``sec_current_bond_metric_v1`` view).
   * detail        -- one row per security: full terms incl. call/put schedule,
-                     144A, PIT aliases, and NEUTRAL identity ambiguity evidence.
+                     144A, PIT aliases, NEUTRAL identity ambiguity evidence, and
+                     the computed metrics current_yield / security_ytm /
+                     security_ytw (fractions) + wal (years) from the promoted
+                     current metric view.
   * observations  -- price/trade observations WITH a mandatory ``lane`` discriminator
                      (``latest`` informative + ``fund_asof`` point-in-time, no
                      look-ahead) + freshness/ambiguity states.
@@ -21,6 +27,13 @@ also neutralises ``cik:``/``row:`` VALUES) and each projection lists only neutra
 source-free public keys with neutral product dates (``as_of``/``observation_date``)
 -- so no source/vendor literal, raw row id, source lineage, filing key or internal
 identity key ever reaches the serving surface (plan Global Constraints 3 & 4).
+
+Null-honesty (Wave 1, plan Global Constraint 4): every computed key is ALWAYS
+present in its payload; a security without an 'available' metric row (or with no
+row at all), or without exactly one eligible latest observation, serves the key as
+JSON null -- never a synthetic 0. Values come ONLY from promoted current relations
+(``sec_current_bond_metric_v1``, ``bond_price_latest_v1``), never from landed or
+unpromoted builds.
 """
 
 from __future__ import annotations
@@ -55,9 +68,19 @@ _COLUMNS = (
 # A surface is 'present' iff ALL its required relations exist; a missing surface
 # fails the coverage gate closed (all declared surfaces or nothing).
 _SURFACE_REQUIRED_RELATIONS: dict[str, tuple[str, ...]] = {
-    # catalog now also reads the alias view for the searchable aliases_cusip9/isin arrays.
-    "catalog": ("sec_current_bond_security_v1", "sec_current_bond_security_alias_v1"),
-    "detail": ("sec_current_bond_security_v1", "sec_current_bond_security_alias_v1"),
+    # catalog also reads the alias view (searchable aliases_cusip9/isin arrays) and,
+    # since Wave 1, the promoted latest price lane (latest_price_pct) + the promoted
+    # current metric view (security_ytm/security_ytw). detail reads the metric view
+    # for current_yield/security_ytm/security_ytw/wal. A build without them would
+    # silently serve payloads missing contract keys -> the gate fails closed.
+    "catalog": (
+        "sec_current_bond_security_v1", "sec_current_bond_security_alias_v1",
+        "bond_price_latest_v1", "sec_current_bond_metric_v1",
+    ),
+    "detail": (
+        "sec_current_bond_security_v1", "sec_current_bond_security_alias_v1",
+        "sec_current_bond_metric_v1",
+    ),
     "observations": ("bond_price_latest_v1",),
     "fund_exposure": (
         "sec_current_bond_security_v1",
@@ -91,8 +114,48 @@ class BondFundExposureMultiplicationError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
-# catalog + detail (grain: security) over sec_current_bond_security_v1.
+# catalog + detail (grain: security) over sec_current_bond_security_v1, joined
+# with the promoted current metric view + latest price lane (Wave 1).
 # ---------------------------------------------------------------------------
+
+# The CLOSED Wave-1 metric vocabulary this projection may serve (owner
+# authorization 2026-07-23; matches the bond_metric_v1 CHECK constraint).
+_WAVE1_SERVED_METRICS = ("security_ytm", "security_ytw", "current_yield", "wal")
+
+
+def _metric_value_sql(metric_id: str) -> str:
+    """Scalar subquery serving one Wave-1 metric value from the PROMOTED current view.
+
+    'available' is the ONLY value-bearing status: any other status -- or no row
+    at all -- projects an honest JSON null under the contract key, never a
+    synthetic 0 (plan Global Constraint 4). The status filter is a serving-side
+    guard in its own right (mutation-locked by poisoned fixture rows), not a free
+    ride on the upstream bond_metric_v1 CHECK.
+    """
+    if metric_id not in _WAVE1_SERVED_METRICS:  # closed vocabulary, fail loud
+        raise ValueError(f"metric {metric_id!r} is not a served Wave-1 metric")
+    return (
+        "(SELECT m.value FROM sec_current_bond_metric_v1 m"
+        " WHERE m.security_id = s.security_id"
+        f" AND m.metric_id = '{metric_id}' AND m.status = 'available')"
+    )
+
+
+# The sole ELIGIBLE latest observation's price (% of par) or an honest NULL.
+# Mirrors bond_price_is_eligible (bond_price_eligibility_v1.sql) column-wise;
+# identity is resolved by lane construction (only resolved observations publish).
+# Parity with the canonical predicate is regex-locked by
+# test_latest_price_inline_eligibility_matches_the_canonical_predicate.
+# A duplicate cohort has NO unambiguous latest price -> NULL, never an arbitrary
+# winner; at most one row can match (unique cohort), so the subquery is scalar.
+_LATEST_PRICE_PCT_SQL = """(
+    SELECT p.price FROM bond_price_latest_v1 p
+    WHERE p.security_id = s.security_id
+      AND p.price_type IN ('trade', 'evaluated')
+      AND p.accrued_treatment IN ('clean', 'dirty')
+      AND p.daily_key_state = 'unique_in_matching_cohort'
+      AND p.price_state = 'present')"""
+
 _CATALOG_SQL = f"""
 INSERT INTO bond_serving_facts ({_COLUMNS})
 SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
@@ -118,6 +181,10 @@ SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
            'aliases_isin', (SELECT COALESCE(jsonb_agg(v ORDER BY v), '[]'::jsonb)
                FROM (SELECT DISTINCT a.alias_value AS v FROM sec_current_bond_security_alias_v1 a
                      WHERE a.security_id = s.security_id AND a.alias_kind = 'isin') c),
+           -- Wave 1 computed summary values (null-honest; promoted sources only).
+           'latest_price_pct', {_LATEST_PRICE_PCT_SQL},
+           'security_ytm', {_metric_value_sql("security_ytm")},
+           'security_ytw', {_metric_value_sql("security_ytw")},
            'identity_state', s.identity_state))
 FROM sec_current_bond_security_v1 s
 ON CONFLICT DO NOTHING
@@ -144,6 +211,12 @@ SELECT %(pub)s, 'detail', s.security_id, '', '', '',
            'is_144a', s.is_144a,
            'day_count', s.day_count,
            'settlement_convention', s.settlement_convention,
+           -- Wave 1 computed metrics (null-honest; promoted current metric view
+           -- only). Coupon above stays a reported TERM, never a yield.
+           'current_yield', {_metric_value_sql("current_yield")},
+           'security_ytm', {_metric_value_sql("security_ytm")},
+           'security_ytw', {_metric_value_sql("security_ytw")},
+           'wal', {_metric_value_sql("wal")},
            'identity_state', s.identity_state,
            -- ambiguous identity surfaces the conflicting VALUES only (neutral
            -- evidence), never the internal contributing_observation_ids lineage.
