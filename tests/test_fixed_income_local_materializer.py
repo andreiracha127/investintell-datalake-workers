@@ -14,6 +14,36 @@ import pytest
 from src.nport import fixed_income_local_materializer as materializer
 
 
+def test_client_safe_timeouts_do_not_set_local_postgres_resource_limits(
+    tmp_path: Path,
+) -> None:
+    class RecordingCursor:
+        def __init__(self) -> None:
+            self.settings: list[tuple[str, str]] = []
+
+        def execute(
+            self, _query: str, parameters: tuple[str, str]
+        ) -> None:
+            self.settings.append(parameters)
+
+    cursor = RecordingCursor()
+    config = materializer.ResourceConfig(
+        memory_limit="1GB",
+        temp_directory=str(tmp_path),
+        minimum_free_bytes=1,
+    )
+
+    materializer._set_client_safe_timeouts(cursor, config)
+
+    assert dict(cursor.settings) == {
+        "lock_timeout": f"{config.lock_timeout_ms}ms",
+        "statement_timeout": f"{config.statement_timeout_ms}ms",
+        "idle_in_transaction_session_timeout": (
+            f"{config.idle_transaction_timeout_ms}ms"
+        ),
+    }
+
+
 def _e2e_config(
     tmp_path: Path, admin_dsn: str
 ) -> materializer.ResourceConfig:
