@@ -225,7 +225,12 @@ def _contract_keys() -> dict[str, tuple[str, ...]]:
     return {name: tuple(_contract_relation(name)["keys"]) for name in TARGET_RELATIONS}
 
 
-def _set_local_timeouts(cursor: Any, config: ResourceConfig, *, statement_timeout_ms: int | None = None) -> None:
+def _set_client_safe_timeouts(
+    cursor: Any,
+    config: ResourceConfig,
+    *,
+    statement_timeout_ms: int | None = None,
+) -> None:
     config.validate()
     for setting, value in (
         ("lock_timeout", config.lock_timeout_ms),
@@ -235,6 +240,19 @@ def _set_local_timeouts(cursor: Any, config: ResourceConfig, *, statement_timeou
         if value <= 0:
             raise ValueError(f"{setting} must be nonzero")
         cursor.execute("SELECT set_config(%s::text,%s::text,true)", (setting, f"{value}ms"))
+
+
+def _set_local_timeouts(
+    cursor: Any,
+    config: ResourceConfig,
+    *,
+    statement_timeout_ms: int | None = None,
+) -> None:
+    _set_client_safe_timeouts(
+        cursor,
+        config,
+        statement_timeout_ms=statement_timeout_ms,
+    )
     for setting, value in (
         ("work_mem", config.work_mem),
         ("temp_file_limit", config.temp_file_limit),
@@ -559,7 +577,7 @@ def extract_sources(
         ) as connection:
             with connection.cursor() as cursor:
                 cursor.execute("SET TRANSACTION READ ONLY")
-                _set_local_timeouts(cursor, resource_config)
+                _set_client_safe_timeouts(cursor, resource_config)
                 before = _provenance(cursor, identity)
                 paths: dict[str, Path] = {}
                 for relation, (filter_column, filter_value) in filters.items():
@@ -887,7 +905,7 @@ def publish_artifact(
     manifest_hash = manifest["manifest_sha256"]
     columns = _contract_columns()
     with connection.transaction(), connection.cursor() as cursor:
-        _set_local_timeouts(cursor, resource_config)
+        _set_client_safe_timeouts(cursor, resource_config)
         cursor.execute(
             "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (product,)
         )
