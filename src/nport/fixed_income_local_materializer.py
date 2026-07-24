@@ -159,8 +159,7 @@ def sha256_file(path: Path) -> str:
 def postgres_server_fingerprint(cursor: Any) -> str:
     """Hash the PostgreSQL settings that can affect oracle semantics."""
     cursor.execute(
-        """SELECT current_setting('server_version'),
-                  current_setting('server_version_num'),
+        """SELECT current_setting('server_version_num'),
                   current_setting('server_encoding'),
                   d.datlocprovider,
                   d.datcollate,
@@ -177,17 +176,16 @@ def postgres_server_fingerprint(cursor: Any) -> str:
     if row is None:
         raise ArtifactIntegrityError("unable to fingerprint local PostgreSQL")
     payload = {
-        "server_version": row[0],
-        "server_version_num": row[1],
-        "server_encoding": row[2],
-        "locale_provider": row[3],
-        "collation": row[4],
-        "ctype": row[5],
-        "timezone": row[6],
-        "date_style": row[7],
-        "interval_style": row[8],
-        "extra_float_digits": row[9],
-        "standard_conforming_strings": row[10],
+        "server_version_num": row[0],
+        "server_encoding": row[1],
+        "locale_provider": row[2],
+        "collation": row[3],
+        "ctype": row[4],
+        "timezone": row[5],
+        "date_style": row[6],
+        "interval_style": row[7],
+        "extra_float_digits": row[8],
+        "standard_conforming_strings": row[9],
     }
     return "sha256:" + hashlib.sha256(canonical_json(payload).encode()).hexdigest()
 
