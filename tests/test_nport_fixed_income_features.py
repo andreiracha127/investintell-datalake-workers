@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
 
 
+def _install_legacy_builder(cur) -> None:
+    """Install the retired server builder only as a parity oracle in fixtures."""
+    cur.execute((ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql").read_text(encoding="utf-8"))
+
+
 def _seed_fixture(cur):
     schema = f"nport_fixed_income_fixture_{uuid4().hex}"
     run_id, package_id, holdings_publication_id, features_publication_id = (uuid4() for _ in range(4))
@@ -39,6 +44,7 @@ def _seed_fixture(cur):
         ddl = (ROOT / "schemas" / ddl_name).read_text(encoding="utf-8")
         cur.execute(ddl)
         cur.execute(ddl)
+    _install_legacy_builder(cur)
     cur.execute("INSERT INTO sec_ingestion_runs VALUES(%s,now())", (run_id,))
     cur.execute("INSERT INTO sec_source_packages VALUES(%s,%s)", (package_id, run_id))
     cur.execute("""INSERT INTO sec_derived_publications
@@ -75,6 +81,20 @@ def _raw(cur, run_id, source_table, accession, projection, *, holding_id=None):
     cur.execute("""INSERT INTO nport_raw_rows
         (ingestion_run_id,source_file_id,source_row_number,source_table,accession_number,holding_id,typed_projection)
         VALUES(%s,%s,2,%s,%s,%s,%s::jsonb)""", (run_id, uuid4(), source_table, accession, holding_id, projection))
+
+
+def test_production_builder_fails_immediately_and_legacy_is_fixture_only():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, *_ = _seed_fixture(cur)
+        # _seed_fixture installs the oracle for old parity assertions. Reapplying
+        # production DDL must always restore the fail-fast operator boundary.
+        cur.execute((ROOT / "schemas" / "nport_fixed_income_features.sql").read_text(encoding="utf-8"))
+        with pytest.raises(psycopg.Error, match="local fixed-income materializer is required") as error:
+            cur.execute("SELECT build_nport_fixed_income_features(%s,%s)", (uuid4(), "2026-07-24"))
+        assert error.value.sqlstate == "0A000"
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
 def test_fixed_income_features_builds_complete_degraded_insufficient_and_unavailable_rows():
@@ -282,14 +302,19 @@ def test_fixed_income_keeps_resolved_positions_without_security_identity():
 
 def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics():
     ddl = (ROOT / "schemas" / "nport_fixed_income_features.sql").read_text(encoding="utf-8").lower()
-    for required in ("sec_nport_holdings_v2_current", "debt_security", "coupon_type", "maturity_date", "methodology_version", "reason_codes", "provenance"):
+    oracle = (ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql").read_text(encoding="utf-8").lower()
+    for required in ("sec_nport_holdings_v2_current", "debt_security", "coupon_type", "maturity_date"):
+        assert required in oracle
+    for required in ("methodology_version", "reason_codes", "provenance"):
         assert required in ddl
     for phase_10_metric in ("rating_distribution", "ytm", "ytw", "current_yield", "oas", "z_spread", "effective_duration"):
-        assert phase_10_metric not in ddl
-    assert "sec_w1_nport_real" not in ddl
-    assert "sec_nport_holdings_v2_current h" not in ddl
-    assert "for share of c" in ddl
-    assert "from sec_nport_holdings_v2 h" in ddl
+        assert phase_10_metric not in oracle
+    assert "sec_w1_nport_real" not in oracle
+    assert "sec_nport_holdings_v2_current h" not in oracle
+    assert "for share of c" in oracle
+    assert "from sec_nport_holdings_v2 h" in oracle
+    assert "sqlstate '0a000'" in ddl
+    assert "snapshot_holdings as" not in ddl
 
 
 def test_fixed_income_adds_weighted_maturity_statistics_without_zero_fill():
