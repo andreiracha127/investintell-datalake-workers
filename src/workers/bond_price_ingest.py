@@ -87,12 +87,6 @@ def _quarter(as_of: date) -> str:
     return f"{as_of.year}Q{(as_of.month - 1) // 3 + 1}"
 
 
-def _observation_count(conn: Any, run_id: UUID) -> int:
-    return conn.execute(
-        "SELECT count(*) FROM bond_price_observation WHERE source_run_id=%s", (run_id,)
-    ).fetchone()[0]
-
-
 def _observation_input(
     descriptor: source_artifact.ArtifactDescriptor, row: source_artifact.PriceRow
 ) -> PriceObservationInput:
@@ -158,8 +152,12 @@ def _ingest(conn: Any, descriptor: source_artifact.ArtifactDescriptor) -> dict[s
             state="loading",
         )
 
-    before = _observation_count(conn, run.run_id)
-    attempted = 0
+    # COPY fast path: resolved batches are streamed into a session-local
+    # staging table and merged with ONE server-side INSERT — a multi-million
+    # row artifact never pays per-row round-trips over TLS. Same transaction,
+    # same resolution, same PK-collision idempotency as the per-row protocol.
+    price_observations.create_price_observation_staging(conn)
+    staged = 0
     quarantined = 0
     batch: list[PriceObservationInput] = []
     for row in source_artifact.iter_price_rows(descriptor):
@@ -187,20 +185,19 @@ def _ingest(conn: Any, descriptor: source_artifact.ArtifactDescriptor) -> dict[s
         # Unparseable identifiers stay IN the batch: the existing resolution
         # path lands them as identity_state='unresolved' (landed, never
         # published) — the bond_price_observation non-resolvable protocol.
-        attempted += 1
         batch.append(_observation_input(descriptor, row))
         if len(batch) >= _LOAD_BATCH_SIZE:
-            price_observations.load_price_observations(
+            staged += price_observations.bulk_load_price_observations(
                 conn, batch, as_of=as_of, source_run_id=run.run_id
             )
             batch = []
     if batch:
-        price_observations.load_price_observations(
+        staged += price_observations.bulk_load_price_observations(
             conn, batch, as_of=as_of, source_run_id=run.run_id
         )
 
-    inserted = _observation_count(conn, run.run_id) - before
-    skipped_existing = attempted - inserted
+    inserted = price_observations.merge_staged_price_observations(conn)
+    skipped_existing = staged - inserted
 
     if landing:
         manifests.register_file(
@@ -212,7 +209,7 @@ def _ingest(conn: Any, descriptor: source_artifact.ArtifactDescriptor) -> dict[s
             expected_count=descriptor.row_count,
             data_count=descriptor.row_count,
             lexical_count=descriptor.row_count,
-            typed_success_count=attempted,
+            typed_success_count=staged,
             quarantine_count=quarantined,
             reject_count=0,
             state="accounted",
@@ -232,6 +229,7 @@ def _ingest(conn: Any, descriptor: source_artifact.ArtifactDescriptor) -> dict[s
 
     return {
         "state": "ok",
+        "staged": staged,
         "inserted": inserted,
         "skipped_existing": skipped_existing,
         "quarantined": quarantined,

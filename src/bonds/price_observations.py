@@ -344,6 +344,85 @@ def load_price_observations(
 
 
 # ---------------------------------------------------------------------------
+# Bulk loader (COPY staging -> ONE server-side merge). Same resolution and the
+# same row protocol as load_price_observations, but rows are streamed into a
+# session-local staging table with COPY and merged with a single INSERT, so a
+# multi-million-row artifact never pays per-row round-trips over TLS.
+# ---------------------------------------------------------------------------
+STAGING_TABLE = "bond_price_observation_staging"
+
+# Column protocol shared verbatim by the per-row INSERT above, the COPY and the
+# merge below — one definition, no drift.
+_OBSERVATION_COLUMNS = (
+    "observation_id", "as_of", "observation_date", "source_run_id", "security_id",
+    "cusip9_input", "normalized_cusip9", "identity_state", "identity_reason_code",
+    "price", "price_state", "price_type", "accrued_treatment", "ytm", "db_type",
+    "db_type_state", "daily_key_state", "source_row_number", "source_lineage",
+)
+
+
+def create_price_observation_staging(conn: psycopg.Connection) -> None:
+    """Create the session-local staging table (dropped automatically on commit)."""
+    conn.execute(
+        f"CREATE TEMP TABLE IF NOT EXISTS {STAGING_TABLE} "
+        "(LIKE bond_price_observation INCLUDING DEFAULTS) ON COMMIT DROP"
+    )
+
+
+def bulk_load_price_observations(
+    conn: psycopg.Connection,
+    rows: Iterable[PriceObservationInput],
+    *,
+    as_of: date,
+    source_run_id: UUID,
+) -> int:
+    """Resolve one batch and stream it into the staging table via COPY.
+
+    Resolution (identity, states, ambiguity) is identical to
+    ``load_price_observations`` — the same ``resolve_price_observations`` fold —
+    only the transport differs. Returns the number of rows staged. The immutable
+    table is untouched until ``merge_staged_price_observations``.
+    """
+    resolved = resolve_price_observations(rows)
+    with conn.cursor() as cur:
+        with cur.copy(
+            f"COPY {STAGING_TABLE} ({', '.join(_OBSERVATION_COLUMNS)}) FROM STDIN"
+        ) as copy:
+            for r in resolved:
+                lineage = dict(r.source_lineage)
+                if not lineage:
+                    raise BondError("missing_source_lineage", {"observation_id": r.observation_id})
+                copy.write_row(
+                    (
+                        r.observation_id, as_of, r.observation_date, source_run_id, r.security_id,
+                        None if r.cusip9_input is None else str(r.cusip9_input), r.normalized_cusip9,
+                        r.identity_state, r.identity_reason_code, _numeric(r.price), r.price_state,
+                        r.price_type, r.accrued_treatment, _numeric(r.ytm), _numeric(r.db_type),
+                        r.db_type_state, r.daily_key_state, r.source_row_number, Jsonb(lineage),
+                    )
+                )
+    return len(resolved)
+
+
+def merge_staged_price_observations(conn: psycopg.Connection) -> int:
+    """Merge ALL staged rows into the immutable table with ONE statement.
+
+    ``ON CONFLICT (observation_id) DO NOTHING`` preserves the per-row protocol's
+    idempotent PK-collision semantics exactly; the return value is the number of
+    rows actually inserted (rowcount), so callers derive
+    ``skipped_existing = staged - inserted``.
+    """
+    columns = ", ".join(_OBSERVATION_COLUMNS)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO bond_price_observation ({columns}) "
+            f"SELECT {columns} FROM {STAGING_TABLE} "
+            "ON CONFLICT (observation_id) DO NOTHING"
+        )
+        return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
 # Publication wiring (sec_derived_publications protocol)
 # ---------------------------------------------------------------------------
 def install_schema(conn: psycopg.Connection) -> None:

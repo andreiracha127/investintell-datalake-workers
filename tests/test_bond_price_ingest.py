@@ -423,3 +423,78 @@ def test_zip_wrapped_artifact_lands_identically(
     assert envelope["state"] == "ok"
     assert envelope["inserted"] == 4 and envelope["quarantined"] == 1
     assert envelope["source_contract_ref"] == f"bond_price_source_v1@{sha[:12]}"
+
+
+# ---------------------------------------------------------------------------
+# COPY-staging fast path (throughput hotfix). Semantics identical to the
+# per-row protocol: same resolution, same landed rows, same idempotency.
+# ---------------------------------------------------------------------------
+@pytestmark_db
+def test_copy_staging_counts_staged_inserted_skipped_on_idempotent_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    artifact = tmp_path / "artifact.parquet"
+    sha = _write_parquet(artifact, _happy_columns())
+    _pin_env(monkeypatch, path=artifact, pin=sha)
+
+    first = bond_price_ingest.run(_db_dsn())
+    assert first["state"] == "ok"
+    assert first["staged"] == 4
+    assert first["inserted"] == 4 and first["skipped_existing"] == 0
+
+    second = bond_price_ingest.run(_db_dsn())
+    assert second["state"] == "ok"
+    assert second["staged"] == 4          # every row staged again (PK collision path)
+    assert second["inserted"] == 0
+    assert second["skipped_existing"] == 4
+    # Invariant of the staged merge: staged == inserted + skipped_existing.
+    for envelope in (first, second):
+        assert envelope["staged"] == envelope["inserted"] + envelope["skipped_existing"]
+
+
+@pytestmark_db
+def test_ingest_lands_through_copy_staging_never_per_row_inserts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Multi-batch fixture: every batch rides the COPY staging path; the per-row
+    INSERT protocol is never invoked; the merge is ONE server-side statement
+    owned by the price_observations protocol module."""
+    from src.bonds import price_observations
+
+    n = 250
+    columns = {
+        "cusip_id": ["037833100"] * n,
+        "trd_exctn_dt": [f"2026-{(i % 12) + 1:02d}-15" for i in range(n)],
+        "pr": [90.0 + (i % 50) for i in range(n)],
+    }
+    artifact = tmp_path / "multi.parquet"
+    sha = _write_parquet(artifact, columns, row_group_size=100)
+    _pin_env(monkeypatch, path=artifact, pin=sha)
+    monkeypatch.setattr(bond_price_ingest, "_LOAD_BATCH_SIZE", 100)
+
+    real_bulk = price_observations.bulk_load_price_observations
+    staged_batches: list[int] = []
+
+    def spy_bulk(conn, rows, **kwargs):
+        batch = list(rows)
+        staged_batches.append(len(batch))
+        return real_bulk(conn, batch, **kwargs)
+
+    def forbid_per_row(*args, **kwargs):
+        raise AssertionError("per-row insert path must not be used by the ingest worker")
+
+    monkeypatch.setattr(price_observations, "bulk_load_price_observations", spy_bulk)
+    monkeypatch.setattr(price_observations, "load_price_observations", forbid_per_row)
+
+    envelope = bond_price_ingest.run(_db_dsn())
+    assert envelope["state"] == "ok"
+    assert envelope["inserted"] == n and envelope["staged"] == n
+    assert staged_batches == [100, 100, 50]
+
+    # The worker owns NO SQL insert of its own; the single merge statement and
+    # the COPY live in the protocol module.
+    worker_source = (ROOT / "src" / "workers" / "bond_price_ingest.py").read_text(encoding="utf-8")
+    assert "INSERT INTO" not in worker_source
+    module_source = (ROOT / "src" / "bonds" / "price_observations.py").read_text(encoding="utf-8")
+    assert ".copy(" in module_source
+    assert "ON CONFLICT (observation_id) DO NOTHING" in module_source
