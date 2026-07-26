@@ -30,7 +30,11 @@ CONTRACT_PATH = (
 LOCAL_ORACLE_PATH = (
     ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql"
 )
-APPROVED_LOCAL_ORACLE_SHA256 = "151b1e3beb17607afda94661bf852fc330517ef3bac40ce5dc665249d1adfbad"
+# Re-approved 2026-07-25: the multi-referenced CTEs carry AS MATERIALIZED. Without
+# it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
+# the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
+# is a planner directive only — the rows the oracle produces are unchanged.
+APPROVED_LOCAL_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
 CONTRACT_DIGEST = (
     "sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563"
 )
@@ -645,6 +649,28 @@ def _copy_source_into_local(cursor: Any, relation: str, path: Path) -> None:
             copy.write(chunk)
 
 
+# The seven raw views each filter nport_raw_rows by source_table, and the oracle
+# reads them across thirteen UNION ALL branches. Without this index every branch
+# sequentially scans ~6M rows; without ANALYZE the planner has no statistics at
+# all, because COPY does not produce any. Both are load-time facts about the
+# local scratch database, not changes to what the oracle computes.
+_LOCAL_LOAD_INDEXES = (
+    (
+        "nport_raw_rows",
+        "CREATE INDEX IF NOT EXISTS nport_raw_rows_local_source_table_idx "
+        "ON nport_raw_rows (source_table, accession_number, holding_id)",
+    ),
+)
+
+
+def _prepare_local_statistics(cursor: Any) -> None:
+    """Index and analyse the freshly copied snapshots before the oracle runs."""
+    for _relation, statement in _LOCAL_LOAD_INDEXES:
+        cursor.execute(statement)
+    for relation in SOURCE_RELATIONS:
+        cursor.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(relation)))
+
+
 def _copy_query_to_gzip(
     cursor: Any, sql: str, params: Sequence[Any], path: Path
 ) -> None:
@@ -701,6 +727,7 @@ def compute_local(
                 _assert_local_materializer(cursor, local_run_uuid)
                 for relation, path in sources.items():
                     _copy_source_into_local(cursor, relation, path)
+                _prepare_local_statistics(cursor)
                 _validate_local_source(cursor, identity)
                 _provenance(cursor, identity)
                 _run_with_watchdog(

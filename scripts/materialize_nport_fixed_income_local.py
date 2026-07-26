@@ -49,6 +49,8 @@ def _config(args: argparse.Namespace) -> ResourceConfig:
         lock_timeout_ms=args.lock_timeout_ms,
         idle_transaction_timeout_ms=args.idle_transaction_timeout_ms,
         client_watchdog_seconds=args.client_watchdog_seconds,
+        work_mem=args.work_mem,
+        max_parallel_workers_per_gather=args.max_parallel_workers_per_gather,
     )
 
 
@@ -72,6 +74,10 @@ def main() -> None:
     parser.add_argument("--lock-timeout-ms", type=int, default=10000)
     parser.add_argument("--idle-transaction-timeout-ms", type=int, default=120000)
     parser.add_argument("--client-watchdog-seconds", type=int, default=28_800)
+    # The oracle is sort- and hash-heavy; on a local scratch database these are
+    # the two knobs that decide whether it spills to disk and how wide it runs.
+    parser.add_argument("--work-mem", default="256MB")
+    parser.add_argument("--max-parallel-workers-per-gather", type=int, default=2)
     sub = parser.add_subparsers(dest="command", required=True)
     extract = sub.add_parser("extract")
     extract.add_argument("--dsn", required=True)

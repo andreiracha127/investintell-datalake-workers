@@ -88,7 +88,7 @@ BEGIN
     END IF;
 
 
-    WITH positions AS (
+    WITH positions AS MATERIALIZED (
         SELECT h.*, b.series_id, b.class_id, b.instrument_id,
                upper(btrim(COALESCE(h.source_typed_projection ->> 'ASSET_CAT', ''))) AS asset_cat,
                CASE WHEN jsonb_typeof(h.source_typed_projection -> 'DEBT_SECURITY') = 'object'
@@ -103,7 +103,7 @@ BEGIN
           AND b.resolution_state = 'resolved'
           AND h.report_date >= b.valid_from
           AND (b.valid_to IS NULL OR h.report_date <= b.valid_to)
-    ), debt AS (
+    ), debt AS MATERIALIZED (
         SELECT *,
                abs(signed_market_value) AS market_value_weight,
                CASE WHEN debt_evidence IS NOT NULL THEN abs(signed_market_value) END AS extension_weight,
@@ -287,7 +287,7 @@ BEGIN
 
     -- The snapshot filings CTE always binds validated raw views to the exact
     -- source_run_id pinned by sec_nport_holdings_v2, never a current raw run.
-    WITH snapshot_filings AS (
+    WITH snapshot_filings AS MATERIALIZED (
       SELECT DISTINCT h.accession_number,b.series_id,h.report_date
       FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b
         ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
@@ -315,11 +315,11 @@ BEGIN
            CASE sensitivity WHEN 'dv01' THEN 'reported_currency_value_per_1bp' ELSE 'reported_currency_value_per_100bp' END,'reported_signed'
     FROM rate_values WHERE raw_value IS NOT NULL ON CONFLICT DO NOTHING;
 
-    WITH snapshot_filings AS (
+    WITH snapshot_filings AS MATERIALIZED (
       SELECT DISTINCT h.accession_number,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
 
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-    ), values_rows AS (
+    ), values_rows AS MATERIALIZED (
       SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,v.metric_key,nport_fixed_income_safe_numeric(v.raw_value) parsed_value,
         CASE WHEN r.raw_row_id IS NULL THEN 'source_row_absent' WHEN nport_fixed_income_safe_numeric(v.raw_value) IS NULL THEN 'field_missing_or_invalid' ELSE 'reported_numeric' END availability_state
       FROM snapshot_filings s LEFT JOIN nport_interest_rate_risk_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
@@ -340,10 +340,10 @@ BEGIN
     -- deterministic absent key, while every actual raw row retains all three
     -- physical identity fields.  Numeric zero is reported_numeric, never null.
 
-    WITH snapshot_filings AS (
+    WITH snapshot_filings AS MATERIALIZED (
       SELECT DISTINCT h.accession_number,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-    ), values_rows AS (
+    ), values_rows AS MATERIALIZED (
       SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'credit_spread_sensitivity' family,v.metric_key,v.raw_value
       FROM snapshot_filings s LEFT JOIN nport_fund_reported_info_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
       CROSS JOIN LATERAL (VALUES ('credit_spread.investment.3mon',r.typed_projection->>'CREDIT_SPREAD_3MON_INVEST'),('credit_spread.noninvestment.3mon',r.typed_projection->>'CREDIT_SPREAD_3MON_NONINVEST'),('credit_spread.investment.1yr',r.typed_projection->>'CREDIT_SPREAD_1YR_INVEST'),('credit_spread.noninvestment.1yr',r.typed_projection->>'CREDIT_SPREAD_1YR_NONINVEST'),('credit_spread.investment.5yr',r.typed_projection->>'CREDIT_SPREAD_5YR_INVEST'),('credit_spread.noninvestment.5yr',r.typed_projection->>'CREDIT_SPREAD_5YR_NONINVEST'),('credit_spread.investment.10yr',r.typed_projection->>'CREDIT_SPREAD_10YR_INVEST'),('credit_spread.noninvestment.10yr',r.typed_projection->>'CREDIT_SPREAD_10YR_NONINVEST'),('credit_spread.investment.30yr',r.typed_projection->>'CREDIT_SPREAD_30YR_INVEST'),('credit_spread.noninvestment.30yr',r.typed_projection->>'CREDIT_SPREAD_30YR_NONINVEST')) v(metric_key,raw_value)
@@ -360,14 +360,14 @@ BEGIN
       CASE WHEN raw_row_id IS NULL THEN 'no_pinned_raw_source_row' WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'named_field_missing_or_invalid' END,'[]'::jsonb
     FROM values_rows ON CONFLICT DO NOTHING;
 
-    WITH snapshot_filings AS (
+    WITH snapshot_filings AS MATERIALIZED (
 
       SELECT DISTINCT h.accession_number,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
         AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-    ), source_rows AS (
+    ), source_rows AS MATERIALIZED (
       SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') AS net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fund_reported_info_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
-    ), values_rows AS (
+    ), values_rows AS MATERIALIZED (
       SELECT s.*,v.bucket,v.tenor,nport_fixed_income_safe_numeric(v.value) raw_value FROM source_rows s CROSS JOIN LATERAL (VALUES
         ('investment','3mon',s.typed_projection->>'CREDIT_SPREAD_3MON_INVEST'),('noninvestment','3mon',s.typed_projection->>'CREDIT_SPREAD_3MON_NONINVEST'),
         ('investment','1yr',s.typed_projection->>'CREDIT_SPREAD_1YR_INVEST'),('noninvestment','1yr',s.typed_projection->>'CREDIT_SPREAD_1YR_NONINVEST'),
@@ -382,14 +382,14 @@ BEGIN
       CASE WHEN net_assets IS NOT NULL AND net_assets<>0 THEN raw_value/net_assets END,net_assets,'reported_currency_value','reported_signed'
     FROM values_rows ON CONFLICT DO NOTHING;
 
-    WITH snapshot_filings AS (
+    WITH snapshot_filings AS MATERIALIZED (
 
       SELECT DISTINCT h.accession_number,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
         AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-    ), source_rows AS (
+    ), source_rows AS MATERIALIZED (
       SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fund_reported_info_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
-    ), values_rows AS (
+    ), values_rows AS MATERIALIZED (
       SELECT s.*,v.key,nport_fixed_income_safe_numeric(v.value) raw_value FROM source_rows s CROSS JOIN LATERAL (VALUES
         ('net_assets',s.typed_projection->>'NET_ASSETS'),('total_assets',s.typed_projection->>'TOTAL_ASSETS'),('total_liabilities',s.typed_projection->>'TOTAL_LIABILITIES'),('borrowing_pay_within_1yr',s.typed_projection->>'BORROWING_PAY_WITHIN_1YR'),('controlled_companies_pay_within_1yr',s.typed_projection->>'CTRLD_COMPANIES_PAY_WITHIN_1YR'),('other_affiliates_pay_within_1yr',s.typed_projection->>'OTHER_AFFILIA_PAY_WITHIN_1YR'),('other_pay_within_1yr',s.typed_projection->>'OTHER_PAY_WITHIN_1YR'),('borrowing_pay_after_1yr',s.typed_projection->>'BORROWING_PAY_AFTER_1YR'),('controlled_companies_pay_after_1yr',s.typed_projection->>'CTRLD_COMPANIES_PAY_AFTER_1YR'),('other_affiliates_pay_after_1yr',s.typed_projection->>'OTHER_AFFILIA_PAY_AFTER_1YR'),('other_pay_after_1yr',s.typed_projection->>'OTHER_PAY_AFTER_1YR'),('standby_commitment',s.typed_projection->>'STANDBY_COMMITMENT'),('delayed_delivery',s.typed_projection->>'DELAYED_DELIVERY'),('cash_not_reported_in_c_or_d',s.typed_projection->>'CASH_NOT_RPTD_IN_C_OR_D')
       ) v(key,value)
@@ -400,7 +400,7 @@ BEGIN
       CASE WHEN net_assets IS NOT NULL AND net_assets<>0 THEN raw_value/net_assets END,'reported_currency_value','reported_signed'
     FROM values_rows ON CONFLICT DO NOTHING;
 
-    WITH positions AS (
+    WITH positions AS MATERIALIZED (
       SELECT b.series_id,h.report_date,h.source_typed_projection->'DEBT_SECURITY' debt,abs(h.signed_market_value) gross
       FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
@@ -424,7 +424,7 @@ BEGIN
       CASE WHEN count(*) FILTER (WHERE gross IS NULL)>0 THEN NULL ELSE COALESCE(sum(gross) FILTER (WHERE normalized_state IN ('Y','YES','TRUE','N','NO','FALSE')),0)/NULLIF(sum(gross),0) END
     FROM expanded GROUP BY series_id,report_date,flag_key ON CONFLICT DO NOTHING;
 
-    WITH snapshot_holdings AS (
+    WITH snapshot_holdings AS MATERIALIZED (
       SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
 
@@ -445,7 +445,7 @@ BEGIN
     SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,holding_id,raw_row_id,source_file_id,source_row_number,source_identity_key,flag_key,reported_state
     FROM flags ON CONFLICT DO NOTHING;
 
-    WITH snapshot_holdings AS (
+    WITH snapshot_holdings AS MATERIALIZED (
       SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
         AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
@@ -468,11 +468,11 @@ BEGIN
       CASE WHEN primitive_type='repurchase_rate' THEN 'reported_rate' ELSE 'reported_currency_value' END,'reported_signed'
     FROM raw_values ON CONFLICT DO NOTHING;
 
-    WITH snapshot_holdings AS (
+    WITH snapshot_holdings AS MATERIALIZED (
       SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
 
-    ), values_rows AS (
+    ), values_rows AS MATERIALIZED (
       SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending' family,'repo.repurchase_rate' metric_key,r.typed_projection->>'REPURCHASE_RATE' raw_value,'nport_repurchase_agreement_raw' source_relation
       FROM snapshot_holdings s LEFT JOIN nport_repurchase_agreement_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
       UNION ALL

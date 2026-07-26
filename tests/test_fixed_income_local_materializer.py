@@ -338,3 +338,57 @@ def test_manifest_declares_all_eight_target_payloads_deterministically(
     assert set(manifest["outputs"]) == set(materializer.TARGET_RELATIONS)
     assert manifest["engine"]["kind"] == "postgresql-local"
     assert len(manifest["manifest_sha256"]) == 64
+
+
+def test_multi_referenced_oracle_ctes_are_materialized() -> None:
+    """Every CTE the oracle reads more than once must be AS MATERIALIZED.
+
+    PostgreSQL inlines a single-reference CTE by default, so without this the
+    snapshot_holdings join over 4.1M holdings is re-executed once per UNION ALL
+    branch — nine times inside the repo/lending statement alone.
+    """
+    sql_text = materializer.LOCAL_ORACLE_PATH.read_text(encoding="utf-8")
+    for name in ("snapshot_holdings", "snapshot_filings", "values_rows",
+                 "positions", "source_rows", "debt"):
+        reads = sql_text.count(f"FROM {name}") + sql_text.count(f"JOIN {name}")
+        assert reads > 1, f"{name} is no longer multi-referenced; revisit this guard"
+        assert f"{name} AS (" not in sql_text, (
+            f"{name} is read {reads} times but is defined without MATERIALIZED"
+        )
+
+
+def test_approved_oracle_hash_matches_the_shipped_sql() -> None:
+    """The pin must track the file, or the runtime attestation fails at build time."""
+    digest = hashlib.sha256(
+        materializer.LOCAL_ORACLE_PATH.read_bytes()
+    ).hexdigest()
+    assert digest == materializer.APPROVED_LOCAL_ORACLE_SHA256
+
+
+def test_local_load_indexes_and_analyze_precede_the_oracle() -> None:
+    """COPY leaves no statistics and no source_table index; both are load-time work.
+
+    The seven raw views each filter nport_raw_rows by source_table, so without the
+    index every oracle branch sequentially scans ~6M rows.
+    """
+    executed: list[str] = []
+
+    class _Cursor:
+        def execute(self, statement, *args):
+            executed.append(str(statement))
+
+    materializer._prepare_local_statistics(_Cursor())
+
+    # ANALYZE is composed with sql.Identifier, so the rendered statement is a
+    # Composed repr rather than a bare string; match on content, not prefix.
+    index_statements = [s for s in executed if "CREATE INDEX" in s]
+    analyze_statements = [s for s in executed if "ANALYZE" in s]
+    assert index_statements, "no index is created for the copied snapshots"
+    assert any("source_table" in s for s in index_statements)
+    for relation in materializer.SOURCE_RELATIONS:
+        assert any(relation in s for s in analyze_statements), (
+            f"{relation} is loaded by COPY but never analysed"
+        )
+    assert executed.index(index_statements[0]) < executed.index(analyze_statements[0]), (
+        "the index must exist before ANALYZE runs"
+    )
