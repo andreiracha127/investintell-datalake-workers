@@ -94,10 +94,11 @@ class BondServingSurfaceCoverageError(RuntimeError):
     """Raised when a serving build would promote a PARTIAL surface set.
 
     The serving publication is one complete, atomically promoted surface set:
-    every contract-declared surface whose source relation is missing would silently
-    drop that surface from the served publication. Failing closed here prevents a
-    partial promotion; ``materialize(..., allow_missing_surfaces=True)`` opts out
-    for tests that deliberately exercise a subset of surfaces.
+    every contract-declared surface whose source relation is missing -- or which
+    projects ZERO rows -- would silently drop that surface from the served
+    publication. Failing closed here prevents a partial promotion;
+    ``materialize(..., allow_missing_surfaces=True)`` opts out for tests that
+    deliberately exercise a subset of surfaces.
     """
 
 
@@ -500,6 +501,7 @@ def materialize(
     ).fetchone()
 
     surfaces_written: list[str] = []
+    empty: list[str] = []
     if existing is None:
         anchor_run, anchor_package = _resolve_anchor(conn, source_run_id, source_package_id)
         version = conn.execute(
@@ -525,8 +527,10 @@ def materialize(
             if name == "fund_exposure":
                 _prepare_fund_exposure_source(conn, params)
                 _guard_fund_exposure(conn, params)
-            conn.execute(_SURFACE_SQL[name], params)
+            projected = conn.execute(_SURFACE_SQL[name], params).rowcount
             surfaces_written.append(name)
+            if projected <= 0:
+                empty.append(name)
             pub_row = conn.execute(
                 "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
                 (surface["source_product"],),
@@ -534,12 +538,16 @@ def materialize(
             if pub_row is not None:
                 consumed[name] = str(pub_row[0])
         missing = [s for s in contract.surface_names() if s not in set(surfaces_written)]
-        if missing and not allow_missing_surfaces:
+        if (missing or empty) and not allow_missing_surfaces:
             # Fail closed BEFORE the build pin, validation and current-pointer flip:
             # nothing is validated and nothing is promoted for a partial surface set.
+            # Cardinality counts as coverage: a surface whose relations all EXIST but
+            # which projected ZERO rows is just as partial as an absent one (2026-07-24:
+            # fund_exposure published, validated and promoted with 0 rows because the
+            # gate only asked whether the relations existed).
             raise BondServingSurfaceCoverageError(
                 "bond serving build would promote a partial surface set; missing surface "
-                f"source relations {missing}"
+                f"source relations {missing}; surfaces projecting zero rows {empty}"
             )
         conn.execute(
             "INSERT INTO bond_serving_builds"
