@@ -1,15 +1,43 @@
 -- Immutable RR1 declared-benchmark snapshot.  Grain is one row per (series,
--- class) that discloses a broad-based-index (benchmark) return inside the
--- amendment-aware effective selection.  A benchmark is a fact tagged
--- AvgAnnlRtrPct whose Performance Measure axis classifies as a broadly available
--- market index (rr1_performance_measure_treatment = 'broad_market_index'); the
--- SPECIFIC index is named by the benchmark dimension carried in otherdims.
+-- class) that declares a benchmark index inside the amendment-aware effective
+-- selection; in practice ``class_id`` is always empty because the declaration is
+-- a series-level disclosure (see below).
 --
--- The snapshot reports WHICH benchmark(s) a series/class declares and whether the
--- SAME benchmark is declared across the different documents / periods of that
--- series/class -- a consistency FLAG with NO judgement (a fund is free to change
--- or carry multiple benchmarks; we only report the fact).  The builder consumes
--- only the effective selection; it never re-opens raw RR1.
+-- HOW A BENCHMARK IS IDENTIFIED IN THE SOURCE (verified against the live corpus,
+-- not assumed).  The RR taxonomy carries the Average Annual Total Return in the
+-- four ``AverageAnnualReturn*`` num.tsv elements (Year01 / Year05 / Year10 /
+-- SinceInception).  Per the frozen source-table contract the Performance Measure
+-- axis (num.tsv ``measure``) distinguishes Before Taxes (the EMPTY member), After
+-- Taxes on Distributions, After Taxes on Distributions and Sales, or "a pre-tax
+-- measure of returns based on a broadly available market index".  The RR taxonomy
+-- defines NO standard member for that last state: the preparer NAMES the index on
+-- the axis itself, so the member IS the benchmark identifier and it is preserved
+-- VERBATIM (e.g. ``SP500Index``, ``IndexLB001``, ``Russell``).  The fund's own
+-- return carries an empty member; the index leg is disclosed at SERIES level (the
+-- benchmark is a property of the series, not of a share class), which is exactly
+-- where the axis member is observed to be free of non-index members.
+--
+-- The snapshot reports WHICH benchmark(s) a series declares and whether the SAME
+-- benchmark is declared across the different documents / periods of that series --
+-- a consistency FLAG with NO judgement (a fund is free to change or carry multiple
+-- benchmarks; we only report the fact).  The member is NEVER normalised to a
+-- canonical index name here: resolving 1.7k filer-defined member spellings to an
+-- index identity is a governed crosswalk concern, not a snapshot concern.  The
+-- builder consumes only the effective selection; it never re-opens raw RR1.
+
+-- Frozen RR taxonomy local names carrying an Average Annual Total Return.  A
+-- custom/unmapped tag can never resolve here (Global Constraint 5).  NOTE:
+-- ``AvgAnnlRtrPct`` is the OEF (Tailored Shareholder Report) element and lives
+-- only under the ``oef/*`` namespace -- it is NOT the RR element and must never
+-- be selected under an ``rr/%`` version filter.
+CREATE OR REPLACE FUNCTION rr1_benchmark_concept_map()
+RETURNS TABLE(original_tag text, source_table text)
+LANGUAGE sql IMMUTABLE AS $$
+    VALUES ('AverageAnnualReturnYear01', 'num.tsv'),
+           ('AverageAnnualReturnYear05', 'num.tsv'),
+           ('AverageAnnualReturnYear10', 'num.tsv'),
+           ('AverageAnnualReturnSinceInception', 'num.tsv')
+$$;
 
 CREATE TABLE IF NOT EXISTS rr1_benchmark_profiles (
     publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
@@ -137,15 +165,18 @@ BEGIN
         RAISE EXCEPTION 'RR1 benchmark build requires a prepared benchmark publication';
     END IF;
 
-    -- Canonical inputs: RR-namespaced AvgAnnlRtrPct facts classified as a broadly
-    -- available market index by the Performance Measure axis.  A custom/unmapped
-    -- tag can never match (Global Constraint 5).
+    -- Canonical inputs: RR-namespaced Average Annual Total Return facts whose
+    -- Performance Measure axis NAMES an index (a non-empty member) at SERIES level.
+    -- A custom/unmapped tag can never match (Global Constraint 5).
     WITH selected AS (
         SELECT f.*
         FROM rr1_effective_facts f
-        WHERE f.source_table = 'num.tsv' AND f.tag = 'AvgAnnlRtrPct' AND f.version LIKE 'rr/%'
+        JOIN rr1_benchmark_concept_map() m
+          ON m.original_tag = f.tag AND m.source_table = f.source_table
+        WHERE f.version LIKE 'rr/%'
           AND f.effective_date <= as_of_date
-          AND rr1_performance_measure_treatment(f.measure_id) = 'broad_market_index'
+          AND NULLIF(btrim(f.class_id), '') IS NULL
+          AND NULLIF(btrim(f.measure_id), '') IS NOT NULL
     )
     SELECT count(*)::integer,
            (md5(COALESCE(string_agg(
@@ -172,15 +203,18 @@ BEGIN
         RAISE EXCEPTION 'RR1 benchmark build is already pinned to effective-input fingerprint';
     END IF;
 
-    -- Series identity is mandatory (benchmarks are declared per series, often at
-    -- series level so class may be empty).  The per-(series,class) roll-up itself
-    -- prevents row multiplication: multiple horizons of one benchmark are counted,
-    -- never fanned out into duplicate rows.
+    -- Series identity is mandatory (a benchmark is a property of the SERIES, so the
+    -- index leg is disclosed with an empty class).  The per-(series,class) roll-up
+    -- itself prevents row multiplication: multiple horizons of one benchmark are
+    -- counted, never fanned out into duplicate rows.
     WITH selected AS (
         SELECT f.* FROM rr1_effective_facts f
-        WHERE f.source_table = 'num.tsv' AND f.tag = 'AvgAnnlRtrPct' AND f.version LIKE 'rr/%'
+        JOIN rr1_benchmark_concept_map() m
+          ON m.original_tag = f.tag AND m.source_table = f.source_table
+        WHERE f.version LIKE 'rr/%'
           AND f.effective_date <= as_of_date
-          AND rr1_performance_measure_treatment(f.measure_id) = 'broad_market_index'
+          AND NULLIF(btrim(f.class_id), '') IS NULL
+          AND NULLIF(btrim(f.measure_id), '') IS NOT NULL
     )
     SELECT CASE WHEN EXISTS (SELECT 1 FROM selected WHERE NULLIF(btrim(series_id),'') IS NULL)
                 THEN 'missing RR1 series identity' END
@@ -188,11 +222,18 @@ BEGIN
     IF parent_state IS NOT NULL THEN RAISE EXCEPTION '%', parent_state; END IF;
 
     WITH selected AS (
-        SELECT f.*, NULLIF(btrim(f.dimensions),'') AS benchmark_identifier
+        -- The Performance Measure member IS the benchmark identifier, preserved
+        -- verbatim: the RR taxonomy has no standard index member, the preparer
+        -- names the index on the axis (``otherdims`` carries no index name -- it is
+        -- populated on ~0.1% of these facts and never with an index).
+        SELECT f.*, NULLIF(btrim(f.measure_id),'') AS benchmark_identifier
         FROM rr1_effective_facts f
-        WHERE f.source_table = 'num.tsv' AND f.tag = 'AvgAnnlRtrPct' AND f.version LIKE 'rr/%'
+        JOIN rr1_benchmark_concept_map() m
+          ON m.original_tag = f.tag AND m.source_table = f.source_table
+        WHERE f.version LIKE 'rr/%'
           AND f.effective_date <= as_of_date
-          AND rr1_performance_measure_treatment(f.measure_id) = 'broad_market_index'
+          AND NULLIF(btrim(f.class_id), '') IS NULL
+          AND NULLIF(btrim(f.measure_id), '') IS NOT NULL
     ), per_bench AS (
         SELECT ingestion_run_id, series_id, COALESCE(class_id,'') AS class_id, benchmark_identifier,
                count(*)::integer AS observation_count,
@@ -244,8 +285,10 @@ BEGIN
            CASE WHEN sc.declared_benchmark_count >= 1 THEN 'available' ELSE 'degraded' END,
            CASE WHEN sc.declared_benchmark_count >= 1 THEN NULL ELSE 'benchmark_dimension_unnamed' END,
            COALESCE(pba.evidence, '[]'::jsonb),
-           jsonb_build_object('effective_selection_view','rr1_effective_facts','original_tag','AvgAnnlRtrPct',
-                              'benchmark_signal','performance_measure_broad_market_index',
+           jsonb_build_object('effective_selection_view','rr1_effective_facts',
+                              'original_tags',(SELECT jsonb_agg(m.original_tag ORDER BY m.original_tag)
+                                               FROM rr1_benchmark_concept_map() m),
+                              'benchmark_signal','performance_measure_named_member_series_level',
                               'source_run_id',sc.ingestion_run_id,'latest_accession_number',l.accession_number),
            jsonb_build_object('source_applicable',true,'as_of_date',as_of_date,
                               'declared_benchmark_count',sc.declared_benchmark_count,'context_count',sc.context_count,
