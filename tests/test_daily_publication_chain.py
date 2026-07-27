@@ -244,6 +244,97 @@ def test_terminal_failure_fails_closed_immediately(env):
 
 
 # --------------------------------------------------------------------------- #
+# A failure records its CAUSE, never a downstream symptom
+# --------------------------------------------------------------------------- #
+
+def test_failure_reason_carries_the_root_cause_not_the_masking_exception(env):
+    """Regression for the 2026-07-24 runs (468c9ead / b3722d63 / b2e61544).
+
+    Those runs recorded ``current transaction is aborted, commands ignored until
+    end of transaction block`` as the terminal cause of ``materialize``. That is
+    a *consequence*: the real error (``must be owner of view
+    ncen_effective_filing_candidates``) aborted the worker's transaction, and the
+    next statement issued on it — ``SELECT pg_advisory_unlock($1)`` from
+    ``advisory_lock``'s ``finally`` — raised over it, replacing the in-flight
+    exception. The chain then recorded only ``str(exc)`` of the replacement.
+
+    The chain must record the CAUSE even when something downstream masks it, so
+    this drives the mask through ``__context__`` exactly as Python builds it.
+    """
+    conn, _, _ = env
+
+    def masked(ctx: StageContext) -> StageOutcome:
+        try:
+            raise psycopg.errors.InsufficientPrivilege(
+                "must be owner of view ncen_effective_filing_candidates")
+        except psycopg.Error:
+            # Implicit chaining: the mask REPLACES the cause on the way out.
+            raise psycopg.errors.InFailedSqlTransaction(
+                "current transaction is aborted, commands ignored until "
+                "end of transaction block")
+
+    summaries = daily_chain.run_chain(
+        conn, stages=[Stage("materialize", masked)], source_days=[D1],
+        code_revision=REV, config_version=CFG, max_attempts=1,
+    )
+    assert summaries[0]["status"] == "failed"
+    stage = summaries[0]["stages"][0]
+    reason = stage["reason"]
+    # The CAUSE leads the reason (and therefore the operator alert line).
+    assert "must be owner of view ncen_effective_filing_candidates" in reason
+    assert not reason.startswith("current transaction is aborted")
+    assert "must be owner" in summaries[0]["alert"]
+    # The symptom is kept too — recorded, not the headline.
+    assert "InFailedSqlTransaction" in reason
+    chain = stage["detail"]["error_chain"]
+    assert [link["type"] for link in chain] == [
+        "InFailedSqlTransaction", "InsufficientPrivilege"]
+    assert chain[-1]["message"] == "must be owner of view ncen_effective_filing_candidates"
+    assert stage["classification"] == "terminal"
+
+
+def test_failure_reason_is_unchanged_for_an_unchained_exception(env):
+    """No chain -> the recorded reason is exactly what it always was."""
+    conn, _, _ = env
+
+    def boom(ctx: StageContext) -> StageOutcome:
+        raise ValueError("coverage breach")
+
+    summaries = daily_chain.run_chain(
+        conn, stages=[Stage("validate", boom)], source_days=[D1],
+        code_revision=REV, config_version=CFG, max_attempts=1,
+    )
+    stage = summaries[0]["stages"][0]
+    assert stage["reason"] == "coverage breach"
+    assert stage["detail"]["error_chain"] == [
+        {"type": "ValueError", "message": "coverage breach", "link": "raised"}]
+
+
+def test_failure_classification_is_fail_closed_across_the_chain(env):
+    """A transient-looking mask over a terminal cause stays terminal."""
+    conn, _, _ = env
+    calls = {"n": 0}
+
+    def masked_terminal(ctx: StageContext) -> StageOutcome:
+        calls["n"] += 1
+        try:
+            raise daily_chain.TerminalStageError("coverage gate breached")
+        except daily_chain.TerminalStageError:
+            # An OperationalError alone would classify 'transient' and retry.
+            raise psycopg.OperationalError("connection blip")
+
+    summaries = daily_chain.run_chain(
+        conn, stages=[Stage("validate", masked_terminal)], source_days=[D1],
+        code_revision=REV, config_version=CFG, max_attempts=3,
+        backoff=lambda a: 0.0, sleep=lambda s: None,
+    )
+    stage = summaries[0]["stages"][0]
+    assert stage["classification"] == "terminal"
+    assert calls["n"] == 1  # fail-closed: no retries
+    assert "coverage gate breached" in stage["reason"]
+
+
+# --------------------------------------------------------------------------- #
 # Skip vs failure distinction
 # --------------------------------------------------------------------------- #
 
