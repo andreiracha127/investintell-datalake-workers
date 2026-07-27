@@ -418,7 +418,18 @@ def test_no_formula_input_calibration_or_contract_files_changed_in_branch() -> N
         "src/external_executor_handshake.py",
         "src/shadow_pilot.py",
         "services/quant_engine/",
-        "packages/investintell_quant_core/",
+        # packages/investintell_quant_core/ was here and did the opposite of its job.
+        # The guard diffs origin/main...HEAD, so it passes once merged: it never froze
+        # the package, it only made the package unlandable through a PR while leaving a
+        # direct push to main wide open — it pushed this work onto the less reviewed
+        # path. Meanwhile the artifact production actually consumes was never gated:
+        # 0.3.0 shipped from a branch that main did not contain, and the guard was blind
+        # to it because publishing does not touch origin/main...HEAD at all.
+        #
+        # The gate that does the job now exists. quant-core-publish rebuilds the wheel
+        # and refuses to publish unless it reproduces the source main tracks at that
+        # commit, and refuses to overwrite a published version that no longer matches.
+        # That binds the consumed artifact, which is what was unprotected.
         "qc_a3_core.py",
         "qc-a3-parity/",
     )
