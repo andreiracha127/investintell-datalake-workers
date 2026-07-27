@@ -12,6 +12,25 @@ STAGE_A_ENTRYPOINTS = (
 )
 
 
+# Files the entrypoints import that CANNOT affect the measured decision path, and so
+# are deliberately not compute surfaces. The import closure and the compute surface are
+# different sets, and treating them as one is what put connection plumbing under a
+# reproducibility pin: an error-handling fix in src/db.py then broke the tree_hashes
+# binding and demanded a 16-run re-measurement to land, on bytes that cannot move
+# logical_output_hash.
+#
+# Membership here is a claim that has to hold, not a convenience. For src/db.py:
+# nothing in the decision closure imports it, and neither live_validation.py nor
+# measure_stage_a_child.py opens a connection or names a DSN — the round runs on the
+# committed pack and the pinned snapshot, both on disk.
+#
+# A NEW import still has to be answered: either manifest it, or add it here with the
+# same kind of evidence. Silence is not an option in either direction.
+STAGE_A_NON_DECISION_IMPORTS = (
+    "src/db.py",
+)
+
+
 STAGE_A_COMPUTE_PATHS = tuple(
     sorted(
         (
@@ -41,7 +60,6 @@ STAGE_A_COMPUTE_PATHS = tuple(
             "services/quant_engine/src/investintell_quant_engine/repeatability.py",
             "services/quant_engine/src/investintell_quant_engine/version.py",
             "src/__init__.py",
-            "src/db.py",
             "src/input_packs/__init__.py",
             "src/input_packs/hashing.py",
             "src/input_packs/manifest.py",

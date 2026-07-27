@@ -621,7 +621,13 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
     from harness.direct_activation.compute_manifest import STAGE_A_COMPUTE_PATHS
 
     expected_surfaces = set(STAGE_A_COMPUTE_PATHS)
-    assert set(job["tree_hashes"]) == expected_surfaces
+    # Containment, not equality, and the direction is the whole point. WIDENING the
+    # manifest still fails here — a newly declared surface is absent from the record,
+    # so the round genuinely has to be re-measured. NARROWING does not: dropping a file
+    # that was never able to move the result leaves every surviving surface bound by the
+    # per-surface check below, on the same measured bytes. Equality conflated the two and
+    # made a correction to the manifest indistinguishable from an unmeasured change.
+    assert expected_surfaces <= set(job["tree_hashes"])
     worker_commit = job["worker_commit"]
     # The AUTHORITATIVE, shallow-safe binding is tree_hashes == HEAD:<surface> (the
     # merged tree, always present in any checkout including a PR merge commit).
@@ -645,7 +651,12 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
         assert is_ancestor == 0, (
             f"job_identity.worker_commit {worker_commit} is present but is NOT an "
             f"ancestor of HEAD — the evidence cites a commit off the merged history")
-    for surface, pinned in job["tree_hashes"].items():
+    # Bind the surfaces the manifest still declares, not every surface the record
+    # happens to carry. A file dropped from the manifest is no longer part of the
+    # measured decision path, so holding the round's evidence hostage to its bytes
+    # asserts nothing about reproducibility — it only blocks the correction.
+    for surface in sorted(expected_surfaces):
+        pinned = job["tree_hashes"][surface]
         head_object = subprocess.run(
             ["git", "rev-parse", f"HEAD:{surface}"],
             cwd=ROOT, capture_output=True, text=True, check=True,

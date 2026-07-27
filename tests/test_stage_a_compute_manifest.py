@@ -7,6 +7,7 @@ from pathlib import Path
 from harness.direct_activation.compute_manifest import (
     STAGE_A_COMPUTE_PATHS,
     STAGE_A_ENTRYPOINTS,
+    STAGE_A_NON_DECISION_IMPORTS,
 )
 from scripts.ci import classify_changes as ci_scope
 from scripts.ci.classify_changes import classify_paths
@@ -116,10 +117,20 @@ def test_manifest_excludes_unrelated_nport_workers() -> None:
 
 
 def test_stage_a_project_import_closure_is_manifested() -> None:
+    # Every import is still accounted for: either it is a compute surface, or it is
+    # named in STAGE_A_NON_DECISION_IMPORTS with the evidence for why it cannot move
+    # the result. A new import that is in neither set still fails here. What no longer
+    # happens is connection plumbing being pinned under a reproducibility gate purely
+    # because the process imports it.
     closure = project_import_closure(STAGE_A_ENTRYPOINTS)
-    assert closure <= set(STAGE_A_COMPUTE_PATHS), sorted(
-        closure - set(STAGE_A_COMPUTE_PATHS)
-    )
+    accounted = set(STAGE_A_COMPUTE_PATHS) | set(STAGE_A_NON_DECISION_IMPORTS)
+    assert closure <= accounted, sorted(closure - accounted)
+
+
+def test_non_decision_imports_are_disjoint_from_compute_surfaces() -> None:
+    # A path cannot be both measured and declared unable to affect the measurement.
+    assert not set(STAGE_A_NON_DECISION_IMPORTS) & set(STAGE_A_COMPUTE_PATHS)
+    assert all((ROOT / path).is_file() for path in STAGE_A_NON_DECISION_IMPORTS)
 
 
 def test_every_stage_a_compute_path_selects_quant() -> None:
