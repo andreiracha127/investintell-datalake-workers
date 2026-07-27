@@ -58,7 +58,6 @@ STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_
 DARK = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
 THRESHOLDS = DARK / "monitoring_thresholds_record.json"
 LIVE_VALIDATION_RECORD = STAGE_A / "live_validation_record.json"
-AMENDMENT_RECORD = STAGE_A / "slo_threshold_amendment_record.json"
 DIRECT_ACTIVATION_ID = "open_macro_v03_direct_activation_001"
 CHILD_MODULE = "harness.direct_activation.measure_stage_a_child"
 CHILD_SCRIPT_IN_REPO = "/repo/harness/direct_activation/measure_stage_a_child.py"
@@ -273,31 +272,6 @@ def load_phase1_thresholds() -> dict[str, Any]:
     return {slo["id"]: slo["threshold"] for slo in thresholds_doc["slos"]}
 
 
-def committed_latency_threshold() -> int | None:
-    """The signed latency threshold for THIS workload, if one has been ratified.
-
-    Phase 1's latency_slo (37826 ms) was derived from the a3_qc_parity job — a
-    different workload, as the amendment record on disk states in its own rationale.
-    Stage A reconstitutes the 148-month latched decision chain and measures ~110 s
-    per run, so judging it against Phase 1 makes an ordinary round fail every time.
-
-    Reading the ratified amendment closes a contradiction that made the gate
-    meaningless in both directions: a plain run always breached, and --amend-latency
-    always passed because it re-derived the threshold from the very round being
-    judged. With the committed threshold as the baseline, a run either fits the
-    ratified envelope or it does not, and --amend-latency goes back to being what it
-    is documented as — a deliberate decision for a genuine workload change.
-    """
-    if not AMENDMENT_RECORD.is_file():
-        return None
-    doc = json.loads(AMENDMENT_RECORD.read_text(encoding="utf-8"))
-    amended = doc.get("amended_slo") or {}
-    if amended.get("id") != "latency_slo":
-        return None
-    threshold = amended.get("threshold")
-    return int(threshold) if isinstance(threshold, (int, float)) else None
-
-
 def _rel_or_abs(path: Path) -> str:
     try:
         return path.resolve().relative_to(ROOT).as_posix()
@@ -319,17 +293,8 @@ def build_slo_conformance_record(measured: dict[str, Any], thr: dict[str, Any], 
                 "status": "pass" if value <= threshold else "fail"}
 
     latency_p95 = measured["latency_p95_ms"]
-    # The ratified Stage A threshold governs when one exists; Phase 1's latency_slo
-    # belongs to the a3_qc_parity workload and only applies while nothing has been
-    # ratified for this one. Judging a pass here against Phase 1 would report "fail"
-    # for a round the runner already accepted, which is how a clean 16-run
-    # reproduction still refused to produce a conformance record.
-    governing = committed_latency_threshold() or thr["latency_slo"]
-    if latency_p95 <= governing:
-        latency_conf: dict[str, Any] = {
-            "measured": latency_p95, "threshold": governing,
-            "status": "pass",
-        }
+    if latency_p95 <= thr["latency_slo"]:
+        latency_conf: dict[str, Any] = _conf("latency_slo", latency_p95)
     else:
         # amendment path: only reachable when the runner built the amendment from
         # THIS round (egg-and-chicken resolved by the two-phase flow in main()).
@@ -509,14 +474,10 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 1
 
-    ratified = committed_latency_threshold()
-    effective_latency_threshold = ratified if ratified is not None else thr["latency_slo"]
-    latency_breach = measured["latency_p95_ms"] > effective_latency_threshold
+    latency_breach = measured["latency_p95_ms"] > thr["latency_slo"]
     if latency_breach and not args.amend_latency:
-        source = ("the ratified Stage A amendment" if ratified is not None
-                  else "Phase 1 signed thresholds")
-        print(f"SLO BREACH vs {source}: latency_slo measured "
-              f"{measured['latency_p95_ms']} ms > {effective_latency_threshold} ms",
+        print(f"SLO BREACH vs Phase 1 signed thresholds: latency_slo measured "
+              f"{measured['latency_p95_ms']} ms > {thr['latency_slo']} ms",
               file=sys.stderr)
         print("STOP and investigate; NEVER recalibrate; NO records written "
               "(pass --amend-latency only under the orchestrator's signed-amendment "
@@ -546,12 +507,14 @@ def main(argv: list[str] | None = None) -> int:
               f"{measured['latency_p95_ms']} ms) pinned to round "
               f"{amendment['measured_round']['reproducibility_record_sha256'][:12]}")
     else:
-        # The amendment is NOT deleted on a clean round. It used to be treated as
-        # residue from a prior breaching round, which held while a breach was the only
-        # way one could exist. It is now the ratified threshold this round was judged
-        # against, so removing it would delete the very baseline that produced the
-        # pass — and hand the next run back to Phase 1's unrelated workload.
-        pass
+        # No latency breach this round: drop any amendment left by a PRIOR breaching
+        # round in this output dir, so a valid no-amendment round never publishes (or
+        # fails CI against) a stale slo_threshold_amendment_record.json.
+        stale_amendment = out_dir / "slo_threshold_amendment_record.json"
+        if stale_amendment.exists():
+            stale_amendment.unlink()
+            print(f"removed stale amendment {stale_amendment.name} (no latency breach "
+                  "this round)")
 
     slo_record = build_slo_conformance_record(
         measured, thr, amendment_threshold=amendment_threshold,
