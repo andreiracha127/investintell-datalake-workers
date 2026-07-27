@@ -385,6 +385,14 @@ _SURFACE_SQL: dict[str, str] = {
     "fund_exposure": _FUND_EXPOSURE_SQL,
 }
 
+# Surfaces allowed to project zero rows without failing the coverage gate.
+# fund_exposure (owner decision 2026-07-26): the reverse N-PORT look-up is not a
+# product we want, so an empty projection is the intended state, not a regression.
+# The surface is still declared by the contract — dropping it means a coordinated
+# contract-digest change plus retiring /v2/bonds/{id}/fund-exposure and its UI block.
+# Until that happens this exemption is what keeps the gate honest for the other three.
+_MAY_BE_EMPTY = frozenset({"fund_exposure"})
+
 
 def install_schema(conn: psycopg.Connection) -> None:
     """Apply the serving DDL idempotently (bond source relations must pre-exist)."""
@@ -529,7 +537,7 @@ def materialize(
                 _guard_fund_exposure(conn, params)
             projected = conn.execute(_SURFACE_SQL[name], params).rowcount
             surfaces_written.append(name)
-            if projected <= 0:
+            if projected <= 0 and name not in _MAY_BE_EMPTY:
                 empty.append(name)
             pub_row = conn.execute(
                 "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s",
