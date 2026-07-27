@@ -246,3 +246,64 @@ def test_rr1_fee_profile_ddl_upgrades_legacy_integer_occurrence_idempotently():
         assert cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,)).fetchone() == (7,)
         assert cur.execute("SELECT rr1_fee_profile_build_is_closed(%s)", (publication_id,)).fetchone() == (True,)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_rr1_fee_profile_closure_is_session_independent_under_a_temp_shadow():
+    """The worker builds behind a TEMP TABLE named ``rr1_effective_facts`` that
+    pre-filters blank series/class (src/workers/rr1_derived_profiles.py).  Any
+    other session resolves that same name to the unfiltered public relation.  A
+    build pinned behind the shadow must still certify as closed from outside it,
+    otherwise its current pointer can never be repointed except by re-running the
+    whole materializer.  Reproduces the production divergence: 1803426 rows in
+    the public relation vs 1800678 behind the shadow, for as_of 2026-07-01.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as builder, builder.cursor() as cur:
+        schema, run_id, publication_id = _fixture(cur)
+        # Class-scoped facts (in scope) ...
+        _fact(cur, run_id, "ManagementFeesOverAssets", "0.35", series="S1", class_id="C1", raw_row_id=1)
+        _fact(cur, run_id, "OtherExpensesOverAssets", "0.05", series="S1", class_id="C1", raw_row_id=2)
+        # ... plus the three shapes of blank identity the public relation keeps
+        # and the worker's cache drops: series-grain, partial, and neither.
+        _fact(cur, run_id, "ManagementFeesOverAssets", "0.49", series="S9", class_id="", raw_row_id=3)
+        _fact(cur, run_id, "ManagementFeesOverAssets", "0.59", series="", class_id="C9", raw_row_id=4)
+        _fact(cur, run_id, "ManagementFeesOverAssets", "0.69", series=" ", class_id=" ", raw_row_id=5)
+        assert cur.execute(
+            "SELECT count(*) FROM rr1_effective_facts"
+        ).fetchone() == (5,)
+
+        # Build exactly like the worker does: behind the pre-filtering shadow.
+        cur.execute(
+            "CREATE TEMP TABLE rr1_effective_facts ON COMMIT PRESERVE ROWS AS "
+            f'SELECT * FROM "{schema}".rr1_effective_facts '
+            "WHERE nullif(btrim(series_id),'') IS NOT NULL "
+            "AND nullif(btrim(class_id),'') IS NOT NULL"
+        )
+        assert cur.execute("SELECT count(*) FROM rr1_effective_facts").fetchone() == (2,)
+        assert cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,)).fetchone() == (7,)
+        pinned = cur.execute(
+            "SELECT effective_input_count FROM rr1_fee_profile_builds WHERE publication_id=%s",
+            (publication_id,),
+        ).fetchone()[0]
+        assert pinned == 2
+        assert cur.execute("SELECT rr1_fee_profile_build_is_closed(%s)", (publication_id,)).fetchone() == (True,)
+
+        # No blank identity was smuggled in under an invented empty class.
+        assert cur.execute(
+            "SELECT count(*) FROM rr1_fee_profiles "
+            "WHERE btrim(series_id)='' OR btrim(class_id)=''"
+        ).fetchone() == (0,)
+
+    # A different session: the name now resolves to the unfiltered relation.
+    with psycopg.connect(DSN, autocommit=True) as reader, reader.cursor() as cur:
+        cur.execute(f'SET search_path TO "{schema}"')
+        assert cur.execute("SELECT count(*) FROM rr1_effective_facts").fetchone() == (5,)
+        assert cur.execute("SELECT rr1_fee_profile_build_is_closed(%s)", (publication_id,)).fetchone() == (True,)
+        # And the pointer the guard protects can actually be moved from here.
+        cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
+        cur.execute("SELECT sec_set_current_derived_publication('rr1_fee_profile_v1',%s)", (publication_id,))
+        assert cur.execute(
+            "SELECT publication_id FROM sec_derived_current_pointers WHERE product='rr1_fee_profile_v1'"
+        ).fetchone() == (publication_id,)
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

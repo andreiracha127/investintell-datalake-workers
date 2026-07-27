@@ -1,5 +1,22 @@
 -- Immutable RR1 share-class fee facts.  This builder consumes only the
 -- amendment-aware effective selection; it deliberately does not re-open raw RR1.
+--
+-- Input scope.  A share-class fee fact is only a share-class fee fact if the
+-- filer asserted BOTH identities: rr1_fee_profiles is keyed by (series_id,
+-- class_id) and both columns are in its primary key, so a fact that carries
+-- neither, or only one of them, has no share-class to be a profile of.  RR1
+-- num.tsv legitimately also carries fee tags at series (fund) grain -- the same
+-- ManagementFeesOverAssets reported once for a single-class fund, with no class
+-- dimension.  Those rows are real data at a DIFFERENT grain; they stay in
+-- rr1_effective_facts and are simply out of scope for this product rather than
+-- being admitted under an invented blank identity.
+--
+-- The scope predicate therefore lives HERE, in the product's own selection, and
+-- is repeated verbatim in every `selected` CTE of build_rr1_fee_profiles and of
+-- rr1_fee_profile_build_is_closed.  It must not live only in a caller's session
+-- (see src/workers/rr1_derived_profiles.py): a session-local pre-filter makes
+-- the builder and the closure guard read two different input sets, and the guard
+-- then can never certify from any session but the one that built.
 
 -- Frozen RR taxonomy local names.  This single mapping is used by fingerprinting,
 -- conflict detection, profile materialization, and lifecycle validation.
@@ -148,6 +165,7 @@ BEGIN
         SELECT f.*,m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag=f.tag
         WHERE f.source_table='num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date<=pinned_as_of
+          AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
     )
     SELECT count(*)::integer,
            (md5(COALESCE(string_agg(
@@ -169,10 +187,8 @@ BEGIN
             SELECT f.*,m.canonical_concept
             FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag=f.tag
             WHERE f.source_table='num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date<=pinned_as_of
+              AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
         )
-        SELECT 1 FROM selected
-        WHERE NULLIF(btrim(series_id),'') IS NULL OR NULLIF(btrim(class_id),'') IS NULL
-        UNION ALL
         SELECT 1 FROM selected
         GROUP BY ingestion_run_id,accession_number,series_id,class_id,data_date,COALESCE(measure_id,''),COALESCE(document_id,''),
                  COALESCE(dimensions,''),COALESCE(occurrence,''),effective_date,filed_date,canonical_concept
@@ -183,6 +199,7 @@ BEGIN
         SELECT f.*,m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag=f.tag
         WHERE f.source_table='num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date<=pinned_as_of
+          AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
     ), contexts AS (
         SELECT DISTINCT ingestion_run_id,accession_number,series_id,class_id,data_date,COALESCE(measure_id,'') AS measure_id,
                COALESCE(document_id,'') AS document_id,COALESCE(dimensions,'') AS dimensions,COALESCE(occurrence,'') AS occurrence,
@@ -200,6 +217,7 @@ BEGIN
             SELECT f.*,m.canonical_concept
             FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag=f.tag
             WHERE f.source_table='num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date<=pinned_as_of
+              AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
         ), contexts AS (
             SELECT DISTINCT ingestion_run_id,accession_number,series_id,class_id,data_date,COALESCE(measure_id,'') AS measure_id,
                    COALESCE(document_id,'') AS document_id,COALESCE(dimensions,'') AS dimensions,COALESCE(occurrence,'') AS occurrence,
@@ -279,6 +297,7 @@ BEGIN
         SELECT f.*, m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag = f.tag
         WHERE f.source_table = 'num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
     )
     SELECT count(*)::integer,
            (md5(COALESCE(string_agg(
@@ -306,14 +325,17 @@ BEGIN
         VALUES(target_publication_id,computed_fingerprint,as_of_date,selected_count);
     END IF;
 
+    -- Missing series/class identity is not an error to fail closed on: it is the
+    -- boundary of this product's grain and is excluded by `selected` below.  What
+    -- remains fail-closed is a genuine contradiction: two effective facts for the
+    -- same share-class context and canonical concept.
     WITH selected AS (
         SELECT f.*, m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_fee_profile_concept_map() m ON m.original_tag = f.tag
         WHERE f.source_table = 'num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
     )
     SELECT CASE
-        WHEN EXISTS (SELECT 1 FROM selected WHERE NULLIF(btrim(series_id),'') IS NULL OR NULLIF(btrim(class_id),'') IS NULL)
-            THEN 'missing RR1 series or class identity'
         WHEN EXISTS (
             SELECT 1 FROM selected
             GROUP BY ingestion_run_id,accession_number,series_id,class_id,data_date,COALESCE(measure_id,''),COALESCE(document_id,''),
@@ -329,6 +351,7 @@ BEGIN
         SELECT f.*, m.canonical_concept, NULLIF(btrim(f.fact_typed_projection->>'value'),'') AS raw_value
         FROM rr1_effective_facts f JOIN mapped m ON m.original_tag = f.tag
         WHERE f.source_table = 'num.tsv' AND f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.series_id),'') IS NOT NULL AND NULLIF(btrim(f.class_id),'') IS NOT NULL
     ), contexts AS (
         SELECT DISTINCT ingestion_run_id,accession_number,series_id,class_id,data_date,COALESCE(measure_id,'') AS measure_id,
                COALESCE(document_id,'') AS document_id,COALESCE(dimensions,'') AS dimensions,COALESCE(occurrence,'') AS occurrence,
