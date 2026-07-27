@@ -32,7 +32,7 @@ from harness.phase0q_cloud import bundle as bundle_mod
 ROOT = Path(__file__).resolve().parents[1]
 CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
-HARNESS_COMMIT = "76710e44fd5c89c4ea964aea863bc321a3b78948"
+HARNESS_COMMIT = "cc6a8bf0e233eeaf9e62687121ba66fa63118feb"
 
 
 # --------------------------------------------------------------------------- #
