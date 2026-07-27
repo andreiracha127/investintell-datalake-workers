@@ -56,7 +56,7 @@
    "src/quadrant_snapshot.py": "a695d810ce29cf5a4f220c6f05406cb08a9de5dd",
    "src/quadrant_staleness.py": "1742c488b649f86d2252b3d20b92a9c0b476069c"
   },
-  "worker_commit": "87a4592ddce0bc70fed9fa37eeb7009d85eefa79"
+  "worker_commit": "7575c7461d10ac978f6e42779ad9a311de183667"
  },
  "legs": {
   "container": {
@@ -66,65 +66,65 @@
      "exit_code": 0,
      "index": 0,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1340088320,
+     "memory_peak_bytes": 1339879424,
      "platform": "linux",
-     "wall_ms": 118878.936
+     "wall_ms": 112038.823
     },
     {
      "exit_code": 0,
      "index": 1,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1338990592,
+     "memory_peak_bytes": 1338347520,
      "platform": "linux",
-     "wall_ms": 117527.046
+     "wall_ms": 110256.959
     },
     {
      "exit_code": 0,
      "index": 2,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1339129856,
+     "memory_peak_bytes": 1340248064,
      "platform": "linux",
-     "wall_ms": 120468.543
+     "wall_ms": 111263.061
     },
     {
      "exit_code": 0,
      "index": 3,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1339850752,
+     "memory_peak_bytes": 1339998208,
      "platform": "linux",
-     "wall_ms": 115771.837
+     "wall_ms": 111040.132
     },
     {
      "exit_code": 0,
      "index": 4,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1339654144,
+     "memory_peak_bytes": 1339351040,
      "platform": "linux",
-     "wall_ms": 128031.296
+     "wall_ms": 118632.013
     },
     {
      "exit_code": 0,
      "index": 5,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1338707968,
+     "memory_peak_bytes": 1338003456,
      "platform": "linux",
-     "wall_ms": 131711.987
+     "wall_ms": 116583.971
     },
     {
      "exit_code": 0,
      "index": 6,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1339170816,
+     "memory_peak_bytes": 1339232256,
      "platform": "linux",
-     "wall_ms": 128165.199
+     "wall_ms": 113174.085
     },
     {
      "exit_code": 0,
      "index": 7,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1339400192,
+     "memory_peak_bytes": 1339789312,
      "platform": "linux",
-     "wall_ms": 122902.734
+     "wall_ms": 110483.902
     }
    ]
   },
@@ -135,70 +135,70 @@
      "exit_code": 0,
      "index": 0,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1342058496,
+     "memory_peak_bytes": 1341890560,
      "platform": "win32",
-     "wall_ms": 136021.359
+     "wall_ms": 134876.951
     },
     {
      "exit_code": 0,
      "index": 1,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341177856,
+     "memory_peak_bytes": 1341517824,
      "platform": "win32",
-     "wall_ms": 134721.242
+     "wall_ms": 132257.042
     },
     {
      "exit_code": 0,
      "index": 2,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1340911616,
+     "memory_peak_bytes": 1340915712,
      "platform": "win32",
-     "wall_ms": 132481.927
+     "wall_ms": 130966.625
     },
     {
      "exit_code": 0,
      "index": 3,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341669376,
+     "memory_peak_bytes": 1340878848,
      "platform": "win32",
-     "wall_ms": 131179.882
+     "wall_ms": 132552.181
     },
     {
      "exit_code": 0,
      "index": 4,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341788160,
+     "memory_peak_bytes": 1341485056,
      "platform": "win32",
-     "wall_ms": 132746.22
+     "wall_ms": 130988.239
     },
     {
      "exit_code": 0,
      "index": 5,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341816832,
+     "memory_peak_bytes": 1340887040,
      "platform": "win32",
-     "wall_ms": 131655.172
+     "wall_ms": 130716.938
     },
     {
      "exit_code": 0,
      "index": 6,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341112320,
+     "memory_peak_bytes": 1341009920,
      "platform": "win32",
-     "wall_ms": 132058.904
+     "wall_ms": 132711.715
     },
     {
      "exit_code": 0,
      "index": 7,
      "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
-     "memory_peak_bytes": 1341476864,
+     "memory_peak_bytes": 1341210624,
      "platform": "win32",
-     "wall_ms": 131266.161
+     "wall_ms": 130850.22
     }
    ]
   }
  },
- "live_validation_record_sha256": "e27d6b0de0e4035d9b81aa2f9ba30f3aaba7bdb03dbdfdcb9aa6a57b43a24de5",
+ "live_validation_record_sha256": "727db201d5f6f9fdb5bfaeca08bc197316284e2776953484d9c9558e70e5b3fe",
  "logical_output_hash": "7704ac2b803f0746a3ffa91a36ae863e2a08627d4927cc0da21ae21e3595dd73",
  "mismatch_count": 0,
  "runs_per_leg": 8,
