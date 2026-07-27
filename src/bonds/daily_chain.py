@@ -255,6 +255,87 @@ def default_classify_exception(exc: BaseException) -> str:
     return "terminal"
 
 
+# An exception raised while another is propagating REPLACES it (``__context__``);
+# an explicit ``raise ... from`` records the cause in ``__cause__``. A stage that
+# fails inside a worker therefore reaches us wrapped in whatever the unwinding
+# path raised last, and ``str(exc)`` alone reports the SYMPTOM. These bounds keep
+# the recorded chain useful without letting a pathological chain bloat the
+# checkpoint/summary JSON.
+_MAX_ERROR_CHAIN = 8
+_MAX_ERROR_MESSAGE = 500
+
+
+def _error_chain(exc: BaseException) -> list[dict[str, str]]:
+    """Flatten an exception and its causes, outermost first, root last.
+
+    ``__cause__`` (explicit ``raise ... from``) wins over ``__context__``
+    (implicit re-raise) exactly as Python's own traceback rendering does.
+    """
+    chain: list[dict[str, str]] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    link = "raised"
+    while current is not None and len(chain) < _MAX_ERROR_CHAIN:
+        if id(current) in seen:  # defensive: a cycle must not spin here
+            break
+        seen.add(id(current))
+        chain.append({
+            "type": type(current).__name__,
+            "message": str(current).strip()[:_MAX_ERROR_MESSAGE],
+            "link": link,
+        })
+        if current.__cause__ is not None:
+            current, link = current.__cause__, "cause"
+        elif current.__context__ is not None and not current.__suppress_context__:
+            current, link = current.__context__, "context"
+        else:
+            current = None
+    return chain
+
+
+def _failure_reason(chain: Sequence[Mapping[str, str]]) -> str:
+    """The reason string for a failed stage: the CAUSE leads, never the symptom.
+
+    With no chain this is byte-identical to the historical ``str(exc) or
+    type(exc).__name__``. With a chain the deepest cause leads and the exception
+    that actually surfaced is kept as a trailing annotation, so the alert line an
+    operator reads names the cause while nothing is discarded.
+    """
+    if not chain:
+        return ""
+    root, raised = chain[-1], chain[0]
+    root_text = root["message"] or root["type"]
+    if len(chain) == 1:
+        return root_text
+    raised_text = raised["message"] or raised["type"]
+    return f"{root_text} [surfaced as {raised['type']}: {raised_text}]"
+
+
+def _classify_chain(
+    exc: BaseException, classify_exception: Callable[[BaseException], str],
+) -> str:
+    """Fail-closed classification across the whole chain.
+
+    A single exception classifies exactly as before. When a chain exists, ANY
+    terminal link makes the failure terminal: a transient-looking wrapper (say an
+    ``OperationalError`` raised while a coverage breach was unwinding) must not
+    turn a fail-closed condition into a retry loop.
+    """
+    classifications = set()
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and len(seen) < _MAX_ERROR_CHAIN:
+        if id(current) in seen:
+            break
+        seen.add(id(current))
+        classifications.add(classify_exception(current))
+        nxt = current.__cause__
+        if nxt is None and not current.__suppress_context__:
+            nxt = current.__context__
+        current = nxt
+    return "terminal" if "terminal" in classifications else "transient"
+
+
 # --------------------------------------------------------------------------- #
 # Run/stage bookkeeping
 # --------------------------------------------------------------------------- #
@@ -395,9 +476,18 @@ def _run_stage(
         try:
             outcome = stage.run(stage_ctx)
         except BaseException as exc:  # noqa: BLE001 — classified, not swallowed
-            classification = classify_exception(exc)
-            outcome = StageOutcome.failed(str(exc) or type(exc).__name__,
-                                          classification=classification)
+            # Read the WHOLE exception chain before anything else touches the
+            # connection: whatever surfaced may be a mask (an exception raised
+            # while the real one was unwinding replaces it), and the checkpoint
+            # must record the CAUSE. ``_failure_reason`` puts the root first and
+            # keeps the surfaced exception as an annotation; the full chain goes
+            # into the stage detail so nothing is discarded.
+            chain = _error_chain(exc)
+            classification = _classify_chain(exc, classify_exception)
+            outcome = StageOutcome.failed(
+                _failure_reason(chain) or type(exc).__name__,
+                classification=classification, error_chain=chain,
+            )
             # A stage that ran SQL on the chain's own connection may have left its
             # transaction aborted; roll it back so the checkpoint write (and any
             # retry) runs cleanly instead of raising InFailedSqlTransaction — which
