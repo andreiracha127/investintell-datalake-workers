@@ -82,11 +82,14 @@ def _seed_full_fee_table(cur, run_id):
     _fact(cur, run_id, "A1", "PortfolioTurnoverRate", "0.45", class_id="C1")
     _fact(cur, run_id, "A1", "PortfolioTurnoverTextBlock", "portfolio turnover was 45%",
           source_table="txt.tsv", uom=None, class_id="C1")
-    # Reported performance: a class return + a declared broad-based-index benchmark
-    # return -> the reported-performance and benchmark snapshots.
+    # Reported performance: a class return -> the reported-performance snapshot.
     _fact(cur, run_id, "A1", "AvgAnnlRtrPct", "0.10", class_id="C1", otherdims="PeriodAxis=Year01")
-    _fact(cur, run_id, "A1", "AvgAnnlRtrPct", "0.12", class_id="", measure="BroadBasedIndexMember",
-          otherdims="IndexAxis=SP500Member")
+    # Declared benchmark -> the benchmark snapshot.  The RR element is
+    # AverageAnnualReturn*, the index is NAMED by the Performance Measure member,
+    # and the index leg carries NO class (it is a property of the series).
+    _fact(cur, run_id, "A1", "AverageAnnualReturnYear01", "0.12", class_id="", measure="SP500Index")
+    _fact(cur, run_id, "A1", "AverageAnnualReturnYear05", "0.11", class_id="", measure="SP500Index",
+          document="D2")
 
 
 def test_materializer_publishes_every_product_prepared_to_validated_to_current():

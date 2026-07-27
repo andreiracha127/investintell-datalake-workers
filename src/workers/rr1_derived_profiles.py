@@ -66,17 +66,26 @@ def _materialize_effective_cache(conn: Any, as_of: date) -> None:
             " UNION SELECT original_tag FROM rr1_waiver_concept_map()"
             " UNION SELECT original_tag FROM rr1_turnover_concept_map()"
             " UNION SELECT original_tag FROM rr1_reported_performance_concept_map()"
+            " UNION SELECT original_tag FROM rr1_benchmark_concept_map()"
             " UNION SELECT 'AvgAnnlRtrPct'"
             " UNION SELECT 'NetExpensesOverAssets'"
         ).fetchall()
+    ]
+    # A declared benchmark is a property of the SERIES, so its facts carry an EMPTY
+    # class.  Requiring a class for every cached fact would starve the benchmark
+    # product of its entire input.  The exemption is strictly ADDITIVE: no other
+    # concept map resolves these tags, so no other product's input changes.
+    series_level_tags = [
+        row[0]
+        for row in conn.execute("SELECT original_tag FROM rr1_benchmark_concept_map()").fetchall()
     ]
     conn.execute(
         "CREATE TEMP TABLE rr1_effective_facts ON COMMIT PRESERVE ROWS AS "
         "SELECT * FROM public.rr1_effective_facts "
         "WHERE effective_date<=%s AND tag=ANY(%s) "
         "AND nullif(btrim(series_id),'') IS NOT NULL "
-        "AND nullif(btrim(class_id),'') IS NOT NULL",
-        (as_of, tags),
+        "AND (nullif(btrim(class_id),'') IS NOT NULL OR tag=ANY(%s))",
+        (as_of, tags, series_level_tags),
     )
     conn.execute(
         "CREATE INDEX ON rr1_effective_facts"
