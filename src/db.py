@@ -8,13 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import os
-import sys
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import psycopg
-from psycopg.pq import TransactionStatus
 
 
 def _materialize_tls() -> dict[str, str] | None:
@@ -81,58 +79,12 @@ def connect(dsn: str | None = None, *, autocommit: bool = False) -> psycopg.Conn
     return psycopg.connect(resolve_dsn(dsn), autocommit=autocommit)
 
 
-def _transaction_is_aborted(conn: psycopg.Connection) -> bool:
-    """True when the connection sits in an ABORTED transaction.
-
-    Introspection is defensive on purpose: ``advisory_lock`` is also driven with
-    duck-typed connection stubs in the worker suites, and a stub that exposes no
-    ``info`` simply has no aborted transaction to end.
-    """
-    info = getattr(conn, "info", None)
-    return getattr(info, "transaction_status", None) is TransactionStatus.INERROR
-
-
-def _release_advisory_lock(conn: psycopg.Connection, lock_id: int) -> None:
-    """Release the session lock WITHOUT masking an exception already in flight.
-
-    This runs from ``advisory_lock``'s ``finally``, i.e. possibly while the body's
-    exception is propagating. Two rules make it safe:
-
-    1. If the body left the transaction ABORTED, *any* statement raises
-       ``InFailedSqlTransaction``; end that transaction first so the unlock is a
-       legal statement. (``ROLLBACK`` does not drop session advisory locks.)
-    2. A ``finally``-raised exception REPLACES the in-flight one, so a release
-       failure must never escape while another exception is unwinding — it would
-       become the recorded cause and bury the real one.
-
-    Incident 2026-07-24 (chain runs 468c9ead / b3722d63 / b2e61544): the prod
-    Postgres log records ``ERROR: must be owner of view
-    ncen_effective_filing_candidates`` immediately followed by ``ERROR: current
-    transaction is aborted ... STATEMENT: SELECT pg_advisory_unlock($1)``. The
-    second error was the one every caller saw; the first was lost.
-    """
-    in_flight = sys.exc_info()[0] is not None
-    try:
-        if _transaction_is_aborted(conn):
-            conn.rollback()
-        with conn.cursor() as cur:
-            cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
-    except Exception:
-        # Never bury the caller's error. A session advisory lock dies with the
-        # session, and every caller closes this connection right after, so the
-        # lock cannot outlive the failure it would otherwise have masked.
-        if not in_flight:
-            raise
-
-
 @contextlib.contextmanager
 def advisory_lock(conn: psycopg.Connection, lock_id: int) -> Iterator[bool]:
     """Try a session advisory lock; yields True if acquired. Releases on exit.
 
     Each worker owns a distinct lock_id (900_2xx range) so concurrent Railway
     services do not serialize against each other across different workers.
-
-    The release is deliberately non-masking: see ``_release_advisory_lock``.
     """
     with conn.cursor() as cur:
         cur.execute("SELECT pg_try_advisory_lock(%s)", (lock_id,))
@@ -141,7 +93,8 @@ def advisory_lock(conn: psycopg.Connection, lock_id: int) -> Iterator[bool]:
         yield got
     finally:
         if got:
-            _release_advisory_lock(conn, lock_id)
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_unlock(%s)", (lock_id,))
 
 
 # Advisory lock id registry (keep distinct per worker).
