@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Offline Investintell quant batch runner"
 requires-python = ">=3.11"
 dependencies = [
-  "investintell-quant-core==0.1.0",
+  "investintell-quant-core==0.3.0",
   "jsonschema>=4.26",
   "numpy>=1.26",
   "pandas>=2.2",
