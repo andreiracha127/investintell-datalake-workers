@@ -94,8 +94,11 @@ def _materialize_effective_cache(conn: Any, as_of: date) -> None:
     ]
     # A declared benchmark is a property of the SERIES, so its facts carry an EMPTY
     # class.  Requiring a class for every cached fact would starve the benchmark
-    # product of its entire input.  The exemption is strictly ADDITIVE: no other
-    # concept map resolves these tags, so no other product's input changes.
+    # product of its entire input.  The exemption is strictly ADDITIVE and stays that
+    # way: the reported-performance map now resolves the same four AverageAnnualReturn*
+    # tags, but ``build_rr1_reported_performance_profiles`` states its own class-level
+    # scope (``class_id`` non-empty) in its selection, so the class-empty rows this
+    # exemption admits reach the benchmark product and nothing else.
     series_level_tags = [
         row[0]
         for row in conn.execute("SELECT original_tag FROM rr1_benchmark_concept_map()").fetchall()

@@ -82,8 +82,11 @@ def _seed_full_fee_table(cur, run_id):
     _fact(cur, run_id, "A1", "PortfolioTurnoverRate", "0.45", class_id="C1")
     _fact(cur, run_id, "A1", "PortfolioTurnoverTextBlock", "portfolio turnover was 45%",
           source_table="txt.tsv", uom=None, class_id="C1")
-    # Reported performance: a class return -> the reported-performance snapshot.
-    _fact(cur, run_id, "A1", "AvgAnnlRtrPct", "0.10", class_id="C1", otherdims="PeriodAxis=Year01")
+    # Reported performance: a CLASS return -> the reported-performance snapshot.  The
+    # horizon is in the element name (the RR taxonomy carries no period axis), and
+    # ``AvgAnnlRtrPct`` is the OEF element, which never appears under rr/*.
+    _fact(cur, run_id, "A1", "AverageAnnualReturnYear01", "0.10", class_id="C1")
+    _fact(cur, run_id, "A1", "AverageAnnualReturnYear05", "0.09", class_id="C1")
     # Declared benchmark -> the benchmark snapshot.  The RR element is
     # AverageAnnualReturn*, the index is NAMED by the Performance Measure member,
     # and the index leg carries NO class (it is a property of the series).

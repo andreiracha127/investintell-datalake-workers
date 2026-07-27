@@ -7,30 +7,68 @@
 --
 -- Grain is one row per selected effective fact at its preserved context
 -- (publication, source run, accession, series, class, measure = the Performance
--- Measure / tax-load axis, document, dimensions = otherdims carrying the horizon
--- and any declared benchmark member, occurrence).  The horizon and benchmark
--- dimensions are preserved VERBATIM in ``dimensions``; the tax/load treatment is
--- additionally classified (rr1_performance_measure_treatment) while ``measure_id``
--- is kept verbatim.  Absence is open-world: a concept a fund did not disclose
--- simply has no row -- never a synthetic zero.  The builder consumes only the
--- amendment-aware effective selection; it never re-opens raw RR1.
+-- Measure axis, document, dimensions = otherdims, occurrence).  ``measure_id`` is
+-- kept VERBATIM and additionally classified (rr1_performance_measure_treatment).
+-- Absence is open-world: a concept a fund did not disclose simply has no row --
+-- never a synthetic zero.  The builder consumes only the amendment-aware effective
+-- selection; it never re-opens raw RR1.
+--
+-- WHAT THE PERFORMANCE MEASURE AXIS ACTUALLY CARRIES HERE (measured, not assumed).
+-- On the AverageAnnualReturn* elements the axis is EMPTY on 894,735 of 918,173
+-- class-grain facts (-> ``before_taxes``); the remaining 23,438 carry a
+-- filer-named string, almost always an index (``SP500Index``, ``ACWI``, ``Russell``)
+-- but also ``beforetax`` / ``BasedonNAV`` / ``Tax1``, which classify ``unclassified``.
+-- The taxonomy's After Taxes on Distributions [and Sales] members do NOT occur on
+-- these elements anywhere in the published corpus, so ``treatment`` here is in
+-- practice a two-valued signal.  KNOWN LIMITATION: the ~1.6% of class-grain facts
+-- whose member names an index are the preparer's index leg tagged WITH a class; the
+-- serving payload does not carry ``measure_id``, so a consumer cannot separate them
+-- from the fund's own return.  Adding ``measure_id`` to the served payload is a
+-- serving-contract change (it moves SURFACE_DIGEST on both repos), not a snapshot
+-- change -- the snapshot already preserves the member verbatim.
+--
+-- HOW THE HORIZON IS CARRIED (verified against the live corpus, not assumed).  The
+-- horizon is NOT a dimension: ``otherdims`` carries no period axis (it is populated
+-- on ~0.1% of these facts).  The RR taxonomy puts the horizon IN THE ELEMENT NAME --
+-- AverageAnnualReturnYear01 / Year05 / Year10 / SinceInception -- so the horizon is
+-- part of the CONCEPT, and each horizon is its own ``canonical_concept``.  Collapsing
+-- the four into a single concept is not merely lossy, it is impossible: 344,566
+-- preserved-context groups carry 2-4 of the horizon elements at the identical
+-- (run, accession, series, class, ddate, measure, document, otherdims, occurrence),
+-- so a single concept would trip the fan-out guard and abort every build.
 
--- Frozen taxonomy local names for the reported-performance family.  ``AvgAnnlRtrPct``
--- is the mandated Average Annual Total Return element; the companions are the RR
--- best/worst-quarter, year-to-date and since-inception elements.  ``value_kind``
+-- Frozen RR taxonomy local names for the reported-performance family.  ``value_kind``
 -- fixes how each concept's value leg is typed.  A custom/unmapped tag can never
 -- resolve here (Global Constraint 5).
+--
+-- NOTE -- three families of element names that LOOK right are NOT in this corpus and
+-- must never be selected again (each matched exactly zero rows, which is why this
+-- product shipped nothing but inception dates):
+--   * ``AvgAnnlRtrPct`` is the OEF (Tailored Shareholder Report) element.  All 311,925
+--     occurrences carry an ``oef/*`` version and none carry ``rr/*``; under an
+--     ``rr/%`` filter it is the empty set.  The RR element is AverageAnnualReturn*.
+--   * ``HighestQuarterlyReturn`` / ``LowestQuarterlyReturn`` / ``YearToDateReturn``
+--     do not exist in ANY namespace.  The RR numeric elements are the BarChart* ones.
+--   * ``BarChart*ReturnLabel`` does not exist either.  The elements that DO exist --
+--     ``HighestQuarterlyReturnLabel`` / ``LowestQuarterlyReturnLabel`` /
+--     ``YearToDateReturnLabel`` -- are the preparer's free-text CAPTIONS ("Best
+--     Quarter", "the highest return for a calendar quarter", whole sentences), not
+--     the period.  The PERIOD is the ISO date in ``BarChart*ReturnDate``, so the
+--     ``*_period`` concepts are typed ``date``, never ``label``.
 CREATE OR REPLACE FUNCTION rr1_reported_performance_concept_map()
 RETURNS TABLE(canonical_concept text, original_tag text, source_table text, value_kind text)
 LANGUAGE sql IMMUTABLE AS $$
-    VALUES ('avg_annual_return', 'AvgAnnlRtrPct', 'num.tsv', 'numeric'),
-           ('best_quarter_return', 'HighestQuarterlyReturn', 'num.tsv', 'numeric'),
-           ('worst_quarter_return', 'LowestQuarterlyReturn', 'num.tsv', 'numeric'),
-           ('year_to_date_return', 'YearToDateReturn', 'num.tsv', 'numeric'),
+    VALUES ('avg_annual_return_year01', 'AverageAnnualReturnYear01', 'num.tsv', 'numeric'),
+           ('avg_annual_return_year05', 'AverageAnnualReturnYear05', 'num.tsv', 'numeric'),
+           ('avg_annual_return_year10', 'AverageAnnualReturnYear10', 'num.tsv', 'numeric'),
+           ('avg_annual_return_since_inception', 'AverageAnnualReturnSinceInception', 'num.tsv', 'numeric'),
+           ('best_quarter_return', 'BarChartHighestQuarterlyReturn', 'num.tsv', 'numeric'),
+           ('worst_quarter_return', 'BarChartLowestQuarterlyReturn', 'num.tsv', 'numeric'),
+           ('year_to_date_return', 'BarChartYearToDateReturn', 'num.tsv', 'numeric'),
            ('since_inception_date', 'AverageAnnualReturnInceptionDate', 'txt.tsv', 'date'),
-           ('best_quarter_period', 'BarChartHighestQuarterlyReturnLabel', 'txt.tsv', 'label'),
-           ('worst_quarter_period', 'BarChartLowestQuarterlyReturnLabel', 'txt.tsv', 'label'),
-           ('year_to_date_period', 'BarChartYearToDateReturnLabel', 'txt.tsv', 'label')
+           ('best_quarter_period', 'BarChartHighestQuarterlyReturnDate', 'txt.tsv', 'date'),
+           ('worst_quarter_period', 'BarChartLowestQuarterlyReturnDate', 'txt.tsv', 'date'),
+           ('year_to_date_period', 'BarChartYearToDateReturnDate', 'txt.tsv', 'date')
 $$;
 
 CREATE TABLE IF NOT EXISTS rr1_reported_performance_profiles (
@@ -48,7 +86,9 @@ CREATE TABLE IF NOT EXISTS rr1_reported_performance_profiles (
     filed_date date NOT NULL,
     form text NOT NULL,
     canonical_concept text NOT NULL CHECK (canonical_concept IN (
-        'avg_annual_return', 'best_quarter_return', 'worst_quarter_return', 'year_to_date_return',
+        'avg_annual_return_year01', 'avg_annual_return_year05', 'avg_annual_return_year10',
+        'avg_annual_return_since_inception',
+        'best_quarter_return', 'worst_quarter_return', 'year_to_date_return',
         'since_inception_date', 'best_quarter_period', 'worst_quarter_period', 'year_to_date_period'
     )),
     value_kind text NOT NULL CHECK (value_kind IN ('numeric', 'date', 'label')),
@@ -88,6 +128,22 @@ CREATE TABLE IF NOT EXISTS rr1_reported_performance_profiles (
     )),
     CHECK ((status = 'available') = (reason_code IS NULL))
 );
+
+-- The concept alphabet is pinned by a CHECK, and ``CREATE TABLE IF NOT EXISTS``
+-- above is a no-op on an installation that already carries the previous (unusable)
+-- alphabet.  Re-state the constraint so the DDL converges on both a fresh and an
+-- existing database.  This only WIDENS the horizon concepts and DROPS the bare
+-- ``avg_annual_return``, which no row can carry: nothing ever resolved to it.
+ALTER TABLE rr1_reported_performance_profiles
+    DROP CONSTRAINT IF EXISTS rr1_reported_performance_profiles_canonical_concept_check;
+ALTER TABLE rr1_reported_performance_profiles
+    ADD CONSTRAINT rr1_reported_performance_profiles_canonical_concept_check
+    CHECK (canonical_concept IN (
+        'avg_annual_return_year01', 'avg_annual_return_year05', 'avg_annual_return_year10',
+        'avg_annual_return_since_inception',
+        'best_quarter_return', 'worst_quarter_return', 'year_to_date_return',
+        'since_inception_date', 'best_quarter_period', 'worst_quarter_period', 'year_to_date_period'
+    ));
 
 CREATE TABLE IF NOT EXISTS rr1_reported_performance_profile_builds (
     publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
@@ -172,11 +228,18 @@ BEGIN
 
     -- Canonical inputs: only RR-namespaced (``rr/%``) facts whose exact table+tag
     -- is in the frozen concept map.  A custom/unmapped tag can never match.
+    -- CLASS-level only: reported performance is a per-share-class disclosure and the
+    -- serving contract declares its grain as ``series_class_fact``.  The SERIES-level
+    -- leg of the same elements is the declared benchmark index return, which is a
+    -- property of the series and is owned by ``rr1_benchmark_profile_v1`` -- taking it
+    -- here would double-report it AND strand it, because ``measure_id`` (the only
+    -- thing that names the index) is not part of this product's served payload.
     WITH selected AS (
         SELECT f.*, m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_reported_performance_concept_map() m
           ON m.original_tag = f.tag AND m.source_table = f.source_table
         WHERE f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.class_id), '') IS NOT NULL
     )
     SELECT count(*)::integer,
            (md5(COALESCE(string_agg(
@@ -204,13 +267,16 @@ BEGIN
     END IF;
 
     -- Fan-out guard: one concept resolves to at most one fact per preserved context
-    -- grain.  Series identity is mandatory; class may be empty (a benchmark index
-    -- return is disclosed at series level).  A duplicated fact is a hard failure.
+    -- grain.  Series identity is mandatory and class is mandatory (see the class-level
+    -- note above).  A duplicated fact is a hard failure -- this is exactly the guard
+    -- that makes a per-horizon concept alphabet obligatory, since the four
+    -- AverageAnnualReturn* horizons share one preserved context.
     WITH selected AS (
         SELECT f.*, m.canonical_concept
         FROM rr1_effective_facts f JOIN rr1_reported_performance_concept_map() m
           ON m.original_tag = f.tag AND m.source_table = f.source_table
         WHERE f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.class_id), '') IS NOT NULL
     )
     SELECT CASE
         WHEN EXISTS (SELECT 1 FROM selected WHERE NULLIF(btrim(series_id),'') IS NULL)
@@ -231,6 +297,7 @@ BEGIN
         FROM rr1_effective_facts f JOIN rr1_reported_performance_concept_map() m
           ON m.original_tag = f.tag AND m.source_table = f.source_table
         WHERE f.version LIKE 'rr/%' AND f.effective_date <= as_of_date
+          AND NULLIF(btrim(f.class_id), '') IS NOT NULL
     ), typed AS (
         SELECT s.*,
                CASE WHEN s.value_kind = 'numeric' THEN rr1_numeric_value(s.raw_value) END AS value_numeric,
