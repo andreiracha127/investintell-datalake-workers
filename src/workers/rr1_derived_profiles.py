@@ -55,8 +55,29 @@ def _materialize_effective_cache(conn: Any, as_of: date) -> None:
     Every RR1 product computes fingerprints, rows, and closure checks over the
     same effective fact set. Letting each SQL function expand the view again
     multiplies the full raw scan many times. A transaction-local table shadows
-    the public view for this session, preserves identical row semantics, and is
-    discarded automatically on commit/rollback.
+    the public view for this session and is discarded automatically on
+    commit/rollback.
+
+    This cache is NOT semantically neutral, and that is the trap it once set.
+    The ``effective_date`` and ``tag`` predicates are neutral -- every consumer
+    re-applies at least as strict a filter -- but the series/class predicate is
+    a *scope* decision: it drops the RR1 facts reported at series (fund) grain,
+    with no class dimension.  In production, for as_of 2026-07-01, that is 2748
+    of 1803426 fee-tag rows.
+
+    While that predicate lived only here, ``build_rr1_fee_profiles`` and
+    ``rr1_fee_profile_build_is_closed`` read two different input sets depending
+    on who was connected: the builder pinned a count/fingerprint over the
+    filtered set, and the guard recomputed them over the unfiltered view, so a
+    perfectly good build could never be certified -- nor its pointer repointed
+    -- from any session but the one that built it.  schemas/rr1_fee_profiles.sql
+    now states the same scope in the product's own selection, so both readings
+    agree and this filter is merely redundant for the fee product.
+
+    It is still load-bearing for the other six RR1 products, whose ``build_*``
+    functions continue to RAISE on a blank series/class instead of scoping it
+    out; removing it here would stop them building at all.  Keep it until they
+    state their own scope too.
     """
     tags = [
         row[0]
