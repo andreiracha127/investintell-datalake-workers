@@ -295,9 +295,17 @@ FOR EACH ROW EXECUTE FUNCTION quant_reject_active_publication_write();
 -- ---------------------------------------------------------------------------
 -- Atomic pointer promotion.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION promote_quant_publication(target_product text, target_publication_id uuid)
+-- Monotonic promotion.  The 3-argument form replaces the 2-argument one (a
+-- defaulted third parameter would make 2-arg calls ambiguous), so existing
+-- 2-argument call sites keep working and get the guard by default.
+DROP FUNCTION IF EXISTS promote_quant_publication(text, uuid);
+CREATE OR REPLACE FUNCTION promote_quant_publication(
+    target_product text,
+    target_publication_id uuid,
+    allow_as_of_regression boolean DEFAULT false
+)
 RETURNS void LANGUAGE plpgsql AS $$
-DECLARE publication quant_publication_v1%ROWTYPE;
+DECLARE publication quant_publication_v1%ROWTYPE; active_as_of date;
 BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(target_product, 0));
     SELECT * INTO publication FROM quant_publication_v1
@@ -308,6 +316,20 @@ BEGIN
     IF publication.status NOT IN ('ready', 'active') THEN
         RAISE EXCEPTION 'publication % must be ready before promotion (is %)',
             target_publication_id, publication.status;
+    END IF;
+    -- The active pointer never moves BACKWARD in data date; a deliberate
+    -- rollback/repoint asks for it explicitly.
+    IF NOT allow_as_of_regression THEN
+        SELECT q.as_of INTO active_as_of
+        FROM active_quant_publication_v1 a
+        JOIN quant_publication_v1 q ON q.publication_id = a.publication_id
+        WHERE a.product = target_product AND a.publication_id <> target_publication_id;
+        IF active_as_of IS NOT NULL AND publication.as_of < active_as_of THEN
+            RAISE EXCEPTION 'active pointer for % would regress from as_of % to as_of %',
+                target_product, active_as_of, publication.as_of
+            USING HINT = 'deliberate rollback: promote_quant_publication('
+                         '<product>, <publication_id>, allow_as_of_regression => true)';
+        END IF;
     END IF;
     -- Retire the incumbent for this product.
     UPDATE quant_publication_v1 SET status = 'superseded'

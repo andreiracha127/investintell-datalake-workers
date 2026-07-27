@@ -26,6 +26,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
+import psycopg
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1101,3 +1102,191 @@ def test_later_stage_failure_compensates_bond_metric_v1_automatically():
         if book_schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{book_schema}" CASCADE')
         admin.close()
+
+
+# --------------------------------------------------------------------------- #
+# Monotonic promotion: the current pointer never moves BACKWARD in data date.
+#
+# Incident 2026-07-24: the chain walked source-days from 2015 and each historical
+# day self-promoted, moving 15 products' current pointers from their 2025/2026
+# builds to empty 2015 ones. Publication VERSION was monotonic throughout (the
+# 2015 builds were versions 2..4), so only the data date (as_of) orders these
+# correctly. Every derived builder records its as_of on its `<product>_builds`
+# row, which is what ``sec_derived_publication_as_of`` reads.
+# --------------------------------------------------------------------------- #
+
+def _with_as_of(conn, pub_id: UUID, as_of: date, table: str = "bond_serving_builds") -> None:
+    """Give a publication a data date the way production does: a build row."""
+    conn.execute(
+        f"CREATE TABLE IF NOT EXISTS {table} "
+        "(publication_id uuid PRIMARY KEY, as_of_date date NOT NULL)")
+    conn.execute(f"INSERT INTO {table} VALUES (%s,%s)", (pub_id, as_of))
+
+
+def _monotonic_env(env):
+    conn, _, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    product = "bond_serving_v1"
+    recent = make_validated_publication(conn, product, 1)
+    historical = make_validated_publication(conn, product, 2)   # HIGHER version...
+    _with_as_of(conn, recent, date(2026, 7, 1))
+    _with_as_of(conn, historical, date(2015, 9, 28))            # ...OLDER data date
+    daily_chain.promote_derived(conn, product, recent)
+    conn.commit()
+    assert daily_chain.current_pointer(conn, product) == recent
+    return conn, product, recent, historical
+
+
+def test_promotion_is_refused_when_it_would_move_the_pointer_backward(env):
+    conn, product, recent, historical = _monotonic_env(env)
+    with pytest.raises(psycopg.errors.RaiseException) as excinfo:
+        conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, historical))
+    assert "would regress from as_of 2026-07-01 to as_of 2015-09-28" in str(excinfo.value)
+    conn.rollback()
+    # The good publication is still current: the pointer never moved.
+    assert daily_chain.current_pointer(conn, product) == recent
+
+
+def test_promotion_backward_is_allowed_only_when_asked_for_explicitly(env):
+    conn, product, _recent, historical = _monotonic_env(env)
+    conn.execute(
+        "SELECT sec_set_current_derived_publication(%s,%s,allow_as_of_regression => true)",
+        (product, historical))
+    conn.commit()
+    assert daily_chain.current_pointer(conn, product) == historical
+
+
+def test_deliberate_rollback_to_an_older_as_of_still_works(env):
+    """``rollback_pointer`` is a deliberate regression and must not be blocked."""
+    conn, product, recent, _historical = _monotonic_env(env)
+    newer = make_validated_publication(conn, product, 3)
+    _with_as_of(conn, newer, date(2026, 7, 23))
+    daily_chain.promote_derived(conn, product, newer)
+    conn.commit()
+    assert daily_chain.current_pointer(conn, product) == newer
+
+    result = daily_chain.rollback_pointer(conn, product)
+    conn.commit()
+    assert result["restored_to"] == str(recent)
+    assert daily_chain.current_pointer(conn, product) == recent
+
+
+def test_publications_without_a_data_date_are_not_ordered(env):
+    """A product that records no build row has no data date; the guard is inert."""
+    conn, _, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    product = "regulatory_mandate"
+    a = make_validated_publication(conn, product, 1)
+    b = make_validated_publication(conn, product, 2)
+    daily_chain.promote_derived(conn, product, a)
+    daily_chain.promote_derived(conn, product, b)
+    conn.commit()
+    assert daily_chain.current_pointer(conn, product) == b
+
+
+def test_chain_compensation_restores_an_older_as_of_pointer(env):
+    """Compensation restores the PRE-RUN pointer, which is older by construction.
+
+    The monotonic guard must not turn a stage failure into a compensation FAILURE.
+    """
+    conn, schema, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    dsn = _search_path_dsn(schema)
+    product = "bond_serving_v1"
+    old = make_validated_publication(conn, product, 1)
+    new = make_validated_publication(conn, product, 2)
+    _with_as_of(conn, old, date(2026, 7, 1))
+    _with_as_of(conn, new, date(2026, 7, 23))
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, old))
+    conn.commit()
+
+    def promote_stage(ctx: StageContext) -> StageOutcome:
+        ctx.conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, new))
+        return StageOutcome.succeeded(product=product)
+
+    def refresh_fail(ctx: StageContext) -> StageOutcome:
+        return StageOutcome.failed("boom", classification="terminal")
+
+    s = daily_chain.run_chain(
+        conn, stages=[Stage("promote", promote_stage), Stage("refresh", refresh_fail)],
+        source_days=[D1], code_revision=REV, config_version=CFG, dsn=dsn,
+        snapshot_pointers=chain_worker._snapshot_pointers,
+        restore_pointer=chain_worker._restore_pointer,
+    )[0]
+    assert s["status"] == "failed"
+    assert s["compensation_failures"] == []
+    assert {c["product"]: c["restored_to"] for c in s["compensations"]} == {product: str(old)}
+    assert daily_chain.current_pointer(conn, product) == old
+
+
+def test_quant_promotion_is_refused_when_it_would_move_the_pointer_backward(env):
+    """The mixed_quant active pointer carries the same invariant (as_of is a column)."""
+    conn, _, _ = env
+    quant_pub.install_schema(conn)
+    conn.commit()
+    mixed = quant_pub.PRODUCT
+    recent = quant_pub.open_publication(conn, product=mixed, as_of=date(2026, 7, 23),
+                                        code_revision="r1", config_version="v")
+    quant_pub.mark_ready(conn, recent, {})
+    historical = quant_pub.open_publication(conn, product=mixed, as_of=date(2015, 12, 1),
+                                            code_revision="r1", config_version="v")
+    quant_pub.mark_ready(conn, historical, {})
+    quant_pub.promote(conn, mixed, recent)
+    conn.commit()
+
+    with pytest.raises(psycopg.errors.RaiseException) as excinfo:
+        quant_pub.promote(conn, mixed, historical)
+    assert "would regress from as_of 2026-07-23 to as_of 2015-12-01" in str(excinfo.value)
+    conn.rollback()
+    assert quant_pub.active_publication_id(conn, mixed) == recent
+
+    quant_pub.promote(conn, mixed, historical, allow_as_of_regression=True)
+    conn.commit()
+    assert quant_pub.active_publication_id(conn, mixed) == historical
+
+
+def test_a_refused_backward_day_fails_alone_and_the_newer_day_still_publishes(env):
+    """The guard fails the offending source-day; the catch-up walk keeps going.
+
+    This is the incident shape: a walk over historical source-days must not take
+    the newest build off the pointer, and must not stop the newest day from
+    publishing either.
+    """
+    conn, schema, _ = env
+    install_derived_protocol(conn)
+    daily_chain.install_schema(conn)
+    conn.commit()
+    dsn = _search_path_dsn(schema)
+    product = "bond_serving_v1"
+    incumbent = make_validated_publication(conn, product, 1)
+    historical = make_validated_publication(conn, product, 2)
+    newest = make_validated_publication(conn, product, 3)
+    _with_as_of(conn, incumbent, date(2026, 7, 1))
+    _with_as_of(conn, historical, date(2015, 9, 28))
+    _with_as_of(conn, newest, date(2026, 7, 23))
+    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, incumbent))
+    conn.commit()
+
+    target = {D1: historical, D2: newest}
+
+    def promote_stage(ctx: StageContext) -> StageOutcome:
+        ctx.conn.execute("SELECT sec_set_current_derived_publication(%s,%s)",
+                         (product, target[ctx.source_day]))
+        return StageOutcome.succeeded(product=product)
+
+    summaries = daily_chain.run_chain(
+        conn, stages=[Stage("promote", promote_stage)], source_days=[D1, D2],
+        code_revision=REV, config_version=CFG, dsn=dsn,
+        snapshot_pointers=chain_worker._snapshot_pointers,
+        restore_pointer=chain_worker._restore_pointer,
+    )
+    assert [s["status"] for s in summaries] == ["failed", "completed"]
+    # The backward day is a REPORTED failure, not a retry storm and not a silent skip.
+    assert summaries[0]["stages"][0]["attempts"] == 1
+    assert daily_chain.current_pointer(conn, product) == newest

@@ -37,6 +37,16 @@ def test_derived_publication_ddl_blocks_direct_mutation_after_validation() -> No
     assert "current pointer is managed by sec_set_current_derived_publication" in ddl
 
 
+def test_derived_publication_ddl_declares_monotonic_promotion() -> None:
+    """The current pointer never moves backward in data date unless asked to."""
+    ddl = (ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8")
+    assert "sec_derived_publication_as_of" in ddl
+    assert "allow_as_of_regression boolean DEFAULT false" in ddl
+    assert "would regress from as_of" in ddl
+    # The 2-arg form must be dropped, or 2-arg calls become ambiguous.
+    assert "DROP FUNCTION IF EXISTS sec_set_current_derived_publication(text, uuid);" in ddl
+
+
 def test_derived_publications_apply_twice_and_validation_and_pointer_are_immutable() -> None:
     import psycopg
 

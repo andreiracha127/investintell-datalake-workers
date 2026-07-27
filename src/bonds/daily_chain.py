@@ -844,7 +844,13 @@ def rollback_pointer(
     if restore_to is None:
         raise TerminalStageError(
             f"product {product!r} has no prior pointer to roll back to (first publication)")
-    conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, restore_to))
+    # Deliberate rollback: the restore target is by construction OLDER than what is
+    # current, so the monotonic-promotion guard is opted out of explicitly here (and
+    # only here) — never by weakening the default that protects normal promotion.
+    conn.execute(
+        "SELECT sec_set_current_derived_publication(%s,%s,allow_as_of_regression => true)",
+        (product, restore_to),
+    )
     record_promotion(conn, product=product, publication_id=restore_to,
                      previous_publication_id=rolled_from, run_id=run_id, action="rollback")
     return {"product": product, "rolled_back_from": str(rolled_from), "restored_to": str(restore_to)}

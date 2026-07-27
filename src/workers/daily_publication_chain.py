@@ -338,7 +338,14 @@ def _restore_pointer(ctx: StageContext, product: str, prior: uuid.UUID | None) -
 
 def _restore_derived(conn: Any, product: str, prior: uuid.UUID | None) -> None:
     if prior is not None:
-        conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, prior))
+        # Compensation restores the PRE-RUN pointer, which is by construction older
+        # than what this run made current: an explicit, deliberate regression. Opting
+        # out of the monotonic-promotion guard here keeps compensation from turning a
+        # stage failure into a compensation FAILURE; normal promotion keeps the guard.
+        conn.execute(
+            "SELECT sec_set_current_derived_publication(%s,%s,allow_as_of_regression => true)",
+            (product, prior),
+        )
         return
     # First publication of this product this run: clear the pointer through the
     # protocol's own sanctioned token path (the guard permits the mutation while
@@ -363,7 +370,8 @@ def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
         conn.execute(
             "UPDATE quant_publication_v1 SET status='ready', activated_at=NULL "
             "WHERE publication_id=%s AND status <> 'active'", (prior,))
-        pub.promote(conn, product, prior)
+        # Deliberate compensation to the pre-run pointer (see _restore_derived).
+        pub.promote(conn, product, prior, allow_as_of_regression=True)
         return
     # No prior active pointer: drop the active row and make the current publication
     # writable again (back to 'ready'); activated_at is cleared for the same CHECK.

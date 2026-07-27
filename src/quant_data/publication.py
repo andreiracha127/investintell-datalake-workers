@@ -234,9 +234,20 @@ def mark_ready(conn: psycopg.Connection, publication_id: uuid.UUID, counts: Mapp
     )
 
 
-def promote(conn: psycopg.Connection, product: str, publication_id: uuid.UUID) -> None:
-    """Atomic pointer promotion; the SQL function holds the per-product lock."""
-    conn.execute("SELECT promote_quant_publication(%s,%s)", (product, publication_id))
+def promote(
+    conn: psycopg.Connection, product: str, publication_id: uuid.UUID,
+    *, allow_as_of_regression: bool = False,
+) -> None:
+    """Atomic pointer promotion; the SQL function holds the per-product lock.
+
+    The SQL function refuses by default to move the active pointer to an OLDER
+    ``as_of``; ``allow_as_of_regression`` is the explicit opt-out for a deliberate
+    rollback/repoint (never for ordinary promotion).
+    """
+    conn.execute(
+        "SELECT promote_quant_publication(%s,%s,%s)",
+        (product, publication_id, allow_as_of_regression),
+    )
 
 
 def active_publication_id(conn: psycopg.Connection, product: str) -> uuid.UUID | None:
