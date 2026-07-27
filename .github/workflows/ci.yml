@@ -471,11 +471,18 @@ jobs:
           steps.changes.outputs.quant_changed == 'true'
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.quant-engine.lock pytest pytest-xdist==3.8.0 ruff==0.15.9
+          python -m pip install -r requirements.quant-engine.lock pytest pytest-xdist==3.8.0 ruff==0.15.9 build==1.5.0
 
       - name: Validate Railway dependencies
         if: steps.changes.outputs.nport_changed == 'true'
         run: python -m pip install --dry-run --ignore-installed -r requirements.txt
+
+      # Runs on every branch, without credentials: any pull request that would
+      # make the wheel diverge from its own source fails here, long before the
+      # publish job on main gets a token.
+      - name: Verify quant-core wheel reproduces its source
+        if: steps.changes.outputs.quant_changed == 'true'
+        run: python scripts/ci/publish_quant_core.py verify
 
       - name: Verify Stage A binding
         if: steps.changes.outputs.quant_changed == 'true'
@@ -602,3 +609,74 @@ jobs:
       - name: Verify calibration artifacts
         if: steps.changes.outputs.quant_changed == 'true'
         run: python docker/railway-ci/verify_calibration_artifacts.py
+
+  # The app installs investintell-quant-core from a private Artifact Registry
+  # index, so that wheel is production code. It is published from here and
+  # nowhere else: only this job — gated on a push to main, after quant-engine
+  # went green — can mint a token for the publisher service account, and the
+  # preflight refuses to upload anything the checked-out source cannot rebuild.
+  quant-core-publish:
+    name: quant-core-publish
+    runs-on: ubuntu-latest
+    needs: quant-engine
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build==1.5.0 twine==6.2.0
+
+      - name: Authenticate to Google Artifact Registry
+        id: gcp-auth
+        uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/552289444247/locations/global/workloadIdentityPools/github-actions/providers/github
+          service_account: gh-actions-gar-publisher@investintell-research-analisys.iam.gserviceaccount.com
+
+      # Builds the wheel, proves it carries exactly the tracked source of this
+      # commit, and compares it against the registry. If the version is already
+      # published but no longer reproduces from main, this fails instead of
+      # publishing — that is the drift the manual builds used to introduce.
+      - name: Preflight the wheel against the registry
+        id: preflight
+        env:
+          GAR_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        run: >-
+          python scripts/ci/publish_quant_core.py preflight
+          --outdir dist/quant-core
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Publish the verified wheel
+        if: steps.preflight.outputs.publish_needed == 'true'
+        env:
+          TWINE_USERNAME: oauth2accesstoken
+          TWINE_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+        run: >-
+          python -m twine upload
+          --repository-url https://southamerica-east1-python.pkg.dev/investintell-research-analisys/python/
+          --non-interactive
+          --disable-progress-bar
+          dist/quant-core/*.whl
+
+      # Re-reads the index the app resolves against and re-runs the comparison,
+      # so a green job means the artifact users install is the one main builds.
+      - name: Confirm the published artifact reproduces from main
+        if: steps.preflight.outputs.publish_needed == 'true'
+        env:
+          GAR_ACCESS_TOKEN: ${{ steps.gcp-auth.outputs.access_token }}
+        run: >-
+          python scripts/ci/publish_quant_core.py preflight
+          --outdir dist/quant-core-confirm
+          --require-published

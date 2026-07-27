@@ -29,6 +29,10 @@ _val*
 _validate_*
 _smoke_*
 
+# quant-core wheel builds (scripts/ci/publish_quant_core.py)
+dist/
+*.egg-info/
+
 # phase0q cloud-leg LOCAL bundle output (never committed)
 build/
 _phase0q_cloud_bundle/
