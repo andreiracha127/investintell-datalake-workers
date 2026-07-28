@@ -357,6 +357,11 @@ def _resolve_holding_parents(conn: psycopg.Connection, *, run_id: UUID, contract
                 ) s""",
             (run_id, run_id),
         )
+        # O mapa acabou de ser populado dentro desta transação e não tem
+        # estatística nenhuma, então o planejador o trata como vazio e escolhe um
+        # plano que derrama dezenas de GB ao varrer as dezenas de milhões de
+        # linhas brutas abaixo. Analisar aqui custa segundos e evita isso.
+        cur.execute("ANALYZE nport_holding_accession_map")
         cur.execute(
             """SELECT 1 FROM nport_raw_rows r
                LEFT JOIN nport_holding_accession_map m

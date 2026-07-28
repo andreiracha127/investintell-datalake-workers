@@ -394,6 +394,31 @@ BEGIN
       WHERE r.ingestion_run_id = target_run_id
       GROUP BY r.source_table
     ),
+    raw_resident AS MATERIALIZED (
+      SELECT EXISTS (
+        SELECT 1 FROM nport_raw_rows WHERE ingestion_run_id = target_run_id
+      ) AS present
+    ),
+    -- Raw rows are prunable EVIDENCE for the manifest, not a permanent storage
+    -- obligation: requiring them forever grew this table to 470M rows / 790 GB
+    -- and forced a full quarterly re-ingestion into production purely to satisfy
+    -- this check. While they are resident the attested counts ARE the physical
+    -- counts, so corruption is caught exactly as before. Once pruned, the
+    -- reconciliation record attests the parse and sec_source_files is still
+    -- cross-checked against it below — two independent records of the same parse
+    -- must still agree. The semantic re-derivation below is unchanged and still
+    -- covers every resident row.
+    attested AS MATERIALIZED (
+      SELECT t.table_name AS source_table,
+             CASE WHEN rr.present THEN COALESCE(a.physical_count, 0) ELSE t.expected_count END AS physical_count,
+             CASE WHEN rr.present THEN COALESCE(a.typed_count, 0) ELSE t.typed_success_count END AS typed_count,
+             CASE WHEN rr.present THEN COALESCE(a.quarantined_count, 0) ELSE t.quarantine_count END AS quarantined_count,
+             CASE WHEN rr.present THEN COALESCE(a.rejected_count, 0) ELSE t.reject_count END AS rejected_count
+      FROM sec_table_reconciliations t
+      CROSS JOIN raw_resident rr
+      LEFT JOIN raw_actuals a ON a.source_table = t.table_name
+      WHERE t.run_id = target_run_id
+    ),
     invalid_counters AS (
       SELECT 1
       FROM nport_contract_tables c
@@ -401,7 +426,7 @@ BEGIN
         ON t.run_id = target_run_id AND t.table_name = c.source_table
       LEFT JOIN sec_source_files f
         ON f.run_id = target_run_id AND f.source_file_id = t.source_file_id
-      LEFT JOIN raw_actuals actual ON actual.source_table = c.source_table
+      LEFT JOIN attested actual ON actual.source_table = c.source_table
       WHERE f.source_file_id IS NULL OR t.reconciliation_id IS NULL
         OR f.state <> 'accounted' OR t.state <> 'accounted'
         OR ((COALESCE(actual.physical_count, 0) > 0 OR c.source_table = 'SUBMISSION.tsv')

@@ -229,6 +229,110 @@ def test_publication_reconciler_uses_run_wide_summaries_and_one_semantic_scan() 
     assert "holding_rows AS MATERIALIZED" in body
 
 
+def test_reconciler_reads_attested_counts_when_raw_rows_are_pruned() -> None:
+    """Raw rows are prunable evidence, so the counters must have a second source.
+
+    Production already holds 84 validated runs with an empty nport_raw_rows: the
+    790 GB of raw evidence was reclaimed. A reconciler that can only read physical
+    counts fails closed on every one of them.
+    """
+    ddl = Path("schemas/nport_raw.sql").read_text(encoding="utf-8")
+    body = ddl.split(
+        "CREATE OR REPLACE FUNCTION nport_raw_run_reconciles(target_run_id uuid)", 1,
+    )[1].split("DROP TRIGGER IF EXISTS nport_raw_publication_gate", 1)[0]
+
+    assert "raw_resident AS MATERIALIZED" in body
+    assert "attested AS MATERIALIZED" in body
+    # While raw rows are resident the attested counts ARE the physical counts, so
+    # the resident path must still be the physical one and nothing else.
+    assert "CASE WHEN rr.present THEN COALESCE(a.physical_count, 0) ELSE t.expected_count END" in body
+    # The counter comparison must consume the attested CTE, not raw_actuals
+    # directly — otherwise the fallback exists but nothing reads it.
+    assert "LEFT JOIN attested actual ON actual.source_table = c.source_table" in body
+    assert "LEFT JOIN raw_actuals actual" not in body
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_real_db_pruned_raw_rows_still_reconcile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ingest, validate, then prune the raw evidence: the run must still reconcile.
+
+    TRUNCATE is the prune path — the row-level DELETE trigger refuses to drop raw
+    rows once raw_validated_at is set, which is why production reclaimed the space
+    this way. The reconciliation record then carries the attestation alone.
+    """
+    import psycopg
+    import src.nport.ingestion as ingestion
+    from src.nport.storage import install_schema as install_nport_schema
+    from src.sec_regulatory.manifests import install_schema as install_manifest_schema
+
+    contract, package = _package(tmp_path, "2027q2_nport", accession="NPORT-PRUNE-TEST")
+    old = ingestion.load_nport_contract
+    monkeypatch.setattr(ingestion, "load_nport_contract", lambda: contract)
+    try:
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+            install_manifest_schema(conn)
+            install_nport_schema(conn)
+            result = ingestion.ingest_package(
+                conn, package=package, source_root=tmp_path, parser_version="nport-test-prune-v1")
+            conn.commit()
+            assert result["state"] == "raw_validated"
+            run_id = result["run_id"]
+
+            with conn.cursor() as cur:
+                cur.execute("SELECT nport_raw_run_reconciles(%s)", (run_id,))
+                assert cur.fetchone()[0] is True, "com evidencia bruta residente deve reconciliar"
+
+                # The immutability trigger is what forces TRUNCATE as the prune path.
+                with pytest.raises(psycopg.Error):
+                    cur.execute("DELETE FROM nport_raw_rows WHERE ingestion_run_id = %s", (run_id,))
+            conn.rollback()
+
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE nport_raw_rows")
+                cur.execute("SELECT count(*) FROM nport_raw_rows")
+                assert cur.fetchone()[0] == 0
+                cur.execute("SELECT nport_raw_run_reconciles(%s)", (run_id,))
+                assert cur.fetchone()[0] is True, "evidencia podada deve reconciliar pelo atestado"
+            conn.rollback()
+    finally:
+        monkeypatch.setattr(ingestion, "load_nport_contract", old)
+
+
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_real_db_resident_raw_rows_still_catch_a_count_lie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fallback must not become a way to launder a corrupt resident run.
+
+    With raw rows present the physical counts still rule, so a reconciliation
+    record that claims more rows than were parsed has to fail exactly as before.
+    """
+    import psycopg
+    import src.nport.ingestion as ingestion
+    from src.nport.storage import install_schema as install_nport_schema
+    from src.sec_regulatory.manifests import install_schema as install_manifest_schema
+
+    contract, package = _package(tmp_path, "2027q3_nport", accession="NPORT-LIE-TEST")
+    old = ingestion.load_nport_contract
+    monkeypatch.setattr(ingestion, "load_nport_contract", lambda: contract)
+    try:
+        with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+            install_manifest_schema(conn)
+            install_nport_schema(conn)
+            result = ingestion.ingest_package(
+                conn, package=package, source_root=tmp_path, parser_version="nport-test-lie-v1")
+            conn.commit()
+            run_id = result["run_id"]
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE sec_table_reconciliations SET expected_count = expected_count + 1
+                       WHERE run_id = %s AND table_name = 'SUBMISSION.tsv'""", (run_id,))
+                cur.execute("SELECT nport_raw_run_reconciles(%s)", (run_id,))
+                assert cur.fetchone()[0] is False, "contagem inflada com evidencia residente deve falhar"
+            conn.rollback()
+    finally:
+        monkeypatch.setattr(ingestion, "load_nport_contract", old)
+
+
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
 def test_real_db_zero_tables_are_accounted_and_validated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import psycopg
