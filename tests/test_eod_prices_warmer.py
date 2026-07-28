@@ -215,3 +215,80 @@ def test_upsert_eod_prices_idempotent():
             cur.execute("DROP SCHEMA IF EXISTS _dlw_test_eodw CASCADE")
         conn.commit()
         conn.close()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sweep ordering + resume cursor
+#
+# Regressão de 2026-07-22..28: a varredura era `sorted(tickers)` puro e o abort
+# por orçamento não guardava posição, então toda execução refazia o prefixo
+# alfabético. SPY/TLT/TIP/SHY/GLD/DBC (S,T,G,D) nunca eram alcançados, ficaram 8
+# dias úteis parados em 2026-07-16, e o open_macro_v03 passou a falhar fechado
+# com staleness_block — /macro e o builder mostrando "no usable macro signal".
+# ──────────────────────────────────────────────────────────────────────────────
+def test_macro_sleeves_are_fetched_before_the_long_tail():
+    from src.workers.eod_prices_warmer import MACRO_SLEEVE_TICKERS, order_sweep
+
+    universe = sorted(["AAPL", "AA", "ABBV", "SPY", "TLT", "TIP", "SHY", "GLD", "DBC", "ZM"])
+    ordered = order_sweep(universe)
+
+    head = ordered[: len(set(MACRO_SLEEVE_TICKERS))]
+    for ticker in MACRO_SLEEVE_TICKERS:
+        assert ticker in head, f"{ticker} tem de vir antes da cauda"
+    # E um corte por orçamento no tamanho do incidente ainda os alcança.
+    assert set(MACRO_SLEEVE_TICKERS).issubset(set(ordered[:8]))
+
+
+def test_sweep_is_a_ring_so_no_ticker_starves():
+    from src.workers.eod_prices_warmer import order_sweep
+
+    universe = [f"T{i:03d}" for i in range(10)]
+    # Sem cursor, começa do início da cauda.
+    assert order_sweep(universe, priority=())[0] == "T000"
+    # Com cursor, retoma DEPOIS dele e dá a volta.
+    rotated = order_sweep(universe, resume_after="T004", priority=())
+    assert rotated[0] == "T005"
+    assert rotated[-1] == "T004"
+    assert sorted(rotated) == sorted(universe), "a rotação não pode perder ticker"
+
+
+def test_cursor_tolerates_a_ticker_that_left_the_universe():
+    from src.workers.eod_prices_warmer import order_sweep
+
+    universe = ["AAA", "CCC", "DDD"]
+    # "BBB" saiu do universo desde a última execução: retoma no próximo que
+    # ordena depois dele, em vez de reiniciar do começo.
+    assert order_sweep(universe, resume_after="BBB", priority=())[0] == "CCC"
+    # Cursor no último elemento dá a volta inteira.
+    assert order_sweep(universe, resume_after="DDD", priority=())[0] == "AAA"
+
+
+def test_priority_head_never_moves_the_cursor():
+    """Senão todo abort rebobina a varredura para a posição do head."""
+    import inspect
+
+    from src.workers import eod_prices_warmer
+
+    source = inspect.getsource(eod_prices_warmer.run)
+    assert "if ticker not in _PRIORITY_SET:" in source
+    assert "last_done = ticker" in source
+
+
+def test_run_actually_consumes_the_ordered_sweep():
+    """Prender a fiação, não só a função pura.
+
+    A primeira versão destes testes exercitava order_sweep isoladamente: voltar o
+    run() para `sorted(warming_universe(conn))` passava por todos eles. É a
+    ordenação NO CAMINHO DE EXECUÇÃO que mantém as sleeves de macro vivas.
+    """
+    import inspect
+
+    from src.workers import eod_prices_warmer
+
+    source = inspect.getsource(eod_prices_warmer.run)
+    assert "order_sweep(" in source, "run() tem de ordenar a varredura"
+    assert "resume_after=resume_after" in source, "run() tem de passar o cursor"
+    assert "read_cursor(conn)" in source
+    assert "write_cursor(conn, last_done)" in source
+    # O bug original, explicitamente proibido.
+    assert "sorted(warming_universe(" not in source

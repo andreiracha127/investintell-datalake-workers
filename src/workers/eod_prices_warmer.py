@@ -47,6 +47,31 @@ PROGRESS_EVERY = 500  # emit a heartbeat log every N tickers (observability)
 # Index / benchmark ETFs the API and screener need even if never queried.
 INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "DIA", "IWM", "GLD", "AGG", "TLT", "USO")
 
+# The six sleeves open_macro_v03 prices its books on. That worker fail-closes when
+# any of them is more than 3 business days stale, so if the sweep never reaches
+# them the whole macro signal goes dark — /macro and the builder both render
+# "no usable macro signal". It happened: the sweep is alphabetical, the Tiingo
+# budget dies around the 300th ticker, and S/T/G/D are never reached, so these
+# stayed frozen at 2026-07-16 for 8 business days while the A-names refreshed
+# daily. Cheap tickers, load-bearing signal — they go first, every run.
+MACRO_SLEEVE_TICKERS: tuple[str, ...] = ("SPY", "TLT", "TIP", "SHY", "GLD", "DBC")
+
+# Priority head: fetched before the long tail and never subject to the resume
+# cursor, so a truncated run still refreshes everything the decision layer needs.
+PRIORITY_TICKERS: tuple[str, ...] = tuple(
+    dict.fromkeys(MACRO_SLEEVE_TICKERS + INDEX_TICKERS)
+)
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS eod_warmer_cursor (
+    worker       text        PRIMARY KEY,
+    last_ticker  text        NOT NULL,
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+"""
+_CURSOR_KEY = "eod_prices_warmer"
+_PRIORITY_SET = frozenset(PRIORITY_TICKERS)
+
 # eod_prices price columns (all NOT NULL) → Tiingo daily-bar JSON key.
 _BAR_KEYS: dict[str, str] = {
     "open": "open", "high": "high", "low": "low", "close": "close",
@@ -130,6 +155,52 @@ def warming_universe(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> list[st
     return sorted(tickers)
 
 
+def order_sweep(
+    tickers: list[str],
+    *,
+    resume_after: str | None = None,
+    priority: tuple[str, ...] = PRIORITY_TICKERS,
+) -> list[str]:
+    """Priority head first, then the tail rotated to start after the last cursor.
+
+    A run that dies on budget must not leave the same suffix cold forever. The
+    tail is rotated rather than truncated so every ticker is still reached — just
+    over several runs — and the rotation wraps, so the sweep is a ring and no
+    ticker can starve. ``priority`` is exempt from the rotation entirely: those
+    are re-fetched on every run regardless of where the cursor sits.
+    """
+    known = set(tickers)
+    head = [t for t in priority if t in known]
+    tail = [t for t in tickers if t not in set(head)]
+    if resume_after is not None and tail:
+        # bisect-free and tolerant of a cursor whose ticker has since left the
+        # universe: split on the first entry that sorts after it.
+        cut = next((i for i, t in enumerate(tail) if t > resume_after), len(tail))
+        tail = tail[cut:] + tail[:cut]
+    return head + tail
+
+
+def read_cursor(conn) -> str | None:
+    with conn.cursor() as cur:
+        cur.execute(_SCHEMA_SQL)
+        cur.execute("SELECT last_ticker FROM eod_warmer_cursor WHERE worker = %s", (_CURSOR_KEY,))
+        row = cur.fetchone()
+    conn.commit()
+    return row[0] if row else None
+
+
+def write_cursor(conn, ticker: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """INSERT INTO eod_warmer_cursor (worker, last_ticker, updated_at)
+               VALUES (%s, %s, now())
+               ON CONFLICT (worker) DO UPDATE
+               SET last_ticker = EXCLUDED.last_ticker, updated_at = now()""",
+            (_CURSOR_KEY, ticker),
+        )
+    conn.commit()
+
+
 def ensure_instruments(conn, *, extra: tuple[str, ...] = INDEX_TICKERS) -> int:
     """Seed FK parent rows for active screener and benchmark tickers."""
     inserted = 0
@@ -175,6 +246,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
     as_of = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
     fetched = upserted = skipped_rows = 0
     aborted: str | None = None
+    last_done: str | None = None
 
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_EOD_PRICES_WARMER) as got:
@@ -182,12 +254,14 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 return {"fetched": 0, "upserted": 0, "skipped": "lock_busy"}
 
             instruments_seeded = ensure_instruments(conn)
-            tickers = warming_universe(conn)
+            resume_after = read_cursor(conn)
+            tickers = order_sweep(warming_universe(conn), resume_after=resume_after)
             if limit:
                 tickers = tickers[:limit]
             watermarks = _ticker_watermarks(conn)
             print(
-                f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}",
+                f"eod_prices_warmer: {len(tickers)} tickers, as_of={as_of}, "
+                f"resume_after={resume_after or '-'}",
                 flush=True,
             )
 
@@ -209,12 +283,19 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                     skipped_rows += len(bars) - len(rows)
                     if rows:
                         upserted += upsert_eod_prices(conn, rows)
+                    # Advance only past the rotating tail: the priority head is
+                    # re-fetched every run, so letting it move the cursor would
+                    # rewind the sweep to the head's position on every abort.
+                    if ticker not in _PRIORITY_SET:
+                        last_done = ticker
                     if i % PROGRESS_EVERY == 0:
                         print(
                             f"eod_prices_warmer: {i}/{len(tickers)} tickers, "
                             f"upserted={upserted}",
                             flush=True,
                         )
+            if last_done is not None:
+                write_cursor(conn, last_done)
             conn.commit()
 
     stats: dict[str, Any] = {
@@ -224,6 +305,8 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
     }
     if skipped_rows:
         stats["skipped_rows"] = skipped_rows
+    if last_done:
+        stats["cursor"] = last_done
     if aborted:
         stats["aborted"] = aborted
     return stats
