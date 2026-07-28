@@ -391,6 +391,7 @@ def materialize(
     source_run_id: UUID | None = None,
     source_package_id: UUID | None = None,
     allow_missing_families: bool = False,
+    allow_as_of_regression: bool = False,
 ) -> dict[str, Any]:
     """Prepare -> project every present family -> validate -> current, atomically.
 
@@ -460,7 +461,13 @@ def materialize(
         "SELECT publication_id FROM sec_derived_current_pointers WHERE product=%s", (product,)
     ).fetchone()
     if current is None or current[0] != publication_id:
-        conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (product, publication_id))
+        # Deliberate opt-in, same shape the chain's compensation path uses. The
+        # monotonic guard refuses a pointer that moves back, and the serving as_of is
+        # derived from the source maxima — so correcting a publication whose as_of was
+        # stamped from the wrong column reads to the guard as a regression even though
+        # coverage grows. The caller has to say so; silence still refuses.
+        conn.execute("SELECT sec_set_current_derived_publication(%s,%s,%s)",
+                     (product, publication_id, allow_as_of_regression))
 
     row_count = conn.execute(
         "SELECT count(*) FROM sec_regulatory_serving_facts WHERE publication_id=%s",

@@ -45,7 +45,8 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     return row[0] if row and row[0] else None
 
 
-def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, object]:
+def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
+        allow_as_of_regression: bool = False) -> dict[str, object]:
     with connect(dsn) as conn, advisory_lock(conn, LOCK_SEC_REGULATORY_SERVING) as acquired:
         if not acquired:
             return {"state": "locked", "rows": 0}
@@ -61,7 +62,9 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             conn.commit()
             return {"state": "no_effective_facts", "rows": 0}
         try:
-            result = materializer.materialize(conn, as_of=as_of, code_revision=_code_revision())
+            result = materializer.materialize(
+                conn, as_of=as_of, code_revision=_code_revision(),
+                allow_as_of_regression=allow_as_of_regression)
         except RuntimeError:
             conn.rollback()
             return {"state": "no_source", "rows": 0}
