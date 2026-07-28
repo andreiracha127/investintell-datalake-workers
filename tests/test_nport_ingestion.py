@@ -288,7 +288,9 @@ def test_real_db_pruned_raw_rows_still_reconcile(tmp_path: Path, monkeypatch: py
             conn.rollback()
 
             with conn.cursor() as cur:
-                cur.execute("TRUNCATE nport_raw_rows")
+                # The holding map carries an FK into the raw rows, so the prune
+                # takes both — which is exactly the state production is in today.
+                cur.execute("TRUNCATE nport_raw_rows, nport_holding_accession_map")
                 cur.execute("SELECT count(*) FROM nport_raw_rows")
                 assert cur.fetchone()[0] == 0
                 cur.execute("SELECT nport_raw_run_reconciles(%s)", (run_id,))
@@ -299,18 +301,23 @@ def test_real_db_pruned_raw_rows_still_reconcile(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
-def test_real_db_resident_raw_rows_still_catch_a_count_lie(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The fallback must not become a way to launder a corrupt resident run.
+def test_real_db_attested_counts_cannot_be_forged_after_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """What makes the pruned path safe is that its fallback source is frozen.
 
-    With raw rows present the physical counts still rule, so a reconciliation
-    record that claims more rows than were parsed has to fail exactly as before.
+    Once the raw evidence can be dropped, the reconciliation record is the only
+    surviving witness of the parse — so it must be untouchable. It is: the lineage
+    trigger refuses any post-validation write. An attacker cannot prune the rows
+    and then restate the counts, because the counts were already frozen against
+    the physical rows at validation time.
     """
     import psycopg
     import src.nport.ingestion as ingestion
     from src.nport.storage import install_schema as install_nport_schema
     from src.sec_regulatory.manifests import install_schema as install_manifest_schema
 
-    contract, package = _package(tmp_path, "2027q3_nport", accession="NPORT-LIE-TEST")
+    contract, package = _package(tmp_path, "2027q3_nport", accession="NPORT-FORGE-TEST")
     old = ingestion.load_nport_contract
     monkeypatch.setattr(ingestion, "load_nport_contract", lambda: contract)
     try:
@@ -318,16 +325,16 @@ def test_real_db_resident_raw_rows_still_catch_a_count_lie(tmp_path: Path, monke
             install_manifest_schema(conn)
             install_nport_schema(conn)
             result = ingestion.ingest_package(
-                conn, package=package, source_root=tmp_path, parser_version="nport-test-lie-v1")
+                conn, package=package, source_root=tmp_path, parser_version="nport-test-forge-v1")
             conn.commit()
+            assert result["state"] == "raw_validated"
             run_id = result["run_id"]
 
             with conn.cursor() as cur:
-                cur.execute(
-                    """UPDATE sec_table_reconciliations SET expected_count = expected_count + 1
-                       WHERE run_id = %s AND table_name = 'SUBMISSION.tsv'""", (run_id,))
-                cur.execute("SELECT nport_raw_run_reconciles(%s)", (run_id,))
-                assert cur.fetchone()[0] is False, "contagem inflada com evidencia residente deve falhar"
+                with pytest.raises(psycopg.Error, match="immutable after validation"):
+                    cur.execute(
+                        """UPDATE sec_table_reconciliations SET expected_count = expected_count + 1
+                           WHERE run_id = %s AND table_name = 'SUBMISSION.tsv'""", (run_id,))
             conn.rollback()
     finally:
         monkeypatch.setattr(ingestion, "load_nport_contract", old)
