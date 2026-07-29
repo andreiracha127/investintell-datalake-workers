@@ -45,6 +45,30 @@ _OBSERVATION_TABLES = (
 )
 
 
+class MixedQuantSourceError(RuntimeError):
+    """A source surface is populated but resolved to nothing downstream.
+
+    Guards the failure mode that produced a funds-only ``mixed_quant_v1``
+    publication in production for weeks: the single-name staging joined
+    ``sec_cusip_ticker_map.cusip`` (a 9-character CUSIP) against
+    ``left(h.cusip, 6)``, matched 0 of 1,582,121 eligible holdings, recorded
+    ``equity_cusip_identities: 0`` and reported success. A publication with no
+    single names is not a mixed universe — it must fail, not ship.
+    """
+
+
+# Holding rows the single-name cohort is drawn from. Used only to tell "this
+# deployment genuinely has no equity holdings" (fine) from "the resolution
+# stopped matching" (a defect), so the probe runs solely on the zero path.
+_ELIGIBLE_EQUITY_HOLDING_SQL = """
+    SELECT EXISTS (
+        SELECT 1 FROM sec_nport_holdings_v2_current h
+        WHERE h.cusip ~ '^[A-Z0-9]{9}$'
+          AND upper(btrim(coalesce(h.source_typed_projection->>'ASSET_CAT',''))) IN ('EC','EP')
+    )
+"""
+
+
 def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
     """Populate the activation cohort from existing PIT fund/market/N-PORT data.
 
@@ -100,7 +124,7 @@ def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
             SELECT DISTINCT ON (h.cusip)
                    h.cusip,m.issuer_cik,m.resolved_via,m.last_verified_at
             FROM sec_nport_holdings_v2_current h
-            JOIN sec_cusip_ticker_map m ON m.cusip=left(h.cusip,6)
+            JOIN sec_cusip_ticker_map m ON m.cusip=h.cusip
             WHERE h.cusip ~ '^[A-Z0-9]{9}$' AND m.is_tradeable
               AND m.security_type NOT IN ('ETP','Open-End Fund','Closed-End Fund')
               AND upper(btrim(coalesce(h.source_typed_projection->>'ASSET_CAT',''))) IN ('EC','EP')
@@ -125,7 +149,7 @@ def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
             SELECT DISTINCT ON (h.cusip,m.ticker)
                    h.cusip,m.ticker,m.issuer_cik,m.resolved_via,m.last_verified_at
             FROM sec_nport_holdings_v2_current h
-            JOIN sec_cusip_ticker_map m ON m.cusip=left(h.cusip,6)
+            JOIN sec_cusip_ticker_map m ON m.cusip=h.cusip
             WHERE h.cusip ~ '^[A-Z0-9]{9}$' AND m.is_tradeable
               AND nullif(btrim(m.ticker),'') IS NOT NULL
               AND m.security_type NOT IN ('ETP','Open-End Fund','Closed-End Fund')
@@ -137,6 +161,15 @@ def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
         (as_of, as_of, as_of),
     )
     counts["equity_ticker_identities"] = max(result.rowcount, 0)
+
+    if not counts["equity_cusip_identities"] and not counts["equity_ticker_identities"]:
+        if conn.execute(_ELIGIBLE_EQUITY_HOLDING_SQL).fetchone()[0]:
+            raise MixedQuantSourceError(
+                "no single-name identity resolved from eligible equity holdings — "
+                "sec_nport_holdings_v2_current has EC/EP rows with 9-character "
+                "CUSIPs that sec_cusip_ticker_map did not match. Publishing now "
+                "would yield a funds-only 'mixed' universe."
+            )
 
     cutoff_year = as_of.year - 3
     cutoff = as_of.replace(
@@ -168,7 +201,7 @@ def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
         WITH eligible AS (
             SELECT DISTINCT m.ticker
             FROM sec_nport_holdings_v2_current h
-            JOIN sec_cusip_ticker_map m ON m.cusip=left(h.cusip,6)
+            JOIN sec_cusip_ticker_map m ON m.cusip=h.cusip
             WHERE h.cusip ~ '^[A-Z0-9]{9}$' AND m.is_tradeable
               AND m.security_type NOT IN ('ETP','Open-End Fund','Closed-End Fund')
               AND upper(btrim(coalesce(h.source_typed_projection->>'ASSET_CAT',''))) IN ('EC','EP')
