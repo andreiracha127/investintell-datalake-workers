@@ -164,6 +164,30 @@ def test_zero_equities_from_a_populated_source_fails_loud(env) -> None:
     assert "equity" in str(exc.value).lower()
 
 
+def test_rerun_for_an_already_staged_as_of_does_not_trip_the_guard(env) -> None:
+    """Este worker é idempotente e restartável: `run()` reexecuta o staging a cada
+    invocação e os INSERTs de identidade são ``ON CONFLICT DO NOTHING``, então um
+    resume legítimo estagia ZERO linhas novas. Uma guarda que lesse rowcount
+    barraria toda reexecução — foi exatamente o que aconteceu em produção em
+    2026-07-29, com a coorte inteira já staged. Ela tem de afirmar ESTADO."""
+    conn = env
+    _seed(conn)
+
+    first = worker._populate_native_observations(conn, AS_OF)
+    assert first["equity_cusip_identities"] == 1
+
+    second = worker._populate_native_observations(conn, AS_OF)
+
+    assert second["equity_cusip_identities"] == 0, "nada novo a estagiar, como esperado"
+    assert second["equity_ticker_identities"] == 0
+    # E o estado continua correto: a ação segue no staging.
+    staged = conn.execute(
+        "SELECT count(*) FROM mixed_quant_identity_observation "
+        "WHERE instrument_type='equity'"
+    ).fetchone()[0]
+    assert staged == 2
+
+
 def test_source_without_equity_holdings_is_not_an_error(env) -> None:
     """A guarda não pode punir uma origem que legitimamente não tem ações —
     ela só dispara quando há holding elegível e mesmo assim zero identidades."""
