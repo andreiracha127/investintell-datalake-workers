@@ -15,6 +15,14 @@ from src.workers import market_overview_snapshot
 _APP_MVS = [
     "price_latest_mv",
     "nav_latest_mv",
+    # Cobertura de NAV por fundo (n_obs / first_nav / last_nav sobre história
+    # completa). Serve os dois gates de qualidade do universo do builder, que
+    # antes reagregavam a hypertable nav_timeseries inteira a CADA request
+    # (35,7M linhas em 115 chunks; 7,96s + 8,31s medidos, ~16,3s dos ~17s de um
+    # POST /builder/optimize). Fica ao lado de nav_latest_mv por ler a mesma
+    # fonte — o NAV que os workers do dia acabaram de escrever.
+    # DDL: Light backend/db/ddl/2026-07-29_fund_nav_coverage_mv.sql
+    "fund_nav_coverage_mv",
     # Grupo A: read-models de fund analytics agregados (style-drift/top-holdings).
     # Active-share deixou de ser MV standalone — vive em colunas de
     # fund_risk_metrics, projetadas em fund_risk_latest_mv (refrescada pelo worker

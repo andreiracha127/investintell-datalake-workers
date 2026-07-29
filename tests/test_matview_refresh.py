@@ -43,6 +43,9 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     # App DB MVs (Grupo D).
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY price_latest_mv" in joined
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY nav_latest_mv" in joined
+    # Cobertura de NAV por fundo: serve os gates de qualidade do universo do
+    # builder, que antes reagregavam a hypertable nav_timeseries por request.
+    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_nav_coverage_mv" in joined
     # App DB Grupo A aggregate MVs.
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_style_drift_mv" in joined
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_top_holdings_mv" in joined
@@ -56,6 +59,7 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     assert result["refreshed"] == [
         "price_latest_mv",
         "nav_latest_mv",
+        "fund_nav_coverage_mv",
         "fund_style_drift_mv",
         "fund_top_holdings_mv",
     ]
