@@ -83,6 +83,7 @@ jobs:
             tests/test_mixed_quant_contracts.py
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
             tests/test_nport_ingestion.py
             tests/test_nport_v2_lookthrough.py
@@ -254,6 +255,7 @@ jobs:
             tests/test_mixed_quant_contracts.py
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
             tests/test_nport_composition_features.py
             tests/test_nport_fixed_income_features.py
@@ -332,6 +334,7 @@ jobs:
           db_tests=(
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
+            tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
             tests/test_nport_composition_features.py
             tests/test_ncen_effective_views.py
