@@ -68,6 +68,17 @@ _ELIGIBLE_EQUITY_HOLDING_SQL = """
     )
 """
 
+# The guard asserts STATE, not the delta of this run. Both identity inserts are
+# ``ON CONFLICT DO NOTHING``, so a rerun for an as_of already staged returns
+# rowcount 0 — this worker is idempotent and restartable by design, and a guard
+# reading rowcount would fail every legitimate resume.
+_STAGED_EQUITY_IDENTITY_SQL = """
+    SELECT EXISTS (
+        SELECT 1 FROM mixed_quant_identity_observation
+        WHERE as_of = %s AND instrument_type = 'equity'
+    )
+"""
+
 
 def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
     """Populate the activation cohort from existing PIT fund/market/N-PORT data.
@@ -162,7 +173,7 @@ def _populate_native_observations(conn: Any, as_of: date) -> dict[str, int]:
     )
     counts["equity_ticker_identities"] = max(result.rowcount, 0)
 
-    if not counts["equity_cusip_identities"] and not counts["equity_ticker_identities"]:
+    if not conn.execute(_STAGED_EQUITY_IDENTITY_SQL, (as_of,)).fetchone()[0]:
         if conn.execute(_ELIGIBLE_EQUITY_HOLDING_SQL).fetchone()[0]:
             raise MixedQuantSourceError(
                 "no single-name identity resolved from eligible equity holdings — "
