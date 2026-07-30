@@ -265,6 +265,16 @@ DECLARE
 BEGIN
     SELECT status INTO state FROM quant_publication_v1 WHERE publication_id = target;
     IF state IS NULL THEN
+        -- The parent publication row is already gone, which can only mean this
+        -- row is being removed by the publication's OWN cascade. There is
+        -- nothing for this guard to protect: deleting a publication is governed
+        -- by active_quant_publication_v1's ON DELETE RESTRICT, which makes the
+        -- ACTIVE publication undeletable. Raising here instead made every
+        -- publication undeletable, so no publication could ever be pruned —
+        -- and each one is a full ~2.4 GB snapshot.
+        IF TG_OP = 'DELETE' THEN
+            RETURN OLD;
+        END IF;
         RAISE EXCEPTION 'unknown publication %', target;
     END IF;
     IF state NOT IN ('building', 'ready') THEN
@@ -341,4 +351,58 @@ BEGIN
         VALUES (target_product, target_publication_id, now())
         ON CONFLICT (product) DO UPDATE
             SET publication_id = EXCLUDED.publication_id, activated_at = EXCLUDED.activated_at;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- Retention.
+-- ---------------------------------------------------------------------------
+-- Each publication is a FULL immutable snapshot (~2.4 GB for the current
+-- universe: 7.1M returns plus instruments, aliases, exposures and links), and
+-- nothing pruned them, so the datalake grew by that much on every run. That is
+-- why the publish cron is monthly rather than weekly.
+--
+-- Two classes of publication exist and only one of them rolls:
+--   * rolling  — as_of near today; serves the builder, plus a rollback margin.
+--   * historical point-in-time — as_of far in the past, built deliberately to
+--     study a past universe. Recency must NEVER prune these, so the window
+--     below leaves anything older than `historical_before` alone.
+--
+-- Deliberately NOT called from promote_quant_publication(): a ROLLBACK repoints
+-- the pointer to an OLDER publication, and pruning "everything older than the
+-- active one" would then delete the very snapshot being rolled back onto.
+-- Retention is an explicit, separate decision.
+--
+-- The ACTIVE publication is never deletable — active_quant_publication_v1's FK
+-- is ON DELETE RESTRICT — so this cannot cut the ground from under the builder
+-- even if called with keep_generations = 0.
+CREATE OR REPLACE FUNCTION prune_quant_publications(
+    target_product text,
+    keep_generations int DEFAULT 3,
+    historical_before interval DEFAULT '1 year'
+) RETURNS TABLE (publication_id uuid, as_of date, status text)
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF keep_generations < 1 THEN
+        RAISE EXCEPTION 'keep_generations must be at least 1, got %', keep_generations;
+    END IF;
+    PERFORM pg_advisory_xact_lock(hashtext('quant_publication:' || target_product));
+
+    RETURN QUERY
+    WITH rolling AS (
+        SELECT p.publication_id, p.as_of, p.status,
+               row_number() OVER (ORDER BY p.created_at DESC) AS generation
+        FROM quant_publication_v1 p
+        WHERE p.product = target_product
+          AND p.as_of >= (CURRENT_DATE - historical_before)
+    ), doomed AS (
+        SELECT r.publication_id FROM rolling r
+        WHERE r.generation > keep_generations
+          AND r.publication_id NOT IN (
+              SELECT a.publication_id FROM active_quant_publication_v1 a
+          )
+    )
+    DELETE FROM quant_publication_v1 p
+    USING doomed d
+    WHERE p.publication_id = d.publication_id
+    RETURNING p.publication_id, p.as_of, p.status;
 END $$;

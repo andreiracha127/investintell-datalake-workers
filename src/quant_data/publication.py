@@ -250,6 +250,33 @@ def promote(
     )
 
 
+def prune(
+    conn: psycopg.Connection, product: str, *, keep_generations: int = 3,
+    historical_before: str = "1 year",
+) -> list[tuple[uuid.UUID, date, str]]:
+    """Drop rolling publications beyond ``keep_generations`` (SQL holds the lock).
+
+    Each publication is a FULL immutable snapshot — ~2.4 GB for the current
+    universe — and nothing pruned them, which is why the publish cron is monthly
+    rather than weekly. Returns the (publication_id, as_of, status) rows removed.
+
+    Two safety properties come from the schema, not from this call: the ACTIVE
+    publication is undeletable (``active_quant_publication_v1`` FKs with ON
+    DELETE RESTRICT), and anything whose ``as_of`` is older than
+    ``historical_before`` is left alone, because a far-past as_of is a
+    deliberate point-in-time build and must not be pruned by recency.
+
+    Deliberately NOT folded into ``promote``: a rollback repoints to an OLDER
+    publication, so pruning "everything older than active" as a side effect of
+    promotion would delete the snapshot being rolled back onto.
+    """
+    rows = conn.execute(
+        "SELECT publication_id, as_of, status FROM prune_quant_publications(%s,%s,%s::interval)",
+        (product, keep_generations, historical_before),
+    ).fetchall()
+    return [(r[0], r[1], r[2]) for r in rows]
+
+
 def active_publication_id(conn: psycopg.Connection, product: str) -> uuid.UUID | None:
     row = conn.execute(
         "SELECT publication_id FROM active_quant_publication_v1 WHERE product=%s", (product,)

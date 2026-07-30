@@ -85,6 +85,7 @@ jobs:
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
+            tests/test_mixed_quant_retention.py
             tests/test_nport_ingestion.py
             tests/test_nport_v2_lookthrough.py
             tests/test_sec_class_factors.py
@@ -257,6 +258,7 @@ jobs:
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
+            tests/test_mixed_quant_retention.py
             tests/test_nport_composition_features.py
             tests/test_nport_fixed_income_features.py
             tests/test_nport_holdings_v2.py
@@ -336,6 +338,7 @@ jobs:
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_native_sources.py
             tests/test_mixed_quant_publication.py
+            tests/test_mixed_quant_retention.py
             tests/test_nport_composition_features.py
             tests/test_ncen_effective_views.py
             tests/test_ncen_operating_profiles.py
