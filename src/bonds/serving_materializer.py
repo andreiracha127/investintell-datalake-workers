@@ -10,7 +10,10 @@ serving surfaces under one atomically promoted derived publication:
                      + data state + computed summary values (Wave 1):
                      latest_price_pct (% of par, sole ELIGIBLE latest observation)
                      and security_ytm / security_ytw (decimal fractions from the
-                     promoted ``sec_current_bond_metric_v1`` view).
+                     promoted ``sec_current_bond_metric_v1`` view); plus the
+                     reported issuer classification issuer_country /
+                     issuer_sector, resolved to the security grain by reported
+                     consensus (see ``_ISSUER_CLASSIFICATION_SQL``).
   * detail        -- one row per security: full terms incl. call/put schedule,
                      144A, PIT aliases, NEUTRAL identity ambiguity evidence, and
                      the computed metrics current_yield / security_ytm /
@@ -76,6 +79,10 @@ _SURFACE_REQUIRED_RELATIONS: dict[str, tuple[str, ...]] = {
     "catalog": (
         "sec_current_bond_security_v1", "sec_current_bond_security_alias_v1",
         "bond_price_latest_v1", "sec_current_bond_metric_v1",
+        # issuer_country / issuer_sector are resolved from the N-PORT reported
+        # classification; without this relation the catalog would serve payloads
+        # missing two contract keys -> the coverage gate fails closed.
+        "sec_nport_holdings_v2_current",
     ),
     "detail": (
         "sec_current_bond_security_v1", "sec_current_bond_security_alias_v1",
@@ -157,6 +164,76 @@ _LATEST_PRICE_PCT_SQL = """(
       AND p.daily_key_state = 'unique_in_matching_cohort'
       AND p.price_state = 'present')"""
 
+# ---------------------------------------------------------------------------
+# Reported issuer classification (issuer_country / issuer_sector), resolved from
+# the N-PORT holding grain to the SECURITY grain once per build.
+#
+# The classification is a REPORTED attribute of the holding, not of the security:
+# many funds hold the same bond and each one reports its own issuer country and
+# issuer category, so a security can carry several reported values (measured
+# 2026-07-30 on the live cohort: 1,108 securities disagree on sector, 769 on
+# country). Resolution is by REPORTED CONSENSUS -- the value the most holdings
+# report wins -- with an alphabetical tiebreak so the same cohort always builds
+# the same publication. A security no holding classifies gets an honest JSON null,
+# never a guess (31 of 10,794 on the live cohort).
+#
+# The cohort mirrors ``_prepare_fund_exposure_source`` (current DBT holdings) and
+# the alias join mirrors ``_FUND_EXPOSURE_MATCHES``: two single-kind equality
+# joins UNIONed, never one OR'd join (the OR form cannot use the alias indexes).
+# Aliases are NOT point-in-time filtered here: the classification describes the
+# security itself, so every alias it was ever known by is a valid route to it.
+# ---------------------------------------------------------------------------
+_ISSUER_CLASSIFICATION_SQL = """
+CREATE TEMP TABLE _bond_issuer_classification ON COMMIT DROP AS
+WITH hold AS MATERIALIZED (
+    SELECT cusip, isin,
+           nullif(btrim(issuer_category), '') AS sector,
+           nullif(btrim(source_typed_projection->>'INVESTMENT_COUNTRY'), '') AS country
+    FROM sec_nport_holdings_v2_current
+    WHERE report_date <= %(as_of)s
+      AND upper(btrim(coalesce(source_typed_projection->>'ASSET_CAT', ''))) = 'DBT'
+), matched AS MATERIALIZED (
+    SELECT al.security_id, h.sector, h.country
+    FROM sec_current_bond_security_alias_v1 al
+    JOIN hold h ON h.cusip = al.alias_value
+    WHERE al.alias_kind = 'cusip9'
+    UNION ALL
+    SELECT al.security_id, h.sector, h.country
+    FROM sec_current_bond_security_alias_v1 al
+    JOIN hold h ON h.isin = al.alias_value
+    WHERE al.alias_kind = 'isin'
+), sector_consensus AS (
+    SELECT security_id, sector,
+           row_number() OVER (PARTITION BY security_id
+                              ORDER BY count(*) DESC, sector ASC) AS rn
+    FROM matched WHERE sector IS NOT NULL GROUP BY security_id, sector
+), country_consensus AS (
+    SELECT security_id, country,
+           row_number() OVER (PARTITION BY security_id
+                              ORDER BY count(*) DESC, country ASC) AS rn
+    FROM matched WHERE country IS NOT NULL GROUP BY security_id, country
+)
+-- LEFT JOIN, never a correlated subquery per security: the consensus CTEs carry
+-- no index, so a per-row lookup degrades to one scan of them PER security and
+-- the build stops finishing (measured on the live cohort 2026-07-30). Joining
+-- the rn=1 slices hashes them once. LEFT so an unclassified security still gets
+-- its row, with both keys NULL.
+SELECT sec.security_id, c.country AS issuer_country, s.sector AS issuer_sector
+FROM sec_current_bond_security_v1 sec
+LEFT JOIN country_consensus c ON c.security_id = sec.security_id AND c.rn = 1
+LEFT JOIN sector_consensus s ON s.security_id = sec.security_id AND s.rn = 1
+"""
+
+# The resolved classification for one security, or an honest NULL. At most one
+# row per security (the temp table is built at security grain), so it is scalar.
+_ISSUER_COUNTRY_SQL = """(
+    SELECT ic.issuer_country FROM _bond_issuer_classification ic
+    WHERE ic.security_id = s.security_id)"""
+
+_ISSUER_SECTOR_SQL = """(
+    SELECT ic.issuer_sector FROM _bond_issuer_classification ic
+    WHERE ic.security_id = s.security_id)"""
+
 _CATALOG_SQL = f"""
 INSERT INTO bond_serving_facts ({_COLUMNS})
 SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
@@ -186,6 +263,10 @@ SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
            'latest_price_pct', {_LATEST_PRICE_PCT_SQL},
            'security_ytm', {_metric_value_sql("security_ytm")},
            'security_ytw', {_metric_value_sql("security_ytw")},
+           -- Reported issuer classification, resolved to the security grain by
+           -- reported consensus (null-honest: unclassified serves JSON null).
+           'issuer_country', {_ISSUER_COUNTRY_SQL},
+           'issuer_sector', {_ISSUER_SECTOR_SQL},
            'identity_state', s.identity_state))
 FROM sec_current_bond_security_v1 s
 ON CONFLICT DO NOTHING
@@ -457,6 +538,19 @@ def _guard_fund_exposure(conn: psycopg.Connection, params: dict[str, Any]) -> No
         )
 
 
+def _prepare_issuer_classification_source(
+    conn: psycopg.Connection, params: dict[str, Any],
+) -> None:
+    """Resolve the reported issuer classification to security grain once per build."""
+    conn.execute("DROP TABLE IF EXISTS _bond_issuer_classification")
+    conn.execute(_ISSUER_CLASSIFICATION_SQL, params)
+    conn.execute(
+        "CREATE INDEX _bond_issuer_classification_security_idx "
+        "ON _bond_issuer_classification(security_id)"
+    )
+    conn.execute("ANALYZE _bond_issuer_classification")
+
+
 def _prepare_fund_exposure_source(
     conn: psycopg.Connection, params: dict[str, Any],
 ) -> None:
@@ -532,6 +626,8 @@ def materialize(
             name = surface["surface"]
             if not _surface_present(conn, name):
                 continue
+            if name == "catalog":
+                _prepare_issuer_classification_source(conn, params)
             if name == "fund_exposure":
                 _prepare_fund_exposure_source(conn, params)
                 _guard_fund_exposure(conn, params)

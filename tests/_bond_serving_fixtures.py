@@ -198,16 +198,26 @@ def synthetic_snapshots(cur) -> None:
             series_id text, class_id text, cusip text, isin text,
             signed_market_value numeric, signed_pct_of_nav numeric,
             report_date date, accession_number text, holding_id text,
-            source_typed_projection jsonb)
+            issuer_category text, source_typed_projection jsonb)
     """)
     rpt = AS_OF - timedelta(days=5)
-    proj = json.dumps({"ASSET_CAT": "DBT", "raw_row_id": SENT_RAW, "vendor": SENT_VENDOR})
+
+    def _proj(country: str) -> str:
+        return json.dumps({
+            "ASSET_CAT": "DBT", "INVESTMENT_COUNTRY": country,
+            "raw_row_id": SENT_RAW, "vendor": SENT_VENDOR,
+        })
+
+    # Two of the three lots classify SEC1 as CORP/US and one dissents (MUN/KY),
+    # so the catalog projection must resolve the reported CONSENSUS (CORP/US)
+    # rather than an arbitrary row. SEC2's alias (459200101) is held by no lot,
+    # so its classification stays an honest NULL.
     cur.execute(
         "INSERT INTO sec_nport_holdings_v2_current VALUES "
-        "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1',%s),"
-        "('S1','C2','037833100',NULL,100.0,0.10,%s,'A1','H1',%s),"
-        "('S1','C1','037833100',NULL,50.0,0.05,%s,'A1','H2',%s)",
-        (rpt, proj, rpt, proj, rpt, proj),
+        "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1','CORP',%s),"
+        "('S1','C2','037833100',NULL,100.0,0.10,%s,'A1','H1','CORP',%s),"
+        "('S1','C1','037833100',NULL,50.0,0.05,%s,'A1','H2','MUN',%s)",
+        (rpt, _proj("US"), rpt, _proj("US"), rpt, _proj("KY")),
     )
 
 

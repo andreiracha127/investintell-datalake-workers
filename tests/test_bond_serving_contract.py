@@ -18,8 +18,8 @@ _SCHEMA_SQL = (
 
 # The shared handshake value; MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Re-synced for
-# Bonds Activation Wave 1 (catalog + detail computed metric keys).
-SHARED_SURFACE_DIGEST = "sha256:96d2f0317be3ae287fdae393a3851122321e65cb26b8aa0094e819085a971e0d"
+# Bonds Activation Wave 1b (catalog issuer_country / issuer_sector).
+SHARED_SURFACE_DIGEST = "sha256:5f7fd708b5adb3f1ad638316ed38c243056c1bc413069ff4f3ca0d00551ca6fc"
 
 
 def test_workers_declare_serving_product() -> None:
@@ -77,14 +77,16 @@ def test_catalog_carries_searchable_alias_arrays() -> None:
 
 
 def test_catalog_payload_serves_computed_metric_keys_in_order() -> None:
-    """Wave 1: the catalog payload gains EXACTLY latest_price_pct + security_ytm +
-    security_ytw, each in its alphabetical position (the contract's key-ordering
-    convention). Pinned as a full-tuple equality so a drive-by key can't ride in."""
+    """Wave 1 gave the catalog payload latest_price_pct + security_ytm +
+    security_ytw; Wave 1b adds issuer_country + issuer_sector. Each sits in its
+    alphabetical position (the contract's key-ordering convention), pinned as a
+    full-tuple equality so a drive-by key can't ride in."""
     catalog = next(s for s in contract.SURFACES if s["surface"] == "catalog")
     assert catalog["payload_keys"] == (
         "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
-        "display", "identity_state", "is_144a", "issuer_name", "latest_price_pct",
-        "maturity_date", "security_ytm", "security_ytw",
+        "display", "identity_state", "is_144a", "issuer_country", "issuer_name",
+        "issuer_sector", "latest_price_pct", "maturity_date", "security_ytm",
+        "security_ytw",
     )
 
 
