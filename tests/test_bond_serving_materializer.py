@@ -186,10 +186,17 @@ def test_catalog_serves_computed_metrics_and_latest_price_null_honest() -> None:
 def test_catalog_resolves_issuer_classification_by_reported_consensus() -> None:
     """Wave 1b catalog extension: issuer_country + issuer_sector.
 
-    SEC1 is held by three lots: two report CORP/US and one dissents with MUN/KY,
-    so the projection must serve the reported CONSENSUS -- the value the most
-    lots report -- not whichever row the planner happened to reach first. SEC2's
-    alias is held by no lot, so both keys are present with an honest JSON null.
+    SEC1 is held by seven lots: four report CORP/US and three dissent with
+    MUN/KY, so the projection must serve the reported CONSENSUS -- the value the
+    most lots report -- not whichever row the planner happened to reach first.
+    SEC2's alias is held by no lot, so both keys are present with a JSON null.
+
+    The CORP/US majority is reported AFTER the publication's as_of, so this also
+    pins that the classification is NOT point-in-time filtered: it describes the
+    security, not a dated exposure. Reintroducing fund exposure's
+    ``report_date <= as_of`` predicate leaves only the MUN/KY lots and this test
+    reads MUN/KY -- the failure that shipped in the first build, where the filter
+    admitted 491 of 4,507,500 live holdings and every security served NULL.
     """
     conn = connect()
     schema = None
@@ -205,8 +212,8 @@ def test_catalog_resolves_issuer_classification_by_reported_consensus() -> None:
             ).fetchone()[0])
 
         p1 = payload(SEC1)
-        assert p1["issuer_sector"] == "CORP"   # 2 lots beat the dissenting MUN
-        assert p1["issuer_country"] == "US"    # 2 lots beat the dissenting KY
+        assert p1["issuer_sector"] == "CORP"   # 4 lots beat the 3 dissenting MUN
+        assert p1["issuer_country"] == "US"    # 4 lots beat the 3 dissenting KY
 
         p2 = payload(SEC2)
         for key in ("issuer_country", "issuer_sector"):

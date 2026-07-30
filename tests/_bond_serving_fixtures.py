@@ -208,16 +208,34 @@ def synthetic_snapshots(cur) -> None:
             "raw_row_id": SENT_RAW, "vendor": SENT_VENDOR,
         })
 
-    # Two of the three lots classify SEC1 as CORP/US and one dissents (MUN/KY),
-    # so the catalog projection must resolve the reported CONSENSUS (CORP/US)
-    # rather than an arbitrary row. SEC2's alias (459200101) is held by no lot,
-    # so its classification stays an honest NULL.
+    # The fund_exposure cohort: at/before as_of, the bridge class fan-out on H1
+    # (C1+C2) plus lot H2. All three report MUN/KY.
     cur.execute(
         "INSERT INTO sec_nport_holdings_v2_current VALUES "
-        "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1','CORP',%s),"
-        "('S1','C2','037833100',NULL,100.0,0.10,%s,'A1','H1','CORP',%s),"
+        "('S1','C1','037833100',NULL,100.0,0.10,%s,'A1','H1','MUN',%s),"
+        "('S1','C2','037833100',NULL,100.0,0.10,%s,'A1','H1','MUN',%s),"
         "('S1','C1','037833100',NULL,50.0,0.05,%s,'A1','H2','MUN',%s)",
-        (rpt, _proj("US"), rpt, _proj("US"), rpt, _proj("KY")),
+        (rpt, _proj("KY"), rpt, _proj("KY"), rpt, _proj("KY")),
+    )
+    # Reported AFTER as_of, and deliberately the classification MAJORITY: four
+    # CORP/US lots against the three MUN/KY ones above. The two surfaces must
+    # read this cohort differently -- fund_exposure MUST exclude it (a holding
+    # reported after as_of is look-ahead for "who held this as of X"), while the
+    # issuer classification MUST include it (it describes what the bond IS, not
+    # a dated exposure). So SEC1 serves CORP/US while its exposure still
+    # aggregates only the pre-as_of lots. Reintroducing the PIT filter on the
+    # classification flips it to MUN/KY; that is the bug the first build shipped,
+    # where the filter admitted 491 of 4,507,500 live holdings and every security
+    # served a NULL classification. SEC2's alias (459200101) is held by no lot at
+    # all, so its classification stays an honest NULL.
+    later = AS_OF + timedelta(days=20)
+    cur.execute(
+        "INSERT INTO sec_nport_holdings_v2_current VALUES "
+        "('S2','C1','037833100',NULL,10.0,0.01,%s,'A2','H3','CORP',%s),"
+        "('S2','C1','037833100',NULL,10.0,0.01,%s,'A2','H4','CORP',%s),"
+        "('S3','C1','037833100',NULL,10.0,0.01,%s,'A3','H5','CORP',%s),"
+        "('S3','C1','037833100',NULL,10.0,0.01,%s,'A3','H6','CORP',%s)",
+        (later, _proj("US"), later, _proj("US"), later, _proj("US"), later, _proj("US")),
     )
 
 

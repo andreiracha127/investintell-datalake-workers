@@ -15,6 +15,7 @@ no current bond snapshot / validated source anchor exists the worker is a no-op.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import date
 from typing import Any
@@ -24,6 +25,20 @@ from src.db import LOCK_BOND_SERVING, advisory_lock, connect, resolve_dsn
 
 
 def _code_revision() -> str:
+    """The revision the publication identity is derived from.
+
+    ``CODE_REVISION`` first, exactly like ``bond_security_master`` and
+    ``mixed_quant_publication``: the deployed image carries no ``.git``, so the
+    git fallback returns "unknown" there and every build of a given ``as_of``
+    collapses onto ONE ``publication_id``. ``materialize`` treats an existing id
+    as already built and only re-points, so a code change would silently re-serve
+    the previous payload instead of rebuilding -- which is exactly what a Wave 1b
+    republication hit on 2026-07-30. The dl-bond-chain job already sets the env
+    var; this makes the worker honour it.
+    """
+    configured = os.getenv("CODE_REVISION")
+    if configured:
+        return configured
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -84,3 +85,37 @@ def test_run_reports_no_source_when_snapshot_is_genuinely_absent() -> None:
         if schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         admin.close()
+
+
+def test_code_revision_prefers_the_configured_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployed image has no ``.git``, so the git fallback returns "unknown".
+
+    Every build of one ``as_of`` would then collapse onto a single
+    ``publication_id``, and ``materialize`` treats an existing id as already
+    built -- it only re-points. A code change would silently re-serve the previous
+    payload instead of rebuilding, which is what a Wave 1b republication hit on
+    2026-07-30. Honouring ``CODE_REVISION`` (which the dl-bond-chain job already
+    sets, and which ``bond_security_master`` already reads) keeps publication
+    identity tracking the code that produced it.
+    """
+    monkeypatch.setenv("CODE_REVISION", "deadbee")
+    assert bond_serving._code_revision() == "deadbee"
+
+    # Distinct revisions must yield distinct publication identities for one as_of,
+    # otherwise the rebuild is a no-op.
+    as_of = date(2025, 3, 31)
+    assert materializer.publication_id_for(
+        as_of, "deadbee"
+    ) != materializer.publication_id_for(as_of, "unknown")
+
+
+def test_code_revision_falls_back_when_the_env_var_is_absent_or_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blank env var is absence, not a revision named "" (it would hash)."""
+    monkeypatch.setenv("CODE_REVISION", "")
+    assert bond_serving._code_revision() != ""
+    monkeypatch.delenv("CODE_REVISION", raising=False)
+    assert bond_serving._code_revision() != ""
