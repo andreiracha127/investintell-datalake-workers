@@ -163,10 +163,15 @@ SURFACES: tuple[dict[str, Any], ...] = (
         # promoted latest price lane) and security_ytm / security_ytw (decimal
         # fractions, from the promoted current metric view) — null-honest: a security
         # without an eligible price / available metric serves the key as JSON null.
+        # Wave 1b: + issuer_country (ISO-3166-1 alpha-2) and issuer_sector (the
+        # reported issuer category) — the reported classification resolved from the
+        # holding grain to the security grain by reported consensus; a security no
+        # holding classifies serves the key as JSON null, never a guess.
         "payload_keys": (
             "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
-            "display", "identity_state", "is_144a", "issuer_name", "latest_price_pct",
-            "maturity_date", "security_ytm", "security_ytw",
+            "display", "identity_state", "is_144a", "issuer_country", "issuer_name",
+            "issuer_sector", "latest_price_pct", "maturity_date", "security_ytm",
+            "security_ytw",
         ),
     },
     {
@@ -224,10 +229,12 @@ SURFACES: tuple[dict[str, Any], ...] = (
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Independent of
 # the regulatory ``sec_regulatory_serving_v1`` digest (sibling product decision).
-# Deliberately re-synced for Bonds Activation Wave 1 (catalog + detail computed
-# metric keys); previous frozen value: sha256:ee64be3339843e73b2d93d4862796b3a
-# c3a94f51e57fb8fb9472592b50771a35.
-SURFACE_DIGEST = "sha256:96d2f0317be3ae287fdae393a3851122321e65cb26b8aa0094e819085a971e0d"
+# Deliberately re-synced for Bonds Activation Wave 1b (catalog issuer_country /
+# issuer_sector); previous frozen value: sha256:96d2f0317be3ae287fdae393a3851122
+# 321e65cb26b8aa0094e819085a971e0d (Wave 1 catalog + detail computed metric keys),
+# before that sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b5077
+# 1a35.
+SURFACE_DIGEST = "sha256:5f7fd708b5adb3f1ad638316ed38c243056c1bc413069ff4f3ca0d00551ca6fc"
 
 
 def _surface_surface(surface: dict[str, Any]) -> dict[str, Any]:

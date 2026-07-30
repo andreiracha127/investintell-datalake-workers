@@ -183,6 +183,41 @@ def test_catalog_serves_computed_metrics_and_latest_price_null_honest() -> None:
         conn.close()
 
 
+def test_catalog_resolves_issuer_classification_by_reported_consensus() -> None:
+    """Wave 1b catalog extension: issuer_country + issuer_sector.
+
+    SEC1 is held by three lots: two report CORP/US and one dissents with MUN/KY,
+    so the projection must serve the reported CONSENSUS -- the value the most
+    lots report -- not whichever row the planner happened to reach first. SEC2's
+    alias is held by no lot, so both keys are present with an honest JSON null.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        _materialize(cur)
+
+        def payload(security_id: UUID) -> dict:
+            return json.loads(cur.execute(
+                "SELECT payload::text FROM sec_current_bond_serving_facts "
+                "WHERE surface='catalog' AND security_id=%s", (security_id,)
+            ).fetchone()[0])
+
+        p1 = payload(SEC1)
+        assert p1["issuer_sector"] == "CORP"   # 2 lots beat the dissenting MUN
+        assert p1["issuer_country"] == "US"    # 2 lots beat the dissenting KY
+
+        p2 = payload(SEC2)
+        for key in ("issuer_country", "issuer_sector"):
+            assert key in p2, f"catalog key {key!r} must be present even when absent"
+            assert p2[key] is None, f"catalog key {key!r} must be NULL, never fabricated"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
 def test_detail_serves_computed_metrics_null_honest() -> None:
     """Wave 1 detail extension: current_yield + security_ytm + security_ytw + wal.
 
@@ -400,16 +435,24 @@ def test_missing_fund_asof_function_fails_the_coverage_gate() -> None:
 
 
 def test_allow_missing_surfaces_opts_out_of_the_coverage_gate() -> None:
+    """The opt-out promotes whatever surfaces the present relations can build.
+
+    Since Wave 1b the N-PORT relation is required by the CATALOG too (it is where
+    issuer_country / issuer_sector come from), so dropping it takes catalog and
+    fund_exposure together: a catalog built without it would serve payloads
+    missing two contract keys, which is exactly what the gate exists to stop.
+    """
     conn = connect()
     schema = None
     try:
         cur = conn.cursor()
         schema = setup(cur)
-        cur.execute("DROP TABLE sec_nport_holdings_v2_current")  # fund_exposure gone
+        cur.execute("DROP TABLE sec_nport_holdings_v2_current")
         result = _materialize(cur, allow_missing_surfaces=True)
         assert result["state"] == "current"
         assert "fund_exposure" not in result["surfaces_written"]
-        assert {"catalog", "detail", "observations"} <= set(result["surfaces_written"])
+        assert "catalog" not in result["surfaces_written"]
+        assert {"detail", "observations"} <= set(result["surfaces_written"])
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
