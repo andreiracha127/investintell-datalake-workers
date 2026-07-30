@@ -177,11 +177,20 @@ _LATEST_PRICE_PCT_SQL = """(
 # the same publication. A security no holding classifies gets an honest JSON null,
 # never a guess (31 of 10,794 on the live cohort).
 #
-# The cohort mirrors ``_prepare_fund_exposure_source`` (current DBT holdings) and
-# the alias join mirrors ``_FUND_EXPOSURE_MATCHES``: two single-kind equality
-# joins UNIONed, never one OR'd join (the OR form cannot use the alias indexes).
-# Aliases are NOT point-in-time filtered here: the classification describes the
-# security itself, so every alias it was ever known by is a valid route to it.
+# The cohort is the current DBT holdings and the alias join mirrors
+# ``_FUND_EXPOSURE_MATCHES``: two single-kind equality joins UNIONed, never one
+# OR'd join (the OR form cannot use the alias indexes).
+#
+# NEITHER side is point-in-time filtered, and that is the whole difference from
+# ``_prepare_fund_exposure_source``. Fund exposure answers "which funds held this
+# as of X", so a holding reported after X is look-ahead and must be excluded. The
+# issuer classification answers "what IS this bond" -- a descriptive, identity-
+# adjacent attribute, which is why the alias join here ignores alias validity
+# windows too. Bounding it by the publication's as_of would also make the feature
+# hostage to an unrelated staleness: as_of is max(measured_at) of the bond master,
+# not a deliberate historical cutoff. Measured 2026-07-30, the first build shipped
+# with the PIT filter copied in by mistake and only 491 of 4,507,500 holdings fell
+# inside it, so every security served a NULL classification.
 # ---------------------------------------------------------------------------
 _ISSUER_CLASSIFICATION_SQL = """
 CREATE TEMP TABLE _bond_issuer_classification ON COMMIT DROP AS
@@ -190,8 +199,7 @@ WITH hold AS MATERIALIZED (
            nullif(btrim(issuer_category), '') AS sector,
            nullif(btrim(source_typed_projection->>'INVESTMENT_COUNTRY'), '') AS country
     FROM sec_nport_holdings_v2_current
-    WHERE report_date <= %(as_of)s
-      AND upper(btrim(coalesce(source_typed_projection->>'ASSET_CAT', ''))) = 'DBT'
+    WHERE upper(btrim(coalesce(source_typed_projection->>'ASSET_CAT', ''))) = 'DBT'
 ), matched AS MATERIALIZED (
     SELECT al.security_id, h.sector, h.country
     FROM sec_current_bond_security_alias_v1 al
