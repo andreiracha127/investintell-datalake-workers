@@ -921,8 +921,10 @@ def test_run_identity_is_deterministic_uuid5():
 _SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
 
 
-def test_materialize_stage_worker_set_includes_bond_metrics(monkeypatch):
-    """The materialize stage invokes bond_metrics after the ncen/rr1 units."""
+def test_materialize_stage_worker_set_is_bond_metrics_only(monkeypatch):
+    """The materialize stage invokes ONLY bond_metrics (2026-07-30): the
+    ncen/rr1 dossier-profile builders left the bond chain after a profile
+    failure held the whole bond publication hostage."""
     invoked: list[str] = []
 
     def fake_worker(name):
@@ -936,36 +938,24 @@ def test_materialize_stage_worker_set_includes_bond_metrics(monkeypatch):
                        run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
                        chain="c", code_revision="r", config_version="v")
     outcome = chain_worker.stage_materialize(ctx)
-    assert invoked == ["ncen_derived_profiles", "rr1_derived_profiles", "bond_metrics"]
+    assert invoked == ["bond_metrics"]
     # A fully dark worker set is still a REPORTED skip, never a silent success.
     assert outcome.status.value == "skipped" and outcome.reason == "dark_no_source"
 
 
-def test_compose_stage_precedence_one_success_beats_dark_skips(monkeypatch):
+def test_compose_stage_precedence_one_success_beats_dark_skips():
     """Aggregation-precedence pin (PR #51 triage): with MIXED unit outcomes —
     dark skips plus one success — the STAGE is succeeded; dark units never mask
-    a delivered publication. ``_compose`` already implements the correct
-    precedence (a unit exception fails the whole stage via the engine; >=1
-    success wins over skips; all-skip is a reported ``dark_no_source``), so
-    this is a regression pin, not a fix: the observed CI 'skipped' came from
-    EVERY unit going dark on the merge tree (see ``_seed_wave1_public_data``),
-    not from the aggregation."""
-    states = {
-        "ncen_derived_profiles": {"state": "no_source"},
-        "rr1_derived_profiles": {"state": "ok", "products": 2},
-        "bond_metrics": {"state": "no_securities"},
-    }
-
-    def fake_worker(name):
-        def _run(dsn, *, calc_date=None):
-            return states[name]
-        return _run
-
-    monkeypatch.setattr(chain_worker, "_worker", fake_worker)
-    ctx = StageContext(conn=None, dsn="unused", source_day=D1,
-                       run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
-                       chain="c", code_revision="r", config_version="v")
-    outcome = chain_worker.stage_materialize(ctx)
+    a delivered publication. ``_compose`` implements the precedence directly
+    (a unit exception fails the whole stage via the engine; >=1 success wins
+    over skips; all-skip is a reported ``dark_no_source``), so it is pinned
+    against ``_compose`` itself now that the materialize stage runs a single
+    unit."""
+    outcome = chain_worker._compose([
+        StageOutcome.skipped("dark_no_source", worker_state="no_source"),
+        StageOutcome.succeeded(products=2),
+        StageOutcome.skipped("dark_no_source", worker_state="no_securities"),
+    ])
     assert outcome.status.value == "succeeded"
     units = outcome.detail["units"]
     assert units["unit_0"]["status"] == "skipped"
@@ -1127,13 +1117,10 @@ def test_chain_materialize_runs_bond_metrics_and_promotes_available_ytm():
         assert by_stage["pit_update"]["status"] == "succeeded"
         assert by_stage["materialize"]["status"] == "succeeded"
         assert by_stage["validate"]["status"] == "succeeded"
-        # Inside materialize the ncen/rr1 units ran dark (no source of their
-        # family); the SUCCESS was carried by the bond_metrics unit.
+        # materialize runs a single unit now: bond_metrics.
         units = by_stage["materialize"]["detail"]["units"]
-        assert units["unit_0"]["status"] == "skipped"
-        assert units["unit_1"]["status"] == "skipped"
-        assert units["unit_2"]["status"] == "succeeded"
-        assert units["unit_2"]["product"] == "bond_metric_v1"
+        assert units["unit_0"]["status"] == "succeeded"
+        assert units["unit_0"]["product"] == "bond_metric_v1"
 
         promoted = {p["product"]: p for p in s["promoted"]}
         assert promoted["bond_metric_v1"]["stage"] == "materialize"
