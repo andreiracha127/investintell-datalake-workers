@@ -1,44 +1,49 @@
-"""Compute+persist worker for the bond_metric_v1 product (activation Wave 1, Task 3).
+"""Compute+persist worker for the bond_metric_v1 product (source projection).
 
-Runs the VALIDATED pure engines (:mod:`src.bonds.metrics_engine_runner` over
-:mod:`src.bonds.cashflows` / :mod:`src.bonds.pricing`) for every security in the
-current published universe and lands one complete ``bond_metric_v1`` snapshot
-through the shared derived-publication protocol (prepared -> validated ->
-current pointer), under an advisory lock.
+Publishes one complete ``bond_metric_v1`` snapshot through the shared
+derived-publication protocol (prepared -> validated -> current pointer), under
+an advisory lock. Values are PROJECTED from what the qualified inputs already
+deliver — never recomputed from insufficient terms:
 
-Inputs (read-only):
-  * ``sec_current_bond_security_v1`` — the published terms per security;
-  * ``bond_price_eligibility_v1`` over ``bond_price_observation`` — the
-    eligible latest CLEAN price (% of par) per security at/before ``as_of``
-    (deterministic tie-break: latest observation_date, then latest landing
-    as_of, then observation_id);
-  * ``bond_source_qualification`` via the Phase-10 ``gate_status`` — the gate
-    is evaluated per metric ONCE per run and every row of a non-passing metric
-    is published ``gate_not_passed`` with a NULL value (gate-honest: the chain
-    stays truthful when only partially qualified).
+  * ``security_ytm``  — the yield the qualified price source itself publishes on
+    the security's latest eligible observation at/before ``as_of``;
+  * ``current_yield`` — coupon rate over the latest eligible clean price, as a
+    decimal fraction (the app registry declares this metric a ``fraction``);
+  * ``wal``           — years from ``as_of`` to maturity (bullet convention; the
+    published terms carry no amortization schedule to weight);
+  * ``security_ytw``  — honestly ``terms_insufficient``: no call schedule is
+    published and the source does not deliver a worst-case yield.
 
-Dark-mode semantics (decision, matching the sibling ``dark_no_source``
-conventions in ``daily_chain.py`` — see the Task 3 report): with NO validated
-source, NO published security universe, or NO observation day to anchor
-``as_of``, the worker is a REPORTED no-op (``no_source`` / ``no_securities`` /
-``no_observations``) and publishes NOTHING — the chain's fully-dark steady
-state stays "nothing promoted". Once a validated source and universe exist, the
-worker always publishes, carrying per-metric gate honesty inside the build.
+This replaces the terms-driven engine path: the published universe carries no
+day-count and no coupon schedule (0% coverage), so recomputing yields from
+terms structurally produced ``terms_insufficient`` for every security while the
+source's own yield lane sat unread. The standing rule applies: before
+rebuilding a metric from terms, check whether the source already delivers it.
+
+Null honesty is unchanged: a metric with no basis serves a typed status and a
+NULL value, never a fabricated number. The Phase-10 qualification registry is
+no longer consulted on the write path — the activation ceremony it encoded is
+retired; provenance and the publication protocol carry the honesty.
+
+Dark-mode semantics (unchanged): with NO validated source, NO published
+security universe, or NO observation day to anchor ``as_of``, the worker is a
+REPORTED no-op (``no_source`` / ``no_securities`` / ``no_observations``) and
+publishes NOTHING.
 
 Determinism: ``as_of`` is the chain's calc-date (or the latest observation
 landing day when unpinned); no wall-clock value enters the payload. The
 publication identity is ``uuid5(product | as_of | code_revision |
-input_fingerprint)`` where the fingerprint covers the terms, eligible prices
-and per-metric gate outcomes — identical inputs replay the SAME publication
-byte-for-byte; changed inputs (e.g. a new qualification) mint a NEW build,
-keeping ``daily_chain.rollback_pointer`` meaningful.
+input_fingerprint)`` where the fingerprint digests every projected input row —
+identical inputs replay the SAME publication byte-for-byte; changed inputs (or
+changed code) mint a NEW build, keeping ``daily_chain.rollback_pointer``
+meaningful.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 """
 from __future__ import annotations
 
 import hashlib
-import json
+import os
 import subprocess
 from datetime import date
 from pathlib import Path
@@ -46,16 +51,7 @@ from typing import Any
 from uuid import UUID, uuid5
 
 import psycopg
-from psycopg.types.json import Jsonb
 
-from src.bonds.metrics_engine_runner import (
-    WAVE1_METRICS,
-    EligiblePrice,
-    MetricRow,
-    SecurityTermsInput,
-    compute_security_metrics,
-)
-from src.bonds.phase10_gate import gate_status, install_gate_schema
 from src.db import LOCK_BOND_METRICS, advisory_lock, connect, resolve_dsn
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -64,26 +60,37 @@ ELIGIBILITY_SCHEMA_PATH = ROOT / "schemas" / "bond_price_eligibility_v1.sql"
 DERIVED_PROTOCOL_PATH = ROOT / "schemas" / "sec_derived_publications.sql"
 
 PRODUCT = "bond_metric_v1"
-METHODOLOGY_VERSION = "bond_metric_v1"
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection"
 
-# Deterministic namespace for the metric publication identity (distinct
-# constant, sibling style; suffix spells 'metric' in hex).
+SERVED_METRICS = ("security_ytm", "security_ytw", "current_yield", "wal")
+
+# Deterministic namespace for the metric publication identity (unchanged).
 _NAMESPACE_PUBLICATION = UUID("b0d5ec00-0000-5000-a000-6d6574726963")
+
+# Build stamps a deploy may inject (the container image carries no ``.git``).
+_REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
 
 
 def _code_revision() -> str:
+    for var in _REVISION_ENV_VARS:
+        value = os.getenv(var)
+        if value:
+            return value.strip()
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5, check=False,
         )
-        return out.stdout.strip() or "unknown"
+        stamped = out.stdout.strip()
+        if stamped:
+            return stamped
     except Exception:
-        return "unknown"
+        pass
+    return "unknown"
 
 
 def install_schema(conn: psycopg.Connection) -> None:
-    """Apply the publication protocol + product DDL (+ gate registry) idempotently.
+    """Apply the publication protocol + product DDL idempotently.
 
     The eligibility predicate/view is re-applied only when its underlying
     observation table exists (in the chain it is installed by the pit_update
@@ -92,7 +99,6 @@ def install_schema(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         cur.execute(DERIVED_PROTOCOL_PATH.read_text(encoding="utf-8"))
         cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
-    install_gate_schema(conn)
     if _relation_exists(conn, "bond_price_observation"):
         with conn.cursor() as cur:
             cur.execute(ELIGIBILITY_SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -125,73 +131,91 @@ def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | No
     return row[0] if row else None
 
 
-def _load_securities(conn: psycopg.Connection) -> list[SecurityTermsInput]:
-    """The current published universe, deterministic order, terms as published."""
-    rows = conn.execute(
-        "SELECT security_id, coupon_type, coupon_rate, maturity_date, day_count, "
-        "       terms -> 'coupon_schedule', terms -> 'call_schedule' "
-        "FROM sec_current_bond_security_v1 ORDER BY security_id"
-    ).fetchall()
-    return [
-        SecurityTermsInput(
-            security_id=r[0], coupon_type=r[1], coupon_rate=r[2],
-            maturity_date=r[3], day_count=r[4], coupon_schedule=r[5],
-            call_schedule=r[6],
-        )
-        for r in rows
-    ]
+# One row per security: published terms joined to the latest eligible price
+# observation at/before ``as_of`` (deterministic tie-break: latest
+# observation_date, then latest landing as_of, then observation_id — a replay
+# is byte-identical). The ``observation_date <= as_of`` predicate is the
+# no-look-ahead guard: the eligibility view itself knows nothing about the
+# calc-date.
+_INPUTS_SQL = """
+CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS
+WITH latest_price AS (
+    SELECT DISTINCT ON (e.security_id)
+           e.security_id, o.price, o.ytm, e.observation_date
+    FROM bond_price_eligibility_v1 e
+    JOIN bond_price_observation o ON o.observation_id = e.observation_id
+    WHERE e.is_eligible AND e.observation_date <= %(as_of)s
+    ORDER BY e.security_id, e.observation_date DESC, e.as_of DESC, e.observation_id DESC
+)
+SELECT s.security_id, s.coupon_rate, s.maturity_date,
+       p.price, p.ytm, p.observation_date
+FROM sec_current_bond_security_v1 s
+LEFT JOIN latest_price p USING (security_id)
+"""
 
+_EMPTY_INPUTS_SQL = """
+CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS
+SELECT s.security_id, s.coupon_rate, s.maturity_date,
+       NULL::numeric AS price, NULL::numeric AS ytm, NULL::date AS observation_date
+FROM sec_current_bond_security_v1 s
+"""
 
-def _eligible_latest_prices(conn: psycopg.Connection, as_of: date) -> dict[UUID, EligiblePrice]:
-    """Eligible latest clean price per security at/before ``as_of`` (typed lane).
+_FINGERPRINT_SQL = """
+SELECT coalesce(
+    md5(string_agg(
+        md5(security_id::text
+            || '|' || coalesce(coupon_rate::text, '')
+            || '|' || coalesce(maturity_date::text, '')
+            || '|' || coalesce(price::text, '')
+            || '|' || coalesce(ytm::text, '')
+            || '|' || coalesce(observation_date::text, '')),
+        '' ORDER BY security_id)),
+    'empty') AS digest,
+    count(*) AS securities
+FROM _bond_metric_inputs
+"""
 
-    Reads the eligibility view only; the deterministic tie-break (latest
-    observation_date, then latest landing as_of, then observation_id) makes a
-    replay byte-identical.
-    """
-    if not (_relation_exists(conn, "bond_price_eligibility_v1")
-            and _relation_exists(conn, "bond_price_observation")):
-        return {}
-    rows = conn.execute(
-        "SELECT DISTINCT ON (e.security_id) e.security_id, o.price, e.observation_date "
-        "FROM bond_price_eligibility_v1 e "
-        "JOIN bond_price_observation o ON o.observation_id = e.observation_id "
-        "WHERE e.is_eligible AND e.observation_date <= %s "
-        "ORDER BY e.security_id, e.observation_date DESC, e.as_of DESC, e.observation_id DESC",
-        (as_of,),
-    ).fetchall()
-    return {r[0]: EligiblePrice(price=r[1], observation_date=r[2]) for r in rows}
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def _input_fingerprint(
-    as_of: date,
-    gates: dict[str, Any],
-    securities: list[SecurityTermsInput],
-    prices: dict[UUID, EligiblePrice],
-) -> str:
-    """Product-salted fingerprint over EVERY build input (terms, prices, gate).
-
-    The gate outcomes are inputs: qualifying a metric changes the honest payload,
-    so it must mint a new publication rather than silently replay the gated one.
-    """
-    parts = [f"{PRODUCT}|{as_of.isoformat()}|{METHODOLOGY_VERSION}"]
-    for metric in WAVE1_METRICS:
-        status = gates[metric]
-        parts.append(f"gate|{metric}|{status.passed}|{','.join(status.reasons)}")
-    for sec in securities:
-        parts.append("|".join(str(x) for x in (
-            "sec", sec.security_id, sec.coupon_type, sec.coupon_rate,
-            sec.maturity_date, sec.day_count,
-            _canonical_json(sec.coupon_schedule), _canonical_json(sec.call_schedule),
-        )))
-    for security_id in sorted(prices, key=str):
-        quote = prices[security_id]
-        parts.append(f"price|{security_id}|{quote.price}|{quote.observation_date.isoformat()}")
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+# The four metric projections in one set-based insert. Value present iff
+# status='available' (the product CHECK also enforces it).
+_METRIC_ROWS_SQL = """
+INSERT INTO bond_metric_v1
+    (publication_id, security_id, metric_id, value, status, engine_error_code, as_of, provenance)
+SELECT %(pub)s, i.security_id, m.metric_id, m.value, m.status,
+       CASE WHEN m.status = 'terms_insufficient' THEN m.reason END,
+       %(as_of)s,
+       jsonb_build_object('origin', m.origin, 'methodology_version', %(methodology)s::text,
+                          'code_revision', %(code_revision)s::text)
+FROM _bond_metric_inputs i
+CROSS JOIN LATERAL (
+    VALUES
+        ('security_ytm',
+         CASE WHEN i.ytm IS NOT NULL THEN i.ytm END,
+         CASE WHEN i.ytm IS NOT NULL THEN 'available' ELSE 'no_eligible_price' END,
+         NULL,
+         'qualified_price_source'),
+        ('security_ytw',
+         NULL::numeric,
+         'terms_insufficient',
+         'call_schedule_unpublished',
+         'derived_terms'),
+        ('current_yield',
+         CASE WHEN i.coupon_rate IS NOT NULL AND i.price IS NOT NULL AND i.price > 0
+              THEN i.coupon_rate / i.price END,
+         CASE WHEN i.price IS NULL OR i.price <= 0 THEN 'no_eligible_price'
+              WHEN i.coupon_rate IS NULL THEN 'terms_insufficient'
+              ELSE 'available' END,
+         'coupon_rate_unpublished',
+         'derived_terms'),
+        ('wal',
+         CASE WHEN i.maturity_date IS NOT NULL
+              THEN (i.maturity_date - %(as_of)s::date) / 365.0 END,
+         CASE WHEN i.maturity_date IS NOT NULL THEN 'available'
+              ELSE 'terms_insufficient' END,
+         'maturity_unpublished',
+         'derived_terms')
+) AS m(metric_id, value, status, reason, origin)
+ON CONFLICT (publication_id, security_id, metric_id) DO NOTHING
+"""
 
 
 def publication_id_for(as_of: date, code_revision: str, fingerprint: str) -> UUID:
@@ -208,7 +232,6 @@ def _materialize(
     code_revision: str,
     fingerprint: str,
     security_count: int,
-    metric_rows: list[MetricRow],
 ) -> dict[str, Any]:
     """Prepare -> pin -> write snapshot -> validate -> current, idempotently.
 
@@ -243,7 +266,8 @@ def _materialize(
             "INSERT INTO bond_metric_v1_builds"
             "(publication_id,input_fingerprint,as_of_date,security_input_count,metric_row_count) "
             "VALUES(%s,%s,%s,%s,%s) ON CONFLICT (publication_id) DO NOTHING",
-            (publication_id, fingerprint, as_of, security_count, len(metric_rows)),
+            (publication_id, fingerprint, as_of, security_count,
+             security_count * len(SERVED_METRICS)),
         )
         pinned = conn.execute(
             "SELECT input_fingerprint, as_of_date FROM bond_metric_v1_builds WHERE publication_id=%s",
@@ -253,19 +277,10 @@ def _materialize(
             raise RuntimeError(f"{PRODUCT} publication already pinned to fingerprint {pinned[0]}")
         if pinned[1] != as_of:
             raise RuntimeError(f"{PRODUCT} publication already pinned to as_of {pinned[1]}")
-        for row in metric_rows:
-            conn.execute(
-                "INSERT INTO bond_metric_v1"
-                "(publication_id,security_id,metric_id,value,status,engine_error_code,as_of,provenance) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (publication_id,security_id,metric_id) DO NOTHING",
-                (
-                    publication_id, row.security_id, row.metric_id, row.value,
-                    row.status, row.engine_error_code, row.as_of,
-                    Jsonb({"engine_runner": "metrics_engine_runner",
-                           "methodology_version": METHODOLOGY_VERSION}),
-                ),
-            )
+        conn.execute(_METRIC_ROWS_SQL, {
+            "pub": publication_id, "as_of": as_of,
+            "methodology": METHODOLOGY_VERSION, "code_revision": code_revision,
+        })
         conn.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
 
     current = conn.execute(
@@ -275,16 +290,19 @@ def _materialize(
         conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (PRODUCT, publication_id))
 
     status_counts = {status: 0 for status in (
-        "available", "no_eligible_price", "terms_insufficient",
-        "engine_typed_error", "gate_not_passed")}
-    for row in metric_rows:
-        status_counts[row.status] += 1
+        "available", "no_eligible_price", "terms_insufficient")}
+    for status, count in conn.execute(
+        "SELECT status, count(*) FROM bond_metric_v1 WHERE publication_id=%s GROUP BY status",
+        (publication_id,),
+    ).fetchall():
+        status_counts[status] = count
+    row_count = sum(status_counts.values())
     return {
         "product": PRODUCT,
         "publication_id": str(publication_id),
         "as_of": as_of.isoformat(),
         "securities": security_count,
-        "rows": len(metric_rows),
+        "rows": row_count,
         **status_counts,
     }
 
@@ -307,8 +325,10 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         if not _relation_exists(conn, "sec_current_bond_security_v1"):
             conn.commit()
             return {"state": "no_securities", "product": PRODUCT}
-        securities = _load_securities(conn)
-        if not securities:
+        universe = conn.execute(
+            "SELECT count(*) FROM sec_current_bond_security_v1"
+        ).fetchone()[0]
+        if not universe:
             conn.commit()
             return {"state": "no_securities", "product": PRODUCT}
         as_of = _resolve_as_of(conn, calc_date)
@@ -316,24 +336,23 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             conn.commit()
             return {"state": "no_observations", "product": PRODUCT}
 
-        gates = {metric: gate_status(metric, conn) for metric in WAVE1_METRICS}
-        gate_passed = {metric: status.passed for metric, status in gates.items()}
-        prices = _eligible_latest_prices(conn, as_of)
+        if (_relation_exists(conn, "bond_price_eligibility_v1")
+                and _relation_exists(conn, "bond_price_observation")):
+            conn.execute(_INPUTS_SQL, {"as_of": as_of})
+        else:
+            conn.execute(_EMPTY_INPUTS_SQL)
+        digest, security_count = conn.execute(_FINGERPRINT_SQL).fetchone()
+        # The protocol pins sha256 fingerprints (64 hex); salt the row digest
+        # with the product identity and methodology so a semantics change alone
+        # also mints a new build.
+        fingerprint = hashlib.sha256(
+            f"{PRODUCT}|{as_of.isoformat()}|{METHODOLOGY_VERSION}|{digest}".encode()
+        ).hexdigest()
 
-        metric_rows: list[MetricRow] = []
-        for sec in securities:
-            metric_rows.extend(
-                compute_security_metrics(
-                    sec, prices.get(sec.security_id), as_of=as_of, gate_passed=gate_passed,
-                )
-            )
-
-        fingerprint = _input_fingerprint(as_of, gates, securities, prices)
         result = _materialize(
             conn, as_of=as_of, source_run_id=source_run_id,
             source_package_id=source_package_id, code_revision=_code_revision(),
-            fingerprint=fingerprint, security_count=len(securities),
-            metric_rows=metric_rows,
+            fingerprint=fingerprint, security_count=security_count,
         )
         conn.commit()
     return {"state": "ok", **result}

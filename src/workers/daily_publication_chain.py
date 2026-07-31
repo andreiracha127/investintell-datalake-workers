@@ -262,15 +262,26 @@ def _staleness_threshold() -> int | None:
 
 
 def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
-    """Watermark-driven eligible source-days (ascending). Absent tables -> []."""
-    days: set[date] = set()
+    """The single LATEST watermark day across the chain's sources (or []).
+
+    Deliberately NOT a historical catch-up: every stage worker projects the
+    CURRENT state of its inputs (current pointers, latest filings at/before the
+    calc-date), so replaying an old source-day rebuilds a stale ``as_of`` and —
+    because each product self-promotes — would advance the current pointers to
+    that stale build. The 2026-07 incident did exactly that: the watermark
+    enumeration walked every distinct filing effective-date since 2015 and spent
+    hours promoting 2015/2016 builds over the present. One day per invocation is
+    the honest cadence; history stays reachable via an explicit ``calc_date``.
+    """
+    latest: date | None = None
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        for (day,) in conn.execute(f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL"):
-            days.add(day)
-    ordered = sorted(days)
-    return ordered[:limit] if limit is not None else ordered
+        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        day = row[0] if row else None
+        if day is not None and (latest is None or day > latest):
+            latest = day
+    return [] if latest is None else [latest]
 
 
 def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
@@ -381,13 +392,34 @@ def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
     conn.execute("DELETE FROM active_quant_publication_v1 WHERE product=%s", (product,))
 
 
+def _configured_stages() -> list[Stage]:
+    """The stage set this deployment runs, from ``DAILY_CHAIN_STAGES``.
+
+    A comma-separated subset of the frozen stage names (order-insensitive: the
+    frozen binding order always applies). Unset/blank -> all eight stages. This
+    exists so a deployment can scope the chain to one product family's lane —
+    e.g. the bond job runs ``pit_update,materialize,validate,refresh,probe``
+    and leaves ``mixed_build``/``promote`` to the quant program's own cadence —
+    without a code fork. Unknown names fail closed (never silently dropped).
+    """
+    raw = os.getenv("DAILY_CHAIN_STAGES", "").strip()
+    if not raw:
+        return build_default_stages()
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    unknown = sorted(set(names) - set(daily_chain.STAGE_ORDER))
+    if unknown:
+        raise ValueError(f"DAILY_CHAIN_STAGES names unknown stages: {unknown}")
+    return build_stages(names)
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Drive the daily publication chain under the chain-run advisory lock.
 
     Overlapping runs are impossible: the whole run holds
     ``LOCK_DAILY_PUBLICATION_CHAIN`` (session-level, survives the per-stage
-    commits). ``calc_date`` pins a single source-day; otherwise all eligible
-    watermark days are processed in ascending (catch-up) order.
+    commits). ``calc_date`` pins a single source-day; otherwise the single
+    latest watermark day is processed. ``DAILY_CHAIN_STAGES`` scopes the stage
+    set (see ``_configured_stages``).
     """
     resolved = resolve_dsn(dsn)
     with connect(resolved) as conn, advisory_lock(conn, LOCK_DAILY_PUBLICATION_CHAIN) as acquired:
@@ -402,7 +434,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         if not source_days:
             return {"state": "no_source_days", "chain": CHAIN, "runs": []}
         summaries = daily_chain.run_chain(
-            conn, stages=build_default_stages(), source_days=source_days,
+            conn, stages=_configured_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
             watermarks_for=build_watermarks,
             snapshot_pointers=_snapshot_pointers, restore_pointer=_restore_pointer,
