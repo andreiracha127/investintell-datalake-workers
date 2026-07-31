@@ -267,3 +267,11 @@ LOCK_BOND_SOURCE_QUALIFY = 900_349
 # on first concurrent creation). 900_350 is the next free id after
 # LOCK_BOND_SOURCE_QUALIFY.
 LOCK_BOND_METRICS = 900_350
+# nport_fixed_income_features_v1 build+promotion worker (Wave 3). Serializes the
+# idempotent DDL/builder install and the single prepared->validated->current
+# build of the eight N-PORT fixed-income relations the app's fixed-income
+# dossier reads. The lock is taken BEFORE the self-installing DDL (fleet idiom:
+# CREATE TABLE IF NOT EXISTS is not race-safe on first concurrent creation).
+# 900_351 is the next free id in the ingestion band (900_3xx) after
+# LOCK_BOND_METRICS.
+LOCK_NPORT_FIXED_INCOME_SERVING = 900_351

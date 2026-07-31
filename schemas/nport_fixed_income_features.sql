@@ -308,18 +308,22 @@ EXCEPTION
     WHEN datetime_field_overflow OR invalid_datetime_format THEN RETURN NULL;
 END $$;
 
--- The legacy oracle is a guarded local-only SQL resource under src/nport/sql/local_only.
--- Production installation always ends with this definition:
--- heavy joins/aggregates are intentionally forbidden in PostgreSQL.
-CREATE OR REPLACE FUNCTION build_nport_fixed_income_features(
-    target_publication_id uuid,
-    as_of_date date
-) RETURNS integer LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE SQLSTATE '0A000' USING
-        MESSAGE = 'local fixed-income materializer is required; server-side builder is unsupported',
-        HINT = 'Extract immutable inputs and run scripts/materialize_nport_fixed_income_local.py.';
-END $$;
+-- build_nport_fixed_income_features() is NOT defined here.
+--
+-- It used to be a stub that raised 0A000 ("local fixed-income materializer is
+-- required"), which made this product impossible to publish from any deployed
+-- runtime: the only writer was a human running a separately-attested local
+-- PostgreSQL. The real builder lives in the sha256-pinned resource
+-- src/nport/sql/nport_fixed_income_features_builder.sql and is installed by the
+-- registered worker src/workers/nport_fixed_income_serving.py (see
+-- src.nport.fixed_income_local_materializer.install_builder), which verifies the
+-- pin before executing it.
+--
+-- Deliberately absent rather than re-stubbed: a re-run of this DDL over a live
+-- database must not silently replace the real builder with a raise.  Every
+-- integrity guard the stub was standing in for (prepared->validated->current
+-- lifecycle, build-identity pinning, per-relation write guards, immutable
+-- manifest) is enforced by the triggers above and by the builder itself.
 
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_features AS
 SELECT f.*

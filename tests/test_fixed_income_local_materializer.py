@@ -268,14 +268,23 @@ def test_manifest_is_canonical_and_tamper_evident(tmp_path: Path) -> None:
         )
 
 
-def test_installed_builder_is_explicitly_unsupported() -> None:
+def test_schema_never_defines_the_builder_and_the_pinned_resource_does() -> None:
+    """The product must be buildable by a deployed worker, not only by a human.
+
+    The DDL used to define ``build_nport_fixed_income_features`` as a stub that
+    raised 0A000, so re-applying it over a live database would replace the real
+    builder with a refusal.  The function now has exactly one definition, in the
+    sha256-pinned resource the worker installs.
+    """
     schema = (
         Path(__file__).resolve().parents[1]
         / "schemas"
         / "nport_fixed_income_features.sql"
     ).read_text(encoding="utf-8")
-    assert "SQLSTATE '0A000'" in schema
-    assert "local fixed-income materializer" in schema
+    assert "SQLSTATE '0A000'" not in schema
+    assert "CREATE OR REPLACE FUNCTION build_nport_fixed_income_features" not in schema
+    builder = materializer.BUILDER_SQL_PATH.read_text(encoding="utf-8")
+    assert builder.count("FUNCTION build_nport_fixed_income_features(") == 1
 
 
 def test_compute_is_delegated_to_guarded_local_postgres_not_duckdb_or_python_formulas() -> (
@@ -291,7 +300,7 @@ def test_compute_is_delegated_to_guarded_local_postgres_not_duckdb_or_python_for
     assert "_feature_rows" not in compute
 
 
-def test_production_schema_contains_one_fail_fast_builder_and_no_legacy_compute_body() -> (
+def test_production_schema_carries_no_builder_body() -> (
     None
 ):
     schema = (
@@ -299,7 +308,7 @@ def test_production_schema_contains_one_fail_fast_builder_and_no_legacy_compute_
         / "schemas"
         / "nport_fixed_income_features.sql"
     ).read_text(encoding="utf-8")
-    assert schema.count("FUNCTION build_nport_fixed_income_features(") == 1
+    assert schema.count("FUNCTION build_nport_fixed_income_features(") == 0
     assert "snapshot_holdings AS" not in schema
     assert "INSERT INTO nport_fixed_income_metric_coverage_v2" not in schema
 

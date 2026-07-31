@@ -72,7 +72,10 @@ def test_github_actions_workflow_runs_quant_engine_gate() -> None:
     ]["run"]
     assert "tests/input_packs" in steps["Run governance and quant-engine tests"]["run"]
     assert "tests/quant_engine" in steps["Run governance and quant-engine tests"]["run"]
-    assert "tests/test_controlled_shadow.py" in steps[
+    # The frozen pre-activation evidence replay is NOT in the per-PR gate any
+    # more (it lives in preactivation-evidence.yml); the current-surface suites
+    # that a commit can actually break are.
+    assert "tests/test_p1_pack.py" in steps[
         "Run governance and quant-engine tests"
     ]["run"]
     assert "scripts/ci/verify_quant_requirements.py" in steps[
