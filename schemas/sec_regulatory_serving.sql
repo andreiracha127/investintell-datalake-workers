@@ -69,12 +69,12 @@ END $$;
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sec_regulatory_serving_facts (
     publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    -- The N-CEN profile families and the six non-fee RR1 profile families were
+    -- removed from the product on 2026-07-30 with their builders and schemas.
+    -- This is CREATE TABLE IF NOT EXISTS: an already-installed serving table keeps
+    -- its wider CHECK until a deliberate migration narrows it.
     family text NOT NULL CHECK (family IN (
-        'ncen_structure', 'ncen_provider_network', 'ncen_operational_event',
-        'ncen_liquidity_backstop', 'ncen_securities_lending', 'ncen_etf_primary_market',
-        'ncen_closed_end', 'ncen_expense_brokerage',
-        'rr1_fee', 'rr1_shareholder_cost', 'rr1_waiver', 'rr1_class_cost_dispersion',
-        'rr1_turnover', 'rr1_reported_performance', 'rr1_benchmark', 'rr1_custom_tag_crosswalk'
+        'rr1_fee', 'rr1_custom_tag_crosswalk'
     )),
     series_id text NOT NULL DEFAULT '',
     class_id text NOT NULL DEFAULT '',

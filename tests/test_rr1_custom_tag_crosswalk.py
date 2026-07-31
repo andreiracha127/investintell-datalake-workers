@@ -128,26 +128,26 @@ def test_approved_crosswalk_still_never_injects_a_custom_fact_into_canonical_met
 
     with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
         schema, run_id, _, publication_id = base_fixture(
-            cur, "rr1_reported_performance_profile_v1",
-            ("rr1_reported_performance_profiles.sql", "rr1_custom_tag_crosswalk.sql"),
+            cur, "rr1_fee_profile_v1",
+            ("rr1_fee_profiles.sql", "rr1_custom_tag_crosswalk.sql"),
         )
         # A custom fact (version = accession) carrying an APPROVED, high-confidence
-        # crosswalk to a canonical performance concept...
-        fact(cur, run_id, "CustomReturn", "0.99", version=ACC, dimensions="PeriodAxis=Year01", raw_row_id=1)
-        _insert(cur, tag="CustomReturn", version=ACC, concept="avg_annual_return",
+        # crosswalk to a canonical fee concept...
+        fact(cur, run_id, "CustomManagementFee", "0.99", version=ACC, raw_row_id=1)
+        _insert(cur, tag="CustomManagementFee", version=ACC, concept="management_fee",
                 confidence="0.99", review="approved")
         # ...still never enters the canonical snapshot today: canonical builders read
         # only rr/%-namespaced facts.  Admitting the custom fact is a future,
         # deliberate operation, not an automatic effect of an approved crosswalk.
         assert cur.execute(
-            "SELECT build_rr1_reported_performance_profiles(%s,'2026-06-30')", (publication_id,)
+            "SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,)
         ).fetchone()[0] == 0
-        cur.execute("SELECT count(*) FROM rr1_reported_performance_profiles")
+        cur.execute("SELECT count(*) FROM rr1_fee_profiles")
         assert cur.fetchone() == (0,)
         # The governance surface resolves it, proving the mapping exists but is inert.
         assert cur.execute(
-            "SELECT rr1_crosswalk_resolve('CustomReturn',%s,'0.80')", (ACC,)
-        ).fetchone()[0] == "avg_annual_return"
+            "SELECT rr1_crosswalk_resolve('CustomManagementFee',%s,'0.80')", (ACC,)
+        ).fetchone()[0] == "management_fee"
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 

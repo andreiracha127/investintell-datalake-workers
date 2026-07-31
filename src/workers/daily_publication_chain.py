@@ -10,7 +10,7 @@ the result. Nothing here creates a schedule or deploys anything (SEM deploy).
 Stage -> existing worker mapping (spec §5):
   1. ingest      -> ncen_ingestion / rr1_ingestion / nport_ingestion (raw landing)
   2. pit_update  -> bond_security_master + bond_price_observations
-  3. materialize -> ncen_derived_profiles + rr1_derived_profiles + bond_metrics
+  3. materialize -> bond_metrics (the dossier-profile builders left this stage)
   4. mixed_build -> mixed_quant_publication (builds inactive; promote is separate)
   5. validate    -> read-only reconciliation of the current derived pointers
   6. promote     -> promote the ready mixed_quant_v1 publication (the derived and
@@ -133,7 +133,8 @@ def stage_materialize(ctx: StageContext) -> StageOutcome:
     # profile failure (e.g. 'conflicting RR1 class net-expense facts' in
     # rr1_class_cost_dispersion_v1) held the whole bond publication hostage —
     # the compensation pass rolled back a completed 55-minute pit_update. The
-    # profile workers remain invocable standalone on their own cadence.
+    # products themselves were then cut: only rr1_derived_profiles survives (the
+    # fee product), invocable standalone on its own cadence.
     return _compose([_invoke(ctx, "bond_metrics")])
 
 

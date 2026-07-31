@@ -63,7 +63,6 @@ jobs:
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
-          src/workers/ncen_derived_profiles.py
           src/workers/ncen_ingestion.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
@@ -124,27 +123,12 @@ jobs:
             tests/test_bond_source_qualify.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
-            tests/test_ncen_closed_end_profiles.py
-            tests/test_ncen_derived_profiles_materializer.py
-            tests/test_ncen_etf_primary_market_profiles.py
-            tests/test_ncen_expense_brokerage_profiles.py
             tests/test_ncen_ingestion.py
-            tests/test_ncen_liquidity_backstop_profiles.py
-            tests/test_ncen_operational_event_profiles.py
-            tests/test_ncen_provider_network_profiles.py
-            tests/test_ncen_securities_lending_profiles.py
-            tests/test_ncen_structure_profiles.py
             tests/test_nport_schema.py
             tests/test_phase10_gate_machine.py
-            tests/test_rr1_benchmark_profiles.py
-            tests/test_rr1_class_cost_dispersion.py
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
             tests/test_rr1_ingestion.py
-            tests/test_rr1_reported_performance_profiles.py
-            tests/test_rr1_shareholder_cost_profiles.py
-            tests/test_rr1_turnover_profiles.py
-            tests/test_rr1_waiver_profiles.py
             tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_serving_contract.py
@@ -236,7 +220,6 @@ jobs:
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
-          src/workers/ncen_derived_profiles.py
           src/workers/ncen_ingestion.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
@@ -300,32 +283,16 @@ jobs:
             tests/test_bond_source_qualify.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
-            tests/test_ncen_closed_end_profiles.py
-            tests/test_ncen_derived_profiles_materializer.py
             tests/test_ncen_effective_views.py
-            tests/test_ncen_etf_primary_market_profiles.py
-            tests/test_ncen_expense_brokerage_profiles.py
             tests/test_ncen_ingestion.py
-            tests/test_ncen_liquidity_backstop_profiles.py
-            tests/test_ncen_operating_profiles.py
-            tests/test_ncen_operational_event_profiles.py
-            tests/test_ncen_provider_network_profiles.py
-            tests/test_ncen_securities_lending_profiles.py
-            tests/test_ncen_structure_profiles.py
             tests/test_nport_effective_views.py
             tests/test_nport_schema.py
             tests/test_phase10_gate_machine.py
-            tests/test_rr1_benchmark_profiles.py
-            tests/test_rr1_class_cost_dispersion.py
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_rr1_ingestion.py
-            tests/test_rr1_reported_performance_profiles.py
-            tests/test_rr1_shareholder_cost_profiles.py
-            tests/test_rr1_turnover_profiles.py
-            tests/test_rr1_waiver_profiles.py
             tests/test_sec_derived_publications.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_mandate.py
@@ -341,7 +308,6 @@ jobs:
             tests/test_mixed_quant_retention.py
             tests/test_nport_composition_features.py
             tests/test_ncen_effective_views.py
-            tests/test_ncen_operating_profiles.py
             tests/test_nport_fixed_income_features.py
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
@@ -411,7 +377,7 @@ jobs:
           declare -A db_scope_tests=(
             [mixed]=tests/test_mixed_quant_publication.py
             [sec]=tests/test_sec_regulatory_serving_materializer.py
-            [ncen]=tests/test_ncen_derived_profiles_materializer.py
+            [ncen]=tests/test_ncen_effective_views.py
             [rr1]=tests/test_rr1_derived_profiles_materializer.py
             [bonds]=tests/test_bond_serving_materializer.py
             [daily_chain]=tests/test_daily_publication_chain.py

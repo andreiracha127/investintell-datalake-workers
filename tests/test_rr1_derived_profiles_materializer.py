@@ -67,32 +67,14 @@ def _fact(cur, run_id, adsh, tag, value, *, source_table="num.tsv", version="rr/
 
 def _seed_full_fee_table(cur, run_id):
     _sub(cur, run_id, "A1", effdate="2026-01-01")
-    # Class C1 full annual operating-expense table + a shareholder fee + waiver + termination.
+    # Class C1 full annual operating-expense table.
     _fact(cur, run_id, "A1", "ManagementFeesOverAssets", "0.40", class_id="C1")
     _fact(cur, run_id, "A1", "ExpensesOverAssets", "0.85", class_id="C1")
     _fact(cur, run_id, "A1", "NetExpensesOverAssets", "0.70", class_id="C1")
     _fact(cur, run_id, "A1", "FeeWaiverOrReimbursementOverAssets", "0.15", class_id="C1")
-    _fact(cur, run_id, "A1", "RedemptionFeeOverRedemption", "0.02", class_id="C1")
-    _fact(cur, run_id, "A1", "FeeWaiverOrReimbursementOverAssetsDateOfTermination", "2026-09-30",
-          source_table="txt.tsv", uom=None, class_id="C1")
-    # Class C2 net expense -> gives the dispersion snapshot >=2 classes.
+    # A second class, so the snapshot carries more than one share class.
     _fact(cur, run_id, "A1", "ManagementFeesOverAssets", "0.45", class_id="C2", document="D2")
     _fact(cur, run_id, "A1", "NetExpensesOverAssets", "0.90", class_id="C2", document="D2")
-    # Turnover: numeric rate + narrative -> the turnover snapshot.
-    _fact(cur, run_id, "A1", "PortfolioTurnoverRate", "0.45", class_id="C1")
-    _fact(cur, run_id, "A1", "PortfolioTurnoverTextBlock", "portfolio turnover was 45%",
-          source_table="txt.tsv", uom=None, class_id="C1")
-    # Reported performance: a CLASS return -> the reported-performance snapshot.  The
-    # horizon is in the element name (the RR taxonomy carries no period axis), and
-    # ``AvgAnnlRtrPct`` is the OEF element, which never appears under rr/*.
-    _fact(cur, run_id, "A1", "AverageAnnualReturnYear01", "0.10", class_id="C1")
-    _fact(cur, run_id, "A1", "AverageAnnualReturnYear05", "0.09", class_id="C1")
-    # Declared benchmark -> the benchmark snapshot.  The RR element is
-    # AverageAnnualReturn*, the index is NAMED by the Performance Measure member,
-    # and the index leg carries NO class (it is a property of the series).
-    _fact(cur, run_id, "A1", "AverageAnnualReturnYear01", "0.12", class_id="", measure="SP500Index")
-    _fact(cur, run_id, "A1", "AverageAnnualReturnYear05", "0.11", class_id="", measure="SP500Index",
-          document="D2")
 
 
 def test_materializer_publishes_every_product_prepared_to_validated_to_current():
@@ -112,10 +94,7 @@ def test_materializer_publishes_every_product_prepared_to_validated_to_current()
         for product in derived_profiles.PRODUCTS:
             cur.execute("SELECT lifecycle_state FROM sec_current_derived_publications WHERE product=%s", (product,))
             assert cur.fetchone() == ("validated",), product
-        for view in ("sec_current_rr1_fee_profiles", "sec_current_rr1_shareholder_cost_profiles",
-                     "sec_current_rr1_waiver_profiles", "sec_current_rr1_class_cost_dispersion",
-                     "sec_current_rr1_turnover_profiles", "sec_current_rr1_reported_performance_profiles",
-                     "sec_current_rr1_benchmark_profiles"):
+        for view in ("sec_current_rr1_fee_profiles",):
             cur.execute(f"SELECT count(*) FROM {view}")
             assert cur.fetchone()[0] >= 1, view
 
@@ -144,28 +123,28 @@ def test_malformed_effective_date_is_quarantined_and_cannot_win_selection():
 
     with psycopg.connect(dsn(), autocommit=True) as conn:
         schema, run_id, package_id, cur = _raw_surface(conn)
-        # A valid older prospectus reports a 2% redemption fee.
+        # A valid older prospectus reports a 0.40% management fee.
         _sub(cur, run_id, "OLD", effdate="2024-06-01")
-        _fact(cur, run_id, "OLD", "RedemptionFeeOverRedemption", "0.02", class_id="C1")
+        _fact(cur, run_id, "OLD", "ManagementFeesOverAssets", "0.40", class_id="C1")
         # A later "amendment" whose effective date 21020906 is malformed: the parser
         # quarantines it (typed effdate NULL), so it can never win the selection --
         # its 99% value must not surface.
         _sub(cur, run_id, "NEW", effdate=None, parse_status="quarantined",
              accepted="2026-05-01T10:00:00", filed="2026-05-02")
-        _fact(cur, run_id, "NEW", "RedemptionFeeOverRedemption", "0.99", class_id="C1")
+        _fact(cur, run_id, "NEW", "ManagementFeesOverAssets", "0.99", class_id="C1")
 
         # The effective view already drops the quarantined amendment.
-        cur.execute("SELECT accession_number,fact_typed_projection->>'value' FROM rr1_effective_facts WHERE tag='RedemptionFeeOverRedemption'")
-        assert cur.fetchall() == [("OLD", "0.02")]
+        cur.execute("SELECT accession_number,fact_typed_projection->>'value' FROM rr1_effective_facts WHERE tag='ManagementFeesOverAssets'")
+        assert cur.fetchall() == [("OLD", "0.40")]
 
         publication_id = uuid4()
         cur.execute(
             """INSERT INTO sec_derived_publications
             (publication_id,product,publication_version,source_run_id,source_package_id,build_fingerprint)
-            VALUES(%s,'rr1_shareholder_cost_profile_v1',1,%s,%s,%s)""",
+            VALUES(%s,'rr1_fee_profile_v1',1,%s,%s,%s)""",
             (publication_id, run_id, package_id, "c" * 64),
         )
-        cur.execute("SELECT build_rr1_shareholder_cost_profiles(%s,'2026-06-30')", (publication_id,))
-        cur.execute("SELECT value_numeric,status FROM rr1_shareholder_cost_profiles WHERE canonical_concept='redemption_fee'")
-        assert cur.fetchone() == (Decimal("0.02"), "available")
+        cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,))
+        cur.execute("SELECT value_numeric,status FROM rr1_fee_profiles WHERE canonical_concept='management_fee'")
+        assert cur.fetchone() == (Decimal("0.40"), "available")
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
