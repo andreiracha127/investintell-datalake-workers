@@ -43,6 +43,7 @@ import datetime as _dt
 import decimal
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import time
@@ -81,6 +82,8 @@ from scripts.p1_export.export_p1_sources import (
     format_macro_vintage_rows,
     seed_series_ids,
 )
+
+LOGGER = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_B_DIR = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_b_001"
@@ -528,6 +531,185 @@ def verify_prefix_hashes(macro_rows: list[dict], eod_rows: list[dict],
             f"pre-cut price prefix hash {eod_sha} != pack pin {pins.get('eod_prices')}")
 
 
+# --------------------------------------------------------------------------- #
+# Gate 7b — prefix checkpoint (DDL: schemas/open_macro_v03_prefix_checkpoint.sql)
+#
+# The pre-cut prefix is a CLOSED window: everything at/below PACK_CUT. Its
+# byte-exact digest is a constant of the committed pack, so re-reading the whole
+# history since 1998, re-serializing it in the certified canonical format and
+# re-hashing it every single run reproduces a known answer whenever nothing
+# pre-cut moved.
+#
+# The checkpoint records "this pin was proven against THIS signature". The
+# signature is a cheap database-side aggregate over the SAME window: row count,
+# the window's max date, and two differently-seeded hash sums over the full row
+# text. It never leaves the server and never materializes a row client-side.
+#
+# The anti-tamper invariant is untouched. Any pre-cut insert, delete or in-place
+# correction changes the count or a hash sum, the checkpoint is rejected, and the
+# full read + byte-exact comparison runs -- which is exactly where the retroactive
+# -mutation alarm fires. Two more escapes stay open by construction: the full path
+# can be forced (OPEN_MACRO_V03_FULL_PREFIX_HASH=1), and a checkpoint expires on
+# its own (OPEN_MACRO_V03_PREFIX_CHECKPOINT_MAX_AGE_HOURS, default 168h) so the
+# byte-exact re-proof happens at least weekly regardless.
+# --------------------------------------------------------------------------- #
+PREFIX_CHECKPOINT_TABLE = "open_macro_v03_prefix_checkpoint"
+_DEFAULT_PREFIX_CHECKPOINT_MAX_AGE_HOURS = 168  # one week
+
+# NULL is folded to a control-character sentinel (chr(30), never present in the
+# stored values) so an empty string and an absent value can never produce the same
+# row text -- concat_ws would skip the NULL and shift the remaining fields left.
+# chr(0) cannot be used: PostgreSQL text rejects the null byte.
+_MACRO_ROW_TEXT = (
+    "concat_ws(chr(31),"
+    " coalesce(series_id::text,chr(30)), coalesce(observation_period::text,chr(30)),"
+    " coalesce(vintage_date::text,chr(30)), coalesce(value::text,chr(30)),"
+    " coalesce(available_at::text,chr(30)), coalesce(revision_number::text,chr(30)),"
+    " coalesce(source::text,chr(30)), coalesce(source_spec_version::text,chr(30)))"
+)
+_EOD_ROW_TEXT = (
+    "concat_ws(chr(31),"
+    " coalesce(ticker::text,chr(30)), coalesce(date::text,chr(30)),"
+    " coalesce(close::text,chr(30)), coalesce(adj_close::text,chr(30)),"
+    " coalesce(volume::text,chr(30)))"
+)
+
+PREFIX_SIGNATURE_MACRO_SQL = (
+    "SELECT count(*)::bigint, max(available_at)::text,\n"
+    f"       sum(hashtextextended({_MACRO_ROW_TEXT},0)::numeric)::text,\n"
+    f"       sum(hashtextextended({_MACRO_ROW_TEXT},8675309)::numeric)::text\n"
+    "FROM macro_observation_vintage\n"
+    "WHERE series_id = ANY(%(series_ids)s)\n"
+    "  AND available_at <= %(as_of_end)s"
+)
+
+PREFIX_SIGNATURE_EOD_SQL = (
+    "SELECT count(*)::bigint, max(date)::text,\n"
+    f"       sum(hashtextextended({_EOD_ROW_TEXT},0)::numeric)::text,\n"
+    f"       sum(hashtextextended({_EOD_ROW_TEXT},8675309)::numeric)::text\n"
+    "FROM eod_prices\n"
+    "WHERE ticker = ANY(%(tickers)s)\n"
+    "  AND date >= %(min_date)s\n"
+    "  AND date <= %(as_of)s"
+)
+
+
+def _prefix_checkpoint_max_age() -> _dt.timedelta | None:
+    raw = os.environ.get("OPEN_MACRO_V03_PREFIX_CHECKPOINT_MAX_AGE_HOURS", "").strip()
+    hours = _DEFAULT_PREFIX_CHECKPOINT_MAX_AGE_HOURS
+    if raw:
+        try:
+            hours = int(raw)
+        except ValueError:
+            hours = _DEFAULT_PREFIX_CHECKPOINT_MAX_AGE_HOURS
+    return None if hours <= 0 else _dt.timedelta(hours=hours)
+
+
+def _full_prefix_hash_forced() -> bool:
+    """Operator switch back onto the unconditional read + byte-exact re-hash."""
+    return os.environ.get("OPEN_MACRO_V03_FULL_PREFIX_HASH", "").strip().lower() in {
+        "1", "true", "yes", "on"}
+
+
+def prefix_signature(conn) -> dict[str, str]:
+    """A cheap, server-side change detector over the SAME window as ``read_prefix``.
+
+    Returns one canonical string per prefix table. Aggregation happens entirely in
+    PostgreSQL: no prefix row is shipped, formatted or hashed client-side.
+    """
+    cut_end = _as_of_end_utc(PACK_CUT)
+    signatures: dict[str, str] = {}
+    with conn.cursor() as cur:
+        cur.execute(PREFIX_SIGNATURE_MACRO_SQL,
+                    {"series_ids": list(seed_series_ids()), "as_of_end": cut_end})
+        signatures["macro_observation_vintage"] = _canonical_json(list(cur.fetchone()))
+    with conn.cursor() as cur:
+        cur.execute(PREFIX_SIGNATURE_EOD_SQL,
+                    {"tickers": list(SLEEVE_TICKERS), "min_date": EOD_MIN_DATE,
+                     "as_of": PACK_CUT.isoformat()})
+        signatures["eod_prices"] = _canonical_json(list(cur.fetchone()))
+    return signatures
+
+
+def _relation_exists(conn, relation: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_regclass(%s) IS NOT NULL", (relation,))
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def read_prefix_checkpoint(conn, pins: dict[str, str],
+                           signatures: dict[str, str]) -> str | None:
+    """``None`` when the recorded checkpoint fully covers the current state.
+
+    Otherwise a short reason string naming why the full re-hash must run. Every
+    negative answer is a REASON, never a silent fallthrough: the run reports which
+    of them applied.
+    """
+    if _full_prefix_hash_forced():
+        return "forced_by_operator"
+    if not _relation_exists(conn, PREFIX_CHECKPOINT_TABLE):
+        return "checkpoint_table_absent"
+    max_age = _prefix_checkpoint_max_age()
+    with conn.cursor() as cur:
+        cur.execute(
+            f"SELECT prefix_table, prefix_sha256, signature, verified_at "
+            f"FROM {PREFIX_CHECKPOINT_TABLE} WHERE pack_sha256=%s",
+            (PACK_SHA256_PIN,),
+        )
+        recorded = {row[0]: (row[1], row[2], row[3]) for row in cur.fetchall()}
+    now = _dt.datetime.now(_dt.timezone.utc)
+    for table, signature in signatures.items():
+        entry = recorded.get(table)
+        if entry is None:
+            return f"no_checkpoint_for_{table}"
+        prefix_sha, recorded_signature, verified_at = entry
+        # The pin is what the checkpoint attests: a pack whose pin moved (or a
+        # checkpoint written for a different pin) can never be honoured.
+        if prefix_sha != pins.get(table):
+            return f"pin_moved_for_{table}"
+        if recorded_signature != signature:
+            return f"signature_moved_for_{table}"
+        if max_age is not None and verified_at is not None:
+            if verified_at.tzinfo is None:
+                verified_at = verified_at.replace(tzinfo=_dt.timezone.utc)
+            if now - verified_at > max_age:
+                return f"checkpoint_expired_for_{table}"
+    return None
+
+
+def write_prefix_checkpoint(conn, pins: dict[str, str],
+                            signatures: dict[str, str],
+                            row_counts: dict[str, int]) -> bool:
+    """Record that the pins were just proven byte-for-byte at these signatures.
+
+    Best-effort by design: the read-only monitor shares this code path and a
+    database that refuses the write must not turn a healthy verification into a
+    failure. A savepoint keeps the caller's transaction usable either way, and a
+    missed write only costs the next run a full verification.
+    """
+    if not _relation_exists(conn, PREFIX_CHECKPOINT_TABLE):
+        return False
+    try:
+        with conn.transaction(), conn.cursor() as cur:
+            for table, signature in signatures.items():
+                cur.execute(
+                    f"INSERT INTO {PREFIX_CHECKPOINT_TABLE}"
+                    "(pack_sha256, prefix_table, prefix_sha256, signature, row_count, verified_at)"
+                    " VALUES (%s,%s,%s,%s,%s, now())"
+                    " ON CONFLICT (pack_sha256, prefix_table) DO UPDATE SET"
+                    "   prefix_sha256 = EXCLUDED.prefix_sha256,"
+                    "   signature = EXCLUDED.signature,"
+                    "   row_count = EXCLUDED.row_count,"
+                    "   verified_at = EXCLUDED.verified_at",
+                    (PACK_SHA256_PIN, table, pins[table], signature, row_counts[table]),
+                )
+    except Exception as error:  # reported, never fatal: the checkpoint is a cache
+        LOGGER.warning("open_macro_v03 prefix checkpoint not persisted: %s", error)
+        return False
+    return True
+
+
 def read_delta(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
     """The live delta since the pack cut (> cut, <= as_of), same format helpers.
 
@@ -572,7 +754,14 @@ def read_delta(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
 
 
 def compose_inputs(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
-    """Pack v2 prefix (disk) + hash-verified live prefix + composed live delta."""
+    """Pack v2 prefix (disk) + hash-verified live prefix + composed live delta.
+
+    The live prefix is verified through the checkpoint: a cheap server-side
+    signature decides whether the pre-cut window still is the one whose byte-exact
+    digest already matched the pack pin. It does not, or there is no checkpoint, or
+    the checkpoint aged out, or an operator forced it -> the full read and the
+    byte-exact comparison run exactly as before, and a retroactive pre-cut mutation
+    still fails loud in ``verify_prefix_hashes``."""
     pack_manifest = _load_json(PACK / "manifest.json")
     if pack_manifest["input_pack_sha256"] != PACK_SHA256_PIN:
         raise OpenMacroV03Error("pack v2 sha diverged from the signed pin")
@@ -580,8 +769,19 @@ def compose_inputs(conn, as_of: _dt.date) -> tuple[list[dict], list[dict]]:
     pack_vintages = _load_json(PACK / "data" / "canonical" / "macro_observation_vintage.json")
     pack_prices = _load_json(PACK / "data" / "canonical" / "eod_prices.json")
 
-    prefix_v, prefix_p = read_prefix(conn)
-    verify_prefix_hashes(prefix_v, prefix_p, prefix_pins())
+    pins = prefix_pins()
+    signatures = prefix_signature(conn)
+    reason = read_prefix_checkpoint(conn, pins, signatures)
+    if reason is None:
+        LOGGER.info("open_macro_v03 prefix checkpoint hit; full re-hash skipped")
+    else:
+        LOGGER.info("open_macro_v03 prefix re-hash: %s", reason)
+        prefix_v, prefix_p = read_prefix(conn)
+        verify_prefix_hashes(prefix_v, prefix_p, pins)
+        write_prefix_checkpoint(conn, pins, signatures, {
+            "macro_observation_vintage": len(prefix_v),
+            "eod_prices": len(prefix_p),
+        })
 
     delta_v, delta_p = read_delta(conn, as_of)
     vintage_rows = compose_rows(pack_vintages, delta_v, _VINTAGE_KEY, what="vintages")
