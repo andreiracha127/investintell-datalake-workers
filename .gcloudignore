@@ -1,0 +1,17 @@
+# Contexto do Cloud Build (gcloud builds submit).
+#
+# Sem este arquivo o gcloud gera um gcloudignore implicito que aplica o
+# .gitignore ao contexto — e o .gitignore exclui `data/` em QUALQUER nivel,
+# re-incluindo apenas o pack golden. Resultado: os dados do pack certificado
+# `fixtures/p1_packs/*/data/**` (trackeados no git via force-add, ~48 MB,
+# input de RUNTIME do worker de regime — o Dockerfile os copia e o Gate 3
+# verifica seus sha256) ficavam fora do tarball, o build passava, e o job
+# quebrava com FileNotFoundError. Mesma armadilha ja vivida com `railway up`
+# (incidente 2026-07-17).
+.gcloudignore
+.git
+#!include:.gitignore
+# Re-inclui os packs certificados por inteiro (diretorios E conteudo — um
+# diretorio excluido nao tem os filhos re-incluiveis, semantica do git).
+!fixtures/p1_packs/
+!fixtures/p1_packs/**
