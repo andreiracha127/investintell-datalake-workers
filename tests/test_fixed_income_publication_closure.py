@@ -483,3 +483,66 @@ def test_an_unknown_manifest_format_is_refused(published) -> None:
     _dsn, _identity, _config, _artifact_dir, manifest = published
     with pytest.raises(materializer.ArtifactIntegrityError, match="unexpected manifest format"):
         materializer.manifest_relations({**manifest, "format": "nport-fixed-income/v9"})
+
+
+def test_a_publication_promoted_before_the_rollup_existed_is_repaired(published) -> None:
+    """The idempotency shortcut must not certify a publication serving nothing.
+
+    A publication promoted by the previous builder -- restored from a v2 bundle,
+    or short-circuited by the worker because its identity did not change -- has
+    no rollup rows, and the dossier reads the rollup. Every check on the replay
+    path still passes: the manifest attests eight relations, the closure attests
+    eight counts, and both remain true. Detect and repair before accepting it.
+    """
+    import psycopg
+
+    dsn, identity, config, artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    rollup = materializer.COVERAGE_ROLLUP_RELATION
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        # Simulate the pre-migration state: the publication is validated and
+        # current, its coverage rows are there, the rollup is not.
+        conn.execute(f"ALTER TABLE {rollup} DISABLE TRIGGER USER")
+        conn.execute(f"DELETE FROM {rollup} WHERE publication_id=%s", (target,))
+        conn.execute(f"ALTER TABLE {rollup} ENABLE TRIGGER USER")
+        assert conn.execute(
+            f"SELECT count(*) FROM {rollup} WHERE publication_id=%s", (target,)
+        ).fetchone() == (0,)
+
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "backfilled"
+        conn.commit()
+
+    with psycopg.connect(dsn) as conn:
+        # Derived from the coverage rows, which for such a publication carry one
+        # row per position including the absent ones.
+        assert conn.execute(
+            f"SELECT metric_key, reported_row_count, source_row_count FROM {rollup} "
+            "WHERE publication_id=%s", (target,)
+        ).fetchall() == [("effective_duration", 1, 1)]
+        # Self-limiting: a second call is a no-op, never a rewrite.
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "present"
+
+
+def test_the_backfill_cannot_rewrite_an_existing_rollup(published) -> None:
+    """The relaxation is additive only: a validated publication WITH a rollup is closed."""
+    import psycopg
+
+    dsn, identity, _config, _artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    with psycopg.connect(dsn) as conn:
+        with pytest.raises(psycopg.errors.RaiseException, match="already published"):
+            conn.execute(
+                f"INSERT INTO {materializer.COVERAGE_ROLLUP_RELATION} "
+                "(publication_id,source_holdings_publication_id,source_run_id,series_id,"
+                " report_date,accession_number,metric_family,metric_key,"
+                " source_row_count,reported_row_count) "
+                "SELECT publication_id,source_holdings_publication_id,source_run_id,series_id,"
+                " report_date,accession_number,metric_family,'forged',1,1 "
+                f"FROM {materializer.COVERAGE_ROLLUP_RELATION} WHERE publication_id=%s",
+                (target,),
+            )
+        conn.rollback()

@@ -1118,6 +1118,63 @@ def _derive_rollup_from_coverage(cursor: Any, publication_id: str) -> None:
     )
 
 
+def ensure_coverage_rollup(cursor: Any, publication_id: str) -> str:
+    """Guarantee the served coverage rollup exists for an already-published id.
+
+    The rollup relation is newer than the publications that predate this
+    migration, so a publication promoted by the previous builder -- restored
+    from a v2 artifact, or short-circuited by the worker because its identity
+    did not change -- has NO rollup rows. The dossier reads the rollup, so that
+    publication serves no coverage at all while every idempotency check passes:
+    the old manifest attests eight relations, the old closure attests eight
+    counts, and both are still true.
+
+    Detect and repair rather than trust. The derivation is only sound for those
+    publications, and for the same reason as the legacy artifact path: their
+    coverage rows are one per position INCLUDING the absent ones. A publication
+    written by the current builder cannot reach the derivation, because it
+    already has rollup rows.
+
+    Returns what happened, so callers can report it instead of hiding it.
+    """
+    # EXISTS, never count: this runs on the idempotent replay path, whose whole
+    # promise is that it does not scan a relation. Both probes are index lookups
+    # that stop at the first row.
+    cursor.execute(
+        "SELECT EXISTS(SELECT 1 FROM nport_fixed_income_metric_coverage_snapshot_v1 "
+        "WHERE publication_id=%s)",
+        (publication_id,),
+    )
+    if cursor.fetchone()[0]:
+        return "present"
+    cursor.execute(
+        "SELECT EXISTS(SELECT 1 FROM nport_fixed_income_metric_coverage_v2 WHERE publication_id=%s)",
+        (publication_id,),
+    )
+    if not cursor.fetchone()[0]:
+        # Nothing to derive from: a publication with neither grain has no
+        # coverage to serve, and inventing an empty rollup would claim it does.
+        return "no_coverage_source"
+    _derive_rollup_from_coverage(cursor, publication_id)
+    cursor.execute(
+        """SELECT (SELECT count(*) FROM nport_fixed_income_metric_coverage_snapshot_v1
+                    WHERE publication_id=%s),
+                  (SELECT count(*) FROM (
+                     SELECT 1 FROM nport_fixed_income_metric_coverage_v2
+                      WHERE publication_id=%s
+                      GROUP BY series_id,report_date,accession_number,metric_family,metric_key
+                   ) g)""",
+        (publication_id, publication_id),
+    )
+    written, expected = cursor.fetchone()
+    if written != expected:
+        raise PublicationConflictError(
+            "derived coverage rollup does not cover the publication's coverage grain: "
+            f"{written} != {expected}"
+        )
+    return "backfilled"
+
+
 def publish_artifact(
     *,
     connection: psycopg.Connection[Any],
@@ -1161,6 +1218,11 @@ def publish_artifact(
                 )
                 if cursor.fetchone() != ("validated", uuid.UUID(identity.target_publication_id)):
                     raise PublicationConflictError("matching manifest is not the validated current target")
+                # Before accepting ANY idempotency shortcut: a publication
+                # promoted before the rollup existed passes every check below
+                # while serving no coverage, because the manifest and the
+                # closure both predate the relation the reader consumes.
+                ensure_coverage_rollup(cursor, identity.target_publication_id)
                 expected = _expected_counts(manifest)
                 # Storage re-proof. The published relations (the eight contract
                 # ones plus the coverage rollup) are frozen for a validated
