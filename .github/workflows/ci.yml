@@ -287,6 +287,7 @@ jobs:
             tests/test_ncen_ingestion.py
             tests/test_nport_effective_views.py
             tests/test_nport_schema.py
+            tests/test_open_macro_v03_resolution_ledger.py
             tests/test_phase10_gate_machine.py
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
@@ -311,6 +312,7 @@ jobs:
             tests/test_nport_fixed_income_features.py
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
+            tests/test_open_macro_v03_resolution_ledger.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py
@@ -559,6 +561,9 @@ jobs:
           tests/test_phase0q_004_amendments.py
           tests/test_threshold_signoff.py
           tests/test_direct_activation_stage_a.py
+          tests/test_direct_activation_stage_b.py
+          tests/test_open_macro_v03_worker.py
+          tests/test_open_macro_v03_monitor.py
           -m "not preactivation"
           -p xdist.plugin
           -n auto
