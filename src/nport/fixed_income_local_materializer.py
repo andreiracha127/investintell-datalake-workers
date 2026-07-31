@@ -986,7 +986,13 @@ def verify_manifest(
 
 
 def _expected_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
-    """The per-relation row counts the manifest attests (already contract-checked)."""
+    """The per-relation row counts the manifest attests (already contract-checked).
+
+    Over PUBLISHED_RELATIONS, i.e. the coverage rollup is INCLUDED, deliberately:
+    it is part of the publication and it is the relation the reader actually
+    consumes, so a storage closure that omitted it would attest everything
+    except what is served.
+    """
     return {relation: int(manifest["outputs"][relation]["count"]) for relation in PUBLISHED_RELATIONS}
 
 
@@ -1029,7 +1035,11 @@ def _record_closure(cursor: Any, publication_id: str, manifest_hash: str,
 
 
 def _count_relations(cursor: Any, publication_id: str, expected: Mapping[str, int]) -> None:
-    """Full storage verification: one count per target relation, all must match."""
+    """Full storage verification: one count per published relation, all must match.
+
+    Published, not contract: the coverage rollup is counted here too (see
+    ``_expected_counts``).
+    """
     for relation in PUBLISHED_RELATIONS:
         cursor.execute(
             f"SELECT count(*) FROM {relation} WHERE publication_id=%s", (publication_id,)
@@ -1081,12 +1091,13 @@ def publish_artifact(
                 if cursor.fetchone() != ("validated", uuid.UUID(identity.target_publication_id)):
                     raise PublicationConflictError("matching manifest is not the validated current target")
                 expected = _expected_counts(manifest)
-                # Storage re-proof. The eight relations are frozen for a validated
+                # Storage re-proof. The published relations (the eight contract
+                # ones plus the coverage rollup) are frozen for a validated
                 # publication -- every UPDATE/DELETE is rejected by the row guards,
                 # an INSERT needs the parent 'prepared', and TRUNCATE is refused --
                 # so a closure recorded while the publication was already validated
-                # remains true. Reading it is ONE indexed row instead of eight full
-                # counts, one of them over the 45.6M-row metric coverage relation.
+                # remains true. Reading it is ONE indexed row instead of nine full
+                # counts, one of them over the metric coverage relation.
                 # No closure (a publication from before this record existed, or a
                 # forced audit) falls back to the counts and then records one, so
                 # the cost is paid once, never per replay.

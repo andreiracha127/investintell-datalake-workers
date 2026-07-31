@@ -80,8 +80,15 @@ def _resource_config(tmp_path: Path) -> materializer.ResourceConfig:
 
 
 def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> dict[str, Path]:
-    """Eight payloads: seven empty, one coverage row (so the counts are not all zero)."""
-    columns = materializer._contract_columns()
+    """Nine payloads: the eight contract relations plus the coverage rollup.
+
+    Two carry a row (one per-position coverage fact and its rollup) so the
+    counts are not all zero. The rollup is part of every publication since the
+    builder stopped materializing absence: it is the only place the counts of
+    what was absent exist, so an artifact without it publishes a coverage
+    surface that silently claims full coverage.
+    """
+    columns = materializer._published_columns()
     payloads: dict[str, Path] = {}
     coverage_row = {
         "publication_id": identity.target_publication_id,
@@ -105,11 +112,33 @@ def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> d
         "exclusions": "[]",
         "methodology_version": "nport_fixed_income_features_v2",
     }
-    for relation in materializer.TARGET_RELATIONS:
+    rollup_row = {
+        "publication_id": identity.target_publication_id,
+        "source_holdings_publication_id": str(holdings_publication),
+        "source_run_id": str(run_id),
+        "series_id": "S1",
+        "report_date": AS_OF,
+        "accession_number": "A1",
+        "metric_family": "duration",
+        "metric_key": "effective_duration",
+        "numerator": "1",
+        "denominator": "2",
+        "denominator_unit": "count",
+        "coverage_ratio": "0.5",
+        "availability_state": "reported_numeric",
+        "methodology_version": "nport_fixed_income_features_v2",
+        "exclusions": "[]",
+        "source_row_count": "2",
+        "reported_row_count": "1",
+        "missing_reason_counts": "{}",
+    }
+    for relation in materializer.PUBLISHED_RELATIONS:
         path = tmp_path / f"{relation}.tsv.gz"
         lines = ["\t".join(columns[relation])]
         if relation == COVERAGE:
             lines.append("\t".join(coverage_row[name] for name in columns[relation]))
+        if relation == materializer.COVERAGE_ROLLUP_RELATION:
+            lines.append("\t".join(rollup_row[name] for name in columns[relation]))
         with gzip.GzipFile(filename="", mode="wb", fileobj=path.open("wb"), mtime=0) as out:
             out.write(("\n".join(lines) + "\n").encode())
         payloads[relation] = path
@@ -174,7 +203,7 @@ def published(tmp_path):
         source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
         output_files=payloads,
         resource_config=config,
-        output_counts={COVERAGE: 1},
+        output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
     )
     (tmp_path / "manifest.json").write_text(
         materializer.canonical_json(manifest), encoding="utf-8"
@@ -208,7 +237,11 @@ def test_publish_records_the_closure_and_replay_never_scans_a_relation(published
         # replay compares numbers it already has instead of producing them.
         assert closure[1][COVERAGE] == 1
         assert closure[1]["nport_fixed_income_features"] == 0
-        assert set(closure[1]) == set(materializer.TARGET_RELATIONS)
+        # The closure covers the rollup too: it is part of the publication, and
+        # it is the relation the reader actually consumes -- a re-proof that
+        # skipped it would attest everything except what is served.
+        assert set(closure[1]) == set(materializer.PUBLISHED_RELATIONS)
+        assert closure[1][materializer.COVERAGE_ROLLUP_RELATION] == 1
         # The published rows really are there: the closure is a shortcut for the
         # re-proof, never a substitute for the write.
         assert conn.execute(
@@ -240,8 +273,9 @@ def test_verify_storage_forces_the_full_recount(published) -> None:
         )
         conn.commit()
     counted = [s for s in statements if "count(*) FROM nport_fixed_income" in s]
-    assert len(counted) == len(materializer.TARGET_RELATIONS)
+    assert len(counted) == len(materializer.PUBLISHED_RELATIONS)
     assert any(COVERAGE in s for s in counted)
+    assert any(materializer.COVERAGE_ROLLUP_RELATION in s for s in counted)
 
 
 def test_verify_storage_env_switch_forces_the_full_recount(published, monkeypatch) -> None:
@@ -257,7 +291,7 @@ def test_verify_storage_env_switch_forces_the_full_recount(published, monkeypatc
         )
         conn.commit()
     assert len([s for s in statements if "count(*) FROM nport_fixed_income" in s]) == len(
-        materializer.TARGET_RELATIONS
+        materializer.PUBLISHED_RELATIONS
     )
 
 
@@ -283,7 +317,7 @@ def test_missing_closure_recounts_once_and_then_records_one(published) -> None:
         )
         conn.commit()
     assert len([s for s in first if "count(*) FROM nport_fixed_income" in s]) == len(
-        materializer.TARGET_RELATIONS
+        materializer.PUBLISHED_RELATIONS
     )
 
     second: list[str] = []
