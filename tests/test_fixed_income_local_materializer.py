@@ -403,7 +403,7 @@ def test_local_load_indexes_and_analyze_precede_the_oracle() -> None:
     )
 
 
-def test_coverage_rollup_is_refreshed_after_the_current_pointer_moves() -> None:
+def test_coverage_rollup_is_written_before_the_publication_is_frozen() -> None:
     """A pointer that moves without the rollup leaves the reader with no coverage.
 
     Coverage is written per holding -- roughly 173k rows per snapshot for 46
@@ -412,23 +412,35 @@ def test_coverage_rollup_is_refreshed_after_the_current_pointer_moves() -> None:
     rollup instead, so publishing has to leave it current.
     """
     source = Path(materializer.__file__).read_text(encoding="utf-8")
-    flip = source.index("sec_set_current_derived_publication")
-    refresh = source.index("nport_fixed_income_metric_coverage_snapshot_v1")
+    publish = source[source.index("def publish_artifact"):]
+    rollup = publish.index("INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1")
+    validate = publish.index("SELECT sec_validate_derived_publication")
+    flip = publish.index("SELECT sec_set_current_derived_publication(%s,%s)")
 
-    assert refresh > flip
-    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY " in source
+    # The rollup is now a WRITTEN publication fact, not a materialized view over
+    # the per-position rows -- the builder stopped materializing absence, so a
+    # view could no longer count it. Its write guard demands a PREPARED
+    # publication, so it has to land before validation and therefore before the
+    # pointer moves; a pointer that moved without it would leave the reader with
+    # no coverage at all.
+    assert rollup < validate < flip
+    assert "REFRESH MATERIALIZED VIEW" not in source
 
 
-def test_coverage_rollup_ddl_ships_with_the_indexes_its_refresh_and_reader_need() -> None:
+def test_coverage_rollup_ddl_ships_with_the_guards_and_index_its_reader_needs() -> None:
     schema = (
         Path(__file__).resolve().parents[1]
         / "schemas"
         / "nport_fixed_income_features.sql"
     ).read_text(encoding="utf-8")
 
-    assert "MATERIALIZED VIEW IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1" in schema
-    # REFRESH ... CONCURRENTLY is rejected without a unique index on the rollup.
-    assert "UNIQUE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_pk" in schema
+    assert "CREATE TABLE IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1" in schema
+    assert "MATERIALIZED VIEW" not in schema
+    # Absence is counted, never materialized per position.
+    assert "source_row_count" in schema and "reported_row_count" in schema
+    assert "missing_reason_counts" in schema
     # The reader pins by source holdings publication, not by the feature publication.
     assert "nport_fi_metric_coverage_snapshot_v1_serving_idx" in schema
     assert "sec_current_nport_fixed_income_metric_coverage_snapshot_v1" in schema
+    # Same lifecycle guards as every other publication fact.
+    assert schema.count("nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1") == 1

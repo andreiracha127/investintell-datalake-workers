@@ -410,11 +410,18 @@ def test_fixed_income_v2_materializes_governed_raw_facts_with_run_isolation():
             FROM nport_fixed_income_metric_coverage_v2 WHERE publication_id=%s ORDER BY metric_key,source_raw_row_id""", (features_id,))
         coverage_rows = cur.fetchall()
         assert ("key_rate.dv01.3mon", 1, 1, 1, "reported_numeric", None) in coverage_rows
-        assert ("key_rate.dv100.3mon", 0, 1, 0, "field_missing_or_invalid", "named_field_missing_or_invalid") in coverage_rows
-        cur.execute("""SELECT availability_state,numerator,coverage_ratio,missing_reason
-            FROM nport_fixed_income_metric_coverage_v2
+        # Absence is no longer a row per position: it is counted in the rollup.
+        assert not [row for row in coverage_rows if row[4] != "reported_numeric"]
+        cur.execute("""SELECT reported_row_count,source_row_count,availability_state,
+                              missing_reason_counts->>'named_field_missing_or_invalid'
+            FROM nport_fixed_income_metric_coverage_snapshot_v1
+            WHERE publication_id=%s AND metric_key='key_rate.dv100.3mon'""", (features_id,))
+        assert cur.fetchone() == (1, 2, None, "1")
+        cur.execute("""SELECT availability_state,reported_row_count,coverage_ratio,
+                              missing_reason_counts->>'named_field_missing_or_invalid'
+            FROM nport_fixed_income_metric_coverage_snapshot_v1
             WHERE publication_id=%s AND metric_key='repo.is_loan_by_fund'""", (features_id,))
-        assert cur.fetchone() == ("field_missing_or_invalid", 0, 0, "named_field_missing_or_invalid")
+        assert cur.fetchone() == ("field_missing_or_invalid", 0, 0, "1")
         cur.execute("""SELECT investment_bucket,raw_value,measurement_type
                 FROM nport_fixed_income_credit_spread_sensitivities_v2
                 WHERE publication_id=%s AND raw_value IS NOT NULL ORDER BY investment_bucket""", (features_id,))
@@ -493,13 +500,13 @@ def test_fixed_income_v2_preserves_physical_raw_identity_and_full_coverage_state
         cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_primitives_v2
             WHERE publication_id=%s AND primitive_type='repurchase_counterparty'""", (features_id,))
         assert cur.fetchone() == (2,)
-        cur.execute("""SELECT metric_family,availability_state,raw_value
-            FROM nport_fixed_income_metric_coverage_v2 c
-            LEFT JOIN nport_fixed_income_balance_sheet_primitives_v2 b
-              ON b.publication_id=c.publication_id AND b.source_raw_row_id=c.source_raw_row_id
-             AND b.primitive_key='total_assets'
-            WHERE c.publication_id=%s AND c.metric_key IN ('key_rate.dv01.3mon','key_rate.dv100.3mon','balance.total_assets','repo.repurchase_counterparty','repo.securities_lending_loan_value')
-            ORDER BY metric_key,c.source_raw_row_id NULLS FIRST""", (features_id,))
+        # Every availability state the per-position rows used to carry is still
+        # reported, per metric, by the rollup -- including the two the base
+        # table no longer materializes.
+        cur.execute("""SELECT metric_family,availability_state
+            FROM nport_fixed_income_metric_coverage_snapshot_v1
+            WHERE publication_id=%s AND metric_key IN ('key_rate.dv01.3mon','key_rate.dv100.3mon','balance.total_assets','repo.repurchase_counterparty','repo.securities_lending_loan_value')
+            ORDER BY metric_key""", (features_id,))
         states = {(row[0], row[1]) for row in cur.fetchall()}
         assert ('key_rate_sensitivity', 'reported_numeric') in states
         assert ('key_rate_sensitivity', 'field_missing_or_invalid') in states
@@ -538,16 +545,39 @@ def test_fixed_income_v2_covers_all_repo_collateral_and_borrow_primitives_withou
               'repo.borrow_aggregate_collateral')
             ORDER BY metric_key,source_raw_row_id""", (features_id,))
         coverage = cur.fetchall()
+        # Reported positions keep their full physical identity in the base table.
         assert ("repo.repurchase_rate", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert ("repo.repurchase_rate", "field_missing_or_invalid", 0, "named_field_missing_or_invalid") in [row[:3] + (row[4],) for row in coverage]
-        assert ("repo.repurchase_collateral_principal_amount", "field_missing_or_invalid", 0) in [row[:3] for row in coverage]
         assert ("repo.repurchase_collateral_value", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert ("repo.borrow_aggregate_amount", "field_missing_or_invalid", 0) in [row[:3] for row in coverage]
         assert ("repo.borrow_aggregate_collateral", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_rate"}) == 2
-        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_collateral_value"}) == 2
-        assert len({row[3] for row in coverage if row[0] == "repo.borrow_aggregate_collateral"}) == 2
-        cur.execute("""SELECT DISTINCT metric_key FROM nport_fixed_income_metric_coverage_v2
+        assert not [row for row in coverage if row[1] != "reported_numeric"]
+        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_rate"}) == 1
+        # The mixed metrics are the ones whose positions disagree: the rollup
+        # reports no single state for them and counts what was missing.
+        cur.execute("""SELECT metric_key,availability_state,reported_row_count,source_row_count,
+                              missing_reason_counts->>'named_field_missing_or_invalid'
+            FROM nport_fixed_income_metric_coverage_snapshot_v1
+            WHERE publication_id=%s AND metric_key IN (
+              'repo.repurchase_rate','repo.repurchase_collateral_principal_amount',
+              'repo.repurchase_collateral_value','repo.borrow_aggregate_amount',
+              'repo.borrow_aggregate_collateral')
+            ORDER BY metric_key""", (features_id,))
+        rollup = {row[0]: row[1:] for row in cur.fetchall()}
+        # Nothing the per-position rows said is lost: every metric still reports
+        # how many positions carried a value, how many were evaluated, and why
+        # the rest did not.
+        for metric_key, (state, reported, total, missing) in rollup.items():
+            assert 0 <= reported <= total, metric_key
+            assert (state is None) == (0 < reported < total), metric_key
+            assert (int(missing or 0) == total - reported), metric_key
+        assert rollup["repo.repurchase_rate"] == (None, 1, 2, "1")
+        assert set(rollup) == {
+            "repo.repurchase_rate",
+            "repo.repurchase_collateral_principal_amount",
+            "repo.repurchase_collateral_value",
+            "repo.borrow_aggregate_amount",
+            "repo.borrow_aggregate_collateral",
+        }
+        cur.execute("""SELECT DISTINCT metric_key FROM nport_fixed_income_metric_coverage_snapshot_v1
             WHERE publication_id=%s AND metric_family='repo_lending' ORDER BY metric_key""", (features_id,))
         assert {row[0] for row in cur.fetchall()} == {
             "repo.borrow_aggregate_amount",

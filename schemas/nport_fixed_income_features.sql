@@ -411,45 +411,57 @@ SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_repo_lend
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_v2 AS
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
 
--- Cobertura e gravada por posicao: um snapshot carrega ~173k linhas para 46
--- chaves de metrica, quase todas marcadores de ausencia. Servir esse grao por
--- requisicao custou 36 s e ~493 MB de I/O com cache frio, alem do statement
--- timeout do datalake. O rollup guarda as mesmas 46 figuras por snapshot.
+-- Coverage rollup: one row per fund snapshot x metric key (46 figures), the
+-- grain the dossier actually consumes.  Serving the per-position grain per
+-- request cost 36 s and ~493 MB of I/O on a cold cache, past the datalake
+-- statement timeout.
 --
--- Regra unica da agregacao: combinar apenas o que concorda. Denominadores em
--- unidades diferentes nao sao somaveis, e uma metrica nesse estado fica sem
--- cobertura reportada em vez de virar um numero sem significado.
-CREATE MATERIALIZED VIEW IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1 AS
-SELECT c.publication_id,
-       c.source_holdings_publication_id,
-       c.series_id,
-       c.report_date,
-       c.accession_number,
-       c.metric_family,
-       c.metric_key,
-       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.numerator) END AS numerator,
-       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.denominator) END AS denominator,
-       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN min(c.denominator_unit) END AS denominator_unit,
-       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) AND sum(c.denominator)>0
-            THEN sum(c.numerator)/sum(c.denominator) END AS coverage_ratio,
-       CASE WHEN min(c.availability_state)=max(c.availability_state) THEN min(c.availability_state) END AS availability_state,
-       CASE WHEN min(c.methodology_version)=max(c.methodology_version) THEN min(c.methodology_version) END AS methodology_version,
-       CASE WHEN min(c.exclusions::text)=max(c.exclusions::text) THEN min(c.exclusions::text)::jsonb ELSE '[]'::jsonb END AS exclusions,
-       count(*) AS source_row_count
-FROM nport_fixed_income_metric_coverage_v2 c
-GROUP BY c.publication_id,c.source_holdings_publication_id,c.series_id,
-         c.report_date,c.accession_number,c.metric_family,c.metric_key;
+-- It is a WRITTEN table, not a materialized view over
+-- nport_fixed_income_metric_coverage_v2, because the builder no longer
+-- materializes absence: writing one row per holding per metric key produced
+-- 173,716 rows per snapshot and 45.6M rows / 20 GB table + 18 GB primary key,
+-- and the debut build was cancelled after 2h+ of CPU. Absence is COUNTED here
+-- instead -- reported_row_count / source_row_count / missing_reason_counts --
+-- which says everything the absent rows said, per metric, in 46 rows.
+--
+-- Aggregation rule, unchanged from the rollup this replaces: combine only what
+-- agrees.  A metric whose positions disagree on availability reports NULL
+-- availability_state rather than a state it does not have.
+CREATE TABLE IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1 (
+    publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_run_id uuid NOT NULL REFERENCES sec_ingestion_runs(run_id) ON DELETE RESTRICT,
+    series_id text NOT NULL, report_date date NOT NULL, accession_number text NOT NULL,
+    metric_family text NOT NULL, metric_key text NOT NULL,
+    numerator numeric, denominator numeric, denominator_unit text,
+    coverage_ratio numeric CHECK (coverage_ratio BETWEEN 0 AND 1),
+    -- NULL is legitimate here and only here: positions that disagree.
+    availability_state text CHECK (availability_state IN ('source_row_absent','field_missing_or_invalid','reported_numeric')),
+    methodology_version text NOT NULL DEFAULT 'nport_fixed_income_features_v2',
+    exclusions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    source_row_count bigint NOT NULL CHECK (source_row_count >= 0),
+    reported_row_count bigint NOT NULL CHECK (reported_row_count >= 0),
+    missing_reason_counts jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CHECK (reported_row_count <= source_row_count),
+    PRIMARY KEY (publication_id,series_id,report_date,accession_number,metric_family,metric_key)
+);
 
--- Unico: exigido pelo REFRESH ... CONCURRENTLY que o materializador dispara
--- logo apos mover o ponteiro corrente.
-CREATE UNIQUE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_pk
-  ON nport_fixed_income_metric_coverage_snapshot_v1
-  (publication_id,series_id,report_date,accession_number,metric_family,metric_key);
-
--- O predicado que a camada de leitura usa de fato.
+-- The predicate the reader actually uses: it pins by source holdings
+-- publication, not by the feature publication.
 CREATE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_serving_idx
   ON nport_fixed_income_metric_coverage_snapshot_v1
   (source_holdings_publication_id,series_id,report_date,accession_number);
 
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_snapshot_v1 AS
 SELECT s.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_snapshot_v1 s ON s.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- The rollup is a publication fact like any other: same prepared-publication
+-- write guard, same truncate guard, same immutability.
+DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_v2_fact_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_v2_fact_write_guard();
+DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_truncate_guard
+BEFORE TRUNCATE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard();

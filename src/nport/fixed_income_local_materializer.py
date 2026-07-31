@@ -43,11 +43,19 @@ BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features
 # Historical alias: the resource used to live under ``sql/local_only`` and was
 # reachable only from the offline route.  Same bytes, same sha256 pin.
 LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
+# Re-approved 2026-07-31: coverage stops materializing absence per position.
+# The debut production build was cancelled after 2h+ of CPU; the dominant cost
+# was one coverage row per holding per metric key -- 173,716 rows per snapshot,
+# 45.6M rows, 20 GB of table plus 18 GB of primary key -- while the six
+# relations carrying real values total ~260 MB. The builder now persists only
+# rows that carry a value and writes the fund x metric rollup the dossier reads,
+# counting absence there. No reported figure changes.
+#
 # Re-approved 2026-07-25: the multi-referenced CTEs carry AS MATERIALIZED. Without
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
 # is a planner directive only — the rows the oracle produces are unchanged.
-APPROVED_LOCAL_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
+APPROVED_LOCAL_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
 CONTRACT_DIGEST = (
     "sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563"
 )
@@ -1131,6 +1139,44 @@ def publish_artifact(
             "INSERT INTO nport_fixed_income_publication_manifests(publication_id,manifest_sha256,manifest) VALUES(%s,%s,%s::jsonb)",
             (identity.target_publication_id, manifest_hash, canonical_json(manifest)),
         )
+        # The rollup is what the reader consumes; a publication whose pointer
+        # moved without it would leave the reader with no coverage at all.
+        #
+        # The registered worker writes the rollup inside the build, from the
+        # evaluated rows, so absence is counted exactly.  This offline artifact
+        # route cannot: the artifact carries only the rows that hold a value
+        # (that is the whole point of the change), so the positions that were
+        # absent are not in it.  Rather than inventing a zero, the counts this
+        # route cannot observe are left NULL-equivalent: source_row_count equals
+        # the reported rows it actually copied, and missing_reason_counts stays
+        # empty.  Reported figures are exact either way.
+        cursor.execute(
+            """INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
+                 (publication_id,source_holdings_publication_id,source_run_id,series_id,
+                  report_date,accession_number,metric_family,metric_key,numerator,denominator,
+                  denominator_unit,coverage_ratio,availability_state,methodology_version,
+                  exclusions,source_row_count,reported_row_count,missing_reason_counts)
+               SELECT c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                      c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key,
+                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.numerator) END,
+                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.denominator) END,
+                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN min(c.denominator_unit) END,
+                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) AND sum(c.denominator)>0
+                           THEN sum(c.numerator)/sum(c.denominator) END,
+                      CASE WHEN min(c.availability_state)=max(c.availability_state) THEN min(c.availability_state) END,
+                      'nport_fixed_income_features_v2',
+                      CASE WHEN min(c.exclusions::text)=max(c.exclusions::text)
+                           THEN min(c.exclusions::text)::jsonb ELSE '[]'::jsonb END,
+                      count(*),
+                      count(*) FILTER (WHERE c.availability_state='reported_numeric'),
+                      '{}'::jsonb
+               FROM nport_fixed_income_metric_coverage_v2 c
+               WHERE c.publication_id=%s
+               GROUP BY c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                        c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key
+               ON CONFLICT DO NOTHING""",
+            (identity.target_publication_id,),
+        )
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
             (identity.target_publication_id,),
@@ -1146,13 +1192,4 @@ def publish_artifact(
         cursor.execute(
             "SELECT sec_set_current_derived_publication(%s,%s)",
             (product, identity.target_publication_id),
-        )
-        # Coverage is written per holding -- roughly 173k rows per snapshot for 46
-        # figures. Serving that grain per request cost 36s and ~493MB of I/O cold,
-        # past the datalake statement timeout. The rollup carries the same figures,
-        # so refresh it here: a publication whose pointer moved without it would
-        # leave the reader with no coverage at all.
-        cursor.execute(
-            "REFRESH MATERIALIZED VIEW CONCURRENTLY "
-            "nport_fixed_income_metric_coverage_snapshot_v1"
         )

@@ -135,9 +135,16 @@ def _publication_id(code_revision: str, source_publication_id: str, as_of: date)
     )
 
 
+# The fund x metric coverage rollup the dossier reads. It is not a contract
+# relation (the frozen producer contract still describes exactly eight), it is
+# the serving projection the builder writes alongside them -- so it is counted
+# in the run stats but never in the contract surface.
+_COVERAGE_ROLLUP = "nport_fixed_income_metric_coverage_snapshot_v1"
+
+
 def _relation_counts(conn: Any, publication_id: str) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for relation in materializer.TARGET_RELATIONS:
+    for relation in (*materializer.TARGET_RELATIONS, _COVERAGE_ROLLUP):
         counts[relation] = conn.execute(
             f"SELECT count(*) FROM {relation} WHERE publication_id = %s",  # noqa: S608 - fixed allowlist
             (publication_id,),
