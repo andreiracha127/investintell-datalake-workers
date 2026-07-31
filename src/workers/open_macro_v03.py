@@ -14,6 +14,10 @@ Fail-loud ordering (zero side effects before every gate):
   2. Governance envelope — every activation gate must hold ⇒ else ``governance_blocked``
      WITHOUT connecting. (The committed envelope ships FULLY BLOCKED; the flips land
      only in the Stage B PR's final review, so a real run today returns governance_blocked.)
+  2b. WRITER runtime identity — the workload must present the ONE approved writer
+     identity (``WORKER_SERVICE_IDENTITY`` / ``CLOUD_RUN_JOB`` / ``K_SERVICE`` /
+     ``RAILWAY_SERVICE_NAME``, first non-empty wins) ⇒ else ``wrong_service`` WITHOUT
+     connecting. Platform-neutral and fail-closed: an absent identity is never trusted.
   3. Module pins — sha256 (CRLF→LF normalized) of each pinned pure module must match
      ⇒ else raise, BEFORE any DB access.
   4. connect + pin search_path=public (before any DDL/table access, so a non-public
@@ -35,6 +39,16 @@ Fail-loud ordering (zero side effects before every gate):
 
 The ``invalidate`` CLI (``python -m src.workers.open_macro_v03 invalidate ...``) is the
 manual kill switch; it is NEVER called by ``run()`` and never touches the ledger.
+
+The ``resolve-staleness`` CLI (``python -m src.workers.open_macro_v03 resolve-staleness
+--as-of ... --resolved-by ... --reason ...``) is the SANCTIONED recovery path for a day
+the staleness gate blocked. It never edits or deletes the immutable block: it APPENDS a
+'resolved' event to ``open_macro_v03_staleness_resolutions`` — and only after the worker
+itself re-read the inputs for that day under the same advisory lock and found the
+freshness report breach-free, storing that report as the event's proof. A later normal
+run for the day then publishes and appends the matching 'superseded' event. Before this
+command existed the block message demanded an "explicit operator resolution" the system
+did not implement, and the only way out was an ad-hoc SQL session on the database host.
 """
 
 from __future__ import annotations
@@ -91,13 +105,26 @@ _SCHEMAS = (
     "schemas/open_macro_v03_decisions.sql",
     "schemas/open_macro_v03_allocations.sql",
     "schemas/open_macro_v03_staleness_blocks.sql",
+    "schemas/open_macro_v03_staleness_resolutions.sql",
 )
 
+# The three PRODUCT tables the ratified activation envelope authorizes (its
+# `allowed_tables` list is compared against exactly this set — never widen it here
+# without a re-ratified envelope, or every run fails governance).
 ALLOWED_TABLES = frozenset({
     "open_macro_v03_decisions",
     "open_macro_v03_allocations",
     "open_macro_v03_staleness_blocks",
 })
+
+# The append-only clearance ledger for staleness blocks. It is NOT a product table and
+# NOT part of the envelope's allowed_tables: it holds no decision, no allocation and no
+# regime data — only the positive record of how a recorded block was cleared. It lives
+# in the same `open_macro_v03_new_tables_only` write mode the envelope pins, and it is
+# written on exactly two paths: the operator `resolve-staleness` command and the
+# 'superseded' event the writer appends when a fresh run finally publishes the day.
+RESOLUTIONS_TABLE = "open_macro_v03_staleness_resolutions"
+RESOLUTION_STATES = ("resolved", "superseded")
 
 # The inherited Phase 4 approval matrix roles (the set pinned by
 # tests/test_dark_launch_readiness.py / tests/test_controlled_activation_proposal.py).
@@ -140,11 +167,37 @@ ENVELOPE_IDENTITY: dict[str, Any] = {
     "direct_activation_id": "open_macro_v03_direct_activation_001",
 }
 
-# The ONE approved Railway service the worker may publish official rows from. The
-# envelope must name exactly this service AND (when the runtime sets RAILWAY_SERVICE_NAME)
-# match it, so an artifact naming a staging/local service — or copied into another
-# service that happens to carry the prod DSN + feature flag — cannot pass governance.
-APPROVED_RAILWAY_SERVICE = "open-macro-v03-worker"
+# The ONE approved WRITER IDENTITY the worker may publish official rows from. This is
+# a LOGICAL name, not a platform hostname: the envelope must name exactly this identity
+# AND the runtime must present it, so an artifact naming a staging/local service — or
+# copied into another workload that happens to carry the prod DSN + feature flag —
+# cannot pass governance. The identity is deliberately platform-neutral: Railway,
+# Cloud Run jobs and Cloud Run services all resolve to the SAME logical writer.
+APPROVED_WRITER_IDENTITY = "open-macro-v03-worker"
+# Historical alias (the Railway-era spelling of the same constant): kept so the Stage B
+# artifacts and their guard tests, which reference APPROVED_RAILWAY_SERVICE by name,
+# keep pointing at the one approved identity.
+APPROVED_RAILWAY_SERVICE = APPROVED_WRITER_IDENTITY
+
+# Where the runtime writer identity is read from, in precedence order. The FIRST env
+# var set (non-empty) wins and must equal APPROVED_WRITER_IDENTITY — a platform whose
+# native name differs (a Cloud Run job is `dl-open-macro-v03`) declares the logical
+# identity explicitly through WORKER_SERVICE_IDENTITY.
+#   WORKER_SERVICE_IDENTITY  explicit, platform-neutral — the preferred wiring anywhere
+#   CLOUD_RUN_JOB            Cloud Run jobs runtime contract (job name)
+#   K_SERVICE                Cloud Run services runtime contract (service name)
+#   RAILWAY_SERVICE_NAME     legacy Railway — accepted for the transition window only
+WRITER_IDENTITY_ENV_VARS = (
+    "WORKER_SERVICE_IDENTITY",
+    "CLOUD_RUN_JOB",
+    "K_SERVICE",
+    "RAILWAY_SERVICE_NAME",
+)
+
+# Commit-provenance env vars, in precedence order — the repo-wide convention (see
+# src/workers/bond_metrics.py, bond_price_observations.py, daily_publication_chain.py).
+# A container image carries no .git, so the git fallback alone is not a runtime path.
+REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
 
 
 class OpenMacroV03Error(RuntimeError):
@@ -264,13 +317,18 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     environment = envelope.get("environment")
     if not isinstance(environment, dict):
         return "environment missing"
-    service = environment.get("railway_service_name")
-    if service != APPROVED_RAILWAY_SERVICE:
-        return f"environment.railway_service_name!={APPROVED_RAILWAY_SERVICE!r} (got {service!r})"
-    # NB: the RUNTIME Railway identity (os.environ RAILWAY_SERVICE_NAME) is a WRITER-only
-    # gate — see check_writer_runtime(), called by run(). It is deliberately NOT part of
-    # this predicate, so the read-only monitor (a separate Railway service) can share the
-    # SAME governance check and still arm after activation.
+    # The envelope declares the LOGICAL writer identity. `writer_identity` is the
+    # platform-neutral key; `railway_service_name` is the historical spelling of the
+    # same field and stays accepted so the ratified Stage B artifact keeps validating
+    # byte-for-byte. Either way the value must be the ONE approved identity.
+    service = environment.get("writer_identity") or environment.get("railway_service_name")
+    if service != APPROVED_WRITER_IDENTITY:
+        return (f"environment.writer_identity!={APPROVED_WRITER_IDENTITY!r} "
+                f"(got {service!r})")
+    # NB: the RUNTIME writer identity (os.environ, see WRITER_IDENTITY_ENV_VARS) is a
+    # WRITER-only gate — see check_writer_runtime(), called by run(). It is deliberately
+    # NOT part of this predicate, so the read-only monitor (a separate workload) can
+    # share the SAME governance check and still arm after activation.
     # inherited Phase 4 approval matrix: EXACTLY the six pinned role ids, each with a
     # named (non-empty) holder, and the strict-bool completeness flag. An absent or
     # stale approval matrix blocks the flip.
@@ -299,17 +357,39 @@ def check_governance(envelope: dict[str, Any]) -> str | None:
     return None
 
 
+def resolve_writer_identity() -> tuple[str | None, str | None]:
+    """The runtime writer identity and the env var it came from, or ``(None, None)``.
+
+    The first NON-EMPTY var of :data:`WRITER_IDENTITY_ENV_VARS` wins, so a workload can
+    always state its logical identity explicitly (``WORKER_SERVICE_IDENTITY``) even when
+    the platform's own name differs, and the platform-native vars stay as a fallback."""
+    for name in WRITER_IDENTITY_ENV_VARS:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value, name
+    return None, None
+
+
 def check_writer_runtime() -> str | None:
-    """WRITER-only gate: official rows may be published only FROM the approved Railway
-    service. An absent or mismatched runtime ``RAILWAY_SERVICE_NAME`` (a local or
-    misconfigured runner carrying the prod DSN + feature flag) blocks — absent identity
-    is not trusted. The read-only MONITOR is a separate service and does NOT call this;
-    it shares ``check_governance`` only, so it still arms after activation."""
-    runtime_service = os.environ.get("RAILWAY_SERVICE_NAME")
-    if runtime_service != APPROVED_RAILWAY_SERVICE:
-        return (f"runtime RAILWAY_SERVICE_NAME {runtime_service!r} != approved "
-                f"{APPROVED_RAILWAY_SERVICE!r} (official writes only from the approved "
-                "Railway service; absent identity is not trusted)")
+    """WRITER-only gate: official rows may be published only FROM the approved writer
+    identity. An absent or mismatched runtime identity (a local or misconfigured runner
+    carrying the prod DSN + feature flag) blocks — absent identity is not trusted; the
+    gate is FAIL-CLOSED and runs before any DB access. The read-only MONITOR is a
+    separate workload and does NOT call this; it shares ``check_governance`` only, so it
+    still arms after activation.
+
+    Platform-neutral by construction: the identity is the logical writer name, resolved
+    from an explicit env var first and from the Cloud Run / Railway runtime contracts
+    after it, so moving the workload between platforms never moves the gate."""
+    identity, source = resolve_writer_identity()
+    if identity is None:
+        return ("runtime writer identity absent (none of "
+                f"{', '.join(WRITER_IDENTITY_ENV_VARS)} is set); official writes only "
+                f"from {APPROVED_WRITER_IDENTITY!r} (absent identity is not trusted)")
+    if identity != APPROVED_WRITER_IDENTITY:
+        return (f"runtime writer identity {identity!r} (from {source}) != approved "
+                f"{APPROVED_WRITER_IDENTITY!r} (official writes only from the approved "
+                "writer; set WORKER_SERVICE_IDENTITY on the sanctioned workload)")
     return None
 
 
@@ -754,6 +834,60 @@ _STALENESS_INSERT_SQL = (
     "ON CONFLICT (as_of) DO NOTHING"
 )
 
+# --------------------------------------------------------------------------- #
+# Staleness-block RESOLUTION ledger (append-only; schemas/
+# open_macro_v03_staleness_resolutions.sql). The block ledger stays IMMUTABLE: a
+# clearance is a NEW row here, never an edit or a delete over there.
+# --------------------------------------------------------------------------- #
+_BLOCK_DETAIL_SQL = (
+    "SELECT run_id, input_vintage_sha256, input_prices_sha256 "
+    "FROM open_macro_v03_staleness_blocks WHERE as_of = %(as_of)s"
+)
+
+# The newest 'resolved' event for a day. Only an operator writes this, and only after
+# the worker itself recomputed the freshness report and found NO breach.
+_ACTIVE_RESOLUTION_SQL = (
+    f"SELECT resolution_id, resolved_by, reason, created_at FROM {RESOLUTIONS_TABLE} "
+    "WHERE as_of = %(as_of)s AND resolution_state = 'resolved' "
+    "ORDER BY created_at DESC LIMIT 1"
+)
+
+_SUPERSEDED_EXISTS_SQL = (
+    f"SELECT 1 FROM {RESOLUTIONS_TABLE} "
+    "WHERE as_of = %(as_of)s AND resolution_state = 'superseded' LIMIT 1"
+)
+
+_RESOLUTION_INSERT_SQL = (
+    f"INSERT INTO {RESOLUTIONS_TABLE} "
+    "(resolution_id, as_of, resolution_state, resolved_by, reason, freshness_proof, "
+    " block_run_id, block_input_vintage_sha256, block_input_prices_sha256, "
+    " input_vintage_sha256, input_prices_sha256, pack_v2_sha256, module_pins_sha256, "
+    " code_commit, run_id) "
+    "VALUES (%(resolution_id)s, %(as_of)s, %(resolution_state)s, %(resolved_by)s, "
+    " %(reason)s, %(freshness_proof)s::jsonb, %(block_run_id)s, "
+    " %(block_input_vintage_sha256)s, %(block_input_prices_sha256)s, "
+    " %(input_vintage_sha256)s, %(input_prices_sha256)s, %(pack_v2_sha256)s, "
+    " %(module_pins_sha256)s, %(code_commit)s, %(run_id)s)"
+)
+
+
+def freshness_proof(report: dict[str, Any], as_of: _dt.date) -> dict[str, Any]:
+    """The PROOF OF RE-FRESHNESS stored on a resolution event.
+
+    It is the staleness report itself: per-series ``last_available_at`` / ``age_days``
+    against the ``bound_days`` that applied, the price ages, the criteria in force, and
+    the (necessarily empty, for a resolution) breach list. A reader can therefore verify
+    from the ledger alone that the sources really satisfied the thresholds at clearance
+    time — the resolution asserts nothing the recomputation did not show."""
+    return {
+        "verified_as_of": as_of.isoformat(),
+        "verified_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        "criteria": report["criteria"],
+        "series": report["series"],
+        "prices": report["prices"],
+        "breaches": report["breaches"],
+    }
+
 
 def _exact_numeric(value: Any) -> Any:
     """Python float → ``decimal.Decimal(repr(value))`` for EXACT NUMERIC persistence.
@@ -777,15 +911,19 @@ def _exact_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
     return {key: _exact_numeric(value) for key, value in params.items()}
 
 
-def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) -> None:
+def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any],
+            *, proof: dict[str, Any] | None = None) -> None:
     """Upsert decision + allocation in ONE transaction. A re-run NEVER resurrects an
     invalidated row: the ON CONFLICT WHERE clause skips it (rowcount 0) ⇒ raise.
 
     Ledger×output mutual exclusion: inside the SAME transaction, a staleness-block
-    ledger row for the as_of forbids publishing — the day was durably blocked, and
-    publishing after a recorded block requires EXPLICIT operator resolution (remove
-    or supersede the block through the sanctioned operational path), never a silent
-    later run.
+    ledger row for the as_of forbids publishing UNLESS the day carries a 'resolved'
+    event in the append-only resolution ledger — the sanctioned operator path
+    (``resolve-staleness``), which only writes after the worker itself recomputed the
+    freshness report and found no breach. A block is therefore never silently
+    outlived by a later run, and it is never edited or deleted either: when the
+    publication lands, this function APPENDS the 'superseded' event (once per day,
+    the first publication) so the ledger reads block → resolution → output.
 
     Write fidelity: every float parameter is converted to ``Decimal(repr(x))``
     before reaching the driver (see :func:`_exact_numeric`), so the NUMERIC columns
@@ -794,15 +932,26 @@ def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) 
     output the Stage C verifier asserts against."""
     decision_row = _exact_numeric_params(decision_row)
     allocation_row = _exact_numeric_params(allocation_row)
+    as_of = decision_row["as_of"]
     with conn.cursor() as cur:
-        cur.execute(
-            "SELECT 1 FROM open_macro_v03_staleness_blocks WHERE as_of = %(as_of)s",
-            decision_row)
-        if cur.fetchone() is not None:
-            raise OpenMacroV03Error(
-                f"publish refused for {decision_row['as_of']}: a staleness-block "
-                "ledger row exists for this day; publishing after a recorded block "
-                "requires explicit operator resolution, not a re-run")
+        cur.execute(_BLOCK_DETAIL_SQL, {"as_of": as_of})
+        block = cur.fetchone()
+        if block is not None:
+            cur.execute(_ACTIVE_RESOLUTION_SQL, {"as_of": as_of})
+            resolution = cur.fetchone()
+            if resolution is None:
+                raise OpenMacroV03Error(
+                    f"publish refused for {as_of}: a staleness-block ledger row exists "
+                    "for this day and carries no resolution; publishing after a "
+                    "recorded block requires explicit operator resolution — run "
+                    "`python -m src.workers.open_macro_v03 resolve-staleness --as-of "
+                    f"{as_of} --resolved-by <operator> --reason <why>`, which re-reads "
+                    "the inputs and only records the clearance if they are fresh")
+            if proof is None:
+                raise OpenMacroV03Error(
+                    f"publish refused for {as_of}: the day carries a resolved staleness "
+                    "block, so the publication must supersede it with the freshness "
+                    "report of THIS run; publish(..., proof=...) was not supplied")
         cur.execute(_DECISION_UPSERT_SQL, decision_row)
         if cur.rowcount == 0:
             raise OpenMacroV03Error(
@@ -813,6 +962,31 @@ def publish(conn, decision_row: dict[str, Any], allocation_row: dict[str, Any]) 
             raise OpenMacroV03Error(
                 f"allocation upsert for {allocation_row['as_of']} did not apply: the row "
                 "is invalidated; a re-run cannot resurrect an invalidated allocation")
+        if block is not None:
+            # Close the loop IN THE SAME TRANSACTION: the resolved block is superseded
+            # by real output. Append-only and once per day — a later idempotent re-run
+            # of an already-published day adds no second event.
+            cur.execute(_SUPERSEDED_EXISTS_SQL, {"as_of": as_of})
+            if cur.fetchone() is None:
+                block_run_id, block_vintage_sha, block_prices_sha = block
+                cur.execute(_RESOLUTION_INSERT_SQL, {
+                    "resolution_id": str(uuid.uuid4()),
+                    "as_of": as_of,
+                    "resolution_state": "superseded",
+                    "resolved_by": APPROVED_WRITER_IDENTITY,
+                    "reason": (f"published run {decision_row['run_id']} superseded the "
+                               "staleness block for this day"),
+                    "freshness_proof": json.dumps(proof, sort_keys=True, default=str),
+                    "block_run_id": block_run_id,
+                    "block_input_vintage_sha256": block_vintage_sha,
+                    "block_input_prices_sha256": block_prices_sha,
+                    "input_vintage_sha256": decision_row["input_vintage_sha256"],
+                    "input_prices_sha256": decision_row["input_prices_sha256"],
+                    "pack_v2_sha256": decision_row["pack_v2_sha256"],
+                    "module_pins_sha256": decision_row["module_pins_sha256"],
+                    "code_commit": decision_row["code_commit"],
+                    "run_id": decision_row["run_id"],
+                })
     conn.commit()
 
 
@@ -889,12 +1063,37 @@ def post_write_verify(conn, as_of: _dt.date, weights: dict[str, float]) -> None:
 # --------------------------------------------------------------------------- #
 # Provenance
 # --------------------------------------------------------------------------- #
+def _is_commit_sha(value: str) -> bool:
+    return len(value) == 40 and all(c in "0123456789abcdef" for c in value.lower())
+
+
 def code_commit() -> str:
-    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA")
-    if sha:
-        return sha.strip()
-    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
-                          capture_output=True, text=True, check=True).stdout.strip()
+    """The 40-hex commit sha stamped on every published row and ledger event.
+
+    Platform-neutral: the repo-wide revision env vars (:data:`REVISION_ENV_VARS`) are
+    read in order and the git fallback is last — a container image ships without a
+    ``.git`` directory, so on Cloud Run the revision MUST come from the env. The value
+    is validated: ``code_commit`` is a ``CHAR(40)`` provenance column and a short string
+    would be silently blank-padded into a lie about which code produced the row."""
+    for name in REVISION_ENV_VARS:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            if not _is_commit_sha(value):
+                raise OpenMacroV03Error(
+                    f"{name}={value!r} is not a 40-hex commit sha; the code_commit "
+                    "provenance column is CHAR(40) and would store a padded half-truth")
+            return value.lower()
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT,
+                             capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise OpenMacroV03Error(
+            "code_commit unresolved: no revision env var "
+            f"({', '.join(REVISION_ENV_VARS)}) is set and git is unavailable here "
+            "(a container image has no .git) — set CODE_REVISION on the workload") from exc
+    if not _is_commit_sha(sha):
+        raise OpenMacroV03Error(f"git rev-parse HEAD returned {sha!r}, not a 40-hex sha")
+    return sha.lower()
 
 
 def pin_search_path(conn) -> None:
@@ -1095,6 +1294,39 @@ EXPECTED_SCHEMA: dict[str, dict[str, dict[str, tuple]]] = {
             "open_macro_v03_staleness_blocks_pkey": ("p", "PRIMARY KEY (as_of)"),
         },
     },
+    # Append-only clearance ledger (schemas/open_macro_v03_staleness_resolutions.sql).
+    # Verified like every other table the worker touches: an absent or drifted ledger
+    # fails loud BEFORE any write, so the recovery path can never be half-installed.
+    RESOLUTIONS_TABLE: {
+        "columns": {
+            "resolution_id": ("uuid", None, "NO", None),
+            "as_of": ("date", None, "NO", None),
+            "resolution_state": ("text", None, "NO", None),
+            "resolved_by": ("text", None, "NO", None),
+            "reason": ("text", None, "NO", None),
+            "freshness_proof": ("jsonb", None, "NO", None),
+            "block_run_id": ("text", None, "NO", None),
+            "block_input_vintage_sha256": ("character", 64, "NO", None),
+            "block_input_prices_sha256": ("character", 64, "NO", None),
+            "input_vintage_sha256": ("character", 64, "NO", None),
+            "input_prices_sha256": ("character", 64, "NO", None),
+            "pack_v2_sha256": ("character", 64, "NO", None),
+            "module_pins_sha256": ("character", 64, "NO", None),
+            "code_commit": ("character", 40, "NO", None),
+            "run_id": ("text", None, "NO", None),
+            "created_at": ("timestamp with time zone", None, "NO", "now()"),
+        },
+        "constraints": {
+            "open_macro_v03_staleness_resolutions_pkey": ("p", "PRIMARY KEY (resolution_id)"),
+            "open_macro_v03_staleness_resolutions_as_of_fkey": ("f",
+                "FOREIGN KEY (as_of) REFERENCES open_macro_v03_staleness_blocks(as_of)"),
+            "open_macro_v03_staleness_resolutions_state_check": ("c",
+                "CHECK ((resolution_state = ANY (ARRAY['resolved'::text, "
+                "'superseded'::text])))"),
+            "open_macro_v03_staleness_resolutions_proof_object": ("c",
+                "CHECK ((jsonb_typeof(freshness_proof) = 'object'::text))"),
+        },
+    },
 }
 
 _CATALOG_COLUMNS_SQL = (
@@ -1285,6 +1517,13 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 return {"status": "staleness_block", "as_of": as_of_date.isoformat(),
                         "ledger": "inserted" if inserted else "already_recorded",
                         "reason": report["breaches"], "run_id": run_id,
+                        # the recovery path is NAMED in the result, so an operator
+                        # reading a blocked run never has to invent one (the
+                        # 2026-07-17 incident was cleared by hand over SSH).
+                        "resolution_path": (
+                            "python -m src.workers.open_macro_v03 resolve-staleness "
+                            f"--as-of {as_of_date.isoformat()} --resolved-by <operator> "
+                            "--reason <what refreshed>"),
                         "wall_ms": int((time.monotonic() - t0) * 1000)}
 
             # Gate 9 — decision chain + consumable position. The GO candidate
@@ -1364,8 +1603,11 @@ def run(dsn: str, *, as_of: str | None = None) -> dict[str, Any]:
                 "valid_until": vu,
             }
 
-            # Gate 11 — publish (atomic).
-            publish(conn, decision_row, allocation_row)
+            # Gate 11 — publish (atomic). The freshness report of THIS run travels
+            # with the write: if the day carries a resolved staleness block, publish()
+            # appends the 'superseded' event with this proof attached.
+            publish(conn, decision_row, allocation_row,
+                    proof=freshness_proof(report, as_of_date))
 
             # Gate 12 — post-write verify.
             post_write_verify(conn, as_of_date, weights)
@@ -1433,6 +1675,140 @@ def invalidate(dsn: str, *, as_of: str, to: str | None = None,
         conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# resolve-staleness CLI (the SANCTIONED recovery path for a blocked day)
+# --------------------------------------------------------------------------- #
+def resolve_staleness_block(dsn: str, *, as_of: str, resolved_by: str,
+                            reason: str) -> dict[str, Any]:
+    """Clear a recorded staleness block for ``as_of`` by APPENDING a 'resolved' event.
+
+    This is the operator path the block message has always demanded and the codebase
+    never implemented — the 2026-07-17 incident was cleared with an ad-hoc SQL session
+    over SSH. It is executable from anywhere the worker image runs (a Cloud Run job
+    execution with overridden args, a Railway one-off, a local run against the DSN);
+    no shell on the database host is involved.
+
+    The clearance is NOT a rubber stamp. The same gates as ``run()`` apply, in the same
+    fail-closed order and with the same zero-side-effect-before-a-gate property (flag,
+    governance envelope, WRITER runtime identity — all before any DB access; module
+    pins and pack bytes before the inputs are trusted), and then, under the SAME
+    advisory lock the daily run uses, the worker RE-READS the inputs for that day and
+    RECOMPUTES the staleness report. The event is written only when the report is
+    breach-free, and it carries that report as ``freshness_proof`` — the per-source
+    timestamps and ages against the thresholds in force at clearance time.
+
+    Nothing is mutated: the original block row stays verbatim in its immutable ledger,
+    and a day already carrying a 'resolved' event returns ``already_resolved`` instead
+    of stacking a second clearance. The corresponding publication is a separate,
+    ordinary run (``OPEN_MACRO_V03_AS_OF=<as_of>``), which appends the 'superseded'
+    event when it lands."""
+    # Gate 1 — feature flag (no DB).
+    if os.environ.get(RUNTIME_FLAG_ENV) != "true":
+        return {"status": "flag_off"}
+
+    # Gate 2 — governance envelope (no DB).
+    envelope = _load_json(ENVELOPE_PATH)
+    blocked = check_governance(envelope)
+    if blocked is not None:
+        return {"status": "governance_blocked", "reason": blocked}
+
+    # Gate 2b — WRITER runtime identity (no DB). A clearance is a write on the
+    # official ledger surface: only the approved writer may emit one.
+    blocked = check_writer_runtime()
+    if blocked is not None:
+        return {"status": "wrong_service", "reason": blocked}
+
+    if not (resolved_by or "").strip():
+        raise OpenMacroV03Error("resolve-staleness requires a named --resolved-by "
+                                "(an anonymous clearance is not a resolution)")
+    if not (reason or "").strip():
+        raise OpenMacroV03Error("resolve-staleness requires a --reason")
+
+    # Gate 3 / 3b — module pins + pack bytes (no DB): the recomputation that produces
+    # the proof must run on the pinned formulas and the certified pack bytes.
+    pins = _load_json(PINS_PATH)
+    verify_module_pins(pins, ROOT)
+    module_pins_sha256 = pins["module_pins_sha256"]
+    verify_pack_bytes()
+
+    # Gate 6 — as_of (explicit here; the same future/pre-cut/business-day rules).
+    as_of_date = resolve_as_of(as_of)
+    if as_of_date is None:
+        return {"status": "non_business_day", "as_of": as_of}
+
+    commit = code_commit()
+    run_id = f"open_macro_v03_resolve-{as_of_date.isoformat()}-{uuid.uuid4().hex[:8]}"
+
+    conn = connect(dsn)
+    try:
+        pin_search_path(conn)
+        with advisory_lock(conn, LOCK_OPEN_MACRO_V03) as got:
+            if not got:
+                return {"status": "lock_busy"}
+
+            # Gate 5 — READ-ONLY catalog verification (includes the resolution ledger).
+            verify_schema(conn)
+
+            with conn.cursor() as cur:
+                cur.execute(_BLOCK_DETAIL_SQL, {"as_of": as_of_date})
+                block = cur.fetchone()
+                if block is None:
+                    conn.commit()
+                    return {"status": "no_block", "as_of": as_of_date.isoformat(),
+                            "detail": "no staleness-block ledger row for this day; "
+                                      "there is nothing to resolve"}
+                cur.execute(_ACTIVE_RESOLUTION_SQL, {"as_of": as_of_date})
+                existing = cur.fetchone()
+            conn.commit()
+            if existing is not None:
+                return {"status": "already_resolved", "as_of": as_of_date.isoformat(),
+                        "resolution_id": str(existing[0]), "resolved_by": existing[1],
+                        "detail": "the ledger is append-only; a second clearance for "
+                                  "the same day is not recorded"}
+
+            # PROOF — re-read the inputs and recompute freshness for that day.
+            vintage_rows, price_rows = compose_inputs(conn, as_of_date)
+            report = staleness_report(vintage_rows, price_rows, as_of_date)
+            proof = freshness_proof(report, as_of_date)
+            if report["breaches"]:
+                return {"status": "still_stale", "as_of": as_of_date.isoformat(),
+                        "reason": report["breaches"], "run_id": run_id,
+                        "detail": "the inputs still breach the staleness SLO; no "
+                                  "resolution recorded (re-run after the sources "
+                                  "refresh)"}
+
+            block_run_id, block_vintage_sha, block_prices_sha = block
+            resolution_id = str(uuid.uuid4())
+            with conn.cursor() as cur:
+                cur.execute(_RESOLUTION_INSERT_SQL, {
+                    "resolution_id": resolution_id,
+                    "as_of": as_of_date,
+                    "resolution_state": "resolved",
+                    "resolved_by": resolved_by.strip(),
+                    "reason": reason.strip(),
+                    "freshness_proof": json.dumps(proof, sort_keys=True, default=str),
+                    "block_run_id": block_run_id,
+                    "block_input_vintage_sha256": block_vintage_sha,
+                    "block_input_prices_sha256": block_prices_sha,
+                    "input_vintage_sha256": _canonical_sha256(vintage_rows),
+                    "input_prices_sha256": _canonical_sha256(price_rows),
+                    "pack_v2_sha256": PACK_SHA256_PIN,
+                    "module_pins_sha256": module_pins_sha256,
+                    "code_commit": commit,
+                    "run_id": run_id,
+                })
+            conn.commit()
+            return {"status": "resolved", "as_of": as_of_date.isoformat(),
+                    "resolution_id": resolution_id, "resolved_by": resolved_by.strip(),
+                    "reason": reason.strip(), "run_id": run_id,
+                    "block_run_id": block_run_id,
+                    "freshness_proof": proof,
+                    "next_step": ("publish the day with a normal run: "
+                                  f"OPEN_MACRO_V03_AS_OF={as_of_date.isoformat()}")}
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     parser = argparse.ArgumentParser(prog="python -m src.workers.open_macro_v03")
@@ -1441,12 +1817,25 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("--as-of", dest="as_of", required=True, help="range start (YYYY-MM-DD)")
     inv.add_argument("--to", dest="to", default=None, help="range end (default: --as-of)")
     inv.add_argument("--reason", dest="reason", required=True, help="invalidation reason")
+    res = sub.add_parser(
+        "resolve-staleness",
+        help="operator path: append a resolution event for a blocked day (proof required)")
+    res.add_argument("--as-of", dest="as_of", required=True, help="blocked day (YYYY-MM-DD)")
+    res.add_argument("--resolved-by", dest="resolved_by", required=True,
+                     help="named operator emitting the resolution")
+    res.add_argument("--reason", dest="reason", required=True,
+                     help="why the day is resolvable (what refreshed)")
     args = parser.parse_args(argv)
     if args.command == "invalidate":
         stats = invalidate(resolve_dsn(), as_of=args.as_of, to=args.to, reason=args.reason)
         print(json.dumps(stats, default=str))
         return 0
-    parser.error("no command (use: invalidate)")
+    if args.command == "resolve-staleness":
+        stats = resolve_staleness_block(resolve_dsn(), as_of=args.as_of,
+                                        resolved_by=args.resolved_by, reason=args.reason)
+        print(json.dumps(stats, default=str))
+        return 0 if stats.get("status") in ("resolved", "already_resolved") else 1
+    parser.error("no command (use: invalidate | resolve-staleness)")
     return 2
 
 
