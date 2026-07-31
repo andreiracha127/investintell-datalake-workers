@@ -32,8 +32,13 @@ CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
-# The clean source commit used for this prepared upload namespace.
-HARNESS_COMMIT = "cc6a8bf0e233eeaf9e62687121ba66fa63118feb"
+# The clean source commit used for this prepared upload namespace. Re-pinned when
+# the shipped closure legitimately evolved (the certified-pack registry became part
+# of the runtime read surface); the records were re-derived by the checked-in
+# generator, offline. The five metric-gate hashes are unchanged across the re-pin —
+# only the three that embed harness_commit in cell provenance moved, which is what
+# the pin is for.
+HARNESS_COMMIT = "7474e620afd291460cb59d35d2392f0de65e7807"
 STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 PACK_003_ID = "open_macro_v03_certified_input_pack_003"
 PACK_003_SHA = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
@@ -202,8 +207,16 @@ def test_policy_artifact_shipped_and_drift_checked(built_bundle, bundle_manifest
     judge policy_absent, drop the blocking `timeline` entry from
     gates_overall_base_cost and fail to reproduce the local leg hash."""
     entries = bundle_manifest["policy_artifact_sources"]
+    # The certified-pack registry joined this set: both shipped verifiers read it
+    # at import time to resolve the accepted pack ids and the governance stance
+    # each pack was certified under, so a leg materialized without it would not
+    # import — and one materialized with a DIFFERENT one would judge the shipped
+    # pack differently. Same category, same drift refusal, same HEAD-blob check
+    # applied by the loop below.
     assert {e["source_path"] for e in entries} == {
-        "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json"}
+        "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json",
+        "contracts/input-packs/registry.json",
+    }
     for entry in entries:
         # materialized at the repo-relative path the runner resolves.
         assert entry["target_path"] == entry["source_path"]
