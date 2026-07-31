@@ -47,15 +47,14 @@ def test_github_actions_workflow_preserves_required_job_identity() -> None:
     assert steps["Check out repository"]["with"]["fetch-depth"] == "0"
     assert steps["Set up Python"]["with"]["python-version"] == "3.13"
     assert steps["Detect changed paths"]["id"] == "changes"
-    assert names.index("Verify Stage A binding") < names.index(
-        "Run governance and quant-engine tests"
-    )
+    # The 16-run Stage A binding replay left the per-PR gate with the rest of the
+    # frozen pre-activation evidence (Onda 4b) — see preactivation-evidence.yml.
+    assert "Verify Stage A binding" not in names
 
 
 def test_github_actions_workflow_runs_quant_engine_gate() -> None:
     _, steps = _steps_by_name()
     quant_steps = (
-        "Verify Stage A binding",
         "Verify quant requirements lock",
         "Verify certified input pack",
         "Verify contract bundle",
@@ -67,9 +66,6 @@ def test_github_actions_workflow_runs_quant_engine_gate() -> None:
 
     for name in quant_steps:
         assert "quant_changed == 'true'" in steps[name]["if"], name
-    assert "test_reproducibility_record_pins_a_clean_16_run_reproduction" in steps[
-        "Verify Stage A binding"
-    ]["run"]
     assert "tests/input_packs" in steps["Run governance and quant-engine tests"]["run"]
     assert "tests/quant_engine" in steps["Run governance and quant-engine tests"]["run"]
     # The frozen pre-activation evidence replay is NOT in the per-PR gate any
