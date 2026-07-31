@@ -7,13 +7,21 @@ systems.
 
 Why a separate verifier (delta vs P0 ``verify_pack``):
 
-* P0 ``verify_pack`` hard-codes ``P0_INPUT_PACK_ID``, the nine ``P0_TABLE_SPECS``,
-  P0 derived-feature recomputation and P0-specific provenance dataset naming; none
-  apply to the two P1 tables.
+* P0 ``verify_pack`` carries the nine ``P0_TABLE_SPECS``, P0 derived-feature
+  recomputation and P0-specific provenance dataset naming; none apply to the two
+  P1 tables.
 * P1 has no derived feature layer (``data/derived`` is absent) and treats
   ``data/raw`` and ``data/canonical`` as identical normalized rows.
-* P1 pins governance flags (A5=blocked, runtime_activation=false, ...) and the v2
-  contract bundle sha in the manifest; those are asserted here.
+* P1 records governance flags (A5, runtime_activation, ...) and its contract
+  bundle sha in the manifest; those are asserted here.
+
+Pack identity is NOT hard-coded here any more. The accepted ids, their versions
+and the contract bundle each pack was certified under come from
+``contracts/input-packs/registry.json`` via ``src.input_packs.registry`` — the
+one place a renewal is published and promoted. This module keeps every byte-level
+proof (hash tree, canonical == normalize(raw), row counts, natural-key
+uniqueness, path-traversal guard); it just stops being a second place where a
+pack id has to be edited by hand.
 
 Generic pieces reused verbatim from ``src/input_packs``:
 ``compute_input_pack_sha256``, ``iter_pack_files``, ``file_sha256``, ``load_json``,
@@ -36,22 +44,22 @@ from src.input_packs.manifest import (
     iter_pack_files,
 )
 from src.input_packs.p0_contract import TableSpec, normalize_row, row_sort_key
+from src.input_packs.registry import P1_PROFILE, load_registry
 
 from .contract import P1_TABLE_SPECS
 
-# Identidade do pack CERTIFICADO corrente (importada por consumidores de runtime,
-# ex. harness/phase0q/runner). A verificação aceita qualquer pack do REGISTRO de
-# packs certificados (o _002 histórico permanece verificável para replay de
-# evidência; o _003 é o corrente com a base pré-cut corrigida — re-certificação
-# de 2026-07-14 sob autoridade delegada pelo quant owner). Anti-swap: quando o
-# pack está num diretório com nome canônico de pack, o manifest DEVE declarar
-# exatamente essa identidade — um manifest não pode fingir ser outro pack.
-CERTIFIED_PACK_VERSIONS: dict[str, int] = {
-    "open_macro_v03_certified_input_pack_002": 2,
-    "open_macro_v03_certified_input_pack_003": 3,
-}
-INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
-INPUT_PACK_VERSION = 3
+# Identidade do pack CERTIFICADO — resolvida do REGISTRO ÚNICO
+# (contracts/input-packs/registry.json), não redigitada aqui. A verificação
+# aceita qualquer pack registrado do perfil P1 (o _002 retired permanece
+# verificável para replay de evidência histórica; o corrente é o entry
+# ``state: "current"``). Anti-swap: quando o pack está num diretório com nome
+# canônico de pack, o manifest DEVE declarar exatamente essa identidade — um
+# manifest não pode fingir ser outro pack.
+_REGISTRY = load_registry()
+CERTIFIED_PACK_VERSIONS: dict[str, int] = _REGISTRY.versions(P1_PROFILE)
+_CURRENT = _REGISTRY.current(P1_PROFILE)
+INPUT_PACK_ID = _CURRENT.pack_id
+INPUT_PACK_VERSION = _CURRENT.pack_version
 
 REQUIRED_FILES: tuple[str, ...] = (
     "manifest.json",
@@ -70,17 +78,25 @@ P1_CANONICAL_ARTIFACT_PATHS = tuple(f"data/canonical/{spec.name}.json" for spec 
 P1_REQUIRED_DATA_ARTIFACTS = frozenset((*P1_RAW_ARTIFACT_PATHS, *P1_CANONICAL_ARTIFACT_PATHS))
 P1_SOURCE_TABLES = tuple(spec.name for spec in P1_TABLE_SPECS)
 
-GOVERNANCE_EXPECTATIONS: dict[str, Any] = {
-    "A5": "blocked",
-    "runtime_activation": False,
-    "activation_allowed": False,
-    "official_result": False,
-    "allocator_publish": False,
-    "db_write_mode": "none",
-    "classification": "metric_evidence_only",
-}
+# The governance stance a pack was certified UNDER is declared per entry in the
+# registry, not hard-coded here. That is what makes a differently-certified pack
+# representable without editing this file; the check itself stays fail-closed —
+# a manifest that does not match the stance its registry entry declares is
+# rejected. GOVERNANCE_EXPECTATIONS remains the stance of the CURRENT pack, for
+# callers that want the one-line answer.
+GOVERNANCE_EXPECTATIONS: dict[str, Any] = dict(_CURRENT.governance or {})
 
-CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
+CONTRACT_BUNDLE_SHA256 = _CURRENT.contract_bundle_sha256
+
+
+def _registry_entry(pack_id: Any):
+    """The registry entry for ``pack_id``, or ``None`` when it is not registered."""
+    if not isinstance(pack_id, str):
+        return None
+    try:
+        return _REGISTRY.entry(pack_id)
+    except Exception:  # noqa: BLE001 - RegistryError only; treated as "unregistered"
+        return None
 
 
 def _load_json_or_error(path: Path, errors: list[str]) -> dict[str, Any]:
@@ -314,14 +330,23 @@ def _verify_expected_p1_content(
         errors.append(
             f"manifest.json: input_pack_id {pack_id!r} does not match its committed "
             f"directory {dir_name!r} (a manifest cannot impersonate another pack)")
-    if manifest.get("contract_bundle_sha256") != CONTRACT_BUNDLE_SHA256:
+    # The contract binding and the governance stance are compared against what
+    # THIS pack's registry entry declares, so renewing a pack under a different
+    # contract or stance is a registry publication, not a verifier edit.
+    entry = _registry_entry(pack_id)
+    expected_bundle = entry.contract_bundle_sha256 if entry else CONTRACT_BUNDLE_SHA256
+    expected_governance = dict(entry.governance or {}) if entry else GOVERNANCE_EXPECTATIONS
+    if manifest.get("contract_bundle_sha256") != expected_bundle:
         errors.append(
-            f"manifest.json: expected contract_bundle_sha256 {CONTRACT_BUNDLE_SHA256}, "
+            f"manifest.json: expected contract_bundle_sha256 {expected_bundle}, "
             f"got {manifest.get('contract_bundle_sha256')!r}"
         )
-    for key, expected in GOVERNANCE_EXPECTATIONS.items():
+    for key, expected in expected_governance.items():
         if manifest.get(key) != expected:
-            errors.append(f"manifest.json: governance pin {key} expected {expected!r}, got {manifest.get(key)!r}")
+            errors.append(
+                f"manifest.json: governance declaration {key} expected {expected!r} "
+                f"(registry entry for {pack_id!r}), got {manifest.get(key)!r}"
+            )
 
     expected_as_of = manifest.get("as_of")
     expected_snapshot = {
@@ -480,8 +505,18 @@ def verify_pack(pack_dir: str | Path) -> dict[str, Any]:
         expected_input_pack_sha256 and expected_input_pack_sha256 == actual_input_pack_sha256
     )
 
+    # A certified pack is no longer BY DEFINITION a pack that can never run: the
+    # verdict is "the manifest states the stance its registry entry declares",
+    # not "runtime_activation is false". A pack promoted under an activated
+    # stance stays verifiable; a pack whose manifest contradicts its declaration
+    # still fails (that comparison is in _verify_expected_p1_content).
     runtime_activation = manifest.get("runtime_activation")
-    runtime_activation_ok = runtime_activation is False
+    _entry = _registry_entry(manifest.get("input_pack_id")) if manifest else None
+    _declared = (_entry.governance if _entry else None) or GOVERNANCE_EXPECTATIONS
+    runtime_activation_ok = (
+        "runtime_activation" not in _declared
+        or runtime_activation == _declared["runtime_activation"]
+    )
     provenance_complete = _provenance_complete(provenance, expected_as_of=manifest.get("as_of") if manifest else None)
 
     ok = all(

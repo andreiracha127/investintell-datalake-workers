@@ -95,6 +95,13 @@ def build_cloud_leg_manifest_record(bundle_manifest: dict[str, Any],
         "file_count": bundle_manifest["file_count"],
         "contract_bundle_sha256": bundle_manifest["contract_bundle_sha256"],
         "harness_commit": bundle_manifest["harness_commit"],
+        # The SHALLOW-SAFE byte pin. `harness_commit` names the round; these blob
+        # ids prove the shipped bytes, and unlike a branch commit they survive the
+        # squash-merge that deletes it. `verify_shipped_source_tree_hashes` checks
+        # them against HEAD.
+        "shipped_source_tree_hashes": dict(
+            sorted(bundle_manifest["shipped_source_tree_hashes"].items())
+        ),
         "input_pack_id": bundle_manifest["input_pack_id"],
         "input_pack_sha256": bundle_manifest["input_pack_sha256"],
         "governance": dict(bundle_manifest["governance"]),

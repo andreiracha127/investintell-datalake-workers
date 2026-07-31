@@ -428,6 +428,13 @@ EXPECTED_PINNED_MODULES = (
     "src/input_packs/manifest.py",
     "src/input_packs/hashing.py",
     "src/input_packs/p0_contract.py",
+    # The certified-pack registry loader: it now RESOLVES which pack (and which
+    # digest) the worker consumes, so it belongs in the same trust closure. The
+    # registry DATA file is deliberately not pinned as a module — that is what
+    # makes a promotion possible — but the resolved identity is pinned in the
+    # `pack` block below and re-verified against the pack manifest and the
+    # recomputed tree, so a promotion still has to restamp the pin bundle.
+    "src/input_packs/registry.py",
 )
 
 
