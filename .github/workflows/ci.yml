@@ -519,6 +519,10 @@ jobs:
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/contract_bundle.py verify --bundle-dir contracts/quant-engine/v2
 
+      - name: Verify contract bundle v3
+        if: steps.changes.outputs.quant_changed == 'true'
+        run: python scripts/contract_bundle.py verify --bundle-dir contracts/quant-engine/v3
+
       # The per-PR gate runs the suites that can still fail because of THIS
       # commit: the current worker, contract, pack, PIT/staleness, publication
       # and rollback surfaces. The frozen pre-activation evidence replay (shadow,
@@ -543,6 +547,7 @@ jobs:
           tests/test_p1_export.py
           tests/test_macro_ingestion.py
           tests/test_contract_metric_backtest.py
+          tests/test_representable_activation.py
           tests/test_p1_pack.py
           tests/test_quant_requirements_sync.py
           tests/test_remote_ci_runner.py

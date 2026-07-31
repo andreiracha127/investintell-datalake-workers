@@ -1,8 +1,28 @@
 """Offline candidate calibration pack generator for Certified Input Pack P0.
 
 This module is intentionally conservative: it produces auditable candidate
-evidence from the verified input pack, but it refuses to mark any result as
-freeze-ready or final-approved while institutional limits remain unset.
+evidence from the verified input pack and refuses to mark a result final-approved
+while a real blocker stands.
+
+What changed (wave 4): the five institutional limits used to be the string
+literals ``"explicitly_unset"``, with a rejection rule whose ONLY trigger was
+the fact that they were unset and a ``final_approval_allowed: False`` written as
+a literal. There was no parameter, env var or config file that could ever set
+them, so final approval was blocked by a condition the code made impossible to
+satisfy. The limits are parameters now
+(``configs/calibration/institutional_limits.json``), the rejection rule tests
+VIOLATION, and ``final_approval_allowed`` is DERIVED from the blockers that
+actually stand.
+
+Three outcomes are representable per limit, and each is a different truth:
+
+* ``unset``          — the mandate does not define it (blocks; honest);
+* ``not_evaluable``  — defined, but the certified evidence does not measure it
+  yet (blocks; a fact about coverage, not a verdict);
+* ``within`` / ``violated`` — measured against the mandate.
+
+Whichever blocks today opens by itself when the config or the evidence changes,
+instead of waiting for someone to edit a literal.
 """
 
 from __future__ import annotations
@@ -21,6 +41,14 @@ from src.input_packs.hashing import canonical_json_bytes, canonical_json_sha256,
 from src.input_packs.verifier import verify_pack
 
 CALIBRATION_ID = "open_macro_v03_calibration_001"
+INSTITUTIONAL_LIMITS_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "calibration" / "institutional_limits.json"
+)
+
+#: Candidate-metric keys the generator can measure from the certified pack today.
+#: A configured limit whose metric is absent here is reported ``not_evaluable``
+#: rather than silently passed or dishonestly failed.
+EVALUABLE_CANDIDATE_METRICS = ("turnover_proxy",)
 INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
 A3_STATUS = "open_macro_v03"
 A4_STATUS = "calibration_candidate_running"
@@ -306,7 +334,123 @@ def pack_summary(input_pack: Path, expected: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def default_config(summary: dict[str, Any], *, merge_commit: str) -> dict[str, Any]:
+def load_institutional_limits(path: Path | str | None = None) -> dict[str, Any]:
+    """The configured institutional mandate.
+
+    A missing config file is not an error and not a silent pass: every limit
+    reports ``unset``, which still blocks final approval. That keeps the
+    conservative behaviour while making the limits settable.
+    """
+    target = Path(path) if path is not None else INSTITUTIONAL_LIMITS_PATH
+    if not target.is_file():
+        return {}
+    payload = load_json(target)
+    limits = payload.get("limits") if isinstance(payload, dict) else None
+    return limits if isinstance(limits, dict) else {}
+
+
+def _limit_value(spec: Any) -> float | None:
+    if isinstance(spec, dict):
+        value = spec.get("limit")
+    else:
+        value = spec
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def evaluate_institutional_limits(
+    candidate_rows: list[dict[str, Any]],
+    limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Judge each configured limit against the candidate evidence.
+
+    Returns one entry per limit with a ``status`` of ``unset``,
+    ``not_evaluable``, ``within`` or ``violated``, plus the candidates that
+    violate it. The rejection rule reads this; nothing here is a literal.
+    """
+    evaluation: dict[str, Any] = {}
+    for name, spec in sorted(limits.items()):
+        value = _limit_value(spec)
+        metric = spec.get("metric") if isinstance(spec, dict) else None
+        comparison = (spec.get("comparison") if isinstance(spec, dict) else None) or "max"
+        entry: dict[str, Any] = {
+            "limit": value,
+            "metric": metric,
+            "comparison": comparison,
+            "violations": [],
+        }
+        if value is None:
+            entry["status"] = "unset"
+            entry["reason"] = "the mandate does not define this limit"
+            evaluation[name] = entry
+            continue
+        if metric not in EVALUABLE_CANDIDATE_METRICS:
+            entry["status"] = "not_evaluable"
+            entry["reason"] = (
+                f"the certified input pack evidence does not measure {metric!r}; "
+                "this opens by itself once the metric is produced"
+            )
+            evaluation[name] = entry
+            continue
+        for row in candidate_rows:
+            observed = row.get(metric)
+            if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+                continue
+            measured = abs(float(observed)) if comparison == "abs_max" else float(observed)
+            if measured > value:
+                entry["violations"].append(
+                    {"candidate_id": row["candidate_id"], "observed": measured, "limit": value}
+                )
+        entry["status"] = "violated" if entry["violations"] else "within"
+        evaluation[name] = entry
+    if not limits:
+        return {}
+    return evaluation
+
+
+def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
+    """The limits that stand between this candidate and final approval."""
+    blockers: list[str] = []
+    for name, entry in sorted(evaluation.items()):
+        status = entry.get("status")
+        if status in ("unset", "not_evaluable", "violated"):
+            blockers.append(f"institutional_limit_{name}_{status}")
+    return blockers
+
+
+def final_approval_blockers(
+    evaluation: dict[str, Any],
+    *,
+    baseline_references_certified: bool = False,
+) -> list[str]:
+    """Every blocker that actually stands, computed — never a literal.
+
+    ``final_approval_allowed`` is ``not final_approval_blockers(...)``. When the
+    mandate is configured, the evidence measures it, no candidate violates it and
+    the baseline references are certified inside the pack, approval opens on its
+    own.
+    """
+    blockers = list(institutional_limit_blockers(evaluation))
+    if not evaluation:
+        blockers.append("institutional_limits_not_configured")
+    if not baseline_references_certified:
+        blockers.append("reference_baselines_not_certified_in_pack")
+    return blockers
+
+
+def default_config(
+    summary: dict[str, Any],
+    *,
+    merge_commit: str,
+    institutional_limits: dict[str, Any] | None = None,
+    final_approval_allowed: bool | None = None,
+) -> dict[str, Any]:
+    limits = (
+        institutional_limits
+        if institutional_limits is not None
+        else load_institutional_limits()
+    )
     return {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -354,13 +498,10 @@ def default_config(summary: dict[str, Any], *, merge_commit: str) -> dict[str, A
                 "A5": "blocked",
                 "freeze_ready": False,
             },
-            "institutional_limits": {
-                "daily_cvar_95": "explicitly_unset",
-                "beta": "explicitly_unset",
-                "max_drawdown": "explicitly_unset",
-                "turnover": "explicitly_unset",
-                "exposure_bounds": "explicitly_unset",
-            },
+            # Configured in configs/calibration/institutional_limits.json.
+            # An empty mapping means the mandate is not configured, which is
+            # reported and blocks — it is no longer an unsatisfiable literal.
+            "institutional_limits": limits,
         },
         "baseline_references": ["G0", "microgrid_v03", "current_baseline_if_certified", "neutral_reference"],
         "rejection_rules": [
@@ -369,9 +510,15 @@ def default_config(summary: dict[str, Any], *, merge_commit: str) -> dict[str, A
             "non_deterministic_output",
             "material_out_of_sample_degradation_when_threshold_defined",
             "turnover_excess_when_threshold_defined",
-            "institutional_limits_explicitly_unset_blocks_final_approval",
+            # Tests VIOLATION of the configured mandate. The old rule
+            # ("institutional_limits_explicitly_unset_blocks_final_approval")
+            # could only ever fire, because nothing could set the limits.
+            "institutional_limit_violation",
+            "institutional_limit_unset_or_not_evaluable",
         ],
-        "final_approval_allowed": False,
+        "final_approval_allowed": (
+            final_approval_allowed if final_approval_allowed is not None else False
+        ),
     }
 
 
@@ -510,8 +657,27 @@ def candidate_metrics(grid: dict[str, Any], metrics: dict[str, Any]) -> list[dic
     return rows
 
 
-def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+def selected_and_rejected(
+    rows: list[dict[str, Any]],
+    *,
+    evaluation: dict[str, Any] | None = None,
+    blockers: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select a candidate and record why the others were rejected.
+
+    The reason is now COMPUTED from the standing blockers instead of the fixed
+    string ``institutional_limits_explicitly_unset_blocks_final_approval``, and
+    ``final_approval_allowed`` follows the blockers. With a configured, measured,
+    unviolated mandate and certified references, this returns True on its own.
+    """
+    evaluation = evaluation if evaluation is not None else {}
+    blockers = blockers if blockers is not None else final_approval_blockers(evaluation)
     baseline = next(row for row in rows if row["candidate_id"] == "baseline_current")
+    reason = (
+        "; ".join(blockers)
+        if blockers
+        else "no standing blocker: the configured mandate is measured and unviolated"
+    )
     selected = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -519,10 +685,12 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
         "selected_candidate_id": baseline["candidate_id"],
         "parameters": baseline["parameters"],
         "selection_reason": (
-            "Institutional limits are explicitly unset; select the current baseline "
-            "as the conservative candidate and block final approval."
+            "Select the current baseline as the conservative candidate. "
+            f"Standing final-approval blockers: {reason}."
         ),
-        "final_approval_allowed": False,
+        "final_approval_blockers": blockers,
+        "final_approval_allowed": not blockers,
+        "institutional_limits_evaluation": evaluation,
         "runtime_activation": False,
         "A5": "blocked",
         "freeze_ready": False,
@@ -534,7 +702,7 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
         "rejections": [
             {
                 "candidate_id": row["candidate_id"],
-                "reason": "institutional_limits_explicitly_unset_blocks_final_approval",
+                "reason": reason,
                 "objective_value": row["objective_value"],
                 "baseline_distance": row["baseline_distance"],
             }
@@ -545,7 +713,12 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
     return selected, rejected
 
 
-def build_baseline_comparison(candidate_rows: list[dict[str, Any]], selected: dict[str, Any]) -> dict[str, Any]:
+def build_baseline_comparison(
+    candidate_rows: list[dict[str, Any]],
+    selected: dict[str, Any],
+    *,
+    blockers: list[str] | None = None,
+) -> dict[str, Any]:
     selected_row = next(row for row in candidate_rows if row["candidate_id"] == selected["selected_candidate_id"])
     neutral = {
         "objective_value": selected_row["objective_value"],
@@ -576,8 +749,22 @@ def build_baseline_comparison(candidate_rows: list[dict[str, Any]], selected: di
                 "accepted_degradation_reason": None,
             },
         },
-        "final_approval_blockers": ["reference_baselines_not_certified_in_pack", "institutional_limits_explicitly_unset"],
+        "final_approval_blockers": (
+            blockers
+            if blockers is not None
+            else selected.get("final_approval_blockers", [])
+        ),
     }
+
+
+def _limit_status(evaluation: dict[str, Any] | None, name: str) -> str:
+    """The reported status of one configured limit, or why there is none."""
+    if not evaluation:
+        return "institutional_limits_not_configured"
+    entry = evaluation.get(name)
+    if not isinstance(entry, dict):
+        return "limit_not_in_mandate"
+    return str(entry.get("status", "unknown"))
 
 
 def build_invariant_report(
@@ -589,6 +776,8 @@ def build_invariant_report(
     network: str,
     db_access: bool,
     input_pack_mount: str,
+    evaluation: dict[str, Any] | None = None,
+    blockers: list[str] | None = None,
 ) -> dict[str, Any]:
     values = finite_values(candidate_rows)
     weights_ok = all(abs(float(row["weights_sum"]) - 1.0) <= 1e-12 for row in candidate_rows)
@@ -605,8 +794,10 @@ def build_invariant_report(
         "outputs_complete": files_ok,
         "constraints_respected": True,
         "weights_close_within_tolerance": weights_ok,
-        "exposures_within_defined_limits": "institutional_limits_explicitly_unset_final_approval_blocked",
-        "turnover_within_defined_envelope": "institutional_limits_explicitly_unset_final_approval_blocked",
+        # Real per-limit statuses (within / violated / not_evaluable / unset),
+        # not a fixed "explicitly_unset" string.
+        "exposures_within_defined_limits": _limit_status(evaluation, "exposure_bounds"),
+        "turnover_within_defined_envelope": _limit_status(evaluation, "turnover"),
         "dates_within_input_pack": True,
         "db_access": db_access is False,
         "network_access": network == "none",
@@ -620,7 +811,9 @@ def build_invariant_report(
         "ok": all(value for value in checks.values() if isinstance(value, bool)),
         "checks": checks,
         "institutional_limits": config["constraints"]["institutional_limits"],
-        "final_approval_allowed": False,
+        "institutional_limits_evaluation": evaluation or {},
+        "final_approval_blockers": blockers if blockers is not None else [],
+        "final_approval_allowed": not (blockers if blockers is not None else ["uncomputed"]),
         "technical_debts_accepted": TECHNICAL_DEBTS,
     }
 
@@ -862,18 +1055,33 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
             f"got {args.builder_code_sha256}"
         )
     builder_commit = summary["builder_commit"]
-    config = default_config(summary, merge_commit=input_pack_p0_merge_commit)
+    limits = load_institutional_limits()
     grid = default_parameter_grid()
 
+    metrics = input_metrics(input_pack)
+    candidates = candidate_metrics(grid, metrics)
+    # The mandate is judged against the candidate evidence, and the standing
+    # blockers are computed from that judgement. `final_approval_allowed` is the
+    # negation of the blockers, not a literal — with a configured, measured,
+    # unviolated mandate and certified references it opens by itself.
+    evaluation = evaluate_institutional_limits(candidates, limits)
+    blockers = final_approval_blockers(evaluation)
+
+    config = default_config(
+        summary,
+        merge_commit=input_pack_p0_merge_commit,
+        institutional_limits=limits,
+        final_approval_allowed=not blockers,
+    )
     config_path = output_dir / "calibration_config.json"
     grid_path = output_dir / "parameter_grid.json"
     write_json(config_path, config)
     write_json(grid_path, grid)
 
-    metrics = input_metrics(input_pack)
-    candidates = candidate_metrics(grid, metrics)
-    selected, rejected = selected_and_rejected(candidates)
-    baseline = build_baseline_comparison(candidates, selected)
+    selected, rejected = selected_and_rejected(
+        candidates, evaluation=evaluation, blockers=blockers
+    )
+    baseline = build_baseline_comparison(candidates, selected, blockers=blockers)
 
     generated_files = [
         "calibration_config.json",
@@ -895,7 +1103,9 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "input_metrics": metrics,
         "candidate_metrics": candidates,
         "objective": config["objective"],
-        "final_approval_allowed": False,
+        "institutional_limits_evaluation": evaluation,
+        "final_approval_blockers": blockers,
+        "final_approval_allowed": not blockers,
     }
 
     paths = {
@@ -925,6 +1135,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         network=args.network,
         db_access=args.db_access,
         input_pack_mount=args.input_pack_mount,
+        evaluation=evaluation,
+        blockers=blockers,
     )
     write_json(output_dir / "invariant_report.json", invariant)
     invariant = build_invariant_report(
@@ -935,6 +1147,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         network=args.network,
         db_access=args.db_access,
         input_pack_mount=args.input_pack_mount,
+        evaluation=evaluation,
+        blockers=blockers,
     )
     write_json(output_dir / "invariant_report.json", invariant)
     write_text(

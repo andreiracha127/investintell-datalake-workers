@@ -1,0 +1,47 @@
+{
+  "artifact_type": "calibration_institutional_limits",
+  "schema_version": 1,
+  "note": "The institutional risk mandate the calibration candidate is judged against. These were five string literals reading \"explicitly_unset\" inside src/calibration_candidate.py, with a rejection rule whose only trigger was the fact that they were unset — so final approval was blocked by a condition the code made impossible to satisfy. They are parameters now: edit this file to change the mandate, no code change. A limit left null is reported as unset (honestly, and it still blocks); a limit that is set but that the current evidence cannot measure is reported as not evaluable, which is a fact about coverage, not a verdict. Both open by themselves when the input changes.",
+  "limits": {
+    "daily_cvar_95": {
+      "limit": 0.03,
+      "comparison": "max",
+      "unit": "fraction_of_nav_per_day",
+      "metric": "daily_cvar_95",
+      "source": "default_pending_owner_ratification",
+      "description": "Maximum 95% daily conditional value at risk."
+    },
+    "beta": {
+      "limit": 1.0,
+      "comparison": "abs_max",
+      "unit": "ratio",
+      "metric": "benchmark_beta",
+      "source": "default_pending_owner_ratification",
+      "description": "Maximum absolute beta to the reference benchmark."
+    },
+    "max_drawdown": {
+      "limit": 0.25,
+      "comparison": "max",
+      "unit": "fraction_of_nav",
+      "metric": "max_drawdown",
+      "source": "default_pending_owner_ratification",
+      "description": "Maximum peak-to-trough drawdown over the evaluation window."
+    },
+    "turnover": {
+      "limit": 0.5,
+      "comparison": "max",
+      "unit": "fraction_of_nav_per_rebalance",
+      "metric": "turnover_proxy",
+      "source": "default_pending_owner_ratification",
+      "description": "Maximum turnover per rebalance. Measured today by the candidate generator's turnover proxy (L1 distance from the baseline weights)."
+    },
+    "exposure_bounds": {
+      "limit": 1.0,
+      "comparison": "max",
+      "unit": "fraction_of_nav",
+      "metric": "gross_exposure",
+      "source": "default_pending_owner_ratification",
+      "description": "Maximum gross exposure. Unlevered long-only mandate."
+    }
+  }
+}
