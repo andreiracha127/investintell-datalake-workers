@@ -28,10 +28,23 @@ from typing import Any
 from harness.phase0q import decision_v3 as decision_mod
 from harness.phase0q import sleeve as sleeve_mod
 from scripts.p1_export.export_p1_sources import DB_SOURCE as P1_DB_SOURCE
+from src.input_packs.registry import P1_PROFILE, current_pack
 from src.macro_sources import SEED_SOURCES
 
 ROOT = Path(__file__).resolve().parents[2]
-PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
+
+# The certified pack this validation — and the runtime worker, which imports
+# PACK/PACK_SHA256_PIN from here — consumes. Resolved from the ONE certified-pack
+# registry (contracts/input-packs/registry.json), so promoting a renewal does not
+# require editing this module (nor the worker, nor the verifier, nor the builder).
+# The pin is NOT weakened: the registry only DECLARES the digest; the worker still
+# recomputes the aggregate over the committed pack tree and refuses a mismatch
+# before touching the database.
+_CERTIFIED_PACK = current_pack(P1_PROFILE)
+PACK = _CERTIFIED_PACK.dir
+PACK_ID = _CERTIFIED_PACK.pack_id
+PACK_SHA256_PIN = _CERTIFIED_PACK.input_pack_sha256
+
 STAGE_A = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_a_001"
 SNAPSHOT = STAGE_A / "input_snapshot"
 
@@ -39,7 +52,6 @@ VALIDATION_AS_OF = _dt.date(2026, 7, 3)
 PACK_CUT = _dt.date(2026, 6, 30)       # pack v2 manifest as_of (delta lower bound)
 PRICE_OVERLAP_START = _dt.date(2026, 6, 26)  # delta re-exports the pack price tail from here
 CHAIN_START = _dt.date(2014, 3, 1)
-PACK_SHA256_PIN = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
 CANDIDATE = sleeve_mod.SleeveParams(candidate_id="open_macro_v03_compressed_50")
 
 # The SEED macro basket the decision consumes (imported from SEED_SOURCES, the one

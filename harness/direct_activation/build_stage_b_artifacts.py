@@ -22,13 +22,20 @@ Serialization: ``sort_keys`` + ``indent=1`` + a trailing LF newline.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STAGE_B = ROOT / "artifacts" / "a5" / "open_macro_v03_direct_activation_stage_b_001"
-PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
+# The pack whose identity gets stamped into the pin bundle: whichever entry the
+# certified-pack registry currently promotes. Re-running this generator after a
+# promotion restamps the pins for the new pack — that is the whole renewal step
+# on the runtime side.
+from src.input_packs.registry import P1_PROFILE, current_pack_dir  # noqa: E402
+
+PACK = current_pack_dir(P1_PROFILE)
 
 # The FULL transitive closure of the decision-chain pure modules + the harness sleeve
 # + the P1 export format helpers. Every module the runtime worker consumes to compute
@@ -67,6 +74,13 @@ PINNED_MODULES = (
     "src/input_packs/manifest.py",
     "src/input_packs/hashing.py",
     "src/input_packs/p0_contract.py",
+    # The certified-pack registry loader: it now RESOLVES which pack (and which
+    # digest) the worker consumes, so it belongs in the same trust closure. The
+    # registry DATA file is deliberately not pinned as a module — that is what
+    # makes a promotion possible — but the resolved identity is pinned in the
+    # `pack` block below and re-verified against the pack manifest and the
+    # recomputed tree, so a promotion still has to restamp the pin bundle.
+    "src/input_packs/registry.py",
 )
 
 APPROVAL_ROLES = (
@@ -159,12 +173,33 @@ def _write(path: Path, payload: dict) -> None:
         encoding="utf-8", newline="\n")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    """Regenerate the pin bundle; NEVER clobber a ratified envelope by accident.
+
+    Restamping ``module_pins.json`` is the routine step after a pinned module
+    changes or a new certified pack is promoted. Rewriting
+    ``activation_envelope.json`` is not routine: the committed envelope carries a
+    ratified six-role approval matrix, and this generator only knows how to emit
+    the FULLY BLOCKED initial state. Overwriting it would silently un-ratify
+    governance, so it now requires an explicit --reset-envelope.
+    """
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--reset-envelope",
+        action="store_true",
+        help="ALSO rewrite activation_envelope.json back to the FULLY BLOCKED initial state.",
+    )
+    args = parser.parse_args(argv)
+
     _write(STAGE_B / "module_pins.json", build_module_pins())
-    _write(STAGE_B / "activation_envelope.json", build_activation_envelope())
-    print(f"wrote module_pins.json ({len(PINNED_MODULES)} modules) + "
-          "activation_envelope.json (FULLY BLOCKED) under "
-          f"{STAGE_B.relative_to(ROOT)}")
+    message = f"wrote module_pins.json ({len(PINNED_MODULES)} modules)"
+    envelope_path = STAGE_B / "activation_envelope.json"
+    if args.reset_envelope or not envelope_path.exists():
+        _write(envelope_path, build_activation_envelope())
+        message += " + activation_envelope.json (FULLY BLOCKED)"
+    else:
+        message += " (activation_envelope.json left intact; pass --reset-envelope to reset it)"
+    print(f"{message} under {STAGE_B.relative_to(ROOT)}")
     return 0
 
 

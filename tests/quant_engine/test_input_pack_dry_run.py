@@ -88,7 +88,9 @@ def test_dry_run_rejects_stale_contract_bundle(
     tmp_path: Path,
 ) -> None:
     pack = _build_pack(tmp_path)
-    monkeypatch.setattr(input_pack_runner, "current_contract_bundle_sha256", lambda: "0" * 64)
+    monkeypatch.setattr(
+        input_pack_runner, "contract_bundle_sha256_for", lambda _pack_id: "0" * 64
+    )
 
     with pytest.raises(ValueError, match="contract_bundle_sha256 mismatch"):
         run_input_pack_dry_run(pack)

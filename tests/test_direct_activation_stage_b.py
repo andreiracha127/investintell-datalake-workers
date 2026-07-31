@@ -47,6 +47,9 @@ PACK_HELPER_MODULES = (
     "src/input_packs/manifest.py",
     "src/input_packs/hashing.py",
     "src/input_packs/p0_contract.py",
+    # The certified-pack registry loader resolves WHICH pack and WHICH digest the
+    # runtime path consumes, so it is inside the same trust closure.
+    "src/input_packs/registry.py",
 )
 PINNED_SRC_MODULES = {
     "src.quadrant_score", "src.macro_transforms", "src.macro_sources",
@@ -59,7 +62,9 @@ PINNED_SRC_MODULES = {
 # Infra allowlist: quadrant_assemble re-exports LOCK_REGIME_QUADRANT from src.db, an
 # infrastructure (locks/connection) module that carries no decision-formula value and
 # is transitively guarded by the prefix-hash pin, not by the formula closure.
-SRC_INFRA_ALLOWLIST = {"src.db"}
+# ...and live_validation resolves the certified pack through the registry, whose
+# module is itself pinned (see PACK_HELPER_MODULES).
+SRC_INFRA_ALLOWLIST = {"src.db", "src.input_packs"}
 
 APPROVAL_ROLES = {
     "technical_owner", "quant_owner", "risk_owner", "operations_owner",
@@ -153,9 +158,11 @@ def test_module_pins_pack_matches_certified_pack():
     from harness.direct_activation import build_stage_b_artifacts as builder
 
     pins = _load_json(PINS)
-    certified_pack = (
-        ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
-    )
+    from src.input_packs.registry import P1_PROFILE, current_pack_dir
+
+    # The pinned pack is whichever entry the registry promotes, not a path typed
+    # into this test.
+    certified_pack = current_pack_dir(P1_PROFILE)
     manifest = json.loads((certified_pack / "manifest.json").read_text(encoding="utf-8"))
     assert builder.PACK == certified_pack
     assert pins["pack"] == {
