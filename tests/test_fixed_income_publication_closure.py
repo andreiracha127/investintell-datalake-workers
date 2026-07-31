@@ -376,3 +376,110 @@ def test_the_closure_and_its_relations_are_immutable_in_the_database(published) 
                 (uuid4(), "b" * 64),
             )
         assert manifest["manifest_sha256"]
+
+
+def _legacy_v2_manifest(manifest: dict) -> dict:
+    """Rewrite a current manifest into the frozen v2 shape it superseded.
+
+    A real pre-migration bundle attests eight payloads and the previous builder
+    sha; nothing else about it changes.
+    """
+    import hashlib
+
+    legacy = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    legacy["format"] = materializer.LEGACY_MANIFEST_FORMAT
+    legacy["engine"] = {
+        **legacy["engine"],
+        "oracle_sha256": materializer.LEGACY_ORACLE_SHA256,
+    }
+    legacy["outputs"] = {
+        name: value
+        for name, value in legacy["outputs"].items()
+        if name != materializer.COVERAGE_ROLLUP_RELATION
+    }
+    legacy["manifest_sha256"] = hashlib.sha256(
+        materializer.canonical_json(legacy).encode()
+    ).hexdigest()
+    return legacy
+
+
+def test_a_frozen_v2_artifact_still_restores_and_gets_its_rollup(tmp_path) -> None:
+    """Recovery from a pre-migration bundle must not be collateral damage.
+
+    A v2 artifact carries eight payloads and no rollup -- but its coverage
+    payload holds one row per position INCLUDING the absent ones, which is
+    exactly what the current builder stopped writing. So the rollup is derived
+    from it at publish time, with the absence counted, and the publication ends
+    up serving the same figures a v3 restore would.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as admin, admin.cursor() as cur:
+        schema, run_id, package_id, holdings_publication = _seed(cur)
+    dsn = f"{DSN} options=-csearch_path={schema}"
+    identity = materializer.BuildIdentity(
+        source_publication_id=str(holdings_publication),
+        source_run_id=str(run_id),
+        source_package_id=str(package_id),
+        target_publication_id=str(uuid4()),
+        as_of_date=AS_OF,
+        contract_digest=materializer.CONTRACT_DIGEST,
+    )
+    config = _resource_config(tmp_path)
+    payloads = _write_payloads(tmp_path, identity, holdings_publication, run_id)
+    manifest = materializer.build_manifest(
+        identity=identity,
+        worker_sha="a" * 40,
+        source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
+        output_files=payloads,
+        resource_config=config,
+        output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
+    )
+    legacy = _legacy_v2_manifest(manifest)
+    (tmp_path / "manifest.json").write_text(
+        materializer.canonical_json(legacy), encoding="utf-8"
+    )
+    (tmp_path / f"{materializer.COVERAGE_ROLLUP_RELATION}.tsv.gz").unlink()
+
+    try:
+        with psycopg.connect(dsn) as conn:
+            materializer.publish_artifact(
+                connection=conn, artifact_dir=tmp_path, identity=identity,
+                resource_config=config,
+            )
+            conn.commit()
+        with psycopg.connect(dsn) as conn:
+            target = identity.target_publication_id
+            assert conn.execute(
+                "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s",
+                (target,),
+            ).fetchone() == ("validated",)
+            # Derived, not carried: the rollup exists and reports the same figure.
+            assert conn.execute(
+                "SELECT metric_key, reported_row_count, source_row_count "
+                f"FROM {materializer.COVERAGE_ROLLUP_RELATION} WHERE publication_id=%s",
+                (target,),
+            ).fetchall() == [("effective_duration", 1, 1)]
+            # The closure attests exactly what the v2 manifest claimed: eight.
+            closure = conn.execute(
+                "SELECT relation_counts FROM nport_fixed_income_publication_closures "
+                "WHERE publication_id=%s", (target,)
+            ).fetchone()[0]
+            assert set(closure) == set(materializer.TARGET_RELATIONS)
+        # And the replay of a v2 bundle stays idempotent.
+        with psycopg.connect(dsn) as conn:
+            materializer.publish_artifact(
+                connection=conn, artifact_dir=tmp_path, identity=identity,
+                resource_config=config,
+            )
+            conn.commit()
+    finally:
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_an_unknown_manifest_format_is_refused(published) -> None:
+    """Only the two known shapes are restorable; anything else fails closed."""
+    _dsn, _identity, _config, _artifact_dir, manifest = published
+    with pytest.raises(materializer.ArtifactIntegrityError, match="unexpected manifest format"):
+        materializer.manifest_relations({**manifest, "format": "nport-fixed-income/v9"})

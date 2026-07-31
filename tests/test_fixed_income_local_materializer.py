@@ -422,7 +422,11 @@ def test_coverage_rollup_travels_with_the_artifact() -> None:
     assert materializer.COVERAGE_ROLLUP_RELATION in materializer.PUBLISHED_RELATIONS
     assert materializer.COVERAGE_ROLLUP_RELATION not in materializer.TARGET_RELATIONS
     assert "REFRESH MATERIALIZED VIEW" not in source
-    assert "INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1" not in source
+    # The only place the rollup is still DERIVED is the legacy-artifact branch,
+    # whose coverage payload does carry the absent rows.
+    publish = source[source.index("def publish_artifact"):]
+    assert "_derive_rollup_from_coverage" in publish
+    assert "INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1" not in publish
     for column in ("source_row_count", "reported_row_count", "missing_reason_counts"):
         assert column in materializer.COVERAGE_ROLLUP_COLUMNS
 
