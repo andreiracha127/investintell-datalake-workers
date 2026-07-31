@@ -259,3 +259,80 @@ def test_real_bond_lane_runs_dark_and_promotes_nothing():
         if dark_schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{dark_schema}" CASCADE')
         admin.close()
+
+
+def test_chain_watermarks_read_the_effective_matview_cache_when_it_is_fresh():
+    """The two watermark reads go through the effective-selection cache.
+
+    ``ncen_effective_filings`` / ``rr1_effective_facts`` are views over a window
+    function on the whole raw landing, and the chain reads them only for
+    ``max(effective_date)`` -- twice per run. With the cache installed and fresh,
+    both reads hit the matview; when the family lands a new validated run the
+    recorded signature no longer matches and the read falls back to the view, so
+    a missed refresh costs the old scan and never a stale day.
+    """
+    from uuid import uuid4
+
+    from src import sec_effective_matviews as mvs
+
+    admin = admin_connect()
+    schema = new_schema(admin)
+    conn = worker_conn(schema)
+    try:
+        conn.execute("CREATE TABLE ncen_effective_filings (raw_row_id bigint, effective_date date)")
+        conn.execute("INSERT INTO ncen_effective_filings VALUES (1,'2025-03-31')")
+        conn.execute(
+            "CREATE TABLE rr1_effective_facts (effective_date date, accession_number text)"
+        )
+        conn.execute("INSERT INTO rr1_effective_facts VALUES ('2025-02-28','R1')")
+        conn.execute(
+            "CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, source_family text,"
+            " raw_validated_at timestamptz)"
+        )
+        conn.execute(
+            "CREATE VIEW sec_validated_raw_runs AS SELECT run_id, source_family,"
+            " raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
+        )
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'ncen',now())", (uuid4(),))
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'rr1',now())", (uuid4(),))
+        conn.execute(
+            (Path(__file__).resolve().parents[1] / "schemas" / "sec_effective_matviews.sql")
+            .read_text(encoding="utf-8")
+        )
+        conn.commit()
+
+        # Not populated yet -> every read stays on the views.
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings"
+
+        assert [o["state"] for o in mvs.refresh_stale(_search_path_dsn(schema))] == [
+            "refreshed", "refreshed",
+        ]
+        conn.rollback()  # see the refreshed matviews from this session
+
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings_mv"
+        assert mvs.resolve_relation(conn, "rr1_effective_facts") == "rr1_effective_fact_calendar_mv"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 3, 31)]
+        assert chain_worker.build_watermarks(conn, D1) == {
+            # Keyed by the source PRODUCT, never by the matview actually read.
+            "ncen_effective_filings": "2025-03-31",
+            "rr1_effective_facts": "2025-02-28",
+        }
+
+        # A newly validated N-CEN run moves the family signature: the cache is no
+        # longer trusted and the view answers, even before anyone refreshes.
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'ncen',now())", (uuid4(),))
+        conn.execute("INSERT INTO ncen_effective_filings VALUES (2,'2025-06-30')")
+        conn.commit()
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 6, 30)]
+
+        assert [o["state"] for o in mvs.refresh_stale(_search_path_dsn(schema))] == [
+            "refreshed", "fresh",
+        ]
+        conn.rollback()
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings_mv"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 6, 30)]
+    finally:
+        conn.close()
+        admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
