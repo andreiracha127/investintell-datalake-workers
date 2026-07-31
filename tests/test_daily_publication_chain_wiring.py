@@ -112,6 +112,32 @@ def test_discover_source_days_yields_only_the_latest_watermark_day():
         admin.close()
 
 
+def test_pit_materialize_refresh_workers_are_self_anchored(monkeypatch):
+    """The pit/materialize/refresh lanes get NO calc_date (each worker resolves
+    its OWN watermark); ingest stays pinned to the chain's source-day. Forcing
+    the global day onto the price lane selected an exact-day cohort that was
+    EMPTY (landings on a different day) and published a zero-row panel."""
+    calls: list[tuple[str, object]] = []
+
+    def fake_worker(name):
+        def _run(dsn, *, calc_date=None):
+            calls.append((name, calc_date))
+            return {"state": "no_source"}
+        return _run
+
+    monkeypatch.setattr(chain_worker, "_worker", fake_worker)
+    ctx = StageContext(conn=None, dsn=base_dsn(), source_day=D1,
+                       run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
+                       chain="c", code_revision="r", config_version="v")
+    chain_worker.stage_pit_update(ctx)
+    chain_worker.stage_materialize(ctx)
+    chain_worker.stage_refresh(ctx)
+    assert all(calc is None for _, calc in calls), calls
+    calls.clear()
+    chain_worker.stage_ingest(ctx)
+    assert all(calc == D1.isoformat() for _, calc in calls), calls
+
+
 def test_configured_stages_env_scopes_the_run(monkeypatch):
     """``DAILY_CHAIN_STAGES`` scopes a deployment to one lane (frozen order
     preserved); blank/unset means all eight; unknown names fail closed."""

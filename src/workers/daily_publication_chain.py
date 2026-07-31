@@ -98,8 +98,22 @@ def _compose(outcomes: list[StageOutcome], *, empty_reason: str = "dark_no_sourc
     return StageOutcome.skipped("dark_no_source", units=detail)
 
 
-def _invoke(ctx: StageContext, worker_name: str) -> StageOutcome:
-    result = _worker(worker_name)(ctx.dsn, calc_date=ctx.source_day.isoformat())
+def _invoke(ctx: StageContext, worker_name: str, *, anchor: str = "chain") -> StageOutcome:
+    """Invoke one worker, anchoring its ``as_of`` per ``anchor``.
+
+    ``chain`` pins the run's source-day (day-keyed products: ingest cohorts,
+    mixed_quant). ``self`` passes NO calc_date so the worker resolves its OWN
+    watermark — required for the pit/materialize/refresh lanes, whose sources
+    advance independently: forcing the chain's global day onto them selects an
+    exact-day cohort that can be EMPTY for a source whose landings sit on a
+    different day (2026-07-31: the price panel lands on 2025-03-31, the chain
+    day was 2026-07-23, and ``bond_price_observation_v1`` published zero rows —
+    caught by the serving coverage guard, whole run compensated). Self-anchored
+    workers also replay to the SAME publication when their source is unchanged,
+    which is what makes the daily cron cheap.
+    """
+    kwargs = {} if anchor == "self" else {"calc_date": ctx.source_day.isoformat()}
+    result = _worker(worker_name)(ctx.dsn, **kwargs)
     return classify_worker_result(dict(result))
 
 
@@ -120,7 +134,10 @@ def stage_ingest(ctx: StageContext) -> StageOutcome:
 
 
 def stage_pit_update(ctx: StageContext) -> StageOutcome:
-    return _compose([_invoke(ctx, "bond_security_master"), _invoke(ctx, "bond_price_observations")])
+    return _compose([
+        _invoke(ctx, "bond_security_master", anchor="self"),
+        _invoke(ctx, "bond_price_observations", anchor="self"),
+    ])
 
 
 def stage_materialize(ctx: StageContext) -> StageOutcome:
@@ -135,7 +152,7 @@ def stage_materialize(ctx: StageContext) -> StageOutcome:
     # the compensation pass rolled back a completed 55-minute pit_update. The
     # products themselves were then cut: only rr1_derived_profiles survives (the
     # fee product), invocable standalone on its own cadence.
-    return _compose([_invoke(ctx, "bond_metrics")])
+    return _compose([_invoke(ctx, "bond_metrics", anchor="self")])
 
 
 def stage_mixed_build(ctx: StageContext) -> StageOutcome:
@@ -196,7 +213,10 @@ def stage_promote(ctx: StageContext) -> StageOutcome:
 
 
 def stage_refresh(ctx: StageContext) -> StageOutcome:
-    return _compose([_invoke(ctx, "sec_regulatory_serving"), _invoke(ctx, "bond_serving")])
+    return _compose([
+        _invoke(ctx, "sec_regulatory_serving", anchor="self"),
+        _invoke(ctx, "bond_serving", anchor="self"),
+    ])
 
 
 def stage_probe(ctx: StageContext) -> StageOutcome:
