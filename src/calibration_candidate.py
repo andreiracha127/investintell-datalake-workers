@@ -54,6 +54,19 @@ EVALUABLE_CANDIDATE_METRICS = ("turnover_proxy",)
 #: a key from the config file must block exactly like setting it to null: without
 #: this, deleting four entries and leaving only the measurable one would have
 #: produced an empty blocker list — silence reading as approval.
+#: The dedicated namespace a certified baseline artifact must live in, keyed by
+#: reference id so the mapping is deterministic and cannot be aimed elsewhere.
+#: It is under ``reports/`` rather than ``data/`` on purpose: the P0 data layer is
+#: exactly the nine source tables plus the derived features (the verifier rejects
+#: anything else under ``data/``), while a certified reference is certification
+#: evidence about the run, which is what ``reports/`` already holds.
+BASELINE_ARTIFACT_DIR = "reports/baselines"
+
+
+def baseline_artifact_path(reference_id: str) -> str:
+    return f"{BASELINE_ARTIFACT_DIR}/{reference_id}.json"
+
+
 #: The baseline references the comparison needs certified INSIDE the pack.
 BASELINE_REFERENCE_IDS: tuple[str, ...] = (
     "G0",
@@ -90,11 +103,17 @@ DOCKER_CONTEXT_PATHS = [
     # hashed context, or a supplied docker_context_sha256 could stay valid across
     # a mandate change.
     #
-    # The scope is the WHOLE `configs/` tree, matching `COPY configs /app/configs`
-    # in docker/quant-engine/Dockerfile exactly. Hashing a narrower slice than the
-    # image copies is the same defect in miniature: a sibling config could change
-    # the image while a recorded docker_context_sha256 stayed valid.
-    "configs",
+    # The scope is `configs/calibration`, matching
+    # `COPY configs/calibration /app/configs/calibration` exactly. Hash scope and
+    # COPY scope must be the same set, in either direction: hashing less than the
+    # image ships lets a sibling change the image under a valid hash, and shipping
+    # more than calibration needs drags unrelated sweep configs into the pin.
+    #
+    # This is deliberately the NARROW half of that equality. Widening both to
+    # `configs/` moved the recomputed hash for engine_commit ee39ad… from d8f7…
+    # to e3761…, because ten a31/a4 YAMLs already lived there — which would have
+    # invalidated the committed calibration evidence without re-measuring it.
+    "configs/calibration",
     "packages/investintell_quant_core",
     "services/quant_engine",
     "contracts/quant-engine",
@@ -468,6 +487,49 @@ def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _pack_artifact_digests(pack_root: Path) -> set[tuple[str, str]]:
+    """``{(sha256, path)}`` for every artifact the pack declares AND carries.
+
+    Read from ``table_hashes.json`` — the same declaration ``verify_pack``
+    recomputes file by file — and re-checked here against the bytes on disk, so a
+    pair in this set is one the pack genuinely proves.
+
+    A SET of pairs, not a ``{digest: path}`` map: two declared artifacts may hold
+    identical bytes and therefore share a digest, and a map silently kept only the
+    last one. That rejected a perfectly well-formed reference whose artifact
+    ``table_hashes.json`` declares and verifies, purely because another file
+    happened to have the same content.
+    """
+    table_path = pack_root / "table_hashes.json"
+    if not table_path.is_file():
+        return {}
+    try:
+        payload = load_json(table_path)
+    except (OSError, ValueError):
+        return {}
+    tables = payload.get("tables") if isinstance(payload, dict) else None
+    if not isinstance(tables, list):
+        return {}
+
+    digests: set[tuple[str, str]] = set()
+    for entry in tables:
+        if not isinstance(entry, dict):
+            continue
+        rel = entry.get("path")
+        declared = entry.get("sha256")
+        if not (isinstance(rel, str) and _is_sha256_hex(declared)):
+            continue
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            continue
+        artifact = pack_root / rel
+        if not artifact.is_file():
+            continue
+        if file_sha256(artifact) != declared:
+            continue
+        digests.add((declared, rel))
+    return digests
+
+
 def _is_sha256_hex(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -485,12 +547,25 @@ def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
     pack does, instead of waiting for someone to edit a literal.
 
     The evidence is the manifest's OPTIONAL ``certified_baseline_references``, an
-    array of ``{reference_id, sha256}``. Two things make that admissible rather
-    than decorative: the pack manifest schema now allows the field (with
-    ``additionalProperties: false`` it was previously rejected outright, so this
-    predicate could never have returned True for a pack that verifies), and the
-    manifest is inside ``input_pack_sha256``, which the verifier recomputes — so a
-    declaration cannot be forged without failing the aggregate hash.
+    array of ``{reference_id, path, sha256}``. A reference counts as certified
+    only when ALL of these hold:
+
+    * the pack manifest schema admits the field at all (with
+      ``additionalProperties: false`` it was once rejected outright, so this
+      predicate could never have returned True for a pack that verifies);
+    * ``path`` is exactly ``reports/baselines/<reference_id>.json`` — derived from
+      the id, so a declaration cannot aim a reference at some other file;
+    * that path is declared in ``table_hashes.json`` under the same digest, and
+      the digest recomputes over the bytes on disk;
+    * and the manifest itself is inside ``input_pack_sha256``, which the verifier
+      recomputes, so none of the above can be forged past the aggregate hash.
+
+    Two earlier drafts were fail-open, each one level shallower than the last.
+    Accepting any well-formed sha256 let a manifest-only claim certify a pack with
+    no baseline content. Accepting any digest the pack happened to carry let an
+    ordinary canonical table — or a schema file — be mapped to the three reference
+    ids. Binding id -> path -> declared digest -> bytes is what closes it: the
+    artifact has to be the one that represents that baseline.
 
     An earlier draft also probed ``data/baselines/*.json``. That branch was dead:
     the P0 verifier rejects ``data/`` artifacts outside its declared set, so a pack
@@ -509,16 +584,36 @@ def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
     declared = manifest.get("certified_baseline_references")
     if not isinstance(declared, list):
         return False
+
+    # Membership alone was still fail-open: the digest of ANY carried artifact —
+    # an ordinary canonical table, even a schema file — could be mapped to the
+    # three reference ids and certify a pack holding no baseline content at all.
+    # Each reference must now bind to the artifact that REPRESENTS it.
+    proven = _pack_artifact_digests(root)
+    if not proven:
+        return False
+
     certified: set[str] = set()
     for item in declared:
-        # Only a hash-pinned entry counts. An id without a digest names a
-        # reference without certifying anything about it.
         if not isinstance(item, dict):
             continue
         reference_id = item.get("reference_id")
+        path = item.get("path")
         digest = item.get("sha256")
-        if isinstance(reference_id, str) and _is_sha256_hex(digest):
-            certified.add(reference_id)
+        if not (isinstance(reference_id, str) and isinstance(path, str)):
+            continue
+        if not _is_sha256_hex(digest):
+            continue
+        # The path is derived from the id, so a declaration cannot aim a
+        # reference at some other file, inside or outside the namespace.
+        if path != baseline_artifact_path(reference_id):
+            continue
+        # ...and that exact (digest, path) pair must be one the pack declares and
+        # carries. Pair membership, so two baseline artifacts with identical bytes
+        # both certify instead of the second one evicting the first.
+        if (digest, path) not in proven:
+            continue
+        certified.add(reference_id)
     return set(BASELINE_REFERENCE_IDS) <= certified
 
 

@@ -24,6 +24,7 @@ v1 and v2 stay byte-frozen: the live certified packs are hash-bound to v2.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -480,85 +481,361 @@ def _pack_manifest_schema() -> dict:
     )
 
 
-def test_a_declared_baseline_reference_manifest_validates_against_the_pack_schema() -> None:
-    """The predicate could never have returned True for a pack that verifies.
+def test_the_hashed_config_scope_matches_what_the_image_copies() -> None:
+    """Hash scope and COPY scope must be the same set, in BOTH directions.
 
-    The pack manifest schema sets `additionalProperties: false` and had no field
-    for this, so the declaration was rejected outright. It is admissible now — and
-    hash-pinned, so it cannot be forged past `input_pack_sha256`.
+    Hashing less than the image ships lets a sibling change the image under a
+    still-valid hash. Shipping more than calibration needs drags unrelated sweep
+    configs into the pin — and broadening BOTH to `configs/` is what silently
+    invalidated the committed calibration evidence, since ten a31/a4 YAMLs already
+    lived there at the recorded engine commit.
     """
-    schema = _pack_manifest_schema()
-    base = _golden_manifest()
-    jsonschema.validate(base, schema)  # the committed pack still validates
+    assert "configs/calibration" in cc.DOCKER_CONTEXT_PATHS
+    assert "configs" not in cc.DOCKER_CONTEXT_PATHS
+    for dockerfile in ("docker/quant-engine/Dockerfile", "docker/railway-ci/Dockerfile"):
+        text = (ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "COPY configs/calibration /app/configs/calibration" in text
+        assert "COPY configs /app/configs" not in text
 
-    declared = dict(
-        base,
-        certified_baseline_references=[
-            {"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS
-        ],
+
+def test_the_committed_calibration_evidence_still_validates_its_context_hash() -> None:
+    """The recorded docker_context_sha256 must still recompute at its own commit.
+
+    `verify_calibration_artifacts.py` never calls `validate_docker_context_sha256`
+    — it only checks file digests and the two `ok` flags — so a stale context hash
+    passes that gate silently and only surfaces when someone re-runs calibration
+    with the recorded manifest values. This is the check that would have caught it.
+    """
+    manifest = json.loads(
+        (
+            ROOT
+            / "artifacts"
+            / "calibration"
+            / "open_macro_v03_calibration_001"
+            / "calibration_manifest.json"
+        ).read_text(encoding="utf-8")
     )
-    jsonschema.validate(declared, schema)
-
-    unpinned = dict(
-        base,
-        certified_baseline_references=[
-            {"reference_id": name, "sha256": "not-a-digest"} for name in cc.BASELINE_REFERENCE_IDS
-        ],
+    recomputed = cc.committed_docker_context_sha256(manifest["engine_commit"])
+    assert manifest["docker_context_sha256"] == recomputed, (
+        "the committed calibration evidence records a context hash that no longer "
+        "recomputes at its engine_commit; changing DOCKER_CONTEXT_PATHS invalidated "
+        "measured evidence"
     )
-    with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate(unpinned, schema)
 
 
-def test_the_baseline_predicate_reads_the_declaration(tmp_path: Path) -> None:
-    base = _golden_manifest()
+def _pack_with_baselines(tmp_path: Path, entries, *, place: bool = True, content=None) -> Path:
+    """A copy of the golden pack, optionally carrying real baseline artifacts.
+
+    ``entries`` receives the pack root and returns the manifest declaration, so a
+    test can declare something other than what it placed. ``content`` maps a
+    reference id to the artifact body, so a test can make two artifacts share
+    bytes — and therefore a digest.
+    """
+    from src.input_packs.hashing import file_sha256
+    from src.input_packs.manifest import build_manifest
+
     pack = tmp_path / "pack"
-    pack.mkdir()
+    shutil.copytree(
+        ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack", pack
+    )
+    if place:
+        rels = []
+        for reference_id in cc.BASELINE_REFERENCE_IDS:
+            rel = cc.baseline_artifact_path(reference_id)
+            (pack / rel).parent.mkdir(parents=True, exist_ok=True)
+            body = (
+                content(reference_id)
+                if content is not None
+                else json.dumps({"reference_id": reference_id}, indent=2) + "\n"
+            )
+            (pack / rel).write_text(body, encoding="utf-8")
+            rels.append(rel)
+        table = json.loads((pack / "table_hashes.json").read_text(encoding="utf-8"))
+        for rel in rels:
+            table["tables"].append(
+                {
+                    "name": f"baseline:{Path(rel).stem}",
+                    "path": rel,
+                    "rows": 1,
+                    "sha256": file_sha256(pack / rel),
+                }
+            )
+        (pack / "table_hashes.json").write_text(
+            json.dumps(table, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
 
-    def write(manifest: dict) -> None:
-        (pack / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    manifest["certified_baseline_references"] = entries(pack)
+    manifest = build_manifest(pack, manifest)
+    (pack / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return pack
 
-    write(base)
+
+def _honest_entries(pack: Path) -> list[dict]:
+    from src.input_packs.hashing import file_sha256
+
+    return [
+        {
+            "reference_id": reference_id,
+            "path": cc.baseline_artifact_path(reference_id),
+            "sha256": file_sha256(pack / cc.baseline_artifact_path(reference_id)),
+        }
+        for reference_id in cc.BASELINE_REFERENCE_IDS
+    ]
+
+
+def test_a_pack_carrying_real_baseline_artifacts_certifies_and_still_verifies(
+    tmp_path: Path,
+) -> None:
+    """The positive case has to actually work, and the pack must still verify.
+
+    The namespace is under `reports/` rather than `data/` on purpose: the P0 data
+    layer is exactly the nine source tables plus derived features, and the
+    verifier rejects anything else under `data/`. A certified reference is
+    certification evidence, which is what `reports/` already carries — so this
+    needs no verifier change and no measured surface moves.
+    """
+    from src.input_packs.verifier import verify_pack
+
+    pack = _pack_with_baselines(tmp_path, _honest_entries)
+    assert cc.pack_certifies_baseline_references(pack) is True
+    assert verify_pack(pack)["ok"] is True, "a certified pack must remain verifiable"
+
+
+def test_the_committed_pack_certifies_nothing() -> None:
+    """Fail-closed for the undeclared: today's pack blocks, by reading."""
+    assert (
+        cc.pack_certifies_baseline_references(
+            ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack"
+        )
+        is False
+    )
+
+
+def test_a_fabricated_baseline_digest_does_not_certify_the_pack(tmp_path: Path) -> None:
+    """A digest must name bytes the pack carries — not any well-formed hex."""
+    pack = _pack_with_baselines(
+        tmp_path,
+        lambda _pack: [
+            {
+                "reference_id": reference_id,
+                "path": cc.baseline_artifact_path(reference_id),
+                "sha256": "a" * 64,
+            }
+            for reference_id in cc.BASELINE_REFERENCE_IDS
+        ],
+    )
     assert cc.pack_certifies_baseline_references(pack) is False
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": cc.BASELINE_REFERENCE_IDS[0], "sha256": "a" * 64}
-            ],
-        )
-    )
-    assert cc.pack_certifies_baseline_references(pack) is False, "a partial set must not certify"
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS
-            ],
-        )
+def test_a_declaration_without_baseline_artifacts_does_not_certify(tmp_path: Path) -> None:
+    """A manifest-only claim certifies nothing when no baseline content exists."""
+    pack = _pack_with_baselines(
+        tmp_path,
+        lambda _pack: [
+            {
+                "reference_id": reference_id,
+                "path": cc.baseline_artifact_path(reference_id),
+                "sha256": "b" * 64,
+            }
+            for reference_id in cc.BASELINE_REFERENCE_IDS
+        ],
+        place=False,
     )
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+
+def test_the_digest_of_a_non_baseline_artifact_does_not_certify(tmp_path: Path) -> None:
+    """THE fail-open this closes.
+
+    Membership alone let the digest of any carried artifact — an ordinary
+    canonical table, even a schema file — be mapped to the three reference ids and
+    certify a pack holding no baseline content at all.
+    """
+
+    def borrowed(pack: Path) -> list[dict]:
+        table = json.loads((pack / "table_hashes.json").read_text(encoding="utf-8"))
+        other = next(
+            entry["sha256"]
+            for entry in table["tables"]
+            if entry["path"].startswith("data/canonical/")
+        )
+        return [
+            {
+                "reference_id": reference_id,
+                "path": cc.baseline_artifact_path(reference_id),
+                "sha256": other,
+            }
+            for reference_id in cc.BASELINE_REFERENCE_IDS
+        ]
+
+    assert cc.pack_certifies_baseline_references(_pack_with_baselines(tmp_path, borrowed)) is False
+
+
+def test_a_path_outside_the_baseline_namespace_does_not_certify(tmp_path: Path) -> None:
+    def outside(pack: Path) -> list[dict]:
+        from src.input_packs.hashing import file_sha256
+
+        return [
+            {
+                "reference_id": reference_id,
+                "path": f"data/canonical/{reference_id}.json",
+                "sha256": file_sha256(pack / cc.baseline_artifact_path(reference_id)),
+            }
+            for reference_id in cc.BASELINE_REFERENCE_IDS
+        ]
+
+    assert cc.pack_certifies_baseline_references(_pack_with_baselines(tmp_path, outside)) is False
+
+
+def test_a_reference_aimed_at_another_references_artifact_does_not_certify(
+    tmp_path: Path,
+) -> None:
+    """The path is DERIVED from the id, so it cannot be aimed elsewhere."""
+
+    def swapped(pack: Path) -> list[dict]:
+        from src.input_packs.hashing import file_sha256
+
+        ids = list(cc.BASELINE_REFERENCE_IDS)
+        return [
+            {
+                "reference_id": ids[i],
+                "path": cc.baseline_artifact_path(ids[(i + 1) % len(ids)]),
+                "sha256": file_sha256(pack / cc.baseline_artifact_path(ids[(i + 1) % len(ids)])),
+            }
+            for i in range(len(ids))
+        ]
+
+    assert cc.pack_certifies_baseline_references(_pack_with_baselines(tmp_path, swapped)) is False
+
+
+def test_a_declared_artifact_whose_bytes_are_gone_does_not_certify(tmp_path: Path) -> None:
+    """The digest is re-checked against the bytes, not just against the table."""
+    pack = _pack_with_baselines(tmp_path, _honest_entries)
     assert cc.pack_certifies_baseline_references(pack) is True
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": name} for name in cc.BASELINE_REFERENCE_IDS
-            ],
+    # `file_sha256` canonicalizes *.json, so whitespace is deliberately not a
+    # mutation; bytes that are gone are.
+    (pack / cc.baseline_artifact_path(cc.BASELINE_REFERENCE_IDS[0])).unlink()
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+
+def test_baseline_artifacts_with_identical_bytes_both_certify(tmp_path: Path) -> None:
+    """Two references may legitimately share content — and therefore a digest.
+
+    The proven set was a `{digest: path}` map, so the second artifact evicted the
+    first and its reference was rejected even though `table_hashes.json` declared
+    and verified BOTH paths. Membership is by `(digest, path)` pair now.
+    """
+    from src.input_packs.hashing import file_sha256
+    from src.input_packs.verifier import verify_pack
+
+    pack = _pack_with_baselines(
+        tmp_path,
+        _honest_entries,
+        content=lambda _reference_id: json.dumps({"baseline": "identical"}, indent=2) + "\n",
+    )
+
+    digests = {
+        file_sha256(pack / cc.baseline_artifact_path(reference_id))
+        for reference_id in cc.BASELINE_REFERENCE_IDS
+    }
+    assert len(digests) == 1, "this test is meaningless unless the digests collide"
+
+    assert cc.pack_certifies_baseline_references(pack) is True
+    assert verify_pack(pack)["ok"] is True
+
+
+def test_a_borrowed_digest_is_still_refused_when_digests_collide(tmp_path: Path) -> None:
+    """Pair membership must not have loosened the check it replaced."""
+
+    def borrowed(pack: Path) -> list[dict]:
+        table = json.loads((pack / "table_hashes.json").read_text(encoding="utf-8"))
+        other = next(
+            entry["sha256"]
+            for entry in table["tables"]
+            if entry["path"].startswith("data/canonical/")
         )
+        return [
+            {
+                "reference_id": reference_id,
+                "path": cc.baseline_artifact_path(reference_id),
+                "sha256": other,
+            }
+            for reference_id in cc.BASELINE_REFERENCE_IDS
+        ]
+
+    pack = _pack_with_baselines(
+        tmp_path,
+        borrowed,
+        content=lambda _reference_id: json.dumps({"baseline": "identical"}, indent=2) + "\n",
     )
-    assert cc.pack_certifies_baseline_references(pack) is False, (
-        "an id without a digest certifies nothing"
-    )
+    assert cc.pack_certifies_baseline_references(pack) is False
 
 
-def test_the_hashed_config_scope_matches_what_the_image_copies() -> None:
-    """A sibling config must not change the image while the hash stays valid."""
-    assert "configs" in cc.DOCKER_CONTEXT_PATHS
-    assert "configs/calibration" not in cc.DOCKER_CONTEXT_PATHS
-    for dockerfile in ("docker/quant-engine/Dockerfile", "docker/railway-ci/Dockerfile"):
-        assert "COPY configs /app/configs" in (ROOT / dockerfile).read_text(encoding="utf-8")
+def test_the_manifest_schema_requires_the_namespaced_path() -> None:
+    schema = _pack_manifest_schema()
+    base = _golden_manifest()
+    jsonschema.validate(base, schema)
+
+    def declared(entries: list[dict]) -> dict:
+        return dict(base, certified_baseline_references=entries)
+
+    jsonschema.validate(
+        declared(
+            [
+                {
+                    "reference_id": name,
+                    "path": cc.baseline_artifact_path(name),
+                    "sha256": "a" * 64,
+                }
+                for name in cc.BASELINE_REFERENCE_IDS
+            ]
+        ),
+        schema,
+    )
+
+    for bad in (
+        [{"reference_id": n, "sha256": "a" * 64} for n in cc.BASELINE_REFERENCE_IDS],
+        [
+            {"reference_id": n, "path": f"data/baselines/{n}.json", "sha256": "a" * 64}
+            for n in cc.BASELINE_REFERENCE_IDS
+        ],
+        [
+            {"reference_id": n, "path": cc.baseline_artifact_path(n), "sha256": "nope"}
+            for n in cc.BASELINE_REFERENCE_IDS
+        ],
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(declared(bad), schema)
+
+
+@pytest.mark.parametrize("mode", ["activated", "offline_evidence"])
+def test_a_pair_with_no_sleeve_object_is_refused(mode: str) -> None:
+    """Omitting the whole object must not skip the governance it carries.
+
+    The guard was gated on `"sleeve" in request`, so an activated request with the
+    entire object omitted skipped sleeve governance and paired happily with a
+    productive result — fail-open on the exact field it exists to catch.
+    """
+    name = (
+        "job-request.metric-backtest.activated.json"
+        if mode == "activated"
+        else "job-request.metric-backtest.json"
+    )
+    result_name = (
+        "job-result.metric-backtest.activated.json"
+        if mode == "activated"
+        else "job-result.metric-backtest.json"
+    )
+    request = _fixture(V3 / "fixtures" / "valid" / name)
+    del request["sleeve"]
+    with pytest.raises(preflight.RuntimeModeError, match="sleeve"):
+        preflight.validate_request_result_pair(
+            request, _fixture(V3 / "fixtures" / "valid" / result_name)
+        )
 
 
 # --------------------------------------------------------------------------- #

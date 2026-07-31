@@ -59,7 +59,7 @@
       "type": "string"
     },
     "certified_baseline_references": {
-      "description": "OPTIONAL. Baseline references this pack certifies for the calibration baseline comparison. Absent means the pack certifies none, which blocks final approval \u2014 the conservative reading. Each entry pins the reference by sha256, and the manifest itself is inside input_pack_sha256, so a declaration cannot be forged without failing the aggregate hash the verifier recomputes.",
+      "description": "OPTIONAL. Baseline references this pack certifies for the calibration baseline comparison. Absent means the pack certifies none, which blocks final approval \u2014 the conservative reading. Each entry binds a reference_id to the artifact that REPRESENTS it, at the deterministic path reports/baselines/<reference_id>.json, pinned by sha256. The artifact must also be declared in table_hashes.json with the same digest, so the pack's own integrity machinery covers it; and the manifest is inside input_pack_sha256, which the verifier recomputes.",
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
@@ -68,12 +68,17 @@
         "additionalProperties": false,
         "required": [
           "reference_id",
+          "path",
           "sha256"
         ],
         "properties": {
           "reference_id": {
             "type": "string",
             "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^reports/baselines/[A-Za-z0-9_]+\\.json$"
           },
           "sha256": {
             "type": "string",
