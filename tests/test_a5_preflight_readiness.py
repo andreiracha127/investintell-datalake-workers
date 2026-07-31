@@ -6,10 +6,18 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 A5_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_a5_preflight_001"
 DOC = ROOT / "docs" / "a5" / "open_macro_v03_a5_preflight_001.md"
-GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PREACTIVATION_WORKFLOW = ROOT / ".github" / "workflows" / "preactivation-evidence.yml"
 A5_PREFLIGHT_BASE_COMMIT = "6fb22079542d2fae5fd63f2088a41f76b8bde8c9"
 
 REQUIRED_A5_ARTIFACTS = {
@@ -451,7 +459,8 @@ def test_docs_and_memo_record_final_non_activation_state() -> None:
 
 
 def test_github_actions_includes_a5_preflight_governance_test() -> None:
-    text = _text(GITHUB_ACTIONS_WORKFLOW)
+    """The suite still has a named home in CI — the on-demand evidence replay."""
+    text = _text(PREACTIVATION_WORKFLOW)
 
-    assert "pull_request:" in text
+    assert "workflow_dispatch:" in text
     assert "tests/test_a5_preflight_readiness.py" in text

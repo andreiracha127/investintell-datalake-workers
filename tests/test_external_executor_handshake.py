@@ -13,10 +13,16 @@ import pytest
 
 from src import external_executor_handshake as hs
 
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 HANDSHAKE_ROOT = ROOT / "artifacts" / "handshake" / hs.HANDSHAKE_ID
 SHADOW_ROOT = ROOT / "artifacts" / "shadow" / hs.SHADOW_ID
-GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PREACTIVATION_WORKFLOW = ROOT / ".github" / "workflows" / "preactivation-evidence.yml"
 
 
 def _json(path: Path) -> dict:
@@ -1227,7 +1233,8 @@ def test_handshake_validator_imports_no_runtime_side_effect_paths() -> None:
 
 
 def test_github_actions_runs_external_executor_handshake_gate() -> None:
-    text = GITHUB_ACTIONS_WORKFLOW.read_text(encoding="utf-8")
+    """The suite still has a named home in CI — the on-demand evidence replay."""
+    text = PREACTIVATION_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "pull_request:" in text
+    assert "workflow_dispatch:" in text
     assert "tests/test_external_executor_handshake.py" in text

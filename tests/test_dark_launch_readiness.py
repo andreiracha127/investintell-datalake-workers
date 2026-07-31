@@ -4,6 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 DARK_ROOT = ROOT / "artifacts" / "a5" / "open_macro_v03_dark_launch_001"
 

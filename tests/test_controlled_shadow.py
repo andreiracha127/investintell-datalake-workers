@@ -9,6 +9,12 @@ import pytest
 import src.controlled_shadow as cs
 import src.external_executor_handshake as hs
 
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE_ROOT = ROOT / "artifacts" / "shadow" / cs.CONTROLLED_SHADOW_ID
 

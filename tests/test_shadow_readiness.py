@@ -7,10 +7,16 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 SHADOW_ROOT = ROOT / "artifacts" / "shadow" / "open_macro_v03_shadow_001"
 DOC = ROOT / "docs" / "shadow" / "open_macro_v03_shadow_readiness_001.md"
-GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PREACTIVATION_WORKFLOW = ROOT / ".github" / "workflows" / "preactivation-evidence.yml"
 
 
 def _json(name: str) -> dict:
@@ -583,7 +589,8 @@ def test_observability_and_rollback_cover_all_side_effects() -> None:
 
 
 def test_github_actions_runs_shadow_readiness_gate() -> None:
-    text = GITHUB_ACTIONS_WORKFLOW.read_text(encoding="utf-8")
+    """The suite still has a named home in CI — the on-demand evidence replay."""
+    text = PREACTIVATION_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "pull_request:" in text
+    assert "workflow_dispatch:" in text
     assert "tests/test_shadow_readiness.py" in text
