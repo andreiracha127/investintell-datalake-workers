@@ -436,73 +436,79 @@ def publication_id_for(as_of: date, code_revision: str) -> UUID:
     return uuid5(_NAMESPACE_PUBLICATION, f"{PRODUCT}|{as_of.isoformat()}|{code_revision}")
 
 
-@dataclass(frozen=True)
-class _PublishedRow:
-    security_id: UUID
-    observation_date: date
-    source_row_number: int
-    price: object
-    price_state: str
-    price_type: str
-    accrued_treatment: str
-    ytm: object
-    db_type: object
-    db_type_state: str
-    is_144a: bool | None
-    daily_key_state: str
+# The publishable subset: resolved observations on each security's LATEST
+# observation date within the landing cohort (same-date duplicates kept, the
+# panel_states rule). The daily-key (ambiguity) state and the deterministic
+# per-publication ordinal are computed in SQL — the cohort is never
+# materialized in Python (the production cohort is the full 29.7M-row panel;
+# fetching it OOM-killed the worker at 16 GiB on 2026-07-31).
+_PUBLISH_SQL = """
+INSERT INTO bond_price_observation_v1
+    (publication_id, source_run_id, security_id, observation_date, source_row_number,
+     price, price_state, price_type, accrued_treatment, ytm, db_type, db_type_state,
+     is_144a, daily_key_state, measured_at, provenance)
+SELECT %(pub)s, %(source_run_id)s, k.security_id, k.observation_date, k.srn,
+       k.price, k.price_state, k.price_type, k.accrued_treatment, k.ytm,
+       k.db_type, k.db_type_state,
+       CASE WHEN k.db_type_state = 'present' AND k.db_type IS NOT NULL
+                 AND k.db_type <> 'NaN'::numeric AND k.db_type = trunc(k.db_type)
+            THEN (k.db_type = 3) END,
+       CASE WHEN k.key_n > 1 THEN 'duplicate_in_matching_cohort'
+            ELSE 'unique_in_matching_cohort' END,
+       %(as_of)s,
+       jsonb_build_object('resolver', 'price_observations',
+                          'methodology_version', %(methodology)s::text)
+FROM (
+    SELECT o.security_id, o.observation_date, o.observation_id, o.price,
+           o.price_state, o.price_type, o.accrued_treatment, o.ytm,
+           o.db_type, o.db_type_state,
+           count(*) OVER (PARTITION BY o.security_id, o.observation_date) AS key_n,
+           (row_number() OVER (ORDER BY o.security_id, o.observation_date, o.observation_id) - 1)::integer AS srn
+    FROM bond_price_observation o
+    JOIN (
+        SELECT security_id, max(observation_date) AS latest_date
+        FROM bond_price_observation
+        WHERE as_of = %(as_of)s AND identity_state = 'resolved'
+        GROUP BY security_id
+    ) l ON l.security_id = o.security_id AND l.latest_date = o.observation_date
+    WHERE o.as_of = %(as_of)s AND o.identity_state = 'resolved'
+) k
+ON CONFLICT (publication_id, security_id, observation_date, source_row_number) DO NOTHING
+"""
 
-
-def _published_rows(conn: psycopg.Connection, as_of: date) -> list[_PublishedRow]:
-    """Project resolved observations for ``as_of`` into publishable rows.
-
-    The daily-key (ambiguity) state is recomputed over the FULL publication cohort
-    (the panel_states rule: a ``(security_id, observation_date)`` key seen more than
-    once is ``duplicate_in_matching_cohort``), so duplicates that arrive across
-    separate loads still coexist and neither is dropped.  ``source_row_number`` is a
-    deterministic per-publication ordinal that keeps duplicate rows distinct.
-    """
-    rows = conn.execute(
-        "SELECT security_id, observation_date, price, price_state, price_type, accrued_treatment, "
-        "ytm, db_type, db_type_state, observation_id "
-        "FROM bond_price_observation WHERE as_of=%s AND identity_state='resolved' "
-        "ORDER BY security_id, observation_date, observation_id",
-        (as_of,),
-    ).fetchall()
-    key_counts: Counter[tuple[Any, date]] = Counter((r[0], r[1]) for r in rows)
-    published: list[_PublishedRow] = []
-    for ordinal, r in enumerate(rows):
-        daily_key_state = (
-            "duplicate_in_matching_cohort" if key_counts[(r[0], r[1])] > 1 else "unique_in_matching_cohort"
-        )
-        published.append(
-            _PublishedRow(
-                security_id=r[0],
-                observation_date=r[1],
-                source_row_number=ordinal,
-                price=r[2],
-                price_state=r[3],
-                price_type=r[4],
-                accrued_treatment=r[5],
-                ytm=r[6],
-                db_type=r[7],
-                db_type_state=r[8],
-                is_144a=_is_144a(r[7], r[8]),
-                daily_key_state=daily_key_state,
-            )
-        )
-    return published
+# Fingerprint over the PUBLISHED subset plus the full-cohort row count. The
+# landing table is immutable per as_of, so the cohort is determined by as_of
+# itself; the count pins its size and the subset digest pins every published
+# byte. (The previous fingerprint hashed all cohort rows in Python — the same
+# OOM class as the publish loop.)
+_FINGERPRINT_SQL = """
+SELECT
+    (SELECT count(*) FROM bond_price_observation WHERE as_of = %(as_of)s) AS cohort_rows,
+    coalesce(md5(string_agg(
+        md5(concat_ws('|', k.security_id, k.observation_date, k.observation_id,
+                      k.price, k.price_state, k.ytm, k.db_type, k.db_type_state)),
+        '' ORDER BY k.security_id, k.observation_date, k.observation_id)), 'empty') AS subset_digest
+FROM (
+    SELECT o.security_id, o.observation_date, o.observation_id, o.price,
+           o.price_state, o.ytm, o.db_type, o.db_type_state
+    FROM bond_price_observation o
+    JOIN (
+        SELECT security_id, max(observation_date) AS latest_date
+        FROM bond_price_observation
+        WHERE as_of = %(as_of)s AND identity_state = 'resolved'
+        GROUP BY security_id
+    ) l ON l.security_id = o.security_id AND l.latest_date = o.observation_date
+    WHERE o.as_of = %(as_of)s AND o.identity_state = 'resolved'
+) k
+"""
 
 
 def _input_fingerprint(as_of: date, conn: psycopg.Connection) -> tuple[str, int]:
-    rows = conn.execute(
-        "SELECT observation_id, observation_date, cusip9_input, price, source_row_number, identity_state "
-        "FROM bond_price_observation WHERE as_of=%s ORDER BY observation_id",
-        (as_of,),
-    ).fetchall()
-    parts = [f"{PRODUCT}|{as_of.isoformat()}"]
-    for r in rows:
-        parts.append("|".join(str(x) for x in r))
-    return hashlib.sha256("\n".join(parts).encode()).hexdigest(), len(rows)
+    cohort_rows, subset_digest = conn.execute(_FINGERPRINT_SQL, {"as_of": as_of}).fetchone()
+    digest = hashlib.sha256(
+        f"{PRODUCT}|{as_of.isoformat()}|{cohort_rows}|{subset_digest}".encode()
+    ).hexdigest()
+    return digest, cohort_rows
 
 
 def materialize(
@@ -542,7 +548,6 @@ def materialize(
     else:
         lifecycle = existing[0]
 
-    published = _published_rows(conn, as_of)
     if lifecycle == "prepared":
         conn.execute(
             "INSERT INTO bond_price_observation_v1_builds"
@@ -558,22 +563,10 @@ def materialize(
             raise RuntimeError(f"{PRODUCT} publication already pinned to fingerprint {pinned[0]}")
         if pinned[1] != as_of:
             raise RuntimeError(f"{PRODUCT} publication already pinned to as_of {pinned[1]}")
-        for row in published:
-            conn.execute(
-                "INSERT INTO bond_price_observation_v1"
-                "(publication_id,source_run_id,security_id,observation_date,source_row_number,price,"
-                " price_state,price_type,accrued_treatment,ytm,db_type,db_type_state,is_144a,"
-                " daily_key_state,measured_at,provenance) "
-                "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (publication_id,security_id,observation_date,source_row_number) DO NOTHING",
-                (
-                    publication_id, source_run_id, row.security_id, row.observation_date,
-                    row.source_row_number, row.price, row.price_state, row.price_type,
-                    row.accrued_treatment, row.ytm, row.db_type, row.db_type_state, row.is_144a,
-                    row.daily_key_state, as_of,
-                    Jsonb({"resolver": "price_observations", "methodology_version": METHODOLOGY_VERSION}),
-                ),
-            )
+        conn.execute(_PUBLISH_SQL, {
+            "pub": publication_id, "source_run_id": source_run_id, "as_of": as_of,
+            "methodology": METHODOLOGY_VERSION,
+        })
         conn.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
 
     current = conn.execute(
@@ -582,11 +575,15 @@ def materialize(
     if current is None or current[0] != publication_id:
         conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (PRODUCT, publication_id))
 
+    published_count = conn.execute(
+        "SELECT count(*) FROM bond_price_observation_v1 WHERE publication_id=%s",
+        (publication_id,),
+    ).fetchone()[0]
     return {
         "product": PRODUCT,
         "publication_id": str(publication_id),
         "as_of": as_of.isoformat(),
         "observations": observation_count,
-        "published": len(published),
+        "published": published_count,
         "state": "current",
     }
