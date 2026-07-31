@@ -89,7 +89,12 @@ DOCKER_CONTEXT_PATHS = [
     # config, the blockers and the approval verdict. It has to be inside the
     # hashed context, or a supplied docker_context_sha256 could stay valid across
     # a mandate change.
-    "configs/calibration",
+    #
+    # The scope is the WHOLE `configs/` tree, matching `COPY configs /app/configs`
+    # in docker/quant-engine/Dockerfile exactly. Hashing a narrower slice than the
+    # image copies is the same defect in miniature: a sibling config could change
+    # the image while a recorded docker_context_sha256 stayed valid.
+    "configs",
     "packages/investintell_quant_core",
     "services/quant_engine",
     "contracts/quant-engine",
@@ -463,13 +468,34 @@ def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
 def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
     """Does the certified pack carry the baseline references the comparison needs?
 
     Read from the pack, not asserted. The comparison needs G0 / microgrid_v03 /
-    current_baseline_if_certified as certified artifacts INSIDE the pack; today no
-    pack ships them, so this returns False — but by looking, so it opens on its own
-    the day a pack does, instead of waiting for someone to edit a literal.
+    current_baseline_if_certified certified INSIDE the pack; today no pack declares
+    them, so this returns False — but by looking, so it opens on its own the day a
+    pack does, instead of waiting for someone to edit a literal.
+
+    The evidence is the manifest's OPTIONAL ``certified_baseline_references``, an
+    array of ``{reference_id, sha256}``. Two things make that admissible rather
+    than decorative: the pack manifest schema now allows the field (with
+    ``additionalProperties: false`` it was previously rejected outright, so this
+    predicate could never have returned True for a pack that verifies), and the
+    manifest is inside ``input_pack_sha256``, which the verifier recomputes — so a
+    declaration cannot be forged without failing the aggregate hash.
+
+    An earlier draft also probed ``data/baselines/*.json``. That branch was dead:
+    the P0 verifier rejects ``data/`` artifacts outside its declared set, so a pack
+    carrying those files could never verify. Dead code that looks like a path is
+    worse than no path, so it is gone.
     """
     root = Path(input_pack)
     manifest_path = root / "manifest.json"
@@ -479,13 +505,21 @@ def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
         manifest = load_json(manifest_path)
     except (OSError, ValueError):
         return False
+
     declared = manifest.get("certified_baseline_references")
-    if isinstance(declared, (list, tuple)):
-        return set(BASELINE_REFERENCE_IDS) <= {str(item) for item in declared}
-    return all(
-        (root / "data" / "baselines" / f"{name}.json").is_file()
-        for name in BASELINE_REFERENCE_IDS
-    )
+    if not isinstance(declared, list):
+        return False
+    certified: set[str] = set()
+    for item in declared:
+        # Only a hash-pinned entry counts. An id without a digest names a
+        # reference without certifying anything about it.
+        if not isinstance(item, dict):
+            continue
+        reference_id = item.get("reference_id")
+        digest = item.get("sha256")
+        if isinstance(reference_id, str) and _is_sha256_hex(digest):
+            certified.add(reference_id)
+    return set(BASELINE_REFERENCE_IDS) <= certified
 
 
 def final_approval_blockers(

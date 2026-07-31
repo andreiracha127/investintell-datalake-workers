@@ -164,3 +164,74 @@ def validate_runtime_disabled(report: dict[str, Any]) -> None:
     New code should call ``validate_runtime_mode`` and say which mode it ran in.
     """
     validate_runtime_mode(report, mode=OFFLINE_EVIDENCE, required=_LEGACY_OFFLINE_REQUIRED)
+
+
+# --------------------------------------------------------------------------- #
+# Request <-> result pairing
+# --------------------------------------------------------------------------- #
+#: Sleeve governance statuses an activated run may consume. A run that publishes
+#: live outputs must not be built on a sleeve nobody approved.
+APPROVED_SLEEVE_STATUSES = frozenset({"approved", "activated"})
+CANDIDATE_SLEEVE_STATUS = "candidate_not_approved"
+
+
+def request_runtime_mode(request: dict[str, Any]) -> str:
+    """The mode a request declares. Absent means the conservative one."""
+    mode = request.get("runtime_mode", OFFLINE_EVIDENCE)
+    if mode not in RUNTIME_MODES:
+        raise RuntimeModeError(
+            f"unknown runtime mode {mode!r} (expected one of {', '.join(RUNTIME_MODES)})"
+        )
+    return str(mode)
+
+
+def validate_sleeve_governance(request: dict[str, Any], *, mode: str | None = None) -> None:
+    """The sleeve a run consumes must match the envelope the run declares.
+
+    The v3 request pinned ``sleeve.status`` to ``candidate_not_approved`` with a
+    ``const``, so a productive run that publishes live outputs could only be
+    expressed by declaring the sleeve UNAPPROVED — the contract forced the
+    publication to disown its own input governance. The status is now coupled to
+    the runtime mode, in both directions:
+
+    * an activated run must consume an approved (or activated) sleeve;
+    * an offline evidence run must consume the unapproved candidate, so evidence
+      cannot quietly borrow production's approval.
+    """
+    mode = mode if mode is not None else request_runtime_mode(request)
+    sleeve = request.get("sleeve")
+    if not isinstance(sleeve, dict) or "status" not in sleeve:
+        raise RuntimeModeError(
+            "sleeve governance inconsistency: the request declares no sleeve status; "
+            "an absent governance field is not an assertion"
+        )
+    status = sleeve["status"]
+    if mode == ACTIVATED and status not in APPROVED_SLEEVE_STATUSES:
+        raise RuntimeModeError(
+            f"sleeve governance inconsistency: mode 'activated' publishes live outputs "
+            f"but the sleeve status is {status!r} (expected one of "
+            f"{', '.join(sorted(APPROVED_SLEEVE_STATUSES))})"
+        )
+    if mode == OFFLINE_EVIDENCE and status != CANDIDATE_SLEEVE_STATUS:
+        raise RuntimeModeError(
+            f"sleeve governance inconsistency: mode 'offline_evidence' must consume the "
+            f"unapproved candidate sleeve, got {status!r}"
+        )
+
+
+def validate_request_result_pair(request: dict[str, Any], result: dict[str, Any]) -> None:
+    """Bind a job REQUEST and its RESULT to one runtime envelope.
+
+    Either half alone can be self-consistent while the pair is nonsense: an
+    offline request paired with a productive result, or an activated request
+    whose result reports nothing activated. This is the seam where that is
+    caught, and it is fail-closed on silence like everything else here.
+    """
+    mode = request_runtime_mode(request)
+    if "job_type" in request and "job_type" in result and request["job_type"] != result["job_type"]:
+        raise RuntimeModeError(
+            f"request/result mismatch: job_type {request['job_type']!r} != {result['job_type']!r}"
+        )
+    if "sleeve" in request:
+        validate_sleeve_governance(request, mode=mode)
+    validate_runtime_mode(result, mode=mode)

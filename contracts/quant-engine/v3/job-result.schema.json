@@ -351,6 +351,88 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime_activation": {
+                "const": false
+              }
+            },
+            "required": [
+              "runtime_activation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "a5_status": {
+                "const": "blocked"
+              },
+              "freeze_ready": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime_activation": {
+                "const": true
+              }
+            },
+            "required": [
+              "runtime_activation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "a5_status": {
+                "const": "active"
+              },
+              "freeze_ready": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "a5_status": {
+                "const": "blocked"
+              }
+            },
+            "required": [
+              "a5_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runtime_activation": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "a5_status": {
+                "const": "active"
+              }
+            },
+            "required": [
+              "a5_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runtime_activation": {
+                "const": true
+              }
+            }
+          }
         }
       ]
     },

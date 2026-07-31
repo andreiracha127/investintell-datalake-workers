@@ -356,6 +356,212 @@ def test_v3_refuses_contradictory_states(fixture_name: str) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Request <-> result pairing, and the sleeve a productive run consumes.
+# --------------------------------------------------------------------------- #
+def test_an_activated_request_may_declare_an_approved_sleeve() -> None:
+    """The product fix: publication no longer has to disown its own input.
+
+    `sleeve.status` was pinned to `candidate_not_approved` with a `const`, so the
+    only expressible metric-backtest request declared the sleeve UNAPPROVED —
+    including the request that pairs with a `productive_result` publishing live
+    outputs. A run that publishes must be able to say the sleeve was approved.
+    """
+    request = _fixture(V3 / "fixtures" / "valid" / "job-request.metric-backtest.activated.json")
+    jsonschema.validate(request, _schema(V3 / "job-request.schema.json"))
+    assert request["runtime_mode"] == "activated"
+    assert request["sleeve"]["status"] == "approved"
+
+
+def test_an_offline_request_still_requires_the_candidate_sleeve() -> None:
+    """Both directions: evidence cannot borrow production's approval."""
+    payload = _fixture(
+        V3
+        / "fixtures"
+        / "invalid"
+        / "job-request.metric-backtest-offline-with-approved-sleeve.json"
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-request.schema.json"))
+
+
+def test_an_activated_request_refuses_an_unapproved_sleeve() -> None:
+    payload = _fixture(
+        V3
+        / "fixtures"
+        / "invalid"
+        / "job-request.metric-backtest-activated-with-unapproved-sleeve.json"
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-request.schema.json"))
+
+
+def test_an_unstated_request_mode_is_the_conservative_one() -> None:
+    request = _fixture(V3 / "fixtures" / "valid" / "job-request.metric-backtest.json")
+    assert "runtime_mode" not in request
+    assert preflight.request_runtime_mode(request) == preflight.OFFLINE_EVIDENCE
+    assert request["sleeve"]["status"] == "candidate_not_approved"
+
+
+@pytest.mark.parametrize(
+    ("request_name", "result_name"),
+    [
+        ("job-request.metric-backtest.json", "job-result.metric-backtest.json"),
+        (
+            "job-request.metric-backtest.activated.json",
+            "job-result.metric-backtest.activated.json",
+        ),
+        ("job-request.metric-backtest.offline-explicit.json", "job-result.metric-backtest.json"),
+    ],
+)
+def test_matching_request_and_result_pair_cleanly(request_name: str, result_name: str) -> None:
+    preflight.validate_request_result_pair(
+        _fixture(V3 / "fixtures" / "valid" / request_name),
+        _fixture(V3 / "fixtures" / "valid" / result_name),
+    )
+
+
+@pytest.mark.parametrize(
+    ("request_name", "result_name"),
+    [
+        ("job-request.metric-backtest.json", "job-result.metric-backtest.activated.json"),
+        ("job-request.metric-backtest.activated.json", "job-result.metric-backtest.json"),
+    ],
+    ids=["offline-request-productive-result", "activated-request-evidence-result"],
+)
+def test_a_mismatched_pair_is_refused(request_name: str, result_name: str) -> None:
+    """Either half can be self-consistent while the PAIR is nonsense."""
+    with pytest.raises(preflight.RuntimeModeError):
+        preflight.validate_request_result_pair(
+            _fixture(V3 / "fixtures" / "valid" / request_name),
+            _fixture(V3 / "fixtures" / "valid" / result_name),
+        )
+
+
+def test_a_request_without_a_sleeve_status_cannot_assert_a_mode() -> None:
+    request = _fixture(V3 / "fixtures" / "valid" / "job-request.metric-backtest.activated.json")
+    del request["sleeve"]["status"]
+    with pytest.raises(preflight.RuntimeModeError, match="declares no sleeve status"):
+        preflight.validate_sleeve_governance(request)
+
+
+# --------------------------------------------------------------------------- #
+# The dry-run variant couples its governance fields like the others.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "job-result.dry-run-activated-but-a5-blocked.json",
+        "job-result.dry-run-blocked-but-freeze-ready.json",
+    ],
+)
+def test_the_dry_run_variant_refuses_split_governance(fixture_name: str) -> None:
+    """`runtime_activation: true` with `a5_status: "blocked"` used to validate."""
+    payload = _fixture(V3 / "fixtures" / "invalid" / fixture_name)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-result.schema.json"))
+
+
+# --------------------------------------------------------------------------- #
+# Baseline certification evidence is ADMISSIBLE, not merely described.
+# --------------------------------------------------------------------------- #
+def _golden_manifest() -> dict:
+    return json.loads(
+        (
+            ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack" / "manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _pack_manifest_schema() -> dict:
+    return json.loads(
+        (ROOT / "schemas" / "input_packs" / "input_pack_manifest.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def test_a_declared_baseline_reference_manifest_validates_against_the_pack_schema() -> None:
+    """The predicate could never have returned True for a pack that verifies.
+
+    The pack manifest schema sets `additionalProperties: false` and had no field
+    for this, so the declaration was rejected outright. It is admissible now — and
+    hash-pinned, so it cannot be forged past `input_pack_sha256`.
+    """
+    schema = _pack_manifest_schema()
+    base = _golden_manifest()
+    jsonschema.validate(base, schema)  # the committed pack still validates
+
+    declared = dict(
+        base,
+        certified_baseline_references=[
+            {"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS
+        ],
+    )
+    jsonschema.validate(declared, schema)
+
+    unpinned = dict(
+        base,
+        certified_baseline_references=[
+            {"reference_id": name, "sha256": "not-a-digest"} for name in cc.BASELINE_REFERENCE_IDS
+        ],
+    )
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(unpinned, schema)
+
+
+def test_the_baseline_predicate_reads_the_declaration(tmp_path: Path) -> None:
+    base = _golden_manifest()
+    pack = tmp_path / "pack"
+    pack.mkdir()
+
+    def write(manifest: dict) -> None:
+        (pack / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    write(base)
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+    write(
+        dict(
+            base,
+            certified_baseline_references=[
+                {"reference_id": cc.BASELINE_REFERENCE_IDS[0], "sha256": "a" * 64}
+            ],
+        )
+    )
+    assert cc.pack_certifies_baseline_references(pack) is False, "a partial set must not certify"
+
+    write(
+        dict(
+            base,
+            certified_baseline_references=[
+                {"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS
+            ],
+        )
+    )
+    assert cc.pack_certifies_baseline_references(pack) is True
+
+    write(
+        dict(
+            base,
+            certified_baseline_references=[
+                {"reference_id": name} for name in cc.BASELINE_REFERENCE_IDS
+            ],
+        )
+    )
+    assert cc.pack_certifies_baseline_references(pack) is False, (
+        "an id without a digest certifies nothing"
+    )
+
+
+def test_the_hashed_config_scope_matches_what_the_image_copies() -> None:
+    """A sibling config must not change the image while the hash stays valid."""
+    assert "configs" in cc.DOCKER_CONTEXT_PATHS
+    assert "configs/calibration" not in cc.DOCKER_CONTEXT_PATHS
+    for dockerfile in ("docker/quant-engine/Dockerfile", "docker/railway-ci/Dockerfile"):
+        assert "COPY configs /app/configs" in (ROOT / dockerfile).read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------- #
 # Calibration: institutional limits are parameters, the verdict is derived.
 # --------------------------------------------------------------------------- #
 def test_no_explicitly_unset_literal_survives_in_the_calibration_module() -> None:
@@ -467,31 +673,6 @@ def test_an_unmeasurable_limit_does_not_fake_a_violation(tmp_path: Path) -> None
     assert report["checks"]["constraints_respected"] is True
     assert report["ok"] is True
     assert cc.final_approval_blockers(evaluation), "approval still blocked, for true reasons"
-
-
-def test_the_mandate_is_inside_the_hashed_docker_context() -> None:
-    """Changing the mandate must invalidate a supplied docker_context_sha256."""
-    assert "configs/calibration" in cc.DOCKER_CONTEXT_PATHS
-
-
-def test_baseline_reference_availability_is_read_from_the_pack(tmp_path: Path) -> None:
-    """Derived, not defaulted: it opens when a pack actually certifies them."""
-    pack = tmp_path / "pack"
-    (pack / "data" / "baselines").mkdir(parents=True)
-    (pack / "manifest.json").write_text("{}", encoding="utf-8")
-    assert cc.pack_certifies_baseline_references(pack) is False
-
-    for name in cc.BASELINE_REFERENCE_IDS:
-        (pack / "data" / "baselines" / f"{name}.json").write_text("{}", encoding="utf-8")
-    assert cc.pack_certifies_baseline_references(pack) is True
-
-    declared = tmp_path / "declared"
-    declared.mkdir()
-    (declared / "manifest.json").write_text(
-        json.dumps({"certified_baseline_references": list(cc.BASELINE_REFERENCE_IDS)}),
-        encoding="utf-8",
-    )
-    assert cc.pack_certifies_baseline_references(declared) is True
 
 
 _SUMMARY = {
