@@ -37,12 +37,18 @@ from psycopg import sql
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = (
-    ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
+    ROOT / "contracts" / "nport-fixed-income-features" / "v3" / "contract.json"
 )
 BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
 # Historical alias: the resource used to live under ``sql/local_only`` and was
 # reachable only from the offline route.  Same bytes, same sha256 pin.
 LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
+# Re-approved 2026-07-31 (second): the two per-position repo/securities-lending
+# surfaces and their coverage family are gone. Owner decision -- the figures are
+# excessively technical for the product, and the one dossier panel that read
+# them was removed. reported_flags alone was the second largest write in the
+# build (~114 MB/min, 1.9+ GB per publication, one row per holding per flag).
+#
 # Re-approved 2026-07-31: coverage stops materializing absence per position.
 # The debut production build was cancelled after 2h+ of CPU; the dominant cost
 # was one coverage row per holding per metric key -- 173,716 rows per snapshot,
@@ -55,9 +61,9 @@ LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
 # is a planner directive only — the rows the oracle produces are unchanged.
-APPROVED_LOCAL_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
+APPROVED_LOCAL_ORACLE_SHA256 = "70703b7ae07c6affb829b354456f4995597cbb58c22798ff9c7590cffb976207"
 CONTRACT_DIGEST = (
-    "sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563"
+    "sha256:15cf29a48a99b6f560118dafa372baaef241713d8649be4c1e1ade2d1ec6e844"
 )
 TARGET_RELATIONS = (
     "nport_fixed_income_features",
@@ -65,8 +71,6 @@ TARGET_RELATIONS = (
     "nport_fixed_income_credit_spread_sensitivities_v2",
     "nport_fixed_income_balance_sheet_primitives_v2",
     "nport_fixed_income_debt_flag_features_v2",
-    "nport_fixed_income_repo_lending_primitives_v2",
-    "nport_fixed_income_repo_lending_reported_flags_v2",
     "nport_fixed_income_metric_coverage_v2",
 )
 # The fund x metric coverage rollup. It is NOT a contract relation -- the frozen
