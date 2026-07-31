@@ -57,6 +57,30 @@
     "source_repo": {
       "const": "investintell-datalake-workers",
       "type": "string"
+    },
+    "certified_baseline_references": {
+      "description": "OPTIONAL. Baseline references this pack certifies for the calibration baseline comparison. Absent means the pack certifies none, which blocks final approval \u2014 the conservative reading. Each entry pins the reference by sha256, and the manifest itself is inside input_pack_sha256, so a declaration cannot be forged without failing the aggregate hash the verifier recomputes.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reference_id",
+          "sha256"
+        ],
+        "properties": {
+          "reference_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
     }
   },
   "required": [
@@ -77,4 +101,3 @@
   "title": "CertifiedInputPackManifestV1",
   "type": "object"
 }
-

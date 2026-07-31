@@ -212,7 +212,12 @@
               "const": "open_macro_v03_phase0q_002"
             },
             "status": {
-              "const": "candidate_not_approved"
+              "enum": [
+                "candidate_not_approved",
+                "approved",
+                "activated"
+              ],
+              "description": "Governance status of the reference sleeve. An offline evidence run may only consume an unapproved candidate; an activated run that publishes must consume an approved (or activated) sleeve."
             }
           }
         },
@@ -275,8 +280,86 @@
         "output_uri": {
           "type": "string",
           "minLength": 1
+        },
+        "runtime_mode": {
+          "enum": [
+            "offline_evidence",
+            "activated"
+          ],
+          "description": "The envelope this run executes under. Absent means offline_evidence: an unstated mode is the conservative one, exactly as in investintell_quant_engine.preflight."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runtime_mode": {
+                "const": "activated"
+              }
+            },
+            "required": [
+              "runtime_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "sleeve": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "approved",
+                      "activated"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime_mode": {
+                "const": "offline_evidence"
+              }
+            },
+            "required": [
+              "runtime_mode"
+            ]
+          },
+          "then": {
+            "properties": {
+              "sleeve": {
+                "properties": {
+                  "status": {
+                    "const": "candidate_not_approved"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "runtime_mode"
+              ]
+            }
+          },
+          "then": {
+            "properties": {
+              "sleeve": {
+                "properties": {
+                  "status": {
+                    "const": "candidate_not_approved"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

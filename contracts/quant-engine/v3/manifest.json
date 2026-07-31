@@ -1,5 +1,5 @@
 {
-  "bundle_sha256": "sha256:99811f3a253623aec64e51174e3a85059bfc424786cf860d98552b70656bd1dc",
+  "bundle_sha256": "sha256:0b4502464f370e05a78d246e26d8f54402ed3761c0bf1a2e5bf183c4c052d850",
   "contract_version": "3.0.0",
   "files": [
     {
@@ -9,6 +9,14 @@
     {
       "path": "fixtures/invalid/job-request.additional-property.json",
       "sha256": "d4e83805e00ba3dc8149f2b71f1ae94546c68f9b140c680ff26a7950c713cc5e"
+    },
+    {
+      "path": "fixtures/invalid/job-request.metric-backtest-activated-with-unapproved-sleeve.json",
+      "sha256": "23e4822b20d4cc202582c49db4441624b6c950773a0000c97570babd65a42546"
+    },
+    {
+      "path": "fixtures/invalid/job-request.metric-backtest-offline-with-approved-sleeve.json",
+      "sha256": "db721f7378bbf4215210450c31e3277d17f70186ca21b49be9f3bcdff6850f62"
     },
     {
       "path": "fixtures/invalid/job-request.missing-engine-image-digest.json",
@@ -29,6 +37,14 @@
     {
       "path": "fixtures/invalid/job-result.db-write-out-of-enum.json",
       "sha256": "48a641d13c3f544cf711f49386af50890c75445c1f8a736d3289950ae181aecc"
+    },
+    {
+      "path": "fixtures/invalid/job-result.dry-run-activated-but-a5-blocked.json",
+      "sha256": "758e7b551a7fe447eb829e1a766e5ec588467317d0fed87c42136a2c9492baf6"
+    },
+    {
+      "path": "fixtures/invalid/job-result.dry-run-blocked-but-freeze-ready.json",
+      "sha256": "c40e997da982afd0bf1466001b956c509251c6ff3aa1b16371ac32eec8b98ae3"
     },
     {
       "path": "fixtures/invalid/job-result.dry-run-failed-but-verified.json",
@@ -63,8 +79,16 @@
       "sha256": "0aa0f294f3f35170d1732d5b0a4b86f8d1deb0aa88d6d9685091fa09632cc1ec"
     },
     {
+      "path": "fixtures/valid/job-request.metric-backtest.activated.json",
+      "sha256": "d00b83ed447a8784351f902d76febf984e5db7d6dcc89b6b5401bc021d84907d"
+    },
+    {
       "path": "fixtures/valid/job-request.metric-backtest.json",
       "sha256": "49b8ec65537302de6aae352731338f803d2a9cf368081561e4a0fe92b0b54a11"
+    },
+    {
+      "path": "fixtures/valid/job-request.metric-backtest.offline-explicit.json",
+      "sha256": "e50353622f333be65275a97c6146518851e50236509365764b4d10ae4917ca26"
     },
     {
       "path": "fixtures/valid/job-request.minimal.json",
@@ -92,11 +116,11 @@
     },
     {
       "path": "job-request.schema.json",
-      "sha256": "7b123ceae4bb2739082d85a4b2d6613b7e2cb74951a83813848f8591af80b2e4"
+      "sha256": "b2cf681f706f6e07c9429962ed7af0114691622ad1566dd3571a2780558945db"
     },
     {
       "path": "job-result.schema.json",
-      "sha256": "58be6a7bdc4ce5c505b89087e51fe60eff2166a3d2a5c606033c21d6ba9ee33d"
+      "sha256": "03b157342d45aab5e0f5ed4a53634f2f1bb5f3eff05a3a78c7f9a7e3fae364dc"
     }
   ]
 }
