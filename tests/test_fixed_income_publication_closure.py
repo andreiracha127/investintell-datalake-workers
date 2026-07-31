@@ -80,8 +80,15 @@ def _resource_config(tmp_path: Path) -> materializer.ResourceConfig:
 
 
 def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> dict[str, Path]:
-    """Eight payloads: seven empty, one coverage row (so the counts are not all zero)."""
-    columns = materializer._contract_columns()
+    """Nine payloads: the eight contract relations plus the coverage rollup.
+
+    Two carry a row (one per-position coverage fact and its rollup) so the
+    counts are not all zero. The rollup is part of every publication since the
+    builder stopped materializing absence: it is the only place the counts of
+    what was absent exist, so an artifact without it publishes a coverage
+    surface that silently claims full coverage.
+    """
+    columns = materializer._published_columns()
     payloads: dict[str, Path] = {}
     coverage_row = {
         "publication_id": identity.target_publication_id,
@@ -105,11 +112,33 @@ def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> d
         "exclusions": "[]",
         "methodology_version": "nport_fixed_income_features_v2",
     }
-    for relation in materializer.TARGET_RELATIONS:
+    rollup_row = {
+        "publication_id": identity.target_publication_id,
+        "source_holdings_publication_id": str(holdings_publication),
+        "source_run_id": str(run_id),
+        "series_id": "S1",
+        "report_date": AS_OF,
+        "accession_number": "A1",
+        "metric_family": "duration",
+        "metric_key": "effective_duration",
+        "numerator": "1",
+        "denominator": "2",
+        "denominator_unit": "count",
+        "coverage_ratio": "0.5",
+        "availability_state": "reported_numeric",
+        "methodology_version": "nport_fixed_income_features_v2",
+        "exclusions": "[]",
+        "source_row_count": "2",
+        "reported_row_count": "1",
+        "missing_reason_counts": "{}",
+    }
+    for relation in materializer.PUBLISHED_RELATIONS:
         path = tmp_path / f"{relation}.tsv.gz"
         lines = ["\t".join(columns[relation])]
         if relation == COVERAGE:
             lines.append("\t".join(coverage_row[name] for name in columns[relation]))
+        if relation == materializer.COVERAGE_ROLLUP_RELATION:
+            lines.append("\t".join(rollup_row[name] for name in columns[relation]))
         with gzip.GzipFile(filename="", mode="wb", fileobj=path.open("wb"), mtime=0) as out:
             out.write(("\n".join(lines) + "\n").encode())
         payloads[relation] = path
@@ -174,7 +203,7 @@ def published(tmp_path):
         source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
         output_files=payloads,
         resource_config=config,
-        output_counts={COVERAGE: 1},
+        output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
     )
     (tmp_path / "manifest.json").write_text(
         materializer.canonical_json(manifest), encoding="utf-8"
@@ -208,7 +237,11 @@ def test_publish_records_the_closure_and_replay_never_scans_a_relation(published
         # replay compares numbers it already has instead of producing them.
         assert closure[1][COVERAGE] == 1
         assert closure[1]["nport_fixed_income_features"] == 0
-        assert set(closure[1]) == set(materializer.TARGET_RELATIONS)
+        # The closure covers the rollup too: it is part of the publication, and
+        # it is the relation the reader actually consumes -- a re-proof that
+        # skipped it would attest everything except what is served.
+        assert set(closure[1]) == set(materializer.PUBLISHED_RELATIONS)
+        assert closure[1][materializer.COVERAGE_ROLLUP_RELATION] == 1
         # The published rows really are there: the closure is a shortcut for the
         # re-proof, never a substitute for the write.
         assert conn.execute(
@@ -240,8 +273,9 @@ def test_verify_storage_forces_the_full_recount(published) -> None:
         )
         conn.commit()
     counted = [s for s in statements if "count(*) FROM nport_fixed_income" in s]
-    assert len(counted) == len(materializer.TARGET_RELATIONS)
+    assert len(counted) == len(materializer.PUBLISHED_RELATIONS)
     assert any(COVERAGE in s for s in counted)
+    assert any(materializer.COVERAGE_ROLLUP_RELATION in s for s in counted)
 
 
 def test_verify_storage_env_switch_forces_the_full_recount(published, monkeypatch) -> None:
@@ -257,7 +291,7 @@ def test_verify_storage_env_switch_forces_the_full_recount(published, monkeypatc
         )
         conn.commit()
     assert len([s for s in statements if "count(*) FROM nport_fixed_income" in s]) == len(
-        materializer.TARGET_RELATIONS
+        materializer.PUBLISHED_RELATIONS
     )
 
 
@@ -283,7 +317,7 @@ def test_missing_closure_recounts_once_and_then_records_one(published) -> None:
         )
         conn.commit()
     assert len([s for s in first if "count(*) FROM nport_fixed_income" in s]) == len(
-        materializer.TARGET_RELATIONS
+        materializer.PUBLISHED_RELATIONS
     )
 
     second: list[str] = []
@@ -342,3 +376,173 @@ def test_the_closure_and_its_relations_are_immutable_in_the_database(published) 
                 (uuid4(), "b" * 64),
             )
         assert manifest["manifest_sha256"]
+
+
+def _legacy_v2_manifest(manifest: dict) -> dict:
+    """Rewrite a current manifest into the frozen v2 shape it superseded.
+
+    A real pre-migration bundle attests eight payloads and the previous builder
+    sha; nothing else about it changes.
+    """
+    import hashlib
+
+    legacy = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
+    legacy["format"] = materializer.LEGACY_MANIFEST_FORMAT
+    legacy["engine"] = {
+        **legacy["engine"],
+        "oracle_sha256": materializer.LEGACY_ORACLE_SHA256,
+    }
+    legacy["outputs"] = {
+        name: value
+        for name, value in legacy["outputs"].items()
+        if name != materializer.COVERAGE_ROLLUP_RELATION
+    }
+    legacy["manifest_sha256"] = hashlib.sha256(
+        materializer.canonical_json(legacy).encode()
+    ).hexdigest()
+    return legacy
+
+
+def test_a_frozen_v2_artifact_still_restores_and_gets_its_rollup(tmp_path) -> None:
+    """Recovery from a pre-migration bundle must not be collateral damage.
+
+    A v2 artifact carries eight payloads and no rollup -- but its coverage
+    payload holds one row per position INCLUDING the absent ones, which is
+    exactly what the current builder stopped writing. So the rollup is derived
+    from it at publish time, with the absence counted, and the publication ends
+    up serving the same figures a v3 restore would.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as admin, admin.cursor() as cur:
+        schema, run_id, package_id, holdings_publication = _seed(cur)
+    dsn = f"{DSN} options=-csearch_path={schema}"
+    identity = materializer.BuildIdentity(
+        source_publication_id=str(holdings_publication),
+        source_run_id=str(run_id),
+        source_package_id=str(package_id),
+        target_publication_id=str(uuid4()),
+        as_of_date=AS_OF,
+        contract_digest=materializer.CONTRACT_DIGEST,
+    )
+    config = _resource_config(tmp_path)
+    payloads = _write_payloads(tmp_path, identity, holdings_publication, run_id)
+    manifest = materializer.build_manifest(
+        identity=identity,
+        worker_sha="a" * 40,
+        source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
+        output_files=payloads,
+        resource_config=config,
+        output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
+    )
+    legacy = _legacy_v2_manifest(manifest)
+    (tmp_path / "manifest.json").write_text(
+        materializer.canonical_json(legacy), encoding="utf-8"
+    )
+    (tmp_path / f"{materializer.COVERAGE_ROLLUP_RELATION}.tsv.gz").unlink()
+
+    try:
+        with psycopg.connect(dsn) as conn:
+            materializer.publish_artifact(
+                connection=conn, artifact_dir=tmp_path, identity=identity,
+                resource_config=config,
+            )
+            conn.commit()
+        with psycopg.connect(dsn) as conn:
+            target = identity.target_publication_id
+            assert conn.execute(
+                "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s",
+                (target,),
+            ).fetchone() == ("validated",)
+            # Derived, not carried: the rollup exists and reports the same figure.
+            assert conn.execute(
+                "SELECT metric_key, reported_row_count, source_row_count "
+                f"FROM {materializer.COVERAGE_ROLLUP_RELATION} WHERE publication_id=%s",
+                (target,),
+            ).fetchall() == [("effective_duration", 1, 1)]
+            # The closure attests exactly what the v2 manifest claimed: eight.
+            closure = conn.execute(
+                "SELECT relation_counts FROM nport_fixed_income_publication_closures "
+                "WHERE publication_id=%s", (target,)
+            ).fetchone()[0]
+            assert set(closure) == set(materializer.TARGET_RELATIONS)
+        # And the replay of a v2 bundle stays idempotent.
+        with psycopg.connect(dsn) as conn:
+            materializer.publish_artifact(
+                connection=conn, artifact_dir=tmp_path, identity=identity,
+                resource_config=config,
+            )
+            conn.commit()
+    finally:
+        with psycopg.connect(DSN, autocommit=True) as admin:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_an_unknown_manifest_format_is_refused(published) -> None:
+    """Only the two known shapes are restorable; anything else fails closed."""
+    _dsn, _identity, _config, _artifact_dir, manifest = published
+    with pytest.raises(materializer.ArtifactIntegrityError, match="unexpected manifest format"):
+        materializer.manifest_relations({**manifest, "format": "nport-fixed-income/v9"})
+
+
+def test_a_publication_promoted_before_the_rollup_existed_is_repaired(published) -> None:
+    """The idempotency shortcut must not certify a publication serving nothing.
+
+    A publication promoted by the previous builder -- restored from a v2 bundle,
+    or short-circuited by the worker because its identity did not change -- has
+    no rollup rows, and the dossier reads the rollup. Every check on the replay
+    path still passes: the manifest attests eight relations, the closure attests
+    eight counts, and both remain true. Detect and repair before accepting it.
+    """
+    import psycopg
+
+    dsn, identity, config, artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    rollup = materializer.COVERAGE_ROLLUP_RELATION
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        # Simulate the pre-migration state: the publication is validated and
+        # current, its coverage rows are there, the rollup is not.
+        conn.execute(f"ALTER TABLE {rollup} DISABLE TRIGGER USER")
+        conn.execute(f"DELETE FROM {rollup} WHERE publication_id=%s", (target,))
+        conn.execute(f"ALTER TABLE {rollup} ENABLE TRIGGER USER")
+        assert conn.execute(
+            f"SELECT count(*) FROM {rollup} WHERE publication_id=%s", (target,)
+        ).fetchone() == (0,)
+
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "backfilled"
+        conn.commit()
+
+    with psycopg.connect(dsn) as conn:
+        # Derived from the coverage rows, which for such a publication carry one
+        # row per position including the absent ones.
+        assert conn.execute(
+            f"SELECT metric_key, reported_row_count, source_row_count FROM {rollup} "
+            "WHERE publication_id=%s", (target,)
+        ).fetchall() == [("effective_duration", 1, 1)]
+        # Self-limiting: a second call is a no-op, never a rewrite.
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "present"
+
+
+def test_the_backfill_cannot_rewrite_an_existing_rollup(published) -> None:
+    """The relaxation is additive only: a validated publication WITH a rollup is closed."""
+    import psycopg
+
+    dsn, identity, _config, _artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    with psycopg.connect(dsn) as conn:
+        with pytest.raises(psycopg.errors.RaiseException, match="already published"):
+            conn.execute(
+                f"INSERT INTO {materializer.COVERAGE_ROLLUP_RELATION} "
+                "(publication_id,source_holdings_publication_id,source_run_id,series_id,"
+                " report_date,accession_number,metric_family,metric_key,"
+                " source_row_count,reported_row_count) "
+                "SELECT publication_id,source_holdings_publication_id,source_run_id,series_id,"
+                " report_date,accession_number,metric_family,'forged',1,1 "
+                f"FROM {materializer.COVERAGE_ROLLUP_RELATION} WHERE publication_id=%s",
+                (target,),
+            )
+        conn.rollback()

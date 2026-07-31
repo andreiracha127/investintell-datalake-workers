@@ -327,14 +327,49 @@ BEGIN
         ('key_rate.dv01.3mon',r.typed_projection->>'INTRST_RATE_CHANGE_3MON_DV01'),('key_rate.dv01.1yr',r.typed_projection->>'INTRST_RATE_CHANGE_1YR_DV01'),('key_rate.dv01.5yr',r.typed_projection->>'INTRST_RATE_CHANGE_5YR_DV01'),('key_rate.dv01.10yr',r.typed_projection->>'INTRST_RATE_CHANGE_10YR_DV01'),('key_rate.dv01.30yr',r.typed_projection->>'INTRST_RATE_CHANGE_30YR_DV01'),
         ('key_rate.dv100.3mon',r.typed_projection->>'INTRST_RATE_CHANGE_3MON_DV100'),('key_rate.dv100.1yr',r.typed_projection->>'INTRST_RATE_CHANGE_1YR_DV100'),('key_rate.dv100.5yr',r.typed_projection->>'INTRST_RATE_CHANGE_5YR_DV100'),('key_rate.dv100.10yr',r.typed_projection->>'INTRST_RATE_CHANGE_10YR_DV100'),('key_rate.dv100.30yr',r.typed_projection->>'INTRST_RATE_CHANGE_30YR_DV100')
       ) v(metric_key,raw_value)
-    ) INSERT INTO nport_fixed_income_metric_coverage_v2
-
+    ), key_rate_coverage AS (
+      SELECT series_id,report_date,accession_number,
+        raw_row_id AS coverage_raw_row_id,source_file_id AS coverage_source_file_id,source_row_number AS coverage_source_row_number,
+        COALESCE('raw:'||raw_row_id::text,'absent:nport_interest_rate_risk_raw:'||accession_number) AS coverage_identity_key,
+        'key_rate_sensitivity' AS coverage_family,metric_key AS coverage_metric_key,
+        availability_state AS coverage_state,
+        CASE availability_state WHEN 'source_row_absent' THEN 'no_pinned_raw_source_row' WHEN 'field_missing_or_invalid' THEN 'named_field_missing_or_invalid' END AS coverage_missing_reason
+      FROM values_rows
+), coverage_rows AS MATERIALIZED (
+      SELECT * FROM key_rate_coverage
+    ), persisted_present AS (
+      -- Only rows that actually carry a value are materialized per position.
+      -- Absence used to be written one row per holding per metric key: 173,716
+      -- rows per snapshot, 45.6M rows, 20 GB of table plus 18 GB of primary key,
+      -- for figures the reader only ever consumes rolled up. Absence is now
+      -- COUNTED in the rollup below -- strictly more informative than a row per
+      -- absent position, and three orders of magnitude smaller.
+      INSERT INTO nport_fixed_income_metric_coverage_v2
       (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,source_raw_row_id,source_file_id,source_row_number,source_identity_key,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,missing_reason,exclusions)
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,raw_row_id,source_file_id,source_row_number,
-      COALESCE('raw:'||raw_row_id::text,'absent:nport_interest_rate_risk_raw:'||accession_number),'key_rate_sensitivity',metric_key,
-      CASE WHEN parsed_value IS NULL THEN 0 ELSE 1 END,1,'source_row_and_named_field',CASE WHEN parsed_value IS NULL THEN 0 ELSE 1 END,availability_state,
-      CASE availability_state WHEN 'source_row_absent' THEN 'no_pinned_raw_source_row' WHEN 'field_missing_or_invalid' THEN 'named_field_missing_or_invalid' END,'[]'::jsonb
-    FROM values_rows ON CONFLICT DO NOTHING;
+      SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_raw_row_id,coverage_source_file_id,coverage_source_row_number,coverage_identity_key,coverage_family,coverage_metric_key,
+        1,1,'source_row_and_named_field',1,'reported_numeric',NULL,'[]'::jsonb
+      FROM coverage_rows WHERE coverage_state='reported_numeric'
+      ON CONFLICT DO NOTHING
+      RETURNING 1
+    )
+    INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
+      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,methodology_version,exclusions,source_row_count,reported_row_count,missing_reason_counts)
+    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_family,coverage_metric_key,
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      count(*),
+      'source_row_and_named_field',
+      count(*) FILTER (WHERE coverage_state='reported_numeric')::numeric/count(*),
+      CASE WHEN min(coverage_state)=max(coverage_state) THEN min(coverage_state) END,
+      'nport_fixed_income_features_v2','[]'::jsonb,
+      count(*),
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      jsonb_build_object(
+        'no_pinned_raw_source_row',count(*) FILTER (WHERE coverage_missing_reason='no_pinned_raw_source_row'),
+        'named_field_missing_or_invalid',count(*) FILTER (WHERE coverage_missing_reason='named_field_missing_or_invalid')
+      )
+    FROM coverage_rows
+    GROUP BY series_id,report_date,accession_number,coverage_family,coverage_metric_key
+    ON CONFLICT DO NOTHING;
 
     -- Coverage is a row-level provenance surface: an absent extension has a
     -- deterministic absent key, while every actual raw row retains all three
@@ -352,13 +387,49 @@ BEGIN
       FROM snapshot_filings s LEFT JOIN nport_fund_reported_info_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
 
       CROSS JOIN LATERAL (VALUES ('balance.net_assets',r.typed_projection->>'NET_ASSETS'),('balance.total_assets',r.typed_projection->>'TOTAL_ASSETS'),('balance.total_liabilities',r.typed_projection->>'TOTAL_LIABILITIES'),('balance.borrowing_pay_within_1yr',r.typed_projection->>'BORROWING_PAY_WITHIN_1YR'),('balance.controlled_companies_pay_within_1yr',r.typed_projection->>'CTRLD_COMPANIES_PAY_WITHIN_1YR'),('balance.other_affiliates_pay_within_1yr',r.typed_projection->>'OTHER_AFFILIA_PAY_WITHIN_1YR'),('balance.other_pay_within_1yr',r.typed_projection->>'OTHER_PAY_WITHIN_1YR'),('balance.borrowing_pay_after_1yr',r.typed_projection->>'BORROWING_PAY_AFTER_1YR'),('balance.controlled_companies_pay_after_1yr',r.typed_projection->>'CTRLD_COMPANIES_PAY_AFTER_1YR'),('balance.other_affiliates_pay_after_1yr',r.typed_projection->>'OTHER_AFFILIA_PAY_AFTER_1YR'),('balance.other_pay_after_1yr',r.typed_projection->>'OTHER_PAY_AFTER_1YR'),('balance.standby_commitment',r.typed_projection->>'STANDBY_COMMITMENT'),('balance.delayed_delivery',r.typed_projection->>'DELAYED_DELIVERY'),('balance.cash_not_reported_in_c_or_d',r.typed_projection->>'CASH_NOT_RPTD_IN_C_OR_D')) v(metric_key,raw_value)
-    ) INSERT INTO nport_fixed_income_metric_coverage_v2
+    ), balance_coverage AS (
+      SELECT series_id,report_date,accession_number,
+        raw_row_id AS coverage_raw_row_id,source_file_id AS coverage_source_file_id,source_row_number AS coverage_source_row_number,
+        COALESCE('raw:'||raw_row_id::text,'absent:nport_fund_reported_info_raw:'||accession_number) AS coverage_identity_key,
+        family AS coverage_family,metric_key AS coverage_metric_key,
+        CASE WHEN raw_row_id IS NULL THEN 'source_row_absent' WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'field_missing_or_invalid' ELSE 'reported_numeric' END AS coverage_state,
+        CASE WHEN raw_row_id IS NULL THEN 'no_pinned_raw_source_row' WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'named_field_missing_or_invalid' END AS coverage_missing_reason
+      FROM values_rows
+), coverage_rows AS MATERIALIZED (
+      SELECT * FROM balance_coverage
+    ), persisted_present AS (
+      -- Only rows that actually carry a value are materialized per position.
+      -- Absence used to be written one row per holding per metric key: 173,716
+      -- rows per snapshot, 45.6M rows, 20 GB of table plus 18 GB of primary key,
+      -- for figures the reader only ever consumes rolled up. Absence is now
+      -- COUNTED in the rollup below -- strictly more informative than a row per
+      -- absent position, and three orders of magnitude smaller.
+      INSERT INTO nport_fixed_income_metric_coverage_v2
       (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,source_raw_row_id,source_file_id,source_row_number,source_identity_key,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,missing_reason,exclusions)
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,raw_row_id,source_file_id,source_row_number,COALESCE('raw:'||raw_row_id::text,'absent:nport_fund_reported_info_raw:'||accession_number),family,metric_key,
-      CASE WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 0 ELSE 1 END,1,'source_row_and_named_field',CASE WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 0 ELSE 1 END,
-      CASE WHEN raw_row_id IS NULL THEN 'source_row_absent' WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'field_missing_or_invalid' ELSE 'reported_numeric' END,
-      CASE WHEN raw_row_id IS NULL THEN 'no_pinned_raw_source_row' WHEN nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'named_field_missing_or_invalid' END,'[]'::jsonb
-    FROM values_rows ON CONFLICT DO NOTHING;
+      SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_raw_row_id,coverage_source_file_id,coverage_source_row_number,coverage_identity_key,coverage_family,coverage_metric_key,
+        1,1,'source_row_and_named_field',1,'reported_numeric',NULL,'[]'::jsonb
+      FROM coverage_rows WHERE coverage_state='reported_numeric'
+      ON CONFLICT DO NOTHING
+      RETURNING 1
+    )
+    INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
+      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,methodology_version,exclusions,source_row_count,reported_row_count,missing_reason_counts)
+    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_family,coverage_metric_key,
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      count(*),
+      'source_row_and_named_field',
+      count(*) FILTER (WHERE coverage_state='reported_numeric')::numeric/count(*),
+      CASE WHEN min(coverage_state)=max(coverage_state) THEN min(coverage_state) END,
+      'nport_fixed_income_features_v2','[]'::jsonb,
+      count(*),
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      jsonb_build_object(
+        'no_pinned_raw_source_row',count(*) FILTER (WHERE coverage_missing_reason='no_pinned_raw_source_row'),
+        'named_field_missing_or_invalid',count(*) FILTER (WHERE coverage_missing_reason='named_field_missing_or_invalid')
+      )
+    FROM coverage_rows
+    GROUP BY series_id,report_date,accession_number,coverage_family,coverage_metric_key
+    ON CONFLICT DO NOTHING;
 
     WITH snapshot_filings AS MATERIALIZED (
 
@@ -502,13 +573,48 @@ BEGIN
         ELSE 'reported_numeric'
       END AS availability_state
       FROM values_rows
-    ) INSERT INTO nport_fixed_income_metric_coverage_v2
+    ), repo_coverage AS (
+      SELECT series_id,report_date,accession_number,
+        raw_row_id AS coverage_raw_row_id,source_file_id AS coverage_source_file_id,source_row_number AS coverage_source_row_number,
+        COALESCE('raw:'||raw_row_id::text,'absent:'||source_relation||':'||accession_number||':'||COALESCE(holding_id,'')) AS coverage_identity_key,
+        family AS coverage_family,metric_key AS coverage_metric_key,
+        availability_state AS coverage_state,
+        CASE availability_state WHEN 'source_row_absent' THEN 'no_pinned_raw_source_row' WHEN 'field_missing_or_invalid' THEN 'named_field_missing_or_invalid' END AS coverage_missing_reason
+      FROM evaluated
+), coverage_rows AS MATERIALIZED (
+      SELECT * FROM repo_coverage
+    ), persisted_present AS (
+      -- Only rows that actually carry a value are materialized per position.
+      -- Absence used to be written one row per holding per metric key: 173,716
+      -- rows per snapshot, 45.6M rows, 20 GB of table plus 18 GB of primary key,
+      -- for figures the reader only ever consumes rolled up. Absence is now
+      -- COUNTED in the rollup below -- strictly more informative than a row per
+      -- absent position, and three orders of magnitude smaller.
+      INSERT INTO nport_fixed_income_metric_coverage_v2
       (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,source_raw_row_id,source_file_id,source_row_number,source_identity_key,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,missing_reason,exclusions)
-
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,raw_row_id,source_file_id,source_row_number,COALESCE('raw:'||raw_row_id::text,'absent:'||source_relation||':'||accession_number||':'||COALESCE(holding_id,'')),family,metric_key,
-      CASE WHEN availability_state='reported_numeric' THEN 1 ELSE 0 END,1,'source_row_and_named_field',
-      CASE WHEN availability_state='reported_numeric' THEN 1 ELSE 0 END,availability_state,
-      CASE availability_state WHEN 'source_row_absent' THEN 'no_pinned_raw_source_row' WHEN 'field_missing_or_invalid' THEN 'named_field_missing_or_invalid' END,'[]'::jsonb
-    FROM evaluated ON CONFLICT DO NOTHING;
+      SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_raw_row_id,coverage_source_file_id,coverage_source_row_number,coverage_identity_key,coverage_family,coverage_metric_key,
+        1,1,'source_row_and_named_field',1,'reported_numeric',NULL,'[]'::jsonb
+      FROM coverage_rows WHERE coverage_state='reported_numeric'
+      ON CONFLICT DO NOTHING
+      RETURNING 1
+    )
+    INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
+      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,methodology_version,exclusions,source_row_count,reported_row_count,missing_reason_counts)
+    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_family,coverage_metric_key,
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      count(*),
+      'source_row_and_named_field',
+      count(*) FILTER (WHERE coverage_state='reported_numeric')::numeric/count(*),
+      CASE WHEN min(coverage_state)=max(coverage_state) THEN min(coverage_state) END,
+      'nport_fixed_income_features_v2','[]'::jsonb,
+      count(*),
+      count(*) FILTER (WHERE coverage_state='reported_numeric'),
+      jsonb_build_object(
+        'no_pinned_raw_source_row',count(*) FILTER (WHERE coverage_missing_reason='no_pinned_raw_source_row'),
+        'named_field_missing_or_invalid',count(*) FILTER (WHERE coverage_missing_reason='named_field_missing_or_invalid')
+      )
+    FROM coverage_rows
+    GROUP BY series_id,report_date,accession_number,coverage_family,coverage_metric_key
+    ON CONFLICT DO NOTHING;
     RETURN inserted_count;
 END $$;

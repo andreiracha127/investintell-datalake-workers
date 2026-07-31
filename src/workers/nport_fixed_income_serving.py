@@ -135,9 +135,16 @@ def _publication_id(code_revision: str, source_publication_id: str, as_of: date)
     )
 
 
+# The fund x metric coverage rollup the dossier reads. It is not a contract
+# relation (the frozen producer contract still describes exactly eight), it is
+# the serving projection the builder writes alongside them -- so it is counted
+# in the run stats but never in the contract surface.
+_COVERAGE_ROLLUP = "nport_fixed_income_metric_coverage_snapshot_v1"
+
+
 def _relation_counts(conn: Any, publication_id: str) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for relation in materializer.TARGET_RELATIONS:
+    for relation in (*materializer.TARGET_RELATIONS, _COVERAGE_ROLLUP):
         counts[relation] = conn.execute(
             f"SELECT count(*) FROM {relation} WHERE publication_id = %s",  # noqa: S608 - fixed allowlist
             (publication_id,),
@@ -267,11 +274,24 @@ def run(
             publication_id = _publication_id(code_revision, source_publication_id, as_of)
             existing = _state_of(conn, publication_id)
             if existing is not None and existing[0] == "validated":
+                # The identity is a function of (revision, source, as_of), so a
+                # publication built by the PREVIOUS builder collapses onto this
+                # same id whenever the revision did not change -- the documented
+                # "unknown" fallback makes that the normal case for a deployment
+                # that carries no .git and no CODE_REVISION. That publication has
+                # no rollup rows, and the dossier reads the rollup, so it would
+                # keep serving no coverage while this branch reports success.
+                # Repair before short-circuiting; the derivation is sound there
+                # because those coverage rows are one per position INCLUDING the
+                # absent ones.
+                with conn.cursor() as cur:
+                    rollup_state = materializer.ensure_coverage_rollup(cur, publication_id)
                 counts = _relation_counts(conn, publication_id)
                 return {
                     "state": "already_published" if existing[1] else "already_validated",
                     "publication_id": publication_id,
                     "as_of": as_of.isoformat(),
+                    "coverage_rollup": rollup_state,
                     "rows": sum(counts.values()),
                     "counts": counts,
                 }

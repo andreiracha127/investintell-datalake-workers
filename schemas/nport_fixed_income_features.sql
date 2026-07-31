@@ -410,3 +410,100 @@ CREATE OR REPLACE VIEW sec_current_nport_fixed_income_repo_lending_reported_flag
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_repo_lending_reported_flags_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_v2 AS
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- Coverage rollup: one row per fund snapshot x metric key (46 figures), the
+-- grain the dossier actually consumes.  Serving the per-position grain per
+-- request cost 36 s and ~493 MB of I/O on a cold cache, past the datalake
+-- statement timeout.
+--
+-- It is a WRITTEN table, not a materialized view over
+-- nport_fixed_income_metric_coverage_v2, because the builder no longer
+-- materializes absence: writing one row per holding per metric key produced
+-- 173,716 rows per snapshot and 45.6M rows / 20 GB table + 18 GB primary key,
+-- and the debut build was cancelled after 2h+ of CPU. Absence is COUNTED here
+-- instead -- reported_row_count / source_row_count / missing_reason_counts --
+-- which says everything the absent rows said, per metric, in 46 rows.
+--
+-- Aggregation rule, unchanged from the rollup this replaces: combine only what
+-- agrees.  A metric whose positions disagree on availability reports NULL
+-- availability_state rather than a state it does not have.
+CREATE TABLE IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1 (
+    publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_run_id uuid NOT NULL REFERENCES sec_ingestion_runs(run_id) ON DELETE RESTRICT,
+    series_id text NOT NULL, report_date date NOT NULL, accession_number text NOT NULL,
+    metric_family text NOT NULL, metric_key text NOT NULL,
+    numerator numeric, denominator numeric, denominator_unit text,
+    coverage_ratio numeric CHECK (coverage_ratio BETWEEN 0 AND 1),
+    -- NULL is legitimate here and only here: positions that disagree.
+    availability_state text CHECK (availability_state IN ('source_row_absent','field_missing_or_invalid','reported_numeric')),
+    methodology_version text NOT NULL DEFAULT 'nport_fixed_income_features_v2',
+    exclusions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    source_row_count bigint NOT NULL CHECK (source_row_count >= 0),
+    reported_row_count bigint NOT NULL CHECK (reported_row_count >= 0),
+    missing_reason_counts jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CHECK (reported_row_count <= source_row_count),
+    PRIMARY KEY (publication_id,series_id,report_date,accession_number,metric_family,metric_key)
+);
+
+-- The predicate the reader actually uses: it pins by source holdings
+-- publication, not by the feature publication.
+CREATE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_serving_idx
+  ON nport_fixed_income_metric_coverage_snapshot_v1
+  (source_holdings_publication_id,series_id,report_date,accession_number);
+
+CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_snapshot_v1 AS
+SELECT s.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_snapshot_v1 s ON s.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- The rollup is a publication fact like any other -- same pinned lineage, same
+-- immutability, same truncate guard -- with ONE narrow addition.
+--
+-- This relation did not exist when earlier publications were validated. A
+-- publication promoted before the migration therefore has no rollup rows, and
+-- the reader consumes the rollup, so it would serve no coverage at all. The
+-- generic fact guard demands a PREPARED parent, which a validated publication
+-- can never be again, so such a publication could never be repaired.
+--
+-- The guard therefore also admits an INSERT for a VALIDATED parent while the
+-- publication has NO rollup rows yet: a one-time backfill, self-limiting
+-- (the second attempt sees rows and is refused) and strictly additive. It can
+-- never rewrite or partially replace an existing rollup, and UPDATE/DELETE stay
+-- refused unconditionally.
+CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE pinned_source uuid; pinned_run uuid; pinned_as_of date; parent_state text; already bigint;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'N-PORT fixed-income coverage rollup row is immutable'; END IF;
+    SELECT lifecycle_state INTO parent_state FROM sec_derived_publications
+      WHERE publication_id=NEW.publication_id AND product='nport_fixed_income_features_v1' FOR UPDATE;
+    IF parent_state IS NULL THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a fixed-income publication';
+    END IF;
+    IF parent_state = 'validated' THEN
+        SELECT count(*) INTO already FROM nport_fixed_income_metric_coverage_snapshot_v1
+          WHERE publication_id = NEW.publication_id;
+        IF already > 0 THEN
+            RAISE EXCEPTION 'N-PORT fixed-income coverage rollup is already published for this publication';
+        END IF;
+    ELSIF parent_state <> 'prepared' THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a prepared publication';
+    END IF;
+    SELECT b.source_holdings_publication_id,p.source_run_id,b.as_of_date INTO pinned_source,pinned_run,pinned_as_of
+      FROM nport_fixed_income_feature_builds b JOIN sec_derived_publications p ON p.publication_id=b.source_holdings_publication_id
+      WHERE b.publication_id=NEW.publication_id;
+    IF NEW.source_holdings_publication_id IS DISTINCT FROM pinned_source OR NEW.source_run_id IS DISTINCT FROM pinned_run THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires the pinned source publication and run';
+    END IF;
+    IF NEW.report_date > pinned_as_of THEN RAISE EXCEPTION 'N-PORT fixed-income coverage rollup report date exceeds build as_of_date'; END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+DROP TRIGGER IF EXISTS nport_fixed_income_coverage_rollup_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_coverage_rollup_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_coverage_rollup_write_guard();
+DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_truncate_guard
+BEFORE TRUNCATE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard();

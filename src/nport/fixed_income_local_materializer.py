@@ -43,11 +43,19 @@ BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features
 # Historical alias: the resource used to live under ``sql/local_only`` and was
 # reachable only from the offline route.  Same bytes, same sha256 pin.
 LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
+# Re-approved 2026-07-31: coverage stops materializing absence per position.
+# The debut production build was cancelled after 2h+ of CPU; the dominant cost
+# was one coverage row per holding per metric key -- 173,716 rows per snapshot,
+# 45.6M rows, 20 GB of table plus 18 GB of primary key -- while the six
+# relations carrying real values total ~260 MB. The builder now persists only
+# rows that carry a value and writes the fund x metric rollup the dossier reads,
+# counting absence there. No reported figure changes.
+#
 # Re-approved 2026-07-25: the multi-referenced CTEs carry AS MATERIALIZED. Without
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
 # is a planner directive only — the rows the oracle produces are unchanged.
-APPROVED_LOCAL_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
+APPROVED_LOCAL_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
 CONTRACT_DIGEST = (
     "sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563"
 )
@@ -61,6 +69,50 @@ TARGET_RELATIONS = (
     "nport_fixed_income_repo_lending_reported_flags_v2",
     "nport_fixed_income_metric_coverage_v2",
 )
+# The fund x metric coverage rollup. It is NOT a contract relation -- the frozen
+# producer contract still describes exactly the eight above -- but it IS part of
+# every publication, because the builder no longer materializes absence per
+# position: the counts of what was absent live here and nowhere else. An
+# artifact that carried only the eight would publish a rollup rebuilt from
+# pruned rows, i.e. coverage_ratio 1 for partially covered metrics and no row at
+# all for metrics with nothing reported. So it travels with the artifact.
+COVERAGE_ROLLUP_RELATION = "nport_fixed_income_metric_coverage_snapshot_v1"
+COVERAGE_ROLLUP_COLUMNS = (
+    "publication_id", "source_holdings_publication_id", "source_run_id", "series_id",
+    "report_date", "accession_number", "metric_family", "metric_key", "numerator",
+    "denominator", "denominator_unit", "coverage_ratio", "availability_state",
+    "methodology_version", "exclusions", "source_row_count", "reported_row_count",
+    "missing_reason_counts",
+)
+COVERAGE_ROLLUP_KEYS = (
+    "publication_id", "series_id", "report_date", "accession_number",
+    "metric_family", "metric_key",
+)
+# What a publication physically consists of: the contract relations plus the
+# rollup. Every artifact/manifest invariant below is stated over THIS tuple.
+PUBLISHED_RELATIONS = (*TARGET_RELATIONS, COVERAGE_ROLLUP_RELATION)
+
+MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v3"
+# Frozen artifacts built before the coverage change are still restorable. Their
+# manifest attests eight payloads and the previous builder sha; their coverage
+# payload carries the absence rows the new one does not, so the rollup can be
+# derived from it at publish time (see ``_derive_rollup_from_coverage``).
+# Accepting the legacy oracle hash is scoped to that format and nothing else.
+LEGACY_MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v2"
+LEGACY_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
+_MANIFEST_FORMATS: dict[str, tuple[tuple[str, ...], str]] = {
+    MANIFEST_FORMAT: (PUBLISHED_RELATIONS, APPROVED_LOCAL_ORACLE_SHA256),
+    LEGACY_MANIFEST_FORMAT: (TARGET_RELATIONS, LEGACY_ORACLE_SHA256),
+}
+
+
+def manifest_relations(manifest: Mapping[str, Any]) -> tuple[str, ...]:
+    """The relations a manifest of this format attests. Fail-closed on unknown."""
+    entry = _MANIFEST_FORMATS.get(str(manifest.get("format")))
+    if entry is None:
+        raise ArtifactIntegrityError("unexpected manifest format")
+    return entry[0]
+
 # Raw inputs are intentionally base relations; no current/contract view may hide a join.
 SOURCE_RELATIONS = (
     "sec_nport_instrument_class_bridge",
@@ -238,8 +290,17 @@ def _contract_columns() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _published_columns() -> dict[str, tuple[str, ...]]:
+    """Contract columns, plus the rollup's own (it has no contract entry)."""
+    return {**_contract_columns(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_COLUMNS}
+
+
 def _contract_keys() -> dict[str, tuple[str, ...]]:
     return {name: tuple(_contract_relation(name)["keys"]) for name in TARGET_RELATIONS}
+
+
+def _published_keys() -> dict[str, tuple[str, ...]]:
+    return {**_contract_keys(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_KEYS}
 
 
 def _set_client_safe_timeouts(
@@ -769,12 +830,12 @@ def compute_local(
                     ),
                 )
                 columns, keys, output_meta, files = (
-                    _contract_columns(),
-                    _contract_keys(),
+                    _published_columns(),
+                    _published_keys(),
                     {},
                     {},
                 )
-                for relation in TARGET_RELATIONS:
+                for relation in PUBLISHED_RELATIONS:
                     selected, order = (
                         ",".join(f'"{name}"' for name in columns[relation]),
                         ",".join(f'"{name}"' for name in keys[relation]),
@@ -838,25 +899,25 @@ def build_manifest(
     resource_config.validate(local=True)
     if set(source_files) != set(SOURCE_RELATIONS):
         raise ArtifactIntegrityError("manifest requires exactly the three physical source relations")
-    if set(output_files) != set(TARGET_RELATIONS):
-        raise ArtifactIntegrityError("manifest requires exactly the eight target relations")
+    if set(output_files) != set(PUBLISHED_RELATIONS):
+        raise ArtifactIntegrityError("manifest requires exactly the published relations")
     outputs = output_meta or {
         name: {
             "count": (output_counts or {}).get(name, 0),
             "sha256": sha256_file(path),
             "filename": path.name,
-            "columns": _contract_columns().get(name, ()),
+            "columns": _published_columns().get(name, ()),
         }
         for name, path in output_files.items()
     }
-    if set(outputs) != set(TARGET_RELATIONS):
-        raise ArtifactIntegrityError("manifest output metadata must cover exactly the eight target relations")
-    contract_columns = _contract_columns()
-    for name in TARGET_RELATIONS:
+    if set(outputs) != set(PUBLISHED_RELATIONS):
+        raise ArtifactIntegrityError("manifest output metadata must cover exactly the published relations")
+    contract_columns = _published_columns()
+    for name in PUBLISHED_RELATIONS:
         if tuple(outputs[name].get("columns", ())) != contract_columns[name]:
             raise ArtifactIntegrityError(f"manifest columns differ from contract: {name}")
     body = {
-        "format": "nport-fixed-income-local-postgres/v2",
+        "format": MANIFEST_FORMAT,
         "identity": asdict(identity),
         "contract_digest": identity.contract_digest,
         "worker_sha": worker_sha,
@@ -892,8 +953,8 @@ def verify_manifest(
         != hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
     ):
         raise ArtifactIntegrityError("manifest hash mismatch")
-    if manifest.get("format") != "nport-fixed-income-local-postgres/v2":
-        raise ArtifactIntegrityError("unexpected manifest format")
+    relations = manifest_relations(manifest)
+    approved_oracle = _MANIFEST_FORMATS[str(manifest["format"])][1]
     manifest_identity = manifest.get("identity")
     if not isinstance(manifest_identity, Mapping):
         raise ArtifactIntegrityError("manifest identity is missing")
@@ -911,7 +972,7 @@ def verify_manifest(
     if not isinstance(engine, Mapping) or (
         engine.get("kind") != "postgresql-local"
         or engine.get("postgres_major") != 18
-        or engine.get("oracle_sha256") != APPROVED_LOCAL_ORACLE_SHA256
+        or engine.get("oracle_sha256") != approved_oracle
         or not isinstance(engine.get("postgres_image_digest"), str)
         or not engine["postgres_image_digest"].startswith("sha256:")
         or len(engine["postgres_image_digest"]) != 71
@@ -924,10 +985,10 @@ def verify_manifest(
     ResourceConfig(**resources).validate(local=True)
     if set(manifest.get("inputs", {})) != set(SOURCE_RELATIONS):
         raise ArtifactIntegrityError("manifest input set is not exact")
-    if set(manifest.get("outputs", {})) != set(TARGET_RELATIONS):
+    if set(manifest.get("outputs", {})) != set(relations):
         raise ArtifactIntegrityError("manifest output set is not exact")
-    contract_columns = _contract_columns()
-    if set(files) != set(TARGET_RELATIONS):
+    contract_columns = _published_columns()
+    if set(files) != set(relations):
         raise ArtifactIntegrityError("payload file set is not exact")
     for name, path in files.items():
         output = manifest["outputs"].get(name, {})
@@ -946,8 +1007,19 @@ def verify_manifest(
 
 
 def _expected_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
-    """The per-relation row counts the manifest attests (already contract-checked)."""
-    return {relation: int(manifest["outputs"][relation]["count"]) for relation in TARGET_RELATIONS}
+    """The per-relation row counts the manifest attests (already contract-checked).
+
+    Over the relations THIS manifest attests: for the current format that
+    includes the coverage rollup, deliberately -- it is part of the publication
+    and is the relation the reader actually consumes, so a storage closure that
+    omitted it would attest everything except what is served. A legacy v2
+    artifact attests eight; its rollup is derived at publish time and therefore
+    not something the manifest can vouch for.
+    """
+    return {
+        relation: int(manifest["outputs"][relation]["count"])
+        for relation in manifest_relations(manifest)
+    }
 
 
 def _verify_storage_requested(explicit: bool | None) -> bool:
@@ -989,13 +1061,118 @@ def _record_closure(cursor: Any, publication_id: str, manifest_hash: str,
 
 
 def _count_relations(cursor: Any, publication_id: str, expected: Mapping[str, int]) -> None:
-    """Full storage verification: one count per target relation, all must match."""
-    for relation in TARGET_RELATIONS:
+    """Full storage verification: one count per published relation, all must match.
+
+    Published, not contract: the coverage rollup is counted here too (see
+    ``_expected_counts``). The relation set comes from ``expected``, so a legacy
+    v2 restore recounts exactly what its manifest attested.
+    """
+    for relation in expected:
         cursor.execute(
             f"SELECT count(*) FROM {relation} WHERE publication_id=%s", (publication_id,)
         )
         if cursor.fetchone()[0] != expected[relation]:
             raise PublicationConflictError(f"matching manifest has divergent count: {relation}")
+
+
+def _derive_rollup_from_coverage(cursor: Any, publication_id: str) -> None:
+    """Build the rollup from a LEGACY artifact's coverage payload.
+
+    Only correct for ``v2`` artifacts, and only because those carry one coverage
+    row per position INCLUDING the absent ones -- which is exactly what the
+    current builder stopped materializing. Deriving a rollup from a current
+    artifact's coverage payload would see reported rows only and claim full
+    coverage; that is why this is reachable from the legacy branch alone and the
+    current format ships the rollup as a payload instead.
+    """
+    cursor.execute(
+        """INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
+             (publication_id,source_holdings_publication_id,source_run_id,series_id,
+              report_date,accession_number,metric_family,metric_key,numerator,denominator,
+              denominator_unit,coverage_ratio,availability_state,methodology_version,
+              exclusions,source_row_count,reported_row_count,missing_reason_counts)
+           SELECT c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                  c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key,
+                  count(*) FILTER (WHERE c.availability_state='reported_numeric'),
+                  count(*),
+                  'source_row_and_named_field',
+                  count(*) FILTER (WHERE c.availability_state='reported_numeric')::numeric/count(*),
+                  CASE WHEN min(c.availability_state)=max(c.availability_state)
+                       THEN min(c.availability_state) END,
+                  'nport_fixed_income_features_v2',
+                  '[]'::jsonb,
+                  count(*),
+                  count(*) FILTER (WHERE c.availability_state='reported_numeric'),
+                  jsonb_build_object(
+                    'no_pinned_raw_source_row',
+                    count(*) FILTER (WHERE c.missing_reason='no_pinned_raw_source_row'),
+                    'named_field_missing_or_invalid',
+                    count(*) FILTER (WHERE c.missing_reason='named_field_missing_or_invalid')
+                  )
+           FROM nport_fixed_income_metric_coverage_v2 c
+           WHERE c.publication_id=%s
+           GROUP BY c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                    c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key
+           ON CONFLICT DO NOTHING""",
+        (publication_id,),
+    )
+
+
+def ensure_coverage_rollup(cursor: Any, publication_id: str) -> str:
+    """Guarantee the served coverage rollup exists for an already-published id.
+
+    The rollup relation is newer than the publications that predate this
+    migration, so a publication promoted by the previous builder -- restored
+    from a v2 artifact, or short-circuited by the worker because its identity
+    did not change -- has NO rollup rows. The dossier reads the rollup, so that
+    publication serves no coverage at all while every idempotency check passes:
+    the old manifest attests eight relations, the old closure attests eight
+    counts, and both are still true.
+
+    Detect and repair rather than trust. The derivation is only sound for those
+    publications, and for the same reason as the legacy artifact path: their
+    coverage rows are one per position INCLUDING the absent ones. A publication
+    written by the current builder cannot reach the derivation, because it
+    already has rollup rows.
+
+    Returns what happened, so callers can report it instead of hiding it.
+    """
+    # EXISTS, never count: this runs on the idempotent replay path, whose whole
+    # promise is that it does not scan a relation. Both probes are index lookups
+    # that stop at the first row.
+    cursor.execute(
+        "SELECT EXISTS(SELECT 1 FROM nport_fixed_income_metric_coverage_snapshot_v1 "
+        "WHERE publication_id=%s)",
+        (publication_id,),
+    )
+    if cursor.fetchone()[0]:
+        return "present"
+    cursor.execute(
+        "SELECT EXISTS(SELECT 1 FROM nport_fixed_income_metric_coverage_v2 WHERE publication_id=%s)",
+        (publication_id,),
+    )
+    if not cursor.fetchone()[0]:
+        # Nothing to derive from: a publication with neither grain has no
+        # coverage to serve, and inventing an empty rollup would claim it does.
+        return "no_coverage_source"
+    _derive_rollup_from_coverage(cursor, publication_id)
+    cursor.execute(
+        """SELECT (SELECT count(*) FROM nport_fixed_income_metric_coverage_snapshot_v1
+                    WHERE publication_id=%s),
+                  (SELECT count(*) FROM (
+                     SELECT 1 FROM nport_fixed_income_metric_coverage_v2
+                      WHERE publication_id=%s
+                      GROUP BY series_id,report_date,accession_number,metric_family,metric_key
+                   ) g)""",
+        (publication_id, publication_id),
+    )
+    written, expected = cursor.fetchone()
+    if written != expected:
+        raise PublicationConflictError(
+            "derived coverage rollup does not cover the publication's coverage grain: "
+            f"{written} != {expected}"
+        )
+    return "backfilled"
 
 
 def publish_artifact(
@@ -1015,11 +1192,12 @@ def publish_artifact(
     normal replay path re-proves storage from the recorded closure instead --
     see ``_record_closure`` and the closure DDL for why that is equivalent."""
     artifact_dir = Path(artifact_dir)
-    files = {name: artifact_dir / f"{name}.tsv.gz" for name in TARGET_RELATIONS}
     manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
+    relations = manifest_relations(manifest)
+    files = {name: artifact_dir / f"{name}.tsv.gz" for name in relations}
     verify_manifest(manifest, files, identity=identity)
     manifest_hash = manifest["manifest_sha256"]
-    columns = _contract_columns()
+    columns = _published_columns()
     with connection.transaction(), connection.cursor() as cursor:
         _set_client_safe_timeouts(cursor, resource_config)
         cursor.execute(
@@ -1040,13 +1218,19 @@ def publish_artifact(
                 )
                 if cursor.fetchone() != ("validated", uuid.UUID(identity.target_publication_id)):
                     raise PublicationConflictError("matching manifest is not the validated current target")
+                # Before accepting ANY idempotency shortcut: a publication
+                # promoted before the rollup existed passes every check below
+                # while serving no coverage, because the manifest and the
+                # closure both predate the relation the reader consumes.
+                ensure_coverage_rollup(cursor, identity.target_publication_id)
                 expected = _expected_counts(manifest)
-                # Storage re-proof. The eight relations are frozen for a validated
+                # Storage re-proof. The published relations (the eight contract
+                # ones plus the coverage rollup) are frozen for a validated
                 # publication -- every UPDATE/DELETE is rejected by the row guards,
                 # an INSERT needs the parent 'prepared', and TRUNCATE is refused --
                 # so a closure recorded while the publication was already validated
-                # remains true. Reading it is ONE indexed row instead of eight full
-                # counts, one of them over the 45.6M-row metric coverage relation.
+                # remains true. Reading it is ONE indexed row instead of nine full
+                # counts, one of them over the metric coverage relation.
                 # No closure (a publication from before this record existed, or a
                 # forced audit) falls back to the counts and then records one, so
                 # the cost is paid once, never per replay.
@@ -1091,7 +1275,7 @@ def publish_artifact(
         )
         for relation, path in files.items():
             quoted = ",".join(f'"{name}"' for name in columns[relation])
-            stage = f"nport_fi_stage_{TARGET_RELATIONS.index(relation)}"
+            stage = f"nport_fi_stage_{PUBLISHED_RELATIONS.index(relation)}"
             cursor.execute(
                 f"CREATE TEMP TABLE {stage} AS SELECT {quoted} FROM {relation} WITH NO DATA"
             )
@@ -1104,7 +1288,7 @@ def publish_artifact(
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     copy.write(chunk)
             key_columns = ",".join(
-                f'"{name}"' for name in _contract_keys()[relation]
+                f'"{name}"' for name in _published_keys()[relation]
             )
             cursor.execute(
                 f"SELECT count(*),count(DISTINCT ({key_columns})),"
@@ -1131,6 +1315,8 @@ def publish_artifact(
             "INSERT INTO nport_fixed_income_publication_manifests(publication_id,manifest_sha256,manifest) VALUES(%s,%s,%s::jsonb)",
             (identity.target_publication_id, manifest_hash, canonical_json(manifest)),
         )
+        if manifest["format"] == LEGACY_MANIFEST_FORMAT:
+            _derive_rollup_from_coverage(cursor, identity.target_publication_id)
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
             (identity.target_publication_id,),
