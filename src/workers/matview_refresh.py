@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 
+from src import sec_effective_matviews
 from src.db import LOCK_MATVIEW_REFRESH, advisory_lock, connect
 from src.workers import market_overview_snapshot
 
@@ -36,6 +37,13 @@ _DATALAKE_MVS = [
     "stock_fund_holders_mv",
     "holding_reverse_lookup_mv",
 ]
+# The SEC "effective" selection caches are refreshed CONDITIONALLY, next to the
+# unconditional list rather than in it: their sources (N-CEN / RR1 packages) land
+# on a quarterly-ish cadence, so refreshing them daily would re-expand the whole
+# raw selection to rebuild an identical relation. src.sec_effective_matviews
+# compares the family's validated-run signature and skips when nothing landed.
+# Registered here so the caches stay fresh even on days the publication chain
+# does not run.
 
 
 def _refresh_all(dsn: str, mvs: list[str]) -> list[str]:
@@ -62,10 +70,13 @@ def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
             if snapshot_stats.get("published") != 1:
                 raise RuntimeError("market overview snapshot did not publish")
             refreshed_datalake: list[str] = []
+            effective_matviews: list[dict] = []
             if datalake_dsn:
                 refreshed_datalake = _refresh_all(datalake_dsn, _DATALAKE_MVS)
+                effective_matviews = sec_effective_matviews.refresh_stale(datalake_dsn)
             return {
                 "refreshed": refreshed,
                 "market_overview_snapshot": snapshot_stats,
                 "refreshed_datalake": refreshed_datalake,
+                "effective_matviews": effective_matviews,
             }

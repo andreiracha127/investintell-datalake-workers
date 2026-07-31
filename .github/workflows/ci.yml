@@ -236,6 +236,7 @@ jobs:
           set -euo pipefail
           tests=(
             tests/test_fixed_income_publication_closure.py
+            tests/test_sec_effective_matviews.py
             tests/test_mixed_quant_contract_version.py
             tests/test_mixed_quant_contracts.py
             tests/test_mixed_quant_factor_inputs.py
@@ -304,6 +305,7 @@ jobs:
           )
           db_tests=(
             tests/test_fixed_income_publication_closure.py
+            tests/test_sec_effective_matviews.py
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_native_sources.py
