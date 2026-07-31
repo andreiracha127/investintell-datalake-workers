@@ -1147,3 +1147,12 @@ def publish_artifact(
             "SELECT sec_set_current_derived_publication(%s,%s)",
             (product, identity.target_publication_id),
         )
+        # Coverage is written per holding -- roughly 173k rows per snapshot for 46
+        # figures. Serving that grain per request cost 36s and ~493MB of I/O cold,
+        # past the datalake statement timeout. The rollup carries the same figures,
+        # so refresh it here: a publication whose pointer moved without it would
+        # leave the reader with no coverage at all.
+        cursor.execute(
+            "REFRESH MATERIALIZED VIEW CONCURRENTLY "
+            "nport_fixed_income_metric_coverage_snapshot_v1"
+        )
