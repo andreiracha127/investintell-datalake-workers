@@ -19,6 +19,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -216,23 +217,44 @@ def test_committed_record_byte_pin_covers_every_shipped_source_at_head():
     bundle_mod.verify_shipped_source_tree_hashes(pinned)
 
 
-def test_committed_record_harness_commit_is_reachable_from_this_history():
-    """The label should still name a real commit — but as a label, not a gate.
+def test_committed_record_harness_commit_is_present_and_ancestral_or_absent():
+    """`harness_commit` is a best-effort LABEL. The byte pin is the anti-tamper.
 
-    Pinning a branch commit is what broke main: it named something the merge
-    policy deletes. The record now names a commit on the merged history.
+    This repo merges by squash as a permanent policy, so the commit a record was
+    built at is deleted the moment its PR lands. Requiring the label to stay
+    resolvable would therefore make every squash a follow-up chore — and it was
+    exactly that requirement, in its stricter form, that turned main red once
+    already.
+
+    So the label is held to the only claim that can survive the merge policy:
+
+    * PRESENT  -> it must be an ancestor of HEAD. A resolvable commit that sits
+      off this history is a real inconsistency (a record built somewhere else)
+      and still fails.
+    * ABSENT   -> accepted. That is squash working as intended, or a shallow
+      clone; neither is evidence of anything.
+
+    Nothing rests on this test that matters for integrity:
+    `test_committed_record_byte_pin_covers_every_shipped_source_at_head` proves
+    the shipped bytes, and it cannot be satisfied by any history rewrite.
     """
     record = json.loads(
         (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
     )
     commit = record["harness_commit"]
-    assert bundle_mod._commit_object_present(commit), (
-        f"{commit} is not in this clone; re-pin the record to a commit on main "
-        "(python -m harness.phase0q_cloud.bundle <sha> ... && record_artifacts)"
+    assert re.fullmatch(r"[0-9a-f]{40}", commit), (
+        f"harness_commit must be a 40-char lowercase hex SHA, got {commit!r}"
     )
+
+    if not bundle_mod._commit_object_present(commit):
+        return  # squashed away or shallow clone — the byte pin still binds
+
     assert subprocess.run(
         ["git", "merge-base", "--is-ancestor", commit, "HEAD"], cwd=ROOT, check=False
-    ).returncode == 0
+    ).returncode == 0, (
+        f"harness_commit {commit} resolves in this clone but is NOT an ancestor of "
+        "HEAD — the record cites a commit off this history"
+    )
 
 
 # --------------------------------------------------------------------------- #
