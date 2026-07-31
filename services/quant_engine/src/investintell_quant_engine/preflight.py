@@ -32,8 +32,9 @@ OFFLINE_EVIDENCE = "offline_evidence"
 ACTIVATED = "activated"
 RUNTIME_MODES = (OFFLINE_EVIDENCE, ACTIVATED)
 
-#: What each mode requires of the fields a report may carry. A field absent from
-#: the report is not checked; a field present must match.
+#: The value each mode requires of every governance field a report may carry. A
+#: field PRESENT must match. A field ABSENT is governed by ``_MODE_REQUIRED``
+#: below — silence is never treated as agreement.
 _MODE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     OFFLINE_EVIDENCE: {
         "runtime_activation": False,
@@ -46,10 +47,41 @@ _MODE_EXPECTATIONS: dict[str, dict[str, Any]] = {
     },
     ACTIVATED: {
         "runtime_activation": True,
+        "freeze_ready": True,
         "a5_status": "active",
         "official_result": True,
+        "allocator_publish": True,
         "db_write": "publication",
+        "production_endpoint_activation": "live",
     },
+}
+
+#: Fields that MUST be present, in every report shape, for the mode to be
+#: assertable at all. These two are the universal governance assertion: every
+#: result variant in the contract declares them. An absent one is an
+#: inconsistency, not a pass — ``{}`` can never validate.
+_MODE_REQUIRED: dict[str, tuple[str, ...]] = {
+    OFFLINE_EVIDENCE: ("runtime_activation", "a5_status"),
+    ACTIVATED: ("runtime_activation", "a5_status"),
+}
+
+#: The publication flags. They exist only on the shapes that can publish, so they
+#: are not universally required — but they travel together: a report carrying any
+#: of them must carry all of them, or it is a half-activated result that no
+#: reader can interpret.
+_PUBLICATION_FIELDS: tuple[str, ...] = (
+    "official_result",
+    "allocator_publish",
+    "db_write",
+    "production_endpoint_activation",
+)
+
+#: Values a mode forbids outright, whatever the rest of the report says. The v3
+#: contract widened ``classification`` so an activated run is expressible; that
+#: must not let an OFFLINE run label itself productive.
+_MODE_FORBIDDEN: dict[str, dict[str, frozenset[Any]]] = {
+    OFFLINE_EVIDENCE: {"classification": frozenset({"productive_result"})},
+    ACTIVATED: {"classification": frozenset({"metric_evidence_only"})},
 }
 
 
@@ -64,26 +96,71 @@ def validate_offline_request(*, offline: bool, jobs: int) -> None:
         raise ValueError("jobs must be >= 1")
 
 
-def validate_runtime_mode(report: dict[str, Any], *, mode: str = OFFLINE_EVIDENCE) -> None:
-    """Raise unless ``report``'s activation fields are consistent with ``mode``."""
+def validate_runtime_mode(
+    report: dict[str, Any],
+    *,
+    mode: str = OFFLINE_EVIDENCE,
+    required: tuple[str, ...] | None = None,
+) -> None:
+    """Raise unless ``report``'s governance fields are consistent with ``mode``.
+
+    Fail-closed on three distinct ways a report can fail to make its claim:
+
+    * a required governance field is MISSING — a partial or empty report cannot
+      assert anything, so it is rejected rather than skipped;
+    * a present field CONTRADICTS the mode;
+    * the publication flags are PARTIALLY present — a half-activated result.
+    """
     if mode not in RUNTIME_MODES:
         raise RuntimeModeError(
             f"unknown runtime mode {mode!r} (expected one of {', '.join(RUNTIME_MODES)})"
         )
     expectations = _MODE_EXPECTATIONS[mode]
-    mismatches = [
+    problems: list[str] = []
+
+    for field in required if required is not None else _MODE_REQUIRED[mode]:
+        if field not in report:
+            problems.append(
+                f"{field} is missing (mode {mode!r} requires {expectations[field]!r}; "
+                "an absent governance field is not an assertion)"
+            )
+
+    present_publication = [f for f in _PUBLICATION_FIELDS if f in report]
+    if present_publication and len(present_publication) != len(_PUBLICATION_FIELDS):
+        missing = sorted(set(_PUBLICATION_FIELDS) - set(present_publication))
+        problems.append(
+            f"publication flags are partially declared (missing: {', '.join(missing)}); "
+            "a half-activated result cannot be interpreted"
+        )
+
+    problems.extend(
         f"{field}={report[field]!r} (mode {mode!r} requires {expected!r})"
         for field, expected in expectations.items()
         if field in report and report[field] != expected
-    ]
-    if mismatches:
-        raise RuntimeModeError("runtime mode inconsistency: " + "; ".join(sorted(mismatches)))
+    )
+
+    problems.extend(
+        f"{field}={report[field]!r} is forbidden in mode {mode!r}"
+        for field, forbidden in _MODE_FORBIDDEN.get(mode, {}).items()
+        if field in report and report[field] in forbidden
+    )
+
+    if problems:
+        raise RuntimeModeError("runtime mode inconsistency: " + "; ".join(sorted(problems)))
+
+
+#: What ``validate_runtime_disabled`` has always demanded be PRESENT and off.
+_LEGACY_OFFLINE_REQUIRED = ("runtime_activation", "freeze_ready", "a5_status")
 
 
 def validate_runtime_disabled(report: dict[str, Any]) -> None:
-    """Back-compatible alias: assert the report is offline-evidence shaped.
+    """Back-compatible guard: assert the report is offline-evidence shaped.
 
-    Kept so existing callers and their tests keep working; new code should call
-    ``validate_runtime_mode`` and say which mode it ran in.
+    Preserves the exact legacy contract — ``runtime_activation``, ``freeze_ready``
+    and ``a5_status`` must each be PRESENT and off. The old implementation used
+    ``report.get(...) is not False``, so a missing field raised; that must keep
+    raising, because this is the guard the quant-engine runners rely on.
+
+    New code should call ``validate_runtime_mode`` and say which mode it ran in.
     """
-    validate_runtime_mode(report, mode=OFFLINE_EVIDENCE)
+    validate_runtime_mode(report, mode=OFFLINE_EVIDENCE, required=_LEGACY_OFFLINE_REQUIRED)

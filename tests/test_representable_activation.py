@@ -169,9 +169,12 @@ _OFFLINE_REPORT = {
 }
 _ACTIVATED_REPORT = {
     "runtime_activation": True,
+    "freeze_ready": True,
     "a5_status": "active",
     "official_result": True,
+    "allocator_publish": True,
     "db_write": "publication",
+    "production_endpoint_activation": "live",
 }
 
 
@@ -226,6 +229,130 @@ def test_validate_runtime_disabled_still_behaves_for_existing_callers() -> None:
     preflight.validate_runtime_disabled(_OFFLINE_REPORT)
     with pytest.raises(ValueError):
         preflight.validate_runtime_disabled(_ACTIVATED_REPORT)
+
+
+# --------------------------------------------------------------------------- #
+# Fail-closed on SILENCE, not just on contradiction (review threads 1 and 4).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "report",
+    [
+        {},
+        {"runtime_activation": False},
+        {"a5_status": "blocked"},
+        {"freeze_ready": False},
+    ],
+    ids=["empty", "only-runtime-activation", "only-a5", "only-freeze-ready"],
+)
+def test_a_partial_report_cannot_assert_a_mode(report: dict) -> None:
+    """An absent governance field is not an assertion. `{}` must never validate."""
+    with pytest.raises(preflight.RuntimeModeError, match="is missing"):
+        preflight.validate_runtime_mode(report, mode=preflight.OFFLINE_EVIDENCE)
+
+
+@pytest.mark.parametrize(
+    "report",
+    [{}, {"runtime_activation": False}, {"runtime_activation": False, "a5_status": "blocked"}],
+    ids=["empty", "partial", "missing-freeze-ready"],
+)
+def test_the_legacy_guard_still_rejects_missing_governance_fields(report: dict) -> None:
+    """`validate_runtime_disabled` kept its exact contract: present AND off.
+
+    The old body was `report.get(...) is not False`, so a missing field raised.
+    This is the guard the quant-engine runners depend on; it must not have become
+    permissive when it gained a mode.
+    """
+    with pytest.raises(ValueError, match="is missing"):
+        preflight.validate_runtime_disabled(report)
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    ["official_result", "allocator_publish", "db_write", "production_endpoint_activation"],
+)
+def test_a_half_declared_publication_result_is_refused(omitted: str) -> None:
+    """The publication flags travel together or not at all."""
+    report = {k: v for k, v in _ACTIVATED_REPORT.items() if k != omitted}
+    with pytest.raises(preflight.RuntimeModeError, match="partially declared"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_a_shape_without_publication_flags_is_still_assertable() -> None:
+    """A parity result has no publication flags; absence of the whole set is fine."""
+    preflight.validate_runtime_mode(
+        {"runtime_activation": True, "a5_status": "active"}, mode=preflight.ACTIVATED
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("allocator_publish", False),
+        ("production_endpoint_activation", "none"),
+        ("freeze_ready", False),
+    ],
+)
+def test_activated_mode_refuses_deactivated_publication_values(field: str, value) -> None:
+    report = dict(_ACTIVATED_REPORT, **{field: value})
+    with pytest.raises(preflight.RuntimeModeError, match="runtime mode inconsistency"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_offline_mode_refuses_a_productive_classification() -> None:
+    """v3 widened `classification`; that must not let offline evidence self-label."""
+    report = dict(_OFFLINE_REPORT, classification="productive_result")
+    with pytest.raises(preflight.RuntimeModeError, match="forbidden"):
+        preflight.validate_runtime_mode(report, mode=preflight.OFFLINE_EVIDENCE)
+
+
+def test_activated_mode_refuses_an_evidence_only_classification() -> None:
+    report = dict(_ACTIVATED_REPORT, classification="metric_evidence_only")
+    with pytest.raises(preflight.RuntimeModeError, match="forbidden"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_the_bundled_activated_fixtures_satisfy_activated_mode() -> None:
+    """A fixture named `activated` must survive the activated envelope.
+
+    It shipped with `a5_status: "blocked"`, so the canonical activated example
+    contradicted the mode it was meant to demonstrate.
+    """
+    for name in ("job-result.activated.json", "job-result.metric-backtest.activated.json"):
+        payload = _fixture(V3 / "fixtures" / "valid" / name)
+        preflight.validate_runtime_mode(payload, mode=preflight.ACTIVATED)
+
+
+def test_the_bundled_offline_fixtures_satisfy_offline_mode() -> None:
+    for name in ("job-result.passed.json", "job-result.metric-backtest.json"):
+        payload = _fixture(V3 / "fixtures" / "valid" / name)
+        preflight.validate_runtime_mode(payload, mode=preflight.OFFLINE_EVIDENCE)
+
+
+# --------------------------------------------------------------------------- #
+# Contradictory states must not validate (review threads 11, 12, 13).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "job-result.dry-run-failed-but-verified.json",
+        "job-result.dry-run-verified-with-errors.json",
+        "job-result.metric-backtest-productive-but-failed.json",
+        "job-result.metric-backtest-evidence-but-publishing.json",
+        "job-result.parity-activated-but-a5-blocked.json",
+    ],
+)
+def test_v3_refuses_contradictory_states(fixture_name: str) -> None:
+    """Widening an enum must not make nonsense expressible.
+
+    A failed dry run that calls itself verified, a verified dry run that reports
+    errors, a productive backtest that failed, evidence-only output that writes a
+    publication, an activated parity run with A5 blocked — each of these was
+    accepted once the `const` pins became enums, and each is now tied together by
+    an if/then rule.
+    """
+    payload = _fixture(V3 / "fixtures" / "invalid" / fixture_name)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-result.schema.json"))
 
 
 # --------------------------------------------------------------------------- #

@@ -123,7 +123,47 @@
             "active"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runtime_activation": {
+                "const": true
+              }
+            },
+            "required": [
+              "runtime_activation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "a5_status": {
+                "const": "active"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runtime_activation": {
+                "const": false
+              }
+            },
+            "required": [
+              "runtime_activation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "a5_status": {
+                "const": "blocked"
+              }
+            }
+          }
+        }
+      ]
     },
     "certified_input_pack_dry_run_result": {
       "type": "object",
@@ -228,7 +268,91 @@
             "active"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "classification": {
+                "const": "input_pack_verified"
+              },
+              "errors": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "classification": {
+                "const": "input_pack_rejected"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "classification": {
+                "const": "input_pack_verified"
+              }
+            },
+            "required": [
+              "classification"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              },
+              "errors": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "classification": {
+                "const": "input_pack_rejected"
+              }
+            },
+            "required": [
+              "classification"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          }
+        }
+      ]
     },
     "open_macro_v03_metric_backtest_result": {
       "type": "object",
@@ -378,7 +502,83 @@
             "live"
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "classification": {
+                "const": "productive_result"
+              }
+            },
+            "required": [
+              "classification"
+            ]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "succeeded"
+              },
+              "errors": {
+                "maxItems": 0
+              },
+              "runtime_activation": {
+                "const": true
+              },
+              "a5_status": {
+                "const": "active"
+              },
+              "official_result": {
+                "const": true
+              },
+              "allocator_publish": {
+                "const": true
+              },
+              "db_write": {
+                "const": "publication"
+              },
+              "production_endpoint_activation": {
+                "const": "live"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "classification": {
+                "const": "metric_evidence_only"
+              }
+            },
+            "required": [
+              "classification"
+            ]
+          },
+          "then": {
+            "properties": {
+              "runtime_activation": {
+                "const": false
+              },
+              "a5_status": {
+                "const": "blocked"
+              },
+              "official_result": {
+                "const": false
+              },
+              "allocator_publish": {
+                "const": false
+              },
+              "db_write": {
+                "const": "none"
+              },
+              "production_endpoint_activation": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -19,5 +19,5 @@
   "runtime_activation": true,
   "a3_status": "open_macro_v03",
   "a4_status": "harness_ready_provisional_A3",
-  "a5_status": "active"
+  "a5_status": "blocked"
 }
