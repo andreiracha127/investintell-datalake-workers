@@ -32,6 +32,12 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
 
     monkeypatch.setattr(mr, "connect", _fake_connect)
     monkeypatch.setattr(
+        mr.sec_effective_matviews,
+        "refresh_stale",
+        lambda dsn: sink.setdefault("events", []).append(("effective_matviews", dsn))
+        or [{"matview": "ncen_effective_filings_mv", "state": "fresh"}],
+    )
+    monkeypatch.setattr(
         mr.market_overview_snapshot,
         "run",
         lambda dsn: sink.setdefault("events", []).append(("snapshot", dsn))
@@ -72,10 +78,18 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         "published": 1,
         "as_of": "2026-07-13",
     }
+    # The SEC effective-selection caches are refreshed CONDITIONALLY (their own
+    # module decides), on the datalake DSN, after the unconditional datalake list.
+    assert result["effective_matviews"] == [
+        {"matview": "ncen_effective_filings_mv", "state": "fresh"}
+    ]
     event_names = [event[0] for event in sink["events"]]
     snapshot_index = event_names.index("snapshot")
     assert "fund_top_holdings_mv" in sink["events"][snapshot_index - 1][1]
     assert "stock_institutional_holders_mv" in sink["events"][snapshot_index + 1][1]
+    effective_index = event_names.index("effective_matviews")
+    assert effective_index > snapshot_index
+    assert sink["events"][effective_index][1] == "postgres://lake"
 
 
 def test_datalake_step_skipped_when_no_dsn(monkeypatch):

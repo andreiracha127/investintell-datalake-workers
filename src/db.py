@@ -275,3 +275,9 @@ LOCK_BOND_METRICS = 900_350
 # 900_351 is the next free id in the ingestion band (900_3xx) after
 # LOCK_BOND_METRICS.
 LOCK_NPORT_FIXED_INCOME_SERVING = 900_351
+# SEC "effective" selection matview cache (Wave 5, data-cost). Serializes the
+# conditional REFRESH of ncen_effective_filings_mv / rr1_effective_fact_calendar_mv
+# so the daily chain and the matview_refresh worker cannot expand the same raw
+# selection twice at once. 900_352 is the next free id after
+# LOCK_NPORT_FIXED_INCOME_SERVING.
+LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352
