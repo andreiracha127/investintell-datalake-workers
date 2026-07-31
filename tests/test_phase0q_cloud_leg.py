@@ -142,6 +142,100 @@ def test_bundle_rejects_non_ancestor_commit_with_identical_sources(monkeypatch, 
 
 
 # --------------------------------------------------------------------------- #
+# Squash-merge survival: the pin binds BYTES, the commit id is a label         #
+# --------------------------------------------------------------------------- #
+
+def _toy_repo(tmp_path):
+    """A tiny real git repo standing in for REPO_ROOT."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    return repo
+
+
+def test_absent_harness_commit_with_matching_bytes_is_accepted(monkeypatch, tmp_path):
+    """THE regression test for the squash incident.
+
+    main merges by squash, so the branch commit stamped into a record is deleted
+    the moment the PR lands. Every later build then died with "cannot verify
+    harness_commit ancestry: Not a valid commit name" — a refusal caused by the
+    repo's own merge policy, not by any tamper. A commit that is simply not in
+    this clone must not be treated as evidence of tamper; the shipped BYTES
+    decide.
+    """
+    monkeypatch.setattr(bundle_mod, "shipped_source_paths", lambda: ())
+    gone = "0" * 39 + "1"  # well-formed, unreachable: a squashed branch commit
+    assert not bundle_mod._commit_object_present(gone)
+    assert bundle_mod._verify_immutable_prefix_source_identity(gone) == {}
+
+
+def test_absent_commit_does_not_disable_the_byte_pin(monkeypatch, tmp_path):
+    """Losing the commit must not lose the anti-tamper. It does not."""
+    repo = _toy_repo(tmp_path)
+    (repo / "shipped.py").write_text("original" + chr(10), encoding="utf-8")
+    subprocess.run(["git", "add", "shipped.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "head"], cwd=repo, check=True)
+    monkeypatch.setattr(bundle_mod, "REPO_ROOT", repo)
+    monkeypatch.setattr(bundle_mod, "shipped_source_paths", lambda: ("shipped.py",))
+
+    pinned = bundle_mod.shipped_source_tree_hashes("HEAD")
+    bundle_mod.verify_shipped_source_tree_hashes(pinned)  # matching bytes: fine
+
+    # One byte moves -> the blob id moves -> refusal, with no commit involved.
+    tampered = dict(pinned, **{"shipped.py": "0" * 40})
+    with pytest.raises(RuntimeError, match="pinned shipped-source bytes differ"):
+        bundle_mod.verify_shipped_source_tree_hashes(tampered)
+
+
+def test_an_incomplete_byte_pin_is_refused(monkeypatch, tmp_path):
+    """A pin that silently omits a shipped source proves nothing about it."""
+    repo = _toy_repo(tmp_path)
+    (repo / "shipped.py").write_text("original" + chr(10), encoding="utf-8")
+    subprocess.run(["git", "add", "shipped.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "head"], cwd=repo, check=True)
+    monkeypatch.setattr(bundle_mod, "REPO_ROOT", repo)
+    monkeypatch.setattr(bundle_mod, "shipped_source_paths", lambda: ("shipped.py",))
+
+    with pytest.raises(RuntimeError, match="does not cover every shipped source"):
+        bundle_mod.verify_shipped_source_tree_hashes({})
+
+
+def test_committed_record_byte_pin_covers_every_shipped_source_at_head():
+    """The committed record's byte pin is real: it verifies against THIS tree.
+
+    This is what the CI gate now rests on, and it is exactly what a squash cannot
+    invalidate.
+    """
+    record = json.loads(
+        (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
+    )
+    pinned = record["shipped_source_tree_hashes"]
+    assert set(pinned) == set(bundle_mod.shipped_source_paths())
+    bundle_mod.verify_shipped_source_tree_hashes(pinned)
+
+
+def test_committed_record_harness_commit_is_reachable_from_this_history():
+    """The label should still name a real commit — but as a label, not a gate.
+
+    Pinning a branch commit is what broke main: it named something the merge
+    policy deletes. The record now names a commit on the merged history.
+    """
+    record = json.loads(
+        (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
+    )
+    commit = record["harness_commit"]
+    assert bundle_mod._commit_object_present(commit), (
+        f"{commit} is not in this clone; re-pin the record to a commit on main "
+        "(python -m harness.phase0q_cloud.bundle <sha> ... && record_artifacts)"
+    )
+    assert subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "HEAD"], cwd=ROOT, check=False
+    ).returncode == 0
+
+
+# --------------------------------------------------------------------------- #
 # Drift refusal                                                               #
 # --------------------------------------------------------------------------- #
 

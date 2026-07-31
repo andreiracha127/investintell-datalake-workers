@@ -17,7 +17,7 @@
       "metrics_canonical_logical_hash": {
         "code_stable": false,
         "committed_evidence_001": "6c6f5df1c02afbf59ee97f5583ede95e2b29a8ed60da0e6e1dd0e999f1fa1b30",
-        "live": "50608a264368bc08173ae3f474fec4920101db8c939c0baae44ae579f13711fb"
+        "live": "c582c63e6ece1b413fd9be4d9d5f810f3ca393a903bd264ee9425295b0282ebd"
       },
       "out_of_sample_stability": {
         "code_stable": false,
@@ -53,7 +53,7 @@
     "runtime_activation": false,
     "status": "candidate_not_approved"
   },
-  "harness_commit": "7474e620afd291460cb59d35d2392f0de65e7807",
+  "harness_commit": "b63d50427a81bb0e9d581b29019e5b0e31805700",
   "input_pack_sha256": "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337",
   "notes": "SKELETON — cloud side null/pending. Local hashes are filled from the committed immutable evidence + the live HEAD harness. The cloud side is completed by harness.phase0q_cloud.fetch_results after the orchestrator fetches the QC verdict JSON. Reproducibility evidence only; grants no activation or approval.",
   "qc_project_id": 33679769,
@@ -64,11 +64,11 @@
       "qc_research_object_store"
     ],
     "local_python_pure": {
-      "logical_hash": "22db3e8f9226448d70ffb609524d0928c5c5481ffcbf17a0aecea497652b421d",
+      "logical_hash": "4ccd589fc2bce48707029ad92ece82622b418ebb02cc72e88f08e4e887ef7999",
       "output_logical_hashes": {
         "annualized_volatility": "67d95b48bacc6da5b0ac8a67752cfb31668b48601e29d367fa8e631540405834",
         "max_drawdown": "d0c797a4e2234122db813200206812ddc0c1e28554b77c605f70b11af062b5d1",
-        "metrics_canonical_logical_hash": "50608a264368bc08173ae3f474fec4920101db8c939c0baae44ae579f13711fb",
+        "metrics_canonical_logical_hash": "c582c63e6ece1b413fd9be4d9d5f810f3ca393a903bd264ee9425295b0282ebd",
         "out_of_sample_stability": "0eae10401281b292b23b6b3095f9187b0ccee8e8fb5b411a415562f3d2622d7b",
         "stress_window_behavior": "a2920595920cdce83f100f080f127ed758623a3d4db8cd841fcb11e835a10758",
         "turnover": "e586755c119823d24f5fa20e68f26b4b0ed2dfa1a8b9b10de30a530d23bb5d16"
@@ -83,7 +83,7 @@
       "status": "pending"
     }
   },
-  "run_fingerprint": "14840e173e40e7c3c45f03db16ead3dbfd63169ff7dc1b36b292714929264368",
+  "run_fingerprint": "ee4d9dec4f6cc934a890b116c135ee3df003e48e7141caa16567e372e8e02b96",
   "schema_version": 1,
   "status": "pending_cloud_leg",
   "verdict": "pending"
