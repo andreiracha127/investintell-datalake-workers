@@ -1,9 +1,20 @@
 # ruff: noqa: E701, E702
-"""Local PostgreSQL execution boundary for N-PORT fixed-income publications.
+"""Execution boundary and artifact protocol for N-PORT fixed-income publications.
 
-Production PostgreSQL is deliberately restricted to snapshot extraction and the
-final COPY publication.  The legacy SQL implementation is installed and run
-only in a separately-attested local PostgreSQL database.
+Two producers share this module:
+
+* ``src.workers.nport_fixed_income_serving`` -- the REGISTERED worker.  It
+  installs the sha256-pinned builder (:func:`install_builder`) into the target
+  database and runs it there, publishing under the shared
+  ``prepared -> validated -> current`` derived-publication protocol.
+* the extract/compute/publish artifact path below -- the original offline route,
+  where the builder runs in a separately-attested local PostgreSQL and only a
+  verified artifact bundle is COPYed into production.
+
+Both paths execute the SAME pinned SQL and honour the SAME integrity scaffolding
+(contract digest, builder sha256, build-identity pinning, immutable manifest).
+The offline route is kept because it is still the only way to rebuild from a
+frozen artifact; it is no longer the only way to produce the product.
 """
 
 from __future__ import annotations
@@ -11,6 +22,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -27,9 +39,10 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = (
     ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
 )
-LOCAL_ORACLE_PATH = (
-    ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql"
-)
+BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
+# Historical alias: the resource used to live under ``sql/local_only`` and was
+# reachable only from the offline route.  Same bytes, same sha256 pin.
+LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # Re-approved 2026-07-25: the multi-referenced CTEs carry AS MATERIALIZED. Without
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
@@ -286,10 +299,27 @@ def _run_with_watchdog(connection: Any, seconds: int, operation: Any) -> Any:
 
 
 def _assert_oracle_resource() -> None:
-    if not LOCAL_ORACLE_PATH.is_file():
-        raise ArtifactIntegrityError("packaged local fixed-income oracle is missing")
-    if sha256_file(LOCAL_ORACLE_PATH) != APPROVED_LOCAL_ORACLE_SHA256:
-        raise ArtifactIntegrityError("local fixed-income oracle is not the approved version")
+    if not BUILDER_SQL_PATH.is_file():
+        raise ArtifactIntegrityError("packaged fixed-income builder SQL is missing")
+    if sha256_file(BUILDER_SQL_PATH) != APPROVED_LOCAL_ORACLE_SHA256:
+        raise ArtifactIntegrityError("fixed-income builder SQL is not the approved version")
+
+
+def install_builder(cursor: Any) -> str:
+    """Install the pinned ``build_nport_fixed_income_features`` into the target DB.
+
+    Fail-closed on the pin FIRST: the sha256 of the packaged SQL is the only
+    thing standing between "the approved builder" and "whatever is on disk", so
+    a drifted resource must never reach ``EXECUTE``.  Idempotent (the resource is
+    a single ``CREATE OR REPLACE FUNCTION``) and callable from any database --
+    the local-vs-production distinction was never enforced by this function, it
+    was enforced by refusing to define the function in production at all.
+
+    Returns the verified sha256 so callers can record it in a manifest.
+    """
+    _assert_oracle_resource()
+    cursor.execute(BUILDER_SQL_PATH.read_text(encoding="utf-8"))
+    return APPROVED_LOCAL_ORACLE_SHA256
 
 
 def _copy_field(value: Any) -> str:
@@ -915,6 +945,59 @@ def verify_manifest(
             raise ArtifactIntegrityError(f"payload header differs from contract: {name}")
 
 
+def _expected_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
+    """The per-relation row counts the manifest attests (already contract-checked)."""
+    return {relation: int(manifest["outputs"][relation]["count"]) for relation in TARGET_RELATIONS}
+
+
+def _verify_storage_requested(explicit: bool | None) -> bool:
+    """Whether this run must re-count the relations instead of reading the closure.
+
+    ``NPORT_FI_VERIFY_STORAGE`` is the operator switch for a restore, a DR drill
+    or an audit; the explicit argument wins when given.
+    """
+    if explicit is not None:
+        return explicit
+    return os.getenv("NPORT_FI_VERIFY_STORAGE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _recorded_closure(cursor: Any, publication_id: str) -> tuple[str, dict[str, int]] | None:
+    cursor.execute(
+        "SELECT manifest_sha256, relation_counts FROM nport_fixed_income_publication_closures "
+        "WHERE publication_id=%s",
+        (publication_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return row[0], {str(k): int(v) for k, v in dict(row[1]).items()}
+
+
+def _record_closure(cursor: Any, publication_id: str, manifest_hash: str,
+                    counts: Mapping[str, int]) -> None:
+    """Persist the storage closure for a validated publication.
+
+    ``ON CONFLICT DO NOTHING`` because the closure is immutable by trigger: a
+    concurrent replay that recorded it first is the same fact, not a conflict.
+    """
+    cursor.execute(
+        "INSERT INTO nport_fixed_income_publication_closures"
+        "(publication_id, manifest_sha256, relation_counts) VALUES(%s,%s,%s::jsonb) "
+        "ON CONFLICT (publication_id) DO NOTHING",
+        (publication_id, manifest_hash, canonical_json(dict(counts))),
+    )
+
+
+def _count_relations(cursor: Any, publication_id: str, expected: Mapping[str, int]) -> None:
+    """Full storage verification: one count per target relation, all must match."""
+    for relation in TARGET_RELATIONS:
+        cursor.execute(
+            f"SELECT count(*) FROM {relation} WHERE publication_id=%s", (publication_id,)
+        )
+        if cursor.fetchone()[0] != expected[relation]:
+            raise PublicationConflictError(f"matching manifest has divergent count: {relation}")
+
+
 def publish_artifact(
     *,
     connection: psycopg.Connection[Any],
@@ -923,8 +1006,14 @@ def publish_artifact(
     resource_config: ResourceConfig,
     product: str = "nport_fixed_income_features_v1",
     failure_after_relation: str | None = None,
+    verify_storage: bool | None = None,
 ) -> None:
-    """Copy a fully verified artifact; never invoke raw relations or the builder here."""
+    """Copy a fully verified artifact; never invoke raw relations or the builder here.
+
+    ``verify_storage`` forces the full per-relation recount on an idempotent
+    replay (default: the ``NPORT_FI_VERIFY_STORAGE`` environment switch). The
+    normal replay path re-proves storage from the recorded closure instead --
+    see ``_record_closure`` and the closure DDL for why that is equivalent."""
     artifact_dir = Path(artifact_dir)
     files = {name: artifact_dir / f"{name}.tsv.gz" for name in TARGET_RELATIONS}
     manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
@@ -951,10 +1040,26 @@ def publish_artifact(
                 )
                 if cursor.fetchone() != ("validated", uuid.UUID(identity.target_publication_id)):
                     raise PublicationConflictError("matching manifest is not the validated current target")
-                for relation in TARGET_RELATIONS:
-                    cursor.execute(f"SELECT count(*) FROM {relation} WHERE publication_id=%s", (identity.target_publication_id,))
-                    if cursor.fetchone()[0] != manifest["outputs"][relation]["count"]:
-                        raise PublicationConflictError(f"matching manifest has divergent count: {relation}")
+                expected = _expected_counts(manifest)
+                # Storage re-proof. The eight relations are frozen for a validated
+                # publication -- every UPDATE/DELETE is rejected by the row guards,
+                # an INSERT needs the parent 'prepared', and TRUNCATE is refused --
+                # so a closure recorded while the publication was already validated
+                # remains true. Reading it is ONE indexed row instead of eight full
+                # counts, one of them over the 45.6M-row metric coverage relation.
+                # No closure (a publication from before this record existed, or a
+                # forced audit) falls back to the counts and then records one, so
+                # the cost is paid once, never per replay.
+                closure = None if _verify_storage_requested(verify_storage) else _recorded_closure(
+                    cursor, identity.target_publication_id)
+                if closure is not None:
+                    recorded_hash, recorded_counts = closure
+                    if recorded_hash != manifest_hash or recorded_counts != expected:
+                        raise PublicationConflictError(
+                            "recorded storage closure diverges from the matching manifest")
+                    return
+                _count_relations(cursor, identity.target_publication_id, expected)
+                _record_closure(cursor, identity.target_publication_id, manifest_hash, expected)
                 return
             raise PublicationConflictError(
                 "target publication already has a distinct manifest"
@@ -1029,6 +1134,14 @@ def publish_artifact(
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
             (identity.target_publication_id,),
+        )
+        # Record the storage closure AFTER validation (its guard demands a
+        # validated publication) and inside the same transaction that wrote the
+        # rows: from here on the row guards refuse every further write, so these
+        # counts -- already asserted against the staged payload above -- are final.
+        # The first idempotent replay is therefore O(1) too, never one full pass.
+        _record_closure(
+            cursor, identity.target_publication_id, manifest_hash, _expected_counts(manifest)
         )
         cursor.execute(
             "SELECT sec_set_current_derived_publication(%s,%s)",
