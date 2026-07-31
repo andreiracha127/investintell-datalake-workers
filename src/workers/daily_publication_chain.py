@@ -392,13 +392,34 @@ def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
     conn.execute("DELETE FROM active_quant_publication_v1 WHERE product=%s", (product,))
 
 
+def _configured_stages() -> list[Stage]:
+    """The stage set this deployment runs, from ``DAILY_CHAIN_STAGES``.
+
+    A comma-separated subset of the frozen stage names (order-insensitive: the
+    frozen binding order always applies). Unset/blank -> all eight stages. This
+    exists so a deployment can scope the chain to one product family's lane —
+    e.g. the bond job runs ``pit_update,materialize,validate,refresh,probe``
+    and leaves ``mixed_build``/``promote`` to the quant program's own cadence —
+    without a code fork. Unknown names fail closed (never silently dropped).
+    """
+    raw = os.getenv("DAILY_CHAIN_STAGES", "").strip()
+    if not raw:
+        return build_default_stages()
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    unknown = sorted(set(names) - set(daily_chain.STAGE_ORDER))
+    if unknown:
+        raise ValueError(f"DAILY_CHAIN_STAGES names unknown stages: {unknown}")
+    return build_stages(names)
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Drive the daily publication chain under the chain-run advisory lock.
 
     Overlapping runs are impossible: the whole run holds
     ``LOCK_DAILY_PUBLICATION_CHAIN`` (session-level, survives the per-stage
-    commits). ``calc_date`` pins a single source-day; otherwise all eligible
-    watermark days are processed in ascending (catch-up) order.
+    commits). ``calc_date`` pins a single source-day; otherwise the single
+    latest watermark day is processed. ``DAILY_CHAIN_STAGES`` scopes the stage
+    set (see ``_configured_stages``).
     """
     resolved = resolve_dsn(dsn)
     with connect(resolved) as conn, advisory_lock(conn, LOCK_DAILY_PUBLICATION_CHAIN) as acquired:
@@ -413,7 +434,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         if not source_days:
             return {"state": "no_source_days", "chain": CHAIN, "runs": []}
         summaries = daily_chain.run_chain(
-            conn, stages=build_default_stages(), source_days=source_days,
+            conn, stages=_configured_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
             watermarks_for=build_watermarks,
             snapshot_pointers=_snapshot_pointers, restore_pointer=_restore_pointer,

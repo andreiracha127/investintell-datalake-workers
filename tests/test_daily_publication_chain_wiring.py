@@ -112,6 +112,18 @@ def test_discover_source_days_yields_only_the_latest_watermark_day():
         admin.close()
 
 
+def test_configured_stages_env_scopes_the_run(monkeypatch):
+    """``DAILY_CHAIN_STAGES`` scopes a deployment to one lane (frozen order
+    preserved); blank/unset means all eight; unknown names fail closed."""
+    monkeypatch.delenv("DAILY_CHAIN_STAGES", raising=False)
+    assert [s.name for s in chain_worker._configured_stages()] == list(daily_chain.STAGE_ORDER)
+    monkeypatch.setenv("DAILY_CHAIN_STAGES", "refresh, pit_update,probe")
+    assert [s.name for s in chain_worker._configured_stages()] == ["pit_update", "refresh", "probe"]
+    monkeypatch.setenv("DAILY_CHAIN_STAGES", "pit_update,teleport")
+    with pytest.raises(ValueError, match="teleport"):
+        chain_worker._configured_stages()
+
+
 def test_staleness_threshold_is_env_configurable(monkeypatch):
     monkeypatch.delenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", raising=False)
     assert chain_worker._staleness_threshold() == chain_worker._DEFAULT_STALENESS_THRESHOLD_DAYS
