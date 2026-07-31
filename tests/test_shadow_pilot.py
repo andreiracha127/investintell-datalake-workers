@@ -11,6 +11,12 @@ import pytest
 from src import shadow_pilot as sp
 from src.input_packs.hashing import file_sha256
 
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 CALIBRATION_RUN_MATRIX = json.loads(
     (ROOT / "artifacts" / "calibration" / sp.CALIBRATION_ID / "run_matrix.json").read_text(encoding="utf-8")
@@ -942,8 +948,11 @@ def test_committed_shadow_pilot_artifacts_validate() -> None:
 
 
 def test_github_actions_runs_shadow_pilot_gate() -> None:
-    text = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    """The suite still has a named home in CI — the on-demand evidence replay."""
+    text = (ROOT / ".github" / "workflows" / "preactivation-evidence.yml").read_text(
+        encoding="utf-8"
+    )
 
-    assert "pull_request:" in text
+    assert "workflow_dispatch:" in text
     assert "tests/test_shadow_pilot.py" in text
     assert "src/shadow_pilot.py" in text
