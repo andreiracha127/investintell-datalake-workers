@@ -1,9 +1,9 @@
-"""Registered materializer for the RR1 derived-profile snapshots.
+"""Registered materializer for the RR1 fee-profile snapshot.
 
-Builds and promotes the fee-profile, shareholder-cost, waiver-durability, and
-class cost-dispersion snapshots over the amendment-aware effective selection.
-Each product lands one complete version under an advisory lock and is promoted to
-its current pointer atomically via the shared derived-publication protocol.
+Builds and promotes ``rr1_fee_profile_v1`` -- the only surviving RR1 derived
+product -- over the amendment-aware effective selection.  It lands one complete
+version under an advisory lock and is promoted to its current pointer atomically
+via the shared derived-publication protocol.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 Global Constraint 9: this ships without running any production backfill; when no
@@ -52,10 +52,10 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
 def _materialize_effective_cache(conn: Any, as_of: date) -> None:
     """Evaluate the amendment-aware RR1 fact view once for the whole build.
 
-    Every RR1 product computes fingerprints, rows, and closure checks over the
-    same effective fact set. Letting each SQL function expand the view again
-    multiplies the full raw scan many times. A transaction-local table shadows
-    the public view for this session and is discarded automatically on
+    The fee product computes fingerprints, rows, and closure checks over the same
+    effective fact set several times. Letting each SQL function expand the view
+    again multiplies the full raw scan many times. A transaction-local table
+    shadows the public view for this session and is discarded automatically on
     commit/rollback.
 
     This cache is NOT semantically neutral, and that is the trap it once set.
@@ -72,44 +72,28 @@ def _materialize_effective_cache(conn: Any, as_of: date) -> None:
     perfectly good build could never be certified -- nor its pointer repointed
     -- from any session but the one that built it.  schemas/rr1_fee_profiles.sql
     now states the same scope in the product's own selection, so both readings
-    agree and this filter is merely redundant for the fee product.
+    agree and this filter is merely redundant.  It is kept so this worker's
+    input set stays byte-identical to the one that produced the published
+    snapshots.
 
-    It is still load-bearing for the other six RR1 products, whose ``build_*``
-    functions continue to RAISE on a blank series/class instead of scoping it
-    out; removing it here would stop them building at all.  Keep it until they
-    state their own scope too.
+    The six other RR1 profile products that used to widen this cache (waiver,
+    turnover, shareholder cost, reported performance, class cost dispersion,
+    benchmark) were removed on 2026-07-30, together with the series-level tag
+    exemption that only the benchmark product needed.
     """
     tags = [
         row[0]
         for row in conn.execute(
             "SELECT original_tag FROM rr1_fee_profile_concept_map()"
-            " UNION SELECT original_tag FROM rr1_shareholder_cost_concept_map()"
-            " UNION SELECT original_tag FROM rr1_waiver_concept_map()"
-            " UNION SELECT original_tag FROM rr1_turnover_concept_map()"
-            " UNION SELECT original_tag FROM rr1_reported_performance_concept_map()"
-            " UNION SELECT original_tag FROM rr1_benchmark_concept_map()"
-            " UNION SELECT 'AvgAnnlRtrPct'"
-            " UNION SELECT 'NetExpensesOverAssets'"
         ).fetchall()
-    ]
-    # A declared benchmark is a property of the SERIES, so its facts carry an EMPTY
-    # class.  Requiring a class for every cached fact would starve the benchmark
-    # product of its entire input.  The exemption is strictly ADDITIVE and stays that
-    # way: the reported-performance map now resolves the same four AverageAnnualReturn*
-    # tags, but ``build_rr1_reported_performance_profiles`` states its own class-level
-    # scope (``class_id`` non-empty) in its selection, so the class-empty rows this
-    # exemption admits reach the benchmark product and nothing else.
-    series_level_tags = [
-        row[0]
-        for row in conn.execute("SELECT original_tag FROM rr1_benchmark_concept_map()").fetchall()
     ]
     conn.execute(
         "CREATE TEMP TABLE rr1_effective_facts ON COMMIT PRESERVE ROWS AS "
         "SELECT * FROM public.rr1_effective_facts "
         "WHERE effective_date<=%s AND tag=ANY(%s) "
         "AND nullif(btrim(series_id),'') IS NOT NULL "
-        "AND (nullif(btrim(class_id),'') IS NOT NULL OR tag=ANY(%s))",
-        (as_of, tags, series_level_tags),
+        "AND nullif(btrim(class_id),'') IS NOT NULL",
+        (as_of, tags),
     )
     conn.execute(
         "CREATE INDEX ON rr1_effective_facts"

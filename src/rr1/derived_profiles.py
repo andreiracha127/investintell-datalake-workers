@@ -1,15 +1,19 @@
-"""Materializer for the RR1 derived-profile snapshots.
+"""Materializer for the RR1 fee-profile snapshot.
 
-The RR1 fee-profile snapshot (``rr1_fee_profile_v1``) previously had no registered
-Python publication path -- its SQL ``build_*`` function was driven only by tests.
-This module is the single RR1 derived materializer: it registers that existing
-product alongside the three new share-class fee snapshots (shareholder costs /
-expense examples, waiver durability, class cost dispersion) so RR1 does not fork
-a parallel publication mechanism.  Each product is built over the amendment-aware
-effective selection and promoted one complete version at a time through the
-existing ``sec_derived_publications`` protocol (prepared -> validated -> current
-pointer).  The heavy lifting lives in the SQL ``build_*`` functions; this module
-only owns the deterministic publication identity and the lifecycle wiring.
+``rr1_fee_profile_v1`` is the ONLY surviving RR1 derived product: it feeds the
+curated share-class block at the top of the fund dossier.  The six other RR1
+profile products (shareholder cost, waiver, class cost dispersion, turnover,
+reported performance, benchmark) were removed on 2026-07-30 together with the
+nine N-CEN profile products -- no metrics worker or quant engine consumed them,
+they only backed redundant dossier accordions, and one of them
+(``rr1_class_cost_dispersion_v1``) took the bond publication chain down in
+production.
+
+The product is built over the amendment-aware effective selection and promoted
+one complete version at a time through the existing ``sec_derived_publications``
+protocol (prepared -> validated -> current pointer).  The heavy lifting lives in
+the SQL ``build_rr1_fee_profiles`` function; this module only owns the
+deterministic publication identity and the lifecycle wiring.
 
 Contract mirrors the other SEC derived builders: the caller resolves the
 validated RR1 source run/package (Global Constraint 9 keeps that out of any
@@ -33,12 +37,6 @@ _NAMESPACE = UUID("b6e1f2a4-7c53-5a91-9d84-3f2c6a1e8b40")
 # product -> SQL build function.  One complete version per product is promoted.
 PRODUCTS: dict[str, str] = {
     "rr1_fee_profile_v1": "build_rr1_fee_profiles",
-    "rr1_shareholder_cost_profile_v1": "build_rr1_shareholder_cost_profiles",
-    "rr1_waiver_profile_v1": "build_rr1_waiver_profiles",
-    "rr1_class_cost_dispersion_v1": "build_rr1_class_cost_dispersion",
-    "rr1_turnover_profile_v1": "build_rr1_turnover_profiles",
-    "rr1_reported_performance_profile_v1": "build_rr1_reported_performance_profiles",
-    "rr1_benchmark_profile_v1": "build_rr1_benchmark_profiles",
 }
 
 _SCHEMA_FILES = (
@@ -46,14 +44,9 @@ _SCHEMA_FILES = (
     "rr1_effective_views.sql",
     "rr1_derived_common.sql",
     "rr1_fee_profiles.sql",
-    "rr1_shareholder_cost_profiles.sql",
-    "rr1_waiver_profiles.sql",
-    "rr1_class_cost_dispersion.sql",
-    "rr1_turnover_profiles.sql",
-    "rr1_reported_performance_profiles.sql",
-    "rr1_benchmark_profiles.sql",
     # Versioned governance infra (no snapshot build function): installed with the
-    # RR1 derived surface but deliberately absent from PRODUCTS.
+    # RR1 derived surface but deliberately absent from PRODUCTS.  It still gates
+    # the crosswalk evidence that rides on a fee fact resolved from a custom tag.
     "rr1_custom_tag_crosswalk.sql",
 )
 

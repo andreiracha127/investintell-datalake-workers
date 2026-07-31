@@ -1,5 +1,13 @@
 """Workers-side ``sec_regulatory_serving_v1`` cross-repo contract counterpart.
 
+SCOPE (2026-07-30): the serving surface carries the RR1 fee family and the
+custom-tag crosswalk governance family ONLY. The nine N-CEN profile families and
+the six other RR1 profile families were removed from the product together with
+their builders and schemas: nothing downstream consumed them, they only backed
+redundant dossier accordions, and one of them took the bond publication chain
+down in production. The raw N-CEN/RR1/N-PORT landing tables and the
+``*_effective_*`` views are untouched.
+
 This is the publisher half of the serving handshake the reader declares in the
 app repo (``backend/app/contracts/sec_regulatory_serving_v1.py``). Both
 repositories build the SAME canonical serving surface -- the product string, the
@@ -30,13 +38,12 @@ PINNED SERVING BOUNDARY (documented here so both repos carry the decision):
 COVERAGE_PCT SEMANTICS (contract note; carried in both repos -- Increment 2 Task 1e):
   ``coverage_pct`` is a per-FAMILY quantity and its denominator differs by family;
   it is a coarse completeness signal, NOT a single cross-family ratio:
-    * N-CEN families -- RAW STATE PASS-THROUGH: the serving materializer derives it
-      from the serving state only (available -> 100, degraded -> 50, otherwise NULL).
-      There is no per-fact usable/total fraction; the number reflects the state band.
-    * ``rr1_fee`` (app composite) -- USABLE / 7: the fraction of the seven closed-world
-      over-assets fee concepts that resolved to a usable value for the class.
-    * ``rr1_reported_performance`` (app composite) -- USABLE / ROWS: the fraction of the
-      reported-performance rows that carried a usable numeric value.
+    * ``rr1_fee`` -- RAW STATE PASS-THROUGH on the serving row (available -> 100,
+      degraded -> 50, otherwise NULL).  The app composite recomputes it as
+      USABLE / 7: the fraction of the seven closed-world over-assets fee concepts
+      that resolved to a usable value for the class.
+    * ``rr1_custom_tag_crosswalk`` -- a governance surface, not a per-fund fact:
+      every emitted row is an approved, confidence-gated mapping (100).
   A consumer must read ``coverage_pct`` against the family it came from and never
   compare it across families as if it were one normalised ratio.
 """
@@ -115,11 +122,6 @@ SCRUB_BLOCKLIST: tuple[str, ...] = (
     "original_version",
 )
 
-_NCEN_STATE_MAP = {
-    "available": "available",
-    "unavailable": "unavailable",
-    "not_applicable": "not_applicable",
-}
 _RR1_STATE_MAP = {
     "available": "available",
     "degraded": "degraded",
@@ -131,124 +133,6 @@ _RR1_STATE_MAP = {
 # materializer reads; ``grain`` documents the serving grain; ``degraded_rule``
 # names the forward-note-driven refinement applied on top of the state map.
 FAMILIES: tuple[dict[str, Any], ...] = (
-    {
-        "family": "ncen_structure",
-        "source_product": "ncen_structure_profile_v1",
-        "source_view": "sec_current_ncen_structure_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "structure_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_structure_v1",
-        "payload_keys": ("structure_flags", "regulatory_reliance", "report_period_lt_12month",
-                         "reliance_state", "reliance_reason_code"),
-        "degraded_rule": "none",
-    },
-    {
-        "family": "ncen_provider_network",
-        "source_product": "ncen_provider_network_v1",
-        "source_view": "sec_current_ncen_provider_network_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "provider_network_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_provider_network_v1",
-        "payload_keys": ("provider_network",),
-        "degraded_rule": "none",
-    },
-    {
-        "family": "ncen_operational_event",
-        "source_product": "ncen_operational_event_v1",
-        "source_view": "sec_current_ncen_operational_event_profiles",
-        "grain": "registrant_fanout_to_fund",
-        "grain_origin": "registrant",
-        "snapshot_state_column": "operational_event_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_operational_event_v1",
-        "payload_keys": ("operational_events",),
-        # forward-note 2: registrant grain fanned out to each fund of the same
-        # accession via the fund roster; grain_origin labels the origin.
-        "degraded_rule": "registrant_to_fund_fanout",
-    },
-    {
-        "family": "ncen_liquidity_backstop",
-        "source_product": "ncen_liquidity_backstop_v1",
-        "source_view": "sec_current_ncen_liquidity_backstop_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "liquidity_backstop_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_liquidity_backstop_v1",
-        "payload_keys": ("liquidity_backstop",),
-        # forward-note 5: family stays available with per-sub-block states inside
-        # the payload; the serving does not collapse sub-panel states.
-        "degraded_rule": "sub_panel_states_in_payload",
-    },
-    {
-        "family": "ncen_securities_lending",
-        "source_product": "ncen_securities_lending_v1",
-        "source_view": "sec_current_ncen_securities_lending_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "securities_lending_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_securities_lending_v1",
-        "payload_keys": ("securities_lending", "quality_flags"),
-        # forward-note 6: IS_COLLATERAL_LIQUIDATED contract defect is surfaced as a
-        # reduced-quality flag, never silently repaired (program pendency).
-        "degraded_rule": "collateral_liquidated_quality_flag",
-    },
-    {
-        "family": "ncen_etf_primary_market",
-        "source_product": "ncen_etf_primary_market_v1",
-        "source_view": "sec_current_ncen_etf_primary_market_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "etf_primary_market_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_etf_primary_market_v1",
-        "payload_keys": ("etf_primary_market",),
-        # forward-note 4: a net flow from two PRESENT legs is legitimate and served
-        # as-is; degrade and drop the net ONLY when the snapshot flagged an incomplete
-        # (one-legged) AP (derived.leg_incomplete). A missing leg is never coerced to 0.
-        "degraded_rule": "serve_net_when_legs_complete_degrade_if_leg_incomplete",
-    },
-    {
-        "family": "ncen_closed_end",
-        "source_product": "ncen_closed_end_v1",
-        "source_view": "sec_current_ncen_closed_end_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "closed_end_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_closed_end_v1",
-        "payload_keys": ("closed_end",),
-        # forward-note 7: preserve the typed not_applicable reason (evidence_absent)
-        # in snapshot_reason_code without reclassifying.
-        "degraded_rule": "preserve_snapshot_reason",
-    },
-    {
-        "family": "ncen_expense_brokerage",
-        "source_product": "ncen_expense_brokerage_v1",
-        "source_view": "sec_current_ncen_expense_brokerage_profiles",
-        "grain": "fund",
-        "grain_origin": "fund",
-        "snapshot_state_column": "expense_brokerage_state",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,
-        "payload_schema_id": "ncen_expense_brokerage_v1",
-        "payload_keys": ("expense_brokerage",),
-        # forward-note 8: the snapshot state cannot tell an empty fund from a
-        # reported one; degrade when every expense leg is NULL.
-        "degraded_rule": "degrade_if_all_expense_legs_null",
-    },
     {
         "family": "rr1_fee",
         "source_product": "rr1_fee_profile_v1",
@@ -264,112 +148,6 @@ FAMILIES: tuple[dict[str, Any], ...] = (
         # + confidence) rides here for a fact resolved from a custom tag; never the tag.
         "payload_keys": ("canonical_concept", "value_numeric", "declared_unit",
                          "crosswalk_evidence"),
-        "degraded_rule": "snapshot_status_passthrough",
-    },
-    {
-        "family": "rr1_shareholder_cost",
-        "source_product": "rr1_shareholder_cost_profile_v1",
-        "source_view": "sec_current_rr1_shareholder_cost_profiles",
-        "grain": "series_class_fact",
-        "grain_origin": "class",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "degraded", "unavailable", "not_applicable"),
-        "state_map": _RR1_STATE_MAP,
-        "payload_schema_id": "rr1_shareholder_cost_v1",
-        "payload_keys": ("canonical_concept", "cost_group", "value_numeric", "declared_unit"),
-        "degraded_rule": "snapshot_status_passthrough",
-    },
-    {
-        "family": "rr1_waiver",
-        "source_product": "rr1_waiver_profile_v1",
-        "source_view": "sec_current_rr1_waiver_profiles",
-        "grain": "series_class_fact",
-        "grain_origin": "class",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "degraded", "unavailable", "not_applicable"),
-        "state_map": _RR1_STATE_MAP,
-        "payload_schema_id": "rr1_waiver_v1",
-        # forward-note 10: reconciliation divergence is a quality flag, never an
-        # adjusted value; gross/net/waiver fractions with declared unit.
-        "payload_keys": (
-            "waiver_over_assets", "gross_expense_over_assets", "net_expense_over_assets",
-            "declared_unit", "termination_date", "term_days", "remaining_days",
-            "gross_minus_waiver", "net_reconstruction_gap", "reconciliation_status",
-            "reconciliation_tolerance", "cliff_horizon_days", "cliff_flag",
-            "termination_reason_code",
-        ),
-        "degraded_rule": "snapshot_status_passthrough",
-    },
-    {
-        "family": "rr1_class_cost_dispersion",
-        "source_product": "rr1_class_cost_dispersion_v1",
-        "source_view": "sec_current_rr1_class_cost_dispersion",
-        "grain": "series",
-        "grain_origin": "series",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "unavailable", "not_applicable"),
-        "state_map": _NCEN_STATE_MAP,  # 3-state, no degraded (matches snapshot)
-        "payload_schema_id": "rr1_class_cost_dispersion_v1",
-        # forward-note 9: consume post-rename names; numeric_class_count is NEVER
-        # presented as the class count -- class_total is.
-        "payload_keys": (
-            "numeric_class_count", "class_total", "net_min", "net_max", "net_spread",
-            "net_min_class_id", "net_max_class_id", "per_class_evidence",
-        ),
-        "degraded_rule": "none",
-    },
-    {
-        "family": "rr1_turnover",
-        "source_product": "rr1_turnover_profile_v1",
-        "source_view": "sec_current_rr1_turnover_profiles",
-        "grain": "series_class_fact",
-        "grain_origin": "class",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "degraded", "unavailable", "not_applicable"),
-        "state_map": _RR1_STATE_MAP,
-        "payload_schema_id": "rr1_turnover_v1",
-        # forward-note 13: number + consistency flag only; NEVER the narrative text.
-        "payload_keys": (
-            "turnover_rate", "declared_unit", "turnover_numeric_present",
-            "turnover_text_present", "narrative_consistency",
-        ),
-        "degraded_rule": "snapshot_status_passthrough",
-    },
-    {
-        "family": "rr1_reported_performance",
-        "source_product": "rr1_reported_performance_profile_v1",
-        "source_view": "sec_current_rr1_reported_performance_profiles",
-        "grain": "series_class_fact",
-        "grain_origin": "class",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "degraded", "unavailable", "not_applicable"),
-        "state_map": _RR1_STATE_MAP,
-        "payload_schema_id": "rr1_reported_performance_v1",
-        # forward-notes 11 & 16: standalone reported-performance; treatment carries
-        # the load/tax signal (incl. 'unclassified'); no fabricated boolean.
-        # forward-notes 12 & 15: crosswalk_evidence rides here for a fact resolved from
-        # a custom tag (canonical_concept + crosswalk_version + confidence; never the tag).
-        "payload_keys": (
-            "canonical_concept", "value_kind", "value_numeric", "value_date",
-            "value_label", "declared_unit", "treatment", "crosswalk_evidence",
-        ),
-        "degraded_rule": "snapshot_status_passthrough",
-    },
-    {
-        "family": "rr1_benchmark",
-        "source_product": "rr1_benchmark_profile_v1",
-        "source_view": "sec_current_rr1_benchmark_profiles",
-        "grain": "series_class",
-        "grain_origin": "class",
-        "snapshot_state_column": "status",
-        "snapshot_state_vocab": ("available", "degraded", "unavailable", "not_applicable"),
-        "state_map": _RR1_STATE_MAP,
-        "payload_schema_id": "rr1_benchmark_v1",
-        "payload_keys": (
-            "primary_benchmark", "benchmark_consistency", "declared_benchmark_count",
-            "observation_count", "context_count", "document_count", "period_count",
-            "per_benchmark_evidence",
-        ),
         "degraded_rule": "snapshot_status_passthrough",
     },
     {
@@ -395,7 +173,7 @@ CROSSWALK_MIN_CONFIDENCE = 0.80
 
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.sec_regulatory_serving_v1.SURFACE_DIGEST`` byte-for-byte.
-SURFACE_DIGEST = "sha256:aa134a7e8e70c0a5b2e577121fa3a3aeb8311404b6aaa9e992173b789d5e1db4"
+SURFACE_DIGEST = "sha256:1dafe89ba9a1997f9849a24c497998950d98d3d9c1371315c2eac22dd9d88708"
 
 
 def _family_surface(family: dict[str, Any]) -> dict[str, Any]:
@@ -464,8 +242,8 @@ def verify_contract() -> dict[str, Any]:
     names = family_names()
     if len(names) != len(set(names)):
         mismatches.append("family names are not unique")
-    if len(names) != 16:
-        mismatches.append(f"expected 16 serving families, declared {len(names)}")
+    if len(names) != 2:
+        mismatches.append(f"expected 2 serving families, declared {len(names)}")
 
     for family in FAMILIES:
         for target in family["state_map"].values():

@@ -1,20 +1,20 @@
 """Public-only serving materializer for ``sec_regulatory_serving_v1``.
 
-Reads the current N-CEN/RR1 snapshot views (``sec_current_*``) and projects ONLY
-public columns into ``sec_regulatory_serving_facts`` under one atomically promoted
-derived publication.  Internal provenance, ``source_run_id``, ``registrant_cik``,
-raw row ids, ``source_table`` and narrative hashes never reach the serving surface:
-every family payload is passed through ``sec_serving_scrub`` (a recursive key-strip)
+Reads the current RR1 snapshot views (``sec_current_*``) and projects ONLY public
+columns into ``sec_regulatory_serving_facts`` under one atomically promoted
+derived publication.  Internal provenance, ``source_run_id``, raw row ids,
+``source_table`` and narrative hashes never reach the serving surface: every
+family payload is passed through ``sec_serving_scrub`` (a recursive key-strip)
 and each projection lists only the family's public columns.
 
 State mapping (documented in ``contract.FAMILIES``):
-  * RR1 families already carry the 4-state ``status`` -> passed through.
-  * N-CEN families carry a 3-state ``*_state`` -> mapped to the 4-state serving
-    vocabulary, with ``degraded`` computed where a forward-note requires it
-    (etf net-flow leg coercion; expense all-null legs).
+  * ``rr1_fee`` already carries the 4-state ``status`` -> passed through.
   * The crosswalk family emits ONLY approved + high-confidence mappings, and its
     public evidence is ``canonical_concept``/``crosswalk_version``/``confidence`` --
     never the internal custom tag (born empty -> zero rows).
+
+The nine N-CEN profile families and the six other RR1 profile families were
+removed from the product on 2026-07-30 together with their builders and schemas.
 """
 
 from __future__ import annotations
@@ -57,19 +57,9 @@ _COLUMNS = (
 )
 
 # Reason code derived deterministically from the serving state.  A ``degraded``
-# state carries a reason that names WHY it degraded, and the two degrade paths are
-# distinct (Increment 2 Task 1c):
-#   * N-CEN families never carry a native ``degraded`` snapshot state; the serving
-#     computes ``degraded`` ONLY from a qualitative disclosure-completeness rule
-#     (etf ``leg_incomplete``; expense all-null legs) -> ``disclosure_quality_degraded``.
-#   * RR1 families pass through the snapshot ``status='degraded'`` (a quantitative
-#     coverage shortfall) -> ``coverage_below_certified_threshold``.
-_REASON_NCEN = (
-    "CASE srv_state WHEN 'available' THEN NULL "
-    "WHEN 'degraded' THEN 'disclosure_quality_degraded' "
-    "WHEN 'not_applicable' THEN 'asset_family_not_applicable' "
-    "ELSE 'source_filing_unavailable' END"
-)
+# state carries a reason that names WHY it degraded: ``rr1_fee`` passes through the
+# snapshot ``status='degraded'`` (a quantitative coverage shortfall) ->
+# ``coverage_below_certified_threshold`` (Increment 2 Task 1c).
 _REASON_RR1 = (
     "CASE srv_state WHEN 'available' THEN NULL "
     "WHEN 'degraded' THEN 'coverage_below_certified_threshold' "
@@ -79,33 +69,6 @@ _REASON_RR1 = (
 _COVERAGE = (
     "CASE srv_state WHEN 'available' THEN 100 WHEN 'degraded' THEN 50 ELSE NULL END"
 )
-# 3-state N-CEN family state -> 4-state serving state. ``degraded`` is a complete
-# ``WHEN <cond> THEN 'degraded' `` clause (or empty) evaluated BEFORE 'available'.
-_NCEN_STATE = (
-    "CASE {degraded}WHEN {state_col}='available' THEN 'available' "
-    "WHEN {state_col}='not_applicable' THEN 'not_applicable' ELSE 'unavailable' END"
-)
-
-
-def _ncen_fund_sql(
-    family: str, view: str, state_col: str, reason_col: str,
-    payload_build: str, *, degraded: str = "",
-) -> str:
-    srv_state = _NCEN_STATE.format(state_col=state_col, degraded=degraded)
-    return f"""
-    INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
-    SELECT %(pub)s, '{family}', COALESCE(series_id,''), '', fund_id, '', 'fund',
-           srv_state, {_REASON_NCEN}, {reason_col}, {_COVERAGE}, measured_at,
-           accession_number, '', NULL, effective_date,
-           CASE WHEN srv_state IN ('available','degraded')
-                THEN sec_serving_scrub({payload_build}) ELSE NULL END
-    FROM (
-        SELECT s.*, ({srv_state}) AS srv_state
-        FROM {view} s
-    ) s
-    ON CONFLICT DO NOTHING
-    """
-
 
 # Natural/numeric crosswalk-version ordering (v2 < v10): rank by the digit run, with
 # a lexical tiebreak, so the HIGHEST approved version wins. Mirrors the SQL resolver
@@ -173,81 +136,6 @@ def _family_sql() -> dict[str, str]:
     """Per-family public projection SQL (publication_id bound as %(pub)s)."""
     sql: dict[str, str] = {}
 
-    sql["ncen_structure"] = _ncen_fund_sql(
-        "ncen_structure", "sec_current_ncen_structure_profiles",
-        "structure_state", "structure_reason_code",
-        "jsonb_build_object('structure_flags', s.structure_flags, "
-        "'regulatory_reliance', s.regulatory_reliance, "
-        "'report_period_lt_12month', s.report_period_lt_12month, "
-        "'reliance_state', s.reliance_state, 'reliance_reason_code', s.reliance_reason_code)",
-    )
-    sql["ncen_provider_network"] = _ncen_fund_sql(
-        "ncen_provider_network", "sec_current_ncen_provider_network_profiles",
-        "provider_network_state", "provider_network_reason_code", "s.provider_network",
-    )
-    sql["ncen_liquidity_backstop"] = _ncen_fund_sql(
-        "ncen_liquidity_backstop", "sec_current_ncen_liquidity_backstop_profiles",
-        "liquidity_backstop_state", "liquidity_backstop_reason_code", "s.liquidity_backstop",
-    )
-    # forward-note 6: surface the frozen IS_COLLATERAL_LIQUIDATED contract defect
-    # as a reduced-quality flag; never silently repaired.
-    sql["ncen_securities_lending"] = _ncen_fund_sql(
-        "ncen_securities_lending", "sec_current_ncen_securities_lending_profiles",
-        "securities_lending_state", "securities_lending_reason_code",
-        "(s.securities_lending || jsonb_build_object('quality_flags', "
-        "jsonb_build_array('collateral_liquidated_field_contract_defect')))",
-    )
-    sql["ncen_closed_end"] = _ncen_fund_sql(
-        "ncen_closed_end", "sec_current_ncen_closed_end_profiles",
-        "closed_end_state", "closed_end_reason_code", "s.closed_end",
-    )
-    # forward-note 8: the snapshot state cannot tell an empty fund from a reported
-    # one -> degrade when every expense leg is NULL.
-    expense_degraded = (
-        "WHEN expense_brokerage_state='available' "
-        "AND s.expense_brokerage#>>'{expenses,management_fee}' IS NULL "
-        "AND s.expense_brokerage#>>'{expenses,net_operating_expenses}' IS NULL THEN 'degraded' "
-    )
-    sql["ncen_expense_brokerage"] = _ncen_fund_sql(
-        "ncen_expense_brokerage", "sec_current_ncen_expense_brokerage_profiles",
-        "expense_brokerage_state", "expense_brokerage_reason_code", "s.expense_brokerage",
-        degraded=expense_degraded,
-    )
-    # forward-note 4: a net flow computed from two PRESENT legs is legitimate and is
-    # served as-is; degrade ONLY when the snapshot flagged an incomplete leg (>=1 AP
-    # row carried a single leg), and in that case never serve the untrustworthy net.
-    etf_degraded = (
-        "WHEN etf_primary_market_state='available' "
-        "AND (s.etf_primary_market#>>'{derived,leg_incomplete}')::boolean THEN 'degraded' "
-    )
-    sql["ncen_etf_primary_market"] = _ncen_fund_sql(
-        "ncen_etf_primary_market", "sec_current_ncen_etf_primary_market_profiles",
-        "etf_primary_market_state", "etf_primary_market_reason_code",
-        "(CASE WHEN (s.etf_primary_market#>>'{derived,leg_incomplete}')::boolean "
-        "THEN s.etf_primary_market #- '{derived,net_primary_market_flow}' "
-        "ELSE s.etf_primary_market END)",
-        degraded=etf_degraded,
-    )
-
-    # forward-note 2: operational events are registrant grain -> fan out to every
-    # fund of the same accession via the structure roster; label grain_origin.
-    oe_state = _NCEN_STATE.format(state_col="o.operational_event_state", degraded="")
-    sql["ncen_operational_event"] = f"""
-    INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
-    SELECT %(pub)s, 'ncen_operational_event', COALESCE(roster.series_id,''), '',
-           roster.fund_id, '', 'registrant', srv_state, {_REASON_NCEN},
-           oe.operational_event_reason_code, {_COVERAGE}, oe.measured_at,
-           oe.accession_number, '', NULL, oe.effective_date,
-           CASE WHEN srv_state IN ('available','degraded')
-                THEN sec_serving_scrub(oe.operational_events) ELSE NULL END
-    FROM (SELECT o.*, ({oe_state}) AS srv_state
-          FROM sec_current_ncen_operational_event_profiles o) oe
-    JOIN (SELECT DISTINCT accession_number, fund_id, series_id
-          FROM sec_current_ncen_structure_profiles) roster
-      ON roster.accession_number = oe.accession_number
-    ON CONFLICT DO NOTHING
-    """
-
     # ---- RR1 fact families (4-state status pass-through) --------------------
     sql["rr1_fee"] = _rr1_fact_sql(
         "rr1_fee", "sec_current_rr1_fee_profiles",
@@ -257,78 +145,6 @@ def _family_sql() -> dict[str, str]:
         "s.occurrence, s.data_date::text)",
         crosswalk_evidence=True,
     )
-    sql["rr1_shareholder_cost"] = _rr1_fact_sql(
-        "rr1_shareholder_cost", "sec_current_rr1_shareholder_cost_profiles",
-        "jsonb_build_object('canonical_concept', s.canonical_concept, 'cost_group', s.cost_group, "
-        "'value_numeric', s.value_numeric, 'declared_unit', s.declared_unit)",
-        "concat_ws('|', s.canonical_concept, s.measure_id, s.document_id, s.dimensions, "
-        "s.occurrence, s.data_date::text)",
-    )
-    # forward-note 10: reconciliation divergence is a quality flag, never adjusted.
-    sql["rr1_waiver"] = _rr1_fact_sql(
-        "rr1_waiver", "sec_current_rr1_waiver_profiles",
-        "jsonb_build_object('waiver_over_assets', s.waiver_over_assets, "
-        "'gross_expense_over_assets', s.gross_expense_over_assets, "
-        "'net_expense_over_assets', s.net_expense_over_assets, 'declared_unit', s.declared_unit, "
-        "'termination_date', s.termination_date, 'term_days', s.term_days, "
-        "'remaining_days', s.remaining_days, 'gross_minus_waiver', s.gross_minus_waiver, "
-        "'net_reconstruction_gap', s.net_reconstruction_gap, "
-        "'reconciliation_status', s.reconciliation_status, "
-        "'reconciliation_tolerance', s.reconciliation_tolerance, "
-        "'cliff_horizon_days', s.cliff_horizon_days, 'cliff_flag', s.cliff_flag, "
-        "'termination_reason_code', s.termination_reason_code)",
-        "concat_ws('|', s.measure_id, s.document_id, s.dimensions, s.occurrence, s.data_date::text)",
-    )
-    # forward-note 13: number + consistency flag only; never the narrative text.
-    sql["rr1_turnover"] = _rr1_fact_sql(
-        "rr1_turnover", "sec_current_rr1_turnover_profiles",
-        "jsonb_build_object('turnover_rate', s.turnover_rate, 'declared_unit', s.declared_unit, "
-        "'turnover_numeric_present', s.turnover_numeric_present, "
-        "'turnover_text_present', s.turnover_text_present, "
-        "'narrative_consistency', s.narrative_consistency)",
-        "concat_ws('|', s.measure_id, s.document_id, s.dimensions, s.occurrence, s.data_date::text)",
-    )
-    # forward-notes 11 & 16: treatment carries the load/tax signal; no fabricated bool.
-    sql["rr1_reported_performance"] = _rr1_fact_sql(
-        "rr1_reported_performance", "sec_current_rr1_reported_performance_profiles",
-        "jsonb_build_object('canonical_concept', s.canonical_concept, 'value_kind', s.value_kind, "
-        "'value_numeric', s.value_numeric, 'value_date', s.value_date, "
-        "'value_label', s.value_label, 'declared_unit', s.declared_unit, 'treatment', s.treatment)",
-        "concat_ws('|', s.canonical_concept, s.measure_id, s.document_id, s.dimensions, "
-        "s.occurrence, s.data_date::text)",
-        crosswalk_evidence=True,
-    )
-    # forward-note 9: use post-rename names; numeric_class_count is never the class count.
-    sql["rr1_class_cost_dispersion"] = f"""
-    INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
-    SELECT %(pub)s, 'rr1_class_cost_dispersion', COALESCE(series_id,''), '', '', '', 'series',
-           srv_state, {_REASON_RR1}, reason_code, {_COVERAGE}, data_date,
-           accession_number, '', filed_date, effective_date,
-           CASE WHEN srv_state IN ('available','degraded') THEN sec_serving_scrub(
-               jsonb_build_object('numeric_class_count', s.numeric_class_count,
-                   'class_total', s.class_total, 'net_min', s.net_min, 'net_max', s.net_max,
-                   'net_spread', s.net_spread, 'net_min_class_id', s.net_min_class_id,
-                   'net_max_class_id', s.net_max_class_id,
-                   'per_class_evidence', s.per_class_evidence)) ELSE NULL END
-    FROM (SELECT s.*, status AS srv_state FROM sec_current_rr1_class_cost_dispersion s) s
-    ON CONFLICT DO NOTHING
-    """
-    sql["rr1_benchmark"] = f"""
-    INSERT INTO sec_regulatory_serving_facts ({_COLUMNS})
-    SELECT %(pub)s, 'rr1_benchmark', COALESCE(series_id,''), COALESCE(class_id,''), '', '', 'class',
-           srv_state, {_REASON_RR1}, reason_code, {_COVERAGE}, latest_effective_date,
-           latest_accession_number, '', latest_filed_date, latest_effective_date,
-           CASE WHEN srv_state IN ('available','degraded') THEN sec_serving_scrub(
-               jsonb_build_object('primary_benchmark', s.primary_benchmark,
-                   'benchmark_consistency', s.benchmark_consistency,
-                   'declared_benchmark_count', s.declared_benchmark_count,
-                   'observation_count', s.observation_count, 'context_count', s.context_count,
-                   'document_count', s.document_count, 'period_count', s.period_count,
-                   'per_benchmark_evidence', s.per_benchmark_evidence)) ELSE NULL END
-    FROM (SELECT s.*, status AS srv_state FROM sec_current_rr1_benchmark_profiles s) s
-    ON CONFLICT DO NOTHING
-    """
-
     # forward-notes 12 & 15: only approved + confidence>=threshold; public evidence
     # is canonical_concept + crosswalk_version + confidence (never the custom tag).
     sql["rr1_custom_tag_crosswalk"] = f"""

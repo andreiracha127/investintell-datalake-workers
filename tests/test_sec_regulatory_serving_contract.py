@@ -23,14 +23,13 @@ def test_contract_verifies_clean() -> None:
     assert verdict["ok"] is True, verdict["mismatches"]
 
 
-def test_all_sixteen_families_declared() -> None:
+def test_only_the_surviving_rr1_families_are_declared() -> None:
     names = contract.family_names()
-    assert len(names) == 16
-    assert len(set(names)) == 16
-    # 8 N-CEN + 8 RR1 (fee, shareholder_cost, waiver, dispersion, turnover,
-    # reported_performance, benchmark, crosswalk).
-    assert sum(1 for n in names if n.startswith("ncen_")) == 8
-    assert sum(1 for n in names if n.startswith("rr1_")) == 8
+    # 2026-07-30 cut: the nine N-CEN profile products and the six non-fee RR1
+    # profile products were removed. What is left is the fee family plus the
+    # custom-tag crosswalk governance family it resolves its evidence against.
+    assert names == ("rr1_fee", "rr1_custom_tag_crosswalk")
+    assert not [n for n in names if n.startswith("ncen_")]
 
 
 def test_no_payload_key_is_an_internal_identifier() -> None:
