@@ -77,41 +77,96 @@ COMMIT;
 and no long transaction — the failure mode that already cost a day on this
 database.
 
-## Step 3 — clear the abandoned publication rows
+## Step 3 — the abandoned publication rows (optional, and guarded)
 
-The cancelled builds also left `prepared` publications and their build rows:
+The cancelled builds also left `prepared` publications with their build-identity
+and manifest rows. **You almost certainly do not need to remove them.** They are
+one row each, they cost no measurable disk, and they are the provenance record of
+what was attempted. Leaving them costs nothing; the next run creates a new
+publication id and ignores them.
+
+If you do want them gone, note that a plain `DELETE` **fails**: both
+`nport_fixed_income_feature_builds` and `nport_fixed_income_publication_manifests`
+carry `BEFORE INSERT OR UPDATE OR DELETE` guards that raise on anything that is
+not an `INSERT` ("feature build identity is immutable" / "publication manifest is
+immutable"). That is deliberate — a promoted publication must not be able to lose
+its identity or its manifest.
+
+There is no sanctioned function for removing them, so the only correct procedure
+is the same deliberate, transactional guard removal used for the truncate in step
+2 — and it must be scoped to the publications you listed and confirmed:
 
 ```sql
--- inspect first
-SELECT publication_id, prepared_at FROM sec_derived_publications
-WHERE product = 'nport_fixed_income_features_v1' AND lifecycle_state = 'prepared'
-ORDER BY prepared_at;
-
--- then, per publication id confirmed above
-DELETE FROM nport_fixed_income_feature_builds WHERE publication_id = :id;
-DELETE FROM nport_fixed_income_publication_manifests WHERE publication_id = :id;
-DELETE FROM sec_derived_publications WHERE publication_id = :id;
+-- 1. list them and confirm every id is 'prepared' and NOT current
+SELECT p.publication_id, p.prepared_at, p.lifecycle_state,
+       c.publication_id IS NOT NULL AS is_current
+FROM sec_derived_publications p
+LEFT JOIN sec_derived_current_pointers c
+       ON c.product = p.product AND c.publication_id = p.publication_id
+WHERE p.product = 'nport_fixed_income_features_v1'
+  AND p.lifecycle_state = 'prepared'
+ORDER BY p.prepared_at;
 ```
 
-The delete guard refuses any publication that is validated or current, so this
-cannot remove something live.
+```sql
+-- 2. remove, guards down only for the duration of the transaction
+BEGIN;
+ALTER TABLE nport_fixed_income_feature_builds DISABLE TRIGGER nport_fixed_income_feature_build_write_guard;
+ALTER TABLE nport_fixed_income_publication_manifests DISABLE TRIGGER nport_fixed_income_manifest_write_guard;
+ALTER TABLE nport_fixed_income_publication_closures DISABLE TRIGGER nport_fixed_income_closure_write_guard;
+
+DELETE FROM nport_fixed_income_feature_builds        WHERE publication_id = ANY(:ids);
+DELETE FROM nport_fixed_income_publication_manifests WHERE publication_id = ANY(:ids);
+DELETE FROM nport_fixed_income_publication_closures  WHERE publication_id = ANY(:ids);
+
+ALTER TABLE nport_fixed_income_feature_builds ENABLE TRIGGER nport_fixed_income_feature_build_write_guard;
+ALTER TABLE nport_fixed_income_publication_manifests ENABLE TRIGGER nport_fixed_income_manifest_write_guard;
+ALTER TABLE nport_fixed_income_publication_closures ENABLE TRIGGER nport_fixed_income_closure_write_guard;
+
+-- The publication delete guard stays ON: it refuses anything validated or
+-- current, which is the check that actually protects you here.
+DELETE FROM sec_derived_publications
+WHERE publication_id = ANY(:ids) AND lifecycle_state = 'prepared';
+COMMIT;
+```
+
+`ALTER TABLE ... DISABLE TRIGGER` takes an ACCESS EXCLUSIVE lock and is
+transactional, so an abort restores the guards. Do not leave the transaction
+open while you go read something.
 
 ## Step 4 — if a promoted publication does exist
 
-Delete only the superseded ones and let autovacuum reclaim:
+Delete only the superseded ones and let autovacuum reclaim. The row guard on
+this table rejects `UPDATE`/`DELETE` too, so it needs the same transactional
+guard removal as step 3:
 
 ```sql
+BEGIN;
+ALTER TABLE nport_fixed_income_metric_coverage_v2 DISABLE TRIGGER nport_fixed_income_v2_fact_write_guard;
+
 DELETE FROM nport_fixed_income_metric_coverage_v2 m
 WHERE m.publication_id NOT IN (
   SELECT publication_id FROM sec_derived_current_pointers
   WHERE product = 'nport_fixed_income_features_v1'
-);
+)
+AND m.ctid = ANY (ARRAY(
+  SELECT ctid FROM nport_fixed_income_metric_coverage_v2
+  WHERE publication_id NOT IN (
+    SELECT publication_id FROM sec_derived_current_pointers
+    WHERE product = 'nport_fixed_income_features_v1'
+  )
+  LIMIT 200000
+));
+
+ALTER TABLE nport_fixed_income_metric_coverage_v2 ENABLE TRIGGER nport_fixed_income_v2_fact_write_guard;
+COMMIT;
+-- repeat until it deletes 0
 ```
 
-Run it in batches (`LIMIT` by `ctid` ranges) rather than one statement: a single
-45M-row delete holds one transaction open long enough to block the global
-`VACUUM`, which is the exact incident pattern this database has already had.
-Disk comes back only after vacuum, not at commit.
+Batch it, as above, rather than one statement: a single 45M-row delete holds one
+transaction open long enough to block the global `VACUUM`, which is the exact
+incident pattern this database has already had. Disk comes back only after
+vacuum, not at commit.
 
 ## Step 5 — republish
 

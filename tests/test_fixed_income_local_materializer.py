@@ -173,7 +173,7 @@ def test_postgres18_cli_pipeline_exports_eight_files_and_rolls_back_publish(
                  "--extraction-dir", str(extraction), "--output-dir", str(artifact),
                  "--worker-sha", "a" * 40)
         assert {path.name for path in artifact.glob("*.tsv.gz")} == {
-            f"{name}.tsv.gz" for name in materializer.TARGET_RELATIONS
+            f"{name}.tsv.gz" for name in materializer.PUBLISHED_RELATIONS
         }
         key_rate_path = (
             artifact / "nport_fixed_income_key_rate_sensitivities_v2.tsv.gz"
@@ -226,12 +226,12 @@ def test_manifest_is_canonical_and_tamper_evident(tmp_path: Path) -> None:
     ) as out:
         out.write(b"a\tb\n1\t2\n")
     payloads = {}
-    for name in materializer.TARGET_RELATIONS:
+    for name in materializer.PUBLISHED_RELATIONS:
         path = tmp_path / f"{name}.tsv.gz"
         with gzip.GzipFile(
             filename="", mode="wb", fileobj=path.open("wb"), mtime=0
         ) as out:
-            out.write(("\t".join(materializer._contract_columns()[name]) + "\n").encode())
+            out.write(("\t".join(materializer._published_columns()[name]) + "\n").encode())
         payloads[name] = path
     manifest = materializer.build_manifest(
         identity=materializer.BuildIdentity(
@@ -313,7 +313,7 @@ def test_production_schema_carries_no_builder_body() -> (
     assert "INSERT INTO nport_fixed_income_metric_coverage_v2" not in schema
 
 
-def test_manifest_declares_all_eight_target_payloads_deterministically(
+def test_manifest_declares_every_published_payload_deterministically(
     tmp_path: Path,
 ) -> None:
     identity = materializer.BuildIdentity(
@@ -325,7 +325,7 @@ def test_manifest_declares_all_eight_target_payloads_deterministically(
         contract_digest="sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563",
     )
     payloads = {}
-    for relation in materializer.TARGET_RELATIONS:
+    for relation in materializer.PUBLISHED_RELATIONS:
         path = tmp_path / f"{relation}.tsv.gz"
         with gzip.GzipFile(
             filename="", mode="wb", fileobj=path.open("wb"), mtime=0
@@ -335,16 +335,16 @@ def test_manifest_declares_all_eight_target_payloads_deterministically(
     manifest = materializer.build_manifest(
         identity=identity,
         worker_sha="a" * 40,
-        source_files={name: payloads[materializer.TARGET_RELATIONS[0]] for name in materializer.SOURCE_RELATIONS},
+        source_files={name: payloads[materializer.PUBLISHED_RELATIONS[0]] for name in materializer.SOURCE_RELATIONS},
         output_files=payloads,
         resource_config=materializer.ResourceConfig(
             memory_limit="1GB", temp_directory=str(tmp_path),
             postgres_image_digest="sha256:" + "a" * 64,
             postgres_server_fingerprint="test-postgres-18",
         ),
-        output_counts={name: 1 for name in materializer.TARGET_RELATIONS},
+        output_counts={name: 1 for name in materializer.PUBLISHED_RELATIONS},
     )
-    assert set(manifest["outputs"]) == set(materializer.TARGET_RELATIONS)
+    assert set(manifest["outputs"]) == set(materializer.PUBLISHED_RELATIONS)
     assert manifest["engine"]["kind"] == "postgresql-local"
     assert len(manifest["manifest_sha256"]) == 64
 
@@ -403,7 +403,7 @@ def test_local_load_indexes_and_analyze_precede_the_oracle() -> None:
     )
 
 
-def test_coverage_rollup_is_written_before_the_publication_is_frozen() -> None:
+def test_coverage_rollup_travels_with_the_artifact() -> None:
     """A pointer that moves without the rollup leaves the reader with no coverage.
 
     Coverage is written per holding -- roughly 173k rows per snapshot for 46
@@ -412,19 +412,19 @@ def test_coverage_rollup_is_written_before_the_publication_is_frozen() -> None:
     rollup instead, so publishing has to leave it current.
     """
     source = Path(materializer.__file__).read_text(encoding="utf-8")
-    publish = source[source.index("def publish_artifact"):]
-    rollup = publish.index("INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1")
-    validate = publish.index("SELECT sec_validate_derived_publication")
-    flip = publish.index("SELECT sec_set_current_derived_publication(%s,%s)")
 
-    # The rollup is now a WRITTEN publication fact, not a materialized view over
-    # the per-position rows -- the builder stopped materializing absence, so a
-    # view could no longer count it. Its write guard demands a PREPARED
-    # publication, so it has to land before validation and therefore before the
-    # pointer moves; a pointer that moved without it would leave the reader with
-    # no coverage at all.
-    assert rollup < validate < flip
+    # The rollup is a WRITTEN publication fact, not a materialized view over the
+    # per-position rows: the builder stopped materializing absence, so a view
+    # could no longer count it. For the offline route that means the rollup has
+    # to TRAVEL IN THE ARTIFACT -- rebuilding it from the published rows would
+    # see only the reported ones and report coverage_ratio 1 for partially
+    # covered metrics, with metrics that reported nothing missing entirely.
+    assert materializer.COVERAGE_ROLLUP_RELATION in materializer.PUBLISHED_RELATIONS
+    assert materializer.COVERAGE_ROLLUP_RELATION not in materializer.TARGET_RELATIONS
     assert "REFRESH MATERIALIZED VIEW" not in source
+    assert "INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1" not in source
+    for column in ("source_row_count", "reported_row_count", "missing_reason_counts"):
+        assert column in materializer.COVERAGE_ROLLUP_COLUMNS
 
 
 def test_coverage_rollup_ddl_ships_with_the_guards_and_index_its_reader_needs() -> None:
@@ -444,3 +444,46 @@ def test_coverage_rollup_ddl_ships_with_the_guards_and_index_its_reader_needs() 
     assert "sec_current_nport_fixed_income_metric_coverage_snapshot_v1" in schema
     # Same lifecycle guards as every other publication fact.
     assert schema.count("nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1") == 1
+
+
+def test_artifact_without_the_rollup_payload_is_rejected(tmp_path: Path) -> None:
+    """An artifact that drops the rollup cannot be published as one that has it.
+
+    The builder no longer materializes absence per position, so absence counts
+    exist only in the rollup.  An artifact carrying just the eight contract
+    relations would publish a rollup rebuilt from reported rows alone:
+    coverage_ratio 1 for partially covered metrics, empty missing_reason_counts,
+    and no row at all for metrics that reported nothing.  The manifest refuses
+    that shape instead of silently degrading it.
+    """
+    payloads = {}
+    for name in materializer.PUBLISHED_RELATIONS:
+        path = tmp_path / f"{name}.tsv.gz"
+        with gzip.GzipFile(filename="", mode="wb", fileobj=path.open("wb"), mtime=0) as out:
+            out.write(("\t".join(materializer._published_columns()[name]) + "\n").encode())
+        payloads[name] = path
+    without_rollup = {
+        name: path
+        for name, path in payloads.items()
+        if name != materializer.COVERAGE_ROLLUP_RELATION
+    }
+    with pytest.raises(materializer.ArtifactIntegrityError):
+        materializer.build_manifest(
+            identity=materializer.BuildIdentity(
+                source_publication_id="62ba191f-5dcf-4e69-b863-3e343db010c2",
+                source_run_id="e47ad93a-ac18-467e-b0a5-ee3c39c607c0",
+                source_package_id="d5b103ed-72a1-4601-bdcf-0ea0b873787b",
+                target_publication_id="4c9f5552-3b57-40cf-882d-e574174fa1c5",
+                as_of_date="2026-07-24",
+                contract_digest=materializer.CONTRACT_DIGEST,
+            ),
+            worker_sha="a" * 40,
+            source_files={name: payloads[materializer.PUBLISHED_RELATIONS[0]] for name in materializer.SOURCE_RELATIONS},
+            output_files=without_rollup,
+            resource_config=materializer.ResourceConfig(
+                memory_limit="1GB", temp_directory=str(tmp_path),
+                postgres_image_digest="sha256:" + "a" * 64,
+                postgres_server_fingerprint="test-postgres-18",
+            ),
+            output_counts={name: 1 for name in without_rollup},
+        )

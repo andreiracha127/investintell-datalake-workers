@@ -69,6 +69,29 @@ TARGET_RELATIONS = (
     "nport_fixed_income_repo_lending_reported_flags_v2",
     "nport_fixed_income_metric_coverage_v2",
 )
+# The fund x metric coverage rollup. It is NOT a contract relation -- the frozen
+# producer contract still describes exactly the eight above -- but it IS part of
+# every publication, because the builder no longer materializes absence per
+# position: the counts of what was absent live here and nowhere else. An
+# artifact that carried only the eight would publish a rollup rebuilt from
+# pruned rows, i.e. coverage_ratio 1 for partially covered metrics and no row at
+# all for metrics with nothing reported. So it travels with the artifact.
+COVERAGE_ROLLUP_RELATION = "nport_fixed_income_metric_coverage_snapshot_v1"
+COVERAGE_ROLLUP_COLUMNS = (
+    "publication_id", "source_holdings_publication_id", "source_run_id", "series_id",
+    "report_date", "accession_number", "metric_family", "metric_key", "numerator",
+    "denominator", "denominator_unit", "coverage_ratio", "availability_state",
+    "methodology_version", "exclusions", "source_row_count", "reported_row_count",
+    "missing_reason_counts",
+)
+COVERAGE_ROLLUP_KEYS = (
+    "publication_id", "series_id", "report_date", "accession_number",
+    "metric_family", "metric_key",
+)
+# What a publication physically consists of: the contract relations plus the
+# rollup. Every artifact/manifest invariant below is stated over THIS tuple.
+PUBLISHED_RELATIONS = (*TARGET_RELATIONS, COVERAGE_ROLLUP_RELATION)
+
 # Raw inputs are intentionally base relations; no current/contract view may hide a join.
 SOURCE_RELATIONS = (
     "sec_nport_instrument_class_bridge",
@@ -246,8 +269,17 @@ def _contract_columns() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _published_columns() -> dict[str, tuple[str, ...]]:
+    """Contract columns, plus the rollup's own (it has no contract entry)."""
+    return {**_contract_columns(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_COLUMNS}
+
+
 def _contract_keys() -> dict[str, tuple[str, ...]]:
     return {name: tuple(_contract_relation(name)["keys"]) for name in TARGET_RELATIONS}
+
+
+def _published_keys() -> dict[str, tuple[str, ...]]:
+    return {**_contract_keys(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_KEYS}
 
 
 def _set_client_safe_timeouts(
@@ -777,12 +809,12 @@ def compute_local(
                     ),
                 )
                 columns, keys, output_meta, files = (
-                    _contract_columns(),
-                    _contract_keys(),
+                    _published_columns(),
+                    _published_keys(),
                     {},
                     {},
                 )
-                for relation in TARGET_RELATIONS:
+                for relation in PUBLISHED_RELATIONS:
                     selected, order = (
                         ",".join(f'"{name}"' for name in columns[relation]),
                         ",".join(f'"{name}"' for name in keys[relation]),
@@ -846,25 +878,25 @@ def build_manifest(
     resource_config.validate(local=True)
     if set(source_files) != set(SOURCE_RELATIONS):
         raise ArtifactIntegrityError("manifest requires exactly the three physical source relations")
-    if set(output_files) != set(TARGET_RELATIONS):
-        raise ArtifactIntegrityError("manifest requires exactly the eight target relations")
+    if set(output_files) != set(PUBLISHED_RELATIONS):
+        raise ArtifactIntegrityError("manifest requires exactly the published relations")
     outputs = output_meta or {
         name: {
             "count": (output_counts or {}).get(name, 0),
             "sha256": sha256_file(path),
             "filename": path.name,
-            "columns": _contract_columns().get(name, ()),
+            "columns": _published_columns().get(name, ()),
         }
         for name, path in output_files.items()
     }
-    if set(outputs) != set(TARGET_RELATIONS):
-        raise ArtifactIntegrityError("manifest output metadata must cover exactly the eight target relations")
-    contract_columns = _contract_columns()
-    for name in TARGET_RELATIONS:
+    if set(outputs) != set(PUBLISHED_RELATIONS):
+        raise ArtifactIntegrityError("manifest output metadata must cover exactly the published relations")
+    contract_columns = _published_columns()
+    for name in PUBLISHED_RELATIONS:
         if tuple(outputs[name].get("columns", ())) != contract_columns[name]:
             raise ArtifactIntegrityError(f"manifest columns differ from contract: {name}")
     body = {
-        "format": "nport-fixed-income-local-postgres/v2",
+        "format": "nport-fixed-income-local-postgres/v3",
         "identity": asdict(identity),
         "contract_digest": identity.contract_digest,
         "worker_sha": worker_sha,
@@ -900,7 +932,7 @@ def verify_manifest(
         != hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
     ):
         raise ArtifactIntegrityError("manifest hash mismatch")
-    if manifest.get("format") != "nport-fixed-income-local-postgres/v2":
+    if manifest.get("format") != "nport-fixed-income-local-postgres/v3":
         raise ArtifactIntegrityError("unexpected manifest format")
     manifest_identity = manifest.get("identity")
     if not isinstance(manifest_identity, Mapping):
@@ -932,10 +964,10 @@ def verify_manifest(
     ResourceConfig(**resources).validate(local=True)
     if set(manifest.get("inputs", {})) != set(SOURCE_RELATIONS):
         raise ArtifactIntegrityError("manifest input set is not exact")
-    if set(manifest.get("outputs", {})) != set(TARGET_RELATIONS):
+    if set(manifest.get("outputs", {})) != set(PUBLISHED_RELATIONS):
         raise ArtifactIntegrityError("manifest output set is not exact")
-    contract_columns = _contract_columns()
-    if set(files) != set(TARGET_RELATIONS):
+    contract_columns = _published_columns()
+    if set(files) != set(PUBLISHED_RELATIONS):
         raise ArtifactIntegrityError("payload file set is not exact")
     for name, path in files.items():
         output = manifest["outputs"].get(name, {})
@@ -955,7 +987,7 @@ def verify_manifest(
 
 def _expected_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
     """The per-relation row counts the manifest attests (already contract-checked)."""
-    return {relation: int(manifest["outputs"][relation]["count"]) for relation in TARGET_RELATIONS}
+    return {relation: int(manifest["outputs"][relation]["count"]) for relation in PUBLISHED_RELATIONS}
 
 
 def _verify_storage_requested(explicit: bool | None) -> bool:
@@ -998,7 +1030,7 @@ def _record_closure(cursor: Any, publication_id: str, manifest_hash: str,
 
 def _count_relations(cursor: Any, publication_id: str, expected: Mapping[str, int]) -> None:
     """Full storage verification: one count per target relation, all must match."""
-    for relation in TARGET_RELATIONS:
+    for relation in PUBLISHED_RELATIONS:
         cursor.execute(
             f"SELECT count(*) FROM {relation} WHERE publication_id=%s", (publication_id,)
         )
@@ -1023,11 +1055,11 @@ def publish_artifact(
     normal replay path re-proves storage from the recorded closure instead --
     see ``_record_closure`` and the closure DDL for why that is equivalent."""
     artifact_dir = Path(artifact_dir)
-    files = {name: artifact_dir / f"{name}.tsv.gz" for name in TARGET_RELATIONS}
+    files = {name: artifact_dir / f"{name}.tsv.gz" for name in PUBLISHED_RELATIONS}
     manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
     verify_manifest(manifest, files, identity=identity)
     manifest_hash = manifest["manifest_sha256"]
-    columns = _contract_columns()
+    columns = _published_columns()
     with connection.transaction(), connection.cursor() as cursor:
         _set_client_safe_timeouts(cursor, resource_config)
         cursor.execute(
@@ -1099,7 +1131,7 @@ def publish_artifact(
         )
         for relation, path in files.items():
             quoted = ",".join(f'"{name}"' for name in columns[relation])
-            stage = f"nport_fi_stage_{TARGET_RELATIONS.index(relation)}"
+            stage = f"nport_fi_stage_{PUBLISHED_RELATIONS.index(relation)}"
             cursor.execute(
                 f"CREATE TEMP TABLE {stage} AS SELECT {quoted} FROM {relation} WITH NO DATA"
             )
@@ -1112,7 +1144,7 @@ def publish_artifact(
                 for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                     copy.write(chunk)
             key_columns = ",".join(
-                f'"{name}"' for name in _contract_keys()[relation]
+                f'"{name}"' for name in _published_keys()[relation]
             )
             cursor.execute(
                 f"SELECT count(*),count(DISTINCT ({key_columns})),"
@@ -1138,44 +1170,6 @@ def publish_artifact(
         cursor.execute(
             "INSERT INTO nport_fixed_income_publication_manifests(publication_id,manifest_sha256,manifest) VALUES(%s,%s,%s::jsonb)",
             (identity.target_publication_id, manifest_hash, canonical_json(manifest)),
-        )
-        # The rollup is what the reader consumes; a publication whose pointer
-        # moved without it would leave the reader with no coverage at all.
-        #
-        # The registered worker writes the rollup inside the build, from the
-        # evaluated rows, so absence is counted exactly.  This offline artifact
-        # route cannot: the artifact carries only the rows that hold a value
-        # (that is the whole point of the change), so the positions that were
-        # absent are not in it.  Rather than inventing a zero, the counts this
-        # route cannot observe are left NULL-equivalent: source_row_count equals
-        # the reported rows it actually copied, and missing_reason_counts stays
-        # empty.  Reported figures are exact either way.
-        cursor.execute(
-            """INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
-                 (publication_id,source_holdings_publication_id,source_run_id,series_id,
-                  report_date,accession_number,metric_family,metric_key,numerator,denominator,
-                  denominator_unit,coverage_ratio,availability_state,methodology_version,
-                  exclusions,source_row_count,reported_row_count,missing_reason_counts)
-               SELECT c.publication_id,c.source_holdings_publication_id,c.source_run_id,
-                      c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key,
-                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.numerator) END,
-                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.denominator) END,
-                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN min(c.denominator_unit) END,
-                      CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) AND sum(c.denominator)>0
-                           THEN sum(c.numerator)/sum(c.denominator) END,
-                      CASE WHEN min(c.availability_state)=max(c.availability_state) THEN min(c.availability_state) END,
-                      'nport_fixed_income_features_v2',
-                      CASE WHEN min(c.exclusions::text)=max(c.exclusions::text)
-                           THEN min(c.exclusions::text)::jsonb ELSE '[]'::jsonb END,
-                      count(*),
-                      count(*) FILTER (WHERE c.availability_state='reported_numeric'),
-                      '{}'::jsonb
-               FROM nport_fixed_income_metric_coverage_v2 c
-               WHERE c.publication_id=%s
-               GROUP BY c.publication_id,c.source_holdings_publication_id,c.source_run_id,
-                        c.series_id,c.report_date,c.accession_number,c.metric_family,c.metric_key
-               ON CONFLICT DO NOTHING""",
-            (identity.target_publication_id,),
         )
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
