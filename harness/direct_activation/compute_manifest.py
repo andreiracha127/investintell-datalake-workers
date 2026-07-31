@@ -65,6 +65,12 @@ STAGE_A_COMPUTE_PATHS = tuple(
             "src/input_packs/manifest.py",
             "src/input_packs/p0_contract.py",
             "src/input_packs/p0_derived.py",
+            # The certified-pack registry loader. live_validation resolves the
+            # pack it composes from — and the digest it pins — through this
+            # module, so it can absolutely move the measured decision: a
+            # different registry entry means a different pack. It is therefore a
+            # measured compute surface, NOT a STAGE_A_NON_DECISION_IMPORT.
+            "src/input_packs/registry.py",
             "src/input_packs/verifier.py",
             "src/macro_sources.py",
             "src/macro_transforms.py",

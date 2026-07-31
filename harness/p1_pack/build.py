@@ -47,22 +47,36 @@ from src.input_packs.p0_contract import (
     normalize_value,
     row_sort_key,
 )
+from src.input_packs.registry import P1_PROFILE, load_registry
 
 from .contract import P1_TABLE_SPECS
 
 PROFILE = "open_macro_v03"
-INPUT_PACK_ID = "open_macro_v03_certified_input_pack_003"
-INPUT_PACK_VERSION = 3
 SCHEMA_VERSION = "v2"
 SOURCE_REPO = "investintell-datalake-workers"
 BUILDER_NAME = "certified-input-pack-builder-p1"
 DATASET_NAMESPACE = "lake://certified-input-packs/open_macro_v03/p1"
-REQUIRED_SOURCE_EXPORT_ID = "open_macro_v03_p1_sources_002"
-REQUIRED_DB_SOURCE = "gcloud_timescale_sp_35.247.237.1"
 
-# The contract bundle v2 sha (bundle_sha256 in contracts/quant-engine/v2/manifest.json),
-# recomputed live at build time and cross-checked against this pin.
-CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
+# Identity, contract binding, source export and governance stance come from the
+# single certified-pack registry (contracts/input-packs/registry.json). The
+# module constants below are the CURRENT entry's values — a default, not a pin
+# that has to be retyped to renew a pack. Building a NEW pack passes the new
+# identity on the CLI (--pack-id / --pack-version / --source-export-id /
+# --db-source); `python -m src.input_packs.registry publish` then records what
+# the builder stamped, and `... promote` makes it current. No source file is
+# edited to renew a certification.
+_REGISTRY = load_registry()
+_CURRENT = _REGISTRY.current(P1_PROFILE)
+
+INPUT_PACK_ID = _CURRENT.pack_id
+INPUT_PACK_VERSION = _CURRENT.pack_version
+REQUIRED_SOURCE_EXPORT_ID = _CURRENT.source_export_id
+REQUIRED_DB_SOURCE = _CURRENT.db_source
+
+# The contract bundle sha the current pack is certified under, recomputed live at
+# build time from the bundle the registry names and cross-checked against it.
+CONTRACT_BUNDLE_DIR = _CURRENT.contract_dir
+CONTRACT_BUNDLE_SHA256 = _CURRENT.contract_bundle_sha256
 
 # The corrected snapshot and pack-003 builder live at separate reachable
 # commits. Keep their identities distinct instead of presenting the snapshot
@@ -71,13 +85,7 @@ SNAPSHOT_SOURCE_COMMIT = "e76d4822f09e8780eafed838bfdaf51c0b9750fc"
 BUILDER_COMMIT = "3eab2bc6c10d6bf9d09a4028d203edd41f4de58d"
 
 GOVERNANCE_PINS: dict[str, Any] = {
-    "A5": "blocked",
-    "runtime_activation": False,
-    "activation_allowed": False,
-    "official_result": False,
-    "allocator_publish": False,
-    "db_write_mode": "none",
-    "classification": "metric_evidence_only",
+    **(_CURRENT.governance or {}),
     "status": "candidate_not_approved",
 }
 
@@ -203,13 +211,24 @@ def pack_schemas_dir() -> Path:
     return Path(__file__).resolve().parent / "schemas"
 
 
-def contract_bundle_sha256() -> str:
-    """Recompute the v2 bundle sha from the committed manifest and cross-check the pin."""
-    manifest = read_json(repo_root() / "contracts" / "quant-engine" / "v2" / "manifest.json")
+def contract_bundle_sha256(
+    contract_dir: str | None = None, *, expected: str | None = None
+) -> str:
+    """Recompute the bundle sha from the committed manifest and cross-check it.
+
+    The bundle DIRECTORY and the expected sha both come from the pack registry
+    entry, so certifying a pack against a newer contract is a registry
+    publication rather than an edit here. The cross-check itself is unchanged:
+    the value the pack records must be the value the committed bundle hashes to.
+    """
+    directory = contract_dir or CONTRACT_BUNDLE_DIR
+    expected = expected if expected is not None else CONTRACT_BUNDLE_SHA256
+    manifest = read_json(repo_root() / directory / "manifest.json")
     value = str(manifest["bundle_sha256"]).removeprefix("sha256:")
-    if value != CONTRACT_BUNDLE_SHA256:
+    if value != expected:
         raise ValueError(
-            f"contract bundle v2 sha mismatch: manifest {value!r} != pinned {CONTRACT_BUNDLE_SHA256!r}"
+            f"contract bundle sha mismatch for {directory}: manifest {value!r} != "
+            f"registry {expected!r}"
         )
     return value
 
@@ -251,18 +270,24 @@ def _source_export(source_dir: Path) -> dict[str, Any]:
     return export
 
 
-def _validate_source_export_identity(export: Mapping[str, Any]) -> None:
+def _validate_source_export_identity(
+    export: Mapping[str, Any],
+    *,
+    required_export_id: str | None = None,
+    required_db_source: str | None = None,
+) -> None:
+    """The export snapshot must be the one the target pack entry declares."""
+    required_export_id = required_export_id or REQUIRED_SOURCE_EXPORT_ID
+    required_db_source = required_db_source or REQUIRED_DB_SOURCE
     export_id = str(export.get("export_id") or "")
-    if export_id != REQUIRED_SOURCE_EXPORT_ID:
+    if export_id != required_export_id:
         raise ValueError(
-            "pack 003 requires the corrected source export "
-            f"{REQUIRED_SOURCE_EXPORT_ID!r}; got {export_id!r}"
+            f"this pack requires source export {required_export_id!r}; got {export_id!r}"
         )
     db_source = str(export.get("db_source") or "")
-    if db_source != REQUIRED_DB_SOURCE:
+    if db_source != required_db_source:
         raise ValueError(
-            f"pack 003 requires the GCloud source {REQUIRED_DB_SOURCE!r}; "
-            f"got {db_source!r}"
+            f"this pack requires the source {required_db_source!r}; got {db_source!r}"
         )
 
 
@@ -319,12 +344,36 @@ def build_pack(
     *,
     sources: str | Path,
     out: str | Path,
+    pack_id: str | None = None,
+    pack_version: int | None = None,
+    source_export_id: str | None = None,
+    db_source: str | None = None,
+    contract_dir: str | None = None,
+    governance: dict[str, Any] | None = None,
+    builder_commit: str | None = None,
 ) -> dict[str, Any]:
+    """Build a P1 pack.
+
+    Every identity argument defaults to the registry CURRENT entry, so rebuilding
+    the committed pack reproduces it byte-for-byte. Building a NEW pack passes the
+    new identity here instead of editing this module; the pack is then published
+    and promoted through ``src.input_packs.registry``.
+    """
+    pack_id = pack_id or INPUT_PACK_ID
+    pack_version = pack_version if pack_version is not None else INPUT_PACK_VERSION
+    required_export_id = source_export_id or REQUIRED_SOURCE_EXPORT_ID
+    required_db_source = db_source or REQUIRED_DB_SOURCE
+    contract_dir = contract_dir or CONTRACT_BUNDLE_DIR
+    governance_pins = dict(governance) if governance is not None else dict(GOVERNANCE_PINS)
+    builder_commit = builder_commit or BUILDER_COMMIT
+
     source_dir = Path(sources)
     output_dir = Path(out)
 
     export = _source_export(source_dir)
-    _validate_source_export_identity(export)
+    _validate_source_export_identity(
+        export, required_export_id=required_export_id, required_db_source=required_db_source
+    )
     _validate_source_export_tables(source_dir, export)
     as_of_str = str(export["as_of"])
     as_of_date = dt.date.fromisoformat(as_of_str)
@@ -366,14 +415,14 @@ def build_pack(
     schema_entries = copy_pack_schemas(output_dir)
     report = {
         "schema_version": SCHEMA_VERSION,
-        "input_pack_id": INPUT_PACK_ID,
+        "input_pack_id": pack_id,
         "profile": PROFILE,
         "as_of": as_of_str,
         "engine_network_required": False,
         "official_source_tables": [spec.name for spec in P1_TABLE_SPECS],
         "raw_equals_canonical": True,
         "has_derived_layer": False,
-        **GOVERNANCE_PINS,
+        **governance_pins,
     }
     write_json(output_dir / "reports" / "certification_summary.json", report)
     report_entry = {
@@ -386,7 +435,6 @@ def build_pack(
     # --- SOURCE.json: carry P1 export provenance through + builder provenance ---
     code_sha256 = builder_code_sha256()
     source_commit = str(export.get("source_commit") or SNAPSHOT_SOURCE_COMMIT)
-    builder_commit = BUILDER_COMMIT
     source_payload = {
         "builder_code_sha256": code_sha256,
         "builder_commit": builder_commit,
@@ -414,7 +462,7 @@ def build_pack(
             "runs": [
                 {
                     "job_name": BUILDER_NAME,
-                    "run_id": f"{INPUT_PACK_ID}_{snapshot_suffix}",
+                    "run_id": f"{pack_id}_{snapshot_suffix}",
                     "export_id": export_id,
                 }
             ],
@@ -431,10 +479,10 @@ def build_pack(
 
     # --- manifest --------------------------------------------------------
     base_manifest = {
-        "input_pack_id": INPUT_PACK_ID,
-        "input_pack_version": INPUT_PACK_VERSION,
+        "input_pack_id": pack_id,
+        "input_pack_version": pack_version,
         "as_of": as_of_str,
-        "contract_bundle_sha256": contract_bundle_sha256(),
+        "contract_bundle_sha256": contract_bundle_sha256(contract_dir),
         "source_repo": SOURCE_REPO,
         "source_commit": source_commit,
         "builder_commit": builder_commit,
@@ -447,7 +495,7 @@ def build_pack(
         "verifier": "harness.p1_pack.verifier",
         "verifier_delta_vs_p0": VERIFIER_DELTA_VS_P0,
         "input_pack_sha256": "",
-        **GOVERNANCE_PINS,
+        **governance_pins,
     }
     # build_manifest fills raw/canonical/derived component sha fields (only the
     # ones whose files exist), forces runtime_activation False, and computes the
@@ -472,15 +520,40 @@ def build_pack(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build the P1 certified input pack v2")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Build a P1 certified input pack. Identity defaults to the registry "
+            "current entry; pass the overrides to build a renewal, then publish and "
+            "promote it with `python -m src.input_packs.registry`."
+        )
+    )
     parser.add_argument("--sources", required=True, help="Directory with P1 source snapshot JSON files.")
     parser.add_argument("--out", required=True, help="Output pack directory.")
+    parser.add_argument("--pack-id", default=None, help=f"Pack id (default: {INPUT_PACK_ID}).")
+    parser.add_argument("--pack-version", type=int, default=None, help="Pack version integer.")
+    parser.add_argument("--source-export-id", default=None, help="Required export_id of the source snapshot.")
+    parser.add_argument("--db-source", default=None, help="Required db_source of the source snapshot.")
+    parser.add_argument(
+        "--contract-dir",
+        default=None,
+        help=f"Contract bundle directory to certify against (default: {CONTRACT_BUNDLE_DIR}).",
+    )
+    parser.add_argument("--builder-commit", default=None, help="Commit whose builder source is hashed.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    result = build_pack(sources=args.sources, out=args.out)
+    result = build_pack(
+        sources=args.sources,
+        out=args.out,
+        pack_id=args.pack_id,
+        pack_version=args.pack_version,
+        source_export_id=args.source_export_id,
+        db_source=args.db_source,
+        contract_dir=args.contract_dir,
+        builder_commit=args.builder_commit,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 

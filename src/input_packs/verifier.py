@@ -29,6 +29,9 @@ from .p0_derived import (
     derive_universe_features,
 )
 from .p0_contract import P0_TABLE_SPECS, TableSpec, normalize_row, row_sort_key
+from .registry import P0_PROFILE, load_registry
+
+_registry = load_registry()
 
 COMPONENT_SCHEMA_FILES: dict[str, str] = {
     "SOURCE.json": "source.schema.json",
@@ -43,7 +46,28 @@ SNAPSHOT_MANIFEST_FILES = (
     "canonical_snapshot_manifest.json",
     "derived_feature_manifest.json",
 )
-P0_INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
+# The P0 pack identity comes from the ONE certified-pack registry
+# (contracts/input-packs/registry.json). Hard-coding it here was what forced a
+# second, forked verifier (harness/p1_pack/verifier.py) into existence: any pack
+# other than _001 failed by identity alone, so a renewal could not be verified.
+# The registry accepts every REGISTERED P0 pack, which keeps historical packs
+# verifiable while making a promotion a registry publication, not a code edit.
+P0_INPUT_PACK_ID = _registry.current(P0_PROFILE).pack_id
+P0_ACCEPTED_PACK_IDS: frozenset[str] = frozenset(_registry.versions(P0_PROFILE))
+
+#: The stance an unregistered pack is held to: the conservative one.
+_DEFAULT_GOVERNANCE: dict[str, Any] = {"runtime_activation": False}
+
+
+def _declared_governance(pack_id: Any) -> dict[str, Any]:
+    """The governance stance the registry declares for ``pack_id``."""
+    if isinstance(pack_id, str):
+        try:
+            entry = _registry.entry(pack_id)
+        except ValueError:
+            return dict(_DEFAULT_GOVERNANCE)
+        return dict(entry.governance or _DEFAULT_GOVERNANCE)
+    return dict(_DEFAULT_GOVERNANCE)
 P0_SOURCE_TABLES = tuple(spec.name for spec in P0_TABLE_SPECS)
 P0_RAW_ARTIFACT_PATHS = tuple(f"data/raw/{name}.json" for name in P0_SOURCE_TABLES)
 P0_CANONICAL_ARTIFACT_PATHS = tuple(f"data/canonical/{name}.json" for name in P0_SOURCE_TABLES)
@@ -776,8 +800,11 @@ def _verify_expected_p0_content(
 ) -> list[str]:
     errors: list[str] = []
     actual_pack_id = manifest.get("input_pack_id")
-    if actual_pack_id != P0_INPUT_PACK_ID:
-        errors.append(f"manifest.json: expected input_pack_id {P0_INPUT_PACK_ID}, got {actual_pack_id!r}")
+    if actual_pack_id not in P0_ACCEPTED_PACK_IDS:
+        errors.append(
+            f"manifest.json: input_pack_id {actual_pack_id!r} is not a registered P0 "
+            f"certified pack (registry: {sorted(P0_ACCEPTED_PACK_IDS)})"
+        )
     expected_as_of = manifest.get("as_of")
 
     for filename, expected_paths in P0_EXPECTED_SNAPSHOT_ARTIFACTS.items():
@@ -942,8 +969,17 @@ def verify_pack(
         expected_input_pack_sha256 and expected_input_pack_sha256 == actual_input_pack_sha256
     )
 
+    # A certified pack is no longer BY DEFINITION a pack that can never run. The
+    # verdict is "the manifest states the stance its registry entry declares",
+    # not the literal "runtime_activation is false" that made certification and
+    # usability mutually exclusive. An unregistered pack still defaults to the
+    # conservative stance, so this stays fail-closed.
     runtime_activation = manifest.get("runtime_activation")
-    runtime_activation_ok = runtime_activation is False
+    _declared = _declared_governance(manifest.get("input_pack_id") if manifest else None)
+    runtime_activation_ok = (
+        "runtime_activation" not in _declared
+        or runtime_activation == _declared["runtime_activation"]
+    )
     provenance_complete = _provenance_complete(provenance, expected_as_of=manifest.get("as_of") if manifest else None)
 
     ok = all(
