@@ -127,11 +127,14 @@ def stage_materialize(ctx: StageContext) -> StageOutcome:
     # bond_metrics runs AFTER the pit_update stage published the security/price
     # snapshots it consumes; it self-promotes bond_metric_v1 atomically, so the
     # chain's table-driven pointer-diff compensation covers it automatically.
-    return _compose([
-        _invoke(ctx, "ncen_derived_profiles"),
-        _invoke(ctx, "rr1_derived_profiles"),
-        _invoke(ctx, "bond_metrics"),
-    ])
+    #
+    # The ncen/rr1 dossier-profile builders were REMOVED from this stage
+    # (2026-07-30): they serve the fund-dossier lane, not the bond lane, and a
+    # profile failure (e.g. 'conflicting RR1 class net-expense facts' in
+    # rr1_class_cost_dispersion_v1) held the whole bond publication hostage —
+    # the compensation pass rolled back a completed 55-minute pit_update. The
+    # profile workers remain invocable standalone on their own cadence.
+    return _compose([_invoke(ctx, "bond_metrics")])
 
 
 def stage_mixed_build(ctx: StageContext) -> StageOutcome:
