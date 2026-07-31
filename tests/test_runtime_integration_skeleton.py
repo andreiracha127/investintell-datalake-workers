@@ -7,10 +7,16 @@ from pathlib import Path
 import jsonschema
 import pytest
 
+# Frozen pre-activation evidence replay. Kept live and replayable, but off the
+# per-PR critical path: it validates artifacts from a governance phase that has
+# already completed, so it cannot fail for a reason a new commit caused. Runs in
+# .github/workflows/preactivation-evidence.yml.
+pytestmark = pytest.mark.preactivation
+
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = ROOT / "artifacts" / "runtime" / "open_macro_v03_runtime_skeleton_001"
 PLAN = ROOT / "docs" / "planning" / "open_macro_v03_runtime_integration_skeleton_plan_001.md"
-GITHUB_ACTIONS_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PREACTIVATION_WORKFLOW = ROOT / ".github" / "workflows" / "preactivation-evidence.yml"
 
 
 def _json(name: str) -> dict:
@@ -434,7 +440,8 @@ def test_contract_bundle_identity_is_referenced_without_contract_v1_change() -> 
 
 
 def test_github_actions_includes_runtime_skeleton_governance_test() -> None:
-    text = _text(GITHUB_ACTIONS_WORKFLOW)
+    """The suite still has a named home in CI — the on-demand evidence replay."""
+    text = _text(PREACTIVATION_WORKFLOW)
 
-    assert "pull_request:" in text
+    assert "workflow_dispatch:" in text
     assert "tests/test_runtime_integration_skeleton.py" in text
