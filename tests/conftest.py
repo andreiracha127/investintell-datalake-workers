@@ -20,3 +20,22 @@ for _path in (_REPO_ROOT, _TESTS_DIR):
     _entry = str(_path)
     if _entry not in sys.path:
         sys.path.insert(0, _entry)
+
+
+def pytest_configure(config) -> None:
+    """Register the markers this repo uses so ``-m`` filtering is warning-free.
+
+    ``preactivation`` marks the frozen pre-activation evidence suites (shadow,
+    pilot, external handshake, controlled shadow/activation, dark launch, A5
+    preflight, runtime skeleton, direct-activation plan). Those suites replay
+    artifacts from a governance phase that already completed and ratified; they
+    can never validate a future run, so they are NOT part of the per-PR gate.
+    They run on demand from ``.github/workflows/preactivation-evidence.yml``.
+    Nothing is deleted or archived — the code and its tests stay live and
+    replayable, just off the critical path of every pull request.
+    """
+    config.addinivalue_line(
+        "markers",
+        "preactivation: frozen pre-activation evidence replay; runs in the "
+        "preactivation-evidence workflow, not in the per-PR quant gate",
+    )

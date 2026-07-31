@@ -267,8 +267,17 @@ LOCK_BOND_SOURCE_QUALIFY = 900_349
 # on first concurrent creation). 900_350 is the next free id after
 # LOCK_BOND_SOURCE_QUALIFY.
 LOCK_BOND_METRICS = 900_350
+# nport_fixed_income_features_v1 build+promotion worker (Wave 3). Serializes the
+# idempotent DDL/builder install and the single prepared->validated->current
+# build of the eight N-PORT fixed-income relations the app's fixed-income
+# dossier reads. The lock is taken BEFORE the self-installing DDL (fleet idiom:
+# CREATE TABLE IF NOT EXISTS is not race-safe on first concurrent creation).
+# 900_351 is the next free id in the ingestion band (900_3xx) after
+# LOCK_BOND_METRICS.
+LOCK_NPORT_FIXED_INCOME_SERVING = 900_351
 # SEC "effective" selection matview cache (Wave 5, data-cost). Serializes the
 # conditional REFRESH of ncen_effective_filings_mv / rr1_effective_fact_calendar_mv
 # so the daily chain and the matview_refresh worker cannot expand the same raw
-# selection twice at once. 900_351 is the next free id after LOCK_BOND_METRICS.
-LOCK_SEC_EFFECTIVE_MATVIEWS = 900_351
+# selection twice at once. 900_352 is the next free id after
+# LOCK_NPORT_FIXED_INCOME_SERVING.
+LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352

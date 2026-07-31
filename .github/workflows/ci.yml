@@ -288,6 +288,7 @@ jobs:
             tests/test_ncen_ingestion.py
             tests/test_nport_effective_views.py
             tests/test_nport_schema.py
+            tests/test_open_macro_v03_resolution_ledger.py
             tests/test_phase10_gate_machine.py
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
@@ -313,6 +314,7 @@ jobs:
             tests/test_nport_fixed_income_features.py
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
+            tests/test_open_macro_v03_resolution_ledger.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py
@@ -521,6 +523,14 @@ jobs:
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/contract_bundle.py verify --bundle-dir contracts/quant-engine/v2
 
+      # The per-PR gate runs the suites that can still fail because of THIS
+      # commit: the current worker, contract, pack, PIT/staleness, publication
+      # and rollback surfaces. The frozen pre-activation evidence replay (shadow,
+      # pilot, external handshake, controlled shadow/activation, dark launch, A5
+      # preflight, runtime skeleton, direct-activation plan) is marked
+      # ``preactivation`` and runs in preactivation-evidence.yml instead. The
+      # ``-m "not preactivation"`` filter is the belt-and-braces: re-adding one of
+      # those paths here cannot silently put the ceremony back on the PR path.
       - name: Run governance and quant-engine tests
         if: steps.changes.outputs.quant_changed == 'true'
         run: >-
@@ -532,13 +542,6 @@ jobs:
           tests/test_qc_a3_core.py
           tests/test_catalog_hash_path_independence.py
           tests/test_repeatability_matrix.py
-          tests/test_shadow_readiness.py
-          tests/test_shadow_pilot.py
-          tests/test_a5_preflight_readiness.py
-          tests/test_runtime_integration_skeleton.py
-          tests/test_external_executor_handshake.py
-          tests/test_controlled_shadow.py
-          tests/test_controlled_activation_proposal.py
           tests/test_phase0q_quant_evidence.py
           tests/test_phase0q_supplement.py
           tests/test_p1_export.py
@@ -548,6 +551,7 @@ jobs:
           tests/test_quant_requirements_sync.py
           tests/test_remote_ci_runner.py
           tests/test_ci_path_scope.py
+          tests/test_preactivation_evidence_scope.py
           tests/test_stage_a_compute_manifest.py
           tests/test_phase0q_harness.py
           tests/test_phase0q_gate_amendments.py
@@ -558,9 +562,11 @@ jobs:
           tests/test_phase0q_reproducibility_evidence.py
           tests/test_phase0q_004_amendments.py
           tests/test_threshold_signoff.py
-          tests/test_dark_launch_readiness.py
-          tests/test_direct_activation_plan.py
           tests/test_direct_activation_stage_a.py
+          tests/test_direct_activation_stage_b.py
+          tests/test_open_macro_v03_worker.py
+          tests/test_open_macro_v03_monitor.py
+          -m "not preactivation"
           -p xdist.plugin
           -n auto
           --dist loadscope
