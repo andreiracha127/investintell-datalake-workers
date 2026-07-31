@@ -32,13 +32,15 @@ CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 ARTIFACT_DIR = ROOT / "artifacts" / "quant" / "open_macro_v03_cloud_leg_001"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
 
-# The clean source commit used for this prepared upload namespace. Re-pinned when
-# the shipped closure legitimately evolved (the certified-pack registry became part
-# of the runtime read surface); the records were re-derived by the checked-in
-# generator, offline. The five metric-gate hashes are unchanged across the re-pin —
-# only the three that embed harness_commit in cell provenance moved, which is what
-# the pin is for.
-HARNESS_COMMIT = "7474e620afd291460cb59d35d2392f0de65e7807"
+# The clean source commit used for this prepared upload namespace, read from the
+# GENERATED record rather than retyped. It was re-pinned when the shipped closure
+# legitimately evolved (the certified-pack registry became part of the runtime read
+# surface) and the records were re-derived by the checked-in generator, offline.
+# Across that re-pin the five metric-gate hashes were byte-identical; only the three
+# that embed harness_commit in cell provenance moved, which is what the pin is for.
+HARNESS_COMMIT = json.loads(
+    (ARTIFACT_DIR / "cloud_leg_manifest.json").read_text(encoding="utf-8")
+)["harness_commit"]
 STALE_HARNESS_COMMIT = "68b07e810bc28665fedd85c6acd3ea5770b4b099"
 PACK_003_ID = "open_macro_v03_certified_input_pack_003"
 PACK_003_SHA = "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"
