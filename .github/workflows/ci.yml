@@ -460,13 +460,6 @@ jobs:
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/ci/publish_quant_core.py verify
 
-      - name: Verify Stage A binding
-        if: steps.changes.outputs.quant_changed == 'true'
-        run: >-
-          python -m pytest
-          tests/test_direct_activation_stage_a.py::test_reproducibility_record_pins_a_clean_16_run_reproduction
-          -q
-
       - name: Verify quant requirements lock
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/ci/verify_quant_requirements.py

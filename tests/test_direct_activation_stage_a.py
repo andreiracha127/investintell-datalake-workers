@@ -262,6 +262,11 @@ def test_governance_walk_treats_string_true_as_truthy() -> None:
 
 # --- 3. live_validation_record equals a fresh regeneration -----------------------
 
+# Frozen measured-round evidence (Onda 4b): these tests re-derive or pin the
+# 16-run measured round and its records. They are validated on demand and on the
+# weekly canary (preactivation-evidence.yml), not on every PR - re-measuring an
+# unchanged decision path per PR proved to cost hours with zero information.
+@pytest.mark.preactivation
 def test_live_validation_record_equals_regeneration() -> None:
     """The committed record must be exactly what the committed executor derives today
     from pinned pack v2 + the pinned delta snapshot; a hand-edited record cannot
@@ -585,6 +590,11 @@ def test_dsn_pin_accepts_only_gcloud_market_and_rejects_lookalikes() -> None:
 
 # --- 6. reproducibility_record (measured round) ----------------------------------
 
+# Frozen measured-round evidence (Onda 4b): these tests re-derive or pin the
+# 16-run measured round and its records. They are validated on demand and on the
+# weekly canary (preactivation-evidence.yml), not on every PR - re-measuring an
+# unchanged decision path per PR proved to cost hours with zero information.
+@pytest.mark.preactivation
 def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
     repro = _load_strict(REPRODUCIBILITY_RECORD)
     live = _load_strict(LIVE_VALIDATION_RECORD)
@@ -682,6 +692,11 @@ def test_reproducibility_record_pins_a_clean_16_run_reproduction() -> None:
 
 # --- 7. slo_threshold_amendment_record -------------------------------------------
 
+# Frozen measured-round evidence (Onda 4b): these tests re-derive or pin the
+# 16-run measured round and its records. They are validated on demand and on the
+# weekly canary (preactivation-evidence.yml), not on every PR - re-measuring an
+# unchanged decision path per PR proved to cost hours with zero information.
+@pytest.mark.preactivation
 def test_slo_threshold_amendment_record_derives_and_inherits_correctly() -> None:
     # The amendment record is CONDITIONAL evidence: the runner writes it only when the
     # round breaches the Phase 1 latency threshold, and its no-breach branch deletes any
@@ -737,6 +752,11 @@ def test_slo_threshold_amendment_record_derives_and_inherits_correctly() -> None
 
 # --- 8. slo_conformance_record ---------------------------------------------------
 
+# Frozen measured-round evidence (Onda 4b): these tests re-derive or pin the
+# 16-run measured round and its records. They are validated on demand and on the
+# weekly canary (preactivation-evidence.yml), not on every PR - re-measuring an
+# unchanged decision path per PR proved to cost hours with zero information.
+@pytest.mark.preactivation
 def test_slo_conformance_record_pins_measured_vs_signed_thresholds() -> None:
     conformance = _load_strict(CONFORMANCE_RECORD)
     live = _load_strict(LIVE_VALIDATION_RECORD)
@@ -829,6 +849,11 @@ def test_official_measure_run_rejects_non_default_image() -> None:
 
 # --- 9. cross-record identity pins -----------------------------------------------
 
+# Frozen measured-round evidence (Onda 4b): these tests re-derive or pin the
+# 16-run measured round and its records. They are validated on demand and on the
+# weekly canary (preactivation-evidence.yml), not on every PR - re-measuring an
+# unchanged decision path per PR proved to cost hours with zero information.
+@pytest.mark.preactivation
 def test_stage_a_records_share_identity_and_worker_commit() -> None:
     live = _load_strict(LIVE_VALIDATION_RECORD)
     repro = _load_strict(REPRODUCIBILITY_RECORD)
