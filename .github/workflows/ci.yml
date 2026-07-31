@@ -559,6 +559,9 @@ jobs:
           tests/test_dark_launch_readiness.py
           tests/test_direct_activation_plan.py
           tests/test_direct_activation_stage_a.py
+          tests/test_direct_activation_stage_b.py
+          tests/test_open_macro_v03_worker.py
+          tests/test_open_macro_v03_monitor.py
           -p xdist.plugin
           -n auto
           --dist loadscope

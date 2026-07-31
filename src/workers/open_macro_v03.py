@@ -1120,7 +1120,7 @@ def pin_search_path(conn) -> None:
 
 
 def ensure_schema(conn) -> None:
-    """Apply the three committed BASE DDL files (idempotent). OPS TOOLING ONLY —
+    """Apply the committed BASE DDL files (idempotent). OPS TOOLING ONLY —
     deliberately NOT called by ``run()``: applying schema before verification would
     hand a fresh/partial database old-shaped tables (the base files lack the
     carry_decay_v1 migration) and commit a partial catalog behind the fail-loud
