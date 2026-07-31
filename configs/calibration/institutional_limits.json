@@ -8,7 +8,7 @@
       "comparison": "max",
       "unit": "fraction_of_nav_per_day",
       "metric": "daily_cvar_95",
-      "source": "default_pending_owner_ratification",
+      "source": "owner_ratified:2026-07-31",
       "description": "Maximum 95% daily conditional value at risk."
     },
     "beta": {
@@ -16,7 +16,7 @@
       "comparison": "abs_max",
       "unit": "ratio",
       "metric": "benchmark_beta",
-      "source": "default_pending_owner_ratification",
+      "source": "owner_ratified:2026-07-31",
       "description": "Maximum absolute beta to the reference benchmark."
     },
     "max_drawdown": {
@@ -24,7 +24,7 @@
       "comparison": "max",
       "unit": "fraction_of_nav",
       "metric": "max_drawdown",
-      "source": "default_pending_owner_ratification",
+      "source": "owner_ratified:2026-07-31",
       "description": "Maximum peak-to-trough drawdown over the evaluation window."
     },
     "turnover": {
@@ -32,7 +32,7 @@
       "comparison": "max",
       "unit": "fraction_of_nav_per_rebalance",
       "metric": "turnover_proxy",
-      "source": "default_pending_owner_ratification",
+      "source": "owner_ratified:2026-07-31",
       "description": "Maximum turnover per rebalance. Measured today by the candidate generator's turnover proxy (L1 distance from the baseline weights)."
     },
     "exposure_bounds": {
@@ -40,7 +40,7 @@
       "comparison": "max",
       "unit": "fraction_of_nav",
       "metric": "gross_exposure",
-      "source": "default_pending_owner_ratification",
+      "source": "owner_ratified:2026-07-31",
       "description": "Maximum gross exposure. Unlevered long-only mandate."
     }
   }
