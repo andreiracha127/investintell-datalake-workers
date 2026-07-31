@@ -1,0 +1,579 @@
+"""An activated state is representable — in the contract and in the calibration.
+
+Two closed loops are dissolved here.
+
+**Contract.** `contracts/quant-engine/v2` pinned the blocked state into the
+schema with `const`: `runtime_activation: {const: false}`, `a5_status: {const:
+"blocked"}`, `db_write: {const: "none"}`, and so on. The `oneOf` had three
+variants and none of them admitted an activated result, so a job that produced
+`runtime_activation: true` was invalid *by contract*. `db_write: "none"` as a
+`const` does not prevent a bad write — it prevents any write. v3 replaces those
+pins with the real domains and moves the decision to the execution envelope,
+where `preflight.validate_runtime_mode` checks REPORTED against DECLARED. Still
+fail-closed, both directions.
+
+**Calibration.** `src/calibration_candidate.py` carried five institutional
+limits as the string literal `"explicitly_unset"`, a rejection rule whose only
+trigger was that they were unset, and `final_approval_allowed: False` written as
+a literal. Nothing could set them, so approval was blocked by an unsatisfiable
+condition. The limits are configuration now and the verdict is derived.
+
+v1 and v2 stay byte-frozen: the live certified packs are hash-bound to v2.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import jsonschema
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+V2 = ROOT / "contracts" / "quant-engine" / "v2"
+V3 = ROOT / "contracts" / "quant-engine" / "v3"
+
+sys.path.insert(0, str(ROOT / "services" / "quant_engine" / "src"))
+
+from investintell_quant_engine import preflight  # noqa: E402
+from src import calibration_candidate as cc  # noqa: E402
+
+
+def _schema(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _fixture(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# --------------------------------------------------------------------------- #
+# The contract: no `const`-pinned governance flag survives in v3.
+# --------------------------------------------------------------------------- #
+_BLOCKED_BY_CONST = (
+    "runtime_activation",
+    "freeze_ready",
+    "a5_status",
+    "official_result",
+    "allocator_publish",
+    "db_write",
+    "production_endpoint_activation",
+)
+
+
+@pytest.mark.parametrize("field", _BLOCKED_BY_CONST)
+def test_v3_result_schema_has_no_const_pinned_governance_flag(field: str) -> None:
+    schema = _schema(V3 / "job-result.schema.json")
+    for variant, definition in schema["$defs"].items():
+        spec = definition.get("properties", {}).get(field)
+        if spec is None:
+            continue
+        assert "const" not in spec, (
+            f"{variant}.{field} is still const-pinned in v3: an activated result "
+            "would be invalid by contract, which is a governance decision the "
+            "schema must not make"
+        )
+        assert "enum" in spec or spec.get("type") == "boolean", (
+            f"{variant}.{field} must declare a real domain (enum or boolean)"
+        )
+
+
+def test_v3_engine_manifest_runtime_activation_is_a_boolean() -> None:
+    schema = _schema(V3 / "engine-manifest.schema.json")
+    assert schema["properties"]["runtime_activation"] == {"type": "boolean"}
+
+
+def test_v3_keeps_offline_as_a_real_invariant() -> None:
+    """No-network is a property of the engine, not a governance flag; it stays."""
+    assert _schema(V3 / "engine-manifest.schema.json")["properties"]["offline"] == {"const": True}
+    request = _schema(V3 / "job-request.schema.json")
+    for definition in request["$defs"].values():
+        spec = definition.get("properties", {}).get("offline")
+        if spec is not None:
+            assert spec == {"const": True}
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "job-result.activated.json",
+        "job-result.metric-backtest.activated.json",
+        "engine-manifest.activated.json",
+    ],
+)
+def test_an_activated_artifact_validates_under_v3(fixture_name: str) -> None:
+    payload = _fixture(V3 / "fixtures" / "valid" / fixture_name)
+    name = (
+        "engine-manifest.schema.json"
+        if fixture_name.startswith("engine-manifest")
+        else "job-result.schema.json"
+    )
+    jsonschema.validate(payload, _schema(V3 / name))
+
+
+def test_the_same_activated_result_is_refused_by_v2() -> None:
+    """The delta is real: v2 could not express it at all."""
+    payload = _fixture(V3 / "fixtures" / "valid" / "job-result.activated.json")
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V2 / "job-result.schema.json"))
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["job-result.a5-status-out-of-enum.json", "job-result.db-write-out-of-enum.json"],
+)
+def test_v3_still_refuses_values_outside_the_declared_domain(fixture_name: str) -> None:
+    payload = _fixture(V3 / "fixtures" / "invalid" / fixture_name)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-result.schema.json"))
+
+
+def test_v3_schema_ids_are_bumped() -> None:
+    for name in ("job-request.schema.json", "job-result.schema.json", "engine-manifest.schema.json"):
+        assert "/v3/" in _schema(V3 / name)["$id"], name
+
+
+def test_v1_and_v2_bundles_stay_verifiable_and_untouched() -> None:
+    """Editing v2 in place would falsify every certified pack's contract pin."""
+    from investintell_quant_engine.contract_bundle import verify_bundle
+
+    for version, expected in (
+        ("v1", "sha256:4ff92bba49ccd178348e4646bd4ba0afe45c7d6036a72f00c52bc02c29ea683a"),
+        ("v2", "sha256:db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"),
+    ):
+        result = verify_bundle(ROOT / "contracts" / "quant-engine" / version)
+        assert result["ok"], result
+        assert result["bundle_sha256"] == expected
+
+
+def test_v3_bundle_verifies() -> None:
+    from investintell_quant_engine.contract_bundle import verify_bundle
+
+    result = verify_bundle(V3)
+    assert result["ok"], result
+    assert result["contract_version"] == "3.0.0"
+
+
+# --------------------------------------------------------------------------- #
+# Preflight: the decision moved to the envelope, and is still fail-closed.
+# --------------------------------------------------------------------------- #
+_OFFLINE_REPORT = {
+    "runtime_activation": False,
+    "freeze_ready": False,
+    "a5_status": "blocked",
+    "official_result": False,
+    "allocator_publish": False,
+    "db_write": "none",
+    "production_endpoint_activation": "none",
+}
+_ACTIVATED_REPORT = {
+    "runtime_activation": True,
+    "freeze_ready": True,
+    "a5_status": "active",
+    "official_result": True,
+    "allocator_publish": True,
+    "db_write": "publication",
+    "production_endpoint_activation": "live",
+}
+
+
+def test_offline_evidence_mode_accepts_a_blocked_report() -> None:
+    preflight.validate_runtime_mode(_OFFLINE_REPORT, mode=preflight.OFFLINE_EVIDENCE)
+
+
+def test_activated_mode_accepts_an_activated_report() -> None:
+    preflight.validate_runtime_mode(_ACTIVATED_REPORT, mode=preflight.ACTIVATED)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("runtime_activation", True),
+        ("a5_status", "active"),
+        ("official_result", True),
+        ("allocator_publish", True),
+        ("db_write", "publication"),
+        ("production_endpoint_activation", "live"),
+    ],
+)
+def test_offline_evidence_mode_still_refuses_any_activation(field: str, value) -> None:
+    """The old guarantee, unchanged: an offline job cannot report activation."""
+    report = dict(_OFFLINE_REPORT, **{field: value})
+    with pytest.raises(preflight.RuntimeModeError, match="runtime mode inconsistency"):
+        preflight.validate_runtime_mode(report, mode=preflight.OFFLINE_EVIDENCE)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("runtime_activation", False), ("a5_status", "blocked"), ("db_write", "none")],
+)
+def test_activated_mode_refuses_an_inconsistent_report(field: str, value) -> None:
+    """Fail-closed in the other direction too: the inconsistency is the error."""
+    report = dict(_ACTIVATED_REPORT, **{field: value})
+    with pytest.raises(preflight.RuntimeModeError, match="runtime mode inconsistency"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_the_default_mode_is_the_conservative_one() -> None:
+    with pytest.raises(preflight.RuntimeModeError):
+        preflight.validate_runtime_mode(_ACTIVATED_REPORT)
+
+
+def test_an_unknown_mode_is_refused() -> None:
+    with pytest.raises(preflight.RuntimeModeError, match="unknown runtime mode"):
+        preflight.validate_runtime_mode(_OFFLINE_REPORT, mode="whatever")
+
+
+def test_validate_runtime_disabled_still_behaves_for_existing_callers() -> None:
+    preflight.validate_runtime_disabled(_OFFLINE_REPORT)
+    with pytest.raises(ValueError):
+        preflight.validate_runtime_disabled(_ACTIVATED_REPORT)
+
+
+# --------------------------------------------------------------------------- #
+# Fail-closed on SILENCE, not just on contradiction (review threads 1 and 4).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "report",
+    [
+        {},
+        {"runtime_activation": False},
+        {"a5_status": "blocked"},
+        {"freeze_ready": False},
+    ],
+    ids=["empty", "only-runtime-activation", "only-a5", "only-freeze-ready"],
+)
+def test_a_partial_report_cannot_assert_a_mode(report: dict) -> None:
+    """An absent governance field is not an assertion. `{}` must never validate."""
+    with pytest.raises(preflight.RuntimeModeError, match="is missing"):
+        preflight.validate_runtime_mode(report, mode=preflight.OFFLINE_EVIDENCE)
+
+
+@pytest.mark.parametrize(
+    "report",
+    [{}, {"runtime_activation": False}, {"runtime_activation": False, "a5_status": "blocked"}],
+    ids=["empty", "partial", "missing-freeze-ready"],
+)
+def test_the_legacy_guard_still_rejects_missing_governance_fields(report: dict) -> None:
+    """`validate_runtime_disabled` kept its exact contract: present AND off.
+
+    The old body was `report.get(...) is not False`, so a missing field raised.
+    This is the guard the quant-engine runners depend on; it must not have become
+    permissive when it gained a mode.
+    """
+    with pytest.raises(ValueError, match="is missing"):
+        preflight.validate_runtime_disabled(report)
+
+
+@pytest.mark.parametrize(
+    "omitted",
+    ["official_result", "allocator_publish", "db_write", "production_endpoint_activation"],
+)
+def test_a_half_declared_publication_result_is_refused(omitted: str) -> None:
+    """The publication flags travel together or not at all."""
+    report = {k: v for k, v in _ACTIVATED_REPORT.items() if k != omitted}
+    with pytest.raises(preflight.RuntimeModeError, match="partially declared"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_a_shape_without_publication_flags_is_still_assertable() -> None:
+    """A parity result has no publication flags; absence of the whole set is fine."""
+    preflight.validate_runtime_mode(
+        {"runtime_activation": True, "a5_status": "active"}, mode=preflight.ACTIVATED
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("allocator_publish", False),
+        ("production_endpoint_activation", "none"),
+        ("freeze_ready", False),
+    ],
+)
+def test_activated_mode_refuses_deactivated_publication_values(field: str, value) -> None:
+    report = dict(_ACTIVATED_REPORT, **{field: value})
+    with pytest.raises(preflight.RuntimeModeError, match="runtime mode inconsistency"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_offline_mode_refuses_a_productive_classification() -> None:
+    """v3 widened `classification`; that must not let offline evidence self-label."""
+    report = dict(_OFFLINE_REPORT, classification="productive_result")
+    with pytest.raises(preflight.RuntimeModeError, match="forbidden"):
+        preflight.validate_runtime_mode(report, mode=preflight.OFFLINE_EVIDENCE)
+
+
+def test_activated_mode_refuses_an_evidence_only_classification() -> None:
+    report = dict(_ACTIVATED_REPORT, classification="metric_evidence_only")
+    with pytest.raises(preflight.RuntimeModeError, match="forbidden"):
+        preflight.validate_runtime_mode(report, mode=preflight.ACTIVATED)
+
+
+def test_the_bundled_activated_fixtures_satisfy_activated_mode() -> None:
+    """A fixture named `activated` must survive the activated envelope.
+
+    It shipped with `a5_status: "blocked"`, so the canonical activated example
+    contradicted the mode it was meant to demonstrate.
+    """
+    for name in ("job-result.activated.json", "job-result.metric-backtest.activated.json"):
+        payload = _fixture(V3 / "fixtures" / "valid" / name)
+        preflight.validate_runtime_mode(payload, mode=preflight.ACTIVATED)
+
+
+def test_the_bundled_offline_fixtures_satisfy_offline_mode() -> None:
+    for name in ("job-result.passed.json", "job-result.metric-backtest.json"):
+        payload = _fixture(V3 / "fixtures" / "valid" / name)
+        preflight.validate_runtime_mode(payload, mode=preflight.OFFLINE_EVIDENCE)
+
+
+# --------------------------------------------------------------------------- #
+# Contradictory states must not validate (review threads 11, 12, 13).
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        "job-result.dry-run-failed-but-verified.json",
+        "job-result.dry-run-verified-with-errors.json",
+        "job-result.metric-backtest-productive-but-failed.json",
+        "job-result.metric-backtest-evidence-but-publishing.json",
+        "job-result.parity-activated-but-a5-blocked.json",
+    ],
+)
+def test_v3_refuses_contradictory_states(fixture_name: str) -> None:
+    """Widening an enum must not make nonsense expressible.
+
+    A failed dry run that calls itself verified, a verified dry run that reports
+    errors, a productive backtest that failed, evidence-only output that writes a
+    publication, an activated parity run with A5 blocked — each of these was
+    accepted once the `const` pins became enums, and each is now tied together by
+    an if/then rule.
+    """
+    payload = _fixture(V3 / "fixtures" / "invalid" / fixture_name)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(payload, _schema(V3 / "job-result.schema.json"))
+
+
+# --------------------------------------------------------------------------- #
+# Calibration: institutional limits are parameters, the verdict is derived.
+# --------------------------------------------------------------------------- #
+def test_no_explicitly_unset_literal_survives_in_the_calibration_module() -> None:
+    """No limit is ASSIGNED the unsatisfiable literal any more.
+
+    The module docstring still explains what the literal was; what must not come
+    back is a limit whose value is that string.
+    """
+    source = (ROOT / "src" / "calibration_candidate.py").read_text(encoding="utf-8")
+    for number, line in enumerate(source.splitlines(), 1):
+        stripped = line.lstrip()
+        if stripped.startswith("#"):
+            continue
+        assert ': "explicitly_unset"' not in line and '= "explicitly_unset"' not in line, (
+            f"src/calibration_candidate.py:{number} still assigns the unsatisfiable "
+            f"literal: {stripped!r}. Institutional limits are configuration now "
+            "(configs/calibration/institutional_limits.json)."
+        )
+
+
+def test_the_mandate_is_configured_and_numeric() -> None:
+    limits = cc.load_institutional_limits()
+    assert set(limits) == {
+        "daily_cvar_95",
+        "beta",
+        "max_drawdown",
+        "turnover",
+        "exposure_bounds",
+    }
+    for name, spec in limits.items():
+        assert isinstance(spec["limit"], (int, float)), name
+
+
+def test_a_missing_config_reports_unset_instead_of_passing(tmp_path: Path) -> None:
+    """Removing the mandate does not open approval; it blocks, per limit, honestly."""
+    limits = cc.load_institutional_limits(tmp_path / "absent.json")
+    assert limits == {}
+
+    evaluation = cc.evaluate_institutional_limits(_rows(), limits)
+    assert set(evaluation) == set(cc.REQUIRED_INSTITUTIONAL_LIMITS)
+    assert {e["status"] for e in evaluation.values()} == {"unset"}
+    assert cc.final_approval_blockers(evaluation, baseline_references_certified=True) == [
+        f"institutional_limit_{name}_unset"
+        for name in sorted(cc.REQUIRED_INSTITUTIONAL_LIMITS)
+    ]
+
+
+@pytest.mark.parametrize("omitted", cc.REQUIRED_INSTITUTIONAL_LIMITS)
+def test_an_omitted_mandate_entry_blocks_like_a_null_one(omitted: str) -> None:
+    """Silence in the config file is not consent.
+
+    Omitting a key produced no evaluation entry at all, so it produced no blocker:
+    a mandate with only the measurable turnover limit left would have returned an
+    empty blocker list and opened final approval.
+    """
+    limits = {k: v for k, v in cc.load_institutional_limits().items() if k != omitted}
+    evaluation = cc.evaluate_institutional_limits(_rows(), limits)
+    assert evaluation[omitted]["status"] == "unset"
+    assert f"institutional_limit_{omitted}_unset" in cc.final_approval_blockers(
+        evaluation, baseline_references_certified=True
+    )
+
+
+def test_a_violated_limit_fails_the_invariant_report(tmp_path: Path) -> None:
+    """A breach must flip the BOOLEAN, not just carry a status string.
+
+    `verify_calibration_artifacts.py` only reads `invariant["ok"]`, so a violation
+    recorded solely as text would have shipped as a passing calibration.
+    """
+    rows = _rows()
+    limits = dict(cc.load_institutional_limits())
+    limits["turnover"] = dict(limits["turnover"], limit=0.0001)
+    evaluation = cc.evaluate_institutional_limits(rows, limits)
+    assert evaluation["turnover"]["status"] == "violated"
+
+    config = cc.default_config(_SUMMARY, merge_commit="deadbeef", institutional_limits=limits)
+    report = cc.build_invariant_report(
+        output_dir=tmp_path,
+        generated_files=[],
+        config=config,
+        candidate_rows=rows,
+        network="none",
+        db_access=False,
+        input_pack_mount="read_only",
+        evaluation=evaluation,
+        blockers=cc.final_approval_blockers(evaluation),
+    )
+    assert report["checks"]["constraints_respected"] is False
+    assert report["checks"]["institutional_limits_not_violated"] is False
+    assert report["ok"] is False
+
+
+def test_an_unmeasurable_limit_does_not_fake_a_violation(tmp_path: Path) -> None:
+    """`unset` and `not_evaluable` block approval, but they are not breaches."""
+    rows = _rows()
+    evaluation = cc.evaluate_institutional_limits(rows, cc.load_institutional_limits())
+    config = cc.default_config(_SUMMARY, merge_commit="deadbeef")
+    report = cc.build_invariant_report(
+        output_dir=tmp_path,
+        generated_files=[],
+        config=config,
+        candidate_rows=rows,
+        network="none",
+        db_access=False,
+        input_pack_mount="read_only",
+        evaluation=evaluation,
+        blockers=cc.final_approval_blockers(evaluation),
+    )
+    assert report["checks"]["constraints_respected"] is True
+    assert report["ok"] is True
+    assert cc.final_approval_blockers(evaluation), "approval still blocked, for true reasons"
+
+
+def test_the_mandate_is_inside_the_hashed_docker_context() -> None:
+    """Changing the mandate must invalidate a supplied docker_context_sha256."""
+    assert "configs/calibration" in cc.DOCKER_CONTEXT_PATHS
+
+
+def test_baseline_reference_availability_is_read_from_the_pack(tmp_path: Path) -> None:
+    """Derived, not defaulted: it opens when a pack actually certifies them."""
+    pack = tmp_path / "pack"
+    (pack / "data" / "baselines").mkdir(parents=True)
+    (pack / "manifest.json").write_text("{}", encoding="utf-8")
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+    for name in cc.BASELINE_REFERENCE_IDS:
+        (pack / "data" / "baselines" / f"{name}.json").write_text("{}", encoding="utf-8")
+    assert cc.pack_certifies_baseline_references(pack) is True
+
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    (declared / "manifest.json").write_text(
+        json.dumps({"certified_baseline_references": list(cc.BASELINE_REFERENCE_IDS)}),
+        encoding="utf-8",
+    )
+    assert cc.pack_certifies_baseline_references(declared) is True
+
+
+_SUMMARY = {
+    "as_of": "2026-06-26",
+    "input_pack_id": "x",
+    "input_pack_sha256": "y",
+    "source_snapshot_sha256": "z",
+    "contract_bundle_sha256": "w",
+}
+
+
+def _rows() -> list[dict]:
+    grid = cc.default_parameter_grid()
+    metrics = {
+        "macro": {"delta_mean": 0.01},
+        "fund_return": {"mean": 0.001},
+        "market_return": {"mean": 0.002},
+    }
+    return cc.candidate_metrics(grid, metrics)
+
+
+def test_a_configured_measurable_limit_is_actually_measured() -> None:
+    evaluation = cc.evaluate_institutional_limits(_rows(), cc.load_institutional_limits())
+    assert evaluation["turnover"]["status"] == "within"
+    assert evaluation["turnover"]["limit"] == 0.5
+
+
+def test_a_violated_limit_is_reported_as_violated() -> None:
+    limits = dict(cc.load_institutional_limits())
+    limits["turnover"] = dict(limits["turnover"], limit=0.0001)
+    evaluation = cc.evaluate_institutional_limits(_rows(), limits)
+    assert evaluation["turnover"]["status"] == "violated"
+    assert evaluation["turnover"]["violations"]
+    assert "institutional_limit_turnover_violated" in cc.final_approval_blockers(evaluation)
+
+
+def test_a_limit_the_evidence_cannot_measure_says_so() -> None:
+    """Null honesty: `not_evaluable` is a fact about coverage, not a verdict."""
+    evaluation = cc.evaluate_institutional_limits(_rows(), cc.load_institutional_limits())
+    assert evaluation["daily_cvar_95"]["status"] == "not_evaluable"
+    assert "does not measure" in evaluation["daily_cvar_95"]["reason"]
+
+
+def test_final_approval_is_derived_and_opens_by_itself() -> None:
+    """The point: no literal stands between a clean candidate and approval."""
+    evaluation = cc.evaluate_institutional_limits(_rows(), cc.load_institutional_limits())
+    assert cc.final_approval_blockers(evaluation), "today real blockers still stand"
+
+    measured = {name: dict(entry, status="within") for name, entry in evaluation.items()}
+    assert cc.final_approval_blockers(measured, baseline_references_certified=True) == []
+
+    selected, _ = cc.selected_and_rejected(
+        _rows(),
+        evaluation=measured,
+        blockers=cc.final_approval_blockers(measured, baseline_references_certified=True),
+    )
+    assert selected["final_approval_allowed"] is True
+    assert "no standing blocker" in selected["selection_reason"]
+
+
+def test_rejection_reasons_are_computed_not_fixed() -> None:
+    rows = _rows()
+    evaluation = cc.evaluate_institutional_limits(rows, cc.load_institutional_limits())
+    blockers = cc.final_approval_blockers(evaluation)
+    _, rejected = cc.selected_and_rejected(rows, evaluation=evaluation, blockers=blockers)
+    reasons = {r["reason"] for r in rejected["rejections"]}
+    assert reasons
+    assert all("explicitly_unset" not in reason for reason in reasons)
+
+
+def test_the_rejection_rule_tests_violation() -> None:
+    config = cc.default_config(
+        {
+            "as_of": "2026-06-26",
+            "input_pack_id": "x",
+            "input_pack_sha256": "y",
+            "source_snapshot_sha256": "z",
+            "contract_bundle_sha256": "w",
+        },
+        merge_commit="deadbeef",
+    )
+    rules = config["rejection_rules"]
+    assert "institutional_limit_violation" in rules
+    assert "institutional_limits_explicitly_unset_blocks_final_approval" not in rules
+    assert config["constraints"]["institutional_limits"] == cc.load_institutional_limits()
