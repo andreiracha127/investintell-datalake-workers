@@ -1,9 +1,20 @@
 # ruff: noqa: E701, E702
-"""Local PostgreSQL execution boundary for N-PORT fixed-income publications.
+"""Execution boundary and artifact protocol for N-PORT fixed-income publications.
 
-Production PostgreSQL is deliberately restricted to snapshot extraction and the
-final COPY publication.  The legacy SQL implementation is installed and run
-only in a separately-attested local PostgreSQL database.
+Two producers share this module:
+
+* ``src.workers.nport_fixed_income_serving`` -- the REGISTERED worker.  It
+  installs the sha256-pinned builder (:func:`install_builder`) into the target
+  database and runs it there, publishing under the shared
+  ``prepared -> validated -> current`` derived-publication protocol.
+* the extract/compute/publish artifact path below -- the original offline route,
+  where the builder runs in a separately-attested local PostgreSQL and only a
+  verified artifact bundle is COPYed into production.
+
+Both paths execute the SAME pinned SQL and honour the SAME integrity scaffolding
+(contract digest, builder sha256, build-identity pinning, immutable manifest).
+The offline route is kept because it is still the only way to rebuild from a
+frozen artifact; it is no longer the only way to produce the product.
 """
 
 from __future__ import annotations
@@ -27,9 +38,10 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = (
     ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
 )
-LOCAL_ORACLE_PATH = (
-    ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql"
-)
+BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
+# Historical alias: the resource used to live under ``sql/local_only`` and was
+# reachable only from the offline route.  Same bytes, same sha256 pin.
+LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # Re-approved 2026-07-25: the multi-referenced CTEs carry AS MATERIALIZED. Without
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
@@ -286,10 +298,27 @@ def _run_with_watchdog(connection: Any, seconds: int, operation: Any) -> Any:
 
 
 def _assert_oracle_resource() -> None:
-    if not LOCAL_ORACLE_PATH.is_file():
-        raise ArtifactIntegrityError("packaged local fixed-income oracle is missing")
-    if sha256_file(LOCAL_ORACLE_PATH) != APPROVED_LOCAL_ORACLE_SHA256:
-        raise ArtifactIntegrityError("local fixed-income oracle is not the approved version")
+    if not BUILDER_SQL_PATH.is_file():
+        raise ArtifactIntegrityError("packaged fixed-income builder SQL is missing")
+    if sha256_file(BUILDER_SQL_PATH) != APPROVED_LOCAL_ORACLE_SHA256:
+        raise ArtifactIntegrityError("fixed-income builder SQL is not the approved version")
+
+
+def install_builder(cursor: Any) -> str:
+    """Install the pinned ``build_nport_fixed_income_features`` into the target DB.
+
+    Fail-closed on the pin FIRST: the sha256 of the packaged SQL is the only
+    thing standing between "the approved builder" and "whatever is on disk", so
+    a drifted resource must never reach ``EXECUTE``.  Idempotent (the resource is
+    a single ``CREATE OR REPLACE FUNCTION``) and callable from any database --
+    the local-vs-production distinction was never enforced by this function, it
+    was enforced by refusing to define the function in production at all.
+
+    Returns the verified sha256 so callers can record it in a manifest.
+    """
+    _assert_oracle_resource()
+    cursor.execute(BUILDER_SQL_PATH.read_text(encoding="utf-8"))
+    return APPROVED_LOCAL_ORACLE_SHA256
 
 
 def _copy_field(value: Any) -> str:

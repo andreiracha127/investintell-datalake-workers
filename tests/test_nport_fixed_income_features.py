@@ -11,9 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
 
 
+BUILDER_SQL = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
+
+
 def _install_legacy_builder(cur) -> None:
-    """Install the retired server builder only as a parity oracle in fixtures."""
-    cur.execute((ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql").read_text(encoding="utf-8"))
+    """Install the sha256-pinned builder -- the same resource the worker installs."""
+    cur.execute(BUILDER_SQL.read_text(encoding="utf-8"))
 
 
 def _seed_fixture(cur):
@@ -83,17 +86,23 @@ def _raw(cur, run_id, source_table, accession, projection, *, holding_id=None):
         VALUES(%s,%s,2,%s,%s,%s,%s::jsonb)""", (run_id, uuid4(), source_table, accession, holding_id, projection))
 
 
-def test_production_builder_fails_immediately_and_legacy_is_fixture_only():
+def test_reapplying_production_ddl_never_replaces_the_builder_with_a_stub():
+    """The DDL used to re-install a raise-stub, which made the product unbuildable.
+
+    Re-applying the schema over a live database must leave the real builder in
+    place; the only thing the DDL may do is re-assert the tables, guards and
+    current-pointer views.
+    """
     import psycopg
 
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
-        schema, *_ = _seed_fixture(cur)
-        # _seed_fixture installs the oracle for old parity assertions. Reapplying
-        # production DDL must always restore the fail-fast operator boundary.
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
         cur.execute((ROOT / "schemas" / "nport_fixed_income_features.sql").read_text(encoding="utf-8"))
-        with pytest.raises(psycopg.Error, match="local fixed-income materializer is required") as error:
-            cur.execute("SELECT build_nport_fixed_income_features(%s,%s)", (uuid4(), "2026-07-24"))
-        assert error.value.sqlstate == "0A000"
+        _publish_holdings(cur, holdings_id)
+        _prepare_features_publication(cur, features_id, run_id, package_id)
+        # No 0A000: the builder runs (an empty snapshot simply inserts nothing).
+        cur.execute("SELECT build_nport_fixed_income_features(%s,%s)", (features_id, "2026-07-24"))
+        assert cur.fetchone()[0] == 0
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -302,7 +311,7 @@ def test_fixed_income_keeps_resolved_positions_without_security_identity():
 
 def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics():
     ddl = (ROOT / "schemas" / "nport_fixed_income_features.sql").read_text(encoding="utf-8").lower()
-    oracle = (ROOT / "src" / "nport" / "sql" / "local_only" / "nport_fixed_income_features_legacy_builder.sql").read_text(encoding="utf-8").lower()
+    oracle = BUILDER_SQL.read_text(encoding="utf-8").lower()
     for required in ("sec_nport_holdings_v2_current", "debt_security", "coupon_type", "maturity_date"):
         assert required in oracle
     for required in ("methodology_version", "reason_codes", "provenance"):
@@ -313,7 +322,7 @@ def test_fixed_income_features_stays_nport_native_and_excludes_phase_10_metrics(
     assert "sec_nport_holdings_v2_current h" not in oracle
     assert "for share of c" in oracle
     assert "from sec_nport_holdings_v2 h" in oracle
-    assert "sqlstate '0a000'" in ddl
+    assert "sqlstate '0a000'" not in ddl  # the raise-stub is gone for good
     assert "snapshot_holdings as" not in ddl
 
 
