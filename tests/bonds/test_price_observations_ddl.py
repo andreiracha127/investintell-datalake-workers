@@ -43,14 +43,19 @@ def test_ddl_lane_discriminator_is_typed_and_lanes_hardcode_their_literal() -> N
     assert "'fund_asof'::bond_price_lane AS lane" in ddl
     assert "CREATE OR REPLACE VIEW bond_price_latest_v1" in ddl
     assert "CREATE OR REPLACE FUNCTION bond_price_fund_asof_v1(fund_as_of date)" in ddl
-    # Point-in-time, no look-ahead + STALE at age >= 31 days.
-    assert "s.observation_date <= fund_as_of" in ddl
-    assert "(fund_as_of - s.observation_date) >= 31) AS is_stale" in ddl
+    # Point-in-time, no look-ahead + STALE at age >= 31 days. The PIT lane reads
+    # the IMMUTABLE landing table (2026-07-31: the snapshot carries only the
+    # latest lane), so the predicates anchor on the landing rows.
+    assert "o.observation_date <= fund_as_of" in ddl
+    assert "(fund_as_of - k.observation_date) >= 31) AS is_stale" in ddl
+    assert "FROM bond_price_observation o" in ddl
+    assert "o.identity_state = 'resolved'" in ddl
     # The latest lane is INFORMATIVE: staleness has no as_of anchor, so it declares
     # observation_age_days/is_stale as an HONEST NULL (absence), never a fabricated 0/false.
     assert "NULL::integer AS observation_age_days" in ddl
     assert "NULL::boolean AS is_stale" in ddl
-    # Lanes read only through the current pointer, never raw/observation rows.
+    # The latest lane reads only through the current pointer; the PIT lane
+    # reports the current publication as its provenance anchor.
     assert "sec_derived_current_pointers" in ddl
 
 

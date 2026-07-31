@@ -132,7 +132,11 @@ BEFORE INSERT OR UPDATE OR DELETE ON bond_price_observation_v1_builds
 FOR EACH ROW EXECUTE FUNCTION bond_price_observation_v1_build_guard();
 
 -- ---------------------------------------------------------------------------
--- Published snapshot: the full PIT price panel (resolved observations only).
+-- Published snapshot: the LATEST-per-security lane (resolved observations on
+-- each security's most recent observation date; same-date duplicates kept).
+-- The full immutable history lives in bond_price_observation — publishing the
+-- entire 29.7M-row panel per code revision duplicated the landing table for no
+-- consumer (2026-07-31); the PIT fund_asof lane reads the landing table.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS bond_price_observation_v1 (
     publication_id        uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
@@ -236,6 +240,14 @@ WHERE c.product = 'bond_price_observation_v1';
 -- observation_date <= fund_as_of; all duplicate rows on that date are retained.
 -- The lane literal is hardcoded 'fund_asof' and typed by bond_price_lane: the PIT
 -- access path can NEVER return a 'latest'-stamped row. is_stale marks age >= 31d.
+--
+-- Reads the IMMUTABLE landing table directly (2026-07-31): the published
+-- snapshot now carries only the latest-per-security lane, while the landing
+-- table is the full immutable history the PIT lane needs. The derived states
+-- (is_144a from db_type==3 when present-and-integral; the daily-key ambiguity
+-- over the (security, date) group) are recomputed here with the SAME rules the
+-- publication applies. publication_id reports the current price publication so
+-- consumers keep a provenance anchor.
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION bond_price_fund_asof_v1(fund_as_of date)
 RETURNS TABLE (
@@ -256,33 +268,42 @@ RETURNS TABLE (
     observation_age_days  integer,
     is_stale              boolean
 ) LANGUAGE sql STABLE AS $$
+    WITH asof AS (
+        SELECT o.security_id, max(o.observation_date) AS asof_date
+        FROM bond_price_observation o
+        WHERE o.identity_state = 'resolved'
+          AND o.observation_date <= fund_as_of
+        GROUP BY o.security_id
+    ), cohort AS (
+        SELECT o.security_id, o.observation_date, o.observation_id, o.price,
+               o.price_state, o.price_type, o.accrued_treatment, o.ytm,
+               o.db_type, o.db_type_state,
+               count(*) OVER (PARTITION BY o.security_id, o.observation_date) AS key_n,
+               (row_number() OVER (ORDER BY o.security_id, o.observation_date, o.observation_id) - 1)::integer AS srn
+        FROM bond_price_observation o
+        JOIN asof a ON a.security_id = o.security_id AND a.asof_date = o.observation_date
+        WHERE o.identity_state = 'resolved'
+    )
     SELECT
         'fund_asof'::bond_price_lane AS lane,
-        s.publication_id,
-        s.security_id,
-        s.observation_date,
-        s.source_row_number,
-        s.price,
-        s.price_state,
-        s.price_type,
-        s.accrued_treatment,
-        s.ytm,
-        s.db_type,
-        s.db_type_state,
-        s.is_144a,
-        s.daily_key_state,
-        (fund_as_of - s.observation_date) AS observation_age_days,
-        ((fund_as_of - s.observation_date) >= 31) AS is_stale
-    FROM sec_derived_current_pointers c
-    JOIN bond_price_observation_v1 s ON s.publication_id = c.publication_id
-    JOIN (
-        SELECT s2.security_id, max(s2.observation_date) AS asof_date
-        FROM sec_derived_current_pointers c2
-        JOIN bond_price_observation_v1 s2 ON s2.publication_id = c2.publication_id
-        WHERE c2.product = 'bond_price_observation_v1'
-          AND s2.observation_date <= fund_as_of
-        GROUP BY s2.security_id
-    ) asof ON asof.security_id = s.security_id AND asof.asof_date = s.observation_date
-    WHERE c.product = 'bond_price_observation_v1'
-      AND s.observation_date <= fund_as_of;
+        (SELECT c2.publication_id FROM sec_derived_current_pointers c2
+          WHERE c2.product = 'bond_price_observation_v1') AS publication_id,
+        k.security_id,
+        k.observation_date,
+        k.srn AS source_row_number,
+        k.price,
+        k.price_state,
+        k.price_type,
+        k.accrued_treatment,
+        k.ytm,
+        k.db_type,
+        k.db_type_state,
+        CASE WHEN k.db_type_state = 'present' AND k.db_type IS NOT NULL
+                  AND k.db_type <> 'NaN'::numeric AND k.db_type = trunc(k.db_type)
+             THEN (k.db_type = 3) END AS is_144a,
+        CASE WHEN k.key_n > 1 THEN 'duplicate_in_matching_cohort'
+             ELSE 'unique_in_matching_cohort' END AS daily_key_state,
+        (fund_as_of - k.observation_date) AS observation_age_days,
+        ((fund_as_of - k.observation_date) >= 31) AS is_stale
+    FROM cohort k;
 $$;

@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import sys
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,12 +70,25 @@ def test_publishes_prepared_to_validated_to_current_idempotently():
         result = _publish(conn, run_id, package_id)
         assert result["state"] == "current"
         assert result["observations"] == 3
-        assert result["published"] == 2  # the placeholder identity is not published
+        # The snapshot carries the LATEST-per-security lane only: the 2026-06-30
+        # print publishes, the 2026-05-31 print stays in the immutable landing
+        # table (still reachable through the PIT fund_asof lane below), and the
+        # placeholder identity is never published.
+        assert result["published"] == 1
 
         cur.execute("SELECT lifecycle_state FROM sec_current_derived_publications WHERE product='bond_price_observation_v1'")
         assert cur.fetchone() == ("validated",)
         cur.execute("SELECT count(*) FROM bond_price_observation_v1")
-        assert cur.fetchone()[0] == 2
+        assert cur.fetchone()[0] == 1
+        cur.execute("SELECT observation_date FROM bond_price_observation_v1")
+        assert cur.fetchone()[0] == date(2026, 6, 30)
+        # PIT honesty: the earlier print is still served by the fund_asof lane
+        # (which reads the landing table), anchored before the newer print.
+        cur.execute(
+            "SELECT observation_date, price FROM bond_price_fund_asof_v1(%s) WHERE security_id=%s",
+            (date(2026, 6, 15), _security_id("037833100")),
+        )
+        assert cur.fetchone() == (date(2026, 5, 31), Decimal("99.5"))
 
         again = _publish(conn, run_id, package_id)
         assert again["publication_id"] == result["publication_id"]
