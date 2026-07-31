@@ -13,6 +13,11 @@ COPY contracts/quant-engine /app/contracts/quant-engine
 COPY schemas/input_packs /app/schemas/input_packs
 COPY qc_a3_core.py /app/qc_a3_core.py
 COPY src /app/src
+# The calibration institutional mandate. load_institutional_limits() resolves
+# /app/configs/calibration/institutional_limits.json and treats an absent file
+# as an unconfigured mandate, so omitting this made every containerized run
+# silently ignore the committed limits.
+COPY configs /app/configs
 COPY --chmod=755 docker/quant-engine/entrypoint.sh /app/docker/quant-engine/entrypoint.sh
 
 ENV PYTHONPATH=/app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src

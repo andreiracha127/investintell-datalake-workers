@@ -49,6 +49,25 @@ INSTITUTIONAL_LIMITS_PATH = (
 #: A configured limit whose metric is absent here is reported ``not_evaluable``
 #: rather than silently passed or dishonestly failed.
 EVALUABLE_CANDIDATE_METRICS = ("turnover_proxy",)
+
+#: The mandate the calibration is judged against, as a REQUIRED key set. Omitting
+#: a key from the config file must block exactly like setting it to null: without
+#: this, deleting four entries and leaving only the measurable one would have
+#: produced an empty blocker list — silence reading as approval.
+#: The baseline references the comparison needs certified INSIDE the pack.
+BASELINE_REFERENCE_IDS: tuple[str, ...] = (
+    "G0",
+    "microgrid_v03",
+    "current_baseline_if_certified",
+)
+
+REQUIRED_INSTITUTIONAL_LIMITS: tuple[str, ...] = (
+    "beta",
+    "daily_cvar_95",
+    "exposure_bounds",
+    "max_drawdown",
+    "turnover",
+)
 INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
 A3_STATUS = "open_macro_v03"
 A4_STATUS = "calibration_candidate_running"
@@ -66,6 +85,11 @@ REQUIRED_MATRIX_LABELS = {
 }
 DOCKER_CONTEXT_PATHS = [
     "requirements.quant-engine.lock",
+    # The institutional mandate is an INPUT to the run: changing it changes the
+    # config, the blockers and the approval verdict. It has to be inside the
+    # hashed context, or a supplied docker_context_sha256 could stay valid across
+    # a mandate change.
+    "configs/calibration",
     "packages/investintell_quant_core",
     "services/quant_engine",
     "contracts/quant-engine",
@@ -334,6 +358,20 @@ def pack_summary(input_pack: Path, expected: dict[str, str]) -> dict[str, Any]:
     }
 
 
+def institutional_limits_sha256(path: Path | str | None = None) -> str | None:
+    """sha256 of the mandate file that produced this run, or None if absent.
+
+    Belt-and-braces alongside putting ``configs/calibration`` in
+    DOCKER_CONTEXT_PATHS: the context hash is computed over a COMMIT's tree, so
+    it only covers the mandate once the run is anchored at a commit containing
+    it. This digest pins the exact bytes used, whatever the anchor.
+    """
+    target = Path(path) if path is not None else INSTITUTIONAL_LIMITS_PATH
+    if not target.is_file():
+        return None
+    return file_sha256(target)
+
+
 def load_institutional_limits(path: Path | str | None = None) -> dict[str, Any]:
     """The configured institutional mandate.
 
@@ -370,7 +408,10 @@ def evaluate_institutional_limits(
     violate it. The rejection rule reads this; nothing here is a literal.
     """
     evaluation: dict[str, Any] = {}
-    for name, spec in sorted(limits.items()):
+    # The union: a required limit the config omits is still judged (as unset), and
+    # an extra limit the owner adds is still judged.
+    for name in sorted(set(REQUIRED_INSTITUTIONAL_LIMITS) | set(limits)):
+        spec = limits.get(name)
         value = _limit_value(spec)
         metric = spec.get("metric") if isinstance(spec, dict) else None
         comparison = (spec.get("comparison") if isinstance(spec, dict) else None) or "max"
@@ -382,7 +423,12 @@ def evaluate_institutional_limits(
         }
         if value is None:
             entry["status"] = "unset"
-            entry["reason"] = "the mandate does not define this limit"
+            entry["reason"] = (
+                "the mandate does not define this limit"
+                if name in limits
+                else "the mandate omits this required limit entirely"
+            )
+            entry["required"] = name in REQUIRED_INSTITUTIONAL_LIMITS
             evaluation[name] = entry
             continue
         if metric not in EVALUABLE_CANDIDATE_METRICS:
@@ -404,8 +450,6 @@ def evaluate_institutional_limits(
                 )
         entry["status"] = "violated" if entry["violations"] else "within"
         evaluation[name] = entry
-    if not limits:
-        return {}
     return evaluation
 
 
@@ -417,6 +461,31 @@ def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
         if status in ("unset", "not_evaluable", "violated"):
             blockers.append(f"institutional_limit_{name}_{status}")
     return blockers
+
+
+def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
+    """Does the certified pack carry the baseline references the comparison needs?
+
+    Read from the pack, not asserted. The comparison needs G0 / microgrid_v03 /
+    current_baseline_if_certified as certified artifacts INSIDE the pack; today no
+    pack ships them, so this returns False — but by looking, so it opens on its own
+    the day a pack does, instead of waiting for someone to edit a literal.
+    """
+    root = Path(input_pack)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = load_json(manifest_path)
+    except (OSError, ValueError):
+        return False
+    declared = manifest.get("certified_baseline_references")
+    if isinstance(declared, (list, tuple)):
+        return set(BASELINE_REFERENCE_IDS) <= {str(item) for item in declared}
+    return all(
+        (root / "data" / "baselines" / f"{name}.json").is_file()
+        for name in BASELINE_REFERENCE_IDS
+    )
 
 
 def final_approval_blockers(
@@ -433,7 +502,7 @@ def final_approval_blockers(
     """
     blockers = list(institutional_limit_blockers(evaluation))
     if not evaluation:
-        blockers.append("institutional_limits_not_configured")
+        blockers.append("institutional_limits_not_evaluated")
     if not baseline_references_certified:
         blockers.append("reference_baselines_not_certified_in_pack")
     return blockers
@@ -503,7 +572,7 @@ def default_config(
             # reported and blocks — it is no longer an unsatisfiable literal.
             "institutional_limits": limits,
         },
-        "baseline_references": ["G0", "microgrid_v03", "current_baseline_if_certified", "neutral_reference"],
+        "baseline_references": [*BASELINE_REFERENCE_IDS, "neutral_reference"],
         "rejection_rules": [
             "constraint_violation",
             "nan_or_infinite_metric",
@@ -757,6 +826,21 @@ def build_baseline_comparison(
     }
 
 
+def _violated_limits(evaluation: dict[str, Any] | None) -> list[str]:
+    """Configured limits the candidate evidence shows to be BREACHED.
+
+    Only ``violated`` counts here. ``unset`` and ``not_evaluable`` block final
+    approval (they are in the blockers) but they are not breaches, and calling
+    them constraint violations would be its own dishonesty.
+    """
+    if not evaluation:
+        return []
+    return sorted(
+        name for name, entry in evaluation.items()
+        if isinstance(entry, dict) and entry.get("status") == "violated"
+    )
+
+
 def _limit_status(evaluation: dict[str, Any] | None, name: str) -> str:
     """The reported status of one configured limit, or why there is none."""
     if not evaluation:
@@ -792,7 +876,12 @@ def build_invariant_report(
         "no_nan": not any(math.isnan(v) for v in values),
         "no_infinite": not any(math.isinf(v) for v in values),
         "outputs_complete": files_ok,
-        "constraints_respected": True,
+        # A violated institutional limit is a CONSTRAINT VIOLATION. Recording it
+        # only as a status string left `ok` green, and the artifact gate
+        # (verify_calibration_artifacts.py) only reads `ok` — so a violation
+        # would have shipped as a passing calibration.
+        "constraints_respected": not _violated_limits(evaluation),
+        "institutional_limits_not_violated": not _violated_limits(evaluation),
         "weights_close_within_tolerance": weights_ok,
         # Real per-limit statuses (within / violated / not_evaluable / unset),
         # not a fixed "explicitly_unset" string.
@@ -1065,7 +1154,10 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
     # negation of the blockers, not a literal — with a configured, measured,
     # unviolated mandate and certified references it opens by itself.
     evaluation = evaluate_institutional_limits(candidates, limits)
-    blockers = final_approval_blockers(evaluation)
+    blockers = final_approval_blockers(
+        evaluation,
+        baseline_references_certified=pack_certifies_baseline_references(input_pack),
+    )
 
     config = default_config(
         summary,
@@ -1199,6 +1291,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
+        "institutional_limits_sha256": institutional_limits_sha256(),
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "jobs_1_hashes": hashes_for_labels(matrix_run_hashes, "jobs1"),
@@ -1234,6 +1327,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
+        "institutional_limits_sha256": institutional_limits_sha256(),
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "output_manifest_sha256": file_sha256(output_dir / "output_manifest.json"),

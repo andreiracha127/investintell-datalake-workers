@@ -390,13 +390,117 @@ def test_the_mandate_is_configured_and_numeric() -> None:
 
 
 def test_a_missing_config_reports_unset_instead_of_passing(tmp_path: Path) -> None:
-    """Removing the mandate does not open approval; it blocks, honestly."""
+    """Removing the mandate does not open approval; it blocks, per limit, honestly."""
     limits = cc.load_institutional_limits(tmp_path / "absent.json")
     assert limits == {}
-    assert cc.final_approval_blockers({}) == [
-        "institutional_limits_not_configured",
-        "reference_baselines_not_certified_in_pack",
+
+    evaluation = cc.evaluate_institutional_limits(_rows(), limits)
+    assert set(evaluation) == set(cc.REQUIRED_INSTITUTIONAL_LIMITS)
+    assert {e["status"] for e in evaluation.values()} == {"unset"}
+    assert cc.final_approval_blockers(evaluation, baseline_references_certified=True) == [
+        f"institutional_limit_{name}_unset"
+        for name in sorted(cc.REQUIRED_INSTITUTIONAL_LIMITS)
     ]
+
+
+@pytest.mark.parametrize("omitted", cc.REQUIRED_INSTITUTIONAL_LIMITS)
+def test_an_omitted_mandate_entry_blocks_like_a_null_one(omitted: str) -> None:
+    """Silence in the config file is not consent.
+
+    Omitting a key produced no evaluation entry at all, so it produced no blocker:
+    a mandate with only the measurable turnover limit left would have returned an
+    empty blocker list and opened final approval.
+    """
+    limits = {k: v for k, v in cc.load_institutional_limits().items() if k != omitted}
+    evaluation = cc.evaluate_institutional_limits(_rows(), limits)
+    assert evaluation[omitted]["status"] == "unset"
+    assert f"institutional_limit_{omitted}_unset" in cc.final_approval_blockers(
+        evaluation, baseline_references_certified=True
+    )
+
+
+def test_a_violated_limit_fails_the_invariant_report(tmp_path: Path) -> None:
+    """A breach must flip the BOOLEAN, not just carry a status string.
+
+    `verify_calibration_artifacts.py` only reads `invariant["ok"]`, so a violation
+    recorded solely as text would have shipped as a passing calibration.
+    """
+    rows = _rows()
+    limits = dict(cc.load_institutional_limits())
+    limits["turnover"] = dict(limits["turnover"], limit=0.0001)
+    evaluation = cc.evaluate_institutional_limits(rows, limits)
+    assert evaluation["turnover"]["status"] == "violated"
+
+    config = cc.default_config(_SUMMARY, merge_commit="deadbeef", institutional_limits=limits)
+    report = cc.build_invariant_report(
+        output_dir=tmp_path,
+        generated_files=[],
+        config=config,
+        candidate_rows=rows,
+        network="none",
+        db_access=False,
+        input_pack_mount="read_only",
+        evaluation=evaluation,
+        blockers=cc.final_approval_blockers(evaluation),
+    )
+    assert report["checks"]["constraints_respected"] is False
+    assert report["checks"]["institutional_limits_not_violated"] is False
+    assert report["ok"] is False
+
+
+def test_an_unmeasurable_limit_does_not_fake_a_violation(tmp_path: Path) -> None:
+    """`unset` and `not_evaluable` block approval, but they are not breaches."""
+    rows = _rows()
+    evaluation = cc.evaluate_institutional_limits(rows, cc.load_institutional_limits())
+    config = cc.default_config(_SUMMARY, merge_commit="deadbeef")
+    report = cc.build_invariant_report(
+        output_dir=tmp_path,
+        generated_files=[],
+        config=config,
+        candidate_rows=rows,
+        network="none",
+        db_access=False,
+        input_pack_mount="read_only",
+        evaluation=evaluation,
+        blockers=cc.final_approval_blockers(evaluation),
+    )
+    assert report["checks"]["constraints_respected"] is True
+    assert report["ok"] is True
+    assert cc.final_approval_blockers(evaluation), "approval still blocked, for true reasons"
+
+
+def test_the_mandate_is_inside_the_hashed_docker_context() -> None:
+    """Changing the mandate must invalidate a supplied docker_context_sha256."""
+    assert "configs/calibration" in cc.DOCKER_CONTEXT_PATHS
+
+
+def test_baseline_reference_availability_is_read_from_the_pack(tmp_path: Path) -> None:
+    """Derived, not defaulted: it opens when a pack actually certifies them."""
+    pack = tmp_path / "pack"
+    (pack / "data" / "baselines").mkdir(parents=True)
+    (pack / "manifest.json").write_text("{}", encoding="utf-8")
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+    for name in cc.BASELINE_REFERENCE_IDS:
+        (pack / "data" / "baselines" / f"{name}.json").write_text("{}", encoding="utf-8")
+    assert cc.pack_certifies_baseline_references(pack) is True
+
+    declared = tmp_path / "declared"
+    declared.mkdir()
+    (declared / "manifest.json").write_text(
+        json.dumps({"certified_baseline_references": list(cc.BASELINE_REFERENCE_IDS)}),
+        encoding="utf-8",
+    )
+    assert cc.pack_certifies_baseline_references(declared) is True
+
+
+_SUMMARY = {
+    "as_of": "2026-06-26",
+    "input_pack_id": "x",
+    "input_pack_sha256": "y",
+    "source_snapshot_sha256": "z",
+    "contract_bundle_sha256": "w",
+}
 
 
 def _rows() -> list[dict]:
