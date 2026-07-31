@@ -24,6 +24,7 @@ v1 and v2 stay byte-frozen: the live certified packs are hash-bound to v2.
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -509,56 +510,152 @@ def test_a_declared_baseline_reference_manifest_validates_against_the_pack_schem
         jsonschema.validate(unpinned, schema)
 
 
-def test_the_baseline_predicate_reads_the_declaration(tmp_path: Path) -> None:
-    base = _golden_manifest()
+def test_the_hashed_config_scope_matches_what_the_image_copies() -> None:
+    """Hash scope and COPY scope must be the same set, in BOTH directions.
+
+    Hashing less than the image ships lets a sibling change the image under a
+    still-valid hash. Shipping more than calibration needs drags unrelated sweep
+    configs into the pin — and broadening BOTH to `configs/` is what silently
+    invalidated the committed calibration evidence, since ten a31/a4 YAMLs already
+    lived there at the recorded engine commit.
+    """
+    assert "configs/calibration" in cc.DOCKER_CONTEXT_PATHS
+    assert "configs" not in cc.DOCKER_CONTEXT_PATHS
+    for dockerfile in ("docker/quant-engine/Dockerfile", "docker/railway-ci/Dockerfile"):
+        text = (ROOT / dockerfile).read_text(encoding="utf-8")
+        assert "COPY configs/calibration /app/configs/calibration" in text
+        assert "COPY configs /app/configs" not in text
+
+
+def test_the_committed_calibration_evidence_still_validates_its_context_hash() -> None:
+    """The recorded docker_context_sha256 must still recompute at its own commit.
+
+    `verify_calibration_artifacts.py` never calls `validate_docker_context_sha256`
+    — it only checks file digests and the two `ok` flags — so a stale context hash
+    passes that gate silently and only surfaces when someone re-runs calibration
+    with the recorded manifest values. This is the check that would have caught it.
+    """
+    manifest = json.loads(
+        (
+            ROOT
+            / "artifacts"
+            / "calibration"
+            / "open_macro_v03_calibration_001"
+            / "calibration_manifest.json"
+        ).read_text(encoding="utf-8")
+    )
+    recomputed = cc.committed_docker_context_sha256(manifest["engine_commit"])
+    assert manifest["docker_context_sha256"] == recomputed, (
+        "the committed calibration evidence records a context hash that no longer "
+        "recomputes at its engine_commit; changing DOCKER_CONTEXT_PATHS invalidated "
+        "measured evidence"
+    )
+
+
+def test_a_fabricated_baseline_digest_does_not_certify_the_pack(tmp_path: Path) -> None:
+    """A digest only certifies bytes the pack actually carries.
+
+    Accepting any well-formed sha256 made the declaration self-certifying: a
+    manifest-only claim cleared `reference_baselines_not_certified_in_pack` with
+    no baseline content in the pack at all — fail-open in the very anti-forgery
+    path the declaration exists to provide.
+    """
     pack = tmp_path / "pack"
-    pack.mkdir()
+    shutil.copytree(
+        ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack", pack
+    )
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
 
-    def write(manifest: dict) -> None:
-        (pack / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    def declare(entries: list[dict]) -> None:
+        (pack / "manifest.json").write_text(
+            json.dumps(dict(manifest, certified_baseline_references=entries)),
+            encoding="utf-8",
+        )
 
-    write(base)
+    declare([{"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS])
     assert cc.pack_certifies_baseline_references(pack) is False
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": cc.BASELINE_REFERENCE_IDS[0], "sha256": "a" * 64}
-            ],
-        )
-    )
-    assert cc.pack_certifies_baseline_references(pack) is False, "a partial set must not certify"
+    table = json.loads((pack / "table_hashes.json").read_text(encoding="utf-8"))
+    real = [entry["sha256"] for entry in table["tables"] if "sha256" in entry]
+    assert len(real) >= len(cc.BASELINE_REFERENCE_IDS)
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": name, "sha256": "a" * 64} for name in cc.BASELINE_REFERENCE_IDS
-            ],
-        )
+    declare(
+        [
+            {"reference_id": name, "sha256": digest}
+            for name, digest in zip(cc.BASELINE_REFERENCE_IDS, real)
+        ]
     )
     assert cc.pack_certifies_baseline_references(pack) is True
 
-    write(
-        dict(
-            base,
-            certified_baseline_references=[
-                {"reference_id": name} for name in cc.BASELINE_REFERENCE_IDS
+    # One real digest plus two invented ones still fails: every reference counts.
+    declare(
+        [
+            {"reference_id": cc.BASELINE_REFERENCE_IDS[0], "sha256": real[0]},
+            *[
+                {"reference_id": name, "sha256": "b" * 64}
+                for name in cc.BASELINE_REFERENCE_IDS[1:]
             ],
+        ]
+    )
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+
+def test_a_declared_digest_whose_bytes_are_gone_does_not_certify(tmp_path: Path) -> None:
+    """The digest is re-checked against the bytes, not just against the table."""
+    pack = tmp_path / "pack"
+    shutil.copytree(
+        ROOT / "fixtures" / "input_packs" / "golden" / "certified_input_pack", pack
+    )
+    manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+    table = json.loads((pack / "table_hashes.json").read_text(encoding="utf-8"))
+    entries = [e for e in table["tables"] if "sha256" in e and (pack / e["path"]).is_file()]
+    chosen = entries[: len(cc.BASELINE_REFERENCE_IDS)]
+
+    (pack / "manifest.json").write_text(
+        json.dumps(
+            dict(
+                manifest,
+                certified_baseline_references=[
+                    {"reference_id": name, "sha256": entry["sha256"]}
+                    for name, entry in zip(cc.BASELINE_REFERENCE_IDS, chosen)
+                ],
+            )
+        ),
+        encoding="utf-8",
+    )
+    assert cc.pack_certifies_baseline_references(pack) is True
+
+    # Remove the artifact the first reference points at. `file_sha256`
+    # canonicalizes *.json, so whitespace is deliberately NOT a mutation; bytes
+    # that are gone are.
+    (pack / chosen[0]["path"]).unlink()
+    assert cc.pack_certifies_baseline_references(pack) is False
+
+
+@pytest.mark.parametrize("mode", ["activated", "offline_evidence"])
+def test_a_pair_with_no_sleeve_object_is_refused(mode: str) -> None:
+    """Omitting the whole object must not skip the governance it carries.
+
+    The guard was gated on `"sleeve" in request`, so an activated request with the
+    entire object omitted skipped sleeve governance and paired happily with a
+    productive result — fail-open on the exact field it exists to catch.
+    """
+    name = (
+        "job-request.metric-backtest.activated.json"
+        if mode == "activated"
+        else "job-request.metric-backtest.json"
+    )
+    result_name = (
+        "job-result.metric-backtest.activated.json"
+        if mode == "activated"
+        else "job-result.metric-backtest.json"
+    )
+    request = _fixture(V3 / "fixtures" / "valid" / name)
+    del request["sleeve"]
+    with pytest.raises(preflight.RuntimeModeError, match="sleeve"):
+        preflight.validate_request_result_pair(
+            request, _fixture(V3 / "fixtures" / "valid" / result_name)
         )
-    )
-    assert cc.pack_certifies_baseline_references(pack) is False, (
-        "an id without a digest certifies nothing"
-    )
-
-
-def test_the_hashed_config_scope_matches_what_the_image_copies() -> None:
-    """A sibling config must not change the image while the hash stays valid."""
-    assert "configs" in cc.DOCKER_CONTEXT_PATHS
-    assert "configs/calibration" not in cc.DOCKER_CONTEXT_PATHS
-    for dockerfile in ("docker/quant-engine/Dockerfile", "docker/railway-ci/Dockerfile"):
-        assert "COPY configs /app/configs" in (ROOT / dockerfile).read_text(encoding="utf-8")
 
 
 # --------------------------------------------------------------------------- #

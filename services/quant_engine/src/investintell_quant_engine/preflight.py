@@ -172,6 +172,10 @@ def validate_runtime_disabled(report: dict[str, Any]) -> None:
 #: Sleeve governance statuses an activated run may consume. A run that publishes
 #: live outputs must not be built on a sleeve nobody approved.
 APPROVED_SLEEVE_STATUSES = frozenset({"approved", "activated"})
+
+#: Job types whose contract declares a sleeve. For these the sleeve is mandatory
+#: in the pair validator, so omitting the object cannot skip its governance.
+SLEEVE_GOVERNED_JOB_TYPES = frozenset({"open_macro_v03_metric_backtest"})
 CANDIDATE_SLEEVE_STATUS = "candidate_not_approved"
 
 
@@ -232,6 +236,16 @@ def validate_request_result_pair(request: dict[str, Any], result: dict[str, Any]
         raise RuntimeModeError(
             f"request/result mismatch: job_type {request['job_type']!r} != {result['job_type']!r}"
         )
-    if "sleeve" in request:
+    # Sleeve governance is REQUIRED for the shapes that declare a sleeve at all.
+    # Gating it on `"sleeve" in request` left the cross-object guard fail-open on
+    # exactly the missing governance field it exists to catch: an activated
+    # request with the whole object omitted skipped the check and paired happily
+    # with a productive result.
+    if request.get("job_type") in SLEEVE_GOVERNED_JOB_TYPES or "sleeve" in request:
         validate_sleeve_governance(request, mode=mode)
+    elif mode != OFFLINE_EVIDENCE:
+        raise RuntimeModeError(
+            f"sleeve governance inconsistency: mode {mode!r} requires a sleeve "
+            "declaration and the request carries none"
+        )
     validate_runtime_mode(result, mode=mode)

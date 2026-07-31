@@ -90,11 +90,17 @@ DOCKER_CONTEXT_PATHS = [
     # hashed context, or a supplied docker_context_sha256 could stay valid across
     # a mandate change.
     #
-    # The scope is the WHOLE `configs/` tree, matching `COPY configs /app/configs`
-    # in docker/quant-engine/Dockerfile exactly. Hashing a narrower slice than the
-    # image copies is the same defect in miniature: a sibling config could change
-    # the image while a recorded docker_context_sha256 stayed valid.
-    "configs",
+    # The scope is `configs/calibration`, matching
+    # `COPY configs/calibration /app/configs/calibration` exactly. Hash scope and
+    # COPY scope must be the same set, in either direction: hashing less than the
+    # image ships lets a sibling change the image under a valid hash, and shipping
+    # more than calibration needs drags unrelated sweep configs into the pin.
+    #
+    # This is deliberately the NARROW half of that equality. Widening both to
+    # `configs/` moved the recomputed hash for engine_commit ee39ad… from d8f7…
+    # to e3761…, because ten a31/a4 YAMLs already lived there — which would have
+    # invalidated the committed calibration evidence without re-measuring it.
+    "configs/calibration",
     "packages/investintell_quant_core",
     "services/quant_engine",
     "contracts/quant-engine",
@@ -468,6 +474,43 @@ def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
     return blockers
 
 
+def _pack_artifact_digests(pack_root: Path) -> dict[str, str]:
+    """``{sha256: path}`` for every artifact the pack declares AND carries.
+
+    Read from ``table_hashes.json`` — the same declaration ``verify_pack``
+    recomputes file by file — and re-checked here against the bytes on disk, so a
+    digest that appears in this map is one the pack genuinely proves.
+    """
+    table_path = pack_root / "table_hashes.json"
+    if not table_path.is_file():
+        return {}
+    try:
+        payload = load_json(table_path)
+    except (OSError, ValueError):
+        return {}
+    tables = payload.get("tables") if isinstance(payload, dict) else None
+    if not isinstance(tables, list):
+        return {}
+
+    digests: dict[str, str] = {}
+    for entry in tables:
+        if not isinstance(entry, dict):
+            continue
+        rel = entry.get("path")
+        declared = entry.get("sha256")
+        if not (isinstance(rel, str) and _is_sha256_hex(declared)):
+            continue
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            continue
+        artifact = pack_root / rel
+        if not artifact.is_file():
+            continue
+        if file_sha256(artifact) != declared:
+            continue
+        digests[declared] = rel
+    return digests
+
+
 def _is_sha256_hex(value: Any) -> bool:
     return (
         isinstance(value, str)
@@ -485,12 +528,19 @@ def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
     pack does, instead of waiting for someone to edit a literal.
 
     The evidence is the manifest's OPTIONAL ``certified_baseline_references``, an
-    array of ``{reference_id, sha256}``. Two things make that admissible rather
-    than decorative: the pack manifest schema now allows the field (with
+    array of ``{reference_id, sha256}``. Three things make that admissible rather
+    than decorative: the pack manifest schema allows the field (with
     ``additionalProperties: false`` it was previously rejected outright, so this
-    predicate could never have returned True for a pack that verifies), and the
-    manifest is inside ``input_pack_sha256``, which the verifier recomputes — so a
-    declaration cannot be forged without failing the aggregate hash.
+    predicate could never have returned True for a pack that verifies); the
+    manifest is inside ``input_pack_sha256``, which the verifier recomputes, so a
+    declaration cannot be forged without failing the aggregate hash; and each
+    declared digest must MATCH AN ARTIFACT THE PACK CARRIES.
+
+    That last one is the difference between a pin and a wish. Accepting any
+    well-formed sha256 made the declaration self-certifying: a manifest-only claim
+    cleared the baseline blocker with no baseline content in the pack. A digest
+    now has to appear in ``table_hashes.json`` AND recompute over the bytes on
+    disk before its reference id counts as certified.
 
     An earlier draft also probed ``data/baselines/*.json``. That branch was dead:
     the P0 verifier rejects ``data/`` artifacts outside its declared set, so a pack
@@ -509,16 +559,26 @@ def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
     declared = manifest.get("certified_baseline_references")
     if not isinstance(declared, list):
         return False
+
+    # A digest only certifies something if it names bytes the pack actually
+    # carries. Accepting any well-formed sha256 made the declaration self-
+    # certifying: a manifest-only claim would have cleared the baseline blocker
+    # with no baseline content in the pack at all.
+    proven = _pack_artifact_digests(root)
+    if not proven:
+        return False
+
     certified: set[str] = set()
     for item in declared:
-        # Only a hash-pinned entry counts. An id without a digest names a
-        # reference without certifying anything about it.
         if not isinstance(item, dict):
             continue
         reference_id = item.get("reference_id")
         digest = item.get("sha256")
-        if isinstance(reference_id, str) and _is_sha256_hex(digest):
-            certified.add(reference_id)
+        if not (isinstance(reference_id, str) and _is_sha256_hex(digest)):
+            continue
+        if digest not in proven:
+            continue
+        certified.add(reference_id)
     return set(BASELINE_REFERENCE_IDS) <= certified
 
 

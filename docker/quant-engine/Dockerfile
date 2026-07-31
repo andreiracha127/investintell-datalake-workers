@@ -17,7 +17,7 @@ COPY src /app/src
 # /app/configs/calibration/institutional_limits.json and treats an absent file
 # as an unconfigured mandate, so omitting this made every containerized run
 # silently ignore the committed limits.
-COPY configs /app/configs
+COPY configs/calibration /app/configs/calibration
 COPY --chmod=755 docker/quant-engine/entrypoint.sh /app/docker/quant-engine/entrypoint.sh
 
 ENV PYTHONPATH=/app:/app/packages/investintell_quant_core/src:/app/services/quant_engine/src
