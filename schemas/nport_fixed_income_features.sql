@@ -341,3 +341,46 @@ CREATE OR REPLACE VIEW sec_current_nport_fixed_income_repo_lending_reported_flag
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_repo_lending_reported_flags_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_v2 AS
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- Cobertura e gravada por posicao: um snapshot carrega ~173k linhas para 46
+-- chaves de metrica, quase todas marcadores de ausencia. Servir esse grao por
+-- requisicao custou 36 s e ~493 MB de I/O com cache frio, alem do statement
+-- timeout do datalake. O rollup guarda as mesmas 46 figuras por snapshot.
+--
+-- Regra unica da agregacao: combinar apenas o que concorda. Denominadores em
+-- unidades diferentes nao sao somaveis, e uma metrica nesse estado fica sem
+-- cobertura reportada em vez de virar um numero sem significado.
+CREATE MATERIALIZED VIEW IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1 AS
+SELECT c.publication_id,
+       c.source_holdings_publication_id,
+       c.series_id,
+       c.report_date,
+       c.accession_number,
+       c.metric_family,
+       c.metric_key,
+       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.numerator) END AS numerator,
+       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN sum(c.denominator) END AS denominator,
+       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) THEN min(c.denominator_unit) END AS denominator_unit,
+       CASE WHEN min(c.denominator_unit)=max(c.denominator_unit) AND sum(c.denominator)>0
+            THEN sum(c.numerator)/sum(c.denominator) END AS coverage_ratio,
+       CASE WHEN min(c.availability_state)=max(c.availability_state) THEN min(c.availability_state) END AS availability_state,
+       CASE WHEN min(c.methodology_version)=max(c.methodology_version) THEN min(c.methodology_version) END AS methodology_version,
+       CASE WHEN min(c.exclusions::text)=max(c.exclusions::text) THEN min(c.exclusions::text)::jsonb ELSE '[]'::jsonb END AS exclusions,
+       count(*) AS source_row_count
+FROM nport_fixed_income_metric_coverage_v2 c
+GROUP BY c.publication_id,c.source_holdings_publication_id,c.series_id,
+         c.report_date,c.accession_number,c.metric_family,c.metric_key;
+
+-- Unico: exigido pelo REFRESH ... CONCURRENTLY que o materializador dispara
+-- logo apos mover o ponteiro corrente.
+CREATE UNIQUE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_pk
+  ON nport_fixed_income_metric_coverage_snapshot_v1
+  (publication_id,series_id,report_date,accession_number,metric_family,metric_key);
+
+-- O predicado que a camada de leitura usa de fato.
+CREATE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_serving_idx
+  ON nport_fixed_income_metric_coverage_snapshot_v1
+  (source_holdings_publication_id,series_id,report_date,accession_number);
+
+CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_snapshot_v1 AS
+SELECT s.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_snapshot_v1 s ON s.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';

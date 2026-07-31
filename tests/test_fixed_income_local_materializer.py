@@ -392,3 +392,34 @@ def test_local_load_indexes_and_analyze_precede_the_oracle() -> None:
     assert executed.index(index_statements[0]) < executed.index(analyze_statements[0]), (
         "the index must exist before ANALYZE runs"
     )
+
+
+def test_coverage_rollup_is_refreshed_after_the_current_pointer_moves() -> None:
+    """A pointer that moves without the rollup leaves the reader with no coverage.
+
+    Coverage is written per holding -- roughly 173k rows per snapshot for 46
+    figures -- and serving that grain per request cost 36s and ~493MB of I/O on a
+    cold cache, past the datalake statement timeout.  The reader consumes the
+    rollup instead, so publishing has to leave it current.
+    """
+    source = Path(materializer.__file__).read_text(encoding="utf-8")
+    flip = source.index("sec_set_current_derived_publication")
+    refresh = source.index("nport_fixed_income_metric_coverage_snapshot_v1")
+
+    assert refresh > flip
+    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY " in source
+
+
+def test_coverage_rollup_ddl_ships_with_the_indexes_its_refresh_and_reader_need() -> None:
+    schema = (
+        Path(__file__).resolve().parents[1]
+        / "schemas"
+        / "nport_fixed_income_features.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "MATERIALIZED VIEW IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1" in schema
+    # REFRESH ... CONCURRENTLY is rejected without a unique index on the rollup.
+    assert "UNIQUE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_pk" in schema
+    # The reader pins by source holdings publication, not by the feature publication.
+    assert "nport_fi_metric_coverage_snapshot_v1_serving_idx" in schema
+    assert "sec_current_nport_fixed_income_metric_coverage_snapshot_v1" in schema
