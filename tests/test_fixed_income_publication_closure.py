@@ -23,6 +23,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from dataclasses import asdict
 
 from src.nport import fixed_income_local_materializer as materializer
 
@@ -378,7 +379,7 @@ def test_the_closure_and_its_relations_are_immutable_in_the_database(published) 
         assert manifest["manifest_sha256"]
 
 
-def _legacy_v2_manifest(manifest: dict) -> dict:
+def _legacy_v2_manifest(manifest: dict, tmp_path) -> dict:
     """Rewrite a current manifest into the frozen v2 shape it superseded.
 
     A real pre-migration bundle attests eight payloads and the previous builder
@@ -392,11 +393,32 @@ def _legacy_v2_manifest(manifest: dict) -> dict:
         **legacy["engine"],
         "oracle_sha256": materializer.LEGACY_ORACLE_SHA256,
     }
+    # A frozen bundle carries the contract digest it was BUILT under, not the
+    # current one -- validating it against today's digest is what would make
+    # every pre-migration artifact unrecoverable.
+    legacy["contract_digest"] = materializer.LEGACY_CONTRACT_DIGEST
+    legacy["identity"] = {
+        **legacy["identity"],
+        "contract_digest": materializer.LEGACY_CONTRACT_DIGEST,
+    }
     legacy["outputs"] = {
         name: value
         for name, value in legacy["outputs"].items()
         if name != materializer.COVERAGE_ROLLUP_RELATION
     }
+    # ...and it DOES carry the two per-position repo/lending payloads the current
+    # builder no longer produces: restoring a frozen bundle means restoring what
+    # it froze.
+    for name, (columns, _keys) in materializer._legacy_relation_shapes().items():
+        path = tmp_path / f"{name}.tsv.gz"
+        with gzip.GzipFile(filename="", mode="wb", fileobj=path.open("wb"), mtime=0) as out:
+            out.write(("\t".join(columns) + "\n").encode())
+        legacy["outputs"][name] = {
+            "count": 0,
+            "sha256": materializer.sha256_file(path),
+            "filename": path.name,
+            "columns": list(columns),
+        }
     legacy["manifest_sha256"] = hashlib.sha256(
         materializer.canonical_json(legacy).encode()
     ).hexdigest()
@@ -435,7 +457,10 @@ def test_a_frozen_v2_artifact_still_restores_and_gets_its_rollup(tmp_path) -> No
         resource_config=config,
         output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
     )
-    legacy = _legacy_v2_manifest(manifest)
+    legacy = _legacy_v2_manifest(manifest, tmp_path)
+    identity = materializer.BuildIdentity(
+        **{**asdict(identity), "contract_digest": materializer.LEGACY_CONTRACT_DIGEST}
+    )
     (tmp_path / "manifest.json").write_text(
         materializer.canonical_json(legacy), encoding="utf-8"
     )
@@ -465,7 +490,7 @@ def test_a_frozen_v2_artifact_still_restores_and_gets_its_rollup(tmp_path) -> No
                 "SELECT relation_counts FROM nport_fixed_income_publication_closures "
                 "WHERE publication_id=%s", (target,)
             ).fetchone()[0]
-            assert set(closure) == set(materializer.TARGET_RELATIONS)
+            assert set(closure) == set(materializer.LEGACY_RELATIONS)
         # And the replay of a v2 bundle stays idempotent.
         with psycopg.connect(dsn) as conn:
             materializer.publish_artifact(
@@ -546,3 +571,40 @@ def test_the_backfill_cannot_rewrite_an_existing_rollup(published) -> None:
                 (target,),
             )
         conn.rollback()
+
+
+def test_a_v2_bundle_presenting_the_wrong_contract_digest_is_refused(tmp_path) -> None:
+    """Per-format, not per-either: a v2 artifact may only carry the v2 digest."""
+    identity = materializer.BuildIdentity(
+        source_publication_id=str(uuid4()),
+        source_run_id=str(uuid4()),
+        source_package_id=str(uuid4()),
+        target_publication_id=str(uuid4()),
+        as_of_date=AS_OF,
+        contract_digest=materializer.CONTRACT_DIGEST,
+    )
+    payloads = _write_payloads(tmp_path, identity, uuid4(), uuid4())
+    manifest = materializer.build_manifest(
+        identity=identity,
+        worker_sha="a" * 40,
+        source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
+        output_files=payloads,
+        resource_config=_resource_config(tmp_path),
+        output_counts={COVERAGE: 1, materializer.COVERAGE_ROLLUP_RELATION: 1},
+    )
+    legacy = _legacy_v2_manifest(manifest, tmp_path)
+    # Claim the v2 format while carrying the CURRENT contract digest.
+    import hashlib
+
+    forged = {key: value for key, value in legacy.items() if key != "manifest_sha256"}
+    forged["contract_digest"] = materializer.CONTRACT_DIGEST
+    forged["manifest_sha256"] = hashlib.sha256(
+        materializer.canonical_json(forged).encode()
+    ).hexdigest()
+    files = {
+        name: payloads[name]
+        for name in materializer.LEGACY_RELATIONS
+        if name in payloads
+    }
+    with pytest.raises(materializer.ArtifactIntegrityError, match="contract digest"):
+        materializer.verify_manifest(forged, files)

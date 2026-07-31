@@ -1590,15 +1590,6 @@
         "unknown signed_market_value makes coverage null",
         "blank or malformed literal is not_reported"
       ]
-    },
-    "repo_and_lending": {
-      "numerator": "one source child row carrying the named primitive or flag",
-      "denominator": "one pinned validated raw child row",
-      "unit": "source-row availability",
-      "exclusions": [
-        "missing raw extension is emitted as not_reported for lending flags",
-        "no counterparty exposure amount is inferred"
-      ]
     }
   },
   "date_semantics": {
@@ -1768,5 +1759,5 @@
       }
     ]
   },
-  "digest": "sha256:15cf29a48a99b6f560118dafa372baaef241713d8649be4c1e1ade2d1ec6e844"
+  "digest": "sha256:fa20a4160593297d011226bfdedb3ff6f8de3ebe0e2e77b9d0612f2495d50865"
 }

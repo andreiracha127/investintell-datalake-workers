@@ -170,6 +170,13 @@ END $$;
 -- surfaces are no longer built, served or pointed at by a current view. The
 -- tables stay because older publications reference them; they retire with the
 -- coverage backlog, under the migration runbook.
+--
+-- Applying this DDL over a v2 database must actually retire them: without these
+-- drops the sec_current_* views survive, keep following the current pointer, and
+-- keep serving a surface the product no longer has. Idempotent, like the rest of
+-- this file.
+DROP VIEW IF EXISTS sec_current_nport_fixed_income_repo_lending_primitives_v2;
+DROP VIEW IF EXISTS sec_current_nport_fixed_income_repo_lending_reported_flags_v2;
 CREATE TABLE IF NOT EXISTS nport_fixed_income_repo_lending_primitives_v2 (
     publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
