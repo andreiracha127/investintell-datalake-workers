@@ -558,19 +558,25 @@ def test_schema_migration_record_pins_the_applied_and_verified_catalog():
 
 def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
     """The worker's EXPECTED_SCHEMA (verify_schema expectations, the B1b evidence
-    base) must mirror the committed DDL: the expected tables are exactly the three
-    sanctioned ones, and every expected column name and every expected NAMED
-    constraint appears in that table's committed DDL text — the base .sql PLUS the
-    additive carry_decay_v1 migration (the byte-pinned base files are never edited;
-    schema evolution lands as a separate additive migration file)."""
+    base) must mirror the committed DDL: the expected tables are the three sanctioned
+    PRODUCT tables PLUS the append-only staleness-resolution ledger (not a product
+    table and deliberately NOT in the envelope's allowed_tables), and every expected
+    column name and every expected NAMED constraint appears in that table's committed
+    DDL text — the base .sql PLUS the additive carry_decay_v1 migration (the byte-pinned
+    base files are never edited; schema evolution lands as a separate additive file)."""
     import src.workers.open_macro_v03 as w
 
     migration = (ROOT / "schemas" / "open_macro_v03_carry_decay_v1_migration.sql"
                  ).read_text(encoding="utf-8")
-    assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES)
+    assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES) | {w.RESOLUTIONS_TABLE}
+    # the envelope's write scope is untouched: the resolution ledger carries no
+    # decision/allocation/regime data, so it is never smuggled into allowed_tables.
+    assert w.RESOLUTIONS_TABLE not in w.ALLOWED_TABLES
     auto_named = {"open_macro_v03_decisions_pkey", "open_macro_v03_allocations_pkey",
                   "open_macro_v03_staleness_blocks_pkey",
-                  "open_macro_v03_allocations_as_of_fkey"}
+                  "open_macro_v03_allocations_as_of_fkey",
+                  "open_macro_v03_staleness_resolutions_pkey",
+                  "open_macro_v03_staleness_resolutions_as_of_fkey"}
     for table, expected in w.EXPECTED_SCHEMA.items():
         ddl = (ROOT / "schemas" / f"{table}.sql").read_text(encoding="utf-8") + migration
         for column in expected["columns"]:

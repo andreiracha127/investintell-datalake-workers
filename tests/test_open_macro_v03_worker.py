@@ -18,10 +18,14 @@ import src.workers.open_macro_v03 as w
 
 
 @pytest.fixture(autouse=True)
-def _approved_railway_service(monkeypatch):
-    # governance requires the runtime RAILWAY_SERVICE_NAME to be the approved service;
-    # default it so tests exercising an ACTIVE envelope pass (a dedicated test unsets it).
-    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-worker")
+def _approved_writer_identity(monkeypatch):
+    # the WRITER gate requires the runtime to present the approved (platform-neutral)
+    # writer identity; default it so tests exercising an ACTIVE envelope pass (dedicated
+    # tests clear it). Every other identity source is cleared so a stray env var on the
+    # developer/CI machine cannot decide the gate.
+    for name in w.WRITER_IDENTITY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WORKER_SERVICE_IDENTITY", "open-macro-v03-worker")
 
 
 # --------------------------------------------------------------------------- #
@@ -119,14 +123,15 @@ def test_flag_off_is_inert_without_db(monkeypatch):
 
 def test_committed_active_envelope_passes_governance_wrong_service_blocks(monkeypatch):
     """B4 flipped: the COMMITTED envelope passes check_governance. The next key is
-    the WRITER runtime identity (Gate 2b): without the approved RAILWAY_SERVICE_NAME
-    the run stops wrong_service BEFORE any pins/pack/DB work - the feature flag env
-    var stays the second key and the service identity the third."""
+    the WRITER runtime identity (Gate 2b): without the approved writer identity the
+    run stops wrong_service BEFORE any pins/pack/DB work - the feature flag env var
+    stays the second key and the writer identity the third."""
     committed = w._load_json(w.ENVELOPE_PATH)
     assert w.check_governance(committed) is None
 
     monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
-    monkeypatch.delenv("RAILWAY_SERVICE_NAME", raising=False)
+    for name in w.WRITER_IDENTITY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
 
     def _no_connect(*a, **k):
         raise AssertionError("must not connect from an unapproved service")
@@ -216,19 +221,72 @@ def test_check_governance_all_gates(monkeypatch):
         assert reason is not None and "envelope identity" in reason, key
 
 
-def test_check_writer_runtime_requires_the_approved_service(monkeypatch):
-    # WRITER-only gate: the runtime RAILWAY_SERVICE_NAME must be the approved service.
-    # An absent identity (local/misconfigured runner) or a different service blocks.
-    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-worker")
+def test_check_writer_runtime_requires_the_approved_identity(monkeypatch):
+    # WRITER-only gate: the runtime must present the approved writer identity. An
+    # absent identity (local/misconfigured runner) or a different one blocks.
+    def _only(name, value):
+        for env in w.WRITER_IDENTITY_ENV_VARS:
+            monkeypatch.delenv(env, raising=False)
+        if name is not None:
+            monkeypatch.setenv(name, value)
+
+    _only("WORKER_SERVICE_IDENTITY", "open-macro-v03-worker")
     assert w.check_writer_runtime() is None
-    monkeypatch.delenv("RAILWAY_SERVICE_NAME", raising=False)
+    _only(None, "")
+    reason = w.check_writer_runtime()
+    assert reason is not None and "absent" in reason
+    _only("WORKER_SERVICE_IDENTITY", "open-macro-v03-monitor")
     assert w.check_writer_runtime() is not None
-    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-monitor")
-    assert w.check_writer_runtime() is not None
-    # ...and this is NOT part of check_governance, so the monitor (a separate service)
+    # ...and this is NOT part of check_governance, so the monitor (a separate workload)
     # can share the governance predicate and still pass.
-    monkeypatch.setenv("RAILWAY_SERVICE_NAME", "open-macro-v03-monitor")
     assert w.check_governance(_active_envelope()) is None
+
+
+def test_writer_identity_is_platform_neutral(monkeypatch):
+    """The gate is the LOGICAL writer identity, not a platform hostname: Cloud Run
+    (job or service), Railway and an explicit declaration all satisfy it, and the
+    explicit declaration WINS so a Cloud Run job whose own name differs can still
+    present the approved identity."""
+    def _env(**values):
+        for env in w.WRITER_IDENTITY_ENV_VARS:
+            monkeypatch.delenv(env, raising=False)
+        for key, value in values.items():
+            monkeypatch.setenv(key, value)
+
+    for source in ("WORKER_SERVICE_IDENTITY", "CLOUD_RUN_JOB", "K_SERVICE",
+                   "RAILWAY_SERVICE_NAME"):
+        _env(**{source: "open-macro-v03-worker"})
+        assert w.check_writer_runtime() is None, source
+        assert w.resolve_writer_identity() == ("open-macro-v03-worker", source)
+
+    # a Cloud Run job named dl-open-macro-v03 declares the logical identity explicitly
+    _env(CLOUD_RUN_JOB="dl-open-macro-v03",
+         WORKER_SERVICE_IDENTITY="open-macro-v03-worker")
+    assert w.check_writer_runtime() is None
+    # ...and without that declaration the platform's own name is NOT the approved
+    # identity: fail-closed, with the platform name named in the reason.
+    _env(CLOUD_RUN_JOB="dl-open-macro-v03")
+    reason = w.check_writer_runtime()
+    assert reason is not None and "dl-open-macro-v03" in reason and "CLOUD_RUN_JOB" in reason
+    # whitespace-only is not an identity
+    _env(WORKER_SERVICE_IDENTITY="   ", K_SERVICE="open-macro-v03-worker")
+    assert w.resolve_writer_identity() == ("open-macro-v03-worker", "K_SERVICE")
+
+
+def test_governance_accepts_either_envelope_identity_key():
+    """The envelope declares the LOGICAL writer identity. The ratified artifact spells
+    it `railway_service_name`; the platform-neutral key `writer_identity` is accepted
+    too, and either way the value must be the ONE approved identity."""
+    env = _active_envelope()
+    env["environment"] = {"writer_identity": w.APPROVED_WRITER_IDENTITY}
+    assert w.check_governance(env) is None
+    env["environment"] = {"railway_service_name": w.APPROVED_WRITER_IDENTITY}
+    assert w.check_governance(env) is None
+    env["environment"] = {"writer_identity": "staging-worker"}
+    assert w.check_governance(env) is not None
+    # the committed Stage B artifact still validates unchanged
+    assert w.check_governance(w._load_json(w.ENVELOPE_PATH)) is None
+    assert w.APPROVED_RAILWAY_SERVICE == w.APPROVED_WRITER_IDENTITY
 
 
 def test_check_governance_requires_real_per_role_approvals():
@@ -450,18 +508,82 @@ def test_verify_pack_bytes_mutated_byte_raises_before_db(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Ledger × output mutual exclusion + immutable ledger
 # --------------------------------------------------------------------------- #
-def test_publish_refuses_when_ledger_row_exists():
+def _blocked_day_responder(*, resolution=None, superseded=False, extra=None):
+    """Fake-conn responder for a day that CARRIES a staleness block: the block detail
+    lookup answers, the resolution lookup answers what the test asks for."""
     def responder(sql, params):
-        if "SELECT 1 FROM open_macro_v03_staleness_blocks" in sql:
-            return {"rows": [(1,)]}
+        if "FROM open_macro_v03_staleness_blocks WHERE as_of" in sql:
+            return {"rows": [("block-run-id", "1" * 64, "2" * 64)]}
+        if "resolution_state = 'resolved'" in sql:
+            return {"rows": [resolution] if resolution is not None else []}
+        if "resolution_state = 'superseded'" in sql:
+            return {"rows": [(1,)] if superseded else []}
+        if extra is not None:
+            return extra(sql, params)
         return {"rowcount": 1}
+    return responder
 
-    conn = _FakeConn(responder)
+
+def test_publish_refuses_when_ledger_row_exists():
+    conn = _FakeConn(_blocked_day_responder())
     with pytest.raises(w.OpenMacroV03Error, match="publish refused.*staleness-block"):
         w.publish(conn, _decision_row(), _allocation_row())
     assert conn.commits == 0
     dml = " ".join(sql for sql, _ in conn.executed)
     assert "INSERT INTO open_macro_v03_decisions" not in dml
+    # the message must NAME the sanctioned recovery path, not just refuse
+    with pytest.raises(w.OpenMacroV03Error, match="resolve-staleness"):
+        w.publish(_FakeConn(_blocked_day_responder()), _decision_row(), _allocation_row())
+
+
+def _resolution_row():
+    return ("11111111-1111-1111-1111-111111111111", "Andrei Rachadel", "sources refreshed",
+            _dt.datetime(2026, 7, 17, 12, 0, tzinfo=_dt.timezone.utc))
+
+
+def _proof():
+    return {"verified_as_of": "2026-07-06", "breaches": [], "series": {}, "prices": {},
+            "criteria": {}}
+
+
+def test_publish_on_a_resolved_block_appends_the_superseded_event():
+    """A day whose block carries a 'resolved' event publishes — and the publication
+    APPENDS the 'superseded' event in the SAME transaction, so the ledger reads
+    block -> resolution -> output. The block row itself is never touched."""
+    conn = _FakeConn(_blocked_day_responder(resolution=_resolution_row()))
+    w.publish(conn, _decision_row(), _allocation_row(), proof=_proof())
+    assert conn.commits == 1
+    dml = [sql for sql, _ in conn.executed]
+    assert any("INSERT INTO open_macro_v03_decisions" in s for s in dml)
+    inserts = [(s, p) for s, p in conn.executed
+               if f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s]
+    assert len(inserts) == 1
+    params = inserts[0][1]
+    assert params["resolution_state"] == "superseded"
+    assert params["resolved_by"] == w.APPROVED_WRITER_IDENTITY
+    assert params["block_run_id"] == "block-run-id"
+    assert params["run_id"] == _decision_row()["run_id"]
+    assert json.loads(params["freshness_proof"])["breaches"] == []
+    # nothing UPDATEs or DELETEs the immutable block ledger
+    assert not any(s.strip().upper().startswith(("UPDATE", "DELETE")) for s in dml)
+
+
+def test_publish_supersedes_only_once_per_day():
+    """Append-only, not append-repeatedly: an idempotent re-run of an already
+    superseded day republishes without stacking a second event."""
+    conn = _FakeConn(_blocked_day_responder(resolution=_resolution_row(), superseded=True))
+    w.publish(conn, _decision_row(), _allocation_row(), proof=_proof())
+    assert not any(f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s for s, _ in conn.executed)
+
+
+def test_publish_on_a_resolved_block_requires_the_freshness_proof():
+    """The supersede event must carry the freshness report of the publishing run;
+    publishing over a resolved block without it fails loud instead of writing a
+    provenance-free event."""
+    conn = _FakeConn(_blocked_day_responder(resolution=_resolution_row()))
+    with pytest.raises(w.OpenMacroV03Error, match="proof"):
+        w.publish(conn, _decision_row(), _allocation_row())
+    assert conn.commits == 0
 
 
 def test_record_staleness_block_refuses_over_published_output():
@@ -715,6 +837,207 @@ def _patched_load_json(monkeypatch):
             return {"modules": {}, "module_pins_sha256": "stub"}
         return real(path)
     return loader
+
+
+# --------------------------------------------------------------------------- #
+# resolve-staleness — the SANCTIONED recovery path for a blocked day
+# --------------------------------------------------------------------------- #
+def _resolve_env(monkeypatch, *, inputs, block=("block-run-id", "1" * 64, "2" * 64),
+                 existing=None):
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_schema", lambda conn: {})
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: inputs())
+    monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+
+    def responder(sql, params):
+        if "FROM open_macro_v03_staleness_blocks WHERE as_of" in sql:
+            return {"rows": [block] if block is not None else []}
+        if "resolution_state = 'resolved'" in sql:
+            return {"rows": [existing] if existing is not None else []}
+        return {"rowcount": 1}
+
+    conn = _FakeConn(_lock_responder(responder))
+    monkeypatch.setattr(w, "connect", lambda dsn: conn)
+    return conn
+
+
+def test_resolve_staleness_records_the_event_with_a_freshness_proof(monkeypatch):
+    """The operator path that did not exist: it APPENDS a 'resolved' event carrying
+    the recomputed staleness report (per-source ages against the bounds in force) —
+    and it never touches the immutable block ledger."""
+    conn = _resolve_env(monkeypatch, inputs=_fresh_inputs)
+    result = w.resolve_staleness_block("dsn", as_of="2026-07-06",
+                                       resolved_by="Andrei Rachadel",
+                                       reason="ALFRED published the July prints")
+    assert result["status"] == "resolved"
+    assert result["block_run_id"] == "block-run-id"
+    assert result["freshness_proof"]["breaches"] == []
+    assert result["freshness_proof"]["series"]  # the per-source proof is not empty
+    inserts = [(s, p) for s, p in conn.executed
+               if f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s]
+    assert len(inserts) == 1
+    params = inserts[0][1]
+    assert params["resolution_state"] == "resolved"
+    assert params["resolved_by"] == "Andrei Rachadel"
+    assert params["block_input_vintage_sha256"] == "1" * 64
+    assert json.loads(params["freshness_proof"])["breaches"] == []
+    # append-only: no statement mutates or removes the block ledger
+    assert not any(s.strip().upper().startswith(("UPDATE", "DELETE"))
+                   for s, _ in conn.executed)
+
+
+def test_resolve_staleness_refuses_while_the_inputs_are_still_stale(monkeypatch):
+    """No rubber stamp: the worker recomputes freshness itself and records NOTHING
+    when the sources still breach the SLO."""
+    conn = _resolve_env(monkeypatch, inputs=_stale_inputs)
+    result = w.resolve_staleness_block("dsn", as_of="2026-07-06",
+                                       resolved_by="Andrei Rachadel", reason="hoping")
+    assert result["status"] == "still_stale"
+    assert result["reason"]
+    assert not any(f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s for s, _ in conn.executed)
+
+
+def test_resolve_staleness_is_idempotent_and_needs_a_block(monkeypatch):
+    conn = _resolve_env(monkeypatch, inputs=_fresh_inputs, block=None)
+    assert w.resolve_staleness_block("dsn", as_of="2026-07-06", resolved_by="A",
+                                     reason="r")["status"] == "no_block"
+    assert not any(f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s for s, _ in conn.executed)
+
+    conn = _resolve_env(monkeypatch, inputs=_fresh_inputs, existing=_resolution_row())
+    result = w.resolve_staleness_block("dsn", as_of="2026-07-06", resolved_by="A",
+                                       reason="r")
+    assert result["status"] == "already_resolved"
+    assert not any(f"INSERT INTO {w.RESOLUTIONS_TABLE}" in s for s, _ in conn.executed)
+
+
+def test_resolve_staleness_is_fail_closed_before_any_db(monkeypatch):
+    """Same gate ordering as run(): flag, governance, WRITER identity — all before a
+    connection is even attempted. A clearance is a write on the official surface."""
+    def _no_connect(*a, **k):
+        raise AssertionError("resolve-staleness must not connect behind a closed gate")
+
+    monkeypatch.setattr(w, "connect", _no_connect)
+    monkeypatch.delenv("open_macro_v03_runtime_activation", raising=False)
+    assert w.resolve_staleness_block("dsn", as_of="2026-07-06", resolved_by="A",
+                                     reason="r") == {"status": "flag_off"}
+
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    for name in w.WRITER_IDENTITY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    assert w.resolve_staleness_block("dsn", as_of="2026-07-06", resolved_by="A",
+                                     reason="r")["status"] == "wrong_service"
+
+    monkeypatch.setenv("WORKER_SERVICE_IDENTITY", "open-macro-v03-worker")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    for bad in ({"resolved_by": "  "}, {"reason": ""}):
+        kwargs = {"as_of": "2026-07-06", "resolved_by": "A", "reason": "r", **bad}
+        with pytest.raises(w.OpenMacroV03Error):
+            w.resolve_staleness_block("dsn", **kwargs)
+
+
+def test_resolve_staleness_cli_wires_the_subcommand(monkeypatch, capsys):
+    seen = {}
+
+    def fake(dsn, *, as_of, resolved_by, reason):
+        seen.update(dsn=dsn, as_of=as_of, resolved_by=resolved_by, reason=reason)
+        return {"status": "resolved", "as_of": as_of}
+
+    monkeypatch.setattr(w, "resolve_dsn", lambda: "dsn-from-env")
+    monkeypatch.setattr(w, "resolve_staleness_block", fake)
+    code = w.main(["resolve-staleness", "--as-of", "2026-07-17",
+                   "--resolved-by", "Andrei Rachadel", "--reason", "prints landed"])
+    assert code == 0
+    assert seen == {"dsn": "dsn-from-env", "as_of": "2026-07-17",
+                    "resolved_by": "Andrei Rachadel", "reason": "prints landed"}
+    assert json.loads(capsys.readouterr().out)["status"] == "resolved"
+    # a refusal is a non-zero exit: an operator/job never reads success from a block
+    monkeypatch.setattr(w, "resolve_staleness_block",
+                        lambda *a, **k: {"status": "still_stale"})
+    assert w.main(["resolve-staleness", "--as-of", "2026-07-17",
+                   "--resolved-by", "A", "--reason", "r"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Provenance — code_commit is platform neutral
+# --------------------------------------------------------------------------- #
+def test_fleet_image_copies_every_runtime_input_of_the_gates():
+    """The fleet image must carry what the fail-closed gates READ at runtime: the
+    pinned pure modules (harness/, scripts/, src/), the ratified Stage B artifact and
+    the certified pack. A missing tree turns a gate into an ImportError at 09:30 UTC."""
+    dockerfile = (w.ROOT / "Dockerfile").read_text(encoding="utf-8")
+    for root in sorted({p.split("/")[0] for p in w.EXPECTED_PINNED_MODULES}):
+        assert f"COPY {root}/" in dockerfile, f"{root}/ missing from the image"
+    assert w.STAGE_B_DIR.relative_to(w.ROOT).as_posix() in dockerfile.replace("\\", "/")
+    assert w.PACK.relative_to(w.ROOT).as_posix() in dockerfile.replace("\\", "/")
+
+
+def test_both_ledgers_are_append_only_in_the_source(monkeypatch):
+    """Static guard: the worker holds NO statement that updates or deletes either the
+    staleness-block ledger or its resolution ledger. Clearance is a new event, always."""
+    source = Path(w.__file__).read_text(encoding="utf-8")
+    for table in ("open_macro_v03_staleness_blocks", w.RESOLUTIONS_TABLE):
+        for verb in ("UPDATE ", "DELETE FROM "):
+            assert f"{verb}{table}" not in source, f"{verb}{table} in the worker source"
+    ddl = (w.ROOT / "schemas" / f"{w.RESOLUTIONS_TABLE}.sql").read_text(encoding="utf-8")
+    assert "ON CONFLICT" not in ddl and "UPDATE" not in ddl
+
+
+def test_staleness_block_result_names_the_recovery_path(monkeypatch):
+    """A blocked run must hand the operator the command, not a demand for an
+    'explicit operator resolution' with no implementation behind it."""
+    monkeypatch.setenv("open_macro_v03_runtime_activation", "true")
+    monkeypatch.setattr(w, "verify_module_pins", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_pack_bytes", lambda *a, **k: None)
+    monkeypatch.setattr(w, "verify_schema", lambda conn: {})
+    monkeypatch.setattr(w, "_load_json", _patched_load_json(monkeypatch))
+    monkeypatch.setattr(w, "compose_inputs", lambda conn, as_of: _stale_inputs())
+    monkeypatch.setattr(w, "code_commit", lambda: "a" * 40)
+    monkeypatch.setattr(w, "resolve_as_of", lambda *a, **k: _dt.date(2026, 7, 6))
+
+    def responder(sql, params):
+        if "SELECT 1 FROM open_macro_v03_staleness_blocks" in sql:
+            return {"rows": [(1,)]}
+        return {}
+
+    monkeypatch.setattr(w, "connect", lambda dsn: _FakeConn(_lock_responder(responder)))
+    result = w.run("dsn", as_of="2026-07-06")
+    assert result["status"] == "staleness_block"
+    assert "resolve-staleness --as-of 2026-07-06" in result["resolution_path"]
+
+
+def test_code_commit_reads_the_neutral_revision_env_vars(monkeypatch):
+    for name in w.REVISION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    for name in w.REVISION_ENV_VARS:
+        monkeypatch.setenv(name, "b" * 40)
+        assert w.code_commit() == "b" * 40
+        monkeypatch.delenv(name)
+
+
+def test_code_commit_rejects_a_short_revision(monkeypatch):
+    """CHAR(40) would blank-pad a short value into a lie about which code ran."""
+    for name in w.REVISION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CODE_REVISION", "abc1234")
+    with pytest.raises(w.OpenMacroV03Error, match="40-hex"):
+        w.code_commit()
+
+
+def test_code_commit_fails_loud_without_env_or_git(monkeypatch):
+    for name in w.REVISION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    def _no_git(*a, **k):
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(w.subprocess, "run", _no_git)
+    with pytest.raises(w.OpenMacroV03Error, match="CODE_REVISION"):
+        w.code_commit()
 
 
 # --------------------------------------------------------------------------- #
