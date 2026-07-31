@@ -69,10 +69,21 @@ def compute_input_pack_sha256(pack_dir: str | Path, manifest: Mapping[str, Any])
 
 
 def build_manifest(pack_dir: str | Path, base_manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """Fill component hashes and ``input_pack_sha256`` for a pack directory."""
+    """Fill component hashes and ``input_pack_sha256`` for a pack directory.
+
+    ``runtime_activation`` DEFAULTS to false — a pack that says nothing about its
+    stance is not activated — but the builder no longer overwrites a stance the
+    caller declared. Forcing it here was the builder half of a closed loop: the
+    builder stamped ``false`` and the verifier only returned ``ok`` when it read
+    ``false``, so a certified pack was by definition a pack that could never be
+    used. The stance now comes from the pack's registry entry and the verifier
+    checks the manifest against that declaration, which stays fail-closed while
+    being renewable. Every current caller passes ``runtime_activation: False``
+    explicitly, so committed pack bytes are unchanged.
+    """
     root = Path(pack_dir)
     manifest = deepcopy(dict(base_manifest))
-    manifest["runtime_activation"] = False
+    manifest.setdefault("runtime_activation", False)
 
     for filename, field in COMPONENT_HASH_FIELDS.items():
         path = root / filename

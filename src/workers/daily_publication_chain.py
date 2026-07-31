@@ -35,6 +35,7 @@ import uuid
 from datetime import date
 from typing import Any, Callable
 
+from src import sec_effective_matviews
 from src.bonds import daily_chain
 from src.bonds.daily_chain import (
     Stage,
@@ -301,7 +302,8 @@ def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        relation = sec_effective_matviews.resolve_relation(conn, table)
+        row = conn.execute(f"SELECT max({col}) FROM {relation}").fetchone()
         day = row[0] if row else None
         if day is not None and (latest is None or day > latest):
             latest = day
@@ -320,8 +322,12 @@ def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        relation = sec_effective_matviews.resolve_relation(conn, table)
+        row = conn.execute(f"SELECT max({col}) FROM {relation}").fetchone()
         wm = row[0] if row else None
+        # Keyed by the SOURCE PRODUCT, never by the relation actually read: the
+        # matview is a cache of the same product and the run row's watermark
+        # history must stay comparable across the swap.
         watermarks[table] = wm.isoformat() if isinstance(wm, date) else None
     return watermarks
 
@@ -451,12 +457,19 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             return {"state": "locked", "chain": CHAIN, "runs": []}
         daily_chain.install_schema(conn)
         conn.commit()
+        # Bring the effective-selection caches up to the state the watermark reads
+        # are about to observe. Both reads below happen BEFORE the ingest stage, so
+        # a cache refreshed here reflects exactly what the views would return now.
+        # Reported, never fatal: when the refresh cannot run, resolve_relation
+        # falls back to the views and the run pays the old scan.
+        matview_refreshes = sec_effective_matviews.refresh_stale(resolved)
         if calc_date:
             source_days = [date.fromisoformat(calc_date)]
         else:
             source_days = discover_source_days(conn, limit=limit)
         if not source_days:
-            return {"state": "no_source_days", "chain": CHAIN, "runs": []}
+            return {"state": "no_source_days", "chain": CHAIN,
+                    "effective_matviews": matview_refreshes, "runs": []}
         summaries = daily_chain.run_chain(
             conn, stages=_configured_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
@@ -469,6 +482,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
     return {
         "state": "failed" if failed else "ok",
         "chain": CHAIN,
+        "effective_matviews": matview_refreshes,
         "runs_processed": len(summaries),
         # Freshness is surfaced separately from failure: a run can be 'ok' yet carry
         # a staleness alert operators should see.

@@ -65,6 +65,7 @@ jobs:
           tests/test_controlled_activation_proposal.py
           tests/test_dark_launch_readiness.py
           tests/test_direct_activation_plan.py
+          tests/test_direct_activation_stage_a.py
           -p xdist.plugin
           -n auto
           --dist loadscope

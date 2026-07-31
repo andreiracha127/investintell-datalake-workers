@@ -236,6 +236,8 @@ jobs:
           set -euo pipefail
           tests=(
             tests/test_fixed_income_publication_closure.py
+            tests/test_sec_effective_matviews.py
+            tests/test_open_macro_v03_prefix_checkpoint.py
             tests/test_mixed_quant_contract_version.py
             tests/test_mixed_quant_contracts.py
             tests/test_mixed_quant_factor_inputs.py
@@ -304,6 +306,8 @@ jobs:
           )
           db_tests=(
             tests/test_fixed_income_publication_closure.py
+            tests/test_sec_effective_matviews.py
+            tests/test_open_macro_v03_prefix_checkpoint.py
             tests/test_mixed_quant_factor_inputs.py
             tests/test_mixed_quant_integration_fixture.py
             tests/test_mixed_quant_native_sources.py
@@ -460,13 +464,6 @@ jobs:
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/ci/publish_quant_core.py verify
 
-      - name: Verify Stage A binding
-        if: steps.changes.outputs.quant_changed == 'true'
-        run: >-
-          python -m pytest
-          tests/test_direct_activation_stage_a.py::test_reproducibility_record_pins_a_clean_16_run_reproduction
-          -q
-
       - name: Verify quant requirements lock
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/ci/verify_quant_requirements.py
@@ -515,6 +512,14 @@ jobs:
         if: steps.changes.outputs.quant_changed == 'true'
         run: python docker/railway-ci/verify_input_pack.py
 
+      # The registry DECLARES each certified pack's identity; this recomputes
+      # every declared digest from the committed pack tree. The sha256 pins are
+      # anti-forgery scaffolding and stay mandatory — the registry only removed
+      # the need to retype them in five files.
+      - name: Verify certified input pack registry
+        if: steps.changes.outputs.quant_changed == 'true'
+        run: python -m src.input_packs.registry verify
+
       - name: Verify contract bundle
         if: steps.changes.outputs.quant_changed == 'true'
         run: python scripts/contract_bundle.py verify
@@ -553,6 +558,7 @@ jobs:
           tests/test_contract_metric_backtest.py
           tests/test_representable_activation.py
           tests/test_p1_pack.py
+          tests/test_input_pack_registry.py
           tests/test_quant_requirements_sync.py
           tests/test_remote_ci_runner.py
           tests/test_ci_path_scope.py

@@ -15,6 +15,7 @@ import subprocess
 from datetime import date
 from typing import Any
 
+from src import sec_effective_matviews
 from src.db import LOCK_RR1_DERIVED_PROFILES, advisory_lock, connect
 from src.rr1 import derived_profiles
 
@@ -45,7 +46,11 @@ def _latest_validated_rr1(conn: Any) -> tuple[Any, Any] | None:
 def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     if calc_date:
         return date.fromisoformat(calc_date)
-    row = conn.execute("SELECT max(effective_date) FROM rr1_effective_facts").fetchone()
+    # The watermark comes from the per-date calendar matview when it is fresh (see
+    # src/sec_effective_matviews.py); otherwise from the view itself, which is
+    # always correct and merely re-expands the whole raw selection.
+    relation = sec_effective_matviews.resolve_relation(conn, "rr1_effective_facts")
+    row = conn.execute(f"SELECT max(effective_date) FROM {relation}").fetchone()
     return row[0] if row else None
 
 

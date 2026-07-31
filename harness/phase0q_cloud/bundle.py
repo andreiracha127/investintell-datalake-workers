@@ -94,6 +94,12 @@ SRC_SOURCE_FILES = (
     "src/input_packs/manifest.py",
     "src/input_packs/p0_contract.py",
     "src/input_packs/p0_derived.py",
+    # The certified-pack registry loader. BOTH shipped verifiers import it at
+    # module scope now (harness/p1_pack/verifier.py and src/input_packs/
+    # verifier.py resolve pack identity, the accepted-id set and the declared
+    # governance stance through it), so a bundle without it would not import in
+    # Research at all. Its data file ships in POLICY_ARTIFACT_FILES.
+    "src/input_packs/registry.py",
     "src/input_packs/verifier.py",
     "src/macro_sources.py",
     "src/macro_transforms.py",
@@ -128,6 +134,15 @@ QUANT_CORE_SOURCE_FILES = (
 # surface, not just its import closure.
 POLICY_ARTIFACT_FILES = (
     "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json",
+    # The certified-pack registry: read at import time by both shipped verifiers
+    # to resolve the accepted pack ids and the governance stance each pack was
+    # certified under. It is result-determining exactly like the timeline gate
+    # policy — a cloud leg materialized without it, or with a different one,
+    # would judge the shipped pack differently — so it belongs in the shipped
+    # read surface AND in the immutable-prefix identity. A pack promotion
+    # therefore re-derives these records through the sanctioned offline flow
+    # (bundle + record_artifacts); it never needs the cloud leg.
+    "contracts/input-packs/registry.json",
 )
 
 # Fail-loud offline DB stub materialized in Research in place of src/db.py. It
