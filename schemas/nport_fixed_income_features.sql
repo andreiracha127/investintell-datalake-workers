@@ -297,6 +297,71 @@ DO $$ DECLARE target text; BEGIN
   END LOOP;
 END $$;
 
+-- --------------------------------------------------------------------------- --
+-- Storage closure: the O(1) proof that a published relation set is intact.
+--
+-- The row guards above reject every UPDATE and DELETE outright and admit an
+-- INSERT only while the parent publication is 'prepared'.  Once a publication is
+-- validated its eight relations are therefore FROZEN by the database, not by
+-- convention.  A closure row records the per-relation counts observed while the
+-- publication was already validated; because nothing can write afterwards, that
+-- observation stays true forever, and an idempotent replay can re-prove storage
+-- by reading ONE indexed row instead of running eight full counts -- one of them
+-- over nport_fixed_income_metric_coverage_v2 (45.6M rows in production).
+--
+-- TRUNCATE bypasses row-level triggers, so it is forbidden explicitly below:
+-- otherwise it would be the one write that could invalidate a closure silently.
+-- --------------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS nport_fixed_income_publication_closures (
+    publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    manifest_sha256 char(64) NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+    relation_counts jsonb NOT NULL CHECK (jsonb_typeof(relation_counts) = 'object'),
+    verified_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION nport_fixed_income_closure_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE recorded_manifest char(64);
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure is immutable';
+    END IF;
+    -- A closure may only be recorded once the publication is validated: before
+    -- that the row guards still admit inserts, so a count observed earlier would
+    -- not be a closure at all.
+    IF NOT sec_derived_publication_is_validated(NEW.publication_id, 'nport_fixed_income_features_v1') THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure requires a validated publication';
+    END IF;
+    -- The closure attests THE manifest that was published, never a free-standing
+    -- hash: a closure whose manifest differs from the recorded one would let a
+    -- replay of a different artifact skip verification.
+    SELECT manifest_sha256 INTO recorded_manifest
+    FROM nport_fixed_income_publication_manifests WHERE publication_id = NEW.publication_id;
+    IF recorded_manifest IS DISTINCT FROM NEW.manifest_sha256 THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure manifest does not match the published manifest';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS nport_fixed_income_closure_write_guard
+    ON nport_fixed_income_publication_closures;
+CREATE TRIGGER nport_fixed_income_closure_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_publication_closures
+FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_closure_write_guard();
+
+CREATE OR REPLACE FUNCTION nport_fixed_income_truncate_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'N-PORT fixed-income publication relations cannot be truncated (%)', TG_TABLE_NAME;
+END $$;
+
+DO $$ DECLARE target text; BEGIN
+  FOREACH target IN ARRAY ARRAY['nport_fixed_income_features','nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2','nport_fixed_income_metric_coverage_v2'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON %I', target);
+    EXECUTE format('CREATE TRIGGER nport_fixed_income_truncate_guard BEFORE TRUNCATE ON %I FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard()', target);
+  END LOOP;
+END $$;
+
 CREATE OR REPLACE FUNCTION nport_fixed_income_safe_date(value text)
 RETURNS date LANGUAGE plpgsql IMMUTABLE AS $$
 BEGIN
