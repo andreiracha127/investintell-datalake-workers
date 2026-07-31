@@ -1101,7 +1101,7 @@ def _seed_wave1_public_data() -> None:
 
 def test_chain_materialize_runs_bond_metrics_and_promotes_available_ytm():
     """Requirement 5: a chain run over fixture data yields a promoted
-    bond_metric_v1 with >=1 available (recomputed) YTM row, produced by the
+    bond_metric_v1 with >=1 available (source-projected) YTM row, produced by the
     materialize stage AFTER the pit_update security/price publications."""
     admin = admin_connect()
     book_schema = None
@@ -1144,8 +1144,9 @@ def test_chain_materialize_runs_bond_metrics_and_promotes_available_ytm():
         ).fetchall()
         available = {r[0]: float(r[1]) for r in rows if r[2] == "available"}
         assert "security_ytm" in available
-        # Recomputed by the engine (Fabozzi ~11%), never the source's raw 0.076.
-        assert abs(available["security_ytm"] - 0.11) < 1e-3
+        # PROJECTED: the qualified source's own yield lane (0.076), never a
+        # recomputation from terms the universe does not carry.
+        assert abs(available["security_ytm"] - 0.076) < 1e-9
     finally:
         if book_schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{book_schema}" CASCADE')

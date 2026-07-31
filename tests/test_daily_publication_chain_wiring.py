@@ -82,6 +82,36 @@ def test_build_watermarks_reports_max_date_per_source_and_dark_is_empty():
         admin.close()
 
 
+def test_discover_source_days_yields_only_the_latest_watermark_day():
+    """The chain processes the SINGLE latest watermark day — never a historical
+    catch-up. Every stage worker projects the CURRENT state of its inputs and
+    self-promotes, so replaying an old source-day would advance the current
+    pointers to a stale build (the 2026-07 incident: hours spent promoting
+    2015/2016 filing days over the present). History stays reachable via an
+    explicit ``calc_date``.
+    """
+    admin = admin_connect()
+    schema = new_schema(admin)
+    conn = worker_conn(schema)
+    try:
+        # Dark: no source tables -> no eligible day at all.
+        assert chain_worker.discover_source_days(conn) == []
+        conn.execute("CREATE TABLE bond_price_observation (as_of date)")
+        conn.execute(
+            "INSERT INTO bond_price_observation VALUES "
+            "('2015-09-28'),('2016-03-01'),('2025-02-15')"
+        )
+        conn.execute("CREATE TABLE ncen_effective_filings (effective_date date)")
+        conn.execute("INSERT INTO ncen_effective_filings VALUES ('2025-03-31'),('2015-12-29')")
+        conn.commit()
+        # ONE day: the max across every source; the 2015/2016 days never enter.
+        assert chain_worker.discover_source_days(conn) == [date(2025, 3, 31)]
+    finally:
+        conn.close()
+        admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
 def test_staleness_threshold_is_env_configurable(monkeypatch):
     monkeypatch.delenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", raising=False)
     assert chain_worker._staleness_threshold() == chain_worker._DEFAULT_STALENESS_THRESHOLD_DAYS

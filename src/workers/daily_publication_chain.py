@@ -262,15 +262,26 @@ def _staleness_threshold() -> int | None:
 
 
 def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
-    """Watermark-driven eligible source-days (ascending). Absent tables -> []."""
-    days: set[date] = set()
+    """The single LATEST watermark day across the chain's sources (or []).
+
+    Deliberately NOT a historical catch-up: every stage worker projects the
+    CURRENT state of its inputs (current pointers, latest filings at/before the
+    calc-date), so replaying an old source-day rebuilds a stale ``as_of`` and —
+    because each product self-promotes — would advance the current pointers to
+    that stale build. The 2026-07 incident did exactly that: the watermark
+    enumeration walked every distinct filing effective-date since 2015 and spent
+    hours promoting 2015/2016 builds over the present. One day per invocation is
+    the honest cadence; history stays reachable via an explicit ``calc_date``.
+    """
+    latest: date | None = None
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        for (day,) in conn.execute(f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL"):
-            days.add(day)
-    ordered = sorted(days)
-    return ordered[:limit] if limit is not None else ordered
+        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        day = row[0] if row else None
+        if day is not None and (latest is None or day > latest):
+            latest = day
+    return [] if latest is None else [latest]
 
 
 def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
