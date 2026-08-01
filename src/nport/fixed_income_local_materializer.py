@@ -63,7 +63,7 @@ LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # is a planner directive only — the rows the oracle produces are unchanged.
 APPROVED_LOCAL_ORACLE_SHA256 = "70703b7ae07c6affb829b354456f4995597cbb58c22798ff9c7590cffb976207"
 CONTRACT_DIGEST = (
-    "sha256:fa20a4160593297d011226bfdedb3ff6f8de3ebe0e2e77b9d0612f2495d50865"
+    "sha256:5072aa4260f52196890288371651a6aa9280686b7325022908d2e892068f4bd0"
 )
 # The contract digest a FROZEN v2 bundle carries. A restore has to validate
 # against the digest of its own contract version, not the current one: a v2
@@ -105,14 +105,22 @@ COVERAGE_ROLLUP_KEYS = (
 # rollup. Every artifact/manifest invariant below is stated over THIS tuple.
 PUBLISHED_RELATIONS = (*TARGET_RELATIONS, COVERAGE_ROLLUP_RELATION)
 
-MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v3"
-# Frozen artifacts built before the coverage change are still restorable. Their
-# manifest attests eight payloads and the previous builder sha; their coverage
-# payload carries the absence rows the new one does not, so the rollup can be
-# derived from it at publish time (see ``_derive_rollup_from_coverage``).
-# Accepting the legacy oracle hash is scoped to that format and nothing else.
+# A format label is a fact about artifacts that EXIST, never a version number to
+# reuse. ``/v3`` was already emitted into production -- publication a42e5032 was
+# promoted on 2026-07-31 by the code merged as #77 -- so its meaning is fixed:
+# nine payloads, the v2 contract digest, and the wave-3b builder. The shape this
+# branch produces is therefore a NEW label.
+MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v4"
+# Frozen artifacts remain restorable, each against the contract, builder and
+# payload set IT was attested under. Their coverage payload carries absence rows
+# the current builder does not write, so their rollup is derived at publish time
+# (see ``_derive_rollup_from_coverage``) when the format predates it.
 LEGACY_MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v2"
+PRIOR_MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v3"
 LEGACY_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
+# The builder that produced the /v3 artifacts now in production: coverage absence
+# already rolled up, repo/lending still built.
+PRIOR_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
 # A v2 artifact carries the eight relations of the v2 contract, including the two
 # per-position repo/securities-lending surfaces this product no longer builds.
 # They are still COPYable into their (retained) tables: restoring a frozen bundle
@@ -122,10 +130,18 @@ LEGACY_RELATIONS = (
     "nport_fixed_income_repo_lending_primitives_v2",
     "nport_fixed_income_repo_lending_reported_flags_v2",
 )
+# /v3 is /v2's eight plus the rollup: the shape production is serving right now.
+PRIOR_RELATIONS = (*LEGACY_RELATIONS, COVERAGE_ROLLUP_RELATION)
+# format -> (payload set, builder sha, contract digest) as ATTESTED by artifacts
+# of that format. Each row is a historical fact; only the first is produced now.
 _MANIFEST_FORMATS: dict[str, tuple[tuple[str, ...], str, str]] = {
     MANIFEST_FORMAT: (PUBLISHED_RELATIONS, APPROVED_LOCAL_ORACLE_SHA256, CONTRACT_DIGEST),
+    PRIOR_MANIFEST_FORMAT: (PRIOR_RELATIONS, PRIOR_ORACLE_SHA256, LEGACY_CONTRACT_DIGEST),
     LEGACY_MANIFEST_FORMAT: (LEGACY_RELATIONS, LEGACY_ORACLE_SHA256, LEGACY_CONTRACT_DIGEST),
 }
+# Formats whose coverage payload still carries absence per position, so their
+# rollup can be derived from it. /v3 already ships a rollup payload.
+_DERIVE_ROLLUP_FORMATS = frozenset({LEGACY_MANIFEST_FORMAT})
 
 
 def manifest_relations(manifest: Mapping[str, Any]) -> tuple[str, ...]:
@@ -1384,7 +1400,7 @@ def publish_artifact(
             "INSERT INTO nport_fixed_income_publication_manifests(publication_id,manifest_sha256,manifest) VALUES(%s,%s,%s::jsonb)",
             (identity.target_publication_id, manifest_hash, canonical_json(manifest)),
         )
-        if manifest["format"] == LEGACY_MANIFEST_FORMAT:
+        if manifest["format"] in _DERIVE_ROLLUP_FORMATS:
             _derive_rollup_from_coverage(cursor, identity.target_publication_id)
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",

@@ -494,3 +494,30 @@ def test_artifact_without_the_rollup_payload_is_rejected(tmp_path: Path) -> None
             ),
             output_counts={name: 1 for name in without_rollup},
         )
+
+
+def test_a_format_label_describes_artifacts_that_exist_and_is_never_reused() -> None:
+    """``/v3`` was emitted into production before this branch changed the shape.
+
+    Publication a42e5032 was promoted on 2026-07-31 by the code merged as #77:
+    nine payloads (the v2 contract's eight plus the rollup), the v2 contract
+    digest, and the wave-3b builder. Re-pointing ``/v3`` at the new shape would
+    have made that artifact unrestorable, so the new shape took a new label.
+    """
+    relations, oracle, contract = materializer._MANIFEST_FORMATS[
+        materializer.PRIOR_MANIFEST_FORMAT
+    ]
+    assert len(relations) == 9
+    assert materializer.COVERAGE_ROLLUP_RELATION in relations
+    assert "nport_fixed_income_repo_lending_reported_flags_v2" in relations
+    assert oracle == materializer.PRIOR_ORACLE_SHA256
+    assert contract == materializer.LEGACY_CONTRACT_DIGEST
+
+    # The label this branch produces is a different one.
+    assert materializer.MANIFEST_FORMAT.endswith("/v4")
+    assert materializer.MANIFEST_FORMAT not in {
+        materializer.PRIOR_MANIFEST_FORMAT,
+        materializer.LEGACY_MANIFEST_FORMAT,
+    }
+    # /v3 already ships a rollup payload; only /v2 needs one derived.
+    assert materializer._DERIVE_ROLLUP_FORMATS == {materializer.LEGACY_MANIFEST_FORMAT}

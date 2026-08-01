@@ -126,11 +126,37 @@ def _resolve_as_of(conn: Any, calc_date: str | None, source_publication_id: str)
     return row[0] if row and row[0] else None
 
 
-def _publication_id(code_revision: str, source_publication_id: str, as_of: date) -> str:
+def _publication_id(
+    code_revision: str,
+    source_publication_id: str,
+    as_of: date,
+    *,
+    contract_digest: str,
+    builder_sha256: str,
+) -> str:
+    """Identity of the publication these inputs produce.
+
+    The contract digest and the builder sha are PART of the identity, not
+    metadata about it: they are what decides the payload. Deriving identity from
+    the code revision alone made correctness depend on an env var -- with the
+    documented ``unknown`` fallback, a contract or builder change produced the
+    same id, so the run short-circuited as ``already_published`` and the new
+    shape was never published. Our jobs do set CODE_REVISION; identity must not
+    rely on them doing so.
+    """
     return str(
         uuid.uuid5(
             _PUBLICATION_NAMESPACE,
-            f"{PRODUCT}|{code_revision}|{source_publication_id}|{as_of.isoformat()}",
+            "|".join(
+                (
+                    PRODUCT,
+                    code_revision,
+                    contract_digest,
+                    builder_sha256,
+                    source_publication_id,
+                    as_of.isoformat(),
+                )
+            ),
         )
     )
 
@@ -271,7 +297,13 @@ def run(
             if as_of is None:
                 return {"state": "no_source", "reason": "source_publication_has_no_report_date", "rows": 0}
 
-            publication_id = _publication_id(code_revision, source_publication_id, as_of)
+            publication_id = _publication_id(
+                code_revision,
+                source_publication_id,
+                as_of,
+                contract_digest=materializer.CONTRACT_DIGEST,
+                builder_sha256=builder_sha256,
+            )
             existing = _state_of(conn, publication_id)
             if existing is not None and existing[0] == "validated":
                 # The identity is a function of (revision, source, as_of), so a

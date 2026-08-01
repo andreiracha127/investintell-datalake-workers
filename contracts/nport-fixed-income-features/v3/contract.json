@@ -1526,12 +1526,7 @@
     ],
     "raw_views": [
       "nport_interest_rate_risk_raw",
-      "nport_fund_reported_info_raw",
-      "nport_borrow_aggregate_raw",
-      "nport_repurchase_agreement_raw",
-      "nport_repurchase_collateral_raw",
-      "nport_repurchase_counterparty_raw",
-      "nport_securities_lending_raw"
+      "nport_fund_reported_info_raw"
     ],
     "identity_fields": [
       "publication_id",
@@ -1759,5 +1754,5 @@
       }
     ]
   },
-  "digest": "sha256:fa20a4160593297d011226bfdedb3ff6f8de3ebe0e2e77b9d0612f2495d50865"
+  "digest": "sha256:5072aa4260f52196890288371651a6aa9280686b7325022908d2e892068f4bd0"
 }

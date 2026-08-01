@@ -169,7 +169,9 @@ END $$;
 -- RETIRED 2026-07-31 (owner decision): the per-position repo/securities-lending
 -- surfaces are no longer built, served or pointed at by a current view. The
 -- tables stay because older publications reference them; they retire with the
--- coverage backlog, under the migration runbook.
+-- coverage backlog, under the migration runbook. They KEEP the fact and truncate
+-- guards: retained does not mean unguarded, and a legacy restore writes into
+-- them, so their rows must stay as immutable as everything the closure counts.
 --
 -- Applying this DDL over a v2 database must actually retire them: without these
 -- drops the sec_current_* views survive, keep following the current pointer, and
@@ -302,7 +304,7 @@ BEGIN
 END $$;
 
 DO $$ DECLARE target text; BEGIN
-  FOREACH target IN ARRAY ARRAY['nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2'] LOOP
+  FOREACH target IN ARRAY ARRAY['nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON %I', target);
     EXECUTE format('CREATE TRIGGER nport_fixed_income_v2_fact_write_guard BEFORE INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_v2_fact_write_guard()', target);
   END LOOP;
@@ -367,7 +369,7 @@ BEGIN
 END $$;
 
 DO $$ DECLARE target text; BEGIN
-  FOREACH target IN ARRAY ARRAY['nport_fixed_income_features','nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2'] LOOP
+  FOREACH target IN ARRAY ARRAY['nport_fixed_income_features','nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON %I', target);
     EXECUTE format('CREATE TRIGGER nport_fixed_income_truncate_guard BEFORE TRUNCATE ON %I FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard()', target);
   END LOOP;
