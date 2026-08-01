@@ -495,126 +495,19 @@ BEGIN
       CASE WHEN count(*) FILTER (WHERE gross IS NULL)>0 THEN NULL ELSE COALESCE(sum(gross) FILTER (WHERE normalized_state IN ('Y','YES','TRUE','N','NO','FALSE')),0)/NULLIF(sum(gross),0) END
     FROM expanded GROUP BY series_id,report_date,flag_key ON CONFLICT DO NOTHING;
 
-    WITH snapshot_holdings AS MATERIALIZED (
-      SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
-      WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
+    -- The two per-position repo/securities-lending surfaces used to be built
+    -- here. Removed 2026-07-31 by owner decision: the figures are excessively
+    -- technical for the product and were consumed by one dossier panel, which
+    -- is gone. They were also the second largest write in the build --
+    -- reported_flags alone grew ~114 MB/min and 1.9+ GB per publication, one
+    -- row per holding per flag, accumulating per publication.
+    -- The existing tables are NOT dropped: older publications still reference
+    -- them and they retire with the coverage backlog.
 
-        AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-    ), raw_flags AS (
-      SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,COALESCE('raw:'||r.raw_row_id::text,'absent:nport_securities_lending_raw:'||s.accession_number||':'||s.holding_id) source_identity_key,v.flag_key,upper(btrim(COALESCE(v.raw_state,''))) normalized_state
-      FROM snapshot_holdings s LEFT JOIN nport_securities_lending_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      CROSS JOIN LATERAL (VALUES ('is_cash_collateral',r.typed_projection->>'IS_CASH_COLLATERAL'),('is_non_cash_collateral',r.typed_projection->>'IS_NON_CASH_COLLATERAL'),('is_loan_by_fund',r.typed_projection->>'IS_LOAN_BY_FUND')) v(flag_key,raw_state)
-    ), flags AS (
-      SELECT series_id,report_date,accession_number,holding_id,raw_row_id,source_file_id,source_row_number,source_identity_key,flag_key,
-        CASE WHEN count(*) FILTER (WHERE normalized_state IN ('Y','YES','TRUE'))=count(*) AND count(*)>0 THEN 'reported_true'
-             WHEN count(*) FILTER (WHERE normalized_state IN ('N','NO','FALSE'))=count(*) AND count(*)>0 THEN 'reported_false'
-             ELSE 'not_reported' END AS reported_state
 
-      FROM raw_flags GROUP BY series_id,report_date,accession_number,holding_id,raw_row_id,source_file_id,source_row_number,source_identity_key,flag_key
-    ) INSERT INTO nport_fixed_income_repo_lending_reported_flags_v2
-      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,holding_id,source_raw_row_id,source_file_id,source_row_number,source_identity_key,flag_key,reported_state)
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,holding_id,raw_row_id,source_file_id,source_row_number,source_identity_key,flag_key,reported_state
-    FROM flags ON CONFLICT DO NOTHING;
-
-    WITH snapshot_holdings AS MATERIALIZED (
-      SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
-      WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
-        AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-
-    ), raw_values AS (
-      SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'REPURCHASE_COUNTERPARTY_ID','') source_child_id,'repurchase_counterparty' primitive_type,NULL::numeric raw_value,NULL::text currency_code,r.typed_projection->>'NAME' counterparty_name,r.typed_projection->>'LEI' counterparty_lei FROM snapshot_holdings s JOIN nport_repurchase_counterparty_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULL,'repurchase_rate',nport_fixed_income_safe_numeric(r.typed_projection->>'REPURCHASE_RATE'),NULL,NULL,NULL FROM snapshot_holdings s JOIN nport_repurchase_agreement_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'REPURCHASE_COLLATERAL_ID',''),'repurchase_collateral_principal_amount',nport_fixed_income_safe_numeric(r.typed_projection->>'PRINCIPAL_AMOUNT'),r.typed_projection->>'PRINCIPAL_CURRENCY_CODE',NULL,NULL FROM snapshot_holdings s JOIN nport_repurchase_collateral_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'REPURCHASE_COLLATERAL_ID',''),'repurchase_collateral_value',nport_fixed_income_safe_numeric(r.typed_projection->>'COLLATERAL_AMOUNT'),r.typed_projection->>'COLLATERAL_CURRENCY_CODE',NULL,NULL FROM snapshot_holdings s JOIN nport_repurchase_collateral_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'SECURITIES_LENDING_ID',''),'securities_lending_loan_value',nport_fixed_income_safe_numeric(r.typed_projection->>'LOAN_VALUE'),NULL,NULL,NULL FROM snapshot_holdings s JOIN nport_securities_lending_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'SECURITIES_LENDING_ID',''),'securities_lending_cash_collateral',nport_fixed_income_safe_numeric(r.typed_projection->>'CASH_COLLATERAL_AMOUNT'),NULL,NULL,NULL FROM snapshot_holdings s JOIN nport_securities_lending_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,s.holding_id,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'SECURITIES_LENDING_ID',''),'securities_lending_non_cash_collateral',nport_fixed_income_safe_numeric(r.typed_projection->>'NON_CASH_COLLATERAL_VALUE'),NULL,NULL,NULL FROM snapshot_holdings s JOIN nport_securities_lending_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,NULL,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'BORROW_AGGREGATE_ID',''),'borrow_aggregate_amount',nport_fixed_income_safe_numeric(r.typed_projection->>'AMOUNT'),NULL,NULL,NULL FROM (SELECT DISTINCT accession_number,series_id,report_date FROM snapshot_holdings) s JOIN nport_borrow_aggregate_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
-      UNION ALL SELECT s.series_id,s.report_date,s.accession_number,NULL,r.raw_row_id,r.source_file_id,r.source_row_number,NULLIF(r.typed_projection->>'BORROW_AGGREGATE_ID',''),'borrow_aggregate_collateral',nport_fixed_income_safe_numeric(r.typed_projection->>'COLLATERAL'),NULL,NULL,NULL FROM (SELECT DISTINCT accession_number,series_id,report_date FROM snapshot_holdings) s JOIN nport_borrow_aggregate_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
-
-    ) INSERT INTO nport_fixed_income_repo_lending_primitives_v2
-      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,source_raw_row_id,source_file_id,source_row_number,holding_id,source_child_id,primitive_type,raw_value,currency_code,counterparty_key,counterparty_name,counterparty_lei,raw_value_unit,sign_semantics)
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,raw_row_id,source_file_id,source_row_number,COALESCE(holding_id,''),source_child_id,primitive_type,raw_value,currency_code,
-      COALESCE('lei:'||NULLIF(counterparty_lei,''),'name:'||NULLIF(counterparty_name,''),'raw:'||raw_row_id::text),counterparty_name,counterparty_lei,
-      CASE WHEN primitive_type='repurchase_rate' THEN 'reported_rate' ELSE 'reported_currency_value' END,'reported_signed'
-    FROM raw_values ON CONFLICT DO NOTHING;
-
-    WITH snapshot_holdings AS MATERIALIZED (
-      SELECT h.accession_number,h.holding_id,b.series_id,h.report_date FROM sec_nport_holdings_v2 h JOIN sec_nport_instrument_class_bridge b ON (b.publication_id,b.accession_number,b.holding_id)=(h.publication_id,h.accession_number,h.holding_id)
-      WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
-
-    ), values_rows AS MATERIALIZED (
-      SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending' family,'repo.repurchase_rate' metric_key,r.typed_projection->>'REPURCHASE_RATE' raw_value,'nport_repurchase_agreement_raw' source_relation
-      FROM snapshot_holdings s LEFT JOIN nport_repurchase_agreement_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      UNION ALL
-      SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending',v.metric_key,v.raw_value,'nport_repurchase_collateral_raw'
-      FROM snapshot_holdings s LEFT JOIN nport_repurchase_collateral_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      CROSS JOIN LATERAL (VALUES ('repo.repurchase_collateral_principal_amount',r.typed_projection->>'PRINCIPAL_AMOUNT'),('repo.repurchase_collateral_value',r.typed_projection->>'COLLATERAL_AMOUNT')) v(metric_key,raw_value)
-      UNION ALL
-      SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending' family,'repo.repurchase_counterparty' metric_key,COALESCE(NULLIF(r.typed_projection->>'NAME',''),NULLIF(r.typed_projection->>'LEI','')) raw_value,'nport_repurchase_counterparty_raw' source_relation
-      FROM snapshot_holdings s LEFT JOIN nport_repurchase_counterparty_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-
-      UNION ALL
-      SELECT s.*,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending',v.metric_key,v.raw_value,'nport_securities_lending_raw'
-      FROM snapshot_holdings s LEFT JOIN nport_securities_lending_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number AND r.holding_id=s.holding_id
-      CROSS JOIN LATERAL (VALUES ('repo.securities_lending_loan_value',r.typed_projection->>'LOAN_VALUE'),('repo.securities_lending_cash_collateral',r.typed_projection->>'CASH_COLLATERAL_AMOUNT'),('repo.securities_lending_non_cash_collateral',r.typed_projection->>'NON_CASH_COLLATERAL_VALUE'),('repo.is_cash_collateral',r.typed_projection->>'IS_CASH_COLLATERAL'),('repo.is_non_cash_collateral',r.typed_projection->>'IS_NON_CASH_COLLATERAL'),('repo.is_loan_by_fund',r.typed_projection->>'IS_LOAN_BY_FUND')) v(metric_key,raw_value)
-      UNION ALL
-      SELECT s.accession_number,NULL::text holding_id,s.series_id,s.report_date,r.raw_row_id,r.source_file_id,r.source_row_number,'repo_lending',v.metric_key,v.raw_value,'nport_borrow_aggregate_raw'
-      FROM (SELECT DISTINCT accession_number,series_id,report_date FROM snapshot_holdings) s LEFT JOIN nport_borrow_aggregate_raw r ON r.ingestion_run_id=source_run_id AND r.accession_number=s.accession_number
-      CROSS JOIN LATERAL (VALUES ('repo.borrow_aggregate_amount',r.typed_projection->>'AMOUNT'),('repo.borrow_aggregate_collateral',r.typed_projection->>'COLLATERAL')) v(metric_key,raw_value)
-    ), evaluated AS (
-      SELECT *, CASE
-
-        WHEN raw_row_id IS NULL THEN 'source_row_absent'
-        WHEN raw_value IS NULL THEN 'field_missing_or_invalid'
-        WHEN metric_key LIKE 'repo.is_%' AND upper(btrim(raw_value)) IN ('Y','YES','TRUE','N','NO','FALSE') THEN 'reported_numeric'
-        WHEN metric_key LIKE 'repo.is_%' THEN 'field_missing_or_invalid'
-        WHEN metric_key <> 'repo.repurchase_counterparty' AND nport_fixed_income_safe_numeric(raw_value) IS NULL THEN 'field_missing_or_invalid'
-        ELSE 'reported_numeric'
-      END AS availability_state
-      FROM values_rows
-    ), repo_coverage AS (
-      SELECT series_id,report_date,accession_number,
-        raw_row_id AS coverage_raw_row_id,source_file_id AS coverage_source_file_id,source_row_number AS coverage_source_row_number,
-        COALESCE('raw:'||raw_row_id::text,'absent:'||source_relation||':'||accession_number||':'||COALESCE(holding_id,'')) AS coverage_identity_key,
-        family AS coverage_family,metric_key AS coverage_metric_key,
-        availability_state AS coverage_state,
-        CASE availability_state WHEN 'source_row_absent' THEN 'no_pinned_raw_source_row' WHEN 'field_missing_or_invalid' THEN 'named_field_missing_or_invalid' END AS coverage_missing_reason
-      FROM evaluated
-), coverage_rows AS MATERIALIZED (
-      SELECT * FROM repo_coverage
-    ), persisted_present AS (
-      -- Only rows that actually carry a value are materialized per position.
-      -- Absence used to be written one row per holding per metric key: 173,716
-      -- rows per snapshot, 45.6M rows, 20 GB of table plus 18 GB of primary key,
-      -- for figures the reader only ever consumes rolled up. Absence is now
-      -- COUNTED in the rollup below -- strictly more informative than a row per
-      -- absent position, and three orders of magnitude smaller.
-      INSERT INTO nport_fixed_income_metric_coverage_v2
-      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,source_raw_row_id,source_file_id,source_row_number,source_identity_key,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,missing_reason,exclusions)
-      SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_raw_row_id,coverage_source_file_id,coverage_source_row_number,coverage_identity_key,coverage_family,coverage_metric_key,
-        1,1,'source_row_and_named_field',1,'reported_numeric',NULL,'[]'::jsonb
-      FROM coverage_rows WHERE coverage_state='reported_numeric'
-      ON CONFLICT DO NOTHING
-      RETURNING 1
-    )
-    INSERT INTO nport_fixed_income_metric_coverage_snapshot_v1
-      (publication_id,source_holdings_publication_id,source_run_id,series_id,report_date,accession_number,metric_family,metric_key,numerator,denominator,denominator_unit,coverage_ratio,availability_state,methodology_version,exclusions,source_row_count,reported_row_count,missing_reason_counts)
-    SELECT target_publication_id,source_publication_id,source_run_id,series_id,report_date,accession_number,coverage_family,coverage_metric_key,
-      count(*) FILTER (WHERE coverage_state='reported_numeric'),
-      count(*),
-      'source_row_and_named_field',
-      count(*) FILTER (WHERE coverage_state='reported_numeric')::numeric/count(*),
-      CASE WHEN min(coverage_state)=max(coverage_state) THEN min(coverage_state) END,
-      'nport_fixed_income_features_v2','[]'::jsonb,
-      count(*),
-      count(*) FILTER (WHERE coverage_state='reported_numeric'),
-      jsonb_build_object(
-        'no_pinned_raw_source_row',count(*) FILTER (WHERE coverage_missing_reason='no_pinned_raw_source_row'),
-        'named_field_missing_or_invalid',count(*) FILTER (WHERE coverage_missing_reason='named_field_missing_or_invalid')
-      )
-    FROM coverage_rows
-    GROUP BY series_id,report_date,accession_number,coverage_family,coverage_metric_key
-    ON CONFLICT DO NOTHING;
+    -- The repo/securities-lending coverage family was built here. Removed with
+    -- the two surfaces it described: coverage evidence for metrics the product
+    -- no longer serves is not evidence, it is cost. It was also per-holding
+    -- across the lending/collateral/counterparty raw tables.
     RETURN inserted_count;
 END $$;

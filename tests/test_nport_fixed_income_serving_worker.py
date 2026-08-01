@@ -28,15 +28,33 @@ def test_worker_is_dispatchable_by_name() -> None:
     assert callable(module.run)
 
 
+def _identity(revision="abc1234", source="62ba191f-5dcf-4e69-b863-3e343db010c2",
+              as_of=date(2026, 7, 24), contract="sha256:aa", builder="bb") -> str:
+    return worker._publication_id(
+        revision, source, as_of, contract_digest=contract, builder_sha256=builder
+    )
+
+
 def test_publication_identity_is_deterministic_and_revision_sensitive() -> None:
-    source = "62ba191f-5dcf-4e69-b863-3e343db010c2"
-    as_of = date(2026, 7, 24)
-    first = worker._publication_id("abc1234", source, as_of)
-    assert first == worker._publication_id("abc1234", source, as_of)
+    first = _identity()
+    assert first == _identity()
     # A code change must move the identity, otherwise ``materialize`` would
     # treat an existing id as already built and silently re-serve stale rows.
-    assert first != worker._publication_id("def5678", source, as_of)
-    assert first != worker._publication_id("abc1234", source, date(2026, 7, 25))
+    assert first != _identity(revision="def5678")
+    assert first != _identity(as_of=date(2026, 7, 25))
+
+
+def test_publication_identity_does_not_depend_on_the_revision_env_var() -> None:
+    """What decides the payload must decide the identity.
+
+    With the documented ``unknown`` revision fallback, deriving identity from the
+    revision alone meant a contract or builder change produced the SAME id, so
+    the run short-circuited as already_published and the new shape was never
+    published. Our jobs do set CODE_REVISION; correctness must not depend on it.
+    """
+    unknown = _identity(revision="unknown")
+    assert unknown != _identity(revision="unknown", contract="sha256:cc")
+    assert unknown != _identity(revision="unknown", builder="dd")
 
 
 def test_code_revision_ladder_prefers_explicit_env(monkeypatch: pytest.MonkeyPatch) -> None:

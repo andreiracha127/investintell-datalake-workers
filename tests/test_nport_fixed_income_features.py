@@ -355,13 +355,6 @@ def test_fixed_income_adds_weighted_maturity_statistics_without_zero_fill():
             FROM nport_fixed_income_debt_flag_features_v2
             WHERE publication_id=%s AND series_id='SPARSE' AND flag_key='is_default'""", (features_id,))
         assert cur.fetchone() == ("not_reported", 0)
-        cur.execute("""SELECT flag_key,reported_state FROM nport_fixed_income_repo_lending_reported_flags_v2
-            WHERE publication_id=%s AND series_id='SPARSE' ORDER BY flag_key""", (features_id,))
-        assert cur.fetchall() == [
-            ("is_cash_collateral", "not_reported"),
-            ("is_loan_by_fund", "not_reported"),
-            ("is_non_cash_collateral", "not_reported"),
-        ]
         cur.execute("""SELECT reported_state,unknown_gross_market_value_position_count,gross_market_value_coverage
             FROM nport_fixed_income_debt_flag_features_v2
             WHERE publication_id=%s AND series_id='FLAG_NULL' AND flag_key='is_default'""", (features_id,))
@@ -417,11 +410,11 @@ def test_fixed_income_v2_materializes_governed_raw_facts_with_run_isolation():
             FROM nport_fixed_income_metric_coverage_snapshot_v1
             WHERE publication_id=%s AND metric_key='key_rate.dv100.3mon'""", (features_id,))
         assert cur.fetchone() == (1, 2, None, "1")
-        cur.execute("""SELECT availability_state,reported_row_count,coverage_ratio,
-                              missing_reason_counts->>'named_field_missing_or_invalid'
-            FROM nport_fixed_income_metric_coverage_snapshot_v1
-            WHERE publication_id=%s AND metric_key='repo.is_loan_by_fund'""", (features_id,))
-        assert cur.fetchone() == ("field_missing_or_invalid", 0, 0, "1")
+        # The repo/securities-lending family is no longer built, so it has no
+        # coverage either -- evidence for a metric nobody serves is not evidence.
+        cur.execute("""SELECT count(*) FROM nport_fixed_income_metric_coverage_snapshot_v1
+            WHERE publication_id=%s AND metric_family='repo_lending'""", (features_id,))
+        assert cur.fetchone() == (0,)
         cur.execute("""SELECT investment_bucket,raw_value,measurement_type
                 FROM nport_fixed_income_credit_spread_sensitivities_v2
                 WHERE publication_id=%s AND raw_value IS NOT NULL ORDER BY investment_bucket""", (features_id,))
@@ -433,19 +426,16 @@ def test_fixed_income_v2_materializes_governed_raw_facts_with_run_isolation():
         cur.execute("""SELECT flag_key,gross_market_value_coverage FROM nport_fixed_income_debt_flag_features_v2
             WHERE publication_id=%s ORDER BY flag_key""", (features_id,))
         assert ("is_default", 1) in cur.fetchall()
-        cur.execute("""SELECT primitive_type,raw_value FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s ORDER BY primitive_type""", (features_id,))
-        assert ("securities_lending_loan_value", 7) in cur.fetchall()
-        cur.execute("""SELECT source_child_id,counterparty_name FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s AND primitive_type='repurchase_counterparty' ORDER BY source_child_id""", (features_id,))
-        assert cur.fetchall() == [("CP-2", "CP TWO"), (None, "CP ONE")]
-        cur.execute("""SELECT flag_key,reported_state FROM nport_fixed_income_repo_lending_reported_flags_v2
-            WHERE publication_id=%s ORDER BY flag_key""", (features_id,))
-        assert cur.fetchall() == [
-            ("is_cash_collateral", "reported_true"),
-            ("is_loan_by_fund", "not_reported"),
-            ("is_non_cash_collateral", "reported_false"),
-        ]
+        # The repo/securities-lending raw rows above are deliberately still
+        # seeded: the build must simply ignore them now.
+        for retired in (
+            "nport_fixed_income_repo_lending_primitives_v2",
+            "nport_fixed_income_repo_lending_reported_flags_v2",
+        ):
+            cur.execute(
+                f"SELECT count(*) FROM {retired} WHERE publication_id=%s", (features_id,)
+            )
+            assert cur.fetchone() == (0,), retired
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
@@ -489,127 +479,25 @@ def test_fixed_income_v2_preserves_physical_raw_identity_and_full_coverage_state
         _publish_holdings(cur, holdings_id)
         _prepare_features_publication(cur, features_id, run_id, package_id)
         cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
-        cur.execute("""SELECT source_raw_row_id,source_file_id,source_row_number,counterparty_name
-            FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s AND primitive_type='repurchase_counterparty'
-            ORDER BY source_raw_row_id""", (features_id,))
-        facts = cur.fetchall()
-        assert len(facts) == 2
-        assert facts[0][0] != facts[1][0] and facts[0][1:] != facts[1][1:]
-        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
+        # The repo/securities-lending surfaces are no longer built: a second
+        # build over the same raw rows still writes nothing there, and the
+        # rebuild below stays idempotent without them.
         cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s AND primitive_type='repurchase_counterparty'""", (features_id,))
-        assert cur.fetchone() == (2,)
+            WHERE publication_id=%s""", (features_id,))
+        assert cur.fetchone() == (0,)
+        cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_reported_flags_v2
+            WHERE publication_id=%s""", (features_id,))
+        assert cur.fetchone() == (0,)
+        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
         # Every availability state the per-position rows used to carry is still
         # reported, per metric, by the rollup -- including the two the base
         # table no longer materializes.
         cur.execute("""SELECT metric_family,availability_state
             FROM nport_fixed_income_metric_coverage_snapshot_v1
-            WHERE publication_id=%s AND metric_key IN ('key_rate.dv01.3mon','key_rate.dv100.3mon','balance.total_assets','repo.repurchase_counterparty','repo.securities_lending_loan_value')
+            WHERE publication_id=%s AND metric_key IN ('key_rate.dv01.3mon','key_rate.dv100.3mon','balance.total_assets')
             ORDER BY metric_key""", (features_id,))
         states = {(row[0], row[1]) for row in cur.fetchall()}
         assert ('key_rate_sensitivity', 'reported_numeric') in states
         assert ('key_rate_sensitivity', 'field_missing_or_invalid') in states
         assert ('balance_sheet', 'field_missing_or_invalid') in states
-        assert ('repo_lending', 'reported_numeric') in states
-        assert ('repo_lending', 'source_row_absent') in states
-        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
-
-
-def test_fixed_income_v2_covers_all_repo_collateral_and_borrow_primitives_without_identity_loss():
-    import psycopg
-
-    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
-        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
-        _holding(cur, holdings_id, run_id, "H1", "REPO", "2026-01-31", 100,
-                 '{"ASSET_CAT":"DBT","DEBT_SECURITY":{}}')
-        _raw(cur, run_id, "INTEREST_RATE_RISK.tsv", "A1", '{"INTRST_RATE_CHANGE_3MON_DV01":"0"}')
-        _raw(cur, run_id, "REPURCHASE_AGREEMENT.tsv", "A1", '{"REPURCHASE_RATE":"0"}', holding_id="H1")
-        _raw(cur, run_id, "REPURCHASE_AGREEMENT.tsv", "A1", '{"REPURCHASE_RATE":"bad"}', holding_id="H1")
-        _raw(cur, run_id, "REPURCHASE_COLLATERAL.tsv", "A1", '{"PRINCIPAL_AMOUNT":"bad","COLLATERAL_AMOUNT":"0"}', holding_id="H1")
-        _raw(cur, run_id, "REPURCHASE_COLLATERAL.tsv", "A1", '{"PRINCIPAL_AMOUNT":"1","COLLATERAL_AMOUNT":"2"}', holding_id="H1")
-        _raw(cur, run_id, "REPURCHASE_COUNTERPARTY.tsv", "A1", '{"NAME":"counterparty"}', holding_id="H1")
-        _raw(cur, run_id, "SECURITIES_LENDING.tsv", "A1", '{"LOAN_VALUE":"5","CASH_COLLATERAL_AMOUNT":"0",'
-             '"NON_CASH_COLLATERAL_VALUE":"7","IS_CASH_COLLATERAL":"Y",'
-             '"IS_NON_CASH_COLLATERAL":"N","IS_LOAN_BY_FUND":"Y"}', holding_id="H1")
-        _raw(cur, run_id, "BORROW_AGGREGATE.tsv", "A1", '{"AMOUNT":"","COLLATERAL":"0"}')
-        _raw(cur, run_id, "BORROW_AGGREGATE.tsv", "A1", '{"AMOUNT":"3","COLLATERAL":"4"}')
-        _publish_holdings(cur, holdings_id)
-        _prepare_features_publication(cur, features_id, run_id, package_id)
-        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
-        cur.execute("""SELECT metric_key,availability_state,numerator,source_raw_row_id,missing_reason
-            FROM nport_fixed_income_metric_coverage_v2
-            WHERE publication_id=%s AND metric_key IN (
-              'repo.repurchase_rate','repo.repurchase_collateral_principal_amount',
-              'repo.repurchase_collateral_value','repo.borrow_aggregate_amount',
-              'repo.borrow_aggregate_collateral')
-            ORDER BY metric_key,source_raw_row_id""", (features_id,))
-        coverage = cur.fetchall()
-        # Reported positions keep their full physical identity in the base table.
-        assert ("repo.repurchase_rate", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert ("repo.repurchase_collateral_value", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert ("repo.borrow_aggregate_collateral", "reported_numeric", 1) in [row[:3] for row in coverage]
-        assert not [row for row in coverage if row[1] != "reported_numeric"]
-        assert len({row[3] for row in coverage if row[0] == "repo.repurchase_rate"}) == 1
-        # The mixed metrics are the ones whose positions disagree: the rollup
-        # reports no single state for them and counts what was missing.
-        cur.execute("""SELECT metric_key,availability_state,reported_row_count,source_row_count,
-                              missing_reason_counts->>'named_field_missing_or_invalid'
-            FROM nport_fixed_income_metric_coverage_snapshot_v1
-            WHERE publication_id=%s AND metric_key IN (
-              'repo.repurchase_rate','repo.repurchase_collateral_principal_amount',
-              'repo.repurchase_collateral_value','repo.borrow_aggregate_amount',
-              'repo.borrow_aggregate_collateral')
-            ORDER BY metric_key""", (features_id,))
-        rollup = {row[0]: row[1:] for row in cur.fetchall()}
-        # Nothing the per-position rows said is lost: every metric still reports
-        # how many positions carried a value, how many were evaluated, and why
-        # the rest did not.
-        for metric_key, (state, reported, total, missing) in rollup.items():
-            assert 0 <= reported <= total, metric_key
-            assert (state is None) == (0 < reported < total), metric_key
-            assert (int(missing or 0) == total - reported), metric_key
-        assert rollup["repo.repurchase_rate"] == (None, 1, 2, "1")
-        assert set(rollup) == {
-            "repo.repurchase_rate",
-            "repo.repurchase_collateral_principal_amount",
-            "repo.repurchase_collateral_value",
-            "repo.borrow_aggregate_amount",
-            "repo.borrow_aggregate_collateral",
-        }
-        cur.execute("""SELECT DISTINCT metric_key FROM nport_fixed_income_metric_coverage_snapshot_v1
-            WHERE publication_id=%s AND metric_family='repo_lending' ORDER BY metric_key""", (features_id,))
-        assert {row[0] for row in cur.fetchall()} == {
-            "repo.borrow_aggregate_amount",
-            "repo.borrow_aggregate_collateral",
-            "repo.is_cash_collateral",
-            "repo.is_loan_by_fund",
-            "repo.is_non_cash_collateral",
-            "repo.repurchase_collateral_principal_amount",
-            "repo.repurchase_collateral_value",
-            "repo.repurchase_counterparty",
-            "repo.repurchase_rate",
-            "repo.securities_lending_cash_collateral",
-            "repo.securities_lending_loan_value",
-            "repo.securities_lending_non_cash_collateral",
-        }
-        cur.execute("""SELECT primitive_type,count(*),count(DISTINCT source_raw_row_id)
-            FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s AND primitive_type IN (
-              'repurchase_rate','repurchase_collateral_principal_amount',
-              'repurchase_collateral_value','borrow_aggregate_amount','borrow_aggregate_collateral')
-            GROUP BY primitive_type ORDER BY primitive_type""", (features_id,))
-        assert cur.fetchall() == [
-            ("borrow_aggregate_amount", 2, 2),
-            ("borrow_aggregate_collateral", 2, 2),
-            ("repurchase_collateral_principal_amount", 2, 2),
-            ("repurchase_collateral_value", 2, 2),
-            ("repurchase_rate", 2, 2),
-        ]
-        cur.execute("SELECT build_nport_fixed_income_features(%s,'2026-06-30')", (features_id,))
-        cur.execute("""SELECT count(*) FROM nport_fixed_income_repo_lending_primitives_v2
-            WHERE publication_id=%s AND primitive_type IN (
-              'repurchase_rate','repurchase_collateral_principal_amount',
-              'repurchase_collateral_value','borrow_aggregate_amount','borrow_aggregate_collateral')""", (features_id,))
-        assert cur.fetchone() == (10,)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

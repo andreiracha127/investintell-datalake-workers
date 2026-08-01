@@ -240,7 +240,7 @@ def test_manifest_is_canonical_and_tamper_evident(tmp_path: Path) -> None:
             source_package_id="d5b103ed-72a1-4601-bdcf-0ea0b873787b",
             target_publication_id="4c9f5552-3b57-40cf-882d-e574174fa1c5",
             as_of_date="2026-07-24",
-            contract_digest="sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563",
+            contract_digest=materializer.CONTRACT_DIGEST,
         ),
         worker_sha="a" * 40,
         source_files={name: payload for name in materializer.SOURCE_RELATIONS},
@@ -322,7 +322,7 @@ def test_manifest_declares_every_published_payload_deterministically(
         source_package_id="d5b103ed-72a1-4601-bdcf-0ea0b873787b",
         target_publication_id="4c9f5552-3b57-40cf-882d-e574174fa1c5",
         as_of_date="2026-07-24",
-        contract_digest="sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563",
+        contract_digest=materializer.CONTRACT_DIGEST,
     )
     payloads = {}
     for relation in materializer.PUBLISHED_RELATIONS:
@@ -353,11 +353,14 @@ def test_multi_referenced_oracle_ctes_are_materialized() -> None:
     """Every CTE the oracle reads more than once must be AS MATERIALIZED.
 
     PostgreSQL inlines a single-reference CTE by default, so without this the
-    snapshot_holdings join over 4.1M holdings is re-executed once per UNION ALL
-    branch — nine times inside the repo/lending statement alone.
+    holdings join over 4.1M rows is re-executed once per UNION ALL branch.
+
+    ``snapshot_holdings`` left this list with the repo/securities-lending
+    statements it existed for: those were the nine-branch UNION ALL this guard
+    was written about, and they are no longer built.
     """
-    sql_text = materializer.LOCAL_ORACLE_PATH.read_text(encoding="utf-8")
-    for name in ("snapshot_holdings", "snapshot_filings", "values_rows",
+    sql_text = materializer.BUILDER_SQL_PATH.read_text(encoding="utf-8")
+    for name in ("snapshot_filings", "values_rows", "coverage_rows",
                  "positions", "source_rows", "debt"):
         reads = sql_text.count(f"FROM {name}") + sql_text.count(f"JOIN {name}")
         assert reads > 1, f"{name} is no longer multi-referenced; revisit this guard"
@@ -491,3 +494,30 @@ def test_artifact_without_the_rollup_payload_is_rejected(tmp_path: Path) -> None
             ),
             output_counts={name: 1 for name in without_rollup},
         )
+
+
+def test_a_format_label_describes_artifacts_that_exist_and_is_never_reused() -> None:
+    """``/v3`` was emitted into production before this branch changed the shape.
+
+    Publication a42e5032 was promoted on 2026-07-31 by the code merged as #77:
+    nine payloads (the v2 contract's eight plus the rollup), the v2 contract
+    digest, and the wave-3b builder. Re-pointing ``/v3`` at the new shape would
+    have made that artifact unrestorable, so the new shape took a new label.
+    """
+    relations, oracle, contract = materializer._MANIFEST_FORMATS[
+        materializer.PRIOR_MANIFEST_FORMAT
+    ]
+    assert len(relations) == 9
+    assert materializer.COVERAGE_ROLLUP_RELATION in relations
+    assert "nport_fixed_income_repo_lending_reported_flags_v2" in relations
+    assert oracle == materializer.PRIOR_ORACLE_SHA256
+    assert contract == materializer.LEGACY_CONTRACT_DIGEST
+
+    # The label this branch produces is a different one.
+    assert materializer.MANIFEST_FORMAT.endswith("/v4")
+    assert materializer.MANIFEST_FORMAT not in {
+        materializer.PRIOR_MANIFEST_FORMAT,
+        materializer.LEGACY_MANIFEST_FORMAT,
+    }
+    # /v3 already ships a rollup payload; only /v2 needs one derived.
+    assert materializer._DERIVE_ROLLUP_FORMATS == {materializer.LEGACY_MANIFEST_FORMAT}

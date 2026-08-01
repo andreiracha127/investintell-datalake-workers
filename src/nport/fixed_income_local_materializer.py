@@ -37,12 +37,18 @@ from psycopg import sql
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = (
-    ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
+    ROOT / "contracts" / "nport-fixed-income-features" / "v3" / "contract.json"
 )
 BUILDER_SQL_PATH = ROOT / "src" / "nport" / "sql" / "nport_fixed_income_features_builder.sql"
 # Historical alias: the resource used to live under ``sql/local_only`` and was
 # reachable only from the offline route.  Same bytes, same sha256 pin.
 LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
+# Re-approved 2026-07-31 (second): the two per-position repo/securities-lending
+# surfaces and their coverage family are gone. Owner decision -- the figures are
+# excessively technical for the product, and the one dossier panel that read
+# them was removed. reported_flags alone was the second largest write in the
+# build (~114 MB/min, 1.9+ GB per publication, one row per holding per flag).
+#
 # Re-approved 2026-07-31: coverage stops materializing absence per position.
 # The debut production build was cancelled after 2h+ of CPU; the dominant cost
 # was one coverage row per holding per metric key -- 173,716 rows per snapshot,
@@ -55,18 +61,25 @@ LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
 # is a planner directive only — the rows the oracle produces are unchanged.
-APPROVED_LOCAL_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
+APPROVED_LOCAL_ORACLE_SHA256 = "70703b7ae07c6affb829b354456f4995597cbb58c22798ff9c7590cffb976207"
 CONTRACT_DIGEST = (
+    "sha256:5072aa4260f52196890288371651a6aa9280686b7325022908d2e892068f4bd0"
+)
+# The contract digest a FROZEN v2 bundle carries. A restore has to validate
+# against the digest of its own contract version, not the current one: a v2
+# artifact was built and attested under v2, and demanding the v3 digest would
+# make every pre-migration bundle unrecoverable -- the exact compatibility the
+# legacy manifest path exists to preserve.
+LEGACY_CONTRACT_DIGEST = (
     "sha256:797332a98c62c3843ea1f870a61dca3c67fe5a4bd012aa7d978913ca120be563"
 )
+ACCEPTED_CONTRACT_DIGESTS = frozenset({CONTRACT_DIGEST, LEGACY_CONTRACT_DIGEST})
 TARGET_RELATIONS = (
     "nport_fixed_income_features",
     "nport_fixed_income_key_rate_sensitivities_v2",
     "nport_fixed_income_credit_spread_sensitivities_v2",
     "nport_fixed_income_balance_sheet_primitives_v2",
     "nport_fixed_income_debt_flag_features_v2",
-    "nport_fixed_income_repo_lending_primitives_v2",
-    "nport_fixed_income_repo_lending_reported_flags_v2",
     "nport_fixed_income_metric_coverage_v2",
 )
 # The fund x metric coverage rollup. It is NOT a contract relation -- the frozen
@@ -92,18 +105,43 @@ COVERAGE_ROLLUP_KEYS = (
 # rollup. Every artifact/manifest invariant below is stated over THIS tuple.
 PUBLISHED_RELATIONS = (*TARGET_RELATIONS, COVERAGE_ROLLUP_RELATION)
 
-MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v3"
-# Frozen artifacts built before the coverage change are still restorable. Their
-# manifest attests eight payloads and the previous builder sha; their coverage
-# payload carries the absence rows the new one does not, so the rollup can be
-# derived from it at publish time (see ``_derive_rollup_from_coverage``).
-# Accepting the legacy oracle hash is scoped to that format and nothing else.
+# A format label is a fact about artifacts that EXIST, never a version number to
+# reuse. ``/v3`` was already emitted into production -- publication a42e5032 was
+# promoted on 2026-07-31 by the code merged as #77 -- so its meaning is fixed:
+# nine payloads, the v2 contract digest, and the wave-3b builder. The shape this
+# branch produces is therefore a NEW label.
+MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v4"
+# Frozen artifacts remain restorable, each against the contract, builder and
+# payload set IT was attested under. Their coverage payload carries absence rows
+# the current builder does not write, so their rollup is derived at publish time
+# (see ``_derive_rollup_from_coverage``) when the format predates it.
 LEGACY_MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v2"
+PRIOR_MANIFEST_FORMAT = "nport-fixed-income-local-postgres/v3"
 LEGACY_ORACLE_SHA256 = "7a6ca642fd44302a92a52d146fc89afd7bca75451cf683b8d2f97194e974610c"
-_MANIFEST_FORMATS: dict[str, tuple[tuple[str, ...], str]] = {
-    MANIFEST_FORMAT: (PUBLISHED_RELATIONS, APPROVED_LOCAL_ORACLE_SHA256),
-    LEGACY_MANIFEST_FORMAT: (TARGET_RELATIONS, LEGACY_ORACLE_SHA256),
+# The builder that produced the /v3 artifacts now in production: coverage absence
+# already rolled up, repo/lending still built.
+PRIOR_ORACLE_SHA256 = "5bbf9116faec249b13cd092b9278b22f46fea6a3e86a8a1e1ca7d69112429831"
+# A v2 artifact carries the eight relations of the v2 contract, including the two
+# per-position repo/securities-lending surfaces this product no longer builds.
+# They are still COPYable into their (retained) tables: restoring a frozen bundle
+# means restoring what it froze.
+LEGACY_RELATIONS = (
+    *TARGET_RELATIONS,
+    "nport_fixed_income_repo_lending_primitives_v2",
+    "nport_fixed_income_repo_lending_reported_flags_v2",
+)
+# /v3 is /v2's eight plus the rollup: the shape production is serving right now.
+PRIOR_RELATIONS = (*LEGACY_RELATIONS, COVERAGE_ROLLUP_RELATION)
+# format -> (payload set, builder sha, contract digest) as ATTESTED by artifacts
+# of that format. Each row is a historical fact; only the first is produced now.
+_MANIFEST_FORMATS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    MANIFEST_FORMAT: (PUBLISHED_RELATIONS, APPROVED_LOCAL_ORACLE_SHA256, CONTRACT_DIGEST),
+    PRIOR_MANIFEST_FORMAT: (PRIOR_RELATIONS, PRIOR_ORACLE_SHA256, LEGACY_CONTRACT_DIGEST),
+    LEGACY_MANIFEST_FORMAT: (LEGACY_RELATIONS, LEGACY_ORACLE_SHA256, LEGACY_CONTRACT_DIGEST),
 }
+# Formats whose coverage payload still carries absence per position, so their
+# rollup can be derived from it. /v3 already ships a rollup payload.
+_DERIVE_ROLLUP_FORMATS = frozenset({LEGACY_MANIFEST_FORMAT})
 
 
 def manifest_relations(manifest: Mapping[str, Any]) -> tuple[str, ...]:
@@ -152,7 +190,10 @@ class BuildIdentity:
         ):
             uuid.UUID(value)
         date.fromisoformat(self.as_of_date)
-        if self.contract_digest != CONTRACT_DIGEST:
+        if self.contract_digest not in ACCEPTED_CONTRACT_DIGESTS:
+            # Either the contract this build was produced under, or the frozen v2
+            # one a restorable legacy bundle carries. verify_manifest pins WHICH
+            # of the two is legal for a given artifact format.
             raise ArtifactIntegrityError("unexpected fixed-income contract digest")
 
 
@@ -290,9 +331,45 @@ def _contract_columns() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _legacy_contract() -> dict[str, Any]:
+    """The frozen v2 contract, still versioned in the repo, digest-verified."""
+    path = ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if document.get("digest") != LEGACY_CONTRACT_DIGEST:
+        raise ArtifactIntegrityError("frozen v2 contract digest mismatch")
+    return document
+
+
+def _legacy_relation_shapes() -> dict[str, tuple[tuple[str, ...], tuple[str, ...]]]:
+    """Columns and keys of the two relations only a v2 bundle still carries.
+
+    Read from the v2 contract rather than hardcoded: it is the document that
+    attested those payloads, it is still in the repo, and it is digest-verified
+    before use.
+    """
+    retired = set(LEGACY_RELATIONS) - set(TARGET_RELATIONS)
+    return {
+        relation["name"]: (
+            tuple(column["name"] for column in relation["columns"]),
+            tuple(relation["keys"]),
+        )
+        for relation in _legacy_contract()["relations"]
+        if relation["name"] in retired
+    }
+
+
 def _published_columns() -> dict[str, tuple[str, ...]]:
-    """Contract columns, plus the rollup's own (it has no contract entry)."""
-    return {**_contract_columns(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_COLUMNS}
+    """Contract columns, plus the rollup's own, plus the retired v2 relations.
+
+    The retired ones are read from the database catalogue, not the contract: the
+    current contract no longer describes them, and a v2 restore still has to
+    place their payload in the tables that remain.
+    """
+    return {
+        **_contract_columns(),
+        COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_COLUMNS,
+        **{name: cols for name, (cols, _keys) in _legacy_relation_shapes().items()},
+    }
 
 
 def _contract_keys() -> dict[str, tuple[str, ...]]:
@@ -300,7 +377,11 @@ def _contract_keys() -> dict[str, tuple[str, ...]]:
 
 
 def _published_keys() -> dict[str, tuple[str, ...]]:
-    return {**_contract_keys(), COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_KEYS}
+    return {
+        **_contract_keys(),
+        COVERAGE_ROLLUP_RELATION: COVERAGE_ROLLUP_KEYS,
+        **{name: keys for name, (_cols, keys) in _legacy_relation_shapes().items()},
+    }
 
 
 def _set_client_safe_timeouts(
@@ -954,15 +1035,17 @@ def verify_manifest(
     ):
         raise ArtifactIntegrityError("manifest hash mismatch")
     relations = manifest_relations(manifest)
-    approved_oracle = _MANIFEST_FORMATS[str(manifest["format"])][1]
+    _, approved_oracle, approved_contract = _MANIFEST_FORMATS[str(manifest["format"])]
     manifest_identity = manifest.get("identity")
     if not isinstance(manifest_identity, Mapping):
         raise ArtifactIntegrityError("manifest identity is missing")
     BuildIdentity(**manifest_identity).validate()
     if identity and manifest_identity != asdict(identity):
         raise ArtifactIntegrityError("manifest identity mismatch")
-    if manifest.get("contract_digest") != CONTRACT_DIGEST:
+    if manifest.get("contract_digest") != approved_contract:
         raise ArtifactIntegrityError("manifest contract digest mismatch")
+    if manifest_identity.get("contract_digest") != approved_contract:
+        raise ArtifactIntegrityError("manifest identity contract digest mismatch")
     worker_sha = manifest.get("worker_sha")
     if not isinstance(worker_sha, str) or len(worker_sha) not in (40, 64) or any(
         char not in "0123456789abcdef" for char in worker_sha
@@ -1275,7 +1358,9 @@ def publish_artifact(
         )
         for relation, path in files.items():
             quoted = ",".join(f'"{name}"' for name in columns[relation])
-            stage = f"nport_fi_stage_{PUBLISHED_RELATIONS.index(relation)}"
+            # Index within THIS artifact's relation set: a legacy bundle carries
+            # two relations the current set does not.
+            stage = f"nport_fi_stage_{relations.index(relation)}"
             cursor.execute(
                 f"CREATE TEMP TABLE {stage} AS SELECT {quoted} FROM {relation} WITH NO DATA"
             )
@@ -1315,7 +1400,7 @@ def publish_artifact(
             "INSERT INTO nport_fixed_income_publication_manifests(publication_id,manifest_sha256,manifest) VALUES(%s,%s,%s::jsonb)",
             (identity.target_publication_id, manifest_hash, canonical_json(manifest)),
         )
-        if manifest["format"] == LEGACY_MANIFEST_FORMAT:
+        if manifest["format"] in _DERIVE_ROLLUP_FORMATS:
             _derive_rollup_from_coverage(cursor, identity.target_publication_id)
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
