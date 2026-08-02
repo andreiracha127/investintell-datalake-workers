@@ -66,6 +66,7 @@ jobs:
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
+          src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
           src/workers/rr1_derived_profiles.py
@@ -225,6 +226,7 @@ jobs:
           src/workers/daily_publication_chain.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
+          src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
           src/workers/rr1_derived_profiles.py
@@ -254,6 +256,7 @@ jobs:
             tests/test_nport_composition_features.py
             tests/test_nport_fixed_income_features.py
             tests/test_nport_fixed_income_serving_worker.py
+            tests/test_nport_holdings_identity_freshness.py
             tests/test_nport_holdings_v2.py
             tests/test_nport_ingestion.py
             tests/test_nport_v2_lookthrough.py
@@ -326,6 +329,7 @@ jobs:
             tests/test_ncen_effective_views.py
             tests/test_nport_fixed_income_features.py
             tests/test_nport_fixed_income_serving_worker.py
+            tests/test_nport_holdings_identity_freshness.py
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
             tests/test_open_macro_v03_resolution_ledger.py
