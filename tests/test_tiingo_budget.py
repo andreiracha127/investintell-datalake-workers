@@ -1,12 +1,13 @@
 """Guards for the account-wide Tiingo request budget.
 
 The 2026-08-02 incident: ``eod_prices_warmer`` paced its own ``TokenBucket`` at
-25 req/s (90k req/h) against a 10k req/h account cap. It drained the whole hourly
-budget in ~6min40s, the 30x429 breaker aborted it "cleanly" (exit 0 -> Railway
-SUCCESS), and every other Tiingo consumer that ran inside the same rolling hour --
-credit_regime, regime_composite, regime_gate at 07:0x UTC -- got 429s that
-``_get_bars`` masks as an empty list, surfacing as "Tiingo returned empty history".
-The regime chain sat stale for five days while every card stayed green.
+25 req/s (90k req/h) against an account cap of 10k req/h on the current key, and
+lower still on the key live at the time. It drained the hourly budget in minutes,
+the 30x429 breaker aborted it "cleanly" (exit 0 -> Railway SUCCESS), and every
+other Tiingo consumer that ran inside the same rolling hour -- credit_regime,
+regime_composite, regime_gate at 07:0x UTC -- got 429s that ``_get_bars`` masks as
+an empty list, surfacing as "Tiingo returned empty history". The regime chain sat
+stale for five days while every card stayed green.
 
 Two independent things have to hold so that cannot repeat: no caller may pace
 above the account budget, and a run that aborts on the budget must not report
@@ -21,6 +22,7 @@ import pytest
 
 from src.workers._tiingo import (
     DEFAULT_RATE_PER_S,
+    TIINGO_MAX_REQUESTS_PER_DAY,
     TIINGO_MAX_REQUESTS_PER_HOUR,
     TiingoClient,
     TokenBucket,
@@ -29,8 +31,17 @@ from src.workers._tiingo import (
 
 # ── the budget itself ────────────────────────────────────────────────────────
 def test_documented_budget_matches_the_account_plan():
-    """10k req/h is the plan's ceiling, not a guess — keep it pinned."""
+    """Pinned against the provider's own usage dashboard for the key in use:
+    10,000 requests/hour, 100,000/day (40 GB/month is not modelled here — the
+    workers fetch incrementally off a watermark, so requests bind first).
+
+    This is a property of the *plan behind the key*, not of the API. The key was
+    rotated 2026-08-02 onto a higher tier than the one that was live during the
+    incident; a future rotation onto a different tier must update the constant,
+    or the guard silently authorises the next starvation.
+    """
     assert TIINGO_MAX_REQUESTS_PER_HOUR == 10_000
+    assert TIINGO_MAX_REQUESTS_PER_DAY == 100_000
 
 
 def test_default_rate_stays_under_the_hourly_budget():

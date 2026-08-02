@@ -18,14 +18,22 @@ single greedy worker starves every other consumer for the rest of the rolling
 hour. That is not hypothetical — the earlier "empirically verified 2026-06-12
 (150 requests in 2.9s, zero 429)" note measured a *burst*, which says nothing
 about an hourly ceiling, and on its strength ``eod_prices_warmer`` paced itself
-at 25 req/s (90k req/h). It drained the whole hourly budget in ~6min40s every
-morning; the regime workers that ran inside the same rolling hour then saw only
-429s, which ``_get_bars`` masks as ``[]``, and the regime chain sat stale for
-five days. Hence the guard in ``TiingoClient``: pacing slower than the default is
-always fine, pacing faster than the account is a bug, so it fails loudly at
-construction rather than silently at someone else's expense. (The guard lives on
-the client, not on ``TokenBucket`` — the bucket is provider-agnostic and also
-paces EODHD, Yahoo and OpenFIGI, which have their own, different limits.)
+at 25 req/s (90k req/h). It drained the hourly budget every morning; the regime
+workers that ran inside the same rolling hour then saw only 429s, which
+``_get_bars`` masks as ``[]``, and the regime chain sat stale for five days.
+
+Note the incident ran on the *previous* API key, whose tier was well below the
+10k req/h pinned here — so 25 req/s overshot by even more than 9x and drained the
+budget in well under the ~6min40s that 10k/25 would suggest. The key was rotated
+2026-08-02; ``TIINGO_MAX_REQUESTS_PER_HOUR`` tracks the plan of the key currently
+in use and has to be revisited whenever the key or tier changes, since the guard
+below is only as honest as this number.
+
+Hence the guard in ``TiingoClient``: pacing slower than the default is always
+fine, pacing faster than the account is a bug, so it fails loudly at construction
+rather than silently at someone else's expense. (The guard lives on the client,
+not on ``TokenBucket`` — the bucket is provider-agnostic and also paces EODHD,
+Yahoo and OpenFIGI, which have their own, different limits.)
 """
 
 from __future__ import annotations
@@ -39,7 +47,10 @@ TIINGO_BASE_URL = "https://api.tiingo.com"
 MAX_CONSECUTIVE_429 = 30
 _RETRY_SLEEPS = (1.0, 4.0, 16.0)
 
-# Account plan ceilings (Power tier). Shared across every worker in the fleet.
+# Account plan ceilings, shared across every worker in the fleet. These track the
+# plan of the key in TIINGO_API_KEY (Power tier, key rotated 2026-08-02) — NOT a
+# property of the API. Rotating to a key on a different tier makes the guard below
+# lie in whichever direction the tier moved, so update these with the key.
 TIINGO_MAX_REQUESTS_PER_HOUR = 10_000
 TIINGO_MAX_REQUESTS_PER_DAY = 100_000
 # 2.5 req/s ≈ 9k req/h — just under the hourly ceiling, leaving headroom for the

@@ -43,10 +43,13 @@ WATERMARK_OVERLAP_DAYS = 5    # re-fetch the last few days to absorb provider re
 NEW_TICKER_LOOKBACK_DAYS = 745  # covers screener beta_2y lookback on cold tickers
 
 # Tiingo pacing — the shared account budget, not a per-worker one. The previous
-# 25 req/s "fast lane" was 90k req/h against a 10k req/h ceiling: it finished the
-# sweep in ~90s by spending the whole fleet's hourly budget in ~6min40s, and the
-# regime workers that ran inside the same rolling hour got nothing but 429s. A
-# slower sweep on a daily cron costs nothing; starving every other consumer does.
+# 25 req/s "fast lane" was 90k req/h against a ceiling of 10k req/h on today's key
+# and lower still on the one live during the incident: it finished the sweep in
+# ~90s by spending the fleet's whole hourly budget, and the regime workers that ran
+# inside the same rolling hour got nothing but 429s. A slower sweep on a daily cron
+# costs nothing; starving every other consumer does. The full sweep is ~5.4k
+# tickers, so pair this with WORKER_LIMIT + a multi-hour cron to keep each run a
+# fraction of the budget instead of most of it.
 FETCH_RATE_PER_S = DEFAULT_RATE_PER_S
 FETCH_BURST = 20.0
 PROGRESS_EVERY = 500  # emit a heartbeat log every N tickers (observability)
