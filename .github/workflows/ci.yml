@@ -235,6 +235,7 @@ jobs:
         run: |
           set -euo pipefail
           tests=(
+            tests/test_fixed_income_local_materializer.py
             tests/test_fixed_income_publication_closure.py
             tests/test_sec_effective_matviews.py
             tests/test_open_macro_v03_prefix_checkpoint.py
@@ -306,6 +307,7 @@ jobs:
             tests/test_sec_source_manifests.py
           )
           db_tests=(
+            tests/test_fixed_income_local_materializer.py
             tests/test_fixed_income_publication_closure.py
             tests/test_sec_effective_matviews.py
             tests/test_open_macro_v03_prefix_checkpoint.py

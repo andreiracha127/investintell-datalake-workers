@@ -4,6 +4,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -217,6 +218,52 @@ def test_postgres18_cli_pipeline_exports_eight_files_and_rolls_back_publish(
         with psycopg.connect(admin_dsn, autocommit=True) as connection:
             connection.execute(f'DROP DATABASE IF EXISTS "nport_local_source_{suffix}" WITH (FORCE)')
             connection.execute(f'DROP DATABASE IF EXISTS "nport_local_compute_{suffix}" WITH (FORCE)')
+
+
+def test_the_completeness_gate_covers_exactly_the_published_relations() -> None:
+    """A seventh relation must not be able to join the product without a gate.
+
+    ``nport_fixed_income_assert_publication_complete`` names its relation set in
+    SQL, so nothing in Python fails when a relation is added to
+    ``PUBLISHED_RELATIONS`` and not to the array: the new relation would simply
+    never be checked, and could regress to zero exactly the way the raw-derived
+    four did on 2026-08-01. This pins the two lists to each other.
+
+    The retired repo/securities-lending relations are deliberately outside BOTH
+    lists: they are empty by owner decision since 2026-07-31.
+    """
+    schema = (
+        Path(__file__).resolve().parents[1] / "schemas" / "nport_fixed_income_features.sql"
+    ).read_text(encoding="utf-8")
+    body = schema[schema.index("CREATE OR REPLACE FUNCTION nport_fixed_income_assert_publication_complete"):]
+    array = body[body.index("FOREACH relation IN ARRAY ARRAY["):]
+    array = array[: array.index("]")]
+    gated = set(re.findall(r"'([a-z0-9_]+)'", array))
+
+    assert gated == set(materializer.PUBLISHED_RELATIONS)
+    assert set(materializer.TARGET_RELATIONS) < gated
+    assert materializer.COVERAGE_ROLLUP_RELATION in gated
+    for retired in (
+        "nport_fixed_income_repo_lending_primitives_v2",
+        "nport_fixed_income_repo_lending_reported_flags_v2",
+    ):
+        assert retired not in gated
+
+
+def test_the_publish_cli_applies_the_product_ddl_before_publishing() -> None:
+    """The DDL is a prerequisite of publishing, not an ambient assumption.
+
+    ``publish_artifact`` calls a function defined in
+    schemas/nport_fixed_income_features.sql, so a restore into a database that
+    never had it applied fails with 42883 instead of publishing.
+    """
+    cli = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "materialize_nport_fixed_income_local.py"
+    ).read_text(encoding="utf-8")
+    assert cli.index("install_product_schema(cursor)") < cli.index("publish_artifact(")
+    assert materializer.PRODUCT_SCHEMA_PATH.is_file()
 
 
 def test_manifest_is_canonical_and_tamper_evident(tmp_path: Path) -> None:
