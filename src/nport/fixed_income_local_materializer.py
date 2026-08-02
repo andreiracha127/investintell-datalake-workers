@@ -447,6 +447,25 @@ def _assert_oracle_resource() -> None:
         raise ArtifactIntegrityError("fixed-income builder SQL is not the approved version")
 
 
+PRODUCT_SCHEMA_PATH = ROOT / "schemas" / "nport_fixed_income_features.sql"
+
+
+def install_product_schema(cursor: Any) -> None:
+    """Apply the product DDL: tables, guards, current views, completeness gate.
+
+    Idempotent by construction (``CREATE TABLE IF NOT EXISTS`` / ``CREATE OR
+    REPLACE``) and deliberately shared by both producers. The artifact route used
+    to assume the DDL was already there, which was true only as long as the DDL
+    contained nothing the route CALLS; the family-completeness assertion made
+    that assumption load-bearing, and a restore into a database without it would
+    fail with 42883 instead of publishing.
+
+    Note that this installs the DDL and NOT the builder: ``publish_artifact``
+    copies an attested payload and must never be able to invoke the builder.
+    """
+    cursor.execute(PRODUCT_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
 def install_builder(cursor: Any) -> str:
     """Install the pinned ``build_nport_fixed_income_features`` into the target DB.
 
