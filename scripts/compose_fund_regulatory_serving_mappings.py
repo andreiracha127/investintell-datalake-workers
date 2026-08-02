@@ -43,6 +43,7 @@ if str(ROOT) not in sys.path:
 from src.db import connect  # noqa: E402
 from src.sec_serving.app_composition import (  # noqa: E402
     CompositionError,
+    GateFailed,
     GateThresholds,
     compose,
     current_pointer,
@@ -142,14 +143,17 @@ def main(argv: list[str] | None = None) -> int:
 
             base_app_id = UUID(args.base_app_publication_id) if args.base_app_publication_id else None
             result = compose(conn, base_app_id=base_app_id, thresholds=thresholds, promote=args.promote)
+    except GateFailed as exc:
+        # The gate rejected the composition; print the same report a successful
+        # run prints so the operator sees WHICH metric regressed.
+        _print_report(exc.result.as_dict(), as_json=args.json)
+        print("gate failed: nothing was validated and the app pointer did not move", file=sys.stderr)
+        return 1
     except CompositionError as exc:
         print(f"composition failed: {exc}", file=sys.stderr)
         return 1
 
     _print_report(result.as_dict(), as_json=args.json)
-    if not result.gate.ok:
-        print("gate failed: nothing was validated and the app pointer did not move", file=sys.stderr)
-        return 1
     if args.promote and not result.promoted:
         print("promotion did not take effect", file=sys.stderr)
         return 1

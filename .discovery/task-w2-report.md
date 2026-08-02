@@ -171,3 +171,45 @@ Cobertura:
 5. **`operating_v` publica só 3 610 de 7 375** — o resto é `source_filing_unavailable`, ou seja, falta de perfil N-CEN, não de mapping. Fora do escopo desta task, mas é o próximo teto do dossiê.
 6. **A verificação sec-api só cobre 30 das 50 séries amostradas** (15 omitem a lista via `includeAllClassesFlag`, 5 sem filing). Concordância é 100 % sobre o que é comparável; ela não é, e não pode ser, prova de atribuição ticker→classe.
 7. **`fund_classes_latest_mv` / `sec_fund_classes` seguem envenenadas** para qualquer outro consumidor (11 773 linhas com series id no campo `class_id`). Este composer as evita; um follow-up separado deveria auditar quem mais as lê.
+
+---
+
+## 7. Dívidas conhecidas
+
+Registradas aqui como dívida escrita (decisão do fix round: documentar, não codar agora).
+
+### D1 — o universo de instrumentos é re-projetado da publicação base, com INNER JOIN em `instrument_identity`
+
+`CASCADE_SQL` parte de `fund_regulatory_serving_instrument_mappings WHERE app_publication_id = :base_app` e faz `JOIN instrument_identity ii ON ii.instrument_id = m.instrument_id`. Consequências:
+
+- **(a) Não há caminho de bootstrap.** Instrumento que entrou no app depois de a publicação base ter sido composta **não** é incorporado: o composer herda o universo, não o descobre. Hoje isso é aceitável porque a base v1 cobre os 7 375 instrumentos do produto, mas na primeira vez que o app ganhar instrumentos novos será preciso um passo de descoberta (projetar de `instrument_identity` ∩ universo do app, em vez de da publicação anterior) — e esse passo muda o universo, então precisa vir com o `--expect-mappings` novo e explícito.
+- **(b) Instrumento presente na base mas ausente de `instrument_identity` some silenciosamente.** O INNER JOIN o descarta sem erro.
+
+**O que fecha isso hoje:** apenas o piso de **igualdade exata** da contagem de mappings no gate (`GateThresholds.mappings`, default 7 375). É a única métrica do gate que é `==` e não `>=`, exatamente por isso: uma queda silenciosa aparece como divergência de contagem e aborta a composição antes de qualquer validação. `--expect-mappings` desliga essa proteção — existe para uma mudança **deliberada** de universo, não para "fazer passar". O comentário correspondente está no próprio `CASCADE_SQL`, junto do JOIN.
+
+**Trabalho futuro:** promover a descoberta de universo a passo próprio, com sua própria métrica de gate (delta de universo esperado vs. medido), em vez de depender de uma igualdade hardcoded.
+
+### D2 — Desenho B: repin do worker para a v6, como app v3
+
+O app segue pinado em `sec_regulatory_serving_v1` **v1** (2026-07-23) enquanto o worker está na **v6** (2026-07-31). O Desenho A resolveu só o `class_id` de propósito: uma variável por flip, para o A/B ser diagnóstico. A dívida do repin fica aberta:
+
+- fazer como **v3**, com esta v2 de baseline;
+- exige revalidar que existe artifact `regulatory_mandate` `validated` correspondente à v6;
+- o composer hoje **herda** os pins de artifact da base — ele não os re-resolve. O repin precisa de um modo novo (ex.: `--repin product=publication_id`) ou de uma base preparada externamente;
+- a v6 traz de volta as 8 famílias N-CEN aposentadas; o skip de `fund_regulatory_serving_families.py` cobre isso desde a Task 5, mas é código recém-mudado — mais uma razão para o repin ser um flip separado.
+
+### D3 — `POISONED_CLASS_SOURCES` é constante documental, não é executada
+
+A constante existe para nomear as relações envenenadas no código, e a guarda de teste inspeciona `CASCADE_SQL` diretamente (`"sec_fund_classes" not in ...`), não a constante. Ou seja: acrescentar um nome à constante hoje **não** cria proteção nova. Follow-up (minor, parked no ledger do orquestrador): fazer a guarda iterar sobre `POISONED_CLASS_SOURCES` e cobrir todo o SQL do módulo, não só `CASCADE_SQL`.
+
+---
+
+## 8. Fix round pós-revisão (2026-08-02)
+
+O reviewer aprovou a substância (cascata, gate, idempotência recomputada, estado do espelho confirmado por SQL próprio). Três correções mecânicas aplicadas:
+
+1. **`ci.yml` reescrito LF→CRLF.** O patch em Python tinha reescrito o arquivo inteiro com tradução de newline do Windows: 683+/677− para 6 linhas reais. Arquivo normalizado de volta para LF preservando as 6 linhas; `git diff --stat` agora mostra **6 insertions, 0 deletions** (os 2 scripts no `compileall` dos dois jobs + a suíte nos arrays `tests` e `db_tests`).
+2. **Contrato de `compose()`.** A docstring prometia "rolls back and raises" enquanto o código devolvia `CompositionResult` com `gate.ok=False`. Escolhido o **raise**: nova exceção `GateFailed(CompositionError)` que carrega o `CompositionResult` completo. Um chamador programático não consegue mais ler gate reprovado como sucesso ignorando um flag; a CLI captura `GateFailed`, imprime o mesmo relatório que uma execução bem-sucedida imprime (para o operador ver QUAL métrica regrediu) e sai com 1. Teste `test_gate_blocks_and_rolls_back_when_a_metric_regresses` passou a usar `pytest.raises(GateFailed)` e a ler `excinfo.value.result`.
+3. **Dívidas escritas** (§7 acima): D1 (bootstrap ausente + drop silencioso do INNER JOIN, e por que o piso de contagem é igualdade exata) com comentário correspondente no `CASCADE_SQL`, e D2 (Desenho B / repin v6 como v3). D3 registrado a partir do minor parkeado.
+
+Reexecutado após o fix: suíte nova **8 passed** no PG efêmero 65431; `ruff check` limpo nos 4 arquivos tocados; `yaml.safe_load` do `ci.yml` OK (4 jobs). Smoke da CLI no espelho com `--min-fee-matched 99999`: gate reprova, relatório impresso, `exit 1`, ponteiro intacto.

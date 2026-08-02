@@ -25,6 +25,7 @@ from src.sec_serving.app_composition import (
     CLASS_SOURCE_CATALOG,
     CLASS_SOURCE_IDENTITY,
     CLASS_SOURCE_TICKERS,
+    GateFailed,
     GateThresholds,
     compose,
     current_pointer,
@@ -327,8 +328,12 @@ def test_gate_blocks_and_rolls_back_when_a_metric_regresses(conn) -> None:
     strict = GateThresholds(
         mappings=5, resolved=4, class_grain=4, fee_matched_instruments=5, mandate_published=4
     )
-    result = compose(conn, thresholds=strict, promote=True)
+    # A rejected gate RAISES: a programmatic caller must not be able to read it
+    # as success by ignoring a flag.
+    with pytest.raises(GateFailed) as excinfo:
+        compose(conn, thresholds=strict, promote=True)
 
+    result = excinfo.value.result
     assert result.gate.ok is False
     assert any("rr1_fee" in failure for failure in result.gate.failures)
     assert result.validated is False

@@ -91,6 +91,20 @@ class CompositionError(RuntimeError):
     """Raised when the composition cannot proceed or its gate fails."""
 
 
+class GateFailed(CompositionError):
+    """The pre-flip gate rejected the composition; nothing was validated.
+
+    Carries the full ``CompositionResult`` so a caller can print the same
+    report a successful run prints.  It is an EXCEPTION rather than a returned
+    value on purpose: a programmatic caller must not be able to treat a
+    rejected gate as success by ignoring a flag.
+    """
+
+    def __init__(self, result: "CompositionResult") -> None:
+        super().__init__("; ".join(result.gate.failures) or "pre-flip gate failed")
+        self.result = result
+
+
 # --------------------------------------------------------------------------
 # SQL
 # --------------------------------------------------------------------------
@@ -100,6 +114,18 @@ class CompositionError(RuntimeError):
 # consulted.  ``%%`` escapes are literal ``%`` under pyformat parameters.
 CASCADE_SQL = """
 WITH base AS (
+    -- KNOWN LIMITATION (Design A, deliberate -- see .discovery/task-w2-report.md
+    -- "Dividas conhecidas"): the instrument universe is RE-PROJECTED from the base
+    -- publication, and the INNER JOIN to instrument_identity means:
+    --   (a) there is NO bootstrap path -- an instrument that entered the app after
+    --       the base publication was composed is not picked up here; and
+    --   (b) an instrument present in the base but ABSENT from instrument_identity
+    --       is dropped silently by this join.
+    -- Both are caught only by the gate's EXACT-equality floor on the mapping count
+    -- (GateThresholds.mappings), which is why that one metric is an equality and
+    -- not a ">=" like the others: a silent drop shows up as a count mismatch and
+    -- aborts the composition.  Overriding it with --expect-mappings disables that
+    -- protection, so the override exists for a deliberate universe change only.
     SELECT m.instrument_id,
            m.series_id,
            m.ncen_fund_id,
@@ -639,8 +665,8 @@ def compose(
 
     The composition + validation run in ONE transaction; promotion is a second
     transaction so a failed flip never loses a composed publication.  A failing
-    gate rolls the composition back and raises: nothing is validated, nothing is
-    promoted.
+    gate rolls the composition back and raises ``GateFailed`` (which carries the
+    full result for reporting): nothing is validated, nothing is promoted.
     """
     base = read_base_publication(conn, base_app_id)
     rows = resolve_class_cascade(conn, base.app_publication_id)
@@ -663,7 +689,7 @@ def compose(
     )
     if not gate.ok:
         conn.rollback()
-        return result
+        raise GateFailed(result)
 
     state = _publication_state(conn, app_publication_id)
     if state is not None and state[1] == "prepared":
