@@ -115,6 +115,40 @@ def _current_source(conn: Any) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
+# The raw evidence four of the six contract relations exist ONLY through.
+# ``nport_interest_rate_risk_raw`` feeds the key-rate sensitivities;
+# ``nport_fund_reported_info_raw`` feeds the credit-spread sensitivities, the
+# balance-sheet primitives and the reported half of the metric coverage. Both are
+# views over ``nport_raw_rows``, which production PRUNES once a run is attested
+# (schemas/nport_raw.sql). A build over a pruned run is not a smaller build: it
+# writes those four relations with ZERO rows and a coverage rollup that is pure
+# absence -- and, before this guard, promoted it.
+_REQUIRED_RAW_EVIDENCE = (
+    "nport_interest_rate_risk_raw",
+    "nport_fund_reported_info_raw",
+)
+
+
+def _pinned_raw_evidence(conn: Any, source_run_id: str) -> dict[str, bool]:
+    """Whether each required raw view still holds rows for the pinned run.
+
+    O(1) per probe: ``EXISTS`` stops at the first matching row, and the views are
+    filtered by ``ingestion_run_id`` -- never a count over a landing table.
+    """
+    probes = ", ".join(
+        f"EXISTS(SELECT 1 FROM {relation} WHERE ingestion_run_id = %s)"
+        for relation in _REQUIRED_RAW_EVIDENCE
+    )
+    row = conn.execute(
+        f"SELECT {probes}",  # noqa: S608 - fixed allowlist
+        tuple(source_run_id for _ in _REQUIRED_RAW_EVIDENCE),
+    ).fetchone()
+    return {
+        relation: bool(present)
+        for relation, present in zip(_REQUIRED_RAW_EVIDENCE, row, strict=True)
+    }
+
+
 def _resolve_as_of(conn: Any, calc_date: str | None, source_publication_id: str) -> date | None:
     if calc_date:
         return date.fromisoformat(calc_date)
@@ -293,6 +327,25 @@ def run(
                 return {"state": "no_source", "reason": "no_current_holdings_publication", "rows": 0}
             source_publication_id, source_run_id = source
 
+            # Fail closed on pruned evidence BEFORE anything is built, inserted,
+            # validated or pinned. On 2026-08-01 this job ran against a database
+            # whose nport_raw_rows had been pruned: the build succeeded, four of
+            # the six contract relations came out empty, the manifest recorded
+            # the zeros, and the pointer moved anyway -- no guard between the
+            # build and the pin ever looked at what had been produced. A build
+            # that cannot see its own evidence has nothing to publish.
+            evidence = _pinned_raw_evidence(conn, source_run_id)
+            pruned = sorted(name for name, present in evidence.items() if not present)
+            if pruned:
+                return {
+                    "state": "no_source",
+                    "reason": "pinned_raw_evidence_pruned",
+                    "source_publication_id": source_publication_id,
+                    "source_run_id": source_run_id,
+                    "pruned_raw_relations": pruned,
+                    "rows": 0,
+                }
+
             as_of = _resolve_as_of(conn, calc_date, source_publication_id)
             if as_of is None:
                 return {"state": "no_source", "reason": "source_publication_has_no_report_date", "rows": 0}
@@ -390,6 +443,14 @@ def run(
                             "fixed-income publication already carries a divergent manifest: "
                             f"{publication_id}"
                         )
+                    # The acceptance criterion promotion never had. The raw
+                    # precondition above catches the known cause of a degenerate
+                    # build; this catches the CLASS -- any relation of the family
+                    # that came out empty while the publication being served has
+                    # rows in it. It runs inside this transaction, so a failure
+                    # unwinds the whole build: no prepared publication survives,
+                    # the pointer does not move, and the job exits non-zero.
+                    materializer.assert_publication_complete(cur, publication_id)
                     cur.execute("SELECT sec_validate_derived_publication(%s)", (publication_id,))
                     cur.execute(
                         "SELECT sec_set_current_derived_publication(%s,%s)",
