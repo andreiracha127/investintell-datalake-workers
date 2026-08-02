@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import uuid
@@ -55,6 +56,8 @@ from typing import Any
 from src.db import LOCK_NPORT_FIXED_INCOME_SERVING, advisory_lock, connect, resolve_dsn
 from src.nport import fixed_income_local_materializer as materializer
 
+LOGGER = logging.getLogger(__name__)
+
 PRODUCT = "nport_fixed_income_features_v1"
 SOURCE_PRODUCT = "sec_nport_holdings_v2"
 MANIFEST_FORMAT = "nport-fixed-income-in-database/v1"
@@ -63,8 +66,6 @@ MANIFEST_FORMAT = "nport-fixed-income-in-database/v1"
 _PUBLICATION_NAMESPACE = uuid.UUID("6f2f1f2c-0f5a-5d3b-9c47-3f2b1c8a54d1")
 
 _REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
-
-_SCHEMA_FILES = ("nport_fixed_income_features.sql",)
 
 
 def _code_revision() -> str:
@@ -97,9 +98,8 @@ def install_schema(conn: Any) -> str:
     (it used to define a raise-stub), so the builder is installed from its
     sha256-pinned resource right after -- ordering that cannot resurrect a stub.
     """
-    for name in _SCHEMA_FILES:
-        conn.execute((materializer.ROOT / "schemas" / name).read_text(encoding="utf-8"))
     with conn.cursor() as cur:
+        materializer.install_product_schema(cur)
         return materializer.install_builder(cur)
 
 
@@ -327,25 +327,6 @@ def run(
                 return {"state": "no_source", "reason": "no_current_holdings_publication", "rows": 0}
             source_publication_id, source_run_id = source
 
-            # Fail closed on pruned evidence BEFORE anything is built, inserted,
-            # validated or pinned. On 2026-08-01 this job ran against a database
-            # whose nport_raw_rows had been pruned: the build succeeded, four of
-            # the six contract relations came out empty, the manifest recorded
-            # the zeros, and the pointer moved anyway -- no guard between the
-            # build and the pin ever looked at what had been produced. A build
-            # that cannot see its own evidence has nothing to publish.
-            evidence = _pinned_raw_evidence(conn, source_run_id)
-            pruned = sorted(name for name, present in evidence.items() if not present)
-            if pruned:
-                return {
-                    "state": "no_source",
-                    "reason": "pinned_raw_evidence_pruned",
-                    "source_publication_id": source_publication_id,
-                    "source_run_id": source_run_id,
-                    "pruned_raw_relations": pruned,
-                    "rows": 0,
-                }
-
             as_of = _resolve_as_of(conn, calc_date, source_publication_id)
             if as_of is None:
                 return {"state": "no_source", "reason": "source_publication_has_no_report_date", "rows": 0}
@@ -379,6 +360,46 @@ def run(
                     "coverage_rollup": rollup_state,
                     "rows": sum(counts.values()),
                     "counts": counts,
+                }
+
+            # Fail closed on pruned evidence BEFORE anything is built, inserted,
+            # validated or pinned. On 2026-08-01 this job ran against a database
+            # whose nport_raw_rows had been pruned: the build succeeded, four of
+            # the six contract relations came out empty, the manifest recorded
+            # the zeros, and the pointer moved anyway -- no guard between the
+            # build and the pin ever looked at what had been produced. A build
+            # that cannot see its own evidence has nothing to publish.
+            #
+            # Placed AFTER the idempotency short-circuit on purpose: neither the
+            # publication identity nor the as_of depends on the raw rows, so a
+            # re-run over an ALREADY published identity must still reach
+            # ensure_coverage_rollup above. The probe gates the BUILD, not the
+            # repair of something already built.
+            evidence = _pinned_raw_evidence(conn, source_run_id)
+            pruned = sorted(name for name, present in evidence.items() if not present)
+            if pruned:
+                # Production prunes raw by policy, so this state is expected to
+                # PERSIST: the job stays green (exit 0 keeps the cron's retry
+                # semantics intact) and would otherwise be silent forever. WARNING
+                # with the identifiers is what makes the standstill legible in the
+                # Cloud Run logs, and the runbook says what to do about it.
+                LOGGER.warning(
+                    "nport_fixed_income_serving: refusing to build over pruned raw evidence "
+                    "(product=%s source_publication_id=%s source_run_id=%s as_of=%s "
+                    "pruned_raw_relations=%s); the pinned N-PORT raw rows are gone, so the "
+                    "raw-derived relations would publish empty. Republish through the offline "
+                    "artifact route -- see docs/runbooks/fixed-income-publication-closure.md",
+                    PRODUCT, source_publication_id, source_run_id, as_of.isoformat(),
+                    ",".join(pruned),
+                )
+                return {
+                    "state": "no_source",
+                    "reason": "pinned_raw_evidence_pruned",
+                    "source_publication_id": source_publication_id,
+                    "source_run_id": source_run_id,
+                    "as_of": as_of.isoformat(),
+                    "pruned_raw_relations": pruned,
+                    "rows": 0,
                 }
 
             with conn.transaction():

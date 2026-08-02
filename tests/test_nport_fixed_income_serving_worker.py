@@ -9,6 +9,7 @@ idempotent, fail-closed, and promoting through the shared publication protocol.
 from __future__ import annotations
 
 import importlib
+import logging
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -292,7 +293,9 @@ def test_run_publishes_then_is_idempotent() -> None:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
-def test_run_refuses_to_build_when_the_pinned_raw_evidence_was_pruned() -> None:
+def test_run_refuses_to_build_when_the_pinned_raw_evidence_was_pruned(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """The 2026-08-01 incident, as a test.
 
     ``nport_raw_rows`` had been pruned, so the two raw views the key-rate,
@@ -314,9 +317,20 @@ def test_run_refuses_to_build_when_the_pinned_raw_evidence_was_pruned() -> None:
             cur.execute("SELECT sec_validate_derived_publication(%s)", (holdings_id,))
             cur.execute("SELECT sec_set_current_derived_publication('sec_nport_holdings_v2',%s)", (holdings_id,))
 
-            result = _run_in_schema(DSN, schema)
+            with caplog.at_level(logging.WARNING, logger=worker.__name__):
+                result = _run_in_schema(DSN, schema)
             assert result["state"] == "no_source"
             assert result["reason"] == "pinned_raw_evidence_pruned"
+            # Production prunes raw by policy, so this state PERSISTS and the job
+            # stays green forever. A silent standstill is the failure mode; the
+            # WARNING with the identifiers is what makes it legible.
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warnings) == 1
+            message = warnings[0].getMessage()
+            assert "pruned raw evidence" in message
+            assert run_id in message
+            assert "nport_interest_rate_risk_raw" in message
+            assert "docs/runbooks/fixed-income-publication-closure.md" in message
             assert result["pruned_raw_relations"] == [
                 "nport_fund_reported_info_raw",
                 "nport_interest_rate_risk_raw",
@@ -334,6 +348,33 @@ def test_run_refuses_to_build_when_the_pinned_raw_evidence_was_pruned() -> None:
             assert cur.fetchone() == (0,)
             cur.execute("SELECT count(*) FROM nport_fixed_income_features")
             assert cur.fetchone() == (0,)
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_an_already_published_identity_is_still_repaired_after_the_raw_is_pruned() -> None:
+    """Pruning the evidence must not orphan a publication that was already built.
+
+    The raw probe gates the BUILD, so it sits AFTER the idempotency
+    short-circuit: neither the publication identity nor the as_of depends on the
+    raw rows, and production prunes them by policy days after a successful
+    publish. A probe placed earlier would turn every later re-run into
+    ``no_source`` and permanently cut off the coverage-rollup repair the dossier
+    depends on.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, _package_id, holdings_id = _seed(cur)
+        try:
+            first = _publish_a_complete_publication(cur, schema, run_id, holdings_id)
+            assert first["state"] == "published"
+
+            cur.execute("DELETE FROM nport_raw_rows WHERE ingestion_run_id=%s", (run_id,))
+            second = _run_in_schema(DSN, schema)
+            assert second["state"] == "already_published"
+            assert second["publication_id"] == first["publication_id"]
+            assert second["counts"] == first["counts"]
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
