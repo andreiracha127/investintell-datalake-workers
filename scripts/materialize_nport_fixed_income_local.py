@@ -20,6 +20,7 @@ from src.nport.fixed_income_local_materializer import (  # noqa: E402
     compute_local,
     extract_sources,
     install_local_oracle,
+    install_product_schema,
     publish_artifact,
 )
 
@@ -139,6 +140,14 @@ def main() -> None:
         )
     else:
         with psycopg.connect(args.dsn) as connection:
+            # The DDL is a PREREQUISITE of publishing, not an ambient assumption:
+            # the publish path calls nport_fixed_income_assert_publication_complete,
+            # so a restore into a database that never had this schema applied would
+            # fail with 42883 rather than publish. Applying it here (idempotent)
+            # mirrors what the in-database worker does in install_schema().
+            with connection.cursor() as cursor:
+                install_product_schema(cursor)
+            connection.commit()
             publish_artifact(
                 connection=connection,
                 artifact_dir=Path(args.artifact_dir),

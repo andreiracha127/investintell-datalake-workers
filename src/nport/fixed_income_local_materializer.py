@@ -447,6 +447,25 @@ def _assert_oracle_resource() -> None:
         raise ArtifactIntegrityError("fixed-income builder SQL is not the approved version")
 
 
+PRODUCT_SCHEMA_PATH = ROOT / "schemas" / "nport_fixed_income_features.sql"
+
+
+def install_product_schema(cursor: Any) -> None:
+    """Apply the product DDL: tables, guards, current views, completeness gate.
+
+    Idempotent by construction (``CREATE TABLE IF NOT EXISTS`` / ``CREATE OR
+    REPLACE``) and deliberately shared by both producers. The artifact route used
+    to assume the DDL was already there, which was true only as long as the DDL
+    contained nothing the route CALLS; the family-completeness assertion made
+    that assumption load-bearing, and a restore into a database without it would
+    fail with 42883 instead of publishing.
+
+    Note that this installs the DDL and NOT the builder: ``publish_artifact``
+    copies an attested payload and must never be able to invoke the builder.
+    """
+    cursor.execute(PRODUCT_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
 def install_builder(cursor: Any) -> str:
     """Install the pinned ``build_nport_fixed_income_features`` into the target DB.
 
@@ -1105,6 +1124,10 @@ def _expected_counts(manifest: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def _env_switch(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _verify_storage_requested(explicit: bool | None) -> bool:
     """Whether this run must re-count the relations instead of reading the closure.
 
@@ -1113,7 +1136,38 @@ def _verify_storage_requested(explicit: bool | None) -> bool:
     """
     if explicit is not None:
         return explicit
-    return os.getenv("NPORT_FI_VERIFY_STORAGE", "").strip().lower() in {"1", "true", "yes", "on"}
+    return _env_switch("NPORT_FI_VERIFY_STORAGE")
+
+
+def _relation_regression_allowed(explicit: bool | None) -> bool:
+    """Whether this run may promote a publication that empties a served relation.
+
+    ``NPORT_FI_ALLOW_RELATION_REGRESSION`` is the deliberate operator override
+    for the one legitimate case -- a source that verifiably stopped reporting a
+    family -- and nothing else. Default false: a scheduled job must never be the
+    thing that decides an empty relation is fine.
+    """
+    if explicit is not None:
+        return explicit
+    return _env_switch("NPORT_FI_ALLOW_RELATION_REGRESSION")
+
+
+def assert_publication_complete(
+    cursor: Any, publication_id: str, *, allow_relation_regression: bool | None = None
+) -> None:
+    """Refuse to promote a publication that regresses a served relation to zero.
+
+    Called by BOTH producers (the in-database worker and this module's artifact
+    route) immediately before ``sec_validate_derived_publication``, so a failure
+    aborts the publishing transaction: the publication never persists as
+    ``prepared``, the pointer never moves, and the job exits non-zero. The rule
+    itself lives in SQL (``nport_fixed_income_assert_publication_complete`` in
+    schemas/nport_fixed_income_features.sql) so it cannot drift between routes.
+    """
+    cursor.execute(
+        "SELECT nport_fixed_income_assert_publication_complete(%s,%s)",
+        (publication_id, _relation_regression_allowed(allow_relation_regression)),
+    )
 
 
 def _recorded_closure(cursor: Any, publication_id: str) -> tuple[str, dict[str, int]] | None:
@@ -1267,13 +1321,18 @@ def publish_artifact(
     product: str = "nport_fixed_income_features_v1",
     failure_after_relation: str | None = None,
     verify_storage: bool | None = None,
+    allow_relation_regression: bool | None = None,
 ) -> None:
     """Copy a fully verified artifact; never invoke raw relations or the builder here.
 
     ``verify_storage`` forces the full per-relation recount on an idempotent
     replay (default: the ``NPORT_FI_VERIFY_STORAGE`` environment switch). The
     normal replay path re-proves storage from the recorded closure instead --
-    see ``_record_closure`` and the closure DDL for why that is equivalent."""
+    see ``_record_closure`` and the closure DDL for why that is equivalent.
+
+    ``allow_relation_regression`` (default: the
+    ``NPORT_FI_ALLOW_RELATION_REGRESSION`` environment switch) is the explicit
+    operator override for the family-completeness assertion below."""
     artifact_dir = Path(artifact_dir)
     manifest = json.loads((artifact_dir / "manifest.json").read_text(encoding="utf-8"))
     relations = manifest_relations(manifest)
@@ -1402,6 +1461,15 @@ def publish_artifact(
         )
         if manifest["format"] in _DERIVE_ROLLUP_FORMATS:
             _derive_rollup_from_coverage(cursor, identity.target_publication_id)
+        # Same acceptance criterion as the in-database worker, in the same place:
+        # after every relation is written, before the publication becomes
+        # promotable. An artifact whose payload lost a family is as unservable as
+        # a build that never had the evidence.
+        assert_publication_complete(
+            cursor,
+            identity.target_publication_id,
+            allow_relation_regression=allow_relation_regression,
+        )
         cursor.execute(
             "SELECT sec_validate_derived_publication(%s)",
             (identity.target_publication_id,),

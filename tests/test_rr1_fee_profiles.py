@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from decimal import Decimal
-from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
@@ -307,3 +306,182 @@ def test_rr1_fee_profile_closure_is_session_independent_under_a_temp_shadow():
             "SELECT publication_id FROM sec_derived_current_pointers WHERE product='rr1_fee_profile_v1'"
         ).fetchone() == (publication_id,)
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_occurrence_semantics_ship_as_column_comments() -> None:
+    """The context grain must be readable FROM THE DATABASE, not only from prose.
+
+    A consumer that has to pick one row per (series, class, concept) needs to know
+    which of measure/document/dimensions/occurrence carries meaning. Measured on
+    the mirror (docs/rr1-fee-context-grain.md): occurrence is RR1's ``iprx``, the
+    SEC's sequence number for otherwise-identical facts -- 2 821 tie groups vary
+    only by it and ZERO of them disagree on the value. Ranking on it is the
+    documented trap, so the warning travels with the column.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, _run_id, _publication_id = _fixture(cur)
+        try:
+            comments = dict(
+                cur.execute(
+                    "SELECT a.attname, col_description(a.attrelid, a.attnum) "
+                    "FROM pg_attribute a WHERE a.attrelid='rr1_fee_profiles'::regclass "
+                    "AND a.attnum>0 AND NOT a.attisdropped"
+                ).fetchall()
+            )
+            for column in ("occurrence", "document_id", "dimensions", "measure_id",
+                           "data_date", "status"):
+                assert comments.get(column), f"{column} must document its grain"
+            assert "iprx" in comments["occurrence"]
+            assert "numerically lowest occurrence" in comments["occurrence"]
+            # The premise the rule must not silently depend on.
+            assert "regexp_replace" in comments["occurrence"]
+            assert "REAL grain" in comments["document_id"]
+            # The vocabulary correction: unavailable is scoped to the CONTEXT.
+            assert "not reported IN THIS CONTEXT" in comments["status"]
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_a_repeated_occurrence_manufactures_unavailable_fillers_for_every_other_concept() -> None:
+    """The measured shape behind the app's 191-slot regression warning.
+
+    One concept reported twice under RR1 ``iprx`` 0 and 1 creates a SECOND context,
+    and the builder's 7-concept grid then writes ``unavailable`` rows at occurrence
+    1 for the concepts that were reported once -- at occurrence 0. A consumer that
+    ranks on occurrence DESC serves those fillers instead of the reported values.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, publication_id = _fixture(cur)
+        try:
+            # Verbatim shape of accession 0000894189-21-001434 / S000071206 / C000226000:
+            # the same management fee twice, every other concept once.
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="0", raw_row_id=1)
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="1", raw_row_id=2)
+            _fact(cur, run_id, "ExpensesOverAssets", "0.0030", occurrence="0", raw_row_id=3)
+            _fact(cur, run_id, "OtherExpensesOverAssets", "0.0000", occurrence="0", raw_row_id=4)
+            cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,))
+
+            rows = dict(
+                ((concept, occurrence), (status, value))
+                for concept, occurrence, status, value in cur.execute(
+                    "SELECT canonical_concept,occurrence,status,value_numeric FROM rr1_fee_profiles "
+                    "WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
+                ).fetchall()
+            )
+            # occurrence 1 exists only because management_fee was repeated.
+            assert rows[("management_fee", "0")] == ("available", Decimal("0.0030"))
+            assert rows[("management_fee", "1")] == ("available", Decimal("0.0030"))
+            assert rows[("gross_expense", "0")] == ("available", Decimal("0.0030"))
+            assert rows[("other_expense", "0")] == ("available", Decimal("0.0000"))
+            # ... and the concepts reported once are unavailable at occurrence 1.
+            assert rows[("gross_expense", "1")] == ("unavailable", None)
+            assert rows[("other_expense", "1")] == ("unavailable", None)
+            assert cur.execute(
+                "SELECT reason_code FROM rr1_fee_profiles "
+                "WHERE canonical_concept='gross_expense' AND occurrence='1'"
+            ).fetchone() == ("concept_not_reported",)
+
+            # The registered rule: available before unavailable, THEN the
+            # numerically lowest occurrence. Applied per concept it never loses a
+            # reported value.
+            picked = {
+                concept: (occurrence, value)
+                for concept, occurrence, value in cur.execute(_REGISTERED_RANK).fetchall()
+            }
+            assert picked == {
+                "management_fee": ("0", Decimal("0.0030")),
+                "gross_expense": ("0", Decimal("0.0030")),
+                "other_expense": ("0", Decimal("0.0000")),
+            }
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+#: The occurrence tie-break registered in schemas/rr1_fee_profiles.sql and
+#: docs/rr1-fee-context-grain.md: by the digit run, with a lexical tiebreak.
+_REGISTERED_OCCURRENCE_ORDER = (
+    "NULLIF(regexp_replace(occurrence,'[^0-9]','','g'),'')::numeric ASC NULLS LAST, "
+    "occurrence ASC"
+)
+#: What a consumer would write before reading the column comment: `occurrence` is
+#: TEXT, so this is LEXICOGRAPHIC and puts '10' before '2'.
+_NAIVE_OCCURRENCE_ORDER = "occurrence ASC"
+
+
+def _rank_sql(occurrence_order: str) -> str:
+    """The registered rank, parameterised only on how it breaks occurrence ties.
+
+    Selecting the occurrence -- not just the value -- is the point: the tied rows
+    routinely carry the SAME value (0 of 2 821 occurrence-only tie groups disagree
+    on it), so a test that asserts only values cannot tell the two orders apart.
+    """
+    return (
+        "SELECT canonical_concept, occurrence, value_numeric FROM ("
+        "  SELECT canonical_concept, occurrence, value_numeric,"
+        "         row_number() OVER (PARTITION BY series_id,class_id,canonical_concept"
+        "             ORDER BY data_date DESC,"
+        "                      (status IN ('available','degraded')) DESC,"
+        f"                      {occurrence_order}) AS rank"
+        "  FROM rr1_fee_profiles"
+        "  WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
+        ") ranked WHERE rank=1"
+    )
+
+
+_REGISTERED_RANK = _rank_sql(_REGISTERED_OCCURRENCE_ORDER)
+
+
+def test_the_registered_rank_orders_occurrence_numerically_not_lexicographically() -> None:
+    """``occurrence`` is TEXT, so ``occurrence ASC`` puts '10' before '2'.
+
+    The column holds only '0'..'3' today, so the two orders agree and the bug
+    would be invisible. Seed an iprx that reaches 10 and the lexicographic rank
+    picks the wrong context; the registered rank does not.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, publication_id = _fixture(cur)
+        try:
+            # management_fee reported at iprx 2 and 10; gross_expense only at 2.
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="2", raw_row_id=1)
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="10", raw_row_id=2)
+            _fact(cur, run_id, "ExpensesOverAssets", "0.0030", occurrence="2", raw_row_id=3)
+            cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,))
+
+            registered = {
+                concept: occurrence
+                for concept, occurrence, _value in cur.execute(_REGISTERED_RANK).fetchall()
+            }
+            naive = {
+                concept: occurrence
+                for concept, occurrence, _value in cur.execute(
+                    _rank_sql(_NAIVE_OCCURRENCE_ORDER)
+                ).fetchall()
+            }
+            # The registered rank reaches the SECOND occurrence, iprx 2.
+            assert registered == {
+                "management_fee": "2",
+                "gross_expense": "2",
+                "other_expense": "2",
+            }
+            # The naive one lands on '10' wherever step 3 did not already decide:
+            # management_fee is available at both, other_expense at neither.
+            assert naive == {
+                "management_fee": "10",
+                "gross_expense": "2",
+                "other_expense": "10",
+            }
+            assert registered != naive
+            # Values alone cannot tell them apart -- which is why this test asserts
+            # the chosen occurrence.
+            assert cur.execute(
+                "SELECT count(DISTINCT value_numeric) FROM rr1_fee_profiles "
+                "WHERE canonical_concept='management_fee'"
+            ).fetchone() == (1,)
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

@@ -80,7 +80,9 @@ def _resource_config(tmp_path: Path) -> materializer.ResourceConfig:
     )
 
 
-def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> dict[str, Path]:
+def _write_payloads(
+    tmp_path: Path, identity, holdings_publication, run_id, *, filled: tuple[str, ...] | None = None
+) -> dict[str, Path]:
     """Nine payloads: the eight contract relations plus the coverage rollup.
 
     Two carry a row (one per-position coverage fact and its rollup) so the
@@ -88,7 +90,12 @@ def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> d
     builder stopped materializing absence: it is the only place the counts of
     what was absent exist, so an artifact without it publishes a coverage
     surface that silently claims full coverage.
+
+    ``filled`` narrows which of those two carry their row, so a test can build an
+    artifact that EMPTIES a relation the published one has.
     """
+    if filled is None:
+        filled = (COVERAGE, materializer.COVERAGE_ROLLUP_RELATION)
     columns = materializer._published_columns()
     payloads: dict[str, Path] = {}
     coverage_row = {
@@ -136,9 +143,9 @@ def _write_payloads(tmp_path: Path, identity, holdings_publication, run_id) -> d
     for relation in materializer.PUBLISHED_RELATIONS:
         path = tmp_path / f"{relation}.tsv.gz"
         lines = ["\t".join(columns[relation])]
-        if relation == COVERAGE:
+        if relation == COVERAGE and relation in filled:
             lines.append("\t".join(coverage_row[name] for name in columns[relation]))
-        if relation == materializer.COVERAGE_ROLLUP_RELATION:
+        if relation == materializer.COVERAGE_ROLLUP_RELATION and relation in filled:
             lines.append("\t".join(rollup_row[name] for name in columns[relation]))
         with gzip.GzipFile(filename="", mode="wb", fileobj=path.open("wb"), mtime=0) as out:
             out.write(("\n".join(lines) + "\n").encode())
@@ -260,6 +267,135 @@ def test_publish_records_the_closure_and_replay_never_scans_a_relation(published
     # The whole point: not one count over a target relation.
     assert not [s for s in statements if "count(*) FROM nport_fixed_income" in s]
     assert any("nport_fixed_income_publication_closures" in s for s in statements)
+
+
+def _next_artifact(dsn, tmp_path: Path, config, *, filled: tuple[str, ...]):
+    """A SECOND artifact for the same pinned source, on the published schema.
+
+    Identity and lineage are read back from the database instead of threaded
+    through the fixture, so this stays a real artifact of the same product --
+    the exact shape a restore or a republication produces.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn) as conn:
+        source_publication, run_id, package_id = conn.execute(
+            "SELECT p.publication_id::text,p.source_run_id::text,p.source_package_id::text "
+            "FROM sec_derived_current_pointers c "
+            "JOIN sec_derived_publications p ON p.publication_id=c.publication_id "
+            "WHERE c.product='sec_nport_holdings_v2'"
+        ).fetchone()
+    identity = materializer.BuildIdentity(
+        source_publication_id=source_publication,
+        source_run_id=run_id,
+        source_package_id=package_id,
+        target_publication_id=str(uuid4()),
+        as_of_date=AS_OF,
+        contract_digest=materializer.CONTRACT_DIGEST,
+    )
+    artifact_dir = tmp_path / f"artifact_{identity.target_publication_id[:8]}"
+    artifact_dir.mkdir()
+    payloads = _write_payloads(
+        artifact_dir, identity, source_publication, run_id, filled=filled
+    )
+    manifest = materializer.build_manifest(
+        identity=identity,
+        worker_sha="b" * 40,
+        source_files={name: payloads[COVERAGE] for name in materializer.SOURCE_RELATIONS},
+        output_files=payloads,
+        resource_config=config,
+        output_counts={name: 1 for name in filled},
+    )
+    (artifact_dir / "manifest.json").write_text(
+        materializer.canonical_json(manifest), encoding="utf-8"
+    )
+    return identity, artifact_dir
+
+
+def test_the_artifact_route_refuses_an_artifact_that_empties_a_served_relation(
+    published, tmp_path
+) -> None:
+    """The completeness gate is executed by THIS route, not just by the worker.
+
+    The product has two producers. A gate on only one of them is a gate on
+    neither: the artifact route is exactly the path an operator reaches for when
+    the in-database build is refused, and a truncated bundle restored through it
+    would empty a served relation just as silently.
+    """
+    import psycopg
+
+    dsn, published_identity, config, _artifact_dir, _manifest = published
+    # Same publication shape MINUS the per-position coverage relation.
+    identity, artifact_dir = _next_artifact(
+        dsn, tmp_path, config, filled=(materializer.COVERAGE_ROLLUP_RELATION,)
+    )
+
+    with psycopg.connect(dsn) as conn:
+        with pytest.raises(psycopg.Error, match="regressed to zero rows"):
+            materializer.publish_artifact(
+                connection=conn, artifact_dir=artifact_dir, identity=identity,
+                resource_config=config,
+            )
+        conn.rollback()
+        # The refused publish left nothing behind and the pointer never moved.
+        assert conn.execute(
+            "SELECT count(*) FROM sec_derived_publications WHERE publication_id=%s",
+            (identity.target_publication_id,),
+        ).fetchone() == (0,)
+        assert conn.execute(
+            "SELECT publication_id::text FROM sec_derived_current_pointers WHERE product=%s",
+            ("nport_fixed_income_features_v1",),
+        ).fetchone() == (published_identity.target_publication_id,)
+        conn.commit()
+
+
+def test_the_artifact_route_honours_the_explicit_regression_override(
+    published, tmp_path
+) -> None:
+    import psycopg
+
+    dsn, _published_identity, config, _artifact_dir, _manifest = published
+    identity, artifact_dir = _next_artifact(
+        dsn, tmp_path, config, filled=(materializer.COVERAGE_ROLLUP_RELATION,)
+    )
+
+    with psycopg.connect(dsn) as conn:
+        materializer.publish_artifact(
+            connection=conn, artifact_dir=artifact_dir, identity=identity,
+            resource_config=config, allow_relation_regression=True,
+        )
+        conn.commit()
+        assert conn.execute(
+            "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s",
+            (identity.target_publication_id,),
+        ).fetchone() == ("validated",)
+        assert conn.execute(
+            "SELECT publication_id::text FROM sec_derived_current_pointers WHERE product=%s",
+            ("nport_fixed_income_features_v1",),
+        ).fetchone() == (identity.target_publication_id,)
+        conn.commit()
+
+
+def test_the_artifact_route_publishes_a_complete_successor(published, tmp_path) -> None:
+    """The gate must not block a legitimate republication of the same shape."""
+    import psycopg
+
+    dsn, _published_identity, config, _artifact_dir, _manifest = published
+    identity, artifact_dir = _next_artifact(
+        dsn, tmp_path, config, filled=(COVERAGE, materializer.COVERAGE_ROLLUP_RELATION)
+    )
+
+    with psycopg.connect(dsn) as conn:
+        materializer.publish_artifact(
+            connection=conn, artifact_dir=artifact_dir, identity=identity,
+            resource_config=config,
+        )
+        conn.commit()
+        assert conn.execute(
+            "SELECT publication_id::text FROM sec_derived_current_pointers WHERE product=%s",
+            ("nport_fixed_income_features_v1",),
+        ).fetchone() == (identity.target_publication_id,)
+        conn.commit()
 
 
 def test_verify_storage_forces_the_full_recount(published) -> None:
@@ -548,6 +684,66 @@ def test_a_publication_promoted_before_the_rollup_existed_is_repaired(published)
             "WHERE publication_id=%s", (target,)
         ).fetchall() == [("effective_duration", 1, 1)]
         # Self-limiting: a second call is a no-op, never a rewrite.
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "present"
+
+
+def test_the_backfill_of_a_validated_publication_writes_every_row_it_derives(
+    published,
+) -> None:
+    """The repair path has to survive a rollup with more than one row.
+
+    The backfill is a single INSERT..SELECT, one row per coverage group. The
+    "already published" check used to be asked once per ROW, and a row trigger's
+    query sees what the same command already inserted -- so row 2 found row 1 and
+    raised. The repair the runbook documents could only ever succeed for a
+    publication whose coverage collapsed to a single group; the real one
+    (f110a2bb, thousands of groups) died on its second row. Only the statement
+    knows whether the rollup was empty when it started, so only the statement can
+    answer.
+    """
+    import psycopg
+
+    dsn, identity, _config, _artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    rollup = materializer.COVERAGE_ROLLUP_RELATION
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        # Widen the publication's coverage to three groups, then clear the
+        # rollup: the pre-migration state, at a grain that is not degenerate.
+        conn.execute(f"ALTER TABLE {COVERAGE} DISABLE TRIGGER USER")
+        conn.execute(
+            f"""INSERT INTO {COVERAGE}
+                (publication_id,source_holdings_publication_id,source_run_id,series_id,
+                 report_date,accession_number,source_identity_key,metric_family,metric_key,
+                 numerator,denominator,denominator_unit,coverage_ratio,availability_state)
+                SELECT c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                       c.series_id,c.report_date,c.accession_number,'K'||g,c.metric_family,
+                       'derived_metric_'||g,1,2,'count',0.5,'reported_numeric'
+                FROM {COVERAGE} c, generate_series(2,3) g
+                WHERE c.publication_id=%s""",
+            (target,),
+        )
+        conn.execute(f"ALTER TABLE {COVERAGE} ENABLE TRIGGER USER")
+        conn.execute(f"ALTER TABLE {rollup} DISABLE TRIGGER USER")
+        conn.execute(f"DELETE FROM {rollup} WHERE publication_id=%s", (target,))
+        conn.execute(f"ALTER TABLE {rollup} ENABLE TRIGGER USER")
+
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "backfilled"
+        conn.commit()
+
+    with psycopg.connect(dsn) as conn:
+        # Every derived group landed -- the whole rollup, not just its first row.
+        assert conn.execute(
+            f"SELECT count(*) FROM {rollup} WHERE publication_id=%s", (target,)
+        ).fetchone() == (3,)
+        assert conn.execute(
+            f"SELECT count(DISTINCT metric_key) FROM {rollup} WHERE publication_id=%s",
+            (target,),
+        ).fetchone() == (3,)
+        # Still closed afterwards: the window was this one statement.
         with conn.cursor() as cur:
             assert materializer.ensure_coverage_rollup(cur, target) == "present"
 
