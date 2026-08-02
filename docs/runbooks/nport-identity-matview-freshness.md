@@ -61,6 +61,17 @@ would tell you the opposite of the truth. `unavailable` stays soft because a
 datalake between publications is not a broken read path — but it is never
 reported as `fresh` either.
 
+### Before you schedule the job: the matview must already exist
+
+This repository installs the two functions and **nothing else** — it never creates
+`nport_holdings_snapshot_identity_v1`. In an environment where that matview was
+never provisioned (a fresh datalake, a restored copy that dropped it, a schema
+where it was created `WITH NO DATA` and never refreshed) the job goes **red with
+`unreadable`**. That is the correct answer — the app's fixed-income read path does
+not resolve there either — but it is not a freshness problem and a `REFRESH` will
+not fix it. Provision the matview from the definition at the top of this runbook,
+as the role that should own it, refresh it once, and only then schedule the job.
+
 ### Who installs the functions
 
 **Install them once, as the role that owns them, and keep that role.**
@@ -75,8 +86,10 @@ install entirely for a caller that knows the functions are managed elsewhere.
 Whoever owns them must **re-apply `schemas/nport_holdings_snapshot_identity_freshness.sql`
 when it changes** — the worker cannot do it for them.
 
-Cost: four index-backed `max()` reads — **24 ms cold, 3 ms warm** measured on the
-mirror against the current 625 508-row publication. `max(filing_date)` is taken
+Cost: four index-backed `max()` reads plus one `count(*)` over the matview's own
+slice of the publication (which rides on the scan `max(report_date)` already
+pays for) — **25.6 ms cold, 4.0 ms warm** measured on the mirror against the
+current 625 508-row publication. `max(filing_date)` is taken
 *at* the maximum `report_date`; unscoped it matches no index and cost 1.5 s of the
 5.6 s an earlier draft spent per call. The exact, bridge-filtered maximum (~15 s)
 is paid **only** when the cheap comparison already looks wrong, because the cheap

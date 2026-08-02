@@ -353,3 +353,38 @@ def test_run_returns_the_verdict_when_the_matview_is_fresh() -> None:
             assert stats["rows"] == 0
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_install_tolerates_not_owning_the_functions_on_a_pooled_connection() -> None:
+    """The privilege fallback must survive a connection that is NOT in autocommit.
+
+    ``run()`` uses autocommit, so the failure is latent for any OTHER caller of
+    ``probe()``: without a savepoint the privilege error leaves an aborted
+    transaction and the existence probe raises InFailedSqlTransaction, masking the
+    very error the tolerance exists for.
+    """
+    import psycopg
+
+    role = f"identity_probe_{uuid4().hex[:8]}"
+    with psycopg.connect(DSN, autocommit=True) as owner, owner.cursor() as cur:
+        schema, holdings_id, run_id = _seed(cur)
+        cur.execute(f'CREATE ROLE "{role}" LOGIN')
+        try:
+            _holding(cur, holdings_id, run_id, "H1", "2026-01-31")
+            _promote(cur, holdings_id)
+            _create_matview(cur)
+            cur.execute(f'GRANT USAGE ON SCHEMA "{schema}" TO "{role}"')
+            cur.execute(f'GRANT SELECT ON ALL TABLES IN SCHEMA "{schema}" TO "{role}"')
+
+            # A non-owner, on a NON-autocommit connection: the install must fail
+            # with InsufficientPrivilege and be recovered from, not masked.
+            guest = psycopg.connect(DSN.replace("user=postgres", f"user={role}"))
+            with guest:
+                guest.execute(f'SET search_path TO "{schema}"')
+                assert freshness.install_schema(guest) is False
+                verdict = freshness.probe(guest)
+                assert verdict["state"] == "fresh"
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+            cur.execute(f'DROP OWNED BY "{role}"')
+            cur.execute(f'DROP ROLE "{role}"')

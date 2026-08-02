@@ -109,11 +109,19 @@ def install_schema(conn: Any) -> bool:
     freshness.  So a privilege error is tolerated ONLY when the functions are
     already there; if they are not, it is re-raised, because then there is nothing
     to probe with.
+
+    The install runs inside ``conn.transaction()`` so that recovery works on a
+    connection that is NOT in autocommit: without it the privilege error would
+    leave an aborted transaction, the existence probe below would raise
+    ``InFailedSqlTransaction``, and the very error this tolerance exists for would
+    be masked by a different one.  ``conn.transaction()`` opens a real transaction
+    under autocommit and a SAVEPOINT when one is already open, so both callers are
+    left with a usable connection.
     """
     import psycopg
 
     try:
-        with conn.cursor() as cur:
+        with conn.transaction(), conn.cursor() as cur:
             cur.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
         return True
     except psycopg.errors.InsufficientPrivilege:
@@ -193,8 +201,8 @@ def run(
     with connect(resolve_dsn(dsn), autocommit=True) as conn:
         verdict = probe(conn)
     state = verdict.get("state")
-    if state in UNREADABLE_STATES:
-        raise IdentityMatviewUnreadable(verdict)
-    if state in DIVERGENT_STATES:
-        raise IdentityMatviewStale(verdict)
+    if state in HARD_STATES:
+        raise (
+            IdentityMatviewUnreadable if state in UNREADABLE_STATES else IdentityMatviewStale
+        )(verdict)
     return {"rows": 0, **verdict}

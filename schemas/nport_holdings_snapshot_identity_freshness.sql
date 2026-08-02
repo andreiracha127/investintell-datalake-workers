@@ -251,6 +251,10 @@ BEGIN
                               'reason', 'matview_is_behind_the_pinned_publication',
                               'matview', matview,
                               'publication_id', pinned,
+                              -- The runbook's first repair step tells the operator
+                              -- to read this; it must be on the verdict that sends
+                              -- them there, not only on the ones that do not.
+                              'matview_rows', mv_rows,
                               'matview_max_report_date', mv_report,
                               'matview_max_filing_date', mv_filing,
                               'source_max_report_date', src_report,
@@ -262,9 +266,17 @@ END $$;
 
 COMMENT ON FUNCTION nport_holdings_snapshot_identity_freshness() IS
 'Structured freshness verdict for nport_holdings_snapshot_identity_v1 against the '
-'current sec_nport_holdings_v2 publication. States: fresh | stale | behind_pointer | '
-'unavailable. Never raises; use nport_holdings_snapshot_identity_assert_fresh() '
-'right after an out-of-band REFRESH when a divergence must stop the caller.';
+'current sec_nport_holdings_v2 publication. States: '
+'fresh (the matview carries the publication''s newest report_date, and the newest '
+'filing_date AT that date -- it does NOT prove completeness) | '
+'stale (proven divergence) | '
+'behind_pointer (the matview holds no rows for the pinned publication) | '
+'unreadable (the matview is absent, or exists but was never refreshed -- the app''s '
+'read path is broken, not merely behind) | '
+'unavailable (undecidable UPSTREAM: no pointer, no holdings surface, or a pinned '
+'publication with no holdings). Never raises; use '
+'nport_holdings_snapshot_identity_assert_fresh() right after an out-of-band REFRESH '
+'when anything but fresh or unavailable must stop the caller.';
 
 -- The assertion an operator (or a refresh script) runs immediately after
 -- ``REFRESH MATERIALIZED VIEW [CONCURRENTLY] nport_holdings_snapshot_identity_v1``.
@@ -294,5 +306,8 @@ BEGIN
 END $$;
 
 COMMENT ON FUNCTION nport_holdings_snapshot_identity_assert_fresh() IS
-'Fail-closed wrapper over nport_holdings_snapshot_identity_freshness(): raises on '
-'stale or behind_pointer, returns the same structured verdict otherwise.';
+'Fail-closed wrapper over nport_holdings_snapshot_identity_freshness(). Raises '
+'undefined_table on unreadable (the matview is absent or was never refreshed -- a '
+'refresh alone may not fix it) and data_exception on stale or behind_pointer. '
+'Returns the same structured verdict on fresh and on unavailable, which is '
+'undecidable upstream rather than a fault of the matview.';

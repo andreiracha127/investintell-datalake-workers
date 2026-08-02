@@ -388,30 +388,51 @@ def test_a_repeated_occurrence_manufactures_unavailable_fillers_for_every_other_
             # The registered rule: available before unavailable, THEN the
             # numerically lowest occurrence. Applied per concept it never loses a
             # reported value.
-            picked = dict(cur.execute(_REGISTERED_RANK).fetchall())
+            picked = {
+                concept: (occurrence, value)
+                for concept, occurrence, value in cur.execute(_REGISTERED_RANK).fetchall()
+            }
             assert picked == {
-                "management_fee": Decimal("0.0030"),
-                "gross_expense": Decimal("0.0030"),
-                "other_expense": Decimal("0.0000"),
+                "management_fee": ("0", Decimal("0.0030")),
+                "gross_expense": ("0", Decimal("0.0030")),
+                "other_expense": ("0", Decimal("0.0000")),
             }
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
-#: The rank registered in schemas/rr1_fee_profiles.sql and docs/rr1-fee-context-grain.md.
-_REGISTERED_RANK = (
-    "SELECT canonical_concept, value_numeric FROM ("
-    "  SELECT canonical_concept, value_numeric,"
-    "         row_number() OVER (PARTITION BY series_id,class_id,canonical_concept"
-    "             ORDER BY data_date DESC,"
-    "                      (status IN ('available','degraded')) DESC,"
-    "                      NULLIF(regexp_replace(occurrence,'[^0-9]','','g'),'')::numeric"
-    "                          ASC NULLS LAST,"
-    "                      occurrence ASC) AS rank"
-    "  FROM rr1_fee_profiles"
-    "  WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
-    ") ranked WHERE rank=1"
+#: The occurrence tie-break registered in schemas/rr1_fee_profiles.sql and
+#: docs/rr1-fee-context-grain.md: by the digit run, with a lexical tiebreak.
+_REGISTERED_OCCURRENCE_ORDER = (
+    "NULLIF(regexp_replace(occurrence,'[^0-9]','','g'),'')::numeric ASC NULLS LAST, "
+    "occurrence ASC"
 )
+#: What a consumer would write before reading the column comment: `occurrence` is
+#: TEXT, so this is LEXICOGRAPHIC and puts '10' before '2'.
+_NAIVE_OCCURRENCE_ORDER = "occurrence ASC"
+
+
+def _rank_sql(occurrence_order: str) -> str:
+    """The registered rank, parameterised only on how it breaks occurrence ties.
+
+    Selecting the occurrence -- not just the value -- is the point: the tied rows
+    routinely carry the SAME value (0 of 2 821 occurrence-only tie groups disagree
+    on it), so a test that asserts only values cannot tell the two orders apart.
+    """
+    return (
+        "SELECT canonical_concept, occurrence, value_numeric FROM ("
+        "  SELECT canonical_concept, occurrence, value_numeric,"
+        "         row_number() OVER (PARTITION BY series_id,class_id,canonical_concept"
+        "             ORDER BY data_date DESC,"
+        "                      (status IN ('available','degraded')) DESC,"
+        f"                      {occurrence_order}) AS rank"
+        "  FROM rr1_fee_profiles"
+        "  WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
+        ") ranked WHERE rank=1"
+    )
+
+
+_REGISTERED_RANK = _rank_sql(_REGISTERED_OCCURRENCE_ORDER)
 
 
 def test_the_registered_rank_orders_occurrence_numerically_not_lexicographically() -> None:
@@ -432,15 +453,35 @@ def test_the_registered_rank_orders_occurrence_numerically_not_lexicographically
             _fact(cur, run_id, "ExpensesOverAssets", "0.0030", occurrence="2", raw_row_id=3)
             cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,))
 
-            assert dict(cur.execute(_REGISTERED_RANK).fetchall()) == {
-                "management_fee": Decimal("0.0030"),
-                "gross_expense": Decimal("0.0030"),
-                "other_expense": None,
+            registered = {
+                concept: occurrence
+                for concept, occurrence, _value in cur.execute(_REGISTERED_RANK).fetchall()
             }
-            # The naive lexicographic tiebreak lands on occurrence '10'.
+            naive = {
+                concept: occurrence
+                for concept, occurrence, _value in cur.execute(
+                    _rank_sql(_NAIVE_OCCURRENCE_ORDER)
+                ).fetchall()
+            }
+            # The registered rank reaches the SECOND occurrence, iprx 2.
+            assert registered == {
+                "management_fee": "2",
+                "gross_expense": "2",
+                "other_expense": "2",
+            }
+            # The naive one lands on '10' wherever step 3 did not already decide:
+            # management_fee is available at both, other_expense at neither.
+            assert naive == {
+                "management_fee": "10",
+                "gross_expense": "2",
+                "other_expense": "10",
+            }
+            assert registered != naive
+            # Values alone cannot tell them apart -- which is why this test asserts
+            # the chosen occurrence.
             assert cur.execute(
-                "SELECT occurrence FROM rr1_fee_profiles WHERE canonical_concept='management_fee' "
-                "ORDER BY occurrence ASC LIMIT 1"
-            ).fetchone() == ("10",)
+                "SELECT count(DISTINCT value_numeric) FROM rr1_fee_profiles "
+                "WHERE canonical_concept='management_fee'"
+            ).fetchone() == (1,)
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
