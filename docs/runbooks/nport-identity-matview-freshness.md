@@ -45,9 +45,35 @@ SELECT nport_holdings_snapshot_identity_freshness();     -- structured verdict, 
 SELECT nport_holdings_snapshot_identity_assert_fresh();  -- raises on stale / behind_pointer
 ```
 
-Verdict states: `fresh`, `stale`, `behind_pointer`, `unavailable`. Absence of any
-input (matview, pointer, holdings surface) resolves to `unavailable` — the
-assertion never reports `fresh` about something it could not read.
+Verdict states and how each one lands:
+
+| state | meaning | `assert_fresh()` | the job |
+|---|---|---|---|
+| `fresh` | the matview carries the newest `report_date` of the pinned publication, and the newest `filing_date` at that date | returns | green |
+| `stale` | proven divergence — the matview is behind | raises (`data_exception`) | red, `IdentityMatviewStale` |
+| `behind_pointer` | the matview holds no rows for the pinned publication | raises (`data_exception`) | red, `IdentityMatviewStale` |
+| `unreadable` | the matview is absent, or exists but was never refreshed | raises (`undefined_table`) | red, `IdentityMatviewUnreadable` |
+| `unavailable` | no pointer, no holdings surface, or a pinned publication with no holdings — undecidable **upstream** | returns | green, with a WARNING |
+
+`unreadable` is hard on purpose: this runbook tells you to call the assertion
+right after a `REFRESH`, and a silent pass from a matview that does not exist
+would tell you the opposite of the truth. `unavailable` stays soft because a
+datalake between publications is not a broken read path — but it is never
+reported as `fresh` either.
+
+### Who installs the functions
+
+**Install them once, as the role that owns them, and keep that role.**
+`CREATE OR REPLACE FUNCTION` requires ownership: if an operator applies the file
+as `postgres` and the worker later runs as `worker_writer`, the worker's install
+fails with *must be owner of function*. The worker tolerates exactly that case —
+it logs a WARNING and uses the already-installed functions — but only when they
+are already there; if they are absent the privilege error is re-raised, because
+then there is nothing to probe with. `probe(conn, install=False)` skips the
+install entirely for a caller that knows the functions are managed elsewhere.
+
+Whoever owns them must **re-apply `schemas/nport_holdings_snapshot_identity_freshness.sql`
+when it changes** — the worker cannot do it for them.
 
 Cost: four index-backed `max()` reads — **24 ms cold, 3 ms warm** measured on the
 mirror against the current 625 508-row publication. `max(filing_date)` is taken
@@ -63,7 +89,7 @@ Verified end to end on the mirror on 2026-08-02:
 $ python -m src.run nport_holdings_identity_freshness
 {"worker": "nport_holdings_identity_freshness", "rows": 0, "state": "fresh",
  "reason": "matview_carries_the_publication_maxima",
- "publication_id": "4594cd24-ad7c-4f45-9d56-367963a18e37",
+ "publication_id": "4594cd24-ad7c-4f45-9d56-367963a18e37", "matview_rows": 13598,
  "matview_max_report_date": "2026-05-31", "source_max_report_date": "2026-05-31",
  "matview_max_filing_date": "2026-06-30", "source_max_filing_date": "2026-06-30",
  "confirmed_against_bridge": false}
@@ -95,12 +121,31 @@ maxima. Point it at the datalake DSN; it writes nothing but the two functions.
 ## When it goes red
 
 1. Read the verdict: `matview_max_report_date` vs `source_max_report_date` /
-   `bridge_resolved_max_report_date` tell you how far behind it is.
-2. Refresh the matview (`CONCURRENTLY` is safe — unique index present).
-3. Re-run the assertion. It must return `fresh`.
-4. If it stays behind after a refresh, the pinned publication is still gaining
+   `bridge_resolved_max_report_date` tell you how far behind it is, and
+   `matview_rows` gives the matview's own cardinality for the pinned publication.
+2. On `unreadable`, a refresh is not the fix — the relation is missing or was
+   created `WITH NO DATA`. Re-create it from the definition above (as its owner),
+   then refresh.
+3. On `stale` / `behind_pointer`, refresh the matview (`CONCURRENTLY` is safe —
+   unique index present).
+4. Re-run the assertion. It must return `fresh`.
+5. If it stays behind after a refresh, the pinned publication is still gaining
    rows — i.e. it is not actually validated — and the pointer is the problem, not
    the matview.
+
+### What `fresh` does and does not prove
+
+It proves the matview carries the newest `report_date` of the pinned publication
+and the newest `filing_date` at that date — the coordinate the app's anchor is
+computed from. It does **not** prove completeness. `sec_nport_holdings_v2` is
+generated offline (`src/nport/local_v2_generator.py` writes
+`sec_nport_holdings_v2.tsv.gz`) and loaded in accession order, not report_date
+order, so a capture taken part-way through a load is a *prefix of accessions* that
+can already contain the global maxima while missing much of the publication — and
+this assertion would call it `fresh`. There is no cheap cardinality check to close
+that gap: `sec_derived_publications` records no row count, and the current
+publication holds 4 507 500 rows. `matview_rows` is reported as evidence for
+anyone comparing two runs, not as proof.
 
 ## Open proposal (not implemented)
 

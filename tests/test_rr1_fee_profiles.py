@@ -334,7 +334,9 @@ def test_occurrence_semantics_ship_as_column_comments() -> None:
                            "data_date", "status"):
                 assert comments.get(column), f"{column} must document its grain"
             assert "iprx" in comments["occurrence"]
-            assert "LOWEST occurrence" in comments["occurrence"]
+            assert "numerically lowest occurrence" in comments["occurrence"]
+            # The premise the rule must not silently depend on.
+            assert "regexp_replace" in comments["occurrence"]
             assert "REAL grain" in comments["document_id"]
             # The vocabulary correction: unavailable is scoped to the CONTEXT.
             assert "not reported IN THIS CONTEXT" in comments["status"]
@@ -383,25 +385,62 @@ def test_a_repeated_occurrence_manufactures_unavailable_fillers_for_every_other_
                 "WHERE canonical_concept='gross_expense' AND occurrence='1'"
             ).fetchone() == ("concept_not_reported",)
 
-            # The registered rule: available before unavailable, THEN lowest
-            # occurrence. Applied per concept it never loses a reported value.
-            picked = dict(
-                cur.execute(
-                    "SELECT canonical_concept, value_numeric FROM ("
-                    "  SELECT canonical_concept, value_numeric,"
-                    "         row_number() OVER (PARTITION BY series_id,class_id,canonical_concept"
-                    "             ORDER BY data_date DESC,"
-                    "                      (status IN ('available','degraded')) DESC,"
-                    "                      occurrence ASC) AS rank"
-                    "  FROM rr1_fee_profiles"
-                    "  WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
-                    ") ranked WHERE rank=1"
-                ).fetchall()
-            )
+            # The registered rule: available before unavailable, THEN the
+            # numerically lowest occurrence. Applied per concept it never loses a
+            # reported value.
+            picked = dict(cur.execute(_REGISTERED_RANK).fetchall())
             assert picked == {
                 "management_fee": Decimal("0.0030"),
                 "gross_expense": Decimal("0.0030"),
                 "other_expense": Decimal("0.0000"),
             }
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+#: The rank registered in schemas/rr1_fee_profiles.sql and docs/rr1-fee-context-grain.md.
+_REGISTERED_RANK = (
+    "SELECT canonical_concept, value_numeric FROM ("
+    "  SELECT canonical_concept, value_numeric,"
+    "         row_number() OVER (PARTITION BY series_id,class_id,canonical_concept"
+    "             ORDER BY data_date DESC,"
+    "                      (status IN ('available','degraded')) DESC,"
+    "                      NULLIF(regexp_replace(occurrence,'[^0-9]','','g'),'')::numeric"
+    "                          ASC NULLS LAST,"
+    "                      occurrence ASC) AS rank"
+    "  FROM rr1_fee_profiles"
+    "  WHERE canonical_concept IN ('management_fee','gross_expense','other_expense')"
+    ") ranked WHERE rank=1"
+)
+
+
+def test_the_registered_rank_orders_occurrence_numerically_not_lexicographically() -> None:
+    """``occurrence`` is TEXT, so ``occurrence ASC`` puts '10' before '2'.
+
+    The column holds only '0'..'3' today, so the two orders agree and the bug
+    would be invisible. Seed an iprx that reaches 10 and the lexicographic rank
+    picks the wrong context; the registered rank does not.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, publication_id = _fixture(cur)
+        try:
+            # management_fee reported at iprx 2 and 10; gross_expense only at 2.
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="2", raw_row_id=1)
+            _fact(cur, run_id, "ManagementFeesOverAssets", "0.0030", occurrence="10", raw_row_id=2)
+            _fact(cur, run_id, "ExpensesOverAssets", "0.0030", occurrence="2", raw_row_id=3)
+            cur.execute("SELECT build_rr1_fee_profiles(%s,'2026-06-30')", (publication_id,))
+
+            assert dict(cur.execute(_REGISTERED_RANK).fetchall()) == {
+                "management_fee": Decimal("0.0030"),
+                "gross_expense": Decimal("0.0030"),
+                "other_expense": None,
+            }
+            # The naive lexicographic tiebreak lands on occurrence '10'.
+            assert cur.execute(
+                "SELECT occurrence FROM rr1_fee_profiles WHERE canonical_concept='management_fee' "
+                "ORDER BY occurrence ASC LIMIT 1"
+            ).fetchone() == ("10",)
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

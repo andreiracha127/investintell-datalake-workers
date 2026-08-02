@@ -30,8 +30,9 @@
 --
 -- COST
 -- ----
--- Four index-backed ``max()`` reads in the happy path: ~30 ms total on the mirror
--- against a 625 k-row publication.  Every one of them is bounded by an index --
+-- Four index-backed ``max()`` reads plus one ``count(*)`` over the matview's own
+-- (small) slice of the publication: ~30 ms total on the mirror against a 625 k-row
+-- publication.  Every one of the maxima is bounded by an index --
 -- ``sec_nport_holdings_v2 (publication_id, report_date DESC, ...)`` and the
 -- matview's own ``(publication_id, series_id, report_date, accession_number)``.
 -- ``max(filing_date)`` is deliberately taken AT the maximum report_date rather
@@ -46,12 +47,37 @@
 --
 -- WHAT THIS PROVES AND WHAT IT DOES NOT
 -- -------------------------------------
--- ``fresh`` means the matview saw the newest (report_date, filing_date) of the
--- pinned publication.  It does not prove per-series completeness: a refresh that
--- captured the newest rows but not some older series would still report fresh.
--- Postgres refreshes a matview atomically, so a partial capture can only come
--- from the prepared-window race above, and that race truncates the NEWEST rows --
--- which is exactly what these maxima see.
+-- ``fresh`` means exactly this and nothing more: the matview carries the newest
+-- ``report_date`` of the pinned publication, and the newest ``filing_date`` AT
+-- that report_date.  That is the coordinate the app's anchor is computed from.
+--
+-- It does NOT prove completeness.  ``sec_nport_holdings_v2`` is generated offline
+-- (``src/nport/local_v2_generator.py`` writes ``sec_nport_holdings_v2.tsv.gz``)
+-- and loaded into the target, so rows arrive in accession order, NOT in
+-- report_date order.  A capture taken part-way through such a load is a PREFIX OF
+-- ACCESSIONS, and a prefix can already contain the global maxima while missing a
+-- large share of the publication -- this function would call that ``fresh``.  No
+-- ordering argument is available to close that gap, and the publication carries
+-- no recorded row count to check cardinality against (``sec_derived_publications``
+-- stores none, and counting 4.5M rows per probe is not a cheap check).
+--
+-- What IS reported, as evidence rather than proof, is ``matview_rows`` -- the
+-- matview's own row count for the pinned publication, which is cheap because the
+-- matview is small.  A collapse there is visible to anyone comparing two runs.
+--
+-- STATES
+-- ------
+--   fresh           proven, as scoped above
+--   stale           proven divergence: the matview is behind the pinned publication
+--   behind_pointer  the matview holds NO rows for the pinned publication
+--   unreadable      the anchor relation cannot be read at all (absent, or never
+--                   refreshed) -- the app's read path is broken, not merely stale
+--   unavailable     genuinely undecidable upstream (no pointer, no holdings
+--                   surface, pinned publication carries no holdings)
+--
+-- ``nport_holdings_snapshot_identity_assert_fresh()`` raises on the first three.
+-- ``unreadable`` raises because a caller that just ran REFRESH and gets silence
+-- from a matview that does not exist has been told the opposite of the truth.
 
 CREATE OR REPLACE FUNCTION nport_holdings_snapshot_identity_freshness()
 RETURNS jsonb
@@ -68,8 +94,30 @@ DECLARE
     src_filing date;
     exact_report date;
     exact_filing date;
+    mv_rows bigint;
 BEGIN
-    -- Fail closed on absence: never claim fresh about a surface we cannot read.
+    -- The SUBJECT is checked first, and its absence is HARD. Whatever the state of
+    -- the upstream pointer, a missing or never-refreshed anchor relation means the
+    -- app's read path is broken, not merely behind -- and a caller that has just
+    -- run REFRESH must not be answered with silence.
+    IF to_regclass(matview) IS NULL THEN
+        RETURN jsonb_build_object('state', 'unreadable',
+                                  'reason', 'matview_absent',
+                                  'matview', matview);
+    END IF;
+
+    -- ``CREATE MATERIALIZED VIEW ... WITH NO DATA`` leaves a relation that raises
+    -- on every SELECT until its first refresh.
+    SELECT c.relispopulated INTO populated
+    FROM pg_class c WHERE c.oid = to_regclass(matview);
+    IF NOT COALESCE(populated, false) THEN
+        RETURN jsonb_build_object('state', 'unreadable',
+                                  'reason', 'matview_never_refreshed',
+                                  'matview', matview);
+    END IF;
+
+    -- Genuinely undecidable upstream conditions stay SOFT: there is nothing for
+    -- the matview to be fresh against, and that is not the matview's fault.
     IF to_regclass('sec_derived_current_pointers') IS NULL
        OR to_regclass('sec_nport_holdings_v2') IS NULL
        OR to_regclass('sec_nport_instrument_class_bridge') IS NULL THEN
@@ -87,27 +135,13 @@ BEGIN
                                   'matview', matview);
     END IF;
 
-    IF to_regclass(matview) IS NULL THEN
-        RETURN jsonb_build_object('state', 'unavailable',
-                                  'reason', 'matview_absent',
-                                  'matview', matview,
-                                  'publication_id', pinned);
-    END IF;
-
-    -- ``CREATE MATERIALIZED VIEW ... WITH NO DATA`` leaves a relation that raises
-    -- on every SELECT until its first refresh.
-    SELECT c.relispopulated INTO populated
-    FROM pg_class c WHERE c.oid = to_regclass(matview);
-    IF NOT COALESCE(populated, false) THEN
-        RETURN jsonb_build_object('state', 'unavailable',
-                                  'reason', 'matview_never_refreshed',
-                                  'matview', matview,
-                                  'publication_id', pinned);
-    END IF;
-
+    -- Evidence, not proof (see WHAT THIS PROVES above): the maxima cannot see a
+    -- mid-load prefix of accessions that already carries them. The matview is
+    -- small, so its own cardinality is cheap to report and a collapse is visible
+    -- to anyone comparing two runs.
     EXECUTE format(
-        'SELECT max(report_date) FROM %I WHERE publication_id = $1', matview
-    ) INTO mv_report USING pinned;
+        'SELECT max(report_date), count(*) FROM %I WHERE publication_id = $1', matview
+    ) INTO mv_report, mv_rows USING pinned;
 
     SELECT max(h.report_date) INTO src_report
     FROM sec_nport_holdings_v2 h
@@ -127,6 +161,7 @@ BEGIN
                                   'reason', 'matview_holds_no_rows_for_pinned_publication',
                                   'matview', matview,
                                   'publication_id', pinned,
+                                  'matview_rows', mv_rows,
                                   'source_max_report_date', src_report);
     END IF;
 
@@ -149,6 +184,7 @@ BEGIN
                                       'reason', 'matview_carries_the_publication_maxima',
                                       'matview', matview,
                                       'publication_id', pinned,
+                                      'matview_rows', mv_rows,
                                       'matview_max_report_date', mv_report,
                                       'matview_max_filing_date', mv_filing,
                                       'source_max_report_date', src_report,
@@ -201,6 +237,7 @@ BEGIN
                                   'reason', 'matview_carries_the_bridge_resolved_maxima',
                                   'matview', matview,
                                   'publication_id', pinned,
+                                  'matview_rows', mv_rows,
                                   'matview_max_report_date', mv_report,
                                   'matview_max_filing_date', mv_filing,
                                   'source_max_report_date', src_report,
@@ -241,6 +278,13 @@ AS $$
 DECLARE verdict jsonb;
 BEGIN
     verdict := nport_holdings_snapshot_identity_freshness();
+    IF verdict->>'state' = 'unreadable' THEN
+        -- Distinct errcode: this is not "behind", it is "not there". A caller that
+        -- just ran REFRESH and gets a silent pass here has been told the opposite
+        -- of the truth.
+        RAISE EXCEPTION 'nport_holdings_snapshot_identity_v1 cannot be read: %', verdict::text
+              USING ERRCODE = 'undefined_table';
+    END IF;
     IF verdict->>'state' IN ('stale', 'behind_pointer') THEN
         RAISE EXCEPTION 'nport_holdings_snapshot_identity_v1 is not fresh for the current '
                         'sec_nport_holdings_v2 publication: %', verdict::text

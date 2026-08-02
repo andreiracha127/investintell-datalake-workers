@@ -422,45 +422,59 @@ WHERE c.product = 'rr1_fee_profile_v1';
 --
 -- The recommended consumer rule, in this order: latest data_date, then
 -- status IN ('available','degraded') before 'unavailable', then the LOWEST
--- occurrence.  Ranking on occurrence FIRST is the documented trap: at a context
--- whose occurrence exists only because a DIFFERENT concept was repeated, every
--- other concept has nothing but its `unavailable` filler, so preferring the
+-- occurrence NUMERICALLY.  Ranking on occurrence FIRST is the documented trap: at
+-- a context whose occurrence exists only because a DIFFERENT concept was repeated,
+-- every other concept has nothing but its `unavailable` filler, so preferring the
 -- highest occurrence turns available slots into unavailable ones.
+--
+-- `occurrence` is TEXT (iprx is lexical in the effective contract -- "01" must not
+-- collapse onto "1"), so a plain `occurrence ASC` is LEXICOGRAPHIC and would order
+-- '10' before '2'.  Today the column holds only '0'..'3' so the two orders agree,
+-- but the rule must not depend on that.  Order the way the crosswalk resolver
+-- already does -- by the digit run, with a lexical tiebreak:
+--
+--   ORDER BY NULLIF(regexp_replace(occurrence,'[^0-9]','','g'),'')::numeric ASC
+--            NULLS LAST, occurrence ASC
 -- See docs/rr1-fee-context-grain.md for the evidence and the app-side rule.
 -- ---------------------------------------------------------------------------
 
 COMMENT ON COLUMN rr1_fee_profiles.occurrence IS
 'RR1 num.tsv `iprx`: the SEC''s own sequence number for facts that would OTHERWISE '
 'BE IDENTICAL within a submission. It is not a semantic dimension -- measured over '
-'the current publication, 2 821 (series, class, concept) groups vary only by '
-'occurrence and ZERO of them disagree on the value; the repeated facts are '
-'byte-identical apart from iprx. Consumers must NOT rank on it: prefer a row whose '
-'status is available/degraded, then the LOWEST occurrence. Because the builder '
-'writes the full 7-concept grid per context, a context that exists only because '
-'ANOTHER concept was repeated carries `unavailable` fillers for every concept it '
-'did not report -- ranking occurrence DESC serves those fillers instead of the '
-'reported value.';
+'the current publication, 2 821 groups keyed by (accession_number, series_id, '
+'class_id, canonical_concept, effective_date, filed_date) vary ONLY by occurrence '
+'and ZERO of them disagree on the value; the repeated facts are byte-identical '
+'apart from iprx. Consumers must NOT rank on it: prefer a row whose status is '
+'available/degraded, then the numerically lowest occurrence -- the column is TEXT '
+'(iprx is lexical, "01" must survive), so order by '
+'NULLIF(regexp_replace(occurrence,''[^0-9]'','''',''g''),'''')::numeric ASC NULLS '
+'LAST, occurrence ASC rather than by occurrence alone, which would put ''10'' '
+'before ''2''. Because the builder writes the full 7-concept grid per context, a '
+'context that exists only because ANOTHER concept was repeated carries '
+'`unavailable` fillers for every concept it did not report -- ranking occurrence '
+'DESC serves those fillers instead of the reported value.';
 
 COMMENT ON COLUMN rr1_fee_profiles.document_id IS
 'RR1 num.tsv `document`: which prospectus document inside the submission reported '
 'the fact. A REAL grain -- one filing can carry several prospectuses for the same '
-'class, and 162 of the 7 154 document-varying groups disagree on the value. A '
-'consumer that needs one number per class must choose a document deliberately; '
-'there is no producer-side ranking of documents.';
+'class, and 162 of the 7 154 document-varying groups (same key as `occurrence`) '
+'disagree on the value. A consumer that needs one number per class must choose a '
+'document deliberately; there is no producer-side ranking of documents.';
 
 COMMENT ON COLUMN rr1_fee_profiles.dimensions IS
 'RR1 num.tsv `otherdims`: the remaining XBRL dimensions of the fact. A REAL grain '
-'(42 of the 98 dimension-varying groups disagree on the value); the empty string '
-'is the undimensioned fact.';
+'(42 of the 98 dimension-varying groups, same key as `occurrence`, disagree on the '
+'value); the empty string is the undimensioned fact.';
 
 COMMENT ON COLUMN rr1_fee_profiles.measure_id IS
-'RR1 num.tsv `measure`. A REAL grain (3 of the 7 measure-varying groups disagree on '
-'the value); the empty string is the unmeasured fact.';
+'RR1 num.tsv `measure`. A REAL grain (3 of the 7 measure-varying groups, same key '
+'as `occurrence`, disagree on the value); the empty string is the unmeasured fact.';
 
 COMMENT ON COLUMN rr1_fee_profiles.data_date IS
 'RR1 num.tsv `ddate`: the fiscal period the fee applies to. A REAL grain (50 of the '
-'2 191 date-varying groups disagree on the value) and the FIRST tie-break a '
-'consumer should apply: the latest data_date is the current fee schedule.';
+'2 191 date-varying groups, same key as `occurrence`, disagree on the value) and '
+'the FIRST tie-break a consumer should apply: the latest data_date is the current '
+'fee schedule.';
 
 COMMENT ON COLUMN rr1_fee_profiles.status IS
 '4-state serving vocabulary, passed through to sec_regulatory_serving_facts. '

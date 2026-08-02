@@ -67,7 +67,7 @@ def _holding(cur, publication_id, run_id, holding_id, report_date, *, resolution
     )
 
 
-def _create_matview(cur) -> None:
+def _create_matview(cur, *, with_data: bool = True) -> None:
     """The operator-owned matview, verbatim from its production definition."""
     cur.execute(
         """CREATE MATERIALIZED VIEW nport_holdings_snapshot_identity_v1 AS
@@ -79,6 +79,7 @@ def _create_matview(cur) -> None:
          AND b.holding_id=h.holding_id
         WHERE b.resolution_state='resolved' AND h.report_date >= b.valid_from
           AND (b.valid_to IS NULL OR h.report_date <= b.valid_to)"""
+        + ("" if with_data else " WITH NO DATA")
     )
 
 
@@ -113,8 +114,13 @@ def test_worker_is_dispatchable_by_name() -> None:
     assert callable(module.run)
 
 
-def test_absent_matview_is_never_reported_fresh() -> None:
-    """Fail closed: "nothing to compare" must never be recorded as "fresh"."""
+def test_absent_matview_is_unreadable_and_stops_the_caller() -> None:
+    """An absent anchor is not "nothing to compare" -- it is a broken read path.
+
+    The runbook tells an operator to call the assertion right after a REFRESH. A
+    silent pass there, on a matview that does not exist, tells the caller the
+    opposite of the truth.
+    """
     import psycopg
 
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
@@ -123,8 +129,98 @@ def test_absent_matview_is_never_reported_fresh() -> None:
             _holding(cur, holdings_id, run_id, "H1", "2026-01-31")
             _promote(cur, holdings_id)
             verdict = _verdict(cur)
-            assert verdict["state"] == "unavailable"
+            assert verdict["state"] == "unreadable"
             assert verdict["reason"] == "matview_absent"
+            with pytest.raises(psycopg.errors.UndefinedTable):
+                cur.execute("SELECT nport_holdings_snapshot_identity_assert_fresh()")
+            with pytest.raises(freshness.IdentityMatviewUnreadable):
+                _run_in_schema(schema)
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_never_refreshed_matview_is_unreadable_not_fresh() -> None:
+    """``WITH NO DATA`` leaves a relation that raises on every SELECT."""
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, holdings_id, run_id = _seed(cur)
+        try:
+            _holding(cur, holdings_id, run_id, "H1", "2026-01-31")
+            _promote(cur, holdings_id)
+            _create_matview(cur, with_data=False)
+            verdict = _verdict(cur)
+            assert verdict["state"] == "unreadable"
+            assert verdict["reason"] == "matview_never_refreshed"
+            with pytest.raises(psycopg.errors.UndefinedTable):
+                cur.execute("SELECT nport_holdings_snapshot_identity_assert_fresh()")
+            with pytest.raises(freshness.IdentityMatviewUnreadable):
+                _run_in_schema(schema)
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_missing_pointer_is_soft_and_never_fresh() -> None:
+    """Undecidable UPSTREAM: there is nothing for the matview to be fresh against.
+
+    Soft on purpose -- a datalake between publications is not a broken read path,
+    and turning this red would make the job cry wolf. It still never says fresh.
+    """
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, holdings_id, run_id = _seed(cur)
+        try:
+            _holding(cur, holdings_id, run_id, "H1", "2026-01-31")
+            _create_matview(cur)  # no pointer was ever set
+            verdict = _verdict(cur)
+            assert verdict["state"] == "unavailable"
+            assert verdict["reason"] == "no_current_holdings_publication"
+            cur.execute("SELECT nport_holdings_snapshot_identity_assert_fresh()")
+            assert _run_in_schema(schema)["state"] == "unavailable"
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_pinned_publication_without_holdings_is_soft_and_never_fresh() -> None:
+    """A pinned publication carrying no holdings rows is likewise undecidable."""
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, holdings_id, _run_id = _seed(cur)
+        try:
+            _create_matview(cur)
+            _promote(cur, holdings_id)  # validated with zero holdings rows
+            verdict = _verdict(cur)
+            assert verdict["state"] == "unavailable"
+            assert verdict["reason"] == "pinned_publication_has_no_holdings"
+            cur.execute("SELECT nport_holdings_snapshot_identity_assert_fresh()")
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_absent_holdings_surface_is_soft_and_never_fresh() -> None:
+    """No holdings surface at all: the matview exists, the thing to compare does not."""
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema = f"identity_bare_{uuid4().hex}"
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        try:
+            cur.execute(
+                (ROOT / "schemas" / freshness.SCHEMA_FILE.name).read_text(encoding="utf-8")
+            )
+            # A populated matview standing alone, with no holdings surface behind it.
+            cur.execute(
+                "CREATE MATERIALIZED VIEW nport_holdings_snapshot_identity_v1 AS "
+                "SELECT NULL::uuid AS publication_id, ''::text AS series_id, "
+                "''::text AS source_series_id, NULL::date AS report_date, "
+                "''::text AS accession_number, NULL::date AS filing_date WHERE false"
+            )
+            verdict = _verdict(cur)
+            assert verdict["state"] == "unavailable"
+            assert verdict["reason"] == "holdings_surface_absent"
+            cur.execute("SELECT nport_holdings_snapshot_identity_assert_fresh()")
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 

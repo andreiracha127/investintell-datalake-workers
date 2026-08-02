@@ -110,15 +110,35 @@ never reported the concept.
 For one number per `(series, class, canonical_concept)`, rank:
 
 1. latest `data_date` (the current fiscal period);
-2. latest `effective_date`, then latest `filing_date`, then accession — as today;
+2. latest `effective_date`, then latest `filing_date`, then accession — this is
+   already what the app does: light repo `main`,
+   `backend/app/repositories/fund_fee_profile.py`, where `_effective_rows`
+   reduces to one fact per `(class, concept)` (commit `6d1afb2`) under a total
+   order whose third step is exactly `(effective_date, filing_date, accession)`
+   (commits `f6995d3`, `43ae987`). The reduction happens in Python because the
+   serving VIEW left-joins every row: 52 937 classes, 43.4 rows per class on
+   average;
 3. `status IN ('available','degraded')` **before** `unavailable`;
-4. lowest `occurrence`;
+4. numerically lowest `occurrence`;
 5. only then a deterministic tie-break on `document_id` / `dimensions` /
    `measure_id`.
 
 Steps 3 and 4 must stay in that order. Step 3 alone already removes every
 occurrence-driven regression; step 4 only makes the remaining choice
 deterministic.
+
+Step 4 says *numerically* on purpose. `occurrence` is `text` — it is part of the
+primary key and `iprx` is lexical in the effective contract, so `'01'` must not
+collapse onto `'1'` — which makes a plain `occurrence ASC` lexicographic:
+`'10' < '2'`. The column currently holds only `'0'..'3'`, so the two orders agree
+today, but the rule must not rest on that. Order the way the crosswalk resolver in
+`src/sec_serving/materializer.py` already does, by the digit run with a lexical
+tiebreak:
+
+```sql
+ORDER BY NULLIF(regexp_replace(occurrence, '[^0-9]', '', 'g'), '')::numeric ASC NULLS LAST,
+         occurrence ASC
+```
 
 ## Why the dedupe was NOT implemented in the producer
 

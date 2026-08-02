@@ -23,11 +23,20 @@ answer costs ~15 s and is paid only when the cheap comparison already looks wron
 
 WHAT "FAIL-CLOSED" MEANS HERE
 -----------------------------
-The probe never reports ``fresh`` unless it PROVED it.  Absence of any input --
-matview, pointer, holdings surface -- resolves to ``unavailable``, never to
-``fresh``.  ``run()`` (the dispatchable job) raises on a proven divergence so the
-job exits non-zero; ``probe()`` returns the same verdict without raising, so a
-caller that merely wants to observe can embed it.
+The probe never reports ``fresh`` unless it PROVED it, and it distinguishes two
+kinds of not-proven:
+
+* ``unreadable`` -- the anchor relation is ABSENT or was never refreshed.  The
+  app's read path is broken, not merely behind, so this is HARD: ``run()`` raises
+  ``IdentityMatviewUnreadable``.  Answering a caller that has just run REFRESH
+  with a silent pass would be telling it the opposite of the truth.
+* ``unavailable`` -- no pointer, no holdings surface, or a pinned publication with
+  no holdings.  Genuinely undecidable UPSTREAM and not the matview's fault, so it
+  stays soft: WARNING, no raise.
+
+``stale`` and ``behind_pointer`` raise ``IdentityMatviewStale``.  ``probe()``
+returns every verdict without raising, so a caller that merely wants to observe
+can embed it.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 """
@@ -47,30 +56,79 @@ SCHEMA_FILE = ROOT / "schemas" / "nport_holdings_snapshot_identity_freshness.sql
 MATVIEW = "nport_holdings_snapshot_identity_v1"
 CONSUMER_VIEW = "sec_current_nport_holdings_snapshot_identity_v1"
 
-#: Verdicts that mean the served anchor cannot be trusted.
+#: Verdicts that mean the served anchor is behind what it labels itself as.
 DIVERGENT_STATES = frozenset({"stale", "behind_pointer"})
+#: Verdicts that mean the served anchor cannot be read at all.
+UNREADABLE_STATES = frozenset({"unreadable"})
+#: Every verdict that must stop the job.
+HARD_STATES = DIVERGENT_STATES | UNREADABLE_STATES
 
 
-class IdentityMatviewStale(RuntimeError):
+class IdentityMatviewError(RuntimeError):
+    """Base for the verdicts that must stop the job."""
+
+    def __init__(self, message: str, verdict: dict[str, Any]) -> None:
+        super().__init__(f"{message}: {verdict}")
+        self.verdict = verdict
+
+
+class IdentityMatviewStale(IdentityMatviewError):
     """The identity matview is behind the pinned holdings publication."""
 
     def __init__(self, verdict: dict[str, Any]) -> None:
         super().__init__(
-            f"{MATVIEW} is not fresh for the current sec_nport_holdings_v2 publication: {verdict}"
+            f"{MATVIEW} is not fresh for the current sec_nport_holdings_v2 publication",
+            verdict,
         )
-        self.verdict = verdict
 
 
-def install_schema(conn: Any) -> None:
+class IdentityMatviewUnreadable(IdentityMatviewError):
+    """The identity matview is absent, or exists but was never refreshed.
+
+    Deliberately a DIFFERENT exception from ``IdentityMatviewStale``: "behind" and
+    "not there" call for different repairs, and only one of them is fixed by a
+    refresh.
+    """
+
+    def __init__(self, verdict: dict[str, Any]) -> None:
+        super().__init__(f"{MATVIEW} cannot be read", verdict)
+
+
+def install_schema(conn: Any) -> bool:
     """Install the freshness functions. Idempotent, and installs no matview.
 
     The matview itself is deliberately NOT created here: production owns it and
     the runtime role is not its owner (the same constraint
     ``src/sec_effective_matviews.py`` documents for the SEC effective views).
     A probe that created its own subject would be probing itself.
+
+    Returns whether the install ran.  ``CREATE OR REPLACE FUNCTION`` requires
+    ownership, and the runbook encourages an operator to install these functions
+    once as ``postgres`` -- after which this call would fail with *must be owner
+    of function* and turn the job red for a reason that has nothing to do with
+    freshness.  So a privilege error is tolerated ONLY when the functions are
+    already there; if they are not, it is re-raised, because then there is nothing
+    to probe with.
     """
-    with conn.cursor() as cur:
-        cur.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
+    import psycopg
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(SCHEMA_FILE.read_text(encoding="utf-8"))
+        return True
+    except psycopg.errors.InsufficientPrivilege:
+        installed = conn.execute(
+            "SELECT to_regprocedure('nport_holdings_snapshot_identity_freshness()') IS NOT NULL"
+        ).fetchone()[0]
+        if not installed:
+            raise
+        LOGGER.warning(
+            "nport_holdings_identity_freshness: not the owner of the freshness functions, "
+            "using the already-installed ones. Whoever owns them must re-apply "
+            "schemas/%s when it changes -- see docs/runbooks/nport-identity-matview-freshness.md",
+            SCHEMA_FILE.name,
+        )
+        return False
 
 
 def probe(conn: Any, *, install: bool = True) -> dict[str, Any]:
@@ -88,7 +146,15 @@ def probe(conn: Any, *, install: bool = True) -> dict[str, Any]:
     ).fetchone()[0]
 
     state = verdict.get("state")
-    if state in DIVERGENT_STATES:
+    if state in UNREADABLE_STATES:
+        LOGGER.warning(
+            "nport_holdings_identity_freshness: %s cannot be read (state=%s reason=%s); the app "
+            "reads it through %s to anchor the fixed-income dossier, so that read path is broken "
+            "-- this is NOT a freshness gap and a REFRESH alone may not fix it. See "
+            "docs/runbooks/nport-identity-matview-freshness.md",
+            MATVIEW, state, verdict.get("reason"), CONSUMER_VIEW,
+        )
+    elif state in DIVERGENT_STATES:
         LOGGER.warning(
             "nport_holdings_identity_freshness: %s is behind the pinned holdings publication "
             "(state=%s reason=%s publication_id=%s matview_max_report_date=%s "
@@ -115,15 +181,20 @@ def run(
     """Assert the identity matview is fresh for the pinned holdings publication.
 
     ``calc_date``/``limit`` are accepted for dispatcher-contract parity and
-    ignored: there is exactly one current publication to check and the check is
-    two ``max()`` reads, so there is nothing to slice.
+    ignored: there is exactly one current publication to check and the check is a
+    handful of ``max()`` reads, so there is nothing to slice.
 
-    Raises ``IdentityMatviewStale`` on a proven divergence -- the job must go red,
-    because the app is serving a stale anchor under a current label.
+    Raises ``IdentityMatviewStale`` on a proven divergence and
+    ``IdentityMatviewUnreadable`` when the anchor relation is absent or was never
+    refreshed.  Both go red: in the first case the app serves a stale anchor under
+    a current label, in the second its read path does not resolve at all.
     """
     del calc_date, limit
     with connect(resolve_dsn(dsn), autocommit=True) as conn:
         verdict = probe(conn)
-    if verdict.get("state") in DIVERGENT_STATES:
+    state = verdict.get("state")
+    if state in UNREADABLE_STATES:
+        raise IdentityMatviewUnreadable(verdict)
+    if state in DIVERGENT_STATES:
         raise IdentityMatviewStale(verdict)
     return {"rows": 0, **verdict}
