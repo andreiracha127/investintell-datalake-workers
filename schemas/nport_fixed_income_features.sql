@@ -478,9 +478,20 @@ SELECT s.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_co
 -- (the second attempt sees rows and is refused) and strictly additive. It can
 -- never rewrite or partially replace an existing rollup, and UPDATE/DELETE stay
 -- refused unconditionally.
+--
+-- "Had no rows yet" is a property of the STATEMENT, not of a row, and that is
+-- why the check lives in its own statement-level trigger below. Asked per row it
+-- was self-defeating: a row trigger's query sees the rows the same command
+-- already inserted, so row 2 of a multi-row backfill found row 1 and raised
+-- "already published". The backfill is one INSERT..SELECT producing one row per
+-- (series, report_date, accession, metric family, metric key) group, so it could
+-- only ever succeed for a publication whose coverage collapsed to a single
+-- group. The repair path documented in the runbook was broken by construction;
+-- the build path never reached this branch (its parent is 'prepared'), which is
+-- why nothing noticed.
 CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_write_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE pinned_source uuid; pinned_run uuid; pinned_as_of date; parent_state text; already bigint;
+DECLARE pinned_source uuid; pinned_run uuid; pinned_as_of date; parent_state text;
 BEGIN
     IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'N-PORT fixed-income coverage rollup row is immutable'; END IF;
     SELECT lifecycle_state INTO parent_state FROM sec_derived_publications
@@ -488,13 +499,8 @@ BEGIN
     IF parent_state IS NULL THEN
         RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a fixed-income publication';
     END IF;
-    IF parent_state = 'validated' THEN
-        SELECT count(*) INTO already FROM nport_fixed_income_metric_coverage_snapshot_v1
-          WHERE publication_id = NEW.publication_id;
-        IF already > 0 THEN
-            RAISE EXCEPTION 'N-PORT fixed-income coverage rollup is already published for this publication';
-        END IF;
-    ELSIF parent_state <> 'prepared' THEN
+    -- 'validated' is admitted here and constrained by the statement guard below.
+    IF parent_state NOT IN ('prepared','validated') THEN
         RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a prepared publication';
     END IF;
     SELECT b.source_holdings_publication_id,p.source_run_id,b.as_of_date INTO pinned_source,pinned_run,pinned_as_of
@@ -507,11 +513,54 @@ BEGIN
     RETURN NEW;
 END $$;
 
+-- The backfill window, stated once per statement instead of once per row.
+--
+-- After the statement, a publication that had NO rollup rows before it holds
+-- exactly the rows this statement inserted. Anything more means the statement
+-- ADDED to a rollup that already existed -- the rewrite the relaxation must
+-- never permit -- so the comparison is total-after vs inserted, and it needs no
+-- pre-statement snapshot to be exact. It runs AFTER, because only an AFTER
+-- trigger can be given a transition table; the RAISE aborts the statement and
+-- its transaction all the same, which is what fail-closed means here.
+--
+-- Publications still 'prepared' (every normal build, and the artifact COPY) are
+-- filtered out: their window is the whole prepared lifetime, enforced by the row
+-- guard, and they must not pay for this check beyond one pass over the rows the
+-- statement just wrote.
+CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_backfill_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE offending uuid;
+BEGIN
+    SELECT n.publication_id INTO offending
+    FROM (
+        SELECT r.publication_id, count(*) AS inserted
+        FROM nport_fixed_income_coverage_rollup_inserted r
+        JOIN sec_derived_publications p ON p.publication_id = r.publication_id
+        WHERE p.product = 'nport_fixed_income_features_v1'
+          AND p.lifecycle_state = 'validated'
+        GROUP BY r.publication_id
+    ) n
+    WHERE (
+        SELECT count(*) FROM nport_fixed_income_metric_coverage_snapshot_v1 s
+        WHERE s.publication_id = n.publication_id
+    ) <> n.inserted
+    LIMIT 1;
+    IF offending IS NOT NULL THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup is already published for this publication: %', offending;
+    END IF;
+    RETURN NULL;
+END $$;
+
 DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
 DROP TRIGGER IF EXISTS nport_fixed_income_coverage_rollup_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
 CREATE TRIGGER nport_fixed_income_coverage_rollup_write_guard
 BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_metric_coverage_snapshot_v1
 FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_coverage_rollup_write_guard();
+DROP TRIGGER IF EXISTS nport_fixed_income_coverage_rollup_backfill_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_coverage_rollup_backfill_guard
+AFTER INSERT ON nport_fixed_income_metric_coverage_snapshot_v1
+REFERENCING NEW TABLE AS nport_fixed_income_coverage_rollup_inserted
+FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_coverage_rollup_backfill_guard();
 DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
 CREATE TRIGGER nport_fixed_income_truncate_guard
 BEFORE TRUNCATE ON nport_fixed_income_metric_coverage_snapshot_v1

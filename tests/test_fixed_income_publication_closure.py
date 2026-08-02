@@ -688,6 +688,66 @@ def test_a_publication_promoted_before_the_rollup_existed_is_repaired(published)
             assert materializer.ensure_coverage_rollup(cur, target) == "present"
 
 
+def test_the_backfill_of_a_validated_publication_writes_every_row_it_derives(
+    published,
+) -> None:
+    """The repair path has to survive a rollup with more than one row.
+
+    The backfill is a single INSERT..SELECT, one row per coverage group. The
+    "already published" check used to be asked once per ROW, and a row trigger's
+    query sees what the same command already inserted -- so row 2 found row 1 and
+    raised. The repair the runbook documents could only ever succeed for a
+    publication whose coverage collapsed to a single group; the real one
+    (f110a2bb, thousands of groups) died on its second row. Only the statement
+    knows whether the rollup was empty when it started, so only the statement can
+    answer.
+    """
+    import psycopg
+
+    dsn, identity, _config, _artifact_dir, _manifest = published
+    target = identity.target_publication_id
+    rollup = materializer.COVERAGE_ROLLUP_RELATION
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        # Widen the publication's coverage to three groups, then clear the
+        # rollup: the pre-migration state, at a grain that is not degenerate.
+        conn.execute(f"ALTER TABLE {COVERAGE} DISABLE TRIGGER USER")
+        conn.execute(
+            f"""INSERT INTO {COVERAGE}
+                (publication_id,source_holdings_publication_id,source_run_id,series_id,
+                 report_date,accession_number,source_identity_key,metric_family,metric_key,
+                 numerator,denominator,denominator_unit,coverage_ratio,availability_state)
+                SELECT c.publication_id,c.source_holdings_publication_id,c.source_run_id,
+                       c.series_id,c.report_date,c.accession_number,'K'||g,c.metric_family,
+                       'derived_metric_'||g,1,2,'count',0.5,'reported_numeric'
+                FROM {COVERAGE} c, generate_series(2,3) g
+                WHERE c.publication_id=%s""",
+            (target,),
+        )
+        conn.execute(f"ALTER TABLE {COVERAGE} ENABLE TRIGGER USER")
+        conn.execute(f"ALTER TABLE {rollup} DISABLE TRIGGER USER")
+        conn.execute(f"DELETE FROM {rollup} WHERE publication_id=%s", (target,))
+        conn.execute(f"ALTER TABLE {rollup} ENABLE TRIGGER USER")
+
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "backfilled"
+        conn.commit()
+
+    with psycopg.connect(dsn) as conn:
+        # Every derived group landed -- the whole rollup, not just its first row.
+        assert conn.execute(
+            f"SELECT count(*) FROM {rollup} WHERE publication_id=%s", (target,)
+        ).fetchone() == (3,)
+        assert conn.execute(
+            f"SELECT count(DISTINCT metric_key) FROM {rollup} WHERE publication_id=%s",
+            (target,),
+        ).fetchone() == (3,)
+        # Still closed afterwards: the window was this one statement.
+        with conn.cursor() as cur:
+            assert materializer.ensure_coverage_rollup(cur, target) == "present"
+
+
 def test_the_backfill_cannot_rewrite_an_existing_rollup(published) -> None:
     """The relaxation is additive only: a validated publication WITH a rollup is closed."""
     import psycopg
