@@ -523,10 +523,25 @@ END $$;
 -- trigger can be given a transition table; the RAISE aborts the statement and
 -- its transaction all the same, which is what fail-closed means here.
 --
--- Publications still 'prepared' (every normal build, and the artifact COPY) are
--- filtered out: their window is the whole prepared lifetime, enforced by the row
--- guard, and they must not pay for this check beyond one pass over the rows the
--- statement just wrote.
+-- The count assumes READ COMMITTED (this database's default): it must see rows a
+-- CONCURRENT transaction committed, or two backfills racing would each observe
+-- only their own rows and both pass. Under REPEATABLE READ or SERIALIZABLE the
+-- count reads the transaction's older snapshot and would miss exactly that. In
+-- practice the race is closed anyway, twice over: the row guard takes
+-- FOR UPDATE on the parent publication row, so a second backfill blocks until
+-- the first commits and then sees its rows; and the rollup's primary key makes a
+-- duplicate insert a conflict rather than a second copy. Do not run the backfill
+-- under an isolation level higher than READ COMMITTED and expect this guard to
+-- be the thing that stops the race.
+--
+-- Filtering to 'validated' parents is LOAD-BEARING FOR CORRECTNESS, not a cost
+-- optimisation. The builder writes the rollup in TWO statements (key-rate and
+-- balance/spread coverage are separate INSERTs), and the artifact route COPYs it
+-- in another. Applied to a prepared parent, "total-after must equal what this
+-- statement inserted" would fail on the second statement of every normal build.
+-- A prepared publication's write window is its whole prepared lifetime -- that is
+-- what the row guard enforces -- and only a validated one has the narrow
+-- one-statement window this trigger exists to state.
 CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_backfill_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE offending uuid;

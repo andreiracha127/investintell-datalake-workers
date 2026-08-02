@@ -48,10 +48,23 @@ replay after that is O(1). Nothing needs backfilling.
 ## Verify
 
 ```sql
--- 1. The new objects exist. Expect one closure table and eight truncate guards.
+-- 1. The new objects exist. Expect one closure table, eight truncate guards, and
+--    exactly one coverage-rollup backfill guard.
+--
+--    That last count is not cosmetic. The backfill guard is what makes the rollup
+--    repair below possible at all: while it is missing, the per-row check it
+--    replaced still refuses the repair's second row with the message
+--    "N-PORT fixed-income coverage rollup is already published for this
+--    publication" -- the SAME message a genuinely closed rollup produces. An
+--    operator who runs the repair without re-applying this DDL therefore sees the
+--    old bug and concludes the repair is impossible. Check the trigger BEFORE
+--    concluding anything from that message.
 SELECT to_regclass('nport_fixed_income_publication_closures') IS NOT NULL AS closure_table,
        (SELECT count(*) FROM pg_trigger
-        WHERE tgname = 'nport_fixed_income_truncate_guard' AND NOT tgisinternal) AS truncate_guards;
+        WHERE tgname = 'nport_fixed_income_truncate_guard' AND NOT tgisinternal) AS truncate_guards,
+       (SELECT count(*) FROM pg_trigger
+        WHERE tgname = 'nport_fixed_income_coverage_rollup_backfill_guard'
+          AND NOT tgisinternal) AS rollup_backfill_guard;  -- expect 1
 
 -- 2. Every recorded closure still matches real storage. Expect zero rows.
 SELECT c.publication_id, r.relation, (c.relation_counts->>r.relation)::bigint AS closed, r.actual
