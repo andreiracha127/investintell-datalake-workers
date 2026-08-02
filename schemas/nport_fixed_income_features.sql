@@ -516,3 +516,94 @@ DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON nport_fixed_income_m
 CREATE TRIGGER nport_fixed_income_truncate_guard
 BEFORE TRUNCATE ON nport_fixed_income_metric_coverage_snapshot_v1
 FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard();
+
+-- --------------------------------------------------------------------------- --
+-- Family completeness: the acceptance criterion promotion never had.
+--
+-- Every guard above protects a single ROW. Nothing protected the SHAPE of a
+-- publication, so on 2026-08-01 a build over pruned raw evidence produced four
+-- empty relations, wrote the zeros into its own manifest, and was validated and
+-- promoted regardless: sec_validate_derived_publication only checks lineage, and
+-- sec_set_current_derived_publication only refuses an as_of regression.
+--
+-- The rule stated here is narrower than "no relation may be empty" (a legitimately
+-- empty relation exists) and exactly as wide as the failure: a relation may not
+-- REGRESS TO ZERO -- be empty in the candidate while the publication currently
+-- being served has rows in it. That predicate needs no baseline count, only the
+-- two EXISTS probes, so it stays O(1) per relation even against the 45.6M-row
+-- coverage table.
+--
+-- ``allow_relation_regression`` is the deliberate operator override, in the same
+-- vocabulary as sec_set_current_derived_publication's allow_as_of_regression: a
+-- source that legitimately stops reporting a family is a fact somebody has to
+-- assert by hand, never something a scheduled job may conclude on its own.
+--
+-- The retired repo/securities-lending relations are NOT in this set: they are
+-- empty by owner decision since 2026-07-31, so requiring them would make every
+-- promotion after a pre-retirement publication fail.
+CREATE OR REPLACE FUNCTION nport_fixed_income_assert_publication_complete(
+    target_publication_id uuid,
+    allow_relation_regression boolean DEFAULT false
+) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    baseline_publication_id uuid;
+    relation text;
+    candidate_has_rows boolean;
+    baseline_has_rows boolean;
+    regressed text[] := ARRAY[]::text[];
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM sec_derived_publications
+        WHERE publication_id = target_publication_id
+          AND product = 'nport_fixed_income_features_v1'
+    ) THEN
+        RAISE EXCEPTION 'N-PORT fixed-income completeness assertion requires a fixed-income publication: %',
+            target_publication_id;
+    END IF;
+
+    -- The publication readers are being served RIGHT NOW is the only honest
+    -- baseline: promotion is what this assertion gates, so the comparison must
+    -- be against what promotion would replace.
+    SELECT c.publication_id INTO baseline_publication_id
+    FROM sec_derived_current_pointers c
+    WHERE c.product = 'nport_fixed_income_features_v1'
+      AND c.publication_id <> target_publication_id;
+
+    IF baseline_publication_id IS NULL THEN
+        -- Nothing is being served yet (or the target already is): there is no
+        -- shape to regress from, and inventing one would block the first build.
+        RETURN;
+    END IF;
+
+    FOREACH relation IN ARRAY ARRAY[
+        'nport_fixed_income_features',
+        'nport_fixed_income_key_rate_sensitivities_v2',
+        'nport_fixed_income_credit_spread_sensitivities_v2',
+        'nport_fixed_income_balance_sheet_primitives_v2',
+        'nport_fixed_income_debt_flag_features_v2',
+        'nport_fixed_income_metric_coverage_v2',
+        'nport_fixed_income_metric_coverage_snapshot_v1'
+    ] LOOP
+        EXECUTE format('SELECT EXISTS(SELECT 1 FROM %I WHERE publication_id = $1)', relation)
+            INTO candidate_has_rows USING target_publication_id;
+        EXECUTE format('SELECT EXISTS(SELECT 1 FROM %I WHERE publication_id = $1)', relation)
+            INTO baseline_has_rows USING baseline_publication_id;
+        IF baseline_has_rows AND NOT candidate_has_rows THEN
+            regressed := regressed || relation;
+        END IF;
+    END LOOP;
+
+    IF array_length(regressed, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    IF allow_relation_regression THEN
+        RAISE WARNING 'N-PORT fixed-income publication % promotes with % empty against current %: explicit override',
+            target_publication_id, regressed, baseline_publication_id;
+        RETURN;
+    END IF;
+
+    RAISE EXCEPTION 'N-PORT fixed-income publication % is incomplete: % regressed to zero rows against the current publication %',
+        target_publication_id, regressed, baseline_publication_id
+        USING HINT = 'the pinned raw evidence is most likely pruned; pass allow_relation_regression => true only to assert a verified, deliberate emptiness';
+END $$;
