@@ -31,16 +31,23 @@ import datetime as _dt
 from typing import Any
 
 from src.db import LOCK_EOD_PRICES_WARMER, advisory_lock, connect
-from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient, TokenBucket
+from src.workers._tiingo import (
+    DEFAULT_RATE_PER_S,
+    TiingoBudgetExceeded,
+    TiingoClient,
+    TokenBucket,
+)
 
 UPSERT_CHUNK = 500            # short transactions; well under the 65535-param ceiling (14/row)
 WATERMARK_OVERLAP_DAYS = 5    # re-fetch the last few days to absorb provider revisions
 NEW_TICKER_LOOKBACK_DAYS = 745  # covers screener beta_2y lookback on cold tickers
 
-# Tiingo pacing — fast lane, matching instrument_ingestion. The account's hourly
-# budget far exceeds this, and the warming universe (~2k tickers) is small, so
-# the full sweep finishes in ~90s instead of ~15min at the 2.5 req/s default.
-FETCH_RATE_PER_S = 25.0
+# Tiingo pacing — the shared account budget, not a per-worker one. The previous
+# 25 req/s "fast lane" was 90k req/h against a 10k req/h ceiling: it finished the
+# sweep in ~90s by spending the whole fleet's hourly budget in ~6min40s, and the
+# regime workers that ran inside the same rolling hour got nothing but 429s. A
+# slower sweep on a daily cron costs nothing; starving every other consumer does.
+FETCH_RATE_PER_S = DEFAULT_RATE_PER_S
 FETCH_BURST = 20.0
 PROGRESS_EVERY = 500  # emit a heartbeat log every N tickers (observability)
 
