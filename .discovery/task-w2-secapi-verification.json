@@ -1,0 +1,525 @@
+{
+  "agreement_pct": 100.0,
+  "app_publication_id": "2264190c-c766-553f-92b2-77539871f022",
+  "checks": [
+    {
+      "composed_class_ids": [
+        "C000170067"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 6,
+      "ncen_filed_at": "2025-11-13T13:33:00-05:00",
+      "series_id": "S000000369",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000002319"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2025-12-12T14:39:57-05:00",
+      "series_id": "S000000780",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000002716"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2026-01-12T14:24:16-05:00",
+      "series_id": "S000000965",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000005562"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 3,
+      "ncen_filed_at": "2026-05-12T12:51:53-04:00",
+      "series_id": "S000002165",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000010543"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 8,
+      "ncen_filed_at": "2025-12-12T16:10:16-05:00",
+      "series_id": "S000003791",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000011957"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-11-14T09:13:44-05:00",
+      "series_id": "S000004253",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000012036"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-06-13T10:08:59-04:00",
+      "series_id": "S000004306",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000014110"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-03-12T16:51:38-04:00",
+      "series_id": "S000005152",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000014124"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2026-03-13T13:19:20-04:00",
+      "series_id": "S000005158",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000162558"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 6,
+      "ncen_filed_at": "2026-01-14T14:00:22-05:00",
+      "series_id": "S000005381",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000014858"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2018-12-11T15:51:25-05:00",
+      "series_id": "S000005457",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000014908"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": null,
+      "series_id": "S000005478",
+      "status": "no_ncen_filing"
+    },
+    {
+      "composed_class_ids": [
+        "C000014936"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 3,
+      "ncen_filed_at": "2026-05-13T14:30:55-04:00",
+      "series_id": "S000005488",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000017144"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2024-08-09T15:37:01-04:00",
+      "series_id": "S000006218",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000018335"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2021-12-06T16:39:47-05:00",
+      "series_id": "S000006757",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000018796"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2021-05-04T16:24:29-04:00",
+      "series_id": "S000006929",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000022418"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": null,
+      "series_id": "S000008233",
+      "status": "no_ncen_filing"
+    },
+    {
+      "composed_class_ids": [
+        "C000023144"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": null,
+      "series_id": "S000008436",
+      "status": "no_ncen_filing"
+    },
+    {
+      "composed_class_ids": [
+        "C000026493"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 4,
+      "ncen_filed_at": "2026-03-13T15:40:45-04:00",
+      "series_id": "S000009667",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000026656"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2026-06-11T13:54:39-04:00",
+      "series_id": "S000009709",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000028730"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2026-03-16T13:10:25-04:00",
+      "series_id": "S000010402",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000031307"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2026-03-13T15:27:01-04:00",
+      "series_id": "S000011252",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000032368"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2025-12-18T14:26:25-05:00",
+      "series_id": "S000011848",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000046514"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 6,
+      "ncen_filed_at": "2026-01-09T11:49:59-05:00",
+      "series_id": "S000016651",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000047971"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2026-04-24T14:32:35-04:00",
+      "series_id": "S000017334",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000052896"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-10-14T10:09:57-04:00",
+      "series_id": "S000019124",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000141339"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": null,
+      "series_id": "S000019611",
+      "status": "no_ncen_filing"
+    },
+    {
+      "composed_class_ids": [
+        "C000112814"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-01-13T07:54:39-05:00",
+      "series_id": "S000036874",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000141273"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-12-11T14:37:37-05:00",
+      "series_id": "S000045387",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000146359"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 4,
+      "ncen_filed_at": "2026-03-16T08:42:31-04:00",
+      "series_id": "S000046839",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000150331"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2021-06-14T10:23:56-04:00",
+      "series_id": "S000047867",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000163598"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 3,
+      "ncen_filed_at": "2025-12-09T11:15:43-05:00",
+      "series_id": "S000052013",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000168374"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-03-12T12:20:54-04:00",
+      "series_id": "S000053572",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000175864"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 2,
+      "ncen_filed_at": "2023-03-16T11:10:02-04:00",
+      "series_id": "S000055846",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000192513"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2024-07-15T16:54:53-04:00",
+      "series_id": "S000058606",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000198139"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-06-15T17:14:12-04:00",
+      "series_id": "S000061165",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000200806"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-01-13T17:01:52-05:00",
+      "series_id": "S000061995",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000207192"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 3,
+      "ncen_filed_at": "2026-03-13T12:30:23-04:00",
+      "series_id": "S000064063",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000210492"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-10-14T10:09:57-04:00",
+      "series_id": "S000065014",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000210926"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2025-08-29T18:15:15-04:00",
+      "series_id": "S000065157",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000214450"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2025-11-12T13:08:52-05:00",
+      "series_id": "S000066488",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000222395"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2025-06-13T15:20:24-04:00",
+      "series_id": "S000069718",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000227362"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-07-10T10:54:42-04:00",
+      "series_id": "S000071838",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000229075"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-01-14T10:28:18-05:00",
+      "series_id": "S000072658",
+      "status": "class_list_omitted"
+    },
+    {
+      "composed_class_ids": [
+        "C000231078"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 9,
+      "ncen_filed_at": "2025-10-10T14:48:56-04:00",
+      "series_id": "S000073854",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000232649"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2026-05-13T11:15:13-04:00",
+      "series_id": "S000074624",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000236093"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": null,
+      "series_id": "S000076347",
+      "status": "no_ncen_filing"
+    },
+    {
+      "composed_class_ids": [
+        "C000237932"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 1,
+      "ncen_filed_at": "2024-12-12T09:40:15-05:00",
+      "series_id": "S000077472",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000241719"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 4,
+      "ncen_filed_at": "2026-06-12T16:09:58-04:00",
+      "series_id": "S000080074",
+      "status": "agree"
+    },
+    {
+      "composed_class_ids": [
+        "C000242518"
+      ],
+      "foreign_class_ids": [],
+      "ncen_class_count": 0,
+      "ncen_filed_at": "2026-06-11T16:05:00-04:00",
+      "series_id": "S000080302",
+      "status": "class_list_omitted"
+    }
+  ],
+  "series_absent_from_filing": 0,
+  "series_agree": 30,
+  "series_comparable": 30,
+  "series_sampled": 50,
+  "series_with_class_list_omitted": 15,
+  "series_with_foreign_class": 0,
+  "series_without_ncen_filing": 5,
+  "tail": [
+    {
+      "ncen_class_ids": [
+        "C000242839"
+      ],
+      "ncen_filed_at": "2026-01-14T13:02:34-05:00",
+      "ncen_state": "enumerated",
+      "series_id": "S000080439",
+      "ticker": "TMET",
+      "verdict": "single_class_candidate"
+    }
+  ]
+}
