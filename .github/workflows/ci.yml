@@ -41,6 +41,8 @@ jobs:
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
           scripts/sync_sec_regulatory_contract.py
+          scripts/compose_fund_regulatory_serving_mappings.py
+          scripts/verify_class_mappings_secapi.py
           scripts/verify_sec_regulatory_contract.py
           src/bonds
           src/db.py
@@ -198,6 +200,8 @@ jobs:
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
           scripts/sync_sec_regulatory_contract.py
+          scripts/compose_fund_regulatory_serving_mappings.py
+          scripts/verify_class_mappings_secapi.py
           scripts/verify_sec_regulatory_contract.py
           src/bonds
           src/db.py
@@ -237,6 +241,7 @@ jobs:
           tests=(
             tests/test_fixed_income_local_materializer.py
             tests/test_fixed_income_publication_closure.py
+            tests/test_fund_regulatory_serving_composition.py
             tests/test_sec_effective_matviews.py
             tests/test_open_macro_v03_prefix_checkpoint.py
             tests/test_mixed_quant_contract_version.py
@@ -309,6 +314,7 @@ jobs:
           db_tests=(
             tests/test_fixed_income_local_materializer.py
             tests/test_fixed_income_publication_closure.py
+            tests/test_fund_regulatory_serving_composition.py
             tests/test_sec_effective_matviews.py
             tests/test_open_macro_v03_prefix_checkpoint.py
             tests/test_mixed_quant_factor_inputs.py
