@@ -215,6 +215,20 @@ CREDIT_SERIES: list[SeriesSpec] = [
 # unchanged by their presence.
 RAW_INGEST_SERIES: list[SeriesSpec] = [
     SeriesSpec("T10YIE", "inflation_expectations", "10Y Breakeven Inflation", "daily"),
+    # open_macro v4.0-rev (M-COMP4). L1 reads the first two, L3 the last two. They
+    # are raw-only for the same reason T10YIE is: scoring them would move the
+    # regional regime snapshot, and the v4 engine reads macro_data directly.
+    # NB `GDP` is the NOMINAL LEVEL series. The registry already carries
+    # A191RL1Q225SBEA (real growth) under the US growth dimension; substituting one
+    # for the other silently changes the deficit/GDP ratio's denominator.
+    # NB this worker fetches a LOOKBACK_YEARS window; it keeps these four current,
+    # it does not backfill the decades of history the v4 replay reads.
+    SeriesSpec("MTSDS133FMS", "fiscal", "Federal Surplus/Deficit (MTS)", "monthly"),
+    SeriesSpec("GDP", "fiscal", "Gross Domestic Product (nominal level)", "quarterly"),
+    SeriesSpec("M2SL", "monetary", "M2 Money Stock", "monthly"),
+    SeriesSpec("SUBLPDCILSLGNQ", "credit",
+               "SLOOS: banks tightening C&I standards, large and middle-market firms",
+               "quarterly"),
 ]
 
 
