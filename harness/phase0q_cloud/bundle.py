@@ -94,6 +94,12 @@ SRC_SOURCE_FILES = (
     "src/input_packs/manifest.py",
     "src/input_packs/p0_contract.py",
     "src/input_packs/p0_derived.py",
+    # The certified-pack registry loader. BOTH shipped verifiers import it at
+    # module scope now (harness/p1_pack/verifier.py and src/input_packs/
+    # verifier.py resolve pack identity, the accepted-id set and the declared
+    # governance stance through it), so a bundle without it would not import in
+    # Research at all. Its data file ships in POLICY_ARTIFACT_FILES.
+    "src/input_packs/registry.py",
     "src/input_packs/verifier.py",
     "src/macro_sources.py",
     "src/macro_transforms.py",
@@ -128,6 +134,15 @@ QUANT_CORE_SOURCE_FILES = (
 # surface, not just its import closure.
 POLICY_ARTIFACT_FILES = (
     "artifacts/quant/open_macro_v03_phase0q_006/timeline_gate_policy.json",
+    # The certified-pack registry: read at import time by both shipped verifiers
+    # to resolve the accepted pack ids and the governance stance each pack was
+    # certified under. It is result-determining exactly like the timeline gate
+    # policy — a cloud leg materialized without it, or with a different one,
+    # would judge the shipped pack differently — so it belongs in the shipped
+    # read surface AND in the immutable-prefix identity. A pack promotion
+    # therefore re-derives these records through the sanctioned offline flow
+    # (bundle + record_artifacts); it never needs the cloud leg.
+    "contracts/input-packs/registry.json",
 )
 
 # Fail-loud offline DB stub materialized in Research in place of src/db.py. It
@@ -596,49 +611,139 @@ def _predrift_check_all_sources(
         read_source_with_drift_refusal(rel)
 
 
-def _verify_immutable_prefix_source_identity(harness_commit: str) -> None:
-    """Require a reachable ancestor whose shipped source bytes match ``HEAD``."""
+def shipped_source_paths() -> tuple[str, ...]:
+    """Every repo path whose BYTES the immutable prefix binds."""
     quant_core_rels = [f"{QUANT_CORE_SRC_ROOT}/{rel}" for rel in QUANT_CORE_SOURCE_FILES]
-    shipped_sources = (
+    return (
         *HARNESS_SOURCE_FILES,
         *SRC_SOURCE_FILES,
         *quant_core_rels,
         *POLICY_ARTIFACT_FILES,
     )
-    try:
-        ancestry = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", harness_commit, "HEAD"],
-            cwd=REPO_ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-        if ancestry.returncode == 1:
+
+
+def _commit_object_present(commit: str) -> bool:
+    """Is ``commit`` resolvable in THIS checkout?
+
+    It routinely is not. The repo merges by SQUASH, so the branch commit that
+    produced a bundle is garbage after the merge; a shallow CI clone need not
+    fetch it either. Absence is a fact about the clone, never evidence of tamper.
+    """
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def shipped_source_tree_hashes(commit_ish: str = "HEAD") -> dict[str, str]:
+    """``{repo path: git blob object id}`` for the shipped sources at ``commit_ish``.
+
+    The blob id IS the content hash git computes over the committed bytes, so this
+    is a byte pin that survives any history rewrite — which the commit id does not.
+    """
+    hashes: dict[str, str] = {}
+    for rel in shipped_source_paths():
+        try:
+            oid = subprocess.check_output(
+                ["git", "rev-parse", f"{commit_ish}:{rel}"],
+                cwd=REPO_ROOT,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             raise RuntimeError(
-                "immutable prefix refusal: harness_commit is not an ancestor of git HEAD"
-            )
-        if ancestry.returncode != 0:
-            raise RuntimeError(
-                "immutable prefix refusal: cannot verify harness_commit ancestry: "
-                f"{ancestry.stderr.strip()}"
-            )
-        changed = subprocess.check_output(
-            ["git", "diff", "--name-only", harness_commit, "HEAD", "--", *shipped_sources],
-            cwd=REPO_ROOT,
-            stderr=subprocess.PIPE,
-            text=True,
-        ).splitlines()
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+                f"immutable prefix refusal: cannot resolve {commit_ish}:{rel}; the "
+                "shipped source is not committed in this checkout"
+            ) from exc
+        hashes[rel] = oid
+    return hashes
+
+
+def verify_shipped_source_tree_hashes(pinned: dict[str, str]) -> None:
+    """Refuse unless every pinned shipped-source blob equals the one at ``HEAD``.
+
+    This is the ANTI-TAMPER half, and it is the authoritative one: it compares
+    content, not names. A single altered byte in any shipped source changes its
+    blob id and fails here.
+    """
+    head = shipped_source_tree_hashes("HEAD")
+    missing = sorted(set(head) - set(pinned))
+    if missing:
         raise RuntimeError(
-            f"immutable prefix refusal: cannot compare harness_commit {harness_commit} "
-            "with git HEAD"
-        ) from exc
+            "immutable prefix refusal: the pin does not cover every shipped source; "
+            f"unpinned paths: {', '.join(missing)}"
+        )
+    changed = sorted(rel for rel, oid in head.items() if pinned.get(rel) != oid)
+    if changed:
+        raise RuntimeError(
+            "immutable prefix refusal: pinned shipped-source bytes differ from git "
+            f"HEAD; changed paths: {', '.join(changed)}"
+        )
+
+
+def _verify_immutable_prefix_source_identity(harness_commit: str) -> dict[str, str]:
+    """Bind the prefix to the shipped source BYTES; use the commit id when it exists.
+
+    The old rule was "harness_commit must be a reachable ancestor whose shipped
+    bytes match HEAD". Under squash-merge that rule is unsatisfiable by
+    construction: the branch commit stamped into the record is deleted the moment
+    the PR lands, so every later build on main died with "cannot verify
+    harness_commit ancestry: Not a valid commit name". The pin was tied to an
+    identifier the repo's own merge policy guarantees will not survive.
+
+    So the binding moves to what does survive — the per-path git blob ids of the
+    shipped sources, the same shallow-safe shape the Stage A reproducibility
+    record already uses (``tree_hashes`` compared against ``HEAD:<surface>``,
+    with the commit checked only when its object is present):
+
+    * ALWAYS: every shipped source's blob id at HEAD is recorded, and
+      ``verify_shipped_source_tree_hashes`` refuses any divergence.
+    * WHEN the harness_commit object is present: it must additionally be an
+      ancestor of HEAD and carry the same shipped bytes — the full pre-squash
+      guarantee, unchanged.
+    * WHEN it is absent (squashed away, or shallow clone): the byte pin alone
+      decides. Missing commit + matching bytes is valid; diverging bytes is a
+      refusal either way.
+
+    Nothing is weakened. The commit id never proved anything the blob ids do not
+    prove better: it proved "these bytes were committed HERE", while the bundle's
+    actual invariant is "these are the bytes we ship".
+    """
+    if not _commit_object_present(harness_commit):
+        return shipped_source_tree_hashes("HEAD")
+
+    # The commit is here, so the full pre-squash claim is checkable: identity
+    # first (cheapest and most specific), then the bytes.
+    ancestry = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", harness_commit, "HEAD"],
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if ancestry.returncode == 1:
+        raise RuntimeError(
+            "immutable prefix refusal: harness_commit is present but is not an "
+            "ancestor of git HEAD (the evidence cites a commit off this history)"
+        )
+    if ancestry.returncode != 0:
+        raise RuntimeError(
+            "immutable prefix refusal: cannot verify harness_commit ancestry: "
+            f"{ancestry.stderr.strip()}"
+        )
+    head_hashes = shipped_source_tree_hashes("HEAD")
+    commit_hashes = shipped_source_tree_hashes(harness_commit)
+    changed = sorted(rel for rel, oid in head_hashes.items() if commit_hashes.get(rel) != oid)
     if changed:
         raise RuntimeError(
             "immutable prefix refusal: harness_commit does not identify the shipped "
             f"git HEAD source bytes; changed paths: {', '.join(changed)}"
         )
+    return head_hashes
 
 
 def _object_files_manifest(
@@ -692,7 +797,7 @@ def build_bundle(
     # Drift refusal FIRST — before the (expensive) live harness run — so a tampered
     # source aborts immediately instead of after a full grid computation.
     _predrift_check_all_sources(pack_dir=pack_dir, pack_rel_root=pack_rel_root)
-    _verify_immutable_prefix_source_identity(harness_commit)
+    shipped_tree_hashes = _verify_immutable_prefix_source_identity(harness_commit)
 
     expected = read_local_leg_expected_hashes(harness_commit, pack_dir)
     pack_sha = expected["input_pack_sha256"]
@@ -737,6 +842,7 @@ def build_bundle(
         quant_core_entries=quant_core_entries,
         policy_entries=policy_entries,
         object_files=object_files,
+        shipped_tree_hashes=shipped_tree_hashes,
     )
     manifest_path = bundle_dir / "object_store_manifest.json"
     write_json(manifest_path, manifest)
@@ -779,6 +885,7 @@ def _object_store_manifest(
     quant_core_entries: list[dict[str, Any]],
     policy_entries: list[dict[str, Any]],
     object_files: dict[str, dict[str, Any]],
+    shipped_tree_hashes: dict[str, str],
 ) -> dict[str, Any]:
     bundle_size = sum(item["file_size_bytes"] for item in object_files.values())
     return {
@@ -788,6 +895,10 @@ def _object_store_manifest(
         "qc_project_id": QC_PROJECT_ID,
         "qc_project_name": QC_PROJECT_NAME,
         "harness_commit": harness_commit,
+        # The SHALLOW-SAFE binding: per-path git blob ids of every shipped source.
+        # `harness_commit` names the round; THIS is what proves the bytes, and it
+        # survives the squash-merge that deletes the branch commit.
+        "shipped_source_tree_hashes": dict(sorted(shipped_tree_hashes.items())),
         "input_pack_id": input_pack_id,
         "input_pack_sha256": pack_sha,
         "contract_bundle_sha256": expected["contract_bundle_sha256"],

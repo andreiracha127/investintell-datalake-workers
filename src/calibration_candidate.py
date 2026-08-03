@@ -1,8 +1,28 @@
 """Offline candidate calibration pack generator for Certified Input Pack P0.
 
 This module is intentionally conservative: it produces auditable candidate
-evidence from the verified input pack, but it refuses to mark any result as
-freeze-ready or final-approved while institutional limits remain unset.
+evidence from the verified input pack and refuses to mark a result final-approved
+while a real blocker stands.
+
+What changed (wave 4): the five institutional limits used to be the string
+literals ``"explicitly_unset"``, with a rejection rule whose ONLY trigger was
+the fact that they were unset and a ``final_approval_allowed: False`` written as
+a literal. There was no parameter, env var or config file that could ever set
+them, so final approval was blocked by a condition the code made impossible to
+satisfy. The limits are parameters now
+(``configs/calibration/institutional_limits.json``), the rejection rule tests
+VIOLATION, and ``final_approval_allowed`` is DERIVED from the blockers that
+actually stand.
+
+Three outcomes are representable per limit, and each is a different truth:
+
+* ``unset``          — the mandate does not define it (blocks; honest);
+* ``not_evaluable``  — defined, but the certified evidence does not measure it
+  yet (blocks; a fact about coverage, not a verdict);
+* ``within`` / ``violated`` — measured against the mandate.
+
+Whichever blocks today opens by itself when the config or the evidence changes,
+instead of waiting for someone to edit a literal.
 """
 
 from __future__ import annotations
@@ -21,6 +41,46 @@ from src.input_packs.hashing import canonical_json_bytes, canonical_json_sha256,
 from src.input_packs.verifier import verify_pack
 
 CALIBRATION_ID = "open_macro_v03_calibration_001"
+INSTITUTIONAL_LIMITS_PATH = (
+    Path(__file__).resolve().parents[1] / "configs" / "calibration" / "institutional_limits.json"
+)
+
+#: Candidate-metric keys the generator can measure from the certified pack today.
+#: A configured limit whose metric is absent here is reported ``not_evaluable``
+#: rather than silently passed or dishonestly failed.
+EVALUABLE_CANDIDATE_METRICS = ("turnover_proxy",)
+
+#: The mandate the calibration is judged against, as a REQUIRED key set. Omitting
+#: a key from the config file must block exactly like setting it to null: without
+#: this, deleting four entries and leaving only the measurable one would have
+#: produced an empty blocker list — silence reading as approval.
+#: The dedicated namespace a certified baseline artifact must live in, keyed by
+#: reference id so the mapping is deterministic and cannot be aimed elsewhere.
+#: It is under ``reports/`` rather than ``data/`` on purpose: the P0 data layer is
+#: exactly the nine source tables plus the derived features (the verifier rejects
+#: anything else under ``data/``), while a certified reference is certification
+#: evidence about the run, which is what ``reports/`` already holds.
+BASELINE_ARTIFACT_DIR = "reports/baselines"
+
+
+def baseline_artifact_path(reference_id: str) -> str:
+    return f"{BASELINE_ARTIFACT_DIR}/{reference_id}.json"
+
+
+#: The baseline references the comparison needs certified INSIDE the pack.
+BASELINE_REFERENCE_IDS: tuple[str, ...] = (
+    "G0",
+    "microgrid_v03",
+    "current_baseline_if_certified",
+)
+
+REQUIRED_INSTITUTIONAL_LIMITS: tuple[str, ...] = (
+    "beta",
+    "daily_cvar_95",
+    "exposure_bounds",
+    "max_drawdown",
+    "turnover",
+)
 INPUT_PACK_ID = "open_macro_v03_certified_input_pack_001"
 A3_STATUS = "open_macro_v03"
 A4_STATUS = "calibration_candidate_running"
@@ -38,6 +98,22 @@ REQUIRED_MATRIX_LABELS = {
 }
 DOCKER_CONTEXT_PATHS = [
     "requirements.quant-engine.lock",
+    # The institutional mandate is an INPUT to the run: changing it changes the
+    # config, the blockers and the approval verdict. It has to be inside the
+    # hashed context, or a supplied docker_context_sha256 could stay valid across
+    # a mandate change.
+    #
+    # The scope is `configs/calibration`, matching
+    # `COPY configs/calibration /app/configs/calibration` exactly. Hash scope and
+    # COPY scope must be the same set, in either direction: hashing less than the
+    # image ships lets a sibling change the image under a valid hash, and shipping
+    # more than calibration needs drags unrelated sweep configs into the pin.
+    #
+    # This is deliberately the NARROW half of that equality. Widening both to
+    # `configs/` moved the recomputed hash for engine_commit ee39ad… from d8f7…
+    # to e3761…, because ten a31/a4 YAMLs already lived there — which would have
+    # invalidated the committed calibration evidence without re-measuring it.
+    "configs/calibration",
     "packages/investintell_quant_core",
     "services/quant_engine",
     "contracts/quant-engine",
@@ -306,7 +382,273 @@ def pack_summary(input_pack: Path, expected: dict[str, str]) -> dict[str, Any]:
     }
 
 
-def default_config(summary: dict[str, Any], *, merge_commit: str) -> dict[str, Any]:
+def institutional_limits_sha256(path: Path | str | None = None) -> str | None:
+    """sha256 of the mandate file that produced this run, or None if absent.
+
+    Belt-and-braces alongside putting ``configs/calibration`` in
+    DOCKER_CONTEXT_PATHS: the context hash is computed over a COMMIT's tree, so
+    it only covers the mandate once the run is anchored at a commit containing
+    it. This digest pins the exact bytes used, whatever the anchor.
+    """
+    target = Path(path) if path is not None else INSTITUTIONAL_LIMITS_PATH
+    if not target.is_file():
+        return None
+    return file_sha256(target)
+
+
+def load_institutional_limits(path: Path | str | None = None) -> dict[str, Any]:
+    """The configured institutional mandate.
+
+    A missing config file is not an error and not a silent pass: every limit
+    reports ``unset``, which still blocks final approval. That keeps the
+    conservative behaviour while making the limits settable.
+    """
+    target = Path(path) if path is not None else INSTITUTIONAL_LIMITS_PATH
+    if not target.is_file():
+        return {}
+    payload = load_json(target)
+    limits = payload.get("limits") if isinstance(payload, dict) else None
+    return limits if isinstance(limits, dict) else {}
+
+
+def _limit_value(spec: Any) -> float | None:
+    if isinstance(spec, dict):
+        value = spec.get("limit")
+    else:
+        value = spec
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def evaluate_institutional_limits(
+    candidate_rows: list[dict[str, Any]],
+    limits: dict[str, Any],
+) -> dict[str, Any]:
+    """Judge each configured limit against the candidate evidence.
+
+    Returns one entry per limit with a ``status`` of ``unset``,
+    ``not_evaluable``, ``within`` or ``violated``, plus the candidates that
+    violate it. The rejection rule reads this; nothing here is a literal.
+    """
+    evaluation: dict[str, Any] = {}
+    # The union: a required limit the config omits is still judged (as unset), and
+    # an extra limit the owner adds is still judged.
+    for name in sorted(set(REQUIRED_INSTITUTIONAL_LIMITS) | set(limits)):
+        spec = limits.get(name)
+        value = _limit_value(spec)
+        metric = spec.get("metric") if isinstance(spec, dict) else None
+        comparison = (spec.get("comparison") if isinstance(spec, dict) else None) or "max"
+        entry: dict[str, Any] = {
+            "limit": value,
+            "metric": metric,
+            "comparison": comparison,
+            "violations": [],
+        }
+        if value is None:
+            entry["status"] = "unset"
+            entry["reason"] = (
+                "the mandate does not define this limit"
+                if name in limits
+                else "the mandate omits this required limit entirely"
+            )
+            entry["required"] = name in REQUIRED_INSTITUTIONAL_LIMITS
+            evaluation[name] = entry
+            continue
+        if metric not in EVALUABLE_CANDIDATE_METRICS:
+            entry["status"] = "not_evaluable"
+            entry["reason"] = (
+                f"the certified input pack evidence does not measure {metric!r}; "
+                "this opens by itself once the metric is produced"
+            )
+            evaluation[name] = entry
+            continue
+        for row in candidate_rows:
+            observed = row.get(metric)
+            if not isinstance(observed, (int, float)) or isinstance(observed, bool):
+                continue
+            measured = abs(float(observed)) if comparison == "abs_max" else float(observed)
+            if measured > value:
+                entry["violations"].append(
+                    {"candidate_id": row["candidate_id"], "observed": measured, "limit": value}
+                )
+        entry["status"] = "violated" if entry["violations"] else "within"
+        evaluation[name] = entry
+    return evaluation
+
+
+def institutional_limit_blockers(evaluation: dict[str, Any]) -> list[str]:
+    """The limits that stand between this candidate and final approval."""
+    blockers: list[str] = []
+    for name, entry in sorted(evaluation.items()):
+        status = entry.get("status")
+        if status in ("unset", "not_evaluable", "violated"):
+            blockers.append(f"institutional_limit_{name}_{status}")
+    return blockers
+
+
+def _pack_artifact_digests(pack_root: Path) -> set[tuple[str, str]]:
+    """``{(sha256, path)}`` for every artifact the pack declares AND carries.
+
+    Read from ``table_hashes.json`` — the same declaration ``verify_pack``
+    recomputes file by file — and re-checked here against the bytes on disk, so a
+    pair in this set is one the pack genuinely proves.
+
+    A SET of pairs, not a ``{digest: path}`` map: two declared artifacts may hold
+    identical bytes and therefore share a digest, and a map silently kept only the
+    last one. That rejected a perfectly well-formed reference whose artifact
+    ``table_hashes.json`` declares and verifies, purely because another file
+    happened to have the same content.
+    """
+    table_path = pack_root / "table_hashes.json"
+    if not table_path.is_file():
+        return {}
+    try:
+        payload = load_json(table_path)
+    except (OSError, ValueError):
+        return {}
+    tables = payload.get("tables") if isinstance(payload, dict) else None
+    if not isinstance(tables, list):
+        return {}
+
+    digests: set[tuple[str, str]] = set()
+    for entry in tables:
+        if not isinstance(entry, dict):
+            continue
+        rel = entry.get("path")
+        declared = entry.get("sha256")
+        if not (isinstance(rel, str) and _is_sha256_hex(declared)):
+            continue
+        if Path(rel).is_absolute() or ".." in Path(rel).parts:
+            continue
+        artifact = pack_root / rel
+        if not artifact.is_file():
+            continue
+        if file_sha256(artifact) != declared:
+            continue
+        digests.add((declared, rel))
+    return digests
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value)
+    )
+
+
+def pack_certifies_baseline_references(input_pack: Path | str) -> bool:
+    """Does the certified pack carry the baseline references the comparison needs?
+
+    Read from the pack, not asserted. The comparison needs G0 / microgrid_v03 /
+    current_baseline_if_certified certified INSIDE the pack; today no pack declares
+    them, so this returns False — but by looking, so it opens on its own the day a
+    pack does, instead of waiting for someone to edit a literal.
+
+    The evidence is the manifest's OPTIONAL ``certified_baseline_references``, an
+    array of ``{reference_id, path, sha256}``. A reference counts as certified
+    only when ALL of these hold:
+
+    * the pack manifest schema admits the field at all (with
+      ``additionalProperties: false`` it was once rejected outright, so this
+      predicate could never have returned True for a pack that verifies);
+    * ``path`` is exactly ``reports/baselines/<reference_id>.json`` — derived from
+      the id, so a declaration cannot aim a reference at some other file;
+    * that path is declared in ``table_hashes.json`` under the same digest, and
+      the digest recomputes over the bytes on disk;
+    * and the manifest itself is inside ``input_pack_sha256``, which the verifier
+      recomputes, so none of the above can be forged past the aggregate hash.
+
+    Two earlier drafts were fail-open, each one level shallower than the last.
+    Accepting any well-formed sha256 let a manifest-only claim certify a pack with
+    no baseline content. Accepting any digest the pack happened to carry let an
+    ordinary canonical table — or a schema file — be mapped to the three reference
+    ids. Binding id -> path -> declared digest -> bytes is what closes it: the
+    artifact has to be the one that represents that baseline.
+
+    An earlier draft also probed ``data/baselines/*.json``. That branch was dead:
+    the P0 verifier rejects ``data/`` artifacts outside its declared set, so a pack
+    carrying those files could never verify. Dead code that looks like a path is
+    worse than no path, so it is gone.
+    """
+    root = Path(input_pack)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = load_json(manifest_path)
+    except (OSError, ValueError):
+        return False
+
+    declared = manifest.get("certified_baseline_references")
+    if not isinstance(declared, list):
+        return False
+
+    # Membership alone was still fail-open: the digest of ANY carried artifact —
+    # an ordinary canonical table, even a schema file — could be mapped to the
+    # three reference ids and certify a pack holding no baseline content at all.
+    # Each reference must now bind to the artifact that REPRESENTS it.
+    proven = _pack_artifact_digests(root)
+    if not proven:
+        return False
+
+    certified: set[str] = set()
+    for item in declared:
+        if not isinstance(item, dict):
+            continue
+        reference_id = item.get("reference_id")
+        path = item.get("path")
+        digest = item.get("sha256")
+        if not (isinstance(reference_id, str) and isinstance(path, str)):
+            continue
+        if not _is_sha256_hex(digest):
+            continue
+        # The path is derived from the id, so a declaration cannot aim a
+        # reference at some other file, inside or outside the namespace.
+        if path != baseline_artifact_path(reference_id):
+            continue
+        # ...and that exact (digest, path) pair must be one the pack declares and
+        # carries. Pair membership, so two baseline artifacts with identical bytes
+        # both certify instead of the second one evicting the first.
+        if (digest, path) not in proven:
+            continue
+        certified.add(reference_id)
+    return set(BASELINE_REFERENCE_IDS) <= certified
+
+
+def final_approval_blockers(
+    evaluation: dict[str, Any],
+    *,
+    baseline_references_certified: bool = False,
+) -> list[str]:
+    """Every blocker that actually stands, computed — never a literal.
+
+    ``final_approval_allowed`` is ``not final_approval_blockers(...)``. When the
+    mandate is configured, the evidence measures it, no candidate violates it and
+    the baseline references are certified inside the pack, approval opens on its
+    own.
+    """
+    blockers = list(institutional_limit_blockers(evaluation))
+    if not evaluation:
+        blockers.append("institutional_limits_not_evaluated")
+    if not baseline_references_certified:
+        blockers.append("reference_baselines_not_certified_in_pack")
+    return blockers
+
+
+def default_config(
+    summary: dict[str, Any],
+    *,
+    merge_commit: str,
+    institutional_limits: dict[str, Any] | None = None,
+    final_approval_allowed: bool | None = None,
+) -> dict[str, Any]:
+    limits = (
+        institutional_limits
+        if institutional_limits is not None
+        else load_institutional_limits()
+    )
     return {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -354,24 +696,27 @@ def default_config(summary: dict[str, Any], *, merge_commit: str) -> dict[str, A
                 "A5": "blocked",
                 "freeze_ready": False,
             },
-            "institutional_limits": {
-                "daily_cvar_95": "explicitly_unset",
-                "beta": "explicitly_unset",
-                "max_drawdown": "explicitly_unset",
-                "turnover": "explicitly_unset",
-                "exposure_bounds": "explicitly_unset",
-            },
+            # Configured in configs/calibration/institutional_limits.json.
+            # An empty mapping means the mandate is not configured, which is
+            # reported and blocks — it is no longer an unsatisfiable literal.
+            "institutional_limits": limits,
         },
-        "baseline_references": ["G0", "microgrid_v03", "current_baseline_if_certified", "neutral_reference"],
+        "baseline_references": [*BASELINE_REFERENCE_IDS, "neutral_reference"],
         "rejection_rules": [
             "constraint_violation",
             "nan_or_infinite_metric",
             "non_deterministic_output",
             "material_out_of_sample_degradation_when_threshold_defined",
             "turnover_excess_when_threshold_defined",
-            "institutional_limits_explicitly_unset_blocks_final_approval",
+            # Tests VIOLATION of the configured mandate. The old rule
+            # ("institutional_limits_explicitly_unset_blocks_final_approval")
+            # could only ever fire, because nothing could set the limits.
+            "institutional_limit_violation",
+            "institutional_limit_unset_or_not_evaluable",
         ],
-        "final_approval_allowed": False,
+        "final_approval_allowed": (
+            final_approval_allowed if final_approval_allowed is not None else False
+        ),
     }
 
 
@@ -510,8 +855,27 @@ def candidate_metrics(grid: dict[str, Any], metrics: dict[str, Any]) -> list[dic
     return rows
 
 
-def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+def selected_and_rejected(
+    rows: list[dict[str, Any]],
+    *,
+    evaluation: dict[str, Any] | None = None,
+    blockers: list[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select a candidate and record why the others were rejected.
+
+    The reason is now COMPUTED from the standing blockers instead of the fixed
+    string ``institutional_limits_explicitly_unset_blocks_final_approval``, and
+    ``final_approval_allowed`` follows the blockers. With a configured, measured,
+    unviolated mandate and certified references, this returns True on its own.
+    """
+    evaluation = evaluation if evaluation is not None else {}
+    blockers = blockers if blockers is not None else final_approval_blockers(evaluation)
     baseline = next(row for row in rows if row["candidate_id"] == "baseline_current")
+    reason = (
+        "; ".join(blockers)
+        if blockers
+        else "no standing blocker: the configured mandate is measured and unviolated"
+    )
     selected = {
         "schema_version": 1,
         "calibration_id": CALIBRATION_ID,
@@ -519,10 +883,12 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
         "selected_candidate_id": baseline["candidate_id"],
         "parameters": baseline["parameters"],
         "selection_reason": (
-            "Institutional limits are explicitly unset; select the current baseline "
-            "as the conservative candidate and block final approval."
+            "Select the current baseline as the conservative candidate. "
+            f"Standing final-approval blockers: {reason}."
         ),
-        "final_approval_allowed": False,
+        "final_approval_blockers": blockers,
+        "final_approval_allowed": not blockers,
+        "institutional_limits_evaluation": evaluation,
         "runtime_activation": False,
         "A5": "blocked",
         "freeze_ready": False,
@@ -534,7 +900,7 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
         "rejections": [
             {
                 "candidate_id": row["candidate_id"],
-                "reason": "institutional_limits_explicitly_unset_blocks_final_approval",
+                "reason": reason,
                 "objective_value": row["objective_value"],
                 "baseline_distance": row["baseline_distance"],
             }
@@ -545,7 +911,12 @@ def selected_and_rejected(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], d
     return selected, rejected
 
 
-def build_baseline_comparison(candidate_rows: list[dict[str, Any]], selected: dict[str, Any]) -> dict[str, Any]:
+def build_baseline_comparison(
+    candidate_rows: list[dict[str, Any]],
+    selected: dict[str, Any],
+    *,
+    blockers: list[str] | None = None,
+) -> dict[str, Any]:
     selected_row = next(row for row in candidate_rows if row["candidate_id"] == selected["selected_candidate_id"])
     neutral = {
         "objective_value": selected_row["objective_value"],
@@ -576,8 +947,37 @@ def build_baseline_comparison(candidate_rows: list[dict[str, Any]], selected: di
                 "accepted_degradation_reason": None,
             },
         },
-        "final_approval_blockers": ["reference_baselines_not_certified_in_pack", "institutional_limits_explicitly_unset"],
+        "final_approval_blockers": (
+            blockers
+            if blockers is not None
+            else selected.get("final_approval_blockers", [])
+        ),
     }
+
+
+def _violated_limits(evaluation: dict[str, Any] | None) -> list[str]:
+    """Configured limits the candidate evidence shows to be BREACHED.
+
+    Only ``violated`` counts here. ``unset`` and ``not_evaluable`` block final
+    approval (they are in the blockers) but they are not breaches, and calling
+    them constraint violations would be its own dishonesty.
+    """
+    if not evaluation:
+        return []
+    return sorted(
+        name for name, entry in evaluation.items()
+        if isinstance(entry, dict) and entry.get("status") == "violated"
+    )
+
+
+def _limit_status(evaluation: dict[str, Any] | None, name: str) -> str:
+    """The reported status of one configured limit, or why there is none."""
+    if not evaluation:
+        return "institutional_limits_not_configured"
+    entry = evaluation.get(name)
+    if not isinstance(entry, dict):
+        return "limit_not_in_mandate"
+    return str(entry.get("status", "unknown"))
 
 
 def build_invariant_report(
@@ -589,6 +989,8 @@ def build_invariant_report(
     network: str,
     db_access: bool,
     input_pack_mount: str,
+    evaluation: dict[str, Any] | None = None,
+    blockers: list[str] | None = None,
 ) -> dict[str, Any]:
     values = finite_values(candidate_rows)
     weights_ok = all(abs(float(row["weights_sum"]) - 1.0) <= 1e-12 for row in candidate_rows)
@@ -603,10 +1005,17 @@ def build_invariant_report(
         "no_nan": not any(math.isnan(v) for v in values),
         "no_infinite": not any(math.isinf(v) for v in values),
         "outputs_complete": files_ok,
-        "constraints_respected": True,
+        # A violated institutional limit is a CONSTRAINT VIOLATION. Recording it
+        # only as a status string left `ok` green, and the artifact gate
+        # (verify_calibration_artifacts.py) only reads `ok` — so a violation
+        # would have shipped as a passing calibration.
+        "constraints_respected": not _violated_limits(evaluation),
+        "institutional_limits_not_violated": not _violated_limits(evaluation),
         "weights_close_within_tolerance": weights_ok,
-        "exposures_within_defined_limits": "institutional_limits_explicitly_unset_final_approval_blocked",
-        "turnover_within_defined_envelope": "institutional_limits_explicitly_unset_final_approval_blocked",
+        # Real per-limit statuses (within / violated / not_evaluable / unset),
+        # not a fixed "explicitly_unset" string.
+        "exposures_within_defined_limits": _limit_status(evaluation, "exposure_bounds"),
+        "turnover_within_defined_envelope": _limit_status(evaluation, "turnover"),
         "dates_within_input_pack": True,
         "db_access": db_access is False,
         "network_access": network == "none",
@@ -620,7 +1029,9 @@ def build_invariant_report(
         "ok": all(value for value in checks.values() if isinstance(value, bool)),
         "checks": checks,
         "institutional_limits": config["constraints"]["institutional_limits"],
-        "final_approval_allowed": False,
+        "institutional_limits_evaluation": evaluation or {},
+        "final_approval_blockers": blockers if blockers is not None else [],
+        "final_approval_allowed": not (blockers if blockers is not None else ["uncomputed"]),
         "technical_debts_accepted": TECHNICAL_DEBTS,
     }
 
@@ -862,18 +1273,36 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
             f"got {args.builder_code_sha256}"
         )
     builder_commit = summary["builder_commit"]
-    config = default_config(summary, merge_commit=input_pack_p0_merge_commit)
+    limits = load_institutional_limits()
     grid = default_parameter_grid()
 
+    metrics = input_metrics(input_pack)
+    candidates = candidate_metrics(grid, metrics)
+    # The mandate is judged against the candidate evidence, and the standing
+    # blockers are computed from that judgement. `final_approval_allowed` is the
+    # negation of the blockers, not a literal — with a configured, measured,
+    # unviolated mandate and certified references it opens by itself.
+    evaluation = evaluate_institutional_limits(candidates, limits)
+    blockers = final_approval_blockers(
+        evaluation,
+        baseline_references_certified=pack_certifies_baseline_references(input_pack),
+    )
+
+    config = default_config(
+        summary,
+        merge_commit=input_pack_p0_merge_commit,
+        institutional_limits=limits,
+        final_approval_allowed=not blockers,
+    )
     config_path = output_dir / "calibration_config.json"
     grid_path = output_dir / "parameter_grid.json"
     write_json(config_path, config)
     write_json(grid_path, grid)
 
-    metrics = input_metrics(input_pack)
-    candidates = candidate_metrics(grid, metrics)
-    selected, rejected = selected_and_rejected(candidates)
-    baseline = build_baseline_comparison(candidates, selected)
+    selected, rejected = selected_and_rejected(
+        candidates, evaluation=evaluation, blockers=blockers
+    )
+    baseline = build_baseline_comparison(candidates, selected, blockers=blockers)
 
     generated_files = [
         "calibration_config.json",
@@ -895,7 +1324,9 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "input_metrics": metrics,
         "candidate_metrics": candidates,
         "objective": config["objective"],
-        "final_approval_allowed": False,
+        "institutional_limits_evaluation": evaluation,
+        "final_approval_blockers": blockers,
+        "final_approval_allowed": not blockers,
     }
 
     paths = {
@@ -925,6 +1356,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         network=args.network,
         db_access=args.db_access,
         input_pack_mount=args.input_pack_mount,
+        evaluation=evaluation,
+        blockers=blockers,
     )
     write_json(output_dir / "invariant_report.json", invariant)
     invariant = build_invariant_report(
@@ -935,6 +1368,8 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         network=args.network,
         db_access=args.db_access,
         input_pack_mount=args.input_pack_mount,
+        evaluation=evaluation,
+        blockers=blockers,
     )
     write_json(output_dir / "invariant_report.json", invariant)
     write_text(
@@ -985,6 +1420,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
+        "institutional_limits_sha256": institutional_limits_sha256(),
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "jobs_1_hashes": hashes_for_labels(matrix_run_hashes, "jobs1"),
@@ -1020,6 +1456,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, Any]:
         "engine_image_id": engine_image_id,
         "docker_context_sha256": docker_context_sha256,
         "dockerfile_sha256": dockerfile_sha256,
+        "institutional_limits_sha256": institutional_limits_sha256(),
         "calibration_config_sha256": file_sha256(config_path),
         "parameter_grid_sha256": file_sha256(grid_path),
         "output_manifest_sha256": file_sha256(output_dir / "output_manifest.json"),

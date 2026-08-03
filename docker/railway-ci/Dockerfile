@@ -20,6 +20,8 @@ COPY contracts/quant-engine /app/contracts/quant-engine
 COPY schemas/input_packs /app/schemas/input_packs
 COPY scripts /app/scripts
 COPY src /app/src
+# See docker/quant-engine/Dockerfile: the calibration mandate lives here.
+COPY configs/calibration /app/configs/calibration
 COPY tests /app/tests
 COPY fixtures/input_packs /app/fixtures/input_packs
 COPY artifacts/calibration/open_macro_v03_calibration_001 /app/artifacts/calibration/open_macro_v03_calibration_001

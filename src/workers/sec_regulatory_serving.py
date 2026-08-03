@@ -1,6 +1,6 @@
 """Registered materializer for the public ``sec_regulatory_serving_v1`` product.
 
-Projects the current N-CEN/RR1 snapshot views into the public-only
+Projects the current RR1 snapshot views into the public-only
 ``sec_regulatory_serving_facts`` surface and promotes one complete serving
 version via the shared derived-publication current pointer. The app pins an exact
 publication of this product; this worker never touches the app-owned composition
@@ -35,12 +35,7 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     if calc_date:
         return date.fromisoformat(calc_date)
     row = conn.execute(
-        """
-        SELECT max(d) FROM (
-            SELECT max(measured_at) AS d FROM sec_current_ncen_structure_profiles
-            UNION ALL SELECT max(data_date) FROM sec_current_rr1_fee_profiles
-        ) x
-        """
+        "SELECT max(data_date) FROM sec_current_rr1_fee_profiles"
     ).fetchone()
     return row[0] if row and row[0] else None
 
@@ -53,7 +48,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None,
         materializer.install_schema(conn)
         # No current family snapshot yet -> nothing to serve (dark until backfill).
         if not conn.execute(
-            "SELECT to_regclass('sec_current_ncen_structure_profiles') IS NOT NULL"
+            "SELECT to_regclass('sec_current_rr1_fee_profiles') IS NOT NULL"
         ).fetchone()[0]:
             conn.commit()
             return {"state": "no_source", "rows": 0}

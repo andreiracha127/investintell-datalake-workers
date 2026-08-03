@@ -10,7 +10,7 @@ the result. Nothing here creates a schedule or deploys anything (SEM deploy).
 Stage -> existing worker mapping (spec §5):
   1. ingest      -> ncen_ingestion / rr1_ingestion / nport_ingestion (raw landing)
   2. pit_update  -> bond_security_master + bond_price_observations
-  3. materialize -> ncen_derived_profiles + rr1_derived_profiles + bond_metrics
+  3. materialize -> bond_metrics (the dossier-profile builders left this stage)
   4. mixed_build -> mixed_quant_publication (builds inactive; promote is separate)
   5. validate    -> read-only reconciliation of the current derived pointers
   6. promote     -> promote the ready mixed_quant_v1 publication (the derived and
@@ -35,6 +35,7 @@ import uuid
 from datetime import date
 from typing import Any, Callable
 
+from src import sec_effective_matviews
 from src.bonds import daily_chain
 from src.bonds.daily_chain import (
     Stage,
@@ -98,8 +99,22 @@ def _compose(outcomes: list[StageOutcome], *, empty_reason: str = "dark_no_sourc
     return StageOutcome.skipped("dark_no_source", units=detail)
 
 
-def _invoke(ctx: StageContext, worker_name: str) -> StageOutcome:
-    result = _worker(worker_name)(ctx.dsn, calc_date=ctx.source_day.isoformat())
+def _invoke(ctx: StageContext, worker_name: str, *, anchor: str = "chain") -> StageOutcome:
+    """Invoke one worker, anchoring its ``as_of`` per ``anchor``.
+
+    ``chain`` pins the run's source-day (day-keyed products: ingest cohorts,
+    mixed_quant). ``self`` passes NO calc_date so the worker resolves its OWN
+    watermark — required for the pit/materialize/refresh lanes, whose sources
+    advance independently: forcing the chain's global day onto them selects an
+    exact-day cohort that can be EMPTY for a source whose landings sit on a
+    different day (2026-07-31: the price panel lands on 2025-03-31, the chain
+    day was 2026-07-23, and ``bond_price_observation_v1`` published zero rows —
+    caught by the serving coverage guard, whole run compensated). Self-anchored
+    workers also replay to the SAME publication when their source is unchanged,
+    which is what makes the daily cron cheap.
+    """
+    kwargs = {} if anchor == "self" else {"calc_date": ctx.source_day.isoformat()}
+    result = _worker(worker_name)(ctx.dsn, **kwargs)
     return classify_worker_result(dict(result))
 
 
@@ -120,18 +135,25 @@ def stage_ingest(ctx: StageContext) -> StageOutcome:
 
 
 def stage_pit_update(ctx: StageContext) -> StageOutcome:
-    return _compose([_invoke(ctx, "bond_security_master"), _invoke(ctx, "bond_price_observations")])
+    return _compose([
+        _invoke(ctx, "bond_security_master", anchor="self"),
+        _invoke(ctx, "bond_price_observations", anchor="self"),
+    ])
 
 
 def stage_materialize(ctx: StageContext) -> StageOutcome:
     # bond_metrics runs AFTER the pit_update stage published the security/price
     # snapshots it consumes; it self-promotes bond_metric_v1 atomically, so the
     # chain's table-driven pointer-diff compensation covers it automatically.
-    return _compose([
-        _invoke(ctx, "ncen_derived_profiles"),
-        _invoke(ctx, "rr1_derived_profiles"),
-        _invoke(ctx, "bond_metrics"),
-    ])
+    #
+    # The ncen/rr1 dossier-profile builders were REMOVED from this stage
+    # (2026-07-30): they serve the fund-dossier lane, not the bond lane, and a
+    # profile failure (e.g. 'conflicting RR1 class net-expense facts' in
+    # rr1_class_cost_dispersion_v1) held the whole bond publication hostage —
+    # the compensation pass rolled back a completed 55-minute pit_update. The
+    # products themselves were then cut: only rr1_derived_profiles survives (the
+    # fee product), invocable standalone on its own cadence.
+    return _compose([_invoke(ctx, "bond_metrics", anchor="self")])
 
 
 def stage_mixed_build(ctx: StageContext) -> StageOutcome:
@@ -192,7 +214,10 @@ def stage_promote(ctx: StageContext) -> StageOutcome:
 
 
 def stage_refresh(ctx: StageContext) -> StageOutcome:
-    return _compose([_invoke(ctx, "sec_regulatory_serving"), _invoke(ctx, "bond_serving")])
+    return _compose([
+        _invoke(ctx, "sec_regulatory_serving", anchor="self"),
+        _invoke(ctx, "bond_serving", anchor="self"),
+    ])
 
 
 def stage_probe(ctx: StageContext) -> StageOutcome:
@@ -262,15 +287,27 @@ def _staleness_threshold() -> int | None:
 
 
 def discover_source_days(conn: Any, *, limit: int | None = None) -> list[date]:
-    """Watermark-driven eligible source-days (ascending). Absent tables -> []."""
-    days: set[date] = set()
+    """The single LATEST watermark day across the chain's sources (or []).
+
+    Deliberately NOT a historical catch-up: every stage worker projects the
+    CURRENT state of its inputs (current pointers, latest filings at/before the
+    calc-date), so replaying an old source-day rebuilds a stale ``as_of`` and —
+    because each product self-promotes — would advance the current pointers to
+    that stale build. The 2026-07 incident did exactly that: the watermark
+    enumeration walked every distinct filing effective-date since 2015 and spent
+    hours promoting 2015/2016 builds over the present. One day per invocation is
+    the honest cadence; history stays reachable via an explicit ``calc_date``.
+    """
+    latest: date | None = None
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        for (day,) in conn.execute(f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL"):
-            days.add(day)
-    ordered = sorted(days)
-    return ordered[:limit] if limit is not None else ordered
+        relation = sec_effective_matviews.resolve_relation(conn, table)
+        row = conn.execute(f"SELECT max({col}) FROM {relation}").fetchone()
+        day = row[0] if row else None
+        if day is not None and (latest is None or day > latest):
+            latest = day
+    return [] if latest is None else [latest]
 
 
 def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
@@ -285,8 +322,12 @@ def build_watermarks(conn: Any, source_day: date) -> dict[str, Any]:
     for table, col in _WATERMARK_SOURCES:
         if not conn.execute("SELECT to_regclass(%s) IS NOT NULL", (table,)).fetchone()[0]:
             continue
-        row = conn.execute(f"SELECT max({col}) FROM {table}").fetchone()
+        relation = sec_effective_matviews.resolve_relation(conn, table)
+        row = conn.execute(f"SELECT max({col}) FROM {relation}").fetchone()
         wm = row[0] if row else None
+        # Keyed by the SOURCE PRODUCT, never by the relation actually read: the
+        # matview is a cache of the same product and the run row's watermark
+        # history must stay comparable across the swap.
         watermarks[table] = wm.isoformat() if isinstance(wm, date) else None
     return watermarks
 
@@ -381,13 +422,34 @@ def _restore_mixed(conn: Any, product: str, prior: uuid.UUID | None) -> None:
     conn.execute("DELETE FROM active_quant_publication_v1 WHERE product=%s", (product,))
 
 
+def _configured_stages() -> list[Stage]:
+    """The stage set this deployment runs, from ``DAILY_CHAIN_STAGES``.
+
+    A comma-separated subset of the frozen stage names (order-insensitive: the
+    frozen binding order always applies). Unset/blank -> all eight stages. This
+    exists so a deployment can scope the chain to one product family's lane —
+    e.g. the bond job runs ``pit_update,materialize,validate,refresh,probe``
+    and leaves ``mixed_build``/``promote`` to the quant program's own cadence —
+    without a code fork. Unknown names fail closed (never silently dropped).
+    """
+    raw = os.getenv("DAILY_CHAIN_STAGES", "").strip()
+    if not raw:
+        return build_default_stages()
+    names = [name.strip() for name in raw.split(",") if name.strip()]
+    unknown = sorted(set(names) - set(daily_chain.STAGE_ORDER))
+    if unknown:
+        raise ValueError(f"DAILY_CHAIN_STAGES names unknown stages: {unknown}")
+    return build_stages(names)
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Drive the daily publication chain under the chain-run advisory lock.
 
     Overlapping runs are impossible: the whole run holds
     ``LOCK_DAILY_PUBLICATION_CHAIN`` (session-level, survives the per-stage
-    commits). ``calc_date`` pins a single source-day; otherwise all eligible
-    watermark days are processed in ascending (catch-up) order.
+    commits). ``calc_date`` pins a single source-day; otherwise the single
+    latest watermark day is processed. ``DAILY_CHAIN_STAGES`` scopes the stage
+    set (see ``_configured_stages``).
     """
     resolved = resolve_dsn(dsn)
     with connect(resolved) as conn, advisory_lock(conn, LOCK_DAILY_PUBLICATION_CHAIN) as acquired:
@@ -395,14 +457,21 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             return {"state": "locked", "chain": CHAIN, "runs": []}
         daily_chain.install_schema(conn)
         conn.commit()
+        # Bring the effective-selection caches up to the state the watermark reads
+        # are about to observe. Both reads below happen BEFORE the ingest stage, so
+        # a cache refreshed here reflects exactly what the views would return now.
+        # Reported, never fatal: when the refresh cannot run, resolve_relation
+        # falls back to the views and the run pays the old scan.
+        matview_refreshes = sec_effective_matviews.refresh_stale(resolved)
         if calc_date:
             source_days = [date.fromisoformat(calc_date)]
         else:
             source_days = discover_source_days(conn, limit=limit)
         if not source_days:
-            return {"state": "no_source_days", "chain": CHAIN, "runs": []}
+            return {"state": "no_source_days", "chain": CHAIN,
+                    "effective_matviews": matview_refreshes, "runs": []}
         summaries = daily_chain.run_chain(
-            conn, stages=build_default_stages(), source_days=source_days,
+            conn, stages=_configured_stages(), source_days=source_days,
             code_revision=_code_revision(), config_version="v1", dsn=resolved,
             watermarks_for=build_watermarks,
             snapshot_pointers=_snapshot_pointers, restore_pointer=_restore_pointer,
@@ -413,6 +482,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
     return {
         "state": "failed" if failed else "ok",
         "chain": CHAIN,
+        "effective_matviews": matview_refreshes,
         "runs_processed": len(summaries),
         # Freshness is surfaced separately from failure: a run can be 'ok' yet carry
         # a staleness alert operators should see.

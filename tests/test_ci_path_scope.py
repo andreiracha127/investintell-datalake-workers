@@ -89,6 +89,8 @@ def test_shared_db_and_nport_input_fixture_select_both() -> None:
         ".github/workflows/ci.yml",
         "requirements.quant-engine.lock",
         "tools/new_worker.py",
+        # the fleet image: its COPY set is a runtime dependency of the worker gates
+        "Dockerfile",
     ],
 )
 def test_workflow_dependency_and_unknown_code_changes_fail_closed(path: str) -> None:

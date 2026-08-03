@@ -47,6 +47,9 @@ PACK_HELPER_MODULES = (
     "src/input_packs/manifest.py",
     "src/input_packs/hashing.py",
     "src/input_packs/p0_contract.py",
+    # The certified-pack registry loader resolves WHICH pack and WHICH digest the
+    # runtime path consumes, so it is inside the same trust closure.
+    "src/input_packs/registry.py",
 )
 PINNED_SRC_MODULES = {
     "src.quadrant_score", "src.macro_transforms", "src.macro_sources",
@@ -59,7 +62,9 @@ PINNED_SRC_MODULES = {
 # Infra allowlist: quadrant_assemble re-exports LOCK_REGIME_QUADRANT from src.db, an
 # infrastructure (locks/connection) module that carries no decision-formula value and
 # is transitively guarded by the prefix-hash pin, not by the formula closure.
-SRC_INFRA_ALLOWLIST = {"src.db"}
+# ...and live_validation resolves the certified pack through the registry, whose
+# module is itself pinned (see PACK_HELPER_MODULES).
+SRC_INFRA_ALLOWLIST = {"src.db", "src.input_packs"}
 
 APPROVAL_ROLES = {
     "technical_owner", "quant_owner", "risk_owner", "operations_owner",
@@ -153,9 +158,11 @@ def test_module_pins_pack_matches_certified_pack():
     from harness.direct_activation import build_stage_b_artifacts as builder
 
     pins = _load_json(PINS)
-    certified_pack = (
-        ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
-    )
+    from src.input_packs.registry import P1_PROFILE, current_pack_dir
+
+    # The pinned pack is whichever entry the registry promotes, not a path typed
+    # into this test.
+    certified_pack = current_pack_dir(P1_PROFILE)
     manifest = json.loads((certified_pack / "manifest.json").read_text(encoding="utf-8"))
     assert builder.PACK == certified_pack
     assert pins["pack"] == {
@@ -558,19 +565,25 @@ def test_schema_migration_record_pins_the_applied_and_verified_catalog():
 
 def test_expected_schema_dict_stays_in_sync_with_the_committed_ddl():
     """The worker's EXPECTED_SCHEMA (verify_schema expectations, the B1b evidence
-    base) must mirror the committed DDL: the expected tables are exactly the three
-    sanctioned ones, and every expected column name and every expected NAMED
-    constraint appears in that table's committed DDL text — the base .sql PLUS the
-    additive carry_decay_v1 migration (the byte-pinned base files are never edited;
-    schema evolution lands as a separate additive migration file)."""
+    base) must mirror the committed DDL: the expected tables are the three sanctioned
+    PRODUCT tables PLUS the append-only staleness-resolution ledger (not a product
+    table and deliberately NOT in the envelope's allowed_tables), and every expected
+    column name and every expected NAMED constraint appears in that table's committed
+    DDL text — the base .sql PLUS the additive carry_decay_v1 migration (the byte-pinned
+    base files are never edited; schema evolution lands as a separate additive file)."""
     import src.workers.open_macro_v03 as w
 
     migration = (ROOT / "schemas" / "open_macro_v03_carry_decay_v1_migration.sql"
                  ).read_text(encoding="utf-8")
-    assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES)
+    assert set(w.EXPECTED_SCHEMA) == set(w.ALLOWED_TABLES) | {w.RESOLUTIONS_TABLE}
+    # the envelope's write scope is untouched: the resolution ledger carries no
+    # decision/allocation/regime data, so it is never smuggled into allowed_tables.
+    assert w.RESOLUTIONS_TABLE not in w.ALLOWED_TABLES
     auto_named = {"open_macro_v03_decisions_pkey", "open_macro_v03_allocations_pkey",
                   "open_macro_v03_staleness_blocks_pkey",
-                  "open_macro_v03_allocations_as_of_fkey"}
+                  "open_macro_v03_allocations_as_of_fkey",
+                  "open_macro_v03_staleness_resolutions_pkey",
+                  "open_macro_v03_staleness_resolutions_as_of_fkey"}
     for table, expected in w.EXPECTED_SCHEMA.items():
         ddl = (ROOT / "schemas" / f"{table}.sql").read_text(encoding="utf-8") + migration
         for column in expected["columns"]:

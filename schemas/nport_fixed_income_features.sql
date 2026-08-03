@@ -166,6 +166,19 @@ BEGIN
     ALTER TABLE nport_fixed_income_debt_flag_features_v2 ADD CONSTRAINT nport_fi_debt_flags_coverage_check CHECK (gross_market_value_coverage IS NULL OR gross_market_value_coverage BETWEEN 0 AND 1);
   END IF;
 END $$;
+-- RETIRED 2026-07-31 (owner decision): the per-position repo/securities-lending
+-- surfaces are no longer built, served or pointed at by a current view. The
+-- tables stay because older publications reference them; they retire with the
+-- coverage backlog, under the migration runbook. They KEEP the fact and truncate
+-- guards: retained does not mean unguarded, and a legacy restore writes into
+-- them, so their rows must stay as immutable as everything the closure counts.
+--
+-- Applying this DDL over a v2 database must actually retire them: without these
+-- drops the sec_current_* views survive, keep following the current pointer, and
+-- keep serving a surface the product no longer has. Idempotent, like the rest of
+-- this file.
+DROP VIEW IF EXISTS sec_current_nport_fixed_income_repo_lending_primitives_v2;
+DROP VIEW IF EXISTS sec_current_nport_fixed_income_repo_lending_reported_flags_v2;
 CREATE TABLE IF NOT EXISTS nport_fixed_income_repo_lending_primitives_v2 (
     publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
@@ -291,9 +304,74 @@ BEGIN
 END $$;
 
 DO $$ DECLARE target text; BEGIN
-  FOREACH target IN ARRAY ARRAY['nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2','nport_fixed_income_metric_coverage_v2'] LOOP
+  FOREACH target IN ARRAY ARRAY['nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2'] LOOP
     EXECUTE format('DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON %I', target);
     EXECUTE format('CREATE TRIGGER nport_fixed_income_v2_fact_write_guard BEFORE INSERT OR UPDATE OR DELETE ON %I FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_v2_fact_write_guard()', target);
+  END LOOP;
+END $$;
+
+-- --------------------------------------------------------------------------- --
+-- Storage closure: the O(1) proof that a published relation set is intact.
+--
+-- The row guards above reject every UPDATE and DELETE outright and admit an
+-- INSERT only while the parent publication is 'prepared'.  Once a publication is
+-- validated its eight relations are therefore FROZEN by the database, not by
+-- convention.  A closure row records the per-relation counts observed while the
+-- publication was already validated; because nothing can write afterwards, that
+-- observation stays true forever, and an idempotent replay can re-prove storage
+-- by reading ONE indexed row instead of running eight full counts -- one of them
+-- over nport_fixed_income_metric_coverage_v2 (45.6M rows in production).
+--
+-- TRUNCATE bypasses row-level triggers, so it is forbidden explicitly below:
+-- otherwise it would be the one write that could invalidate a closure silently.
+-- --------------------------------------------------------------------------- --
+CREATE TABLE IF NOT EXISTS nport_fixed_income_publication_closures (
+    publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    manifest_sha256 char(64) NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
+    relation_counts jsonb NOT NULL CHECK (jsonb_typeof(relation_counts) = 'object'),
+    verified_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION nport_fixed_income_closure_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE recorded_manifest char(64);
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure is immutable';
+    END IF;
+    -- A closure may only be recorded once the publication is validated: before
+    -- that the row guards still admit inserts, so a count observed earlier would
+    -- not be a closure at all.
+    IF NOT sec_derived_publication_is_validated(NEW.publication_id, 'nport_fixed_income_features_v1') THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure requires a validated publication';
+    END IF;
+    -- The closure attests THE manifest that was published, never a free-standing
+    -- hash: a closure whose manifest differs from the recorded one would let a
+    -- replay of a different artifact skip verification.
+    SELECT manifest_sha256 INTO recorded_manifest
+    FROM nport_fixed_income_publication_manifests WHERE publication_id = NEW.publication_id;
+    IF recorded_manifest IS DISTINCT FROM NEW.manifest_sha256 THEN
+        RAISE EXCEPTION 'N-PORT fixed-income publication closure manifest does not match the published manifest';
+    END IF;
+    RETURN NEW;
+END $$;
+
+DROP TRIGGER IF EXISTS nport_fixed_income_closure_write_guard
+    ON nport_fixed_income_publication_closures;
+CREATE TRIGGER nport_fixed_income_closure_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_publication_closures
+FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_closure_write_guard();
+
+CREATE OR REPLACE FUNCTION nport_fixed_income_truncate_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'N-PORT fixed-income publication relations cannot be truncated (%)', TG_TABLE_NAME;
+END $$;
+
+DO $$ DECLARE target text; BEGIN
+  FOREACH target IN ARRAY ARRAY['nport_fixed_income_features','nport_fixed_income_key_rate_sensitivities_v2','nport_fixed_income_credit_spread_sensitivities_v2','nport_fixed_income_balance_sheet_primitives_v2','nport_fixed_income_debt_flag_features_v2','nport_fixed_income_metric_coverage_v2','nport_fixed_income_repo_lending_primitives_v2','nport_fixed_income_repo_lending_reported_flags_v2'] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON %I', target);
+    EXECUTE format('CREATE TRIGGER nport_fixed_income_truncate_guard BEFORE TRUNCATE ON %I FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard()', target);
   END LOOP;
 END $$;
 
@@ -308,18 +386,22 @@ EXCEPTION
     WHEN datetime_field_overflow OR invalid_datetime_format THEN RETURN NULL;
 END $$;
 
--- The legacy oracle is a guarded local-only SQL resource under src/nport/sql/local_only.
--- Production installation always ends with this definition:
--- heavy joins/aggregates are intentionally forbidden in PostgreSQL.
-CREATE OR REPLACE FUNCTION build_nport_fixed_income_features(
-    target_publication_id uuid,
-    as_of_date date
-) RETURNS integer LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE SQLSTATE '0A000' USING
-        MESSAGE = 'local fixed-income materializer is required; server-side builder is unsupported',
-        HINT = 'Extract immutable inputs and run scripts/materialize_nport_fixed_income_local.py.';
-END $$;
+-- build_nport_fixed_income_features() is NOT defined here.
+--
+-- It used to be a stub that raised 0A000 ("local fixed-income materializer is
+-- required"), which made this product impossible to publish from any deployed
+-- runtime: the only writer was a human running a separately-attested local
+-- PostgreSQL. The real builder lives in the sha256-pinned resource
+-- src/nport/sql/nport_fixed_income_features_builder.sql and is installed by the
+-- registered worker src/workers/nport_fixed_income_serving.py (see
+-- src.nport.fixed_income_local_materializer.install_builder), which verifies the
+-- pin before executing it.
+--
+-- Deliberately absent rather than re-stubbed: a re-run of this DDL over a live
+-- database must not silently replace the real builder with a raise.  Every
+-- integrity guard the stub was standing in for (prepared->validated->current
+-- lifecycle, build-identity pinning, per-relation write guards, immutable
+-- manifest) is enforced by the triggers above and by the builder itself.
 
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_features AS
 SELECT f.*
@@ -335,9 +417,257 @@ CREATE OR REPLACE VIEW sec_current_nport_fixed_income_balance_sheet_primitives_v
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_balance_sheet_primitives_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_debt_flag_features_v2 AS
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_debt_flag_features_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
-CREATE OR REPLACE VIEW sec_current_nport_fixed_income_repo_lending_primitives_v2 AS
-SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_repo_lending_primitives_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
-CREATE OR REPLACE VIEW sec_current_nport_fixed_income_repo_lending_reported_flags_v2 AS
-SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_repo_lending_reported_flags_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
 CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_v2 AS
 SELECT f.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_v2 f ON f.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- Coverage rollup: one row per fund snapshot x metric key (46 figures), the
+-- grain the dossier actually consumes.  Serving the per-position grain per
+-- request cost 36 s and ~493 MB of I/O on a cold cache, past the datalake
+-- statement timeout.
+--
+-- It is a WRITTEN table, not a materialized view over
+-- nport_fixed_income_metric_coverage_v2, because the builder no longer
+-- materializes absence: writing one row per holding per metric key produced
+-- 173,716 rows per snapshot and 45.6M rows / 20 GB table + 18 GB primary key,
+-- and the debut build was cancelled after 2h+ of CPU. Absence is COUNTED here
+-- instead -- reported_row_count / source_row_count / missing_reason_counts --
+-- which says everything the absent rows said, per metric, in 46 rows.
+--
+-- Aggregation rule, unchanged from the rollup this replaces: combine only what
+-- agrees.  A metric whose positions disagree on availability reports NULL
+-- availability_state rather than a state it does not have.
+CREATE TABLE IF NOT EXISTS nport_fixed_income_metric_coverage_snapshot_v1 (
+    publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_holdings_publication_id uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
+    source_run_id uuid NOT NULL REFERENCES sec_ingestion_runs(run_id) ON DELETE RESTRICT,
+    series_id text NOT NULL, report_date date NOT NULL, accession_number text NOT NULL,
+    metric_family text NOT NULL, metric_key text NOT NULL,
+    numerator numeric, denominator numeric, denominator_unit text,
+    coverage_ratio numeric CHECK (coverage_ratio BETWEEN 0 AND 1),
+    -- NULL is legitimate here and only here: positions that disagree.
+    availability_state text CHECK (availability_state IN ('source_row_absent','field_missing_or_invalid','reported_numeric')),
+    methodology_version text NOT NULL DEFAULT 'nport_fixed_income_features_v2',
+    exclusions jsonb NOT NULL DEFAULT '[]'::jsonb,
+    source_row_count bigint NOT NULL CHECK (source_row_count >= 0),
+    reported_row_count bigint NOT NULL CHECK (reported_row_count >= 0),
+    missing_reason_counts jsonb NOT NULL DEFAULT '{}'::jsonb,
+    CHECK (reported_row_count <= source_row_count),
+    PRIMARY KEY (publication_id,series_id,report_date,accession_number,metric_family,metric_key)
+);
+
+-- The predicate the reader actually uses: it pins by source holdings
+-- publication, not by the feature publication.
+CREATE INDEX IF NOT EXISTS nport_fi_metric_coverage_snapshot_v1_serving_idx
+  ON nport_fixed_income_metric_coverage_snapshot_v1
+  (source_holdings_publication_id,series_id,report_date,accession_number);
+
+CREATE OR REPLACE VIEW sec_current_nport_fixed_income_metric_coverage_snapshot_v1 AS
+SELECT s.* FROM sec_derived_current_pointers c JOIN nport_fixed_income_metric_coverage_snapshot_v1 s ON s.publication_id=c.publication_id WHERE c.product='nport_fixed_income_features_v1';
+
+-- The rollup is a publication fact like any other -- same pinned lineage, same
+-- immutability, same truncate guard -- with ONE narrow addition.
+--
+-- This relation did not exist when earlier publications were validated. A
+-- publication promoted before the migration therefore has no rollup rows, and
+-- the reader consumes the rollup, so it would serve no coverage at all. The
+-- generic fact guard demands a PREPARED parent, which a validated publication
+-- can never be again, so such a publication could never be repaired.
+--
+-- The guard therefore also admits an INSERT for a VALIDATED parent while the
+-- publication has NO rollup rows yet: a one-time backfill, self-limiting
+-- (the second attempt sees rows and is refused) and strictly additive. It can
+-- never rewrite or partially replace an existing rollup, and UPDATE/DELETE stay
+-- refused unconditionally.
+--
+-- "Had no rows yet" is a property of the STATEMENT, not of a row, and that is
+-- why the check lives in its own statement-level trigger below. Asked per row it
+-- was self-defeating: a row trigger's query sees the rows the same command
+-- already inserted, so row 2 of a multi-row backfill found row 1 and raised
+-- "already published". The backfill is one INSERT..SELECT producing one row per
+-- (series, report_date, accession, metric family, metric key) group, so it could
+-- only ever succeed for a publication whose coverage collapsed to a single
+-- group. The repair path documented in the runbook was broken by construction;
+-- the build path never reached this branch (its parent is 'prepared'), which is
+-- why nothing noticed.
+CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_write_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE pinned_source uuid; pinned_run uuid; pinned_as_of date; parent_state text;
+BEGIN
+    IF TG_OP <> 'INSERT' THEN RAISE EXCEPTION 'N-PORT fixed-income coverage rollup row is immutable'; END IF;
+    SELECT lifecycle_state INTO parent_state FROM sec_derived_publications
+      WHERE publication_id=NEW.publication_id AND product='nport_fixed_income_features_v1' FOR UPDATE;
+    IF parent_state IS NULL THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a fixed-income publication';
+    END IF;
+    -- 'validated' is admitted here and constrained by the statement guard below.
+    IF parent_state NOT IN ('prepared','validated') THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires a prepared publication';
+    END IF;
+    SELECT b.source_holdings_publication_id,p.source_run_id,b.as_of_date INTO pinned_source,pinned_run,pinned_as_of
+      FROM nport_fixed_income_feature_builds b JOIN sec_derived_publications p ON p.publication_id=b.source_holdings_publication_id
+      WHERE b.publication_id=NEW.publication_id;
+    IF NEW.source_holdings_publication_id IS DISTINCT FROM pinned_source OR NEW.source_run_id IS DISTINCT FROM pinned_run THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup requires the pinned source publication and run';
+    END IF;
+    IF NEW.report_date > pinned_as_of THEN RAISE EXCEPTION 'N-PORT fixed-income coverage rollup report date exceeds build as_of_date'; END IF;
+    RETURN NEW;
+END $$;
+
+-- The backfill window, stated once per statement instead of once per row.
+--
+-- After the statement, a publication that had NO rollup rows before it holds
+-- exactly the rows this statement inserted. Anything more means the statement
+-- ADDED to a rollup that already existed -- the rewrite the relaxation must
+-- never permit -- so the comparison is total-after vs inserted, and it needs no
+-- pre-statement snapshot to be exact. It runs AFTER, because only an AFTER
+-- trigger can be given a transition table; the RAISE aborts the statement and
+-- its transaction all the same, which is what fail-closed means here.
+--
+-- The count assumes READ COMMITTED (this database's default): it must see rows a
+-- CONCURRENT transaction committed, or two backfills racing would each observe
+-- only their own rows and both pass. Under REPEATABLE READ or SERIALIZABLE the
+-- count reads the transaction's older snapshot and would miss exactly that. In
+-- practice the race is closed anyway, twice over: the row guard takes
+-- FOR UPDATE on the parent publication row, so a second backfill blocks until
+-- the first commits and then sees its rows; and the rollup's primary key makes a
+-- duplicate insert a conflict rather than a second copy. Do not run the backfill
+-- under an isolation level higher than READ COMMITTED and expect this guard to
+-- be the thing that stops the race.
+--
+-- Filtering to 'validated' parents is LOAD-BEARING FOR CORRECTNESS, not a cost
+-- optimisation. The builder writes the rollup in TWO statements (key-rate and
+-- balance/spread coverage are separate INSERTs), and the artifact route COPYs it
+-- in another. Applied to a prepared parent, "total-after must equal what this
+-- statement inserted" would fail on the second statement of every normal build.
+-- A prepared publication's write window is its whole prepared lifetime -- that is
+-- what the row guard enforces -- and only a validated one has the narrow
+-- one-statement window this trigger exists to state.
+CREATE OR REPLACE FUNCTION nport_fixed_income_coverage_rollup_backfill_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE offending uuid;
+BEGIN
+    SELECT n.publication_id INTO offending
+    FROM (
+        SELECT r.publication_id, count(*) AS inserted
+        FROM nport_fixed_income_coverage_rollup_inserted r
+        JOIN sec_derived_publications p ON p.publication_id = r.publication_id
+        WHERE p.product = 'nport_fixed_income_features_v1'
+          AND p.lifecycle_state = 'validated'
+        GROUP BY r.publication_id
+    ) n
+    WHERE (
+        SELECT count(*) FROM nport_fixed_income_metric_coverage_snapshot_v1 s
+        WHERE s.publication_id = n.publication_id
+    ) <> n.inserted
+    LIMIT 1;
+    IF offending IS NOT NULL THEN
+        RAISE EXCEPTION 'N-PORT fixed-income coverage rollup is already published for this publication: %', offending;
+    END IF;
+    RETURN NULL;
+END $$;
+
+DROP TRIGGER IF EXISTS nport_fixed_income_v2_fact_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+DROP TRIGGER IF EXISTS nport_fixed_income_coverage_rollup_write_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_coverage_rollup_write_guard
+BEFORE INSERT OR UPDATE OR DELETE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH ROW EXECUTE FUNCTION nport_fixed_income_coverage_rollup_write_guard();
+DROP TRIGGER IF EXISTS nport_fixed_income_coverage_rollup_backfill_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_coverage_rollup_backfill_guard
+AFTER INSERT ON nport_fixed_income_metric_coverage_snapshot_v1
+REFERENCING NEW TABLE AS nport_fixed_income_coverage_rollup_inserted
+FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_coverage_rollup_backfill_guard();
+DROP TRIGGER IF EXISTS nport_fixed_income_truncate_guard ON nport_fixed_income_metric_coverage_snapshot_v1;
+CREATE TRIGGER nport_fixed_income_truncate_guard
+BEFORE TRUNCATE ON nport_fixed_income_metric_coverage_snapshot_v1
+FOR EACH STATEMENT EXECUTE FUNCTION nport_fixed_income_truncate_guard();
+
+-- --------------------------------------------------------------------------- --
+-- Family completeness: the acceptance criterion promotion never had.
+--
+-- Every guard above protects a single ROW. Nothing protected the SHAPE of a
+-- publication, so on 2026-08-01 a build over pruned raw evidence produced four
+-- empty relations, wrote the zeros into its own manifest, and was validated and
+-- promoted regardless: sec_validate_derived_publication only checks lineage, and
+-- sec_set_current_derived_publication only refuses an as_of regression.
+--
+-- The rule stated here is narrower than "no relation may be empty" (a legitimately
+-- empty relation exists) and exactly as wide as the failure: a relation may not
+-- REGRESS TO ZERO -- be empty in the candidate while the publication currently
+-- being served has rows in it. That predicate needs no baseline count, only the
+-- two EXISTS probes, so it stays O(1) per relation even against the 45.6M-row
+-- coverage table.
+--
+-- ``allow_relation_regression`` is the deliberate operator override, in the same
+-- vocabulary as sec_set_current_derived_publication's allow_as_of_regression: a
+-- source that legitimately stops reporting a family is a fact somebody has to
+-- assert by hand, never something a scheduled job may conclude on its own.
+--
+-- The retired repo/securities-lending relations are NOT in this set: they are
+-- empty by owner decision since 2026-07-31, so requiring them would make every
+-- promotion after a pre-retirement publication fail.
+CREATE OR REPLACE FUNCTION nport_fixed_income_assert_publication_complete(
+    target_publication_id uuid,
+    allow_relation_regression boolean DEFAULT false
+) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+    baseline_publication_id uuid;
+    relation text;
+    candidate_has_rows boolean;
+    baseline_has_rows boolean;
+    regressed text[] := ARRAY[]::text[];
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM sec_derived_publications
+        WHERE publication_id = target_publication_id
+          AND product = 'nport_fixed_income_features_v1'
+    ) THEN
+        RAISE EXCEPTION 'N-PORT fixed-income completeness assertion requires a fixed-income publication: %',
+            target_publication_id;
+    END IF;
+
+    -- The publication readers are being served RIGHT NOW is the only honest
+    -- baseline: promotion is what this assertion gates, so the comparison must
+    -- be against what promotion would replace.
+    SELECT c.publication_id INTO baseline_publication_id
+    FROM sec_derived_current_pointers c
+    WHERE c.product = 'nport_fixed_income_features_v1'
+      AND c.publication_id <> target_publication_id;
+
+    IF baseline_publication_id IS NULL THEN
+        -- Nothing is being served yet (or the target already is): there is no
+        -- shape to regress from, and inventing one would block the first build.
+        RETURN;
+    END IF;
+
+    FOREACH relation IN ARRAY ARRAY[
+        'nport_fixed_income_features',
+        'nport_fixed_income_key_rate_sensitivities_v2',
+        'nport_fixed_income_credit_spread_sensitivities_v2',
+        'nport_fixed_income_balance_sheet_primitives_v2',
+        'nport_fixed_income_debt_flag_features_v2',
+        'nport_fixed_income_metric_coverage_v2',
+        'nport_fixed_income_metric_coverage_snapshot_v1'
+    ] LOOP
+        EXECUTE format('SELECT EXISTS(SELECT 1 FROM %I WHERE publication_id = $1)', relation)
+            INTO candidate_has_rows USING target_publication_id;
+        EXECUTE format('SELECT EXISTS(SELECT 1 FROM %I WHERE publication_id = $1)', relation)
+            INTO baseline_has_rows USING baseline_publication_id;
+        IF baseline_has_rows AND NOT candidate_has_rows THEN
+            regressed := regressed || relation;
+        END IF;
+    END LOOP;
+
+    IF array_length(regressed, 1) IS NULL THEN
+        RETURN;
+    END IF;
+
+    IF allow_relation_regression THEN
+        RAISE WARNING 'N-PORT fixed-income publication % promotes with % empty against current %: explicit override',
+            target_publication_id, regressed, baseline_publication_id;
+        RETURN;
+    END IF;
+
+    RAISE EXCEPTION 'N-PORT fixed-income publication % is incomplete: % regressed to zero rows against the current publication %',
+        target_publication_id, regressed, baseline_publication_id
+        USING HINT = 'the pinned raw evidence is most likely pruned; pass allow_relation_regression => true only to assert a verified, deliberate emptiness';
+END $$;

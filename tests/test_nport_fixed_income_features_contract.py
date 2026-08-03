@@ -10,7 +10,7 @@ from test_nport_fixed_income_features import DSN, _seed_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CONTRACT_PATH = ROOT / "contracts" / "nport-fixed-income-features" / "v2" / "contract.json"
+CONTRACT_PATH = ROOT / "contracts" / "nport-fixed-income-features" / "v3" / "contract.json"
 
 
 def _canonical_digest(document: dict[str, object]) -> str:
@@ -19,11 +19,11 @@ def _canonical_digest(document: dict[str, object]) -> str:
     return f"sha256:{hashlib.sha256(payload.encode('utf-8')).hexdigest()}"
 
 
-def test_nport_fixed_income_v2_contract_is_deterministic_and_governed() -> None:
+def test_nport_fixed_income_v3_contract_is_deterministic_and_governed() -> None:
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
 
-    assert contract["id"] == "nport-fixed-income-features/v2"
-    assert contract["version"] == "2.0.0"
+    assert contract["id"] == "nport-fixed-income-features/v3"
+    assert contract["version"] == "3.0.0"
     assert contract["digest"] == _canonical_digest(contract)
     assert contract["build_pin"] == {
         "source_commit": "external_runtime_pin",
@@ -39,8 +39,6 @@ def test_nport_fixed_income_v2_contract_is_deterministic_and_governed() -> None:
         "nport_fixed_income_credit_spread_sensitivities_v2",
         "nport_fixed_income_balance_sheet_primitives_v2",
         "nport_fixed_income_debt_flag_features_v2",
-        "nport_fixed_income_repo_lending_primitives_v2",
-        "nport_fixed_income_repo_lending_reported_flags_v2",
     }
     for relation_name in v2_relations:
         relation = relations[relation_name]
@@ -53,7 +51,7 @@ def test_nport_fixed_income_v2_contract_is_deterministic_and_governed() -> None:
     supported = {capability["id"]: capability for capability in contract["capabilities"]}
     assert supported["weighted_maturity_statistics"]["state"] == "supported"
     assert supported["holding_country_currency_restriction_fair_value"]["state"] == "supported"
-    for capability_id in ("interest_rate_dv01_dv100", "spread_sensitivity", "borrowings_and_commitments", "repo_lending_collateral_counterparty"):
+    for capability_id in ("interest_rate_dv01_dv100", "spread_sensitivity", "borrowings_and_commitments"):
         assert supported[capability_id]["state"] == "supported"
         assert supported[capability_id]["relation"].endswith("_v2")
 
@@ -62,7 +60,7 @@ def test_nport_fixed_income_v2_contract_is_deterministic_and_governed() -> None:
     assert "sector" not in json.dumps(contract).lower()
 
 
-def test_nport_fixed_income_v2_contract_relations_match_disposable_postgres_shape() -> None:
+def test_nport_fixed_income_v3_contract_relations_match_disposable_postgres_shape() -> None:
     """Detect unreviewed v2 table/current-view shape drift using real catalog data."""
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
     declared = {item["name"]: item for item in contract["relations"]}

@@ -5,13 +5,35 @@ Standalone reimplementation of the monolith Tiingo provider essentials:
 ``Authorization: Token <TIINGO_API_KEY>``, preferring ``adjClose`` (split/
 dividend-adjusted) and falling back to ``close``.
 
-Rate-limit posture (design §5.1, revised): the account is on a high-volume
-tier — empirically verified 2026-06-12 (150 requests in 2.9s, zero 429), i.e.
-the Power-tier 10k req/h budget, not the "~130 req/h" the design memo assumed.
-Tiingo still exposes **no** ``X-RateLimit-*`` headers — the only safe signal
-is a 429. We pace with an in-process token bucket just under the hourly budget
-and abort cleanly after ``MAX_CONSECUTIVE_429`` consecutive 429s (the
-monolith's breaker), letting the next scheduled run resume from the watermark.
+Rate-limit posture (design §5.1, revised again 2026-08-02): the Power-tier plan
+allows 10k req/h and 100k req/day, account-wide. Tiingo exposes **no**
+``X-RateLimit-*`` headers — the only safe signal is a 429 — so the ceiling lives
+here as ``TIINGO_MAX_REQUESTS_PER_HOUR`` and every bucket is checked against it.
+We pace with an in-process token bucket just under the hourly budget and abort
+cleanly after ``MAX_CONSECUTIVE_429`` consecutive 429s (the monolith's breaker),
+letting the next scheduled run resume from the watermark.
+
+The budget is a **shared** resource: it is per account, not per process, so a
+single greedy worker starves every other consumer for the rest of the rolling
+hour. That is not hypothetical — the earlier "empirically verified 2026-06-12
+(150 requests in 2.9s, zero 429)" note measured a *burst*, which says nothing
+about an hourly ceiling, and on its strength ``eod_prices_warmer`` paced itself
+at 25 req/s (90k req/h). It drained the hourly budget every morning; the regime
+workers that ran inside the same rolling hour then saw only 429s, which
+``_get_bars`` masks as ``[]``, and the regime chain sat stale for five days.
+
+Note the incident ran on the *previous* API key, whose tier was well below the
+10k req/h pinned here — so 25 req/s overshot by even more than 9x and drained the
+budget in well under the ~6min40s that 10k/25 would suggest. The key was rotated
+2026-08-02; ``TIINGO_MAX_REQUESTS_PER_HOUR`` tracks the plan of the key currently
+in use and has to be revisited whenever the key or tier changes, since the guard
+below is only as honest as this number.
+
+Hence the guard in ``TiingoClient``: pacing slower than the default is always
+fine, pacing faster than the account is a bug, so it fails loudly at construction
+rather than silently at someone else's expense. (The guard lives on the client,
+not on ``TokenBucket`` — the bucket is provider-agnostic and also paces EODHD,
+Yahoo and OpenFIGI, which have their own, different limits.)
 """
 
 from __future__ import annotations
@@ -25,6 +47,16 @@ TIINGO_BASE_URL = "https://api.tiingo.com"
 MAX_CONSECUTIVE_429 = 30
 _RETRY_SLEEPS = (1.0, 4.0, 16.0)
 
+# Account plan ceilings, shared across every worker in the fleet. These track the
+# plan of the key in TIINGO_API_KEY (Power tier, key rotated 2026-08-02) — NOT a
+# property of the API. Rotating to a key on a different tier makes the guard below
+# lie in whichever direction the tier moved, so update these with the key.
+TIINGO_MAX_REQUESTS_PER_HOUR = 10_000
+TIINGO_MAX_REQUESTS_PER_DAY = 100_000
+# 2.5 req/s ≈ 9k req/h — just under the hourly ceiling, leaving headroom for the
+# other consumers that share the same token.
+DEFAULT_RATE_PER_S = 2.5
+
 
 class TiingoBudgetExceeded(RuntimeError):
     """Raised after MAX_CONSECUTIVE_429 consecutive 429s — resume next cycle."""
@@ -33,10 +65,18 @@ class TiingoBudgetExceeded(RuntimeError):
 class TokenBucket:
     """Thread-safe token bucket pacing Tiingo calls.
 
-    Default 2.5 req/s sustained ≈ 9k req/h — just under the Power-tier
-    10k req/h budget, leaving headroom for other Tiingo consumers."""
+    Default ``DEFAULT_RATE_PER_S`` (2.5 req/s ≈ 9k req/h) — just under the
+    Power-tier 10k req/h budget, leaving headroom for other Tiingo consumers.
 
-    def __init__(self, max_tokens: float = 10.0, refill_rate: float = 2.5) -> None:
+    Deliberately provider-agnostic: ``_fallback_nav`` and ``_openfigi`` pace
+    EODHD, Yahoo and OpenFIGI with this same bucket under *their* limits, so the
+    Tiingo ceiling is enforced in ``TiingoClient``, not here."""
+
+    def __init__(
+        self,
+        max_tokens: float = 10.0,
+        refill_rate: float = DEFAULT_RATE_PER_S,
+    ) -> None:
         self.max_tokens = max_tokens
         self.refill_rate = refill_rate
         self._tokens = max_tokens
@@ -76,12 +116,25 @@ def parse_price_bars(bars: list[dict]) -> list[tuple[_dt.date, float | None]]:
 
 
 class TiingoClient:
-    """Paced Tiingo daily-price fetcher with the 30×429 circuit breaker."""
+    """Paced Tiingo daily-price fetcher with the 30×429 circuit breaker.
+
+    A caller may hand in a bucket paced *slower* than the default for a
+    low-priority sweep. Pacing faster than the account allows is rejected: the
+    budget is shared across the whole fleet, so the cost of exceeding it lands on
+    whichever worker happens to run next — far from the code that caused it. The
+    ``ValueError`` is a programming error caught by tests, not a runtime state."""
 
     def __init__(self, key: str | None = None, *,
                  bucket: TokenBucket | None = None) -> None:
         import httpx
 
+        if bucket is not None and bucket.refill_rate * 3600 > TIINGO_MAX_REQUESTS_PER_HOUR:
+            raise ValueError(
+                f"bucket paces {bucket.refill_rate} req/s = "
+                f"{bucket.refill_rate * 3600:,.0f} req/h, above the shared Tiingo "
+                f"account budget of {TIINGO_MAX_REQUESTS_PER_HOUR:,} req/h "
+                f"(use DEFAULT_RATE_PER_S={DEFAULT_RATE_PER_S} or slower)"
+            )
         self._key = key or api_key()
         self._bucket = bucket or TokenBucket()
         self._client = httpx.Client(

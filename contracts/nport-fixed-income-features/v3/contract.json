@@ -1,0 +1,1758 @@
+{
+  "id": "nport-fixed-income-features/v3",
+  "version": "3.0.0",
+  "canonicalization": "UTF-8 JSON, keys sorted recursively, compact separators, with digest excluded",
+  "build_pin": {
+    "source_commit": "external_runtime_pin",
+    "reason": "A source commit embedded in its own contract would be self-referential."
+  },
+  "relations": [
+    {
+      "name": "sec_nport_holdings_v2",
+      "grain": [
+        "publication_id",
+        "accession_number",
+        "holding_id"
+      ],
+      "keys": [
+        "publication_id",
+        "accession_number",
+        "holding_id"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_nport_holdings_v2_current"
+      },
+      "identity": {
+        "publication": "publication_id",
+        "accession": "accession_number",
+        "holding": "holding_id",
+        "report_date": "report_date",
+        "filing_date": "filing_date"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "accession_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "holding_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "source_run_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "type": "date",
+          "nullable": false,
+          "unit": "ISO-8601 date",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "filing_date",
+          "type": "date",
+          "nullable": false,
+          "unit": "ISO-8601 date",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "issuer_name",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "issuer_category",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "cusip",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "isin",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "issuer_lei",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "signed_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "source_signed"
+        },
+        {
+          "name": "signed_pct_of_nav",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "percent of NAV",
+          "sign": "source_signed"
+        },
+        {
+          "name": "payoff_profile",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "source_typed_projection",
+          "type": "jsonb",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_features",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_features"
+      },
+      "identity": {
+        "publication": "publication_id",
+        "source_holdings_publication": "source_holdings_publication_id",
+        "series": "series_id",
+        "measurement_date": "measured_at"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "report_date",
+          "type": "date",
+          "nullable": false,
+          "unit": "ISO-8601 date",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "measured_at",
+          "type": "date",
+          "nullable": false,
+          "unit": "ISO-8601 date",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "status",
+          "type": "text",
+          "nullable": false,
+          "unit": "quality state",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "reason_codes",
+          "type": "jsonb",
+          "nullable": false,
+          "unit": "quality reasons",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "provenance",
+          "type": "jsonb",
+          "nullable": false,
+          "unit": "source lineage",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "coverage",
+          "type": "jsonb",
+          "nullable": false,
+          "unit": "coverage evidence",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "position_count",
+          "type": "integer",
+          "nullable": false,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "debt_position_count",
+          "type": "integer",
+          "nullable": false,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "debt_extension_position_count",
+          "type": "integer",
+          "nullable": false,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "unknown_debt_market_value_position_count",
+          "type": "integer",
+          "nullable": false,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "debt_signed_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "source_signed"
+        },
+        {
+          "name": "debt_gross_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "debt_nav_signed_pct",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "percent of NAV",
+          "sign": "source_signed"
+        },
+        {
+          "name": "debt_nav_gross_pct",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "percent of NAV",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "debt_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "debt_extension_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "coupon_weighted_average",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported annualized rate",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "coupon_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "coupon_type_mix",
+          "type": "jsonb",
+          "nullable": true,
+          "unit": "ratio by raw coupon type",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "maturity_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "maturity_ladder",
+          "type": "jsonb",
+          "nullable": true,
+          "unit": "ratio by years bucket",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "maturity_weighted_mean_years",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "years",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "maturity_weighted_p25_years",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "years",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "maturity_weighted_median_years",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "years",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "maturity_weighted_p75_years",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "years",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "maturity_statistics_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "identifier_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "report_age_days",
+          "type": "integer",
+          "nullable": false,
+          "unit": "days",
+          "sign": "nonnegative"
+        }
+      ]
+    },
+    {
+      "name": "nport_composition_features",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_composition_features"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "methodology_version",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "measured_at",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "status",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "reason_codes",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "jsonb",
+          "nullable": false
+        },
+        {
+          "name": "provenance",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "jsonb",
+          "nullable": false
+        },
+        {
+          "name": "coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "jsonb",
+          "nullable": false
+        },
+        {
+          "name": "position_count",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "unknown_market_value_position_count",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "unknown_nav_position_count",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "signed_market_value",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "gross_market_value",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "signed_nav_pct",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "gross_nav_pct",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "signed_nav_residual_pct",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "gross_nav_residual_pct",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "identifier_market_value_coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "issuer_category_market_value_coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "payoff_profile_market_value_coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "issuer_market_value_coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "security_identity_market_value_coverage",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "top_5_gross_market_value_share",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "top_10_gross_market_value_share",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "issuer_hhi",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "issuer_effective_position_count",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "security_hhi",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "security_effective_position_count",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "report_age_days",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "name": "nport_composition_governed_dimensions_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "dimension_type",
+        "dimension_key"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "dimension_type",
+        "dimension_key"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_composition_governed_dimensions_v2"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "dimension_type",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "dimension_key",
+          "type": "text",
+          "nullable": false,
+          "unit": "source literal",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "position_count",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "unknown_market_value_position_count",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "integer",
+          "nullable": false
+        },
+        {
+          "name": "gross_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "gross_market_value_share",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "known_gross_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "gross_market_value_denominator",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_key_rate_sensitivities_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "tenor",
+        "sensitivity"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "tenor",
+        "sensitivity"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_key_rate_sensitivities_v2"
+      },
+      "identity": {
+        "source_holdings_publication": "source_holdings_publication_id",
+        "source_run": "source_run_id",
+        "as_of": "measured_at build pin",
+        "accession": "accession_number"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_run_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "accession_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "source_raw_row_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "source_file_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_row_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "interest_rate_risk_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "currency_code",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": true
+        },
+        {
+          "name": "tenor",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "sensitivity",
+          "type": "text",
+          "nullable": false,
+          "unit": "dv01 or dv100",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "raw_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value per stated shock",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "normalized_to_net_assets",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio per stated shock",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "net_assets_denominator",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "unit",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "sign_semantics",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_credit_spread_sensitivities_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "investment_bucket",
+        "tenor"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "investment_bucket",
+        "tenor"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_credit_spread_sensitivities_v2"
+      },
+      "identity": {
+        "source_holdings_publication": "source_holdings_publication_id",
+        "source_run": "source_run_id",
+        "as_of": "measured_at build pin",
+        "accession": "accession_number"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_run_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "accession_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "source_raw_row_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "source_file_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_row_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "investment_bucket",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "tenor",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "raw_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "normalized_to_net_assets",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "net_assets_denominator",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "numeric",
+          "nullable": true
+        },
+        {
+          "name": "measurement_type",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "unit",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "sign_semantics",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_balance_sheet_primitives_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "primitive_key"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_raw_row_id",
+        "primitive_key"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_balance_sheet_primitives_v2"
+      },
+      "identity": {
+        "source_holdings_publication": "source_holdings_publication_id",
+        "source_run": "source_run_id",
+        "as_of": "measured_at build pin",
+        "accession": "accession_number"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_run_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "accession_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "source_raw_row_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "source_file_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_row_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "bigint",
+          "nullable": false
+        },
+        {
+          "name": "primitive_key",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "raw_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "net_assets_denominator",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "normalized_to_net_assets",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "reported_signed"
+        },
+        {
+          "name": "unit",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "sign_semantics",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_debt_flag_features_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "flag_key"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "flag_key"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_debt_flag_features_v2"
+      },
+      "identity": {
+        "source_holdings_publication": "source_holdings_publication_id",
+        "source_run": "source_run_id",
+        "as_of": "measured_at build pin"
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_run_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "flag_key",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "reported_state",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "true_gross_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "known_gross_market_value",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "gross_market_value_denominator",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "reported currency value",
+          "sign": "absolute_value"
+        },
+        {
+          "name": "unknown_gross_market_value_position_count",
+          "type": "integer",
+          "nullable": false,
+          "unit": "count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "gross_market_value_coverage",
+          "type": "numeric",
+          "nullable": true,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    },
+    {
+      "name": "nport_fixed_income_metric_coverage_v2",
+      "grain": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_identity_key",
+        "metric_family",
+        "metric_key"
+      ],
+      "keys": [
+        "publication_id",
+        "series_id",
+        "report_date",
+        "accession_number",
+        "source_identity_key",
+        "metric_family",
+        "metric_key"
+      ],
+      "semantics": {
+        "historical": "immutable_publication",
+        "current": "sec_current_nport_fixed_income_metric_coverage_v2"
+      },
+      "identity": {
+        "source_holdings_publication": "source_holdings_publication_id",
+        "source_run": "source_run_id",
+        "source_raw": "source_raw_row_id",
+        "source_file_row": [
+          "source_file_id",
+          "source_row_number"
+        ]
+      },
+      "columns": [
+        {
+          "name": "publication_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "uuid",
+          "nullable": false
+        },
+        {
+          "name": "source_holdings_publication_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_run_id",
+          "type": "uuid",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "series_id",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "report_date",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "date",
+          "nullable": false
+        },
+        {
+          "name": "accession_number",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "source_raw_row_id",
+          "type": "bigint",
+          "nullable": true,
+          "unit": "physical raw identity; zero only for explicit absent-row coverage",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_file_id",
+          "type": "uuid",
+          "nullable": true,
+          "unit": "physical raw identity",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_row_number",
+          "type": "bigint",
+          "nullable": true,
+          "unit": "physical raw identity",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "source_identity_key",
+          "unit": "not_applicable",
+          "sign": "not_applicable",
+          "type": "text",
+          "nullable": false
+        },
+        {
+          "name": "metric_family",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "metric_key",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "numerator",
+          "type": "numeric",
+          "nullable": false,
+          "unit": "source-row count",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "denominator",
+          "type": "numeric",
+          "nullable": false,
+          "unit": "source-row count",
+          "sign": "positive"
+        },
+        {
+          "name": "denominator_unit",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "coverage_ratio",
+          "type": "numeric",
+          "nullable": false,
+          "unit": "ratio",
+          "sign": "nonnegative"
+        },
+        {
+          "name": "availability_state",
+          "type": "text",
+          "nullable": false,
+          "unit": "generic source-field availability; reported_numeric means a valid reported value (numeric metric or recognized flag literal)",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "missing_reason",
+          "type": "text",
+          "nullable": true,
+          "unit": "typed reason",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "exclusions",
+          "type": "jsonb",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        },
+        {
+          "name": "methodology_version",
+          "type": "text",
+          "nullable": false,
+          "unit": "not_applicable",
+          "sign": "not_applicable"
+        }
+      ]
+    }
+  ],
+  "measurement": {
+    "methodology": "N-PORT reported values only; no inferred security terms or external enrichment.",
+    "maturity": "Market-value-weighted remaining calendar years; percentiles are weighted empirical thresholds.",
+    "concentration": "Gross market-value weights; issuer and resolved instrument identities remain distinct.",
+    "freshness": "report_age_days is measured_at minus report_date, lower bounded at zero."
+  },
+  "source_lineage": {
+    "root": "sec_nport_holdings_v2 plus validated raw N-PORT views pinned by sec_derived_publications.source_run_id",
+    "holding_fields": [
+      "ASSET_CAT",
+      "CURRENCY_CODE",
+      "INVESTMENT_COUNTRY",
+      "IS_RESTRICTED_SECURITY",
+      "FAIR_VALUE_LEVEL"
+    ],
+    "debt_fields": [
+      "DEBT_SECURITY.COUPON_TYPE",
+      "DEBT_SECURITY.ANNUALIZED_RATE",
+      "DEBT_SECURITY.MATURITY_DATE",
+      "DEBT_SECURITY.IS_DEFAULT",
+      "DEBT_SECURITY.ARE_ANY_INTEREST_PAYMENT",
+      "DEBT_SECURITY.IS_ANY_PORTION_INTEREST_PAID",
+      "DEBT_SECURITY.IS_CONVTIBLE_MANDATORY",
+      "DEBT_SECURITY.IS_CONVTIBLE_CONTINGENT"
+    ],
+    "raw_views": [
+      "nport_interest_rate_risk_raw",
+      "nport_fund_reported_info_raw"
+    ],
+    "identity_fields": [
+      "publication_id",
+      "source_run_id",
+      "accession_number",
+      "holding_id",
+      "sec_nport_instrument_class_bridge.instrument_id"
+    ]
+  },
+  "coverage": {
+    "unit": "ratio in [0,1]",
+    "denominator": "sum(abs(signed_market_value)) of the applicable resolved positions with known market value; sensitivity normalization separately requires nonzero NET_ASSETS",
+    "numerator": "sum(abs(signed_market_value)) of denominator positions carrying the named governed field",
+    "exclusions": [
+      "unresolved bridge rows",
+      "unknown signed_market_value",
+      "missing or invalid source fields"
+    ],
+    "null_policy": "A metric is null when its denominator is unavailable; an unavailable source capability is never zero-filled."
+  },
+  "coverage_by_family": {
+    "holding_and_maturity": {
+      "numerator": "gross market value with the named governed holding or debt field",
+      "denominator": "gross market value of applicable resolved DBT positions",
+      "unit": "reported currency value and ratio",
+      "exclusions": [
+        "unknown signed_market_value",
+        "invalid maturity",
+        "unresolved or temporally invalid bridge"
+      ]
+    },
+    "key_rate_and_credit_sensitivity": {
+      "numerator": "one parsed numeric governed field",
+      "denominator": "one pinned validated source row and named field",
+      "unit": "source-row availability ratio",
+      "exclusions": [
+        "missing or invalid numeric field",
+        "source run or accession outside pinned snapshot"
+      ],
+      "normalization": "only when NET_ASSETS is parsed and nonzero"
+    },
+    "balance_sheet": {
+      "numerator": "one parsed numeric governed primitive",
+      "denominator": "one pinned FUND_REPORTED_INFO source row and named field",
+      "unit": "source-row availability ratio",
+      "exclusions": [
+        "missing or invalid numeric field"
+      ],
+      "normalization": "only when NET_ASSETS is parsed and nonzero"
+    },
+    "debt_flags": {
+      "numerator": "gross market value with a recognized true or false source literal",
+      "denominator": "gross market value of applicable DBT positions",
+      "unit": "reported currency value and ratio",
+      "exclusions": [
+        "unknown signed_market_value makes coverage null",
+        "blank or malformed literal is not_reported"
+      ]
+    }
+  },
+  "date_semantics": {
+    "report_date": "governed N-PORT report_date",
+    "filing_date": "governed only on sec_nport_holdings_v2",
+    "measured_at": "fixed-income build as_of_date",
+    "nav_date": "unavailable_no_governed_field"
+  },
+  "quality": {
+    "states": [
+      "certified",
+      "degraded",
+      "insufficient",
+      "unavailable"
+    ],
+    "unavailable_metrics": [
+      {
+        "id": "ytm",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "ytw",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "current_yield",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "oas",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "z_spread",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "spread_duration",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "wal",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "prepayment",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "rating",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "seniority",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "secured",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "call",
+        "reason": "no_governed_projected_field"
+      },
+      {
+        "id": "liquidity",
+        "reason": "no_governed_projected_field"
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "id": "coupon_maturity_and_debt_composition",
+      "state": "supported"
+    },
+    {
+      "id": "weighted_maturity_statistics",
+      "state": "supported"
+    },
+    {
+      "id": "holding_country_currency_restriction_fair_value",
+      "state": "supported"
+    },
+    {
+      "id": "issuer_and_position_concentration",
+      "state": "supported"
+    },
+    {
+      "id": "historical_snapshots_and_current_views",
+      "state": "supported"
+    },
+    {
+      "id": "stable_snapshot_holding_identity",
+      "state": "supported",
+      "relation": "sec_nport_holdings_v2"
+    },
+    {
+      "id": "interest_rate_dv01_dv100",
+      "state": "supported",
+      "relation": "nport_fixed_income_key_rate_sensitivities_v2"
+    },
+    {
+      "id": "spread_sensitivity",
+      "state": "supported",
+      "relation": "nport_fixed_income_credit_spread_sensitivities_v2"
+    },
+    {
+      "id": "borrowings_and_commitments",
+      "state": "supported",
+      "relation": "nport_fixed_income_balance_sheet_primitives_v2"
+    },
+    {
+      "id": "counterparty_concentration",
+      "state": "unavailable",
+      "reason": "counterparty rows have no governed exposure amount attributable to a counterparty"
+    }
+  ],
+  "schema_parity": {
+    "internal_allowlist": {
+      "sec_nport_holdings_v2": [],
+      "nport_fixed_income_features": [
+        "created_at"
+      ],
+      "nport_composition_features": [
+        "created_at"
+      ],
+      "nport_composition_governed_dimensions_v2": [],
+      "nport_fixed_income_key_rate_sensitivities_v2": [],
+      "nport_fixed_income_credit_spread_sensitivities_v2": [],
+      "nport_fixed_income_balance_sheet_primitives_v2": [],
+      "nport_fixed_income_debt_flag_features_v2": [],
+      "nport_fixed_income_metric_coverage_v2": []
+    },
+    "relation_names": [
+      "sec_nport_holdings_v2",
+      "nport_fixed_income_features",
+      "nport_composition_features",
+      "nport_composition_governed_dimensions_v2",
+      "nport_fixed_income_key_rate_sensitivities_v2",
+      "nport_fixed_income_credit_spread_sensitivities_v2",
+      "nport_fixed_income_balance_sheet_primitives_v2",
+      "nport_fixed_income_debt_flag_features_v2",
+      "nport_fixed_income_metric_coverage_v2"
+    ]
+  },
+  "compatibility": {
+    "backward_compatible": false,
+    "existing_current_relations": [
+      "sec_current_nport_fixed_income_features",
+      "sec_current_nport_composition_features",
+      "sec_current_nport_composition_dimension_features",
+      "sec_current_nport_composition_governed_dimensions_v2",
+      "sec_current_nport_fixed_income_key_rate_sensitivities_v2",
+      "sec_current_nport_fixed_income_credit_spread_sensitivities_v2",
+      "sec_current_nport_fixed_income_balance_sheet_primitives_v2",
+      "sec_current_nport_fixed_income_debt_flag_features_v2",
+      "sec_current_nport_fixed_income_metric_coverage_v2"
+    ],
+    "deprecations": [
+      {
+        "relation": "nport_fixed_income_repo_lending_primitives_v2",
+        "reason": "per-position repo/securities-lending detail is excessively technical for the product and is no longer served; the tables are retained for older publications"
+      },
+      {
+        "relation": "nport_fixed_income_repo_lending_reported_flags_v2",
+        "reason": "per-position repo/securities-lending detail is excessively technical for the product and is no longer served; the tables are retained for older publications"
+      }
+    ]
+  },
+  "digest": "sha256:5072aa4260f52196890288371651a6aa9280686b7325022908d2e892068f4bd0"
+}

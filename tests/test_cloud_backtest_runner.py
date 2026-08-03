@@ -32,7 +32,19 @@ from harness.phase0q_cloud import bundle as bundle_mod
 ROOT = Path(__file__).resolve().parents[1]
 CLOUD_PKG = ROOT / "harness" / "phase0q_cloud"
 NOTEBOOK = CLOUD_PKG / "phase0q_cloud_leg.ipynb"
-HARNESS_COMMIT = "cc6a8bf0e233eeaf9e62687121ba66fa63118feb"
+# The prepared upload namespace's commit. Read from the GENERATED record rather
+# than retyped: it lived in two test files and drifted the moment the shipped
+# closure evolved. `record_artifacts` writes this field, so a re-pin updates one
+# generated artifact and every reader follows.
+HARNESS_COMMIT = json.loads(
+    (
+        ROOT
+        / "artifacts"
+        / "quant"
+        / "open_macro_v03_cloud_leg_001"
+        / "cloud_leg_manifest.json"
+    ).read_text(encoding="utf-8")
+)["harness_commit"]
 
 
 # --------------------------------------------------------------------------- #

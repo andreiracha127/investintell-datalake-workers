@@ -1,22 +1,25 @@
-"""DB tests for the bond_metrics compute+persist worker (activation Wave 1, Task 3).
+"""DB tests for the bond_metrics compute+persist worker (source projection).
 
 Runs against the disposable Postgres at ``SEC_TEST_DATABASE_URL`` (PG 65431),
 DSN-agnostic (keyword and URL forms). Proves, against the REAL publication
 protocol:
 
-  * happy path: qualified metrics -> a promoted ``bond_metric_v1`` build whose
-    yields are RECOMPUTED by the validated engines (never copied from the
-    source's raw ``ytm`` lane);
-  * gate honesty: unqualified metrics publish ``gate_not_passed`` rows with a
-    NULL value (fail-closed, still truthful);
-  * per-security typed statuses (``no_eligible_price`` / ``terms_insufficient``
-    / ``engine_typed_error``) — never NaN, never a fabricated value;
+  * happy path: a promoted ``bond_metric_v1`` build whose ``security_ytm`` is
+    the yield the qualified price source itself delivered (PROJECTED, never
+    recomputed from terms the universe does not carry);
+  * per-security typed statuses (``no_eligible_price`` / ``terms_insufficient``)
+    — never NaN, never a fabricated value, value present iff available;
+  * no-look-ahead: a future observation never enters the build;
   * the sibling dark ladder (``no_source`` / ``no_securities`` /
     ``no_observations``) publishes NOTHING (chain dark_no_source semantics);
   * build-versioned publication: idempotent replay, input-change mints a new
     publication, ``daily_chain.rollback_pointer`` restores the prior current;
   * write guard: the published snapshot is immutable after validation;
   * schema enum carries EXACTLY the Wave-1 metrics (no OAS/z-spread/duration).
+
+The Phase-10 qualification registry is deliberately ABSENT from every path
+here: the write path no longer consults it (the activation ceremony is
+retired), so a build must publish real values with no qualification row at all.
 """
 from __future__ import annotations
 
@@ -35,9 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bond_price_fixtures import price_input  # noqa: E402
 
 from src.bonds import daily_chain, price_observations, security_master  # noqa: E402
-from src.bonds.metrics_engine_runner import WAVE1_METRICS  # noqa: E402
 from src.bonds.security_master import NAMESPACE_BOND_SECURITY  # noqa: E402
 from src.db import advisory_lock  # noqa: E402
+from src.workers.bond_metrics import SERVED_METRICS  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL not set"
@@ -45,20 +48,18 @@ pytestmark = pytest.mark.skipif(
 
 ROOT = Path(__file__).resolve().parents[1]
 AS_OF = date(2025, 1, 1)
-SOURCE_REF = "bond_price_source_v1@aaaaaaaaaaaa"
 
-CUSIP_FIX = "BNDFIX001"  # fixed 10% semiannual (Fabozzi-style), priced 96.23
+CUSIP_FIX = "BNDFIX001"  # fixed 10%, priced 96.23, source ytm 0.076
 CUSIP_NOP = "BNDNOP002"  # sufficient terms, NO eligible price
-CUSIP_FLT = "BNDFLT003"  # floating coupon: terms_insufficient
-CUSIP_STB = "BNDSTB004"  # off-grid coupon schedule: front_stub_unsupported
+CUSIP_NOY = "BNDNOY003"  # eligible price, source delivered NO yield
+CUSIP_NCP = "BNDNCP004"  # no coupon rate published: current_yield insufficient
 
 SEC_FIX = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_FIX}")
 SEC_NOP = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_NOP}")
-SEC_FLT = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_FLT}")
-SEC_STB = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_STB}")
+SEC_NOY = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_NOY}")
+SEC_NCP = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_NCP}")
 
 FIX_SCHEDULE = [{"date": "2025-07-01", "rate": 10.0}, {"date": "2026-01-01", "rate": 10.0}]
-STB_SCHEDULE = [{"date": "2025-08-15"}, {"date": "2026-02-15"}]
 
 
 def base_dsn() -> str:
@@ -103,7 +104,6 @@ def new_env(admin: psycopg.Connection, *, seed_lineage: bool = True) -> tuple[st
             "bond_security_v1.sql",
             "bond_price_observations_v1.sql",
             "bond_price_eligibility_v1.sql",
-            "bond_source_qualification.sql",
         ):
             conn.execute((ROOT / "schemas" / ddl_name).read_text(encoding="utf-8"))
         conn.execute("INSERT INTO sec_ingestion_runs VALUES(%s, now())", (run_id,))
@@ -155,25 +155,15 @@ def land_price(
     conn.commit()
 
 
-def qualify(conn, metrics) -> None:
-    for metric in metrics:
-        conn.execute(
-            "INSERT INTO bond_source_qualification "
-            "(metric_id, source_contract_ref, qualified_from, qualified_to) "
-            "VALUES (%s, %s, now(), NULL) "
-            "ON CONFLICT (metric_id, source_contract_ref) DO NOTHING",
-            (metric, SOURCE_REF),
-        )
-    conn.commit()
-
-
-def seed_fabozzi_bond(conn, run_id: UUID, package_id: UUID, *, source_ytm: object = 0.076) -> None:
-    """One fixed 10% semiannual bond, clean trade price 96.23 at AS_OF."""
+def seed_fix_bond(conn, run_id: UUID, package_id: UUID, *, source_ytm: object = 0.076,
+                  observation_date: date = AS_OF) -> None:
+    """One fixed 10% bond, clean trade price 96.23, source yield 0.076."""
     observe_security(conn, run_id, cusip9=CUSIP_FIX, coupon_type="fixed",
                      coupon_rate=Decimal("10.0"), maturity=date(2030, 1, 1),
                      day_count="30/360 US", coupon_schedule=FIX_SCHEDULE)
     publish_security_master(conn, run_id, package_id)
-    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"), ytm=source_ytm)
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"), ytm=source_ytm,
+               observation_date=observation_date)
 
 
 def current_rows(conn, security_id: UUID | None = None):
@@ -214,71 +204,54 @@ def env():
 
 
 # --------------------------------------------------------------------------- #
-# Happy path: recomputed yields, promoted publication
+# Happy path: projected source yield, promoted publication
 # --------------------------------------------------------------------------- #
 
-def test_worker_publishes_available_rows_and_recomputes_yields(env):
+def test_worker_publishes_the_source_delivered_yield(env):
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id, source_ytm=0.076)
-    qualify(conn, WAVE1_METRICS)
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert result["state"] == "ok"
     assert result["product"] == "bond_metric_v1"
     assert result["securities"] == 1
     assert result["rows"] == 4
-    assert result["available"] == 4
+    assert result["available"] == 3  # ytm, current_yield, wal
+    assert result["terms_insufficient"] == 1  # ytw: no call schedule published
 
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
-    assert set(rows) == set(WAVE1_METRICS)
+    assert set(rows) == set(SERVED_METRICS)
     ytm = rows["security_ytm"]
     assert ytm[3] == "available" and ytm[4] is None and ytm[5] == AS_OF
-    # RECOMPUTED by the engine (Fabozzi ~11%), never the source's raw 0.076.
-    assert float(ytm[2]) == pytest.approx(0.11, abs=1e-3)
-    assert float(ytm[2]) != pytest.approx(0.076, abs=1e-3)
-    assert float(rows["security_ytw"][2]) == pytest.approx(float(ytm[2]), rel=1e-9)
+    # PROJECTED: exactly the source's yield lane, never a terms recomputation.
+    assert float(ytm[2]) == pytest.approx(0.076, rel=1e-9)
+    # current_yield is a decimal FRACTION (the app registry declares it so).
     assert float(rows["current_yield"][2]) == pytest.approx(10.0 / 96.23, rel=1e-6)
     assert float(rows["wal"][2]) == pytest.approx((date(2030, 1, 1) - AS_OF).days / 365.0, rel=1e-9)
+    assert rows["security_ytw"][3] == "terms_insufficient"
+    assert rows["security_ytw"][2] is None
 
     assert current_pointer(conn) == UUID(result["publication_id"])
 
 
-# --------------------------------------------------------------------------- #
-# Gate honesty (fail-closed rows, still published)
-# --------------------------------------------------------------------------- #
-
-def test_unqualified_metrics_publish_gate_not_passed_rows(env):
+def test_no_qualification_registry_is_needed_to_publish(env):
+    """The retired gate must not be consulted: the env installs NO
+    bond_source_qualification table and the build still publishes real values."""
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id)
-    qualify(conn, ["security_ytm", "wal"])  # ytw / current_yield stay unqualified
+    assert conn.execute(
+        "SELECT to_regclass('bond_source_qualification')"
+    ).fetchone()[0] is None
+    seed_fix_bond(conn, run_id, package_id)
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert result["state"] == "ok"
+    assert result["available"] == 3
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
     assert rows["security_ytm"][3] == "available"
-    assert rows["wal"][3] == "available"
-    for gated in ("security_ytw", "current_yield"):
-        assert rows[gated][3] == "gate_not_passed"
-        assert rows[gated][2] is None
-        assert rows[gated][4] is None
-
-
-def test_fully_unqualified_world_publishes_a_fully_gated_build(env):
-    from src.workers import bond_metrics
-
-    conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id)
-    # NO qualification row at all: the gate fails with no_qualified_source.
-    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
-    assert result["state"] == "ok"
-    assert result["gate_not_passed"] == 4
-    rows = current_rows(conn, SEC_FIX)
-    assert len(rows) == 4
-    assert all(r[3] == "gate_not_passed" and r[2] is None for r in rows)
 
 
 # --------------------------------------------------------------------------- #
@@ -295,40 +268,48 @@ def test_per_security_typed_statuses_never_a_fabricated_value(env):
     observe_security(conn, run_id, cusip9=CUSIP_NOP, coupon_type="fixed",
                      coupon_rate=Decimal("5.0"), maturity=date(2031, 1, 1),
                      day_count="30/360 US", coupon_schedule=FIX_SCHEDULE)
-    observe_security(conn, run_id, cusip9=CUSIP_FLT, coupon_type="floating",
+    observe_security(conn, run_id, cusip9=CUSIP_NOY, coupon_type="fixed",
                      coupon_rate=Decimal("4.0"), maturity=date(2031, 1, 1),
-                     day_count="30/360 US")
-    observe_security(conn, run_id, cusip9=CUSIP_STB, coupon_type="fixed",
-                     coupon_rate=Decimal("6.0"), maturity=date(2030, 1, 1),
-                     day_count="30/360 US", coupon_schedule=STB_SCHEDULE)
+                     day_count=None)
+    observe_security(conn, run_id, cusip9=CUSIP_NCP, coupon_type="fixed",
+                     coupon_rate=None, maturity=date(2030, 1, 1),
+                     day_count=None)
     publish_security_master(conn, run_id, package_id)
-    for cusip in (CUSIP_FIX, CUSIP_FLT, CUSIP_STB):  # NOP gets no price
-        land_price(conn, run_id, cusip9=cusip, price=Decimal("96.23"))
-    qualify(conn, WAVE1_METRICS)
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"), ytm=0.076)
+    land_price(conn, run_id, cusip9=CUSIP_NOY, price=Decimal("101.5"))  # no yield lane
+    land_price(conn, run_id, cusip9=CUSIP_NCP, price=Decimal("88.0"), ytm=0.09)
+    # NOP gets no price at all.
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert result["state"] == "ok"
     assert result["securities"] == 4 and result["rows"] == 16
 
     fix = rows_by_metric(current_rows(conn, SEC_FIX))
-    assert all(fix[m][3] == "available" for m in WAVE1_METRICS)
+    for metric in ("security_ytm", "current_yield", "wal"):
+        assert fix[metric][3] == "available"
 
     nop = rows_by_metric(current_rows(conn, SEC_NOP))
-    for metric in ("security_ytm", "security_ytw", "current_yield"):
+    for metric in ("security_ytm", "current_yield"):
         assert nop[metric][3] == "no_eligible_price" and nop[metric][2] is None
-    assert nop["wal"][3] == "available"  # WAL is schedule-only
+    assert nop["wal"][3] == "available"  # WAL needs no price
 
-    flt = rows_by_metric(current_rows(conn, SEC_FLT))
-    for metric in WAVE1_METRICS:
-        assert flt[metric][3] == "terms_insufficient"
-        assert flt[metric][4] == "coupon_type_unsupported"
-        assert flt[metric][2] is None
+    # A price the source delivered WITHOUT a yield: no yield is served (never
+    # recomputed from terms), while price-derived current_yield still is.
+    noy = rows_by_metric(current_rows(conn, SEC_NOY))
+    assert noy["security_ytm"][3] == "no_eligible_price" and noy["security_ytm"][2] is None
+    assert noy["current_yield"][3] == "available"
+    assert float(noy["current_yield"][2]) == pytest.approx(4.0 / 101.5, rel=1e-6)
 
-    stb = rows_by_metric(current_rows(conn, SEC_STB))
-    for metric in WAVE1_METRICS:
-        assert stb[metric][3] == "engine_typed_error"
-        assert stb[metric][4] == "front_stub_unsupported"
-        assert stb[metric][2] is None
+    # No coupon rate published: current_yield is honestly terms_insufficient,
+    # while the source's own yield still serves.
+    ncp = rows_by_metric(current_rows(conn, SEC_NCP))
+    assert ncp["current_yield"][3] == "terms_insufficient" and ncp["current_yield"][2] is None
+    assert ncp["security_ytm"][3] == "available"
+    assert float(ncp["security_ytm"][2]) == pytest.approx(0.09, rel=1e-9)
+
+    # ytw is uniformly terms_insufficient: nothing to compute it from.
+    for rows in (fix, nop, noy, ncp):
+        assert rows["security_ytw"][3] == "terms_insufficient"
 
     # Structural honesty in the DB itself: value present iff available.
     bad = conn.execute(
@@ -338,71 +319,46 @@ def test_per_security_typed_statuses_never_a_fabricated_value(env):
     assert bad == 0
 
 
-def test_future_observation_never_enters_and_yields_settle_on_the_stale_date(env):
-    """Negative no-look-ahead + settlement-anchor pin (review IMP).
-
-    One security, TWO eligible observations with DIFFERENT prices: a stale one
-    (as_of - 10d) and a FUTURE one (as_of + 5d). Discriminates two silent
-    regressions: (1) dropping the ``observation_date <= as_of`` predicate would
-    make the future print win as most recent (different values); (2) silently
-    re-anchoring the yield settlement from the observation date to as_of would
-    shift the yields. Expected values are pinned with DIRECT engine calls at
-    the stale settlement (anchor-independent ground truth).
+def test_future_observation_never_enters_the_build(env):
+    """No-look-ahead: only the latest eligible observation AT/BEFORE the
+    calc-date feeds the projection; a future print never enters, even when the
+    eligibility view itself (which knows nothing about the calc-date) admits it.
     """
     from datetime import timedelta
 
-    from src.bonds import cashflows, pricing
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
     as_of = date(2025, 2, 1)
-    stale_date = as_of - timedelta(days=10)   # 2025-01-22, inside the bond's life
-    future_date = as_of + timedelta(days=5)   # 2025-02-06, must NEVER enter
+    stale_date = as_of - timedelta(days=10)   # inside the bond's life
+    future_date = as_of + timedelta(days=5)   # must NEVER enter
 
     observe_security(conn, run_id, cusip9=CUSIP_FIX, coupon_type="fixed",
                      coupon_rate=Decimal("10.0"), maturity=date(2030, 1, 1),
                      day_count="30/360 US", coupon_schedule=FIX_SCHEDULE, as_of=as_of)
     publish_security_master(conn, run_id, package_id, as_of=as_of)
-    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"),
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("96.23"), ytm=0.076,
                observation_date=stale_date, as_of=as_of)
-    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("55.0"),
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("55.0"), ytm=0.21,
                observation_date=future_date, as_of=as_of)
     # BOTH observations are eligible: only the <= as_of predicate excludes the
-    # future one (the eligibility view knows nothing about the calc-date).
+    # future one.
     eligible = conn.execute(
         "SELECT count(*) FROM bond_price_eligibility_v1 WHERE is_eligible"
     ).fetchone()[0]
     assert eligible == 2
-    qualify(conn, WAVE1_METRICS)
+    # Release the view lock this SELECT's open transaction holds: the worker's
+    # own connection re-applies the eligibility DDL and would block on it.
+    conn.commit()
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=as_of.isoformat())
-    assert result["state"] == "ok" and result["available"] == 4
+    assert result["state"] == "ok" and result["available"] == 3
 
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
-    engine_terms = cashflows.BondTerms(
-        issue_date=date(2025, 1, 1), maturity_date=date(2030, 1, 1),
-        coupon_rate=0.10, frequency=cashflows.Frequency.SEMIANNUAL,
-        day_count=cashflows.DayCount.THIRTY_360_US,
-    )
-    schedule = cashflows.generate_schedule(engine_terms)
-    expected_ytm_stale = pricing.yield_to_maturity(schedule, stale_date, 96.23)
-    anchored_at_as_of = pricing.yield_to_maturity(schedule, as_of, 96.23)
-    future_print_ytm = pricing.yield_to_maturity(schedule, future_date, 55.0)
-    # Sanity: the three candidate anchors are genuinely distinguishable.
-    assert abs(expected_ytm_stale - anchored_at_as_of) > 1e-6
-    assert abs(expected_ytm_stale - future_print_ytm) > 1e-3
-
-    served_ytm = float(rows["security_ytm"][2])
-    # (a) NO LOOK-AHEAD: the future print's price never enters the build.
-    assert served_ytm != pytest.approx(future_print_ytm, rel=1e-6)
-    # (b) SETTLEMENT ANCHOR: yields settle at the STALE observation date...
-    assert served_ytm == pytest.approx(expected_ytm_stale, rel=1e-9)
-    assert float(rows["security_ytw"][2]) == pytest.approx(expected_ytm_stale, rel=1e-9)
-    assert float(rows["current_yield"][2]) == pytest.approx(
-        pricing.current_yield(schedule, 96.23), rel=1e-9)
-    # ...NOT at as_of (a silent re-anchor would land exactly here).
-    assert served_ytm != pytest.approx(anchored_at_as_of, rel=1e-9)
-    # WAL alone settles at the chain calc-date, from the schedule (no price).
+    # The STALE print's yield and price serve; the future print's never do.
+    assert float(rows["security_ytm"][2]) == pytest.approx(0.076, rel=1e-9)
+    assert float(rows["current_yield"][2]) == pytest.approx(10.0 / 96.23, rel=1e-6)
+    # WAL settles at the chain calc-date, from the published maturity (no price).
     assert float(rows["wal"][2]) == pytest.approx(
         (date(2030, 1, 1) - as_of).days / 365.0, rel=1e-9)
 
@@ -474,8 +430,7 @@ def test_replay_is_idempotent_and_input_change_mints_a_new_publication(env):
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id)
-    qualify(conn, ["security_ytm"])
+    seed_fix_bond(conn, run_id, package_id, observation_date=date(2024, 12, 20))
 
     first = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     replay = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
@@ -486,29 +441,29 @@ def test_replay_is_idempotent_and_input_change_mints_a_new_publication(env):
     ).fetchone()[0]
     assert n == 4  # no duplicate rows on replay
 
-    # Qualifying another metric changes the build inputs: a NEW publication.
-    qualify(conn, ["security_ytw"])
+    # A fresher eligible observation changes the build inputs: a NEW publication.
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("97.10"), ytm=0.071,
+               observation_date=AS_OF, as_of=AS_OF)
     second = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert second["publication_id"] != first["publication_id"]
     assert current_pointer(conn) == UUID(second["publication_id"])
-    rows = rows_by_metric(current_rows(conn, SEC_FIX))
-    assert rows["security_ytw"][3] == "available"  # the change is served
 
 
 def test_rollback_pointer_restores_the_prior_current(env):
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id)
-    qualify(conn, ["security_ytm"])
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076,
+                  observation_date=date(2024, 12, 20))
     first = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
-    qualify(conn, ["security_ytw"])
+    land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("97.10"), ytm=0.071,
+               observation_date=AS_OF, as_of=AS_OF)
     second = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     pub1, pub2 = UUID(first["publication_id"]), UUID(second["publication_id"])
     assert current_pointer(conn) == pub2
 
     # The chain records promotions in its ledger; mirror that, then roll back
-    # through the EXISTING daily_chain.rollback_pointer path (requirement 4).
+    # through the EXISTING daily_chain.rollback_pointer path.
     daily_chain.install_schema(conn)
     daily_chain.record_promotion(conn, product="bond_metric_v1", publication_id=pub2,
                                  previous_publication_id=pub1, action="promote")
@@ -516,17 +471,16 @@ def test_rollback_pointer_restores_the_prior_current(env):
     conn.commit()
     assert outcome["restored_to"] == str(pub1)
     assert current_pointer(conn) == pub1
-    # The rolled-back-to build serves the OLD gate state (ytw not yet passing).
+    # The rolled-back-to build serves the OLD projected values.
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
-    assert rows["security_ytw"][3] == "gate_not_passed"
+    assert float(rows["security_ytm"][2]) == pytest.approx(0.076, rel=1e-9)
 
 
 def test_published_snapshot_is_immutable_after_validation(env):
     from src.workers import bond_metrics
 
     conn, schema, run_id, package_id, _ = env
-    seed_fabozzi_bond(conn, run_id, package_id)
-    qualify(conn, WAVE1_METRICS)
+    seed_fix_bond(conn, run_id, package_id)
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     pub = UUID(result["publication_id"])
 
@@ -557,8 +511,7 @@ def test_same_inputs_produce_the_same_publication_across_schemas():
             schema, run_id, package_id = new_env(admin)
             schemas.append(schema)
             with work_conn(schema) as conn:
-                seed_fabozzi_bond(conn, run_id, package_id)
-                qualify(conn, WAVE1_METRICS)
+                seed_fix_bond(conn, run_id, package_id)
                 result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
                 assert result["state"] == "ok"
                 pub_ids.append(result["publication_id"])
@@ -574,7 +527,7 @@ def test_same_inputs_produce_the_same_publication_across_schemas():
 
 def test_schema_enum_carries_exactly_the_wave1_metrics_and_no_forbidden_family():
     ddl = (ROOT / "schemas" / "bond_metric_v1.sql").read_text(encoding="utf-8").lower()
-    for metric in WAVE1_METRICS:
+    for metric in SERVED_METRICS:
         assert metric in ddl
     for forbidden in ("oas", "zspread", "z_spread", "duration"):
         assert forbidden not in ddl
@@ -589,4 +542,4 @@ def test_new_surfaces_carry_no_vendor_identity():
     for path in sources:
         text = path.read_text(encoding="utf-8").lower()
         for token in ("osbap", "openbondassetpricing", "trace", "wrds", "n-port", "nport"):
-            assert token not in text, f"{token!r} leaked into {path.name}"
+            assert token not in text, f"{path.name} leaks vendor token {token!r}"

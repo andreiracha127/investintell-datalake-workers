@@ -20,7 +20,7 @@ stage, and writes exactly ONE summary per run.
 |---|--------------|-----------------------------------------------------------------|
 | 1 | `ingest`     | `ncen_ingestion` / `rr1_ingestion` / `nport_ingestion` (raw landing; `sec_ingestion_runs`/`sec_source_packages` state machine) |
 | 2 | `pit_update` | `bond_security_master` + `bond_price_observations` (immutable `*_observation` PIT) |
-| 3 | `materialize`| `ncen_derived_profiles` + `rr1_derived_profiles` (derived publications) |
+| 3 | `materialize`| `bond_metrics` (derived publications). The dossier-profile builders left this stage on 2026-07-30; only `rr1_derived_profiles` (fee product) survives and runs standalone. |
 | 4 | `mixed_build`| `mixed_quant_publication` (builds the inactive publication; promote is separate) |
 | 5 | `validate`   | read-only reconciliation of current derived pointers (`sec_derived_publication_is_validated`) |
 | 6 | `promote`    | atomic promotion of the ready `mixed_quant_v1` publication (`promote_quant_publication`); the derived/bond products self-promote atomically inside their own stages via `sec_set_current_derived_publication` |

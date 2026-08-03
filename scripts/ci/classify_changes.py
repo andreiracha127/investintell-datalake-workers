@@ -22,6 +22,11 @@ ALL_LANES = {
     ".github/workflows/ci.yml",
     "requirements.quant-engine.lock",
     "scripts/ci/classify_changes.py",
+    # The fleet image every dl-* Cloud Run job runs. Its COPY set is a RUNTIME
+    # dependency of the fail-closed gates (open_macro_v03 reads harness/, scripts/,
+    # the ratified Stage B artifact and the certified pack from the image), so a
+    # trimmed COPY set is a production break, not a packaging detail.
+    "Dockerfile",
 }
 NPORT_PATTERNS = (
     "requirements.txt",

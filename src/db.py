@@ -192,17 +192,16 @@ LOCK_NPORT_INGESTION = 900_307
 # N-CEN V2 raw/shadow landing owns its package-level worker lock.  Deliberately
 # distinct from N-PORT and the 13F/Form345 SEC ingestion lanes.
 LOCK_NCEN_INGESTION = 900_310
-# N-CEN derived-profile publication worker (structure/provider/operational
-# snapshots).  Distinct from the raw-landing lane above; 900_338 is the next
-# free id after mixed_quant (900_337) and clear of the reserved 900_311/312.
-LOCK_NCEN_DERIVED_PROFILES = 900_338
-# RR1 derived-profile publication worker (fee waterfall / shareholder costs,
-# waiver durability, share-class cost dispersion).  Distinct from the RR1
-# raw-landing lane below; 900_339 is the next free id after the N-CEN derived
-# lock (900_338).
+# 900_338 belonged to the N-CEN derived-profile publication worker, removed on
+# 2026-07-30 with the nine N-CEN profile products.  The id stays retired rather
+# than recycled so an in-flight lock from an old revision can never collide with
+# a new lane.
+# RR1 derived-profile publication worker (the fee waterfall -- the only surviving
+# RR1 derived product).  Distinct from the RR1 raw-landing lane below; 900_339 is
+# the next free id after the retired 900_338.
 LOCK_RR1_DERIVED_PROFILES = 900_339
 # Public serving projection worker (sec_regulatory_serving_v1). Projects the
-# current N-CEN/RR1 snapshots into the public-only serving surface consumed by the
+# current RR1 snapshots into the public-only serving surface consumed by the
 # app. 900_340 is the next free id after the RR1 derived lock (900_339).
 LOCK_SEC_REGULATORY_SERVING = 900_340
 # RR1 V2 raw landing owns the next documented free ingestion lock.  900_311
@@ -275,3 +274,17 @@ LOCK_BOND_SOURCE_QUALIFY = 900_349
 # on first concurrent creation). 900_350 is the next free id after
 # LOCK_BOND_SOURCE_QUALIFY.
 LOCK_BOND_METRICS = 900_350
+# nport_fixed_income_features_v1 build+promotion worker (Wave 3). Serializes the
+# idempotent DDL/builder install and the single prepared->validated->current
+# build of the eight N-PORT fixed-income relations the app's fixed-income
+# dossier reads. The lock is taken BEFORE the self-installing DDL (fleet idiom:
+# CREATE TABLE IF NOT EXISTS is not race-safe on first concurrent creation).
+# 900_351 is the next free id in the ingestion band (900_3xx) after
+# LOCK_BOND_METRICS.
+LOCK_NPORT_FIXED_INCOME_SERVING = 900_351
+# SEC "effective" selection matview cache (Wave 5, data-cost). Serializes the
+# conditional REFRESH of ncen_effective_filings_mv / rr1_effective_fact_calendar_mv
+# so the daily chain and the matview_refresh worker cannot expand the same raw
+# selection twice at once. 900_352 is the next free id after
+# LOCK_NPORT_FIXED_INCOME_SERVING.
+LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352

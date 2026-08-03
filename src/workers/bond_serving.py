@@ -56,6 +56,59 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     return row[0] if row and row[0] else None
 
 
+def _advance_app_pin(conn: Any, worker_publication_id: str) -> dict[str, Any]:
+    """Advance the app-side serving pin to the just-validated worker publication.
+
+    The app reads through ``bond_serving_publications`` (its own prepared ->
+    validated -> current protocol) and pins an EXACT worker publication_id, so a
+    fresh serving build is invisible until this pin advances. Doing it here —
+    only AFTER the worker publication is validated and current — removes the
+    manual re-pin step without weakening the guarantee the pin exists for (the
+    app never reads a half-built serving).
+
+    Honest no-ops: the app protocol absent (``app_protocol_missing``, e.g. unit
+    schemas that never install the app DDL) or the publication already pinned
+    (``already_pinned``). A failure to advance raises — the operator must see
+    it, because the app would silently keep serving the previous payload.
+    """
+    if not conn.execute(
+        "SELECT to_regclass('bond_serving_publications') IS NOT NULL"
+    ).fetchone()[0]:
+        return {"app_pin": "app_protocol_missing"}
+    worker = conn.execute(
+        "SELECT publication_id, publication_version FROM sec_derived_publications "
+        "WHERE publication_id=%s AND lifecycle_state='validated'",
+        (worker_publication_id,),
+    ).fetchone()
+    if worker is None:
+        return {"app_pin": "worker_publication_not_validated"}
+    already = conn.execute(
+        "SELECT app_publication_id FROM bond_serving_publications "
+        "WHERE worker_publication_id=%s AND lifecycle_state='validated'",
+        (worker_publication_id,),
+    ).fetchone()
+    if already is not None:
+        return {"app_pin": "already_pinned", "app_publication_id": str(already[0])}
+    app_id, next_version = conn.execute(
+        "SELECT gen_random_uuid(), COALESCE(max(app_publication_version),0)+1 "
+        "FROM bond_serving_publications"
+    ).fetchone()
+    conn.execute(
+        "INSERT INTO bond_serving_publications "
+        "(app_publication_id, app_publication_version, worker_publication_id, "
+        " worker_publication_version, lifecycle_state) "
+        "VALUES (%s,%s,%s,%s,'prepared')",
+        (app_id, next_version, worker[0], worker[1]),
+    )
+    conn.execute("SELECT bond_validate_serving_publication(%s)", (app_id,))
+    conn.execute("SELECT bond_set_current_serving_publication(%s)", (app_id,))
+    return {
+        "app_pin": "advanced",
+        "app_publication_id": str(app_id),
+        "app_publication_version": next_version,
+    }
+
+
 def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None) -> dict[str, Any]:
     with connect(resolve_dsn(dsn)) as conn, advisory_lock(conn, LOCK_BOND_SERVING) as acquired:
         if not acquired:
@@ -88,4 +141,8 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             conn.rollback()
             return {"state": "no_source", "rows": 0}
         conn.commit()
-    return {"state": "ok", **result}
+        # Worker publication validated + current: advance the app pin in its own
+        # transaction (a pin failure must not roll back the worker publication).
+        pin = _advance_app_pin(conn, result["publication_id"])
+        conn.commit()
+    return {"state": "ok", **result, **pin}

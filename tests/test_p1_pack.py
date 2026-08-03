@@ -18,14 +18,21 @@ import pytest
 from harness.p1_pack import build as p1_build
 from harness.p1_pack import verifier as p1_verifier
 from harness.p1_pack.contract import P1_TABLE_SPECS, P1_TABLES_BY_NAME
+from src.input_packs.registry import P1_PROFILE, load_registry
 
 ROOT = Path(__file__).resolve().parents[1]
 P1_SOURCES = ROOT / "fixtures" / "p1_sources" / "open_macro_v03_002"
-REAL_PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003"
-CONTRACT_BUNDLE_SHA256 = "db85c58968becd890d49d0a022b54b9493449e8c9ff444c88da10678c5d6f53b"
-CERTIFIED_PACK_IDENTITIES = (
-    ("open_macro_v03_certified_input_pack_002", "23a639781853bd53e37eb44359c30a613bc3c82a9dfc5a65c9b5b81f1d04d337"),
-    ("open_macro_v03_certified_input_pack_003", "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804"),
+
+# The pack identities come from the ONE registry, not from a sixth hand-kept copy
+# here. Nothing is weakened: tests/test_input_pack_registry.py proves the registry
+# declarations match the committed pack bytes, and the tests below still recompute
+# the hash tree, the aggregate digest and the byte-for-byte rebuild.
+_REGISTRY = load_registry()
+_CURRENT_PACK = _REGISTRY.current(P1_PROFILE)
+REAL_PACK = _CURRENT_PACK.dir
+CONTRACT_BUNDLE_SHA256 = _CURRENT_PACK.contract_bundle_sha256
+CERTIFIED_PACK_IDENTITIES = tuple(
+    (entry.pack_id, entry.input_pack_sha256) for entry in _REGISTRY.for_profile(P1_PROFILE)
 )
 
 
@@ -132,8 +139,8 @@ def test_contract_declares_two_p1_tables():
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
-        ("export_id", "open_macro_v03_p1_sources_001", "corrected source export"),
-        ("db_source", "tiger_t83f4np6x4", "GCloud source"),
+        ("export_id", "open_macro_v03_p1_sources_001", "requires source export"),
+        ("db_source", "tiger_t83f4np6x4", "requires the source"),
     ],
 )
 def test_builder_rejects_legacy_source_export_identity(
@@ -224,7 +231,7 @@ def test_builder_pins_v2_bundle_and_governance(tmp_path):
     manifest = _read(out / "manifest.json")
     assert manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
     assert manifest["input_pack_version"] == 3
-    assert manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
+    assert manifest["input_pack_id"] == _CURRENT_PACK.pack_id
     assert manifest["A5"] == "blocked"
     assert manifest["runtime_activation"] is False
     assert manifest["activation_allowed"] is False
@@ -384,7 +391,7 @@ def test_verifier_reports_verified_pack_identity(pack_id, pack_sha256):
 
 
 def test_real_pack_governance_pins(real_manifest):
-    assert real_manifest["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
+    assert real_manifest["input_pack_id"] == _CURRENT_PACK.pack_id
     assert real_manifest["input_pack_version"] == 3
     assert real_manifest["contract_bundle_sha256"] == CONTRACT_BUNDLE_SHA256
     assert real_manifest["A5"] == "blocked"
@@ -542,5 +549,5 @@ def test_cli_builds_pack(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
-    assert payload["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
+    assert payload["input_pack_id"] == _CURRENT_PACK.pack_id
     assert p1_verifier.verify_pack(out)["ok"]

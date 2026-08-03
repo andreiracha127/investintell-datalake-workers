@@ -82,6 +82,74 @@ def test_build_watermarks_reports_max_date_per_source_and_dark_is_empty():
         admin.close()
 
 
+def test_discover_source_days_yields_only_the_latest_watermark_day():
+    """The chain processes the SINGLE latest watermark day — never a historical
+    catch-up. Every stage worker projects the CURRENT state of its inputs and
+    self-promotes, so replaying an old source-day would advance the current
+    pointers to a stale build (the 2026-07 incident: hours spent promoting
+    2015/2016 filing days over the present). History stays reachable via an
+    explicit ``calc_date``.
+    """
+    admin = admin_connect()
+    schema = new_schema(admin)
+    conn = worker_conn(schema)
+    try:
+        # Dark: no source tables -> no eligible day at all.
+        assert chain_worker.discover_source_days(conn) == []
+        conn.execute("CREATE TABLE bond_price_observation (as_of date)")
+        conn.execute(
+            "INSERT INTO bond_price_observation VALUES "
+            "('2015-09-28'),('2016-03-01'),('2025-02-15')"
+        )
+        conn.execute("CREATE TABLE ncen_effective_filings (effective_date date)")
+        conn.execute("INSERT INTO ncen_effective_filings VALUES ('2025-03-31'),('2015-12-29')")
+        conn.commit()
+        # ONE day: the max across every source; the 2015/2016 days never enter.
+        assert chain_worker.discover_source_days(conn) == [date(2025, 3, 31)]
+    finally:
+        conn.close()
+        admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_pit_materialize_refresh_workers_are_self_anchored(monkeypatch):
+    """The pit/materialize/refresh lanes get NO calc_date (each worker resolves
+    its OWN watermark); ingest stays pinned to the chain's source-day. Forcing
+    the global day onto the price lane selected an exact-day cohort that was
+    EMPTY (landings on a different day) and published a zero-row panel."""
+    calls: list[tuple[str, object]] = []
+
+    def fake_worker(name):
+        def _run(dsn, *, calc_date=None):
+            calls.append((name, calc_date))
+            return {"state": "no_source"}
+        return _run
+
+    monkeypatch.setattr(chain_worker, "_worker", fake_worker)
+    ctx = StageContext(conn=None, dsn=base_dsn(), source_day=D1,
+                       run_id=daily_chain.chain_run_id_for("c", D1, "r", "v"),
+                       chain="c", code_revision="r", config_version="v")
+    chain_worker.stage_pit_update(ctx)
+    chain_worker.stage_materialize(ctx)
+    chain_worker.stage_refresh(ctx)
+    assert all(calc is None for _, calc in calls), calls
+    calls.clear()
+    chain_worker.stage_ingest(ctx)
+    assert all(calc == D1.isoformat() for _, calc in calls), calls
+
+
+def test_configured_stages_env_scopes_the_run(monkeypatch):
+    """``DAILY_CHAIN_STAGES`` scopes a deployment to one lane (frozen order
+    preserved); blank/unset means all eight; unknown names fail closed."""
+    monkeypatch.delenv("DAILY_CHAIN_STAGES", raising=False)
+    assert [s.name for s in chain_worker._configured_stages()] == list(daily_chain.STAGE_ORDER)
+    monkeypatch.setenv("DAILY_CHAIN_STAGES", "refresh, pit_update,probe")
+    assert [s.name for s in chain_worker._configured_stages()] == ["pit_update", "refresh", "probe"]
+    monkeypatch.setenv("DAILY_CHAIN_STAGES", "pit_update,teleport")
+    with pytest.raises(ValueError, match="teleport"):
+        chain_worker._configured_stages()
+
+
 def test_staleness_threshold_is_env_configurable(monkeypatch):
     monkeypatch.delenv("DAILY_CHAIN_STALENESS_THRESHOLD_DAYS", raising=False)
     assert chain_worker._staleness_threshold() == chain_worker._DEFAULT_STALENESS_THRESHOLD_DAYS
@@ -190,4 +258,81 @@ def test_real_bond_lane_runs_dark_and_promotes_nothing():
             admin.execute(f'DROP SCHEMA IF EXISTS "{book_schema}" CASCADE')
         if dark_schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{dark_schema}" CASCADE')
+        admin.close()
+
+
+def test_chain_watermarks_read_the_effective_matview_cache_when_it_is_fresh():
+    """The two watermark reads go through the effective-selection cache.
+
+    ``ncen_effective_filings`` / ``rr1_effective_facts`` are views over a window
+    function on the whole raw landing, and the chain reads them only for
+    ``max(effective_date)`` -- twice per run. With the cache installed and fresh,
+    both reads hit the matview; when the family lands a new validated run the
+    recorded signature no longer matches and the read falls back to the view, so
+    a missed refresh costs the old scan and never a stale day.
+    """
+    from uuid import uuid4
+
+    from src import sec_effective_matviews as mvs
+
+    admin = admin_connect()
+    schema = new_schema(admin)
+    conn = worker_conn(schema)
+    try:
+        conn.execute("CREATE TABLE ncen_effective_filings (raw_row_id bigint, effective_date date)")
+        conn.execute("INSERT INTO ncen_effective_filings VALUES (1,'2025-03-31')")
+        conn.execute(
+            "CREATE TABLE rr1_effective_facts (effective_date date, accession_number text)"
+        )
+        conn.execute("INSERT INTO rr1_effective_facts VALUES ('2025-02-28','R1')")
+        conn.execute(
+            "CREATE TABLE sec_ingestion_runs(run_id uuid PRIMARY KEY, source_family text,"
+            " raw_validated_at timestamptz)"
+        )
+        conn.execute(
+            "CREATE VIEW sec_validated_raw_runs AS SELECT run_id, source_family,"
+            " raw_validated_at FROM sec_ingestion_runs WHERE raw_validated_at IS NOT NULL"
+        )
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'ncen',now())", (uuid4(),))
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'rr1',now())", (uuid4(),))
+        conn.execute(
+            (Path(__file__).resolve().parents[1] / "schemas" / "sec_effective_matviews.sql")
+            .read_text(encoding="utf-8")
+        )
+        conn.commit()
+
+        # Not populated yet -> every read stays on the views.
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings"
+
+        assert [o["state"] for o in mvs.refresh_stale(_search_path_dsn(schema))] == [
+            "refreshed", "refreshed",
+        ]
+        conn.rollback()  # see the refreshed matviews from this session
+
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings_mv"
+        assert mvs.resolve_relation(conn, "rr1_effective_facts") == "rr1_effective_fact_calendar_mv"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 3, 31)]
+        assert chain_worker.build_watermarks(conn, D1) == {
+            # Keyed by the source PRODUCT, never by the matview actually read.
+            "ncen_effective_filings": "2025-03-31",
+            "rr1_effective_facts": "2025-02-28",
+        }
+
+        # A newly validated N-CEN run moves the family signature: the cache is no
+        # longer trusted and the view answers, even before anyone refreshes.
+        conn.execute("INSERT INTO sec_ingestion_runs VALUES (%s,'ncen',now())", (uuid4(),))
+        conn.execute("INSERT INTO ncen_effective_filings VALUES (2,'2025-06-30')")
+        conn.commit()
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 6, 30)]
+
+        assert [o["state"] for o in mvs.refresh_stale(_search_path_dsn(schema))] == [
+            "refreshed", "fresh",
+        ]
+        conn.rollback()
+        assert mvs.resolve_relation(conn, "ncen_effective_filings") == "ncen_effective_filings_mv"
+        assert chain_worker.discover_source_days(conn) == [date(2025, 6, 30)]
+    finally:
+        conn.close()
+        admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         admin.close()

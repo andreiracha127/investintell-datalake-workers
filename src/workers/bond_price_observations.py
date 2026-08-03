@@ -14,6 +14,7 @@ pricing pilot does not authorize a production price source (handoff warning).
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import date
 from typing import Any
@@ -21,16 +22,28 @@ from typing import Any
 from src.bonds import price_observations
 from src.db import LOCK_BOND_PRICE_OBSERVATIONS, advisory_lock, connect, resolve_dsn
 
+# Build stamps a deploy may inject (the container image carries no ``.git``;
+# without them every build of one as_of collapses onto a single publication_id
+# and materialize only re-points instead of rebuilding).
+_REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+
 
 def _code_revision() -> str:
+    for var in _REVISION_ENV_VARS:
+        value = os.getenv(var)
+        if value:
+            return value.strip()
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5, check=False,
         )
-        return out.stdout.strip() or "unknown"
+        stamped = out.stdout.strip()
+        if stamped:
+            return stamped
     except Exception:
-        return "unknown"
+        pass
+    return "unknown"
 
 
 def _latest_validated_source(conn: Any) -> tuple[Any, Any] | None:
