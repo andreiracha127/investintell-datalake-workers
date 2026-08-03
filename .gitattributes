@@ -20,3 +20,6 @@ artifacts/handshake/**/*.md text eol=lf
 artifacts/handshake/**/*.log text eol=lf
 contracts/quant-engine/** text eol=lf
 artifacts/quant/**/*.json text eol=lf
+
+# open_macro v4 pinned fixtures — the golden ledger sha256 is over raw bytes
+tests/fixtures/open_macro_v4/** text eol=lf
