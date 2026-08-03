@@ -10,7 +10,9 @@ The end-to-end reproduction of the signed ledger lives in
 
 from __future__ import annotations
 
+import ast
 import math
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -319,6 +321,32 @@ def test_the_pinned_drop_and_renormalize_would_delete_the_barbell_destination() 
     assert set(books.CENTER) - set(dropped) == set(books.CREDIT_TICKERS)
     # ... and the barbell needs that column to exist.
     assert books.DOMINANCE_BOOK["LQD"] > 0.0
+
+
+def test_the_router_never_reaches_for_the_pinned_enforcement_machinery() -> None:
+    """The dissolution proof, part 4: the router does not merely avoid NEEDING the
+    pinned constraint machinery — it never names it.
+
+    A runtime assert on the emitted books would pass even if the books were being
+    quietly repaired on the way out. This reads the source: the only two names the
+    router takes from the pinned sleeve are the read-only baseline table and the
+    quadrant key map, plus the four constraint CONSTANTS it re-declares as its own
+    invariant bounds.
+
+    Read off the AST, not the text, so the module's own prose about what it does
+    not use cannot make the test pass or fail."""
+    tree = ast.parse(Path(books.__file__).read_text(encoding="utf-8"))
+    used = {node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name) and node.value.id == "_sleeve"}
+    assert used == {
+        "SLEEVE_TICKERS", "QUADRANT_TO_KEY", "PER_QUADRANT_BASELINE_WEIGHTS",
+        "RISK_ASSETS", "DEFENSIVE_ASSETS", "RISK_CAP_BASELINE",
+        "DEFENSIVE_FLOOR_BASELINE"}
+    for forbidden in ("_enforce_risk_cap", "_enforce_defensive_floor",
+                      "_renormalize", "target_weights", "compressed_quadrant_weights",
+                      "variant_book", "_compressed_book_50", "simulate"):
+        assert forbidden not in used, f"book_router reaches for sleeve.{forbidden}"
 
 
 def test_the_signed_dial_never_computes_a_compressed_25_book() -> None:
