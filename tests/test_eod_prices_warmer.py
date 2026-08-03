@@ -229,7 +229,12 @@ def test_upsert_eod_prices_idempotent():
 def test_macro_sleeves_are_fetched_before_the_long_tail():
     from src.workers.eod_prices_warmer import MACRO_SLEEVE_TICKERS, order_sweep
 
-    universe = sorted(["AAPL", "AA", "ABBV", "SPY", "TLT", "TIP", "SHY", "GLD", "DBC", "ZM"])
+    # O universo do teste TEM de conter todos os sleeves, porque order_sweep só
+    # ordena o que existe: um sleeve ausente daqui passaria despercebido e é
+    # exatamente o buraco que o incidente abriu. LQD entrou com o open_macro v4
+    # (perna de crédito do barbell B60-LQD no livro de dominância).
+    universe = sorted(["AAPL", "AA", "ABBV", *MACRO_SLEEVE_TICKERS, "ZM"])
+    assert set(MACRO_SLEEVE_TICKERS) <= set(universe)
     ordered = order_sweep(universe)
 
     head = ordered[: len(set(MACRO_SLEEVE_TICKERS))]

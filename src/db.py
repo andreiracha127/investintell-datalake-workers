@@ -168,6 +168,13 @@ LOCK_IPCA_FACTOR_PACK = 900_216
 # workers sharing an advisory lock id block each other silently, so this takes
 # the next free id in the band instead.
 LOCK_MARKET_OVERVIEW_SNAPSHOT = 900_217
+# open_macro v4.0-rev (M-COMP4) monthly regime worker. It publishes to the SIBLING
+# open_macro_v04_* tables, so it deliberately does NOT share LOCK_OPEN_MACRO_V03:
+# the two workers touch disjoint tables and must be allowed to run concurrently
+# (the v03 daily job is live and certified; serializing against a dark-run v4
+# backfill would delay it for no reason). 900_218 is the next free id in the
+# metrics band (900_2xx) after LOCK_MARKET_OVERVIEW_SNAPSHOT.
+LOCK_OPEN_MACRO_V04 = 900_218
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211

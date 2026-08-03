@@ -41,6 +41,21 @@
 #   open_macro_v03_monitor -> daily 09:30 UTC, DEPOIS da janela de publicação
 #                           do worker, para alertar missing_output_slo no
 #                           mesmo dia (às 07:00 avaliava antes do worker rodar).
+#   open_macro_v04       -> DARK RUN. Motor v4.0-rev (M-COMP4), cadência MENSAL
+#                           publicada por um cron DIÁRIO idempotente nas tabelas
+#                           IRMÃS open_macro_v04_decisions/_allocations. NÃO
+#                           substitui o open_macro_v03: as duas rodam lado a
+#                           lado, em tabelas disjuntas e locks distintos
+#                           (900_215 vs 900_218), até o dono ratificar o
+#                           artefato e o Light ser virado para consumir o v4.
+#                           Ordem obrigatória: macro_ingestion (05:00, mantém
+#                           MTSDS133FMS/GDP/M2SL/SUBLPDCILSLGNQ) e
+#                           eod_prices_warmer (06:15, aquece SPY..LQD) ANTES —
+#                           sugestão 08:45 UTC, depois do v03 (08:30). O DDL é
+#                           aplicado pelo OPERADOR (schemas/open_macro_v04_*.sql);
+#                           o worker só verifica o catálogo, read-only.
+#                           Este arquivo NÃO cria o serviço: criar/agendar é
+#                           passo operacional (docs/open_macro_v4_runbook.md).
 #
 # nixpacks auto-detects Python via requirements.txt.
 

@@ -54,7 +54,13 @@ INDEX_TICKERS: tuple[str, ...] = ("SPY", "QQQ", "DIA", "IWM", "GLD", "AGG", "TLT
 # budget dies around the 300th ticker, and S/T/G/D are never reached, so these
 # stayed frozen at 2026-07-16 for 8 business days while the A-names refreshed
 # daily. Cheap tickers, load-bearing signal — they go first, every run.
-MACRO_SLEEVE_TICKERS: tuple[str, ...] = ("SPY", "TLT", "TIP", "SHY", "GLD", "DBC")
+# LQD joins for open_macro v4.0-rev: the dominance book routes 0.155 into LQD
+# through the B60-LQD barbell, and the v4 worker refuses to price a book on a
+# session where any instrument is missing. Without LQD warmed, every dominance
+# month is unpriceable — the same alphabetical-sweep failure mode that froze
+# S/T/G/D for 8 business days, except LQD would never have been fetched at all.
+MACRO_SLEEVE_TICKERS: tuple[str, ...] = ("SPY", "TLT", "TIP", "SHY", "GLD", "DBC",
+                                         "LQD")
 
 # Priority head: fetched before the long tail and never subject to the resume
 # cursor, so a truncated run still refreshes everything the decision layer needs.
