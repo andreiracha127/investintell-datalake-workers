@@ -827,6 +827,29 @@ def test_no_emitted_book_holds_hyg() -> None:
 # =========================================================================== #
 # 7. as_of resolution                                                         #
 # =========================================================================== #
+def test_the_runbook_quotes_the_owners_normative_text_verbatim() -> None:
+    """A runbook that paraphrases the step rule is worse than one that omits it: the
+    comfortable half ('degrades to ALERT, never off') is true of the STATE and false
+    of the PORTFOLIO, which is the entire reason the owner required the wording."""
+    freeze = json.loads(w.FREEZE_PATH.read_text(encoding="utf-8"))
+    normative = freeze["formulation"]["L3_guard"]["A8"]["normative_text"]
+    runbook = (ROOT / "docs" / "open_macro_v4_runbook.md").read_text(encoding="utf-8")
+    quoted = re.search(r"> (Sob amplitude 0.*?carteira\.)\n", runbook, re.S)
+    assert quoted is not None, "the runbook must quote the A8 normative text"
+    assert " ".join(quoted.group(1).replace("\n> ", " ").split()) == normative
+
+
+def test_the_runbook_cites_the_current_formulation_digest() -> None:
+    """The operator is told to check that every row carries ONE formulation_sha256.
+    A runbook naming a stale one turns that check into a false alarm."""
+    runbook = (ROOT / "docs" / "open_macro_v4_runbook.md").read_text(encoding="utf-8")
+    assert w.verify_formulation_freeze() in runbook
+    assert "open_macro_v04_decisions   | 29" in runbook
+    assert "open_macro_v04_allocations | 21" in runbook
+    assert len(w.EXPECTED_COLUMNS["open_macro_v04_decisions"]) == 29
+    assert len(w.EXPECTED_COLUMNS["open_macro_v04_allocations"]) == 21
+
+
 def test_the_default_as_of_is_the_last_complete_month_end() -> None:
     assert w.last_complete_month_end(_dt.date(2026, 8, 3)) == _dt.date(2026, 7, 31)
     assert w.last_complete_month_end(_dt.date(2026, 3, 1)) == _dt.date(2026, 2, 28)
