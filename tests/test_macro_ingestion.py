@@ -155,6 +155,40 @@ def test_registry_covers_design_series():
     assert len(ids) >= 90  # 35 regional + 11 global + ~46 credit
 
 
+def test_open_macro_v4_inputs_are_ingested_raw_and_never_scored():
+    """The four series the v4.0-rev regime engine reads out of ``macro_data``.
+
+    Raw-only for the same reason T10YIE is: they are ingested for a downstream
+    consumer, and scoring them would move the regional regime snapshot.
+
+    The GDP assertion is the one that matters. ``A191RL1Q225SBEA`` (REAL GROWTH) is
+    already in the US growth dimension; ``GDP`` is the NOMINAL LEVEL and is the
+    denominator of deficit/GDP. Confusing them would rescale L1 silently, so both
+    are asserted present and distinct.
+    """
+    raw_ids = [spec.series_id for spec in mi.RAW_INGEST_SERIES]
+    for series_id in ("MTSDS133FMS", "GDP", "M2SL", "SUBLPDCILSLGNQ"):
+        assert series_id in raw_ids
+        assert series_id in mi.get_all_series_ids()
+
+    by_id = {spec.series_id: spec for spec in mi.RAW_INGEST_SERIES}
+    assert by_id["MTSDS133FMS"].frequency == "monthly"
+    assert by_id["GDP"].frequency == "quarterly"
+    assert by_id["M2SL"].frequency == "monthly"
+    assert by_id["SUBLPDCILSLGNQ"].frequency == "quarterly"
+    assert all(spec.frequency in mi.FREQUENCY_LIMITS for spec in mi.RAW_INGEST_SERIES)
+
+    assert "A191RL1Q225SBEA" in mi.get_all_series_ids()
+    assert "A191RL1Q225SBEA" not in raw_ids
+
+    scored: set[str] = set()
+    for region_specs in mi.REGION_SERIES.values():
+        scored |= {spec.series_id for spec in region_specs}
+    scored |= {spec.series_id for spec in mi.GLOBAL_SERIES}
+    scored |= {spec.series_id for spec in mi.CREDIT_SERIES}
+    assert not (set(raw_ids) & scored)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Upsert / idempotency (throwaway schema in the DB-mãe)
 # ──────────────────────────────────────────────────────────────────────────────

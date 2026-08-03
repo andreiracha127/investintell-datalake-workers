@@ -1,0 +1,451 @@
+{
+ "artifact": "golden_ledger.csv",
+ "sha256": "02a3b5ee791a8712eab0c40122d4491e513aa5886a6bd8248628999c6abd6cd3",
+ "bytes": 69164,
+ "rows": 234,
+ "window": [
+  "2006-12-31",
+  "2026-05-31"
+ ],
+ "columns": [
+  "date",
+  "deficit_gdp",
+  "fiscal_state",
+  "fiscal_state_age_m",
+  "sloos_z",
+  "sloos_age_m",
+  "m2_yoy",
+  "arm_a",
+  "arm_b",
+  "guard_blind",
+  "alert",
+  "severe_candidate",
+  "severe_run_age",
+  "stress_confirmed",
+  "severe_emit",
+  "severe_degraded",
+  "guard_level",
+  "quadrant",
+  "quadrant_source",
+  "carry_age",
+  "book_id",
+  "SPY",
+  "TLT",
+  "TIP",
+  "GLD",
+  "DBC",
+  "SHY",
+  "LQD",
+  "HYG"
+ ],
+ "number_format": "%.17g (NaN renders as 'nan'; SQL/py None renders as an empty field)",
+ "input_snapshot_sha256": "42253855212736a948c2ae865676c3511aa271e3be698b91ba7fa9537b79da28",
+ "m4_core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424",
+ "config": {
+  "engine": "m4_core.py (M-COMP4, open_macro v4.0-rev, ratified 2026-08-02)",
+  "inputs": "load_inputs()",
+  "prices": "load_prices()  -> restrict(daily, T7), T7=['SPY', 'TLT', 'TIP', 'GLD', 'DBC', 'SHY', 'LQD']",
+  "stress": "stress_series(monthly_T7['SPY'], MIDX, -0.08)",
+  "build_states": {
+   "fiscal_enter": 5.0,
+   "fiscal_exit": 4.0,
+   "guard_window": 54,
+   "z_threshold": 0.5,
+   "m2_threshold": 12.0,
+   "guard_age_max": 5,
+   "severe_min_contained_age": 3,
+   "persist": "confirm",
+   "persist_k": 3,
+   "stress": "the series above"
+  },
+  "book_family": {
+   "scope": "none  [SIGNED \u2014 see spec_divergence]",
+   "share_short": 0.6,
+   "short_tkr": "SHY",
+   "credit_tkr": "LQD",
+   "dominance_base": "expansion_c50",
+   "severe_book": "contraction_c50",
+   "contained_f": 0.0
+  },
+  "build_books": {
+   "alert_f": 0.5,
+   "l2_hook": "make_barbell_hook(0.60,'SHY','LQD','dominance')",
+   "mod_trigger": null,
+   "note": "A10 commodity modulation ABSENT (v4.1)"
+  }
+ },
+ "checks": [
+  {
+   "id": "a",
+   "name": "crosstab fiscal_state x guard_level == 58/25/23 | 86/42/0, n=234",
+   "pass": true,
+   "detail": {
+    "observed": {
+     "contained|off": 58,
+     "contained|alert": 25,
+     "contained|severe": 23,
+     "dominance|off": 86,
+     "dominance|alert": 42,
+     "dominance|severe": 0
+    },
+    "expected": {
+     "contained|off": 58,
+     "contained|alert": 25,
+     "contained|severe": 23,
+     "dominance|off": 86,
+     "dominance|alert": 42,
+     "dominance|severe": 0
+    },
+    "n_months": 234,
+    "full_crosstab": {
+     "contained|alert": 25,
+     "contained|off": 58,
+     "contained|severe": 23,
+     "dominance|alert": 42,
+     "dominance|off": 86,
+     "dominance|severe": 0
+    }
+   }
+  },
+  {
+   "id": "b",
+   "name": "contained & alert -> weights == CENTER, max|delta| == 0.0",
+   "pass": true,
+   "detail": {
+    "n_months": 25,
+    "max_abs_delta": 0.0,
+    "book_ids": [
+     "alert50:center",
+     "alert50:compressed_0(contraction)",
+     "alert50:compressed_0(expansion)",
+     "alert50:compressed_0(recovery)",
+     "alert50:compressed_0(slowdown)"
+    ]
+   }
+  },
+  {
+   "id": "c",
+   "name": "contained & guard in (off,alert) -> weights == CENTER (dial-0)",
+   "pass": true,
+   "detail": {
+    "n_months": 83,
+    "max_abs_delta": 0.0,
+    "book_ids_off_or_alert": [
+     "alert50:center",
+     "alert50:compressed_0(contraction)",
+     "alert50:compressed_0(expansion)",
+     "alert50:compressed_0(recovery)",
+     "alert50:compressed_0(slowdown)",
+     "compressed_0(contraction)",
+     "compressed_0(expansion)",
+     "compressed_0(recovery)",
+     "compressed_0(slowdown)"
+    ],
+    "book_ids_guard_off_only": [
+     "compressed_0(contraction)",
+     "compressed_0(expansion)",
+     "compressed_0(recovery)",
+     "compressed_0(slowdown)"
+    ]
+   }
+  },
+  {
+   "id": "d",
+   "name": "guard severe -> weights == compressed_from(BASELINE,CENTER,'contraction',0.5)",
+   "pass": true,
+   "detail": {
+    "n_months": 23,
+    "max_abs_delta": 0.0,
+    "fam_sev_vs_reference_max_abs_delta": 0.0,
+    "book_ids": [
+     "severe:contraction_c50"
+    ],
+    "book": {
+     "SPY": 0.24375000000000002,
+     "TLT": 0.28750000000000003,
+     "TIP": 0.11875000000000001,
+     "GLD": 0.10625000000000001,
+     "DBC": 0.0375,
+     "SHY": 0.20625,
+     "LQD": 0.0,
+     "HYG": 0.0
+    }
+   }
+  },
+  {
+   "id": "e",
+   "name": "dominance & guard off -> expansion_c50 + B60-LQD barbell",
+   "pass": true,
+   "detail": {
+    "n_months": 86,
+    "max_abs_delta_vs_decimal_literals": 5.551115123125783e-17,
+    "max_abs_delta_vs_bb_transform_reference": 0.0,
+    "per_ticker_delta_vs_literals": {
+     "SPY": 5.551115123125783e-17,
+     "TLT": 0.0,
+     "TIP": 0.0,
+     "GLD": 1.3877787807814457e-17,
+     "DBC": 1.3877787807814457e-17,
+     "SHY": 2.7755575615628914e-17,
+     "LQD": 2.7755575615628914e-17,
+     "HYG": 0.0
+    },
+    "observed": {
+     "SPY": 0.39375000000000004,
+     "TLT": 0.0,
+     "TIP": 0.0,
+     "GLD": 0.10625000000000001,
+     "DBC": 0.11249999999999999,
+     "SHY": 0.23249999999999998,
+     "LQD": 0.15500000000000003,
+     "HYG": 0.0
+    },
+    "book_ids": [
+     "expansion_c50+bb"
+    ],
+    "note": "the residual is 1 ULP on SHY: 0.3875*0.60 == 0.23249999999999998 != the literal 0.2325; the engine value is byte-identical to m4_results.json ['books']['dominance expansion_c50 + A9 bb']"
+   }
+  },
+  {
+   "id": "f",
+   "name": "A8-degraded: n==24, guard=='alert', all contained, weights==CENTER",
+   "pass": true,
+   "detail": {
+    "n_months": 24,
+    "months": [
+     "2007-12",
+     "2015-06",
+     "2015-07",
+     "2015-08",
+     "2015-10",
+     "2015-11",
+     "2015-12",
+     "2016-01",
+     "2016-02",
+     "2016-03",
+     "2016-04",
+     "2016-05",
+     "2016-06",
+     "2016-07",
+     "2016-08",
+     "2016-09",
+     "2016-10",
+     "2016-11",
+     "2016-12",
+     "2017-01",
+     "2017-02",
+     "2017-03",
+     "2017-04",
+     "2017-05"
+    ],
+    "guard_levels": [
+     "alert"
+    ],
+    "fiscal_states": [
+     "contained"
+    ],
+    "max_abs_delta_vs_CENTER": 0.0,
+    "n_expected_by_task": 24
+   }
+  },
+  {
+   "id": "g",
+   "name": "m4_results.json cross-check (G2 min, capture 2013/2017/2019)",
+   "pass": true,
+   "detail": {
+    "G2_min": {
+     "json_key": ".G2['R6|primary07/binding'].min",
+     "json_value": -0.08655799173688145,
+     "expected": -0.086558,
+     "abs_delta": 8.263118550511095e-09,
+     "pass": true
+    },
+    "capture_2013": {
+     "json_key": ".rows.R6.windows.primary07.gates.binding.metrics.upside_capture['2013']  (== .capture_2013.R6.capture)",
+     "json_value": 0.19118559019973463,
+     "expected": 0.1912,
+     "abs_delta": 1.440980026537475e-05,
+     "pass": true
+    },
+    "capture_2017": {
+     "json_key": ".rows.R6.windows.primary07.gates.binding.metrics.upside_capture['2017']",
+     "json_value": 0.506190179224984,
+     "expected": 0.5062,
+     "abs_delta": 9.820775015989547e-06,
+     "pass": true
+    },
+    "capture_2019": {
+     "json_key": ".rows.R6.windows.primary07.gates.binding.metrics.upside_capture['2019']",
+     "json_value": 0.5676118073068406,
+     "expected": 0.5676,
+     "abs_delta": 1.1807306840583287e-05,
+     "pass": true
+    },
+    "capture_2013_alt_key": {
+     "json_key": ".capture_2013.R6.capture",
+     "json_value": 0.19118559019973463
+    },
+    "G2_note": "R2 and R6 report the SAME G2 min (-0.086557991737); G2 is menu-neutral and amplitude-0 does not move it",
+    "config_in_json": {
+     "run": "M-COMP4 SIGNATURE (open_macro v4.0-rev, owner-ratified 2026-08-02)",
+     "primary07": [
+      "2007-01-31",
+      "2026-06-30"
+     ],
+     "secondary": [
+      "2014-04-30",
+      "2026-06-30"
+     ],
+     "frame": [
+      "SPY",
+      "TLT",
+      "TIP",
+      "GLD",
+      "DBC",
+      "SHY",
+      "LQD"
+     ],
+     "L1": "deficit_gdp hysteresis enter>5.0 exit<4.0, cold start contained",
+     "L2_dominance": "expansion_c50 + A9 B60-LQD (l2_hook, dominance scope)",
+     "L3": {
+      "alert": "z(SUBLPDCILSLGNQ,54m,min36)>0.5 OR M2 YoY>12",
+      "alert_book": "0.5*book_L2 + 0.5*center",
+      "severe": "alert AND contained(age>=3) AND (run_age<=3 OR SPY<=-8% vs trailing 12m max)",
+      "severe_book": "contraction_c50",
+      "A8": {
+       "persist": "confirm",
+       "persist_k": 3,
+       "X": -0.08
+      }
+     },
+     "A10": "ABSENT \u2014 deferred to v4.1",
+     "ordering": "baseline -> (no A10) -> A9 barbell (l2_hook) -> guard blend",
+     "cost_bps": 0.0,
+     "core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424",
+     "mcomp3_core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424",
+     "core_byte_identical_to_mcomp3": true,
+     "rows": {
+      "R2": "contained_f=0.25 \u2014 compressed_25(quadrant)  [REFERENCE]",
+      "R6": "contained_f=0.00 \u2014 the CENTER, amplitude 0   [SIGNATURE]"
+     }
+    }
+   }
+  }
+ ],
+ "all_checks_pass": true,
+ "crosstab": {
+  "contained|alert": 25,
+  "contained|off": 58,
+  "contained|severe": 23,
+  "dominance|alert": 42,
+  "dominance|off": 86,
+  "dominance|severe": 0
+ },
+ "spec_divergence": {
+  "spec_as_written": "book_family(scope='dominance', ...) + l2_hook=make_barbell_hook(0.60,'SHY','LQD','dominance')",
+  "problem": "bb_transform is not idempotent; scope='dominance' pre-barbells fam['dom'] and the l2_hook barbells it again, re-splitting the SHY leg the first pass created",
+  "signed_config": "book_family(scope='none', ...) + the same l2_hook",
+  "evidence": [
+   "m4_run.py:191 FAMS['R6'] = C.book_family('none', contained_f=0.00)",
+   "m4_results.json .config.L2_dominance = 'expansion_c50 + A9 B60-LQD (l2_hook, dominance scope)'",
+   "m4_results.json .books['dominance expansion_c50 + A9 bb'] = SHY 0.23249999999999998, LQD 0.15500000000000003",
+   "the task's own check (e)"
+  ],
+  "literal_spec_dominance_guard_off": {
+   "SPY": 0.39375000000000004,
+   "TLT": 0.0,
+   "TIP": 0.0,
+   "GLD": 0.10625000000000001,
+   "DBC": 0.11249999999999999,
+   "SHY": 0.13949999999999999,
+   "LQD": 0.24800000000000003,
+   "HYG": 0.0
+  },
+  "literal_spec_max_abs_delta_vs_check_e": 0.09300000000000003,
+  "n_window_rows_differing": 128,
+  "affects": "ONLY the dominance book; states, crosstab, contained books and the SEVERE book are identical (checks a,b,c,d,f unaffected)",
+  "spec_variant_file": "golden_ledger_SPEC_scope_dominance.csv",
+  "spec_variant_sha256": "77510c5928608614252d59896b04d467de3aa30194d96e275c901c6d34d266ab"
+ },
+ "stated_expectation_divergence_f": {
+  "stated": "2007-12 and 2015-06..2017-05 contiguous (24 months in total)",
+  "stated_list_len": 25,
+  "measured_list_len": 24,
+  "count_matches_stated_total_of_24": true,
+  "contiguous_range_refuted_at": [
+   "2015-09"
+  ],
+  "unexpected_extra_months": [],
+  "why": "2015-09 is a SEVERE candidate (run_age 7) whose SPY trailing-12m drawdown reaches -0.084797 <= X=-0.08, so stress_confirmed is True and A8 RE-ESCALATES it to SEVERE instead of degrading it. That is the designed A8 behaviour ('re-escalates the moment stress confirms'), not a defect: the stated contiguous range is wrong, the stated total of 24 is right.",
+  "2015_09": {
+   "spy_trailing_12m_drawdown": -0.084801676546293,
+   "X_stress": -0.08,
+   "severe_run_age": 7,
+   "stress_confirmed": true,
+   "severe_emit": true,
+   "guard_level": "severe"
+  },
+  "contained_window_accounting": {
+   "n_contained": 106,
+   "severe_candidates": 47,
+   "severe_emitted": 23,
+   "degraded": 24,
+   "guard_alert": 25,
+   "alert_months_that_are_not_A8_degraded": [
+    "2022-09"
+   ],
+   "note": "23 emitted + 24 degraded = 47 candidates; contained alert 25 = 24 degraded + 2022-09, which is an ALERT that is not even a SEVERE candidate (contained age < 3)."
+  }
+ },
+ "books": {
+  "CENTER": {
+   "SPY": 0.3375,
+   "TLT": 0.17500000000000002,
+   "TIP": 0.1375,
+   "GLD": 0.1125,
+   "DBC": 0.075,
+   "SHY": 0.1625,
+   "LQD": 0.0,
+   "HYG": 0.0
+  },
+  "severe_contraction_c50": {
+   "SPY": 0.24375000000000002,
+   "TLT": 0.28750000000000003,
+   "TIP": 0.11875000000000001,
+   "GLD": 0.10625000000000001,
+   "DBC": 0.0375,
+   "SHY": 0.20625,
+   "LQD": 0.0,
+   "HYG": 0.0
+  },
+  "dominance_expansion_c50_plus_B60_LQD": {
+   "SPY": 0.39375000000000004,
+   "TLT": 0.0,
+   "TIP": 0.0,
+   "GLD": 0.10625000000000001,
+   "DBC": 0.11249999999999999,
+   "SHY": 0.23249999999999998,
+   "LQD": 0.15500000000000003,
+   "HYG": 0.0
+  },
+  "dominance_under_literal_spec_double_barbell": {
+   "SPY": 0.39375000000000004,
+   "TLT": 0.0,
+   "TIP": 0.0,
+   "GLD": 0.10625000000000001,
+   "DBC": 0.11249999999999999,
+   "SHY": 0.13949999999999999,
+   "LQD": 0.24800000000000003,
+   "HYG": 0.0
+  }
+ },
+ "audit": {
+  "n_months_A10_fired": 0,
+  "n_months_barbell_hooked": 128,
+  "l2_sum_min": 1.0,
+  "l2_sum_max": 1.0,
+  "weight_row_sum_min": 1.0,
+  "weight_row_sum_max": 1.0000000000000002,
+  "min_weight": 0.0
+ }
+}

@@ -591,6 +591,9 @@ jobs:
           tests/test_direct_activation_stage_b.py
           tests/test_open_macro_v03_worker.py
           tests/test_open_macro_v03_monitor.py
+          tests/test_open_macro_v4_formula.py
+          tests/test_open_macro_v4_golden.py
+          tests/test_open_macro_v04_worker.py
           -m "not preactivation"
           -p xdist.plugin
           -n auto

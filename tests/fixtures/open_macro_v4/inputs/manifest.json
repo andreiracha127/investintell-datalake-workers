@@ -1,0 +1,83 @@
+{
+ "dsn": "postgresql://postgres@127.0.0.1:5432/market",
+ "pinned_on": "2026-08-03",
+ "canonical_serialization": "<snap>/01_snapshot.py \u2014 per input: '\\n'.join(lines) sha256; combined: sha256 of the '\\n'-joined list of the 8 part shas in the order GDP, MTSDS133FMS, SUBLPDCILSLGNQ, M2SL, CFNAI, CPIAUCSL, chain, prices",
+ "series": {
+  "GDP": {
+   "file": "inputs/GDP.csv",
+   "n": 318,
+   "first": "1947-01-01",
+   "last": "2026-04-01",
+   "sha256": "70cb47b07f27318007e338efb10207ca577f5abdd502b5eb13ae4030958ad1bb"
+  },
+  "MTSDS133FMS": {
+   "file": "inputs/MTSDS133FMS.csv",
+   "n": 549,
+   "first": "1980-10-01",
+   "last": "2026-06-01",
+   "sha256": "a47384567fd1bd347e1f1f5da8a9a99c15b28af86542370b516610c4b997baa0"
+  },
+  "SUBLPDCILSLGNQ": {
+   "file": "inputs/SUBLPDCILSLGNQ.csv",
+   "n": 145,
+   "first": "1990-04-01",
+   "last": "2026-04-01",
+   "sha256": "85411cf0fe8db10624177e55d9ad3f9ca226bf30dbfccf080e3794f2d446633a"
+  },
+  "M2SL": {
+   "file": "inputs/M2SL.csv",
+   "n": 810,
+   "first": "1959-01-01",
+   "last": "2026-06-01",
+   "sha256": "eba620bbca5c13b9e7644ffe45c380226cbb8f0afae7ee9f8699aa715f91d363"
+  },
+  "CFNAI": {
+   "file": "inputs/CFNAI.csv",
+   "n": 712,
+   "first": "1967-03-01",
+   "last": "2026-06-01",
+   "sha256": "4277e929d1f5dfdddfa01839906de6f6d94cded97dd25cf62d1c84d6367e0778"
+  },
+  "CPIAUCSL": {
+   "file": "inputs/CPIAUCSL.csv",
+   "n": 809,
+   "first": "1959-01-01",
+   "last": "2026-06-01",
+   "sha256": "8cc270d0fb810948eae3d6cb239c2097778bde56ed4754983db85125f32a5532"
+  }
+ },
+ "chain": {
+  "file": "inputs/decision_chain.csv",
+  "table": "open_macro_v03_decision_chain",
+  "n": 148,
+  "first": "2014-03-31",
+  "last": "2026-06-30",
+  "sha256": "cfe2514439624849fe8e8780466bff828e2e5c1e9068e71b09b7f9409c60d041",
+  "null_encoding": "NULL is written as an empty CSV field and read back as Python None (rendered 'None' in the canonical line)"
+ },
+ "prices": {
+  "file": "inputs/eod_prices_7.csv",
+  "tickers": [
+   "SPY",
+   "TLT",
+   "TIP",
+   "GLD",
+   "DBC",
+   "SHY",
+   "LQD"
+  ],
+  "n": 42851,
+  "first": "1993-01-29",
+  "last": "2026-07-30",
+  "sha256": "868d053765891b54c30090381b5a29636baf78e61df756aad0e3ae5c0af313fe"
+ },
+ "input_snapshot_sha256": "42253855212736a948c2ae865676c3511aa271e3be698b91ba7fa9537b79da28",
+ "input_snapshot_sha256_from_csv": "42253855212736a948c2ae865676c3511aa271e3be698b91ba7fa9537b79da28",
+ "m4_core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424",
+ "expected": {
+  "input_snapshot_sha256": "42253855212736a948c2ae865676c3511aa271e3be698b91ba7fa9537b79da28",
+  "m4_core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424"
+ },
+ "verdict": "MATCH",
+ "failures": []
+}

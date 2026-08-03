@@ -1,0 +1,528 @@
+{
+ "approval_required_from": "quant_owner",
+ "approved": false,
+ "artifact_type": "open_macro_v4_formulation_freeze",
+ "books": {
+  "center": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "contained_compressed_0_contraction": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "contained_compressed_0_expansion": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "contained_compressed_0_recovery": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "contained_compressed_0_slowdown": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "dominance_double_barbell_TRAP_not_the_signed_book": {
+   "DBC": 0.11249999999999999,
+   "GLD": 0.10625000000000001,
+   "HYG": 0.0,
+   "LQD": 0.24800000000000003,
+   "SHY": 0.13949999999999999,
+   "SPY": 0.39375000000000004,
+   "TIP": 0.0,
+   "TLT": 0.0
+  },
+  "dominance_expansion_c50_b60_lqd": {
+   "DBC": 0.11249999999999999,
+   "GLD": 0.10625000000000001,
+   "HYG": 0.0,
+   "LQD": 0.15500000000000003,
+   "SHY": 0.23249999999999998,
+   "SPY": 0.39375000000000004,
+   "TIP": 0.0,
+   "TLT": 0.0
+  },
+  "emitted::alert50:center": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::alert50:compressed_0(contraction)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::alert50:compressed_0(expansion)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::alert50:compressed_0(recovery)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::alert50:compressed_0(slowdown)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::alert50:expansion_c50+bb": {
+   "DBC": 0.09375,
+   "GLD": 0.109375,
+   "HYG": 0.0,
+   "LQD": 0.07750000000000001,
+   "SHY": 0.1975,
+   "SPY": 0.36562500000000003,
+   "TIP": 0.06875,
+   "TLT": 0.08750000000000001
+  },
+  "emitted::center": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::compressed_0(contraction)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::compressed_0(expansion)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::compressed_0(recovery)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::compressed_0(slowdown)": {
+   "DBC": 0.075,
+   "GLD": 0.1125,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.1625,
+   "SPY": 0.3375,
+   "TIP": 0.1375,
+   "TLT": 0.17500000000000002
+  },
+  "emitted::expansion_c50+bb": {
+   "DBC": 0.11249999999999999,
+   "GLD": 0.10625000000000001,
+   "HYG": 0.0,
+   "LQD": 0.15500000000000003,
+   "SHY": 0.23249999999999998,
+   "SPY": 0.39375000000000004,
+   "TIP": 0.0,
+   "TLT": 0.0
+  },
+  "emitted::severe:contraction_c50": {
+   "DBC": 0.0375,
+   "GLD": 0.10625000000000001,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.20625,
+   "SPY": 0.24375000000000002,
+   "TIP": 0.11875000000000001,
+   "TLT": 0.28750000000000003
+  },
+  "severe_contraction_c50": {
+   "DBC": 0.0375,
+   "GLD": 0.10625000000000001,
+   "HYG": 0.0,
+   "LQD": 0.0,
+   "SHY": 0.20625,
+   "SPY": 0.24375000000000002,
+   "TIP": 0.11875000000000001,
+   "TLT": 0.28750000000000003
+  }
+ },
+ "caveats": {
+  "input_vintage": "a margem do arm_b ao limiar é 7× só dentro da janela avaliada; o mês mais apertado da série (1976-10) tem folga 0,0323pp contra revisão máxima observada de 0,0404pp — estender a janela para trás herda um ledger de arm_b instável a safra; o espelho M2SL é safra corrente (re-sync 2026-08-03), não PIT por vintage",
+  "pin_scope": "the module pins cover the FORMULA. They do not cover the ingestion that fills macro_data, which is governed separately.",
+  "pre_chain_quadrant": "the CFNAI × CPI-acceleration proxy is a REPLAY reconstruction for months before the decision chain exists. It is never a live decision path and never publishes."
+ },
+ "engine_version": "v4.0-rev",
+ "formulation": {
+  "L1_fiscal": {
+   "hysteresis": {
+    "abstention": "a non-finite reading emits no state, resets the age to 0, and the month gets NO book",
+    "band_behaviour": "[4.0, 5.0] HOLDS the state in force and raises fiscal_boundary",
+    "cold_start": "the first finite reading picks dominance iff it is strictly above the entry threshold, contained otherwise",
+    "enter_dominance_above": 5.0,
+    "return_contained_below": 4.0
+   },
+   "observable": "deficit_gdp",
+   "pit_convention": "stamp each observation at month_end(obs_date + lag), keep the LAST duplicate stamp, reindex to the monthly decision index and forward-fill; a publication-lag shift, NOT vintage reconstruction",
+   "rolling_window_months": 12,
+   "series": {
+    "deficit": {
+     "fred_series_id": "MTSDS133FMS",
+     "frequency": "monthly",
+     "note": "Monthly Treasury Statement federal surplus/deficit; negative in a deficit month.",
+     "pit_lag_months": 1,
+     "units": "USD millions"
+    },
+    "gdp": {
+     "fred_series_id": "GDP",
+     "frequency": "quarterly",
+     "note": "The nominal LEVEL series. NOT A191RL1Q225SBEA, which is real growth and would silently change the ratio.",
+     "pit_lag_months": 3,
+     "units": "USD billions, NOMINAL level"
+    }
+   },
+   "state_age": "fiscal_state_age_m counts consecutive months the current state has held; 1 on the month of entry",
+   "transform": "deficit_gdp(t) = -( rolling_12m_sum(MTSDS133FMS)(t) / 1000 ) / GDP(t) * 100"
+  },
+  "L2_books": {
+   "alert_blend": "0.5 * book_L2 + 0.5 * CENTER",
+   "barbell": {
+    "applications": 1,
+    "credit_ticker": "LQD",
+    "id": "B60-LQD",
+    "idempotent": false,
+    "share_short": 0.6,
+    "short_ticker": "SHY",
+    "sleeve_replaced": [
+     "TLT",
+     "TIP",
+     "SHY"
+    ],
+    "trap": "bb_transform is NOT idempotent: pre-barbelling the dominance book and then applying the hook again re-splits the SHY leg the first pass created. Measured delta 0.093 on SHY/LQD, and the double-pass book BREAKS the defensive floor (TLT+SHY+TIP = 0.1395 against 0.20). Applied EXACTLY ONCE, at construction of the dominance book."
+   },
+   "center": "the cross-quadrant MEAN of the four per-quadrant baselines in the hash-pinned harness/phase0q/sleeve.py, imported read-only",
+   "compression": "compressed_f(q) = f * baseline[q] + (1 - f) * CENTER — a PURE convex combination over the fixed universe: no `w > 0` drop, no renormalization, zero columns preserved",
+   "contained_amplitude": 0.0,
+   "contained_book": "compressed_0(q) == CENTER exactly; the quadrant is a PUBLISHED DIAGNOSTIC and NEVER determines the book",
+   "dominance_book": "compressed_50(expansion) + B60-LQD barbell",
+   "invariants": {
+    "defensive_assets": [
+     "TLT",
+     "SHY",
+     "TIP"
+    ],
+    "enforcement": "REFUSE, never repair. Every emitted book satisfies these natively, so none of the pinned sleeve's _enforce_risk_cap / _enforce_defensive_floor / _renormalize machinery is used.",
+    "max_risk_weight": 0.65,
+    "min_defensive_weight": 0.2,
+    "risk_assets": [
+     "SPY",
+     "DBC"
+    ],
+    "weight_sum": 1.0,
+    "weight_sum_tolerance": 1e-09
+   },
+   "quadrant_sources": {
+    "post_chain": "open_macro_v03_decision_chain; status='valid' reads FRESH, otherwise the last valid reading CARRIES for up to 3 months, then no_signal",
+    "pre_chain": "REPLAY-ONLY proxy: CFNAI ma3 lag 1 (growth) × CPI YoY acceleration lag 1 (inflation). Historical reconstruction, never a live path."
+   },
+   "renormalization_asymmetry_dissolved": "The pinned sleeve keeps only `w > 0` and renormalizes the survivors. On the v4 universe that deletes LQD — the barbell's own destination — and HYG before the barbell could fill them. Under the signed dial only λ=0.5 and amplitude 0 are reachable, so compressed_25, the grid cell where the asymmetry actually bites, is never computed.",
+   "severe_book": "compressed_50(contraction)"
+  },
+  "L3_guard": {
+   "A3": {
+    "consequence": "SEVERE is unreachable under fiscal dominance",
+    "min_contained_age_months": 3,
+    "rule": "a SEVERE candidate additionally requires fiscal_state == contained with fiscal_state_age_m >= 3"
+   },
+   "A8": {
+    "K": 3,
+    "normative_text": "Sob amplitude 0, ALERT em contained devolve o center: inerte. A leitura correta: após 3 meses não confirmados a guarda DESARMA A CARTEIRA, e só o preço (SPY ≤ −8% da máxima móvel de 12m) a re-arma. 'Degrada a ALERT (nunca off)' é verdadeiro do estado — a re-escalada segue vigiando — e falso da carteira.",
+    "persist": "confirm",
+    "rule": "the ENTRY rule is unchanged; a month meeting it is a CANDIDATE. severe_run_age counts the current maximal consecutive candidate stretch. The candidate is EMITTED as SEVERE iff run_age <= K OR stress_confirmed; otherwise it DEGRADES to ALERT and re-escalates the moment stress confirms.",
+    "stress_confirmed": {
+     "price": "month-end adjusted close (total return)",
+     "rule": "SPY month-end close at or below -8% of its trailing 12-month month-end maximum",
+     "threshold": -0.08,
+     "ticker": "SPY",
+     "window_bounds": "t-11..t inclusive, 12 observations required",
+     "window_months": 12
+    }
+   },
+   "alert": "arm_a OR arm_b OR guard_blind",
+   "arm_a": {
+    "fires_when": "z > 0.5",
+    "fred_series_id": "SUBLPDCILSLGNQ",
+    "frequency": "quarterly",
+    "pit_lag_months": 2,
+    "threshold": 0.5,
+    "transform": "rolling z-score, 54-month trailing window INCLUDING the current month, min_periods 36",
+    "what_it_is": "SLOOS net percentage of banks TIGHTENING standards on C&I loans to large and middle-market firms — the bank DECISION series, not DRTSCILM and not a spread"
+   },
+   "arm_b": {
+    "fires_when": "M2 YoY > 12.0",
+    "fred_series_id": "M2SL",
+    "frequency": "monthly",
+    "lookback_months": 12,
+    "pit_lag_months": 1,
+    "threshold": 12.0,
+    "transform": "month-end resample (last), NaN months dropped before the reindex, year-over-year in percent, shifted 1 month"
+   },
+   "tokens": {
+    "emission_rule": "the coverage token is emitted even when the book does not move. Under amplitude 0 an ALERT inside contained is inert, which is exactly the month where a suppressed token would hide a real loss of coverage.",
+    "guard_coverage": [
+     "full",
+     "partial_a",
+     "partial_b",
+     "blind"
+    ],
+    "guard_level": [
+     "off",
+     "alert",
+     "severe"
+    ],
+    "severe_degraded": "a candidate that did NOT emit",
+    "severe_run_age": "length of the current consecutive candidate stretch",
+    "stress_confirmed": "A8's price confirmation"
+   }
+  },
+  "decision_timing": "Every sensor is PIT-lagged to what a decision maker knew at the CLOSE of month-end t. The state machine at t produces book w_t; the portfolio is rebalanced to w_t at that close and earns month t+1's total returns.",
+  "engine": "open_macro v4.0-rev (M-COMP4), owner-ratified 2026-08-02",
+  "universe": {
+   "core": [
+    "SPY",
+    "TLT",
+    "TIP",
+    "GLD",
+    "DBC",
+    "SHY"
+   ],
+   "credit": [
+    "LQD",
+    "HYG"
+   ],
+   "credit_base_weight": 0.0,
+   "note": "LQD is the barbell's credit destination; HYG is the high-yield sensitivity column and is inert under the signed configuration."
+  }
+ },
+ "freeze_id": "open_macro_v4_formulation_freeze_001",
+ "freshness": {
+  "arms": [
+   {
+    "arm": "a",
+    "frequency": "quarterly",
+    "lag_months": 2,
+    "period_identified_by": "period start (quarter start)",
+    "series_id": "SUBLPDCILSLGNQ"
+   },
+   {
+    "arm": "b",
+    "frequency": "monthly",
+    "lag_months": 1,
+    "period_identified_by": "period start (month start)",
+    "series_id": "M2SL"
+   }
+  ],
+  "calibration_points": [
+   {
+    "evaluated_at": "2026-08-03",
+    "last_observation": "2026-04-01",
+    "missing_periods": 2,
+    "series_id": "M2SL",
+    "stale": true,
+    "why": "the 2026-05 print was due 2026-06-30 and the 2026-06 print was due 2026-07-31; the 2026-07 print is not due until 2026-08-31, which is why the count is 2 and not 3"
+   },
+   {
+    "evaluated_at": "2026-08-03",
+    "last_observation": "2026-04-01",
+    "missing_periods": 0,
+    "series_id": "SUBLPDCILSLGNQ",
+    "stale": false,
+    "why": "the next quarterly period (2026-07) is not due until 2026-09-30; nothing is late"
+   }
+  ],
+  "consequences": {
+   "both_stale": "guard_blind: the guard cannot see, so it compresses conservatively (ALERT) and says so with coverage blind",
+   "one_arm_stale": "contributes False to the ALERT (never its last known reading) and raises guard_coverage partial_a | partial_b"
+  },
+  "deadline": "deadline(p) = month_end( start_of(p) + lag_months )",
+  "equivalence_with_the_signed_engine": "m4_core carries a single month-count rule, guard_blind = sloos_age_m > 5 or NaN. Over the 2006-12..2026-05 decision window the SLOOS mirror is gapless and quarterly, so its PIT age never leaves {0,1,2} and BOTH rules say guard_blind = False in all 234 months — the golden end-to-end replay proves it byte for byte. The rules DIVERGE before 1990-04, where SLOOS has no data at all: the month-count rule calls that blind (hence ALERT, hence a SEVERE candidate), while the per-arm rule sees M2SL publishing normally, drops only arm A and emits partial_a. That divergence is the v4 amendment and it lies entirely outside the window the signed configuration was measured on.",
+  "principle": "freshness is measured in NATIVE PUBLICATION PERIODS, never in months: the two arms publish on different clocks, so a single month-count threshold gives opposite verdicts for the same label age",
+  "rule": "missing(arm, t) = #{ p : p > last_observation ∧ deadline(p) <= t }",
+  "stale_when": "missing >= 1"
+ },
+ "gates": {
+  "A4_prime": {
+   "binding": true,
+   "bound": 0.35,
+   "comparator": ">=",
+   "exception": {
+    "backstop_months": 12,
+    "capture_2013": 0.1912,
+    "expires_with": "v4.1",
+    "status": "dated exception, granted at signature",
+    "why": "2013 is the single bull year the signed configuration fails A4′ on. The exception is DATED and carries a 12-month backstop so it cannot quietly become the rule; it expires with v4.1 and must be re-measured, not renewed by default.",
+    "year": 2013
+   },
+   "id": "min_upside_capture_bull_year",
+   "watches": "the ALERT blend target — the book the guard compresses TOWARD, i.e. the CENTER"
+  },
+  "F1_amplitude_reentry": {
+   "conditions_all_required": [
+    "the NEXT contained episode, not the current one",
+    "a certified instrument only — no uncertified proxy may carry it",
+    "the contracting − expanding forward-12m spread must be <= 0 on the certified instrument",
+    ">= 18 months of fresh-valid decisions inside the episode",
+    "once per episode"
+   ],
+   "note": "No partial credit: an episode that meets four of the five conditions re-enters at amplitude 0, unchanged. The dial does not move on a near miss.",
+   "partial_credit": false,
+   "what_it_governs": "the only path by which contained amplitude may rise above 0 again"
+  },
+  "G1": {
+   "binding": true,
+   "bound": 3,
+   "comparator": "<=",
+   "id": "max_unconfirmed_severe_run_months",
+   "what_it_bounds": "the longest stretch of consecutive SEVERE candidate months that A8 emits WITHOUT a price confirmation. Past K the guard must disarm, not keep holding the defensive book on an unconfirmed thesis."
+  },
+  "G2": {
+   "binding": true,
+   "bound": -0.1,
+   "comparator": ">=",
+   "definition": "over every rolling 12-observation window with SPY total return > 0.15: guard_cost = (port_TR - port_TR_guard_OFF) / SPY_TR. Menu-neutral: both legs carry the SAME L1/L2 book and the SAME barbell; only guard_level differs.",
+   "id": "min_rolling_12m_guard_cost",
+   "measured_min_at_signature": -0.086557991737
+  }
+ },
+ "governance": {
+  "A5": "blocked",
+  "activation_allowed": false,
+  "allocator_publish": false,
+  "db_write_mode": "none",
+  "note": "These pins describe THIS ARTIFACT's own side effects — a formulation record writes nothing and activates nothing by itself. Runtime activation stays governed by the Stage B activation envelope and its approval matrix. The ratification decision is the quant_owner's; an engineering agent generating this file is not a step toward approval.",
+  "official_result": false,
+  "runtime_activation": false,
+  "self_ratification": "prohibited"
+ },
+ "measurement_ledger": {
+  "advisory": {
+   "always_printed": true,
+   "why": "the unmasked ledger is printed on EVERY run alongside the binding one. Masking a window for judgement is defensible; hiding it is not."
+  },
+  "binding": {
+   "bull_year_2020": "excluded from upside capture; a 7-month year is not a calendar year",
+   "masked_months": [
+    "2020-02",
+    "2020-03",
+    "2020-04",
+    "2020-05",
+    "2020-06"
+   ],
+   "why": "the COVID crash and its rebound dominate every metric they touch and would let a gate pass or fail on one episode"
+  },
+  "fold_dispersion": {
+   "excluded_fold": 5,
+   "fold_window": [
+    "2022-03-01",
+    "2023-02-28"
+   ],
+   "why": "the 2022 inflation shock; the exclusion is DECLARED here rather than applied silently, and the all-folds statistic is reported next to the excl-fold5 one"
+  }
+ },
+ "pins": {
+  "formulation_sha256": "0f154e614a12cea69a77a8d275204b81d1b32dffd1fb6269ef962d0244f84060",
+  "formulation_sha256_scope": [
+   "books",
+   "formulation",
+   "freshness",
+   "gates"
+  ],
+  "golden_ledger_path": "tests/fixtures/open_macro_v4/golden_ledger.csv",
+  "golden_ledger_rows": 234,
+  "golden_ledger_sha256": "02a3b5ee791a8712eab0c40122d4491e513aa5886a6bd8248628999c6abd6cd3",
+  "golden_ledger_window": [
+   "2006-12-31",
+   "2026-05-31"
+  ],
+  "input_snapshot_sha256": "42253855212736a948c2ae865676c3511aa271e3be698b91ba7fa9537b79da28",
+  "m4_core_sha256": "384b02177cd8b17cb5403e5b140bf69d8f64df0ea05815936fcab7e8d7d0f424",
+  "module_sha256_method": "sha256 of file bytes with CRLF→LF normalization, the same _sha256_norm the Stage B module pins use",
+  "modules": {
+   "harness/direct_activation/credit_guard.py": "d64f7cb1f14b179b95c9feeff8d7de7096623da9dd716b7a8bf4d8f600ad3034",
+   "harness/phase0q/book_router.py": "a86b2e79a8b00bf50ac35be190c5217c4f9084e1ba8bf2f3297a876a1ee329d0",
+   "harness/phase0q/v4_replay.py": "60c8faa2da7f70ba3e3b34a24d64f95f2887170321a79a810c6d43875b2827a7",
+   "src/fiscal_state.py": "0f11bb62d520b3f03f1b0aebf66f00ef88982390c913ba6fcfe5c0a990bb5eb9"
+  }
+ },
+ "schema_version": 1,
+ "status": "awaiting_ratification",
+ "summary": "The complete formula: explicit FRED ids, transforms, thresholds, windows and PIT lags; per-arm freshness in native publication periods with its two measured calibration points; the full book table at exact float precision; the binding gates; and pins tying all of it to a specific tree and input snapshot. Committed UNRATIFIED.",
+ "title": "open_macro v4.0-rev — frozen formulation of the three-layer regime engine (M-COMP4)"
+}
