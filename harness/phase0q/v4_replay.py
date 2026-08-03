@@ -227,34 +227,59 @@ def quadrant_series(chain: pd.DataFrame, proxy: pd.DataFrame,
 
 # ──────────────────────────────── the replay ───────────────────────────────
 
-def ledger(input_dir: Path = INPUT_DIR,
-           index: pd.DatetimeIndex | None = None,
-           *, extended: bool = False) -> pd.DataFrame:
-    """Run L1 + L3 + L2 month by month and return the full ledger frame.
+def empty_series(name: str = "") -> pd.Series:
+    """A float64 series with an empty DatetimeIndex — an input that is simply absent.
+
+    The proxy axes are OPTIONAL inputs (see :func:`build_ledger`): a caller that
+    cannot supply CFNAI or CPIAUCSL passes this and every pre-chain month reads
+    ``proxy_missing``. That is the honest answer — "no reading" — and it is
+    deliberately not the same thing as a fabricated zero."""
+    return pd.Series([], index=pd.DatetimeIndex([]), dtype="float64", name=name)
+
+
+def build_ledger(series: dict[str, pd.Series], chain: pd.DataFrame,
+                 spy_month_end: pd.Series, index: pd.DatetimeIndex,
+                 *, extended: bool = False) -> pd.DataFrame:
+    """L1 + L3 + L2 over ``index``, from IN-MEMORY inputs. No I/O, no clock, no DB.
+
+    THE one code path. :func:`ledger` feeds it from the pinned CSV fixtures and the
+    runtime worker (``src.workers.open_macro_v04``) feeds it from ``macro_data`` /
+    ``eod_prices`` / ``open_macro_v03_decision_chain``. Extracting it is what lets a
+    test assert that the worker reproduces the golden ledger byte for byte instead of
+    asserting that two look-alike implementations agree today.
+
+    ``series``          raw ``macro_data`` series keyed by FRED id, obs_date-indexed.
+                        ``MTSDS133FMS``/``GDP`` (L1) and ``SUBLPDCILSLGNQ``/``M2SL``
+                        (L3) are REQUIRED — a missing one raises KeyError rather than
+                        quietly routing on a hole. ``CFNAI``/``CPIAUCSL`` feed the
+                        replay-only pre-chain proxy and default to
+                        :func:`empty_series`.
+    ``chain``           ``chain_quadrant`` / ``chain_status`` indexed by as_of.
+    ``spy_month_end``   SPY month-end adjusted close for A8's price confirmation.
 
     ``extended`` appends the v4-only freshness columns (``arm_a_fresh``,
     ``arm_b_fresh``, ``guard_coverage``) after the golden's schema; the golden
     comparison uses the golden's own column list, so the extra diagnostics can
     never smuggle themselves into the pinned contract.
     """
-    idx = decision_index() if index is None else index
-    raw = {sid: load_macro_series(sid, input_dir) for sid in MACRO_SERIES}
-    chain = load_decision_chain(input_dir)
-    daily = load_price_frame(input_dir)
-    monthly = month_end_prices(daily)
+    idx = index
 
     # L1 — the fiscal router.
-    l1 = _fiscal.fiscal_panel(raw[_fiscal.MTS_SERIES_ID], raw[_fiscal.GDP_SERIES_ID], idx)
+    l1 = _fiscal.fiscal_panel(series[_fiscal.MTS_SERIES_ID],
+                              series[_fiscal.GDP_SERIES_ID], idx)
 
     # L3 — the credit guard, including A8's price confirmation.
-    stress = _guard.stress_confirmed_series(monthly[_guard.STRESS_TICKER], idx)
+    stress = _guard.stress_confirmed_series(spy_month_end, idx)
     l3 = _guard.build_guard(
-        sloos_raw=raw[_guard.SLOOS_SERIES_ID], m2_raw=raw[_guard.M2_SERIES_ID],
+        sloos_raw=series[_guard.SLOOS_SERIES_ID], m2_raw=series[_guard.M2_SERIES_ID],
         index=idx, fiscal_state=l1["fiscal_state"],
         fiscal_state_age_m=l1["fiscal_state_age_m"], stress_confirmed=stress)
 
     quadrants = quadrant_series(
-        chain, proxy_quadrant(raw[CFNAI_SERIES_ID], raw[CPI_SERIES_ID], idx), idx)
+        chain,
+        proxy_quadrant(series.get(CFNAI_SERIES_ID, empty_series(CFNAI_SERIES_ID)),
+                       series.get(CPI_SERIES_ID, empty_series(CPI_SERIES_ID)), idx),
+        idx)
 
     frame = pd.concat([l1.drop(columns=["fiscal_boundary"]), l3, quadrants], axis=1)
     frame["fiscal_boundary"] = l1["fiscal_boundary"]
@@ -277,6 +302,19 @@ def ledger(input_dir: Path = INPUT_DIR,
     if extended:
         columns += list(EXTENDED_COLUMNS)
     return frame[columns]
+
+
+def ledger(input_dir: Path = INPUT_DIR,
+           index: pd.DatetimeIndex | None = None,
+           *, extended: bool = False) -> pd.DataFrame:
+    """The FIXTURE-driven ledger: load the eight pinned inputs, then
+    :func:`build_ledger`. This function is the I/O shell and nothing else."""
+    idx = decision_index() if index is None else index
+    raw = {sid: load_macro_series(sid, input_dir) for sid in MACRO_SERIES}
+    chain = load_decision_chain(input_dir)
+    monthly = month_end_prices(load_price_frame(input_dir))
+    return build_ledger(raw, chain, monthly[_guard.STRESS_TICKER], idx,
+                        extended=extended)
 
 
 def golden_window(frame: pd.DataFrame,

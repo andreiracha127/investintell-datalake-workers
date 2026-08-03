@@ -517,7 +517,7 @@
   "modules": {
    "harness/direct_activation/credit_guard.py": "d64f7cb1f14b179b95c9feeff8d7de7096623da9dd716b7a8bf4d8f600ad3034",
    "harness/phase0q/book_router.py": "a86b2e79a8b00bf50ac35be190c5217c4f9084e1ba8bf2f3297a876a1ee329d0",
-   "harness/phase0q/v4_replay.py": "e8e6e81bb5fddc67ee273a0bcc2db5643c84dc91a463c2ade5c743125b4bf4ca",
+   "harness/phase0q/v4_replay.py": "60c8faa2da7f70ba3e3b34a24d64f95f2887170321a79a810c6d43875b2827a7",
    "src/fiscal_state.py": "0f11bb62d520b3f03f1b0aebf66f00ef88982390c913ba6fcfe5c0a990bb5eb9"
   }
  },
