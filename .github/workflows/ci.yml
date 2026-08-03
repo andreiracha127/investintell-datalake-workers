@@ -595,6 +595,7 @@ jobs:
           tests/test_direct_activation_stage_a.py
           tests/test_open_macro_v4_formula.py
           tests/test_open_macro_v4_golden.py
+          tests/test_open_macro_v04_worker.py
           -p xdist.plugin
           -n auto
           --dist loadscope
