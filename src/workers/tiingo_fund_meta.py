@@ -33,16 +33,22 @@ import datetime as _dt
 from typing import Any
 
 from src.db import LOCK_TIINGO_FUND_META, advisory_lock, connect, resolve_dsn
-from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient, TokenBucket
+from src.workers._tiingo import (
+    DEFAULT_RATE_PER_S,
+    TiingoBudgetExceeded,
+    TiingoClient,
+    TokenBucket,
+)
 
 DEFAULT_REFRESH_DAYS = 30     # re-fetch a cached ticker only after it is this stale
 PROGRESS_EVERY = 500          # emit a heartbeat log every N tickers (observability)
 
 # Tiingo pacing for the metadata endpoint. The account is on the Power tier
-# (~10k req/h, no X-RateLimit headers); 10 req/s ≈ 36k/h is well within reach and
-# the fund-catalog universe is small, so a full sweep finishes in a couple of
-# minutes. The shared TokenBucket + 30×429 breaker in _tiingo.py enforce safety.
-FETCH_RATE_PER_S = 10.0
+# (10k req/h, no X-RateLimit headers). The old note called 10 req/s "≈ 36k/h,
+# well within reach" — 36k/h is 3.6x the ceiling; what was actually within reach
+# was the *sweep size*, which says nothing about the rate other consumers see.
+# The 30x429 breaker is a backstop, not a licence to pace above the account.
+FETCH_RATE_PER_S = DEFAULT_RATE_PER_S
 FETCH_BURST = 10.0
 
 # Fund catalog tables whose ``ticker`` column seeds the fetch universe. Append a

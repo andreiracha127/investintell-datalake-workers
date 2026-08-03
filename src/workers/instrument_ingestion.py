@@ -43,7 +43,7 @@ from typing import Any
 
 from src.db import LOCK_INSTRUMENT_INGESTION, advisory_lock, connect
 from src.workers._nav_sanitize import sanitize_nav_series
-from src.workers._tiingo import TiingoBudgetExceeded, TiingoClient
+from src.workers._tiingo import DEFAULT_RATE_PER_S, TiingoBudgetExceeded, TiingoClient
 
 UPSERT_CHUNK = 500
 DEFAULT_LOOKBACK_DAYS = 5475   # ~15y for first-time backfills
@@ -51,10 +51,13 @@ WATERMARK_OVERLAP_DAYS = 7     # re-fetch overlap to catch revisions
 STALE_AFTER_DAYS = 2           # weekend-tolerant: refreshed daily data is fresh
 DEFAULT_TICKER_CAP = 10_000    # full universe fits the verified 10k req/h budget
 # Railway service: 24 vCPU / 24 GB. Fetches are I/O-bound; concurrency matches
-# the cores and the bucket caps the burst — a full sweep is ~6.1k requests, so
-# even at 25 req/s the hourly total stays under the verified 10k req/h budget.
+# the cores and the bucket caps the burst. The old note — "a full sweep is ~6.1k
+# requests, so even at 25 req/s the hourly total stays under 10k/h" — measured
+# the sweep, not the rate: 6.1k requests at 25 req/s land in ~4 minutes, taking
+# 61% of the fleet's hourly budget in one burst and leaving whatever runs next
+# with 429s. The budget is per account, not per sweep.
 FETCH_CONCURRENCY = 24         # parallel Tiingo fetches (upserts stay single-conn)
-FETCH_RATE_PER_S = 25.0        # shared bucket: 6.1k req/sweep stays < 10k/h
+FETCH_RATE_PER_S = DEFAULT_RATE_PER_S
 
 
 @dataclass(frozen=True)

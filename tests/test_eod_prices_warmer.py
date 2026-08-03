@@ -159,9 +159,18 @@ def test_advisory_lock_id_is_distinct():
     assert LOCK_EOD_PRICES_WARMER == 900_335
 
 
-def test_fetch_rate_is_fast_lane():
-    """Pacing matches instrument_ingestion's fast lane, not the 2.5 req/s default."""
-    assert w.FETCH_RATE_PER_S >= 25.0
+def test_fetch_rate_stays_within_the_shared_account_budget():
+    """Was ``test_fetch_rate_is_fast_lane``, asserting ``>= 25.0 req/s``.
+
+    That pinned the defect in place: 25 req/s is 90k req/h against a ceiling of
+    10k req/h on the current key, and lower still on the key live during the
+    incident, so the warmer drained the fleet's hourly budget within minutes
+    each morning and the regime workers running in the same rolling hour got
+    only 429s. The invariant worth holding is the account's, not the sweep's.
+    """
+    from src.workers._tiingo import TIINGO_MAX_REQUESTS_PER_HOUR
+
+    assert w.FETCH_RATE_PER_S * 3600 <= TIINGO_MAX_REQUESTS_PER_HOUR
     assert w.FETCH_BURST >= 10.0
 
 
