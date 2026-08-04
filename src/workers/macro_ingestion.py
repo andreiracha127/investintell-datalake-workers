@@ -68,6 +68,13 @@ FREQUENCY_LIMITS: dict[str, int] = {
     "quarterly": 50,
 }
 
+# Escape hatch from the LOOKBACK_YEARS window for specs marked ``full_history``:
+# the whole series, every run. FRED's earliest accepted observation_start is
+# 1776-07-04 and its documented maximum ``limit`` is 100000; no FRED series comes
+# close, so this is "everything" without being a magic sentinel.
+FULL_HISTORY_START = "1776-07-04"
+FULL_HISTORY_LIMIT = 100_000
+
 MIN_HISTORY_OBS = 60
 IMF_MAX_STALE_DAYS = 366
 IMF_FORECAST_WEIGHTS: dict[int, float] = {1: 0.40, 2: 0.20, 3: 0.10}
@@ -97,12 +104,26 @@ _DEFAULT_CONFIG: dict[str, Any] = {
 # ──────────────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class SeriesSpec:
-    series_id: str
+    series_id: str  # FRED series id — what we ASK FOR
     dimension: str
     label: str
     frequency: str  # daily | weekly | monthly | quarterly
     invert: bool = False  # True = higher raw value means worse conditions
     units: str = "lin"  # FRED transform: lin, pch, pc1, ...
+    # macro_data.series_id — what we STORE AS. Defaults to series_id. Set it only
+    # to ingest the same FRED series twice under different transforms: the FRED id
+    # is not unique across the registry once `units` varies, but macro_data's PK is
+    # (series_id, obs_date), so two transforms of one FRED series would otherwise
+    # overwrite each other row-for-row. See INDPRO / INDPRO_IDX below.
+    storage_id: str | None = None
+    # Ignore the LOOKBACK_YEARS window and fetch the entire series every run. Only
+    # for cheap, low-frequency series a downstream consumer needs full history for.
+    full_history: bool = False
+
+    @property
+    def key(self) -> str:
+        """The macro_data.series_id this spec writes to."""
+        return self.storage_id or self.series_id
 
 
 REGION_SERIES: dict[str, list[SeriesSpec]] = {
@@ -235,23 +256,49 @@ RAW_INGEST_SERIES: list[SeriesSpec] = [
     SeriesSpec("SUBLPDCILSLGNQ", "credit",
                "SLOOS: banks tightening C&I standards, large and middle-market firms",
                "quarterly"),
+    # INDPRO, the INDEX LEVEL, stored under the alias INDPRO_IDX.
+    #
+    # ``macro_data.INDPRO`` is a chimera and has been for as long as this worker
+    # has run. The US growth dimension scores INDPRO with units="pc1" (YoY %), so
+    # every run rewrites the trailing LOOKBACK_YEARS window in percent — while the
+    # head of the series, older than the first pc1 run, is still index level from
+    # an earlier ingest. Prod: ~689 rows in the 22..104 range (level) ahead of the
+    # splice, ~121 rows in −17..+17 (percent) behind it. Reading INDPRO across the
+    # splice as one unit is meaningless.
+    #
+    # The regional scoring depends on the pc1 spec, so it is NOT touched here. The
+    # divergence gauge needs the level with full history, so it gets its own
+    # storage id fed by the same FRED series with units="lin". Two transforms, two
+    # rows, no collision.
+    #
+    # OPERATOR NOTE (out of scope for this worker): the pre-splice head of
+    # ``macro_data.INDPRO`` is a fossil in the wrong unit and is a candidate for a
+    # hygiene re-sync to pc1. Nothing here reads it; nothing here repairs it.
+    SeriesSpec("INDPRO", "growth", "Industrial Production (index level, 2017=100)",
+               "monthly", storage_id="INDPRO_IDX", full_history=True),
 ]
 
 
 def _all_specs() -> list[SeriesSpec]:
+    """Every spec to fetch, deduped by STORAGE key (not by FRED id).
+
+    Deduping by FRED id would silently drop an aliased spec whose FRED series is
+    already scored somewhere — exactly the INDPRO/INDPRO_IDX case.
+    """
     specs: list[SeriesSpec] = []
     for region_specs in REGION_SERIES.values():
         specs.extend(region_specs)
     specs.extend(GLOBAL_SERIES)
-    existing = {s.series_id for s in specs}
-    specs.extend(s for s in CREDIT_SERIES if s.series_id not in existing)
-    existing |= {s.series_id for s in CREDIT_SERIES}
-    specs.extend(s for s in RAW_INGEST_SERIES if s.series_id not in existing)
+    existing = {s.key for s in specs}
+    specs.extend(s for s in CREDIT_SERIES if s.key not in existing)
+    existing |= {s.key for s in CREDIT_SERIES}
+    specs.extend(s for s in RAW_INGEST_SERIES if s.key not in existing)
     return specs
 
 
 def get_all_series_ids() -> list[str]:
-    return [s.series_id for s in _all_specs()]
+    """The macro_data.series_id values this worker writes (storage keys)."""
+    return [s.key for s in _all_specs()]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -307,6 +354,9 @@ def parse_observations(payload: dict[str, Any]) -> list[Obs]:
 def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str,
                   bucket: TokenBucket) -> list[Obs]:
     limit = FREQUENCY_LIMITS.get(spec.frequency, 120)
+    if spec.full_history:
+        observation_start = FULL_HISTORY_START
+        limit = FULL_HISTORY_LIMIT
     params = {
         "series_id": spec.series_id,
         "api_key": api_key,
@@ -346,7 +396,11 @@ def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str
 
 def fetch_all_series(api_key: str, observation_start: str,
                      limit: int | None = None) -> dict[str, list[Obs]]:
-    """Fetch every registry series concurrently (5 threads, shared bucket)."""
+    """Fetch every registry series concurrently (5 threads, shared bucket).
+
+    Keyed by STORAGE id (``SeriesSpec.key``), so an aliased spec lands in its own
+    slot instead of overwriting the FRED-id-named one.
+    """
     import concurrent.futures
 
     import httpx
@@ -358,7 +412,7 @@ def fetch_all_series(api_key: str, observation_start: str,
     out: dict[str, list[Obs]] = {}
     with httpx.Client(timeout=30.0) as client:
         def one(spec: SeriesSpec) -> tuple[str, list[Obs]]:
-            return spec.series_id, _fetch_series(client, api_key, spec, observation_start, bucket)
+            return spec.key, _fetch_series(client, api_key, spec, observation_start, bucket)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
             for sid, obs in pool.map(one, specs):
@@ -554,25 +608,25 @@ def score_region(region: str, raw: dict[str, list[Obs]], as_of: _dt.date) -> dic
     indicator_scores: dict[str, float] = {}
     freshness: dict[str, DataFreshness] = {}
     for spec in specs:
-        history, last_date = _extract_history(raw.get(spec.series_id, []))
+        history, last_date = _extract_history(raw.get(spec.key, []))
         if len(history) == 0:
-            freshness[spec.series_id] = DataFreshness(spec.series_id, None, None, 0.0, "stale")
+            freshness[spec.key] = DataFreshness(spec.key, None, None, 0.0, "stale")
             continue
-        indicator_scores[spec.series_id] = percentile_rank_score(
+        indicator_scores[spec.key] = percentile_rank_score(
             float(history[-1]), history, invert=spec.invert)
         f = compute_staleness_weight(last_date, as_of, spec.frequency, staleness_cfg)
-        freshness[spec.series_id] = DataFreshness(
-            spec.series_id, f.last_date, f.days_stale, f.weight, f.status)
+        freshness[spec.key] = DataFreshness(
+            spec.key, f.last_date, f.days_stale, f.weight, f.status)
 
     by_dim: dict[str, list[tuple[str, float, float]]] = {}
     for spec in specs:
-        if spec.series_id not in indicator_scores:
+        if spec.key not in indicator_scores:
             continue
-        w = freshness[spec.series_id].weight
+        w = freshness[spec.key].weight
         if w <= 0:
             continue
         by_dim.setdefault(spec.dimension, []).append(
-            (spec.series_id, indicator_scores[spec.series_id], w))
+            (spec.key, indicator_scores[spec.key], w))
 
     dimensions: dict[str, DimensionScore] = {}
     for dim, indicators in by_dim.items():
@@ -755,7 +809,7 @@ def _enrich_region(result: dict[str, Any], region: str, as_of: _dt.date,
 
 
 def score_global_indicators(raw: dict[str, list[Obs]]) -> dict[str, float]:
-    invert = {s.series_id: s.invert for s in GLOBAL_SERIES}
+    invert = {s.key: s.invert for s in GLOBAL_SERIES}
 
     def _avg(series_ids: list[str]) -> float:
         scores = []

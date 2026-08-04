@@ -243,12 +243,12 @@ def test_open_macro_v4_inputs_are_ingested_raw_and_never_scored():
     denominator of deficit/GDP. Confusing them would rescale L1 silently, so both
     are asserted present and distinct.
     """
-    raw_ids = [spec.series_id for spec in mi.RAW_INGEST_SERIES]
+    raw_ids = [spec.key for spec in mi.RAW_INGEST_SERIES]
     for series_id in ("MTSDS133FMS", "GDP", "M2SL", "SUBLPDCILSLGNQ"):
         assert series_id in raw_ids
         assert series_id in mi.get_all_series_ids()
 
-    by_id = {spec.series_id: spec for spec in mi.RAW_INGEST_SERIES}
+    by_id = {spec.key: spec for spec in mi.RAW_INGEST_SERIES}
     assert by_id["MTSDS133FMS"].frequency == "monthly"
     assert by_id["GDP"].frequency == "quarterly"
     assert by_id["M2SL"].frequency == "monthly"
@@ -260,10 +260,92 @@ def test_open_macro_v4_inputs_are_ingested_raw_and_never_scored():
 
     scored: set[str] = set()
     for region_specs in mi.REGION_SERIES.values():
-        scored |= {spec.series_id for spec in region_specs}
-    scored |= {spec.series_id for spec in mi.GLOBAL_SERIES}
-    scored |= {spec.series_id for spec in mi.CREDIT_SERIES}
+        scored |= {spec.key for spec in region_specs}
+    scored |= {spec.key for spec in mi.GLOBAL_SERIES}
+    scored |= {spec.key for spec in mi.CREDIT_SERIES}
     assert not (set(raw_ids) & scored)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Storage alias (macro_data.series_id ≠ FRED series id) + full history
+# ──────────────────────────────────────────────────────────────────────────────
+def test_series_spec_key_defaults_to_the_fred_id():
+    plain = mi.SeriesSpec("DFF", "monetary", "Fed Funds", "daily")
+    aliased = mi.SeriesSpec("DFF", "monetary", "Fed Funds", "daily", storage_id="DFF_ALT")
+    assert plain.key == "DFF"
+    assert aliased.key == "DFF_ALT"
+    assert not plain.full_history
+
+
+def test_indpro_idx_is_the_level_alias_of_the_scored_pc1_series():
+    """``macro_data.INDPRO`` is a chimera: the US growth dimension scores INDPRO
+    as pc1 (YoY %) and rewrites the trailing 10y window in percent, while the head
+    of the series is index level from an older ingest. The regional scoring
+    depends on the pc1 spec, so the divergence gauge gets its own storage id fed
+    by the same FRED series in levels — two transforms, two rows, no collision.
+    """
+    scored_indpro = next(s for s in mi.REGION_SERIES["US"] if s.series_id == "INDPRO")
+    assert scored_indpro.units == "pc1"      # untouched: the snapshot depends on it
+    assert scored_indpro.key == "INDPRO"
+    assert not scored_indpro.full_history
+
+    idx = next(s for s in mi.RAW_INGEST_SERIES if s.key == "INDPRO_IDX")
+    assert idx.series_id == "INDPRO"         # same FRED series...
+    assert idx.units == "lin"                # ...different transform
+    assert idx.frequency == "monthly"
+    assert idx.full_history                  # the gauge needs the whole history
+
+    ids = mi.get_all_series_ids()
+    assert ids.count("INDPRO") == 1
+    assert ids.count("INDPRO_IDX") == 1
+
+
+def test_alias_survives_registry_dedup_and_keys_the_fetch_by_storage_id():
+    """Deduping by FRED id would silently drop INDPRO_IDX (its FRED series is
+    already scored); the fetch dict must also key by storage id or the two
+    transforms overwrite each other in flight."""
+    specs = mi._all_specs()
+    keys = [s.key for s in specs]
+    assert len(keys) == len(set(keys))
+    by_key = {s.key: s for s in specs}
+    assert by_key["INDPRO"].units == "pc1"
+    assert by_key["INDPRO_IDX"].units == "lin"
+
+
+def test_obs_to_rows_uses_storage_keys_and_tags_the_source():
+    rows = mi.obs_to_rows({"INDPRO_IDX": [mi.Obs("2026-06-01", 104.2)]})
+    assert rows == [{
+        "series_id": "INDPRO_IDX", "obs_date": _dt.date(2026, 6, 1),
+        "value": 104.2, "source": "fred", "is_derived": False,
+    }]
+    tagged = mi.obs_to_rows({"X": [mi.Obs("2026-06-01", 1.0)]}, source="bis")
+    assert tagged[0]["source"] == "bis"
+
+
+def test_full_history_spec_ignores_the_lookback_window():
+    observations = [(f"{year}-01-01", "100.0") for year in range(1919, 2027)]
+    client = _FakeFredClient(observations)
+    spec = next(s for s in mi.RAW_INGEST_SERIES if s.key == "INDPRO_IDX")
+
+    obs = mi._fetch_series(client, "test-key", spec, "2016-07-03", mi.TokenBucket())
+
+    assert client.last_params["series_id"] == "INDPRO"   # asks FRED for INDPRO
+    assert "units" not in client.last_params             # lin is FRED's default
+    assert client.last_params["observation_start"] == mi.FULL_HISTORY_START
+    assert client.last_params["limit"] == mi.FULL_HISTORY_LIMIT
+    assert len(obs) == len(observations)                 # nothing windowed away
+    assert obs[0].date == "1919-01-01"
+
+
+def test_windowed_specs_are_unaffected_by_the_full_history_escape_hatch():
+    observations = [(f"{year}-01-01", "100.0") for year in range(1919, 2027)]
+    client = _FakeFredClient(observations)
+    spec = next(s for s in mi.RAW_INGEST_SERIES if s.key == "M2SL")
+
+    mi._fetch_series(client, "test-key", spec, "2016-07-03", mi.TokenBucket())
+
+    assert client.last_params["observation_start"] == "2016-07-03"
+    assert client.last_params["limit"] == mi.FREQUENCY_LIMITS["monthly"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
