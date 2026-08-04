@@ -22,7 +22,12 @@ Faithful to the monolith:
 Differences (by design, README §Princípios): sync psycopg3 + httpx, in-process
 token bucket (FRED 120 req/min) instead of Redis gates, advisory lock 900_320.
 
-Contract:  run(dsn, *, calc_date=None, limit=None) -> {"fetched", "upserted", ...}
+Beyond FRED it also ingests the BIS offshore-dollar stock (locational banking
+statistics, SDMX over stats.bis.org) under ``source='bis'`` — full history each
+run, fail-soft, reported as ``bis_rows``/``bis_error``. See the BIS section.
+
+Contract:  run(dsn, *, calc_date=None, limit=None) -> {"fetched", "upserted",
+"bis_rows", "bis_error", ...}
 ``limit`` caps the number of series fetched (smoke runs); ``calc_date`` is the
 snapshot as-of date (defaults to today).
 
@@ -35,6 +40,7 @@ import datetime as _dt
 import json
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -61,6 +67,13 @@ FREQUENCY_LIMITS: dict[str, int] = {
     "monthly": 150,
     "quarterly": 50,
 }
+
+# Escape hatch from the LOOKBACK_YEARS window for specs marked ``full_history``:
+# the whole series, every run. FRED's earliest accepted observation_start is
+# 1776-07-04 and its documented maximum ``limit`` is 100000; no FRED series comes
+# close, so this is "everything" without being a magic sentinel.
+FULL_HISTORY_START = "1776-07-04"
+FULL_HISTORY_LIMIT = 100_000
 
 MIN_HISTORY_OBS = 60
 IMF_MAX_STALE_DAYS = 366
@@ -91,12 +104,26 @@ _DEFAULT_CONFIG: dict[str, Any] = {
 # ──────────────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class SeriesSpec:
-    series_id: str
+    series_id: str  # FRED series id — what we ASK FOR
     dimension: str
     label: str
     frequency: str  # daily | weekly | monthly | quarterly
     invert: bool = False  # True = higher raw value means worse conditions
     units: str = "lin"  # FRED transform: lin, pch, pc1, ...
+    # macro_data.series_id — what we STORE AS. Defaults to series_id. Set it only
+    # to ingest the same FRED series twice under different transforms: the FRED id
+    # is not unique across the registry once `units` varies, but macro_data's PK is
+    # (series_id, obs_date), so two transforms of one FRED series would otherwise
+    # overwrite each other row-for-row. See INDPRO / INDPRO_IDX below.
+    storage_id: str | None = None
+    # Ignore the LOOKBACK_YEARS window and fetch the entire series every run. Only
+    # for cheap, low-frequency series a downstream consumer needs full history for.
+    full_history: bool = False
+
+    @property
+    def key(self) -> str:
+        """The macro_data.series_id this spec writes to."""
+        return self.storage_id or self.series_id
 
 
 REGION_SERIES: dict[str, list[SeriesSpec]] = {
@@ -229,23 +256,49 @@ RAW_INGEST_SERIES: list[SeriesSpec] = [
     SeriesSpec("SUBLPDCILSLGNQ", "credit",
                "SLOOS: banks tightening C&I standards, large and middle-market firms",
                "quarterly"),
+    # INDPRO, the INDEX LEVEL, stored under the alias INDPRO_IDX.
+    #
+    # ``macro_data.INDPRO`` is a chimera and has been for as long as this worker
+    # has run. The US growth dimension scores INDPRO with units="pc1" (YoY %), so
+    # every run rewrites the trailing LOOKBACK_YEARS window in percent — while the
+    # head of the series, older than the first pc1 run, is still index level from
+    # an earlier ingest. Prod: ~689 rows in the 22..104 range (level) ahead of the
+    # splice, ~121 rows in −17..+17 (percent) behind it. Reading INDPRO across the
+    # splice as one unit is meaningless.
+    #
+    # The regional scoring depends on the pc1 spec, so it is NOT touched here. The
+    # divergence gauge needs the level with full history, so it gets its own
+    # storage id fed by the same FRED series with units="lin". Two transforms, two
+    # rows, no collision.
+    #
+    # OPERATOR NOTE (out of scope for this worker): the pre-splice head of
+    # ``macro_data.INDPRO`` is a fossil in the wrong unit and is a candidate for a
+    # hygiene re-sync to pc1. Nothing here reads it; nothing here repairs it.
+    SeriesSpec("INDPRO", "growth", "Industrial Production (index level, 2017=100)",
+               "monthly", storage_id="INDPRO_IDX", full_history=True),
 ]
 
 
 def _all_specs() -> list[SeriesSpec]:
+    """Every spec to fetch, deduped by STORAGE key (not by FRED id).
+
+    Deduping by FRED id would silently drop an aliased spec whose FRED series is
+    already scored somewhere — exactly the INDPRO/INDPRO_IDX case.
+    """
     specs: list[SeriesSpec] = []
     for region_specs in REGION_SERIES.values():
         specs.extend(region_specs)
     specs.extend(GLOBAL_SERIES)
-    existing = {s.series_id for s in specs}
-    specs.extend(s for s in CREDIT_SERIES if s.series_id not in existing)
-    existing |= {s.series_id for s in CREDIT_SERIES}
-    specs.extend(s for s in RAW_INGEST_SERIES if s.series_id not in existing)
+    existing = {s.key for s in specs}
+    specs.extend(s for s in CREDIT_SERIES if s.key not in existing)
+    existing |= {s.key for s in CREDIT_SERIES}
+    specs.extend(s for s in RAW_INGEST_SERIES if s.key not in existing)
     return specs
 
 
 def get_all_series_ids() -> list[str]:
-    return [s.series_id for s in _all_specs()]
+    """The macro_data.series_id values this worker writes (storage keys)."""
+    return [s.key for s in _all_specs()]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -301,6 +354,9 @@ def parse_observations(payload: dict[str, Any]) -> list[Obs]:
 def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str,
                   bucket: TokenBucket) -> list[Obs]:
     limit = FREQUENCY_LIMITS.get(spec.frequency, 120)
+    if spec.full_history:
+        observation_start = FULL_HISTORY_START
+        limit = FULL_HISTORY_LIMIT
     params = {
         "series_id": spec.series_id,
         "api_key": api_key,
@@ -340,7 +396,11 @@ def _fetch_series(client, api_key: str, spec: SeriesSpec, observation_start: str
 
 def fetch_all_series(api_key: str, observation_start: str,
                      limit: int | None = None) -> dict[str, list[Obs]]:
-    """Fetch every registry series concurrently (5 threads, shared bucket)."""
+    """Fetch every registry series concurrently (5 threads, shared bucket).
+
+    Keyed by STORAGE id (``SeriesSpec.key``), so an aliased spec lands in its own
+    slot instead of overwriting the FRED-id-named one.
+    """
     import concurrent.futures
 
     import httpx
@@ -352,7 +412,7 @@ def fetch_all_series(api_key: str, observation_start: str,
     out: dict[str, list[Obs]] = {}
     with httpx.Client(timeout=30.0) as client:
         def one(spec: SeriesSpec) -> tuple[str, list[Obs]]:
-            return spec.series_id, _fetch_series(client, api_key, spec, observation_start, bucket)
+            return spec.key, _fetch_series(client, api_key, spec, observation_start, bucket)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
             for sid, obs in pool.map(one, specs):
@@ -363,7 +423,13 @@ def fetch_all_series(api_key: str, observation_start: str,
 # ──────────────────────────────────────────────────────────────────────────────
 # Rows + derived series (pure)
 # ──────────────────────────────────────────────────────────────────────────────
-def obs_to_rows(raw: dict[str, list[Obs]]) -> list[dict[str, Any]]:
+def obs_to_rows(raw: dict[str, list[Obs]], *, source: str = "fred") -> list[dict[str, Any]]:
+    """``{macro_data.series_id: [Obs]}`` → upsert row dicts.
+
+    Keys are the STORAGE ids (``macro_data.series_id``), not the upstream
+    provider's ids — see ``SeriesSpec.key``. ``source`` tags the provider so a
+    non-FRED feed (BIS) can reuse the same row shape.
+    """
     rows: list[dict[str, Any]] = []
     for sid, obs_list in raw.items():
         for o in obs_list:
@@ -373,7 +439,7 @@ def obs_to_rows(raw: dict[str, list[Obs]]) -> list[dict[str, Any]]:
                 "series_id": sid,
                 "obs_date": _dt.date.fromisoformat(o.date),
                 "value": o.value,
-                "source": "fred",
+                "source": source,
                 "is_derived": False,
             })
     return rows
@@ -542,25 +608,25 @@ def score_region(region: str, raw: dict[str, list[Obs]], as_of: _dt.date) -> dic
     indicator_scores: dict[str, float] = {}
     freshness: dict[str, DataFreshness] = {}
     for spec in specs:
-        history, last_date = _extract_history(raw.get(spec.series_id, []))
+        history, last_date = _extract_history(raw.get(spec.key, []))
         if len(history) == 0:
-            freshness[spec.series_id] = DataFreshness(spec.series_id, None, None, 0.0, "stale")
+            freshness[spec.key] = DataFreshness(spec.key, None, None, 0.0, "stale")
             continue
-        indicator_scores[spec.series_id] = percentile_rank_score(
+        indicator_scores[spec.key] = percentile_rank_score(
             float(history[-1]), history, invert=spec.invert)
         f = compute_staleness_weight(last_date, as_of, spec.frequency, staleness_cfg)
-        freshness[spec.series_id] = DataFreshness(
-            spec.series_id, f.last_date, f.days_stale, f.weight, f.status)
+        freshness[spec.key] = DataFreshness(
+            spec.key, f.last_date, f.days_stale, f.weight, f.status)
 
     by_dim: dict[str, list[tuple[str, float, float]]] = {}
     for spec in specs:
-        if spec.series_id not in indicator_scores:
+        if spec.key not in indicator_scores:
             continue
-        w = freshness[spec.series_id].weight
+        w = freshness[spec.key].weight
         if w <= 0:
             continue
         by_dim.setdefault(spec.dimension, []).append(
-            (spec.series_id, indicator_scores[spec.series_id], w))
+            (spec.key, indicator_scores[spec.key], w))
 
     dimensions: dict[str, DimensionScore] = {}
     for dim, indicators in by_dim.items():
@@ -743,7 +809,7 @@ def _enrich_region(result: dict[str, Any], region: str, as_of: _dt.date,
 
 
 def score_global_indicators(raw: dict[str, list[Obs]]) -> dict[str, float]:
-    invert = {s.series_id: s.invert for s in GLOBAL_SERIES}
+    invert = {s.key: s.invert for s in GLOBAL_SERIES}
 
     def _avg(series_ids: list[str]) -> float:
         scores = []
@@ -870,6 +936,178 @@ def upsert_snapshot(conn, as_of: _dt.date, data_json: dict[str, Any]) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# BIS offshore-dollar stock (SDMX v2 REST, stats.bis.org)
+# ──────────────────────────────────────────────────────────────────────────────
+# Input to the liquidity-divergence DIAGNOSTIC gauge (conviction P1b): the Light
+# backend computes the gauge on-read from ``macro_data`` out of the M2 + offshore
+# stock composite. It informs; it never allocates.
+#
+# Provenance is fixed by the P1b pre-registration and is NOT a free parameter:
+# dataflow ``WS_LBS_D_PUB`` version 1.0, key ``Q.S.C.A.USD.A.5J.A.5A.A.5J.N``.
+# Open download, no key, no published quota — but we stay polite anyway: 60s
+# timeout, 3 attempts, exponential backoff.
+BIS_BASE_URL = "https://stats.bis.org/api/v2/data/dataflow/BIS"
+BIS_SOURCE = "bis"
+BIS_TIMEOUT_SECONDS = 60.0
+BIS_MAX_ATTEMPTS = 3
+# The LBS publishes in USD MILLIONS (UNIT_MEASURE=USD, UNIT_MULT=6). macro_data
+# stores this series in USD BILLIONS so it is dimensionally comparable with the
+# FRED monetary aggregates (M2SL is $B). Both facts are asserted at parse time:
+# a silent BIS rescale would move the gauge by 1000x without any error.
+BIS_UNIT_MEASURE = "USD"
+BIS_UNIT_MULT = "6"
+BIS_MILLIONS_PER_BILLION = 1000.0
+
+_BIS_QUARTER_RE = re.compile(r"^(\d{4})-?Q([1-4])$")
+
+
+@dataclass(frozen=True)
+class BisSeriesSpec:
+    storage_id: str  # macro_data.series_id
+    dataflow: str
+    version: str
+    sdmx_key: str
+    label: str
+
+
+BIS_SERIES: list[BisSeriesSpec] = [
+    BisSeriesSpec(
+        "BIS_LBS_XB_CLAIMS_USD", "WS_LBS_D_PUB", "1.0",
+        "Q.S.C.A.USD.A.5J.A.5A.A.5J.N",
+        # FREQ=Q, L_MEASURE=S (amounts outstanding), L_POSITION=C (total claims),
+        # L_INSTR=A (all instruments), L_DENOM=USD, L_CURR_TYPE=A, L_PARENT_CTY=5J,
+        # L_REP_BANK_TYPE=A, L_REP_CTY=5A, L_CP_SECTOR=A, L_CP_COUNTRY=5J,
+        # L_POS_TYPE=N (cross-border). 1977-Q4 onward, ~194 quarterly observations.
+        "BIS LBS cross-border claims, all instruments, USD-denominated ($B)",
+    ),
+]
+
+
+def bis_series_url(spec: BisSeriesSpec) -> str:
+    return f"{BIS_BASE_URL}/{spec.dataflow}/{spec.version}/{spec.sdmx_key}"
+
+
+def _bis_period_to_date(period: str | None) -> _dt.date:
+    """``'1977-Q4'`` → ``date(1977, 10, 1)``.
+
+    FIRST day of the quarter, FRED-like: every other quarterly series in
+    ``macro_data`` (GDP, SUBLPDCILSLGNQ, ...) is period-START stamped, and a
+    consumer joining M2SL to this series must not have to special-case it.
+    NB the P1b research script stamped quarter-END; the difference is a label,
+    not a value, but the on-read gauge has to know which one it is reading.
+    """
+    match = _BIS_QUARTER_RE.match((period or "").strip())
+    if not match:
+        raise ValueError(f"unsupported BIS TIME_PERIOD {period!r} (expected 'YYYY-Qn')")
+    year, quarter = int(match.group(1)), int(match.group(2))
+    return _dt.date(year, 3 * (quarter - 1) + 1, 1)
+
+
+def parse_bis_csv(text: str) -> list[Obs]:
+    """SDMX-CSV → ascending [Obs] in USD BILLIONS, one row per quarter."""
+    import csv
+    import io
+
+    reader = csv.DictReader(io.StringIO(text))
+    missing = {"TIME_PERIOD", "OBS_VALUE", "UNIT_MEASURE", "UNIT_MULT"} - set(
+        reader.fieldnames or ())
+    if missing:
+        raise ValueError(f"unexpected BIS CSV shape, missing columns {sorted(missing)}")
+
+    by_date: dict[_dt.date, float] = {}
+    for row in reader:
+        unit = (row.get("UNIT_MEASURE") or "").strip()
+        mult = (row.get("UNIT_MULT") or "").strip()
+        if unit != BIS_UNIT_MEASURE or mult != BIS_UNIT_MULT:
+            raise ValueError(
+                f"unexpected BIS units UNIT_MEASURE={unit!r} UNIT_MULT={mult!r} "
+                f"(expected {BIS_UNIT_MEASURE!r}/{BIS_UNIT_MULT!r}) — refusing to "
+                "store a series whose scale is not the documented USD millions")
+        raw_value = (row.get("OBS_VALUE") or "").strip()
+        if raw_value in _MISSING_VALUES:
+            continue
+        try:
+            millions = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(millions):
+            continue
+        by_date[_bis_period_to_date(row.get("TIME_PERIOD"))] = (
+            millions / BIS_MILLIONS_PER_BILLION)
+    return [Obs(day.isoformat(), value) for day, value in sorted(by_date.items())]
+
+
+def _fetch_bis_with(client, spec: BisSeriesSpec) -> list[Obs]:
+    url = bis_series_url(spec)
+    last_error: Exception | None = None
+    for attempt in range(BIS_MAX_ATTEMPTS):
+        if attempt:
+            time.sleep(min(30.0, 2.0 * (2 ** (attempt - 1))))
+        try:
+            resp = client.get(url, params={"format": "csv"})
+        except Exception as exc:  # timeout / connection reset → retry
+            last_error = exc
+            continue
+        status = resp.status_code
+        if status == 429 or status >= 500:
+            last_error = RuntimeError(f"BIS HTTP {status} for {spec.storage_id}")
+            continue
+        if status != 200:
+            raise RuntimeError(f"BIS HTTP {status} for {spec.storage_id} ({url})")
+        text = resp.text
+        if text.lstrip().startswith("<"):
+            raise RuntimeError(
+                f"BIS returned an SDMX/XML error document for {spec.storage_id}")
+        return parse_bis_csv(text)
+    raise RuntimeError(
+        f"BIS fetch failed after {BIS_MAX_ATTEMPTS} attempts for "
+        f"{spec.storage_id}: {last_error}")
+
+
+def fetch_bis_series(spec: BisSeriesSpec, *, client: Any | None = None) -> list[Obs]:
+    """Download one BIS series, full history, as ascending [Obs] in $B.
+
+    Raises on any failure; the fail-soft boundary is ``ingest_bis``. Pass
+    ``client`` to inject a transport (tests); otherwise an httpx client is
+    created and closed here.
+    """
+    if client is not None:
+        return _fetch_bis_with(client, spec)
+    import httpx
+
+    with httpx.Client(timeout=BIS_TIMEOUT_SECONDS, follow_redirects=True) as owned:
+        return _fetch_bis_with(owned, spec)
+
+
+def ingest_bis(conn, *, specs: list[BisSeriesSpec] | None = None,
+               client: Any | None = None) -> tuple[int, str | None]:
+    """Fetch the BIS series and upsert them. Returns ``(rows, error_or_None)``.
+
+    Fail-soft by contract: the BIS is a third-party open endpoint and its outage
+    must not take the daily FRED ingest down with it. Every failure is swallowed,
+    described in the returned string and logged. The DB work runs inside a
+    SAVEPOINT (``conn.transaction()``) so a half-applied BIS upsert cannot poison
+    the caller's open transaction and lose the FRED rows.
+
+    Full history every run: 194 quarterly observations is cheap, and a window
+    would leave the head of the series frozen at whatever the first run wrote.
+    """
+    specs = BIS_SERIES if specs is None else specs
+    try:
+        fetched = {spec.storage_id: fetch_bis_series(spec, client=client)
+                   for spec in specs}
+        rows = dedup_rows(obs_to_rows(fetched, source=BIS_SOURCE))
+        if not rows:
+            raise RuntimeError("BIS returned no observations")
+        with conn.transaction():
+            return upsert_macro_data(conn, rows), None
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        print(f"WARN macro_ingestion bis_ingest_failed error={error}", flush=True)
+        return 0, error
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Public entrypoint
 # ──────────────────────────────────────────────────────────────────────────────
 def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
@@ -889,6 +1127,12 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             rows = dedup_rows(obs_to_rows(raw) + compute_derived_series(raw))
             upserted = upsert_macro_data(conn, rows)
 
+            # BIS offshore-dollar stock, AFTER the FRED leg and fail-soft: a BIS
+            # outage costs the diagnostic gauge its newest quarter, it does not
+            # cost the fleet its daily FRED ingest. The outcome is reported in
+            # the stats dict (bis_rows / bis_error), never raised.
+            bis_rows, bis_error = ingest_bis(conn)
+
             snapshot_written = False
             if limit is None:  # partial fetches would skew the regional scores
                 snapshot = build_regional_snapshot(
@@ -902,6 +1146,8 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         "fetched": sum(len(v) for v in raw.values()),
         "series": len(raw),
         "upserted": upserted,
+        "bis_rows": bis_rows,
+        "bis_error": bis_error,
         "snapshot_written": snapshot_written,
         "as_of": as_of.isoformat(),
     }

@@ -8,6 +8,7 @@ test_risk_metrics.py. No network calls anywhere in this file.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 
 import psycopg
@@ -24,6 +25,82 @@ def _mae():
         return psycopg.connect(MAE_DSN, connect_timeout=5)
     except Exception as exc:  # pragma: no cover
         pytest.skip(f"DB-mãe unreachable: {exc}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Fake connection — enough psycopg3 surface for the pure-Python DB paths
+# (upsert, snapshot write, SAVEPOINT via conn.transaction()). No server.
+# ──────────────────────────────────────────────────────────────────────────────
+class _FakeCursor:
+    def __init__(self, conn: "_FakeConn"):
+        self._conn = conn
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
+
+    def execute(self, sql: str, params=None) -> None:
+        self._conn.executed.append((sql, params))
+
+    def executemany(self, sql: str, rows) -> None:
+        self._conn.rows.extend(rows)
+
+    def fetchall(self) -> list:
+        return []
+
+    def fetchone(self):
+        return None
+
+
+class _FakeTransaction:
+    """psycopg3 ``Connection.transaction()`` inside an open transaction is a
+    SAVEPOINT: on exception it rolls back to the savepoint and re-raises,
+    leaving the outer transaction usable."""
+
+    def __init__(self, conn: "_FakeConn"):
+        self._conn = conn
+        self._mark = 0
+
+    def __enter__(self) -> "_FakeTransaction":
+        self._conn.savepoints += 1
+        self._mark = len(self._conn.rows)
+        return self
+
+    def __exit__(self, exc_type, *_exc) -> bool:
+        if exc_type is not None:
+            del self._conn.rows[self._mark:]
+            self._conn.savepoint_rollbacks += 1
+        return False
+
+
+class _FakeConn:
+    def __init__(self) -> None:
+        self.rows: list[tuple] = []
+        self.executed: list[tuple] = []
+        self.commits = 0
+        self.savepoints = 0
+        self.savepoint_rollbacks = 0
+        self.rolled_back = False
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self)
+
+    def transaction(self) -> _FakeTransaction:
+        return _FakeTransaction(self)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rolled_back = True
+
+    def __enter__(self) -> "_FakeConn":
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -166,12 +243,12 @@ def test_open_macro_v4_inputs_are_ingested_raw_and_never_scored():
     denominator of deficit/GDP. Confusing them would rescale L1 silently, so both
     are asserted present and distinct.
     """
-    raw_ids = [spec.series_id for spec in mi.RAW_INGEST_SERIES]
+    raw_ids = [spec.key for spec in mi.RAW_INGEST_SERIES]
     for series_id in ("MTSDS133FMS", "GDP", "M2SL", "SUBLPDCILSLGNQ"):
         assert series_id in raw_ids
         assert series_id in mi.get_all_series_ids()
 
-    by_id = {spec.series_id: spec for spec in mi.RAW_INGEST_SERIES}
+    by_id = {spec.key: spec for spec in mi.RAW_INGEST_SERIES}
     assert by_id["MTSDS133FMS"].frequency == "monthly"
     assert by_id["GDP"].frequency == "quarterly"
     assert by_id["M2SL"].frequency == "monthly"
@@ -183,10 +260,92 @@ def test_open_macro_v4_inputs_are_ingested_raw_and_never_scored():
 
     scored: set[str] = set()
     for region_specs in mi.REGION_SERIES.values():
-        scored |= {spec.series_id for spec in region_specs}
-    scored |= {spec.series_id for spec in mi.GLOBAL_SERIES}
-    scored |= {spec.series_id for spec in mi.CREDIT_SERIES}
+        scored |= {spec.key for spec in region_specs}
+    scored |= {spec.key for spec in mi.GLOBAL_SERIES}
+    scored |= {spec.key for spec in mi.CREDIT_SERIES}
     assert not (set(raw_ids) & scored)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Storage alias (macro_data.series_id ≠ FRED series id) + full history
+# ──────────────────────────────────────────────────────────────────────────────
+def test_series_spec_key_defaults_to_the_fred_id():
+    plain = mi.SeriesSpec("DFF", "monetary", "Fed Funds", "daily")
+    aliased = mi.SeriesSpec("DFF", "monetary", "Fed Funds", "daily", storage_id="DFF_ALT")
+    assert plain.key == "DFF"
+    assert aliased.key == "DFF_ALT"
+    assert not plain.full_history
+
+
+def test_indpro_idx_is_the_level_alias_of_the_scored_pc1_series():
+    """``macro_data.INDPRO`` is a chimera: the US growth dimension scores INDPRO
+    as pc1 (YoY %) and rewrites the trailing 10y window in percent, while the head
+    of the series is index level from an older ingest. The regional scoring
+    depends on the pc1 spec, so the divergence gauge gets its own storage id fed
+    by the same FRED series in levels — two transforms, two rows, no collision.
+    """
+    scored_indpro = next(s for s in mi.REGION_SERIES["US"] if s.series_id == "INDPRO")
+    assert scored_indpro.units == "pc1"      # untouched: the snapshot depends on it
+    assert scored_indpro.key == "INDPRO"
+    assert not scored_indpro.full_history
+
+    idx = next(s for s in mi.RAW_INGEST_SERIES if s.key == "INDPRO_IDX")
+    assert idx.series_id == "INDPRO"         # same FRED series...
+    assert idx.units == "lin"                # ...different transform
+    assert idx.frequency == "monthly"
+    assert idx.full_history                  # the gauge needs the whole history
+
+    ids = mi.get_all_series_ids()
+    assert ids.count("INDPRO") == 1
+    assert ids.count("INDPRO_IDX") == 1
+
+
+def test_alias_survives_registry_dedup_and_keys_the_fetch_by_storage_id():
+    """Deduping by FRED id would silently drop INDPRO_IDX (its FRED series is
+    already scored); the fetch dict must also key by storage id or the two
+    transforms overwrite each other in flight."""
+    specs = mi._all_specs()
+    keys = [s.key for s in specs]
+    assert len(keys) == len(set(keys))
+    by_key = {s.key: s for s in specs}
+    assert by_key["INDPRO"].units == "pc1"
+    assert by_key["INDPRO_IDX"].units == "lin"
+
+
+def test_obs_to_rows_uses_storage_keys_and_tags_the_source():
+    rows = mi.obs_to_rows({"INDPRO_IDX": [mi.Obs("2026-06-01", 104.2)]})
+    assert rows == [{
+        "series_id": "INDPRO_IDX", "obs_date": _dt.date(2026, 6, 1),
+        "value": 104.2, "source": "fred", "is_derived": False,
+    }]
+    tagged = mi.obs_to_rows({"X": [mi.Obs("2026-06-01", 1.0)]}, source="bis")
+    assert tagged[0]["source"] == "bis"
+
+
+def test_full_history_spec_ignores_the_lookback_window():
+    observations = [(f"{year}-01-01", "100.0") for year in range(1919, 2027)]
+    client = _FakeFredClient(observations)
+    spec = next(s for s in mi.RAW_INGEST_SERIES if s.key == "INDPRO_IDX")
+
+    obs = mi._fetch_series(client, "test-key", spec, "2016-07-03", mi.TokenBucket())
+
+    assert client.last_params["series_id"] == "INDPRO"   # asks FRED for INDPRO
+    assert "units" not in client.last_params             # lin is FRED's default
+    assert client.last_params["observation_start"] == mi.FULL_HISTORY_START
+    assert client.last_params["limit"] == mi.FULL_HISTORY_LIMIT
+    assert len(obs) == len(observations)                 # nothing windowed away
+    assert obs[0].date == "1919-01-01"
+
+
+def test_windowed_specs_are_unaffected_by_the_full_history_escape_hatch():
+    observations = [(f"{year}-01-01", "100.0") for year in range(1919, 2027)]
+    client = _FakeFredClient(observations)
+    spec = next(s for s in mi.RAW_INGEST_SERIES if s.key == "M2SL")
+
+    mi._fetch_series(client, "test-key", spec, "2016-07-03", mi.TokenBucket())
+
+    assert client.last_params["observation_start"] == "2016-07-03"
+    assert client.last_params["limit"] == mi.FREQUENCY_LIMITS["monthly"]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -362,3 +521,233 @@ def test_frequency_limits_cover_full_lookback_window_at_max_density():
     assert mi.FREQUENCY_LIMITS["weekly"] >= 53 * years + 5
     assert mi.FREQUENCY_LIMITS["monthly"] >= 12 * years + 3
     assert mi.FREQUENCY_LIMITS["quarterly"] >= 4 * years + 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# BIS offshore-dollar stock (SDMX-CSV parse, retry, upsert, fail-soft)
+# ──────────────────────────────────────────────────────────────────────────────
+# Verbatim excerpt of the real download (header + first two and last two rows) of
+# https://stats.bis.org/api/v2/data/dataflow/BIS/WS_LBS_D_PUB/1.0/
+# Q.S.C.A.USD.A.5J.A.5A.A.5J.N?format=csv
+# Full response: 194 data rows, sha256
+# 567098e78c1774f6eabca4af1d08fbe1bffc81b97348cf31b5af996b40b5d5b6
+# (P1b provenance, 05_bis_provenance.json). Inlined rather than kept as a file:
+# the repo .gitignore drops any directory named ``data/`` at any depth.
+BIS_CSV_FIXTURE = (
+    "FREQ,L_MEASURE,L_POSITION,L_INSTR,L_DENOM,L_CURR_TYPE,L_PARENT_CTY,"
+    "L_REP_BANK_TYPE,L_REP_CTY,L_CP_SECTOR,L_CP_COUNTRY,L_POS_TYPE,DECIMALS,"
+    "UNIT_MEASURE,UNIT_MULT,AVAILABILITY,TITLE_GRP,TIME_FORMAT,COLLECTION,"
+    "ORG_VISIBILITY,TIME_PERIOD,OBS_VALUE,OBS_STATUS,OBS_CONF,OBS_PRE_BREAK\n"
+    "Q,S,C,A,USD,A,5J,A,5A,A,5J,N,3,USD,6,K,,,E,E,1977-Q4,379688.0,B,F,NaN\n"
+    "Q,S,C,A,USD,A,5J,A,5A,A,5J,N,3,USD,6,K,,,E,E,1978-Q1,392687.0,A,F,\n"
+    "Q,S,C,A,USD,A,5J,A,5A,A,5J,N,3,USD,6,K,,,E,E,2025-Q4,20837989.85,B,F,20838302.593\n"
+    "Q,S,C,A,USD,A,5J,A,5A,A,5J,N,3,USD,6,K,,,E,E,2026-Q1,21796862.573,B,F,21794144.133\n"
+)
+
+BIS_SPEC = mi.BIS_SERIES[0]
+
+
+class _FakeBisResponse:
+    def __init__(self, status_code: int, text: str = ""):
+        self.status_code = status_code
+        self.text = text
+
+
+class _FakeBisClient:
+    """Replays a scripted sequence of responses/exceptions, one per attempt."""
+
+    def __init__(self, script: list):
+        self._script = list(script)
+        self.calls: list[tuple[str, dict]] = []
+
+    def get(self, url: str, params: dict) -> _FakeBisResponse:
+        self.calls.append((url, dict(params)))
+        item = self._script[min(len(self.calls) - 1, len(self._script) - 1)]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def test_bis_registry_pins_the_preregistered_series():
+    """The instrument is fixed by the P1b pre-registration, not by taste."""
+    assert BIS_SPEC.storage_id == "BIS_LBS_XB_CLAIMS_USD"
+    assert BIS_SPEC.dataflow == "WS_LBS_D_PUB"
+    assert BIS_SPEC.version == "1.0"
+    assert BIS_SPEC.sdmx_key == "Q.S.C.A.USD.A.5J.A.5A.A.5J.N"
+    assert mi.bis_series_url(BIS_SPEC) == (
+        "https://stats.bis.org/api/v2/data/dataflow/BIS/WS_LBS_D_PUB/1.0/"
+        "Q.S.C.A.USD.A.5J.A.5A.A.5J.N"
+    )
+
+
+def test_parse_bis_csv_stamps_quarter_start_and_converts_to_billions():
+    obs = mi.parse_bis_csv(BIS_CSV_FIXTURE)
+    assert [o.date for o in obs] == [
+        "1977-10-01", "1978-01-01", "2025-10-01", "2026-01-01"]
+    # USD millions / 1000 → $B. 379688.0 → 379.688
+    assert obs[0].value == pytest.approx(379.688, abs=1e-9)
+    assert obs[-1].value == pytest.approx(21796.862573, abs=1e-9)
+
+
+def test_parse_bis_csv_rejects_a_silent_rescale():
+    """UNIT_MULT is the whole ballgame: if the BIS ever republished this cut in
+    units or thousands, storing it unchecked would move the gauge by 1000x."""
+    tampered = BIS_CSV_FIXTURE.replace(",USD,6,K,", ",USD,3,K,")
+    with pytest.raises(ValueError, match="unexpected BIS units"):
+        mi.parse_bis_csv(tampered)
+
+
+def test_parse_bis_csv_rejects_unknown_shape():
+    with pytest.raises(ValueError, match="missing columns"):
+        mi.parse_bis_csv("A,B\n1,2\n")
+
+
+def test_parse_bis_csv_drops_missing_observations():
+    rows = BIS_CSV_FIXTURE.splitlines()
+    rows[1] = rows[1].replace(",1977-Q4,379688.0,", ",1977-Q4,NaN,")
+    rows[2] = rows[2].replace(",1978-Q1,392687.0,", ",1978-Q1,,")
+    obs = mi.parse_bis_csv("\n".join(rows) + "\n")
+    assert [o.date for o in obs] == ["2025-10-01", "2026-01-01"]
+
+
+def test_bis_period_parser_rejects_non_quarterly():
+    for bad in ("2026-M01", "2026", "", None, "2026-Q5"):
+        with pytest.raises(ValueError):
+            mi._bis_period_to_date(bad)
+
+
+def test_fetch_bis_series_retries_transient_failures_then_succeeds(monkeypatch):
+    monkeypatch.setattr(mi.time, "sleep", lambda _s: None)
+    client = _FakeBisClient([
+        _FakeBisResponse(503),
+        RuntimeError("connection reset"),
+        _FakeBisResponse(200, BIS_CSV_FIXTURE),
+    ])
+    obs = mi.fetch_bis_series(BIS_SPEC, client=client)
+    assert len(client.calls) == 3
+    assert client.calls[0][1] == {"format": "csv"}
+    assert len(obs) == 4
+
+
+def test_fetch_bis_series_gives_up_after_three_attempts(monkeypatch):
+    monkeypatch.setattr(mi.time, "sleep", lambda _s: None)
+    client = _FakeBisClient([_FakeBisResponse(503)])
+    with pytest.raises(RuntimeError, match="failed after 3 attempts"):
+        mi.fetch_bis_series(BIS_SPEC, client=client)
+    assert len(client.calls) == mi.BIS_MAX_ATTEMPTS
+
+
+def test_fetch_bis_series_does_not_retry_a_bad_key():
+    """404/400 is a wrong SDMX key, not weather — retrying just wastes time."""
+    client = _FakeBisClient([_FakeBisResponse(404)])
+    with pytest.raises(RuntimeError, match="BIS HTTP 404"):
+        mi.fetch_bis_series(BIS_SPEC, client=client)
+    assert len(client.calls) == 1
+
+
+def test_fetch_bis_series_rejects_an_sdmx_error_document():
+    client = _FakeBisClient([_FakeBisResponse(200, '<?xml version="1.0"?><err/>')])
+    with pytest.raises(RuntimeError, match="error document"):
+        mi.fetch_bis_series(BIS_SPEC, client=client)
+
+
+def test_ingest_bis_upserts_billions_under_the_bis_source():
+    conn = _FakeConn()
+    client = _FakeBisClient([_FakeBisResponse(200, BIS_CSV_FIXTURE)])
+    rows, error = mi.ingest_bis(conn, client=client)
+    assert (rows, error) == (4, None)
+    assert conn.savepoints == 1
+    stored = {r[1]: r for r in conn.rows}
+    assert set(stored) == {
+        _dt.date(1977, 10, 1), _dt.date(1978, 1, 1),
+        _dt.date(2025, 10, 1), _dt.date(2026, 1, 1)}
+    first = stored[_dt.date(1977, 10, 1)]
+    assert first[0] == "BIS_LBS_XB_CLAIMS_USD"
+    assert first[2] == pytest.approx(379.688, abs=1e-9)
+    assert first[3] == "bis"
+    assert first[4] is False
+
+
+def test_ingest_bis_is_fail_soft_and_leaves_the_transaction_usable(monkeypatch):
+    monkeypatch.setattr(mi.time, "sleep", lambda _s: None)
+    conn = _FakeConn()
+    client = _FakeBisClient([RuntimeError("stats.bis.org unreachable")])
+    rows, error = mi.ingest_bis(conn, client=client)
+    assert rows == 0
+    assert "stats.bis.org unreachable" in error
+    assert conn.rows == []          # nothing written
+    assert conn.savepoints == 0     # never even opened the savepoint
+    assert conn.rolled_back is False
+
+
+def test_ingest_bis_rolls_back_to_savepoint_when_the_upsert_fails(monkeypatch):
+    """A half-applied BIS upsert must not poison the caller's transaction — the
+    FRED rows written before it are what would be lost."""
+    conn = _FakeConn()
+    fred_row = ("DFF", _dt.date(2026, 6, 1), 4.33, "fred", False)
+    conn.rows.append(fred_row)
+
+    def _half_applied_then_boom(target_conn, rows):
+        target_conn.rows.append(rows[0])
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(mi, "upsert_macro_data", _half_applied_then_boom)
+    client = _FakeBisClient([_FakeBisResponse(200, BIS_CSV_FIXTURE)])
+    rows, error = mi.ingest_bis(conn, client=client)
+    assert rows == 0 and "boom" in error
+    assert conn.savepoints == 1 and conn.savepoint_rollbacks == 1
+    assert conn.rows == [fred_row]  # the partial BIS write is gone, FRED survives
+
+
+def test_ingest_bis_treats_an_empty_download_as_a_failure():
+    conn = _FakeConn()
+    header = BIS_CSV_FIXTURE.splitlines()[0] + "\n"
+    client = _FakeBisClient([_FakeBisResponse(200, header)])
+    rows, error = mi.ingest_bis(conn, client=client)
+    assert rows == 0
+    assert "no observations" in error
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# run() wiring — stats dict and the FRED-survives-a-BIS-outage contract
+# ──────────────────────────────────────────────────────────────────────────────
+@contextlib.contextmanager
+def _lock_granted(_conn, _lock_id):
+    yield True
+
+
+def _patch_run_environment(monkeypatch, conn, *, bis) -> None:
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(mi, "connect", lambda _dsn: conn)
+    monkeypatch.setattr(mi, "advisory_lock", _lock_granted)
+    monkeypatch.setattr(mi, "fetch_all_series",
+                        lambda *_a, **_k: {"DFF": [mi.Obs("2026-06-01", 4.33)]})
+    monkeypatch.setattr(mi, "fetch_bis_series", bis)
+
+
+def test_run_reports_the_bis_leg_in_the_stats_dict(monkeypatch):
+    conn = _FakeConn()
+    _patch_run_environment(monkeypatch, conn,
+                           bis=lambda _spec, **_k: mi.parse_bis_csv(BIS_CSV_FIXTURE))
+    stats = mi.run("dsn://ignored", calc_date="2026-06-11")
+    assert stats["bis_rows"] == 4
+    assert stats["bis_error"] is None
+    assert stats["upserted"] == 1
+    assert {r[3] for r in conn.rows} == {"fred", "bis"}
+    assert conn.commits == 1
+
+
+def test_run_survives_a_bis_outage_without_losing_the_fred_leg(monkeypatch):
+    conn = _FakeConn()
+
+    def _down(_spec, **_k):
+        raise RuntimeError("stats.bis.org unreachable")
+
+    _patch_run_environment(monkeypatch, conn, bis=_down)
+    stats = mi.run("dsn://ignored", calc_date="2026-06-11")
+    assert stats["bis_rows"] == 0
+    assert "stats.bis.org unreachable" in stats["bis_error"]
+    assert stats["upserted"] == 1
+    assert stats["snapshot_written"] is True
+    assert {r[3] for r in conn.rows} == {"fred"}
+    assert conn.commits == 1
