@@ -443,12 +443,20 @@ def test_the_formulation_sha256_recomputes(freeze: dict) -> None:
     assert _canonical_block_sha256(block) == recorded
 
 
-def test_the_freeze_is_unratified_and_forbids_self_ratification(freeze: dict) -> None:
+def test_the_freeze_is_ratified_by_the_owner_not_by_itself(freeze: dict) -> None:
+    """Ratified 2026-08-04 by the quant_owner ("RATIFICO O formulation_freeze_001").
+    The ratification record carries who and when; the artifact's own side-effect
+    pins stay false — a formulation record still writes and activates nothing,
+    and self-ratification stays prohibited (the record names the owner's act)."""
     assert freeze["artifact_type"] == "open_macro_v4_formulation_freeze"
     assert freeze["schema_version"] == 1
-    assert freeze["status"] == "awaiting_ratification"
-    assert freeze["approved"] is False
+    assert freeze["status"] == "ratified"
+    assert freeze["approved"] is True
     assert freeze["approval_required_from"] == "quant_owner"
+    assert freeze["ratification"]["ratified_by"] == "quant_owner"
+    assert freeze["ratification"]["ratified_at"] == "2026-08-04"
+    assert freeze["ratification"]["statement_verbatim"] == (
+        "RATIFICO O formulation_freeze_001")
     assert freeze["governance"]["self_ratification"] == "prohibited"
     assert freeze["governance"]["activation_allowed"] is False
     assert freeze["governance"]["allocator_publish"] is False

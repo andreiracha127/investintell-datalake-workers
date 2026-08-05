@@ -4,9 +4,11 @@ The v4 engine (M-COMP4) publishes a **monthly** regime decision and its book int
 `open_macro_v04_decisions` / `open_macro_v04_allocations`. This runbook takes it from
 "nothing exists" to "the dark run is verifiably producing rows", and stops there.
 
-**It stops there on purpose.** The formulation freeze is committed
-`status: awaiting_ratification`, `approved: false`. Nothing in this document flips the
-Light onto v4, and step 7 is the gate that says who may.
+**It stops there on purpose.** The formulation freeze was committed
+`status: awaiting_ratification`, `approved: false`, and was **ratified by the
+`quant_owner` on 2026-08-04** (see §7.1). Nothing in this document flips the Light
+onto v4 by itself; step 7 is the gate that says who may, and §7.1 records that
+they did.
 
 ---
 
@@ -374,3 +376,21 @@ What ratification needs in front of it — the dark run's own evidence:
 
 An engineering agent producing these rows is not a step toward approval. Bring the
 evidence; the owner decides.
+
+### 7.1 Ratification record
+
+**Ratified 2026-08-04 by the `quant_owner`** — written statement, verbatim:
+"RATIFICO O formulation_freeze_001". All five evidence items above were satisfied
+by the dark run at the moment of ratification (236 months, `live = 1`, the §4.3
+crosstab and single `formulation_sha256` reproducing, `guard_coverage = full` on
+2026-07-31, A4′ acknowledged as dated). The artifact now carries
+`status: ratified`, `approved: true` and a `ratification` block naming the act;
+the formulation digest and module pins are byte-identical to the signed state.
+
+What ratification authorizes — and what it does not:
+
+- `USE_OPEN_MACRO_V04` may be flipped on the Light (`hub-api`), lighting the
+  taxonomy compass and the divergence diagnostic together;
+- v03 retirement and builder consumption of v4 books remain **separate, later
+  increments** — nothing in this ratification retires, degrades or repoints a
+  v03 worker, table or consumer.
