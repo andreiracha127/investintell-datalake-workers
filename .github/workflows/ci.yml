@@ -333,6 +333,7 @@ jobs:
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
             tests/test_open_macro_v03_resolution_ledger.py
+            tests/test_risk_metrics_peer_cohort_guard.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py
