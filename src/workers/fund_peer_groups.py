@@ -32,15 +32,41 @@ fact sheet; none of it was chosen here:
 The IDF discount was measured and DISCARDED upstream: the ruler that FORMS the graph
 is the ruler that JUDGES it, raw. Do not reintroduce a discount here.
 
-THE ONE PARAMETER THAT IS NOT FROZEN
-------------------------------------
-The size cap. 8% is what the evidence was cut at, and it is what breaks the US
-large-cap complex into four readable groups instead of one — a GRANULARITY DECISION
-with a measured price (those four are the least stable groups in the product, and
-raising the cap is the lever that would settle them). It is read from
-``FUND_PEER_GROUPS_SIZE_CAP`` so a parallel measurement can move it, and it is part of
-``params_sha256`` so two anchors computed under different caps can never be silently
-compared. Everything else is a module constant on purpose.
+THE THREE PARAMETERS THAT ARE NOT FROZEN — AND WHY THE CAP HAS A WAIVER
+-----------------------------------------------------------------------
+The cap sensitivity was measured across eight arms and eight anchors, and the verdict
+was that **the 8% cap was never wrong in its value — it was wrong in being blind to
+cohesion**. On the reference anchor the cap cut a single Louvain community of 1,178
+funds whose members share a MEDIAN 23.9% of portfolio into three, and those three
+came out as the three least stable groups in the entire product. On the same anchor
+it also cut three blocks of comparable size whose medians were 0.022, 0.031 and 0.067
+— which deserved to be cut. Across the eight anchors' 34 cap events, 14 parents were
+cohesive (median 0.1045-0.2387) and 20 were incoherent (0.0088-0.0999).
+
+So the cap now yields to cohesion: a community above the cap whose median intra-group
+overlap is at least ``cap_waive_min_median`` is kept WHOLE. Measured effect on the
+large-cap complex: persistence 50.94% -> 70.48% (+19.5 pp), churn 24.3% -> 8.3%,
+coherent coverage unchanged, pooled median intra BETTER on all eight anchors, all four
+stability gates still PASS. The single price is the largest served group going from
+~7.9% to 16.77% of the universe, and a minimum ARI 0.014 lower.
+
+  ``FUND_PEER_GROUPS_SIZE_CAP``               0.08  the cap itself (unchanged)
+  ``FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN``   0.10  cohesion that buys the waiver
+  ``FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING`` 0.20  a community this big is NEVER
+                                                    waived, however cohesive
+
+The hard ceiling is the one piece that was NOT in the measurement: the waived block
+grew 12.81% -> 16.77% of the universe over the eight anchors, with the biggest jump
+last, and a waiver with no ceiling of its own would let a quarter cross 20% in
+silence. It constrains the WAIVER only — it does not stop the partitioner from
+honestly failing to reduce something.
+
+**The threshold is a parameter, not a magic constant, and it is knife-edge.** On one
+measured anchor a real block of 1,006 funds carries median 0.09997 and misses the
+waiver by 3e-5. That is the same rounding sensitivity the coherence floor has. All
+three values are part of ``params_sha256``, so two anchors computed under different
+cap policy can never be silently compared. Everything else is a module constant on
+purpose.
 
 THE GUARD THAT EXISTS BECAUSE THE DEFECT ALREADY HAPPENED
 ----------------------------------------------------------
@@ -112,6 +138,8 @@ TABLE = "fund_peer_groups_v1"
 
 ANCHOR_ENV = "FUND_PEER_GROUPS_ANCHOR"
 SIZE_CAP_ENV = "FUND_PEER_GROUPS_SIZE_CAP"
+CAP_WAIVE_MEDIAN_ENV = "FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN"
+CAP_WAIVE_CEILING_ENV = "FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING"
 IDENT_FLOOR_ENV = "FUND_PEER_GROUPS_IDENT_FLOOR"
 UNIVERSE_DSN_ENV = "FUND_PEER_GROUPS_UNIVERSE_DSN"
 
@@ -133,8 +161,16 @@ BLOCK_THRESHOLD = 0.70              # P1.6 §1.1 — the hard FI/EQ/MIXED pre-sp
 MAX_DEPTH = 3                       # P1.6 §1.3 — recursion budget beyond the block
 RESOLUTION_LADDER = (1.0, 2.0, 4.0)  # P1.6 §1.3 — tried in this order, first that fits
 COHERENCE_MIN_MEDIAN = 0.05         # P1.6 §2 — a group below this is not a peer group
-DEFAULT_SIZE_CAP_FRAC = 0.08        # P1.6 §1.3 — the one product dial (see docstring)
+DEFAULT_SIZE_CAP_FRAC = 0.08        # P1.6 §1.3, confirmed by the cap measurement
+DEFAULT_CAP_WAIVE_MIN_MEDIAN = 0.10  # cap measurement arm C5 — cohesion beats the cap
+DEFAULT_CAP_WAIVE_HARD_CEILING = 0.20  # the waiver's own ceiling, never waived
 DEFAULT_IDENT_FLOOR = 0.95          # the guard for the known identifier hole
+
+# Reporting only, and therefore NOT in params_sha256: it changes no partition, it only
+# raises a flag in the stats. The measured waived block grew to 16.77% of the universe
+# on the last anchor with the biggest jump of the series, so the quarter it approaches
+# the 20% ceiling should be visible before it hits it.
+CAP_WAIVE_ALERT_FRAC = 0.15
 
 # Universe rule — P0 §0 / P1.5 §1, unchanged across every anchor of the evidence.
 MAX_LAG = "4 months 15 days"
@@ -183,11 +219,35 @@ def resolve_size_cap_frac() -> float:
     return _env_fraction(SIZE_CAP_ENV, DEFAULT_SIZE_CAP_FRAC, low=0.01, high=1.0)
 
 
+def resolve_cap_waive_min_median() -> float:
+    """The median intra-group overlap that buys a community exemption from the cap.
+
+    1.0 disables the waiver in practice (only a group of identical portfolios reaches
+    it), which is the declared way to run the pre-waiver policy."""
+    return _env_fraction(CAP_WAIVE_MEDIAN_ENV, DEFAULT_CAP_WAIVE_MIN_MEDIAN,
+                         low=0.0, high=1.0)
+
+
+def resolve_cap_waive_hard_ceiling(size_cap_frac: float) -> float:
+    """The size no waiver may exceed, as a fraction of the anchor's universe."""
+    ceiling = _env_fraction(CAP_WAIVE_CEILING_ENV, DEFAULT_CAP_WAIVE_HARD_CEILING,
+                            low=0.01, high=1.0)
+    if ceiling < size_cap_frac:
+        raise FundPeerGroupsError(
+            f"{CAP_WAIVE_CEILING_ENV}={ceiling} is below {SIZE_CAP_ENV}="
+            f"{size_cap_frac}: a ceiling under the cap makes the cohesion waiver "
+            "unreachable. Refusing rather than silently running without a waiver — "
+            f"set {CAP_WAIVE_MEDIAN_ENV}=1.0 if that is what you want")
+    return ceiling
+
+
 def resolve_ident_floor() -> float:
     return _env_fraction(IDENT_FLOOR_ENV, DEFAULT_IDENT_FLOOR, low=0.0, high=1.0)
 
 
-def canonical_params(*, size_cap_frac: float, ident_floor: float) -> dict[str, Any]:
+def canonical_params(*, size_cap_frac: float, cap_waive_min_median: float,
+                     cap_waive_hard_ceiling: float,
+                     ident_floor: float) -> dict[str, Any]:
     """Every input that can move the partition, in one canonical dict.
 
     Anything absent from here is either not an input (the anchor date, which is its
@@ -201,6 +261,8 @@ def canonical_params(*, size_cap_frac: float, ident_floor: float) -> dict[str, A
         "louvain_threshold": LOUVAIN_THRESHOLD,
         "block_threshold": BLOCK_THRESHOLD,
         "size_cap_frac": size_cap_frac,
+        "cap_waive_min_median": cap_waive_min_median,
+        "cap_waive_hard_ceiling": cap_waive_hard_ceiling,
         "max_depth": MAX_DEPTH,
         "resolution_ladder": list(RESOLUTION_LADDER),
         "coherence_min_median": COHERENCE_MIN_MEDIAN,
@@ -718,14 +780,25 @@ def build_block_graph(M: np.ndarray, theta: float,
     return G
 
 
-def partition_with_cap(G: nx.Graph, cap: float) -> list[tuple[set, int, str]]:
-    """Louvain, then re-partition anything above the cap, recursively (P1.6 §1.2-1.3).
+def partition_with_cap(G: nx.Graph, cap: float, *, hard_ceiling: float,
+                       waive_min_median: float,
+                       median_of) -> list[tuple[set, int, str]]:
+    """Louvain, then re-partition anything above the cap, recursively (P1.6 §1.2-1.3),
+    with the measured COHESION WAIVER on top.
 
-    The stop rule is declared in full and never widened: at most ``MAX_DEPTH`` levels,
-    and at each level the FIRST resolution on the fixed ladder that yields >= 2 parts
-    whose largest is STRICTLY smaller than the input. If none does, the community is
-    marked ``irreducible``, stays whole and stays above the cap — an honest failure
-    with a name, not a fourth attempt or a hand-tuned sweep."""
+    Order of decision for a community above the cap, exactly as measured:
+
+      1. cohesive enough (median intra >= ``waive_min_median``) AND not above the hard
+         ceiling -> ``waived``: kept WHOLE. The cap was never wrong in its value, it
+         was wrong in being blind to cohesion.
+      2. otherwise the P1.6 rule stands: at most ``MAX_DEPTH`` levels, and at each
+         level the FIRST resolution on the fixed ladder that yields >= 2 parts whose
+         largest is STRICTLY smaller than the input.
+      3. if none does, the community is marked ``irreducible``, stays whole and stays
+         above the cap — an honest failure with a name, not a fourth attempt.
+
+    The hard ceiling gates the WAIVER only. It never forces a split that the ladder
+    cannot produce, and it never converts an honest ``irreducible`` into a lie."""
     final: list[tuple[set, int, str]] = []
     stack: list[tuple[set, int]] = [
         (set(part), 0) for part in louvain_communities(
@@ -735,6 +808,11 @@ def partition_with_cap(G: nx.Graph, cap: float) -> list[tuple[set, int, str]]:
         part, depth = stack.pop()
         if len(part) <= cap:
             final.append((part, depth, "ok"))
+            continue
+        median = median_of(part)
+        if (median is not None and median >= waive_min_median
+                and len(part) <= hard_ceiling):
+            final.append((part, depth, "waived"))
             continue
         if depth >= MAX_DEPTH:
             final.append((part, depth, "depth_exhausted"))
@@ -756,16 +834,28 @@ def partition_with_cap(G: nx.Graph, cap: float) -> list[tuple[set, int, str]]:
     return final
 
 
+def median_overlap(M: np.ndarray, members: Iterable[int]) -> float | None:
+    """The median of every distinct intra-group pair, or None for a singleton."""
+    values = triangle_values(M, members)
+    if values.size == 0:
+        return None
+    return float(np.median(values))
+
+
 def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
                      M: np.ndarray, *, size_cap_frac: float,
+                     cap_waive_min_median: float = DEFAULT_CAP_WAIVE_MIN_MEDIAN,
+                     cap_waive_hard_ceiling: float = DEFAULT_CAP_WAIVE_HARD_CEILING,
                      theta: float = THETA) -> dict[str, Any]:
-    """Pre-split, partition under the cap, then apply the coherence layer.
+    """Pre-split, partition under the cap and its cohesion waiver, then apply the
+    coherence layer.
 
     Community ids are assigned by SIZE DESCENDING, ties broken by the smallest member
     position — a total order over disjoint sets, so the same anchor always yields the
     same ids whatever order Louvain happened to return its parts in."""
     n = len(sids)
     cap = size_cap_frac * n
+    hard_ceiling = cap_waive_hard_ceiling * n
     blocks: dict[str, list[int]] = collections.defaultdict(list)
     for i, sid in enumerate(sids):
         blocks[block_of(meta[sid])].append(i)
@@ -779,7 +869,10 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
             continue
         G = build_block_graph(M, theta, nodes)
         edges += G.number_of_edges()
-        parts = partition_with_cap(G, cap)
+        parts = partition_with_cap(
+            G, cap, hard_ceiling=hard_ceiling,
+            waive_min_median=cap_waive_min_median,
+            median_of=lambda members: median_overlap(M, members))
         try:
             modularity[name] = round(float(nx.community.modularity(
                 G, [frozenset(p) for p, _, _ in parts], weight="weight")), 6)
@@ -798,14 +891,9 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
         communities.append(members)
         community_blocks.append(name)
         statuses.append({"depth": depth, "status": status})
-        values = triangle_values(M, members)
-        if values.size == 0:
-            medians.append(None)
-            coherent.append(False)
-            continue
-        median = float(np.median(values))
+        median = median_overlap(M, members)
         medians.append(median)
-        coherent.append(median >= COHERENCE_MIN_MEDIAN)
+        coherent.append(median is not None and median >= COHERENCE_MIN_MEDIAN)
 
     labels = [-1] * n
     for k, members in enumerate(communities):
@@ -814,6 +902,13 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
 
     n_coherent_funds = sum(len(communities[k]) for k in range(len(communities))
                            if coherent[k])
+    waived = [{"group_index": k, "block": BLOCK_DB_NAME[community_blocks[k]],
+               "size": len(communities[k]),
+               "share_pct": round(100.0 * len(communities[k]) / n, 4) if n else 0.0,
+               "median_overlap": medians[k]}
+              for k in range(len(communities))
+              if statuses[k]["status"] == "waived"]
+    alert = [c for c in waived if c["size"] > CAP_WAIVE_ALERT_FRAC * n]
     return {
         "communities": communities,
         "blocks": community_blocks,
@@ -822,6 +917,10 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
         "statuses": statuses,
         "labels": labels,
         "cap": cap,
+        "hard_ceiling": hard_ceiling,
+        "cap_waived": waived,
+        "n_cap_waived": len(waived),
+        "cap_waive_alert": bool(alert),
         "edges": edges,
         "modularity_by_block": modularity,
         "block_sizes": {b: len(v) for b, v in sorted(blocks.items())},
@@ -830,7 +929,14 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
         "n_singletons": int(sum(1 for c in communities if len(c) == 1)),
         "largest_community": max((len(c) for c in communities), default=0),
         "coherent_coverage_pct": round(100.0 * n_coherent_funds / n, 4) if n else 0.0,
-        "n_oversized_after_cap": int(sum(1 for c in communities if len(c) > cap)),
+        # Communities above the cap that the waiver did NOT admit: the partitioner
+        # tried to reduce them and could not. Waived ones are counted separately
+        # because they are a decision, not a failure.
+        "n_oversized_after_cap": int(sum(
+            1 for k, c in enumerate(communities)
+            if len(c) > cap and statuses[k]["status"] != "waived")),
+        "n_above_hard_ceiling": int(sum(1 for c in communities
+                                        if len(c) > hard_ceiling)),
         "status_counts": dict(collections.Counter(s["status"] for s in statuses)),
     }
 
@@ -906,7 +1012,9 @@ VERIFY_COUNTS_SQL = f"""
            count(DISTINCT computed_at),
            count(*) FILTER (WHERE (group_state = 'empirical')
                                   <> (group_id IS NOT NULL)),
-           coalesce(max(group_size), 0)
+           coalesce(max(group_size), 0),
+           count(*) FILTER (WHERE group_size > %(cap)s
+                              AND coalesce(group_median_overlap, -1) < %(waive)s)
     FROM {TABLE} WHERE anchor_date = %(anchor)s
 """
 VERIFY_GROUP_SIZES_SQL = f"""
@@ -935,17 +1043,22 @@ def _equal(read: Any, computed: Any) -> bool:
     return read == computed
 
 
-def post_write_verify(conn, anchor: _dt.date, rows: list[dict[str, Any]],
-                      cap: float) -> dict[str, Any]:
+def post_write_verify(conn, anchor: _dt.date, rows: list[dict[str, Any]], *,
+                      cap: float, hard_ceiling: float,
+                      waive_min_median: float) -> dict[str, Any]:
     """Re-measure the invariants IN THE DATABASE, not in the objects just built.
 
     A verification that inspected the Python rows would only prove the worker agrees
-    with itself. These read back what the table now holds."""
+    with itself. These read back what the table now holds — including the cap policy
+    stated as a property of the published rows: nothing above the hard ceiling, and
+    nothing above the cap that the cohesion waiver would not have admitted."""
     expected = len(rows)
     expected_empirical = sum(1 for r in rows if r["group_state"] == STATE_EMPIRICAL)
     with conn.cursor() as cur:
-        cur.execute(VERIFY_COUNTS_SQL, {"anchor": anchor})
-        total, empirical, distinct_stamps, inconsistent, max_size = cur.fetchone()
+        cur.execute(VERIFY_COUNTS_SQL, {"anchor": anchor, "cap": cap,
+                                        "waive": waive_min_median})
+        (total, empirical, distinct_stamps, inconsistent, max_size,
+         unwaivable) = cur.fetchone()
         cur.execute(VERIFY_GROUP_SIZES_SQL, {"anchor": anchor})
         size_mismatches = cur.fetchall()
 
@@ -965,9 +1078,14 @@ def post_write_verify(conn, anchor: _dt.date, rows: list[dict[str, Any]],
         detail = ", ".join(f"{g}: stated {s} vs {c} members"
                            for g, s, c in size_mismatches)
         problems.append(f"group_size disagrees with the member count ({detail})")
-    if int(max_size) > cap:
+    if int(max_size) > hard_ceiling:
         problems.append(f"largest published group is {int(max_size)} members, above "
-                        f"the size cap of {cap:.2f}")
+                        f"the hard ceiling of {hard_ceiling:.2f} that no cohesion "
+                        "waiver may cross")
+    if int(unwaivable) != 0:
+        problems.append(f"{int(unwaivable)} rows sit in a group above the cap of "
+                        f"{cap:.2f} whose median overlap is under the waiver "
+                        f"threshold {waive_min_median}")
     if problems:
         raise FundPeerGroupsError(
             f"post-write verification failed for anchor {anchor.isoformat()}: "
@@ -1007,8 +1125,13 @@ def run(dsn: str, *, anchor: str | None = None,
     # knowable before the first connection.
     anchor_date = resolve_anchor(anchor, today=today)
     size_cap_frac = resolve_size_cap_frac()
+    cap_waive_min_median = resolve_cap_waive_min_median()
+    cap_waive_hard_ceiling = resolve_cap_waive_hard_ceiling(size_cap_frac)
     ident_floor = resolve_ident_floor()
-    params = canonical_params(size_cap_frac=size_cap_frac, ident_floor=ident_floor)
+    params = canonical_params(size_cap_frac=size_cap_frac,
+                              cap_waive_min_median=cap_waive_min_median,
+                              cap_waive_hard_ceiling=cap_waive_hard_ceiling,
+                              ident_floor=ident_floor)
     params_digest = params_sha256(params)
     commit = code_commit()
 
@@ -1051,8 +1174,10 @@ def run(dsn: str, *, anchor: str | None = None,
             # Gate 7 — the matrix, the pre-split, the partition, the coherence layer.
             sids = sorted(weights)
             M = overlap_matrix(sids, weights)
-            partition = partition_anchor(sids, meta, M,
-                                         size_cap_frac=size_cap_frac)
+            partition = partition_anchor(
+                sids, meta, M, size_cap_frac=size_cap_frac,
+                cap_waive_min_median=cap_waive_min_median,
+                cap_waive_hard_ceiling=cap_waive_hard_ceiling)
             del M
 
             computed_at = _dt.datetime.now(_dt.timezone.utc)
@@ -1064,7 +1189,10 @@ def run(dsn: str, *, anchor: str | None = None,
             published = publish(conn, anchor_date, rows)
 
             # Gate 9 — post-write verification.
-            verified = post_write_verify(conn, anchor_date, rows, partition["cap"])
+            verified = post_write_verify(
+                conn, anchor_date, rows, cap=partition["cap"],
+                hard_ceiling=partition["hard_ceiling"],
+                waive_min_median=cap_waive_min_median)
 
             return {
                 "status": "published",
@@ -1083,10 +1211,21 @@ def run(dsn: str, *, anchor: str | None = None,
                 "n_singletons": partition["n_singletons"],
                 "largest_community": partition["largest_community"],
                 "size_cap_nodes": round(partition["cap"], 4),
+                "cap_waive_hard_ceiling_nodes": round(partition["hard_ceiling"], 4),
                 "n_oversized_after_cap": partition["n_oversized_after_cap"],
+                "n_above_hard_ceiling": partition["n_above_hard_ceiling"],
+                "n_cap_waived": partition["n_cap_waived"],
+                "cap_waived": partition["cap_waived"],
+                # The waived block grew every quarter of the measurement and jumped
+                # hardest on the last one. This flag is the quarter to look at before
+                # it reaches the ceiling, not after.
+                "cap_waive_alert": partition["cap_waive_alert"],
+                "cap_waive_alert_frac": CAP_WAIVE_ALERT_FRAC,
                 "community_status_counts": partition["status_counts"],
                 "coherent_coverage_pct": partition["coherent_coverage_pct"],
                 "size_cap_frac": size_cap_frac,
+                "cap_waive_min_median": cap_waive_min_median,
+                "cap_waive_hard_ceiling": cap_waive_hard_ceiling,
                 "identifier_coverage_floor": ident_floor,
                 "params_sha256": params_digest,
                 "computed_at": computed_at.isoformat(),
@@ -1114,9 +1253,11 @@ if __name__ == "__main__":
 
 __all__ = ["run", "main", "FundPeerGroupsError", "block_of", "build_block_graph",
            "build_rows", "canonical_params", "check_identifier_coverage",
-           "code_commit", "last_closed_quarter_end", "load_anchor", "norm_id",
-           "overlap_matrix", "params_sha256", "partition_anchor",
+           "code_commit", "last_closed_quarter_end", "load_anchor", "median_overlap",
+           "norm_id", "overlap_matrix", "params_sha256", "partition_anchor",
            "partition_with_cap", "pin_search_path", "post_write_verify", "publish",
-           "read_served_universe", "resolve_anchor", "resolve_ident_floor",
-           "resolve_size_cap_frac", "to_mixed", "triangle_values", "verify_schema",
+           "read_served_universe", "resolve_anchor",
+           "resolve_cap_waive_hard_ceiling", "resolve_cap_waive_min_median",
+           "resolve_ident_floor", "resolve_size_cap_frac", "to_mixed",
+           "triangle_values", "verify_schema",
            "EXPECTED_COLUMNS", "ROW_COLUMNS", "TABLE"]

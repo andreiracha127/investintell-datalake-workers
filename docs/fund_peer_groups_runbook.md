@@ -53,7 +53,9 @@ Optional:
 
 | variable | default | what it does |
 |:--|:--|:--|
-| `FUND_PEER_GROUPS_SIZE_CAP` | `0.08` | the size cap as a fraction of the anchor's universe — **the one product dial** (§6). It is part of `params_sha256`. |
+| `FUND_PEER_GROUPS_SIZE_CAP` | `0.08` | the size cap as a fraction of the anchor's universe (§6). Part of `params_sha256`. |
+| `FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN` | `0.10` | a community above the cap whose median intra-group overlap reaches this is kept **whole** (§6). Part of `params_sha256`. |
+| `FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING` | `0.20` | a community this big is **never** waived, however cohesive (§6). Part of `params_sha256`. |
 | `FUND_PEER_GROUPS_IDENT_FLOOR` | `0.95` | identifier-coverage floor (§5). Also part of `params_sha256`. |
 | `FUND_PEER_GROUPS_ANCHOR` | — | publish a specific quarter-end instead of the last closed one (backfill). |
 | `FUND_PEER_GROUPS_UNIVERSE_DSN` | — | **only** if `funds_profile_mv` / `fund_risk_latest_mv` do not live in the same database as `sec_nport_holdings`. |
@@ -102,11 +104,17 @@ What a healthy anchor looks like, from the eight-quarter validation:
 
 | reading | expected range |
 |:--|:--|
-| `coverage_pct` (funds with an empirical group) | **81.5% – 87.1%** (mean 83.5) |
-| `groups` | 93 – 105 coherent groups |
-| `largest / series` | 5.8% – 8.0% — never above the cap |
+| `coverage_pct` (funds with an empirical group) | **81.6% – 87.1%** (mean 83.5) |
+| `groups` | ~90 – 105 coherent groups |
+| `largest / series` | **12.8% – 16.8%** under the shipped cohesion waiver (§6); never above the 20% ceiling |
 | `recipes` | **exactly 1** per anchor |
 | `computed_at` | one distinct value per anchor (the publication is atomic) |
+
+The worker's stats also carry `n_cap_waived`, the size and median of every waived
+community, and `cap_waive_alert` — true when a waived community passes 15% of the
+universe. **That flag is the one to act on**: the waived block grew every quarter of
+the measurement and jumped hardest on the last one, so the quarter it approaches the
+20% ceiling should be seen before it arrives (§6).
 
 The worker's own stats line (stdout, one JSON object) carries the same numbers plus
 the rejection breakdown, the per-report-date identifier coverage, block sizes and
@@ -187,23 +195,67 @@ N served series passed the eligibility floors` (the quarter is not ingested), an
 
 ---
 
-## 6. The size cap is a decision, not a setting
+## 6. The cap, and why it yields to cohesion
 
-`FUND_PEER_GROUPS_SIZE_CAP` (default 0.08) is the one parameter left open, and it is
-a **product decision with a measured price**:
+Three parameters, all in `params_sha256`. They were measured together across eight
+arms and eight anchors, and the recommended configuration is the shipped default.
 
-* At 8% the US large-cap complex breaks into four readable groups (mega-cap growth,
-  index blend, global/ESG core, value) instead of one large blob. That split is
-  *induced by the cap*, not discovered.
-* It is also where the instability is concentrated: those three or four groups matched
-  their previous quarter at Jaccard 0.52–0.58, against 0.87–1.00 for the five
-  fixed-income groups in the same top ten. Between 29% and 48% of their members in one
-  quarter did not come from the matched group in the previous one, against 2.8% for
-  the emerging-market equity group the cap does not cut.
+```
+FUND_PEER_GROUPS_SIZE_CAP                = 0.08   (unchanged)
+FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN    = 0.10   (the cohesion waiver)
+FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING  = 0.20   (never waived)
+```
 
-Raising the cap buys stability and costs granularity; lowering it does the reverse.
-Changing it changes `params_sha256`, so anchors on either side of the change are
-distinguishable in the table — deliberately. Re-run every anchor you intend to compare.
+**The 8% cap was never wrong in its value — it was wrong in being blind to cohesion.**
+On the reference anchor it cut a single Louvain community of 1,178 funds whose members
+share a **median 23.9%** of portfolio into three, and those three came out as the
+three *least stable* groups in the whole product (Jaccard 0.52–0.58 against the
+previous quarter, versus 0.87–1.00 for fixed income). On the same anchor it also cut
+three blocks of comparable size whose medians were 0.022, 0.031 and 0.067 — which
+deserved to be cut. Across the eight anchors' 34 cap events, 14 parents were cohesive
+(median 0.1045–0.2387) and 20 were incoherent (0.0088–0.0999).
+
+So a community above the cap whose median intra-group overlap reaches 0.10 is kept
+whole. Measured effect:
+
+| reading | cap alone | cap + cohesion waiver |
+|:--|--:|--:|
+| persistence of the large-cap complex | 50.94% | **70.48%** (+19.5 pp) |
+| its churn (mean) | 24.26% | **8.27%** |
+| coherent coverage (min / mean) | 79.23 / 82.47 | **81.55 / 83.47** |
+| pooled median intra (mean) | 0.13113 | **0.14137** |
+| largest community | 9.41% | **16.77%** |
+| minimum adjacent ARI | 0.7103 | 0.6967 (−0.014) |
+
+All four stability gates still PASS. Raising the cap instead was measured and buys
+nothing: 0.10 and 0.12 change little and cost coverage, 0.16 makes the complex worse
+and destroys 22 pp of coverage, and no cap at all is worse still. One parameter — the
+waiver — delivers the whole gain.
+
+**The threshold is knife-edge, and that is declared, not hidden.** On one measured
+anchor a real block of 1,006 funds carries median **0.09997** and misses the waiver by
+3 × 10⁻⁵; that anchor waives one community instead of two because of it. It is the
+same rounding sensitivity the coherence floor has. The threshold is a parameter for
+exactly this reason.
+
+**The hard ceiling is the piece that was not measured** (it is an implementation
+recommendation from the same document). The waived block grew across the eight anchors
+— 12.81% · 13.30% · 13.18% · 13.69% · 14.30% · 13.09% · 13.09% · **16.77%** — with the
+biggest jump last. A waiver with no ceiling of its own would let a quarter cross 20%
+in silence. The ceiling gates the **waiver only**: it never forces a split the ladder
+cannot produce, and it never converts an honest `irreducible` into a lie. The worker
+also raises `cap_waive_alert` in its stats when any waived community passes **15%** of
+the universe — the quarter to look at is the one *before* the ceiling is reached.
+
+**Copy consequence, stated:** at the reference anchor the product serves **one** group
+of 1,178 funds where the pure cap served three of 514 / 366 / 298. The big group's
+median overlap (0.2387) is higher than two of the three it replaces (0.2042, 0.2241)
+and lower than the third (0.4518, the index core). The larger group is honest, but a
+pure index fund loses the tighter neighbourhood it had.
+
+Changing any of the three changes `params_sha256`, so anchors on either side of a
+change are distinguishable in the table — deliberately. Re-run every anchor you intend
+to compare.
 
 ---
 
@@ -216,29 +268,35 @@ and a 200 MB fixture to restate numbers this document already carries would be
 ceremony. Reproduce it against the database instead:
 
 ```bash
-WORKER=fund_peer_groups \
-FUND_PEER_GROUPS_ANCHOR=2025-12-31 \
-FUND_PEER_GROUPS_SIZE_CAP=0.08 \
-DATABASE_URL=... \
+# the SHIPPED policy (cap + cohesion waiver + ceiling)
+WORKER=fund_peer_groups DATABASE_URL=... \
+python -m src.workers.fund_peer_groups --anchor 2025-12-31
+
+# the pre-waiver policy, for comparison against the P1.6/P1.7 published figures
+FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN=1.0 \
+FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING=1.0 \
+WORKER=fund_peer_groups DATABASE_URL=... \
 python -m src.workers.fund_peer_groups --anchor 2025-12-31
 ```
 
-The published anchor should reproduce, from the validation:
+Two configurations, two sets of expected numbers — they are different objects and the
+`params_sha256` in the table says which is which:
 
-| reading | expected |
-|:--|:--|
-| eligible universe | 7,023 series |
-| block sizes | EQ 4,787 · FI 1,951 · MIXED 285 |
-| communities / coherent | 191 / 95 |
-| largest community | 514 = 7.32% |
-| coherent coverage | 82.83% |
-| pooled median intra-group overlap | 0.1460 |
-| communities above the cap | 0 (every one `ok`; none `irreducible`) |
+| reading | pre-waiver (P1.6/P1.7) | **shipped** (cap + waiver) |
+|:--|:--|:--|
+| eligible universe | 7,023 series | 7,023 series |
+| block sizes | EQ 4,787 · FI 1,951 · MIXED 285 | same |
+| communities / coherent | 191 / 95 | ~185 / ~93 |
+| largest community | 514 = 7.32% | **1,178 = 16.77%** (waived, median 0.2387) |
+| coherent coverage | 82.83% | 82.83% |
+| pooled median intra-group overlap | 0.1460 | **0.14137** (mean over 8 anchors) |
+| communities above the cap not waived | 0 | 0 |
+| communities above the 20% ceiling | — | **0** |
 
 Small differences in the universe count are expected and are **not** a reproduction
 failure by themselves: the served read-models move as funds are added and retired, and
-the N-PORT mirror gains late filings. A different *shape* — a community above the cap,
-coverage outside 81%–88%, a largest community past 10% — is.
+the N-PORT mirror gains late filings. A different *shape* is — a community above the
+ceiling, coverage outside 81%–88%, or a waived community whose median is under 0.10.
 
 ---
 

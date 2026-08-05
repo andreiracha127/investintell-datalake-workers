@@ -324,8 +324,13 @@ class FakeDatabase:
                 if (r["group_state"] == "empirical") != (r["group_id"] is not None))
             stamps = {r["computed_at"] for r in rows}
             sizes = [r["group_size"] for r in rows if r["group_size"] is not None]
+            unwaivable = sum(
+                1 for r in rows
+                if r["group_size"] is not None and r["group_size"] > params["cap"]
+                and (r["group_median_overlap"] if r["group_median_overlap"]
+                     is not None else -1) < params["waive"])
             return {"rows": [(len(rows), len(empirical), len(stamps), inconsistent,
-                              max(sizes, default=0))]}
+                              max(sizes, default=0), unwaivable)]}
         if sql is w.VERIFY_GROUP_SIZES_SQL:
             counts: dict[tuple, int] = {}
             for r in self._anchor_rows(params["anchor"]):

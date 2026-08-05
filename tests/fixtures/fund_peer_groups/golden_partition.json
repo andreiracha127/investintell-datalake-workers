@@ -1,8 +1,10 @@
 {
- "_note": "Recorded from tests/_fund_peer_groups_fixtures.py under FUND_PEER_GROUPS_SIZE_CAP=0.5. Regenerating this file is a DESIGN CHANGE: the partitioner is frozen, so a diff here means a constant moved and the params_sha256 pin moved with it.",
+ "_note": "Recorded from tests/_fund_peer_groups_fixtures.py under a cap policy that sits ABOVE every designed group, so this golden pins the BASE algorithm (pre-split, Louvain, coherence) with the cohesion waiver never reached; the waiver has its own tests on both sides of the threshold. Regenerating this file is a DESIGN CHANGE: the partitioner is frozen, so a diff here means a constant moved and the params_sha256 pin moved with it.",
  "anchor_date": "2025-12-31",
- "size_cap_frac": 0.5,
- "params_sha256": "f451759dea943e13a0a0a179f1250d00fc8670e45de2d3d85f88123020047eac",
+ "size_cap_frac": 0.3,
+ "cap_waive_hard_ceiling": 0.5,
+ "cap_waive_min_median": 0.1,
+ "params_sha256": "576da5646e18c609158689a7f1605e094d93e3ce1887d4e83ac822eac5cc48cc",
  "stats": {
   "n_served_universe": 52,
   "n_universe": 49,
@@ -28,6 +30,10 @@
   "n_singletons": 4,
   "largest_community": 10,
   "n_oversized_after_cap": 0,
+  "n_above_hard_ceiling": 0,
+  "n_cap_waived": 0,
+  "cap_waived": [],
+  "cap_waive_alert": false,
   "community_status_counts": {
    "ok": 10
   },

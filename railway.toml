@@ -71,9 +71,14 @@
 #                           patch inteiro do serviço. Para desligar, use uma
 #                           data impossível (`0 0 29 2 *`).
 #                           Env: WORKER=fund_peer_groups, DATABASE_URL (datalake
-#                           `market`). Opcionais:
-#                           FUND_PEER_GROUPS_SIZE_CAP (default 0.08 — a única
-#                           alavanca de produto, entra no params_sha256),
+#                           `market`). Opcionais (as três primeiras são a
+#                           política de teto medida e entram no params_sha256):
+#                           FUND_PEER_GROUPS_SIZE_CAP (default 0.08),
+#                           FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN (default 0.10
+#                           — dispensa do teto por coesão; o teto nunca esteve
+#                           errado no valor, esteve errado em ser cego à coesão),
+#                           FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING (default
+#                           0.20 — NUNCA dispensado),
 #                           FUND_PEER_GROUPS_IDENT_FLOOR (default 0.95),
 #                           FUND_PEER_GROUPS_ANCHOR (backfill de uma âncora),
 #                           FUND_PEER_GROUPS_UNIVERSE_DSN (só se os read-models

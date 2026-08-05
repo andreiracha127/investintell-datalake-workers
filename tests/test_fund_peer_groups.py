@@ -24,6 +24,7 @@ import json
 import re
 from pathlib import Path
 
+import networkx as nx
 import pytest
 
 import src.workers.fund_peer_groups as w
@@ -44,21 +45,40 @@ FAKE_COMMIT = "0" * 40
 # moving means two anchors could carry the same digest under different recipes, which
 # is the one thing params_sha256 exists to make impossible.
 DEFAULT_PARAMS_SHA256 = \
-    "eb5efda717071776f3dc97133577f085237a7d46ad94523a846dc5b3348a7085"
+    "cd2a9018eca5e56fd9ccb6bc49fb394ad8713743beb72566fd1f95135d5f80b3"
+
+DEFAULT_PARAMS = dict(size_cap_frac=w.DEFAULT_SIZE_CAP_FRAC,
+                      cap_waive_min_median=w.DEFAULT_CAP_WAIVE_MIN_MEDIAN,
+                      cap_waive_hard_ceiling=w.DEFAULT_CAP_WAIVE_HARD_CEILING,
+                      ident_floor=w.DEFAULT_IDENT_FLOOR)
 
 
 @pytest.fixture(autouse=True)
 def _pinned_environment(monkeypatch):
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", FAKE_COMMIT)
-    for name in (w.ANCHOR_ENV, w.SIZE_CAP_ENV, w.IDENT_FLOOR_ENV,
-                 w.UNIVERSE_DSN_ENV):
+    for name in (w.ANCHOR_ENV, w.SIZE_CAP_ENV, w.CAP_WAIVE_MEDIAN_ENV,
+                 w.CAP_WAIVE_CEILING_ENV, w.IDENT_FLOOR_ENV, w.UNIVERSE_DSN_ENV):
         monkeypatch.delenv(name, raising=False)
+
+
+def _set_cap_policy(monkeypatch, *, cap: float, ceiling: float,
+                    waive: float | None = None) -> None:
+    monkeypatch.setenv(w.SIZE_CAP_ENV, str(cap))
+    monkeypatch.setenv(w.CAP_WAIVE_CEILING_ENV, str(ceiling))
+    if waive is not None:
+        monkeypatch.setenv(w.CAP_WAIVE_MEDIAN_ENV, str(waive))
 
 
 @pytest.fixture
 def golden_run(monkeypatch):
-    """The run the golden was recorded from: the fixture under its own size cap."""
-    monkeypatch.setenv(w.SIZE_CAP_ENV, str(GOLDEN["size_cap_frac"]))
+    """The run the golden was recorded from: the fixture under its own cap policy.
+
+    The cap sits above every designed group, so the golden is a statement about the
+    BASE algorithm — pre-split, Louvain, coherence — with the waiver never reached.
+    The waiver has its own tests, on both sides of the threshold."""
+    _set_cap_policy(monkeypatch, cap=GOLDEN["size_cap_frac"],
+                    ceiling=GOLDEN["cap_waive_hard_ceiling"],
+                    waive=GOLDEN["cap_waive_min_median"])
     return run_worker(w, monkeypatch, today=TODAY)
 
 
@@ -144,14 +164,14 @@ def test_the_fixture_identifier_ranges_do_not_collide() -> None:
 # 2. The frozen parameters and their digest                                   #
 # =========================================================================== #
 def test_the_shipped_parameters_hash_to_their_pinned_digest() -> None:
-    params = w.canonical_params(size_cap_frac=w.DEFAULT_SIZE_CAP_FRAC,
-                                ident_floor=w.DEFAULT_IDENT_FLOOR)
-    assert w.params_sha256(params) == DEFAULT_PARAMS_SHA256
+    assert w.params_sha256(w.canonical_params(**DEFAULT_PARAMS)) \
+        == DEFAULT_PARAMS_SHA256
 
 
 def test_the_frozen_constants_are_the_pre_registered_ones() -> None:
-    """Transcribed from PREREG_P16 sections 1.1-1.3, 2 and 4 and from the P0/P1.5
-    universe rule. A change here is a recipe change, not a tuning."""
+    """Transcribed from PREREG_P16 sections 1.1-1.3, 2 and 4, the P0/P1.5 universe
+    rule, and the cap measurement's recommended arm. A change here is a recipe
+    change, not a tuning."""
     assert w.SEED == 20260805
     assert w.THETA == 0.10
     assert w.RESOLUTION == 1.0
@@ -161,16 +181,25 @@ def test_the_frozen_constants_are_the_pre_registered_ones() -> None:
     assert w.RESOLUTION_LADDER == (1.0, 2.0, 4.0)
     assert w.COHERENCE_MIN_MEDIAN == 0.05
     assert w.DEFAULT_SIZE_CAP_FRAC == 0.08
+    assert w.DEFAULT_CAP_WAIVE_MIN_MEDIAN == 0.10
+    assert w.DEFAULT_CAP_WAIVE_HARD_CEILING == 0.20
     assert w.MAX_LAG == "4 months 15 days"
     assert w.MIN_POSITIONS == 10
     assert w.MIN_COVERAGE == 0.50
 
 
-def test_moving_the_size_cap_moves_the_digest() -> None:
-    a = w.params_sha256(w.canonical_params(size_cap_frac=0.08, ident_floor=0.95))
-    b = w.params_sha256(w.canonical_params(size_cap_frac=0.12, ident_floor=0.95))
-    c = w.params_sha256(w.canonical_params(size_cap_frac=0.08, ident_floor=0.99))
-    assert a != b and a != c and b != c
+@pytest.mark.parametrize("changed", [
+    {"size_cap_frac": 0.12},
+    {"cap_waive_min_median": 0.12},
+    {"cap_waive_hard_ceiling": 0.25},
+    {"ident_floor": 0.99},
+])
+def test_moving_any_cap_policy_parameter_moves_the_digest(changed) -> None:
+    """All three cap parameters are IN the digest. Two anchors run under different
+    cap policy must never be comparable by accident — the waiver threshold changes
+    which communities survive whole, which is as much a recipe change as the cap."""
+    assert w.params_sha256(w.canonical_params(**{**DEFAULT_PARAMS, **changed})) \
+        != DEFAULT_PARAMS_SHA256
 
 
 @pytest.mark.parametrize("value", ["0", "-0.1", "1.5", "abc"])
@@ -180,18 +209,46 @@ def test_an_inadmissible_size_cap_is_refused(monkeypatch, value) -> None:
         w.resolve_size_cap_frac()
 
 
-def test_the_size_cap_is_honoured_and_actually_bites(monkeypatch) -> None:
-    """At a cap of 15% the 10-fund clique cannot survive whole.
+def test_a_ceiling_below_the_cap_is_refused(monkeypatch) -> None:
+    """It would make the waiver unreachable while the configuration claims to have
+    one. Refuse rather than run a silently different policy."""
+    monkeypatch.setenv(w.CAP_WAIVE_CEILING_ENV, "0.05")
+    with pytest.raises(w.FundPeerGroupsError, match="below"):
+        w.resolve_cap_waive_hard_ceiling(0.08)
 
-    A uniform synthetic clique shatters hard under the resolution ladder — real
-    clusters are not uniform, which is why the same cap splits the US large-cap
-    complex into four readable groups on the real anchor instead of into dust. What
-    this test asserts is the INVARIANT, not the fixture's shape: nothing above the
-    cap survives, and the cap changed the partition."""
-    monkeypatch.setenv(w.SIZE_CAP_ENV, "0.15")
+
+# --------------------------------------------------------------------------- #
+# The cohesion waiver — BOTH SIDES of the threshold                            #
+# --------------------------------------------------------------------------- #
+def test_the_waiver_keeps_a_cohesive_over_cap_group_whole(monkeypatch) -> None:
+    """The 10-fund clique's median overlap is 0.80. Above the cap, under the
+    ceiling, cohesive: it stays whole. This is the whole point of the waiver — the
+    cap was never wrong in its value, it was wrong in being blind to cohesion."""
+    _set_cap_policy(monkeypatch, cap=0.15, ceiling=0.30, waive=0.10)
     stats, database = run_worker(w, monkeypatch, today=TODAY)
     n = stats["n_universe"]
     assert stats["size_cap_nodes"] == pytest.approx(0.15 * n)
+    assert stats["n_cap_waived"] >= 1
+    waived_sizes = {c["size"] for c in stats["cap_waived"]}
+    assert 10 in waived_sizes
+    assert stats["largest_community"] == 10
+    assert stats["n_oversized_after_cap"] == 0
+    assert stats["n_above_hard_ceiling"] == 0
+    clique = {f"EQC{i:02d}" for i in range(10)}
+    groups = {r["group_id"] for r in database.published if r["series_id"] in clique}
+    assert len(groups) == 1 and None not in groups
+
+
+def test_below_the_waiver_threshold_the_same_group_is_split(monkeypatch) -> None:
+    """Same universe, same cap, waiver raised above the clique's cohesion. It splits.
+
+    A uniform synthetic clique shatters hard under the resolution ladder; real
+    clusters are not uniform. What this asserts is the invariant — nothing above the
+    cap survives once the waiver does not admit it."""
+    _set_cap_policy(monkeypatch, cap=0.15, ceiling=0.30, waive=1.0)
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    n = stats["n_universe"]
+    assert stats["n_cap_waived"] == 0
     assert stats["largest_community"] <= 0.15 * n
     assert stats["n_oversized_after_cap"] == 0
     assert stats["n_communities"] > GOLDEN["stats"]["n_communities"]
@@ -200,12 +257,104 @@ def test_the_size_cap_is_honoured_and_actually_bites(monkeypatch) -> None:
     assert all(size <= 0.15 * n for size in sizes.values())
 
 
-def test_the_default_cap_holds_too(monkeypatch) -> None:
-    stats, _ = run_worker(w, monkeypatch, today=TODAY)
-    assert stats["size_cap_frac"] == w.DEFAULT_SIZE_CAP_FRAC
-    assert stats["largest_community"] <= w.DEFAULT_SIZE_CAP_FRAC * stats["n_universe"]
+def test_the_hard_ceiling_is_never_waived(monkeypatch) -> None:
+    """The ceiling cuts between two EQUALLY cohesive groups, on size alone.
+
+    Cap 7.35, ceiling 8.82. The 8-fund groups (median 0.80) are waived; the 10-fund
+    clique (median 0.80, exactly as cohesive) is not — it is over the ceiling, and
+    cohesion is the one thing that cannot buy past it."""
+    _set_cap_policy(monkeypatch, cap=0.15, ceiling=0.18, waive=0.10)
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    n = stats["n_universe"]
+    cap, ceiling = 0.15 * n, 0.18 * n
+    assert cap < 8 <= ceiling < 10, "the fixture must straddle both bounds"
+
+    waived_sizes = sorted(c["size"] for c in stats["cap_waived"])
+    assert waived_sizes == [8, 8]
+    assert 10 not in waived_sizes
+    assert stats["largest_community"] <= ceiling
+    assert stats["n_above_hard_ceiling"] == 0
     assert stats["n_oversized_after_cap"] == 0
+
+    # The clique does not survive as one group. What it becomes instead is the
+    # resolution ladder's business — a uniform synthetic clique shatters, a real
+    # cluster does not — so the claim asserted here is only that the ceiling held.
+    clique = {f"EQC{i:02d}" for i in range(10)}
+    clique_rows = [r for r in database.published if r["series_id"] in clique]
+    assert len(clique_rows) == 10
+    assert not any(r["group_size"] == 10 for r in clique_rows)
+
+
+@pytest.mark.parametrize("median,expected", [
+    (0.12, "waived"),
+    (0.10, "waived"),        # the threshold itself admits
+    (0.09997, "split"),      # the measured knife-edge: misses by 3e-5
+    (0.05, "split"),
+])
+def test_the_waiver_threshold_is_exact_at_the_knife_edge(median, expected) -> None:
+    """A real measured anchor carries a block of 1,006 funds with median 0.09997 that
+    misses the waiver by 3e-5. The threshold is a parameter, not a magic constant, and
+    the comparison has to be exact in both directions rather than approximately
+    right — so this drives the decision with a stubbed median instead of contorting a
+    fixture into producing one."""
+    G = nx.complete_graph(12)
+    nx.set_edge_attributes(G, 1.0, "weight")
+    parts = w.partition_with_cap(G, 6.0, hard_ceiling=20.0,
+                                 waive_min_median=0.10,
+                                 median_of=lambda members: median)
+    statuses = {status for _members, _depth, status in parts}
+    if expected == "waived":
+        assert parts == [(set(range(12)), 0, "waived")]
+    else:
+        assert "waived" not in statuses
+        assert max(len(m) for m, _, _ in parts) <= 6
+
+
+def test_a_singleton_over_the_cap_cannot_be_waived() -> None:
+    """A community of one has no pair, therefore no median, therefore no cohesion to
+    claim. It can never buy the waiver — which only matters if someone ever sets a
+    cap below 1, but a None median silently comparing as "cohesive" is the kind of
+    thing that only shows up in production."""
+    G = nx.Graph()
+    G.add_nodes_from(range(3))
+    parts = w.partition_with_cap(G, 0.5, hard_ceiling=10.0, waive_min_median=0.0,
+                                 median_of=lambda members: None)
+    assert {status for _m, _d, status in parts} == {"irreducible"}
+
+
+def test_the_default_policy_waives_by_cohesion_and_respects_the_ceiling(
+        monkeypatch) -> None:
+    """At the SHIPPED defaults on this universe: cap 3.92, ceiling 9.8. The cohesive
+    8-fund groups are waived; the 10-fund clique is over the ceiling and is not."""
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    n = stats["n_universe"]
+    assert stats["size_cap_frac"] == w.DEFAULT_SIZE_CAP_FRAC
     assert stats["params_sha256"] == DEFAULT_PARAMS_SHA256
+    assert stats["n_cap_waived"] >= 1
+    assert stats["largest_community"] <= w.DEFAULT_CAP_WAIVE_HARD_CEILING * n
+    assert stats["n_above_hard_ceiling"] == 0
+    assert stats["n_oversized_after_cap"] == 0
+    for community in stats["cap_waived"]:
+        assert community["size"] > w.DEFAULT_SIZE_CAP_FRAC * n
+        assert community["size"] <= w.DEFAULT_CAP_WAIVE_HARD_CEILING * n
+        assert community["median_overlap"] >= w.DEFAULT_CAP_WAIVE_MIN_MEDIAN
+    # every waived community is published as a real group, medians and all
+    published_sizes = {r["group_size"] for r in database.published
+                       if r["group_size"] is not None}
+    assert {c["size"] for c in stats["cap_waived"]} <= published_sizes
+
+
+def test_the_waiver_alert_fires_before_the_ceiling_does(monkeypatch) -> None:
+    """The measured waived block grew to 16.77% of the universe with its biggest jump
+    on the last anchor. The quarter it approaches 20% has to be visible before it
+    arrives, not after."""
+    _set_cap_policy(monkeypatch, cap=0.15, ceiling=0.30, waive=0.10)
+    stats, _ = run_worker(w, monkeypatch, today=TODAY)
+    n = stats["n_universe"]
+    assert stats["cap_waive_alert_frac"] == w.CAP_WAIVE_ALERT_FRAC
+    biggest = max(c["size"] for c in stats["cap_waived"])
+    assert stats["cap_waive_alert"] == (biggest > w.CAP_WAIVE_ALERT_FRAC * n)
+    assert stats["cap_waive_alert"] is True     # 10 of 49 is 20.4%, past the 15%
 
 
 # =========================================================================== #
@@ -474,7 +623,9 @@ def test_publication_replaces_the_anchor_in_one_transaction(golden_run) -> None:
 
 
 def test_a_second_run_replaces_rather_than_duplicates(monkeypatch) -> None:
-    monkeypatch.setenv(w.SIZE_CAP_ENV, str(GOLDEN["size_cap_frac"]))
+    _set_cap_policy(monkeypatch, cap=GOLDEN["size_cap_frac"],
+                    ceiling=GOLDEN["cap_waive_hard_ceiling"],
+                    waive=GOLDEN["cap_waive_min_median"])
     database = FakeDatabase(w)
     conn = FakeConn(database)
     database.conn = conn
@@ -499,14 +650,16 @@ def test_post_write_verification_catches_a_short_publication(golden_run) -> None
     rows = [dict(r) for r in database.published]
     database.published = database.published[:-1]
     with pytest.raises(w.FundPeerGroupsError, match="row count"):
-        w.post_write_verify(database.conn, ANCHOR, rows, 999.0)
+        w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
 
 
-def test_post_write_verification_catches_a_group_above_the_cap(golden_run) -> None:
+def test_post_write_verification_catches_a_group_above_the_ceiling(golden_run) -> None:
     _, database = golden_run
     rows = [dict(r) for r in database.published]
-    with pytest.raises(w.FundPeerGroupsError, match="above the size cap"):
-        w.post_write_verify(database.conn, ANCHOR, rows, 5.0)
+    with pytest.raises(w.FundPeerGroupsError, match="above the hard ceiling"):
+        w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=5.0, waive_min_median=0.0)
 
 
 def test_post_write_verification_catches_a_lying_group_size(golden_run) -> None:
@@ -519,7 +672,8 @@ def test_post_write_verification_catches_a_lying_group_size(golden_run) -> None:
         if row["group_size"] is not None:
             row["group_size"] = row["group_size"] + 1
     with pytest.raises(w.FundPeerGroupsError, match="disagrees with the member count"):
-        w.post_write_verify(database.conn, ANCHOR, rows, 999.0)
+        w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
 
 
 def test_post_write_verification_catches_a_mutated_value(golden_run) -> None:
@@ -528,7 +682,8 @@ def test_post_write_verification_catches_a_mutated_value(golden_run) -> None:
     database.published[0] = dict(database.published[0], granularity="mixed"
                                  if rows[0]["granularity"] != "mixed" else "issuer")
     with pytest.raises(w.FundPeerGroupsError, match="granularity re-read as"):
-        w.post_write_verify(database.conn, ANCHOR, rows, 999.0)
+        w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
 
 
 # =========================================================================== #
