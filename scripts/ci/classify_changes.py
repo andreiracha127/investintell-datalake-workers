@@ -36,6 +36,11 @@ NPORT_PATTERNS = (
     "scripts/backfill_nport_holding_attributes.py",
     "scripts/load_nport_fund_flows.py",
     "schemas/nport_*.sql",
+    # The operator write path of sec_nport_holdings. Untracked until 2026-08 and
+    # the source of two silently degraded quarters; it is governed N-PORT surface
+    # now, not tooling on the side.
+    "tools/nport_dera/*.py",
+    "tests/fixtures/nport_dera/*/*.tsv",
     "tests/test_nport_*.py",
     "tests/test_openfigi.py",
     "tests/test_yahoo_sector.py",

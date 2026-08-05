@@ -23,3 +23,7 @@ artifacts/quant/**/*.json text eol=lf
 
 # open_macro v4 pinned fixtures — the golden ledger sha256 is over raw bytes
 tests/fixtures/open_macro_v4/** text eol=lf
+
+# N-PORT DERA slice — carved verbatim from a real quarterly package; the tests
+# pin exact row and ISIN counts, so the bytes must not be rewritten on checkout.
+tests/fixtures/nport_dera/** text eol=lf
