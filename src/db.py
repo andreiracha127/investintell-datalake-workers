@@ -175,6 +175,12 @@ LOCK_MARKET_OVERVIEW_SNAPSHOT = 900_217
 # backfill would delay it for no reason). 900_218 is the next free id in the
 # metrics band (900_2xx) after LOCK_MARKET_OVERVIEW_SNAPSHOT.
 LOCK_OPEN_MACRO_V04 = 900_218
+# fund_peer_groups quarterly partitioner (fund_peer_groups_v1). It reads the N-PORT
+# look-through and the served universe and republishes ONE anchor atomically; a second
+# concurrent run would DELETE the anchor the first one is still inserting. It shares no
+# table with any worker above, so it gets its own id rather than borrowing one:
+# 900_219 is the next free id in the metrics band (900_2xx) after LOCK_OPEN_MACRO_V04.
+LOCK_FUND_PEER_GROUPS = 900_219
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211

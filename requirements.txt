@@ -6,6 +6,12 @@ pandas>=2.2
 # bonds price source-artifact ingest (src/bonds/source_artifact.py, streamed
 # record batches; also used by the quant data lanes).
 pyarrow>=15.0
+# networkx: justified third-party dep — the fund_peer_groups partitioner IS
+# networkx's Louvain (seed 20260805), and the eight-anchor evidence that ratified the
+# recipe was cut with networkx 3.6.1. A hand-rolled community detector would not
+# reproduce that partition, so the library is part of the frozen recipe, not a
+# convenience. Pure Python, no compiled extension.
+networkx>=3.3
 PyYAML>=6.0
 jsonschema>=4.23
 scipy>=1.13

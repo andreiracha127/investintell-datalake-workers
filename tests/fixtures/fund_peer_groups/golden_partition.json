@@ -1,0 +1,430 @@
+{
+ "_note": "Recorded from tests/_fund_peer_groups_fixtures.py under FUND_PEER_GROUPS_SIZE_CAP=0.5. Regenerating this file is a DESIGN CHANGE: the partitioner is frozen, so a diff here means a constant moved and the params_sha256 pin moved with it.",
+ "anchor_date": "2025-12-31",
+ "size_cap_frac": 0.5,
+ "params_sha256": "f451759dea943e13a0a0a179f1250d00fc8670e45de2d3d85f88123020047eac",
+ "stats": {
+  "n_served_universe": 52,
+  "n_universe": 49,
+  "n_published": 49,
+  "reject": {
+   "no_report_in_window": 2,
+   "lt_min_positions": 1
+  },
+  "holding_rows": 602,
+  "block_sizes": {
+   "EQ": 27,
+   "FI": 16,
+   "MIXED": 6
+  },
+  "edges": 137,
+  "modularity_by_block": {
+   "FI": 0.5,
+   "EQ": 0.393118,
+   "MIXED": 0.0
+  },
+  "n_communities": 10,
+  "n_coherent_communities": 5,
+  "n_singletons": 4,
+  "largest_community": 10,
+  "n_oversized_after_cap": 0,
+  "community_status_counts": {
+   "ok": 10
+  },
+  "coherent_coverage_pct": 77.551
+ },
+ "rows": {
+  "EQC00": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC01": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC02": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC03": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC04": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC05": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC06": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC07": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC08": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQC09": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:0",
+   "group_state": "empirical",
+   "group_size": 10,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD00": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD01": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD02": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD03": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD04": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQD05": {
+   "block": "eq",
+   "group_id": "2025-12-31:eq:4",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "security"
+  },
+  "EQG00": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQG01": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQG02": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQG03": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQG04": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQG05": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQGHUB": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQN00": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQN01": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQN02": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "EQN03": {
+   "block": "eq",
+   "group_id": null,
+   "group_state": "no_empirical_group",
+   "group_size": null,
+   "group_median_overlap": null,
+   "granularity": "security"
+  },
+  "FIA00": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA01": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA02": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA03": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA04": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA05": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA06": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIA07": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:1",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB00": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB01": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB02": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB03": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB04": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB05": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB06": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "FIB07": {
+   "block": "fi",
+   "group_id": "2025-12-31:fi:2",
+   "group_state": "empirical",
+   "group_size": 8,
+   "group_median_overlap": 0.7999998927116394,
+   "granularity": "issuer"
+  },
+  "MXF00": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  },
+  "MXF01": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  },
+  "MXF02": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  },
+  "MXF03": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  },
+  "MXF04": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  },
+  "MXF05": {
+   "block": "mixed",
+   "group_id": "2025-12-31:mixed:5",
+   "group_state": "empirical",
+   "group_size": 6,
+   "group_median_overlap": 0.9599998593330383,
+   "granularity": "mixed"
+  }
+ }
+}

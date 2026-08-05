@@ -38,6 +38,7 @@ def main() -> None:
             "|nport_ingestion|ncen_ingestion|rr1_ingestion"
             "|rr1_derived_profiles|sec_regulatory_serving"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
+            "|fund_peer_groups"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics|open_macro_v03"
             "|open_macro_v04"
