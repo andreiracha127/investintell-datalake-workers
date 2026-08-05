@@ -8,11 +8,14 @@ it still carries an ISIN.
 ## The failure it watches for
 
 `sec_nport_holdings` is loaded one DERA quarterly package at a time by
-`scripts/nport_bulk_parse.py` → `scripts/nport_parallel_load.py`, both of which
-live outside this repository and are run by hand. The parse builds a
-`HOLDING_ID → ISIN` map from `IDENTIFIERS.tsv` and uses it twice: to fill the
-`isin` column, and to choose the synthetic key when a holding has no CUSIP —
-`IS:<isin>` first, `LE:<lei>` only as a fallback.
+`tools/nport_dera/nport_bulk_parse.py` → `tools/nport_dera/nport_parallel_load.py`,
+run by hand. Until 2026-08-05 those two scripts lived only on the operator's disk,
+untracked and untested; that is the reason two bad quarters went unnoticed for one
+and two years, and it is why they are now in this repository with a fixture-backed
+suite (`tests/test_nport_dera_tooling.py`). The parse builds a `HOLDING_ID → ISIN`
+map from `IDENTIFIERS.tsv` and uses it twice: to fill the `isin` column, and to
+choose the synthetic key when a holding has no CUSIP — `IS:<isin>` first,
+`LE:<lei>` only as a fallback.
 
 If that map comes out incomplete, the load still succeeds and looks normal.
 Every row arrives. `series_id`, `cik`, `sector`, `quantity`, `currency`,
@@ -54,17 +57,61 @@ same two populations by 32.5 pp (worst clean 0.9445, best degraded 0.6198).
    `2025q1`), and confirm by checking whether the clean part of that
    `report_date` belongs to the neighbouring package.
 
-2. **Re-parse from the local package.** No SEC or `sec-api.io` request is needed:
-   the DERA packages are on disk (`E:\Edgard\nport\<q>_nport`) and
-   `nport_bulk_parse.py` reads them correctly today — the defect was in the
-   artifact produced at load time, not in the parser as it stands.
+2. **Re-parse from the local package, scoped to the report_dates.** No SEC or
+   `sec-api.io` request is needed: the DERA packages are on disk
+   (`E:\Edgard\nport\<q>_nport`) and the parser reads them correctly today — the
+   defect was in the artifact produced at load time, not in the parser as it
+   stands. `--only-report-dates` keeps the CSV inside the repair's charter (a
+   quarterly package also carries its neighbours' report_dates), and the parse
+   refuses to hand over a CSV whose own ISIN fill is below the floor:
+
+   ```
+   python -m tools.nport_dera.nport_bulk_parse "E:\Edgard\nport\2023q4_nport" \
+       -o out\2023q4.csv --only-report-dates 2023-09-29,2023-09-30,2023-10-31
+   ```
+
+   Run it once per package that contributes rows to the affected dates, not just
+   the guilty one: the clean neighbours own real rows on the same `report_date`s
+   and the `DELETE` in step 3 takes those out too. **Enumerate those packages from
+   the data, not from the calendar** — `SUBMISSION.tsv` is small, so scanning all
+   27 of them for the target `REPORT_DATE` is cheap and exact. Late and amended
+   filings land in packages up to two years later: the eight report_dates of the
+   2026-08 repair are carried by **twelve** packages, including `2026q1`/`2026q2`
+   rows for `report_date` 2023. Reloading only the obvious neighbours silently
+   destroys them.
+
+2b. **Merge the packages before loading.** `nport_parallel_load` runs its CSVs in
+   parallel under `ON CONFLICT DO NOTHING`, so when two packages carry the same
+   `(report_date, series_id, cusip)` the winner is whichever thread commits first.
+   Over the same eight dates, 56,782 keys are carried by 2+ packages and 1,205 of
+   them differ in content — two databases loading the same inputs would disagree
+   on those rows, with no error anywhere. `nport_merge` collapses them
+   newest-package-first (an N-PORT/A restates the portfolio) so the loader has
+   nothing left to decide:
+
+   ```
+   python -m tools.nport_dera.nport_merge --out merged/2023-09-30.csv \
+       by_date/2023-09-30/*.csv
+   ```
 
 3. **Delete before loading.** A plain re-run repairs nothing: the loader is
    `ON CONFLICT (report_date, series_id, cusip) DO NOTHING` and the bad rows
-   already own the key. The affected `report_date`s must be deleted first, in a
-   window the operator has pinned. `sec_nport_holdings` is a compressed
-   hypertable — `prep()`/`finalize()` in `nport_parallel_load.py` handle the
-   decompression and the compression policy.
+   already own the key. `--delete-first` does it, and refuses to run without an
+   explicit `--only-report-dates` (which also bounds the INSERT, independently of
+   the parser). `sec_nport_holdings` is a compressed hypertable — `prep()`
+   decompresses only the chunks the target dates fall in and `finalize()`
+   re-compresses exactly those and restores the policy:
+
+   ```
+   python -m tools.nport_dera.nport_parallel_load --seed-dir out --dsn "$DSN" \
+       --workers 4 --skip-matview --delete-first \
+       --only-report-dates 2023-09-29,2023-09-30,2023-10-31
+   ```
+
+   The loader verifies the ISIN fill of each target `report_date` after the load
+   and exits non-zero below the floor. Do one `report_date` at a time on the
+   production datalake: a single transaction over all eight holds `backend_xmin`
+   long enough to stall the global `VACUUM`.
 
 4. **Re-run the probe** (`nport_lookthrough`, or `probe()` against the datalake
    directly) and confirm the readings return to the 0.98–0.99 band.
