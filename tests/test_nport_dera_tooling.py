@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from tools.nport_dera import nport_bulk_parse as parse
+from tools.nport_dera import nport_merge as merge
 from tools.nport_dera import nport_parallel_load as load
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "nport_dera" / "2023q4_slice"
@@ -271,6 +272,84 @@ def test_delete_first_refuses_to_run_unscoped(tmp_path):
 def test_delete_report_dates_refuses_an_empty_list():
     with pytest.raises(ValueError):
         load.delete_report_dates("postgresql:///nope", [])
+
+
+# --------------------------------------------------------------------------
+# merge — the step that keeps two databases from disagreeing about one date
+# --------------------------------------------------------------------------
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=parse.CSV_COLS)
+        w.writeheader()
+        for r in rows:
+            w.writerow({c: r.get(c, "") for c in parse.CSV_COLS})
+
+
+def _row(**kw) -> dict:
+    base = dict(report_date="2023-09-30", cik="1", cusip="037833100", isin="US0378331005",
+                issuer_name="A", asset_class="EC", sector="CORP", market_value="10",
+                quantity="1", currency="USD", pct_of_nav="0.1", is_restricted="false",
+                fair_value_level="1", series_id="S1")
+    base.update(kw)
+    return base
+
+
+def test_merge_lets_the_newest_package_own_a_contested_key(tmp_path):
+    """An N-PORT/A restates the portfolio, so the later filing is the correct one."""
+    _write_csv(tmp_path / "2023q4.csv", [_row(market_value="10", issuer_name="original")])
+    _write_csv(tmp_path / "2024q1.csv", [_row(market_value="99", issuer_name="amended")])
+    stats = merge.merge_csvs([str(tmp_path / "2023q4.csv"), str(tmp_path / "2024q1.csv")],
+                             str(tmp_path / "out.csv"))
+    assert stats["order"] == ["2024q1.csv", "2023q4.csv"]
+    assert stats["dropped"] == 1
+    with open(tmp_path / "out.csv", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) == 1
+    assert rows[0]["market_value"] == "99" and rows[0]["issuer_name"] == "amended"
+
+
+def test_merge_is_order_independent_at_the_call_site(tmp_path):
+    """The caller cannot change the outcome by passing the files differently.
+
+    That is the whole point: ``nport_parallel_load`` runs its CSVs in parallel and
+    ON CONFLICT DO NOTHING lets whichever thread commits first own the key, so two
+    databases loading the same package set can end up disagreeing. Merging first
+    removes the decision instead of hoping the loader makes it consistently.
+    """
+    _write_csv(tmp_path / "2023q4.csv", [_row(market_value="10")])
+    _write_csv(tmp_path / "2024q1.csv", [_row(market_value="99")])
+    paths = [str(tmp_path / "2023q4.csv"), str(tmp_path / "2024q1.csv")]
+    a = merge.merge_csvs(paths, str(tmp_path / "a.csv"))
+    b = merge.merge_csvs(list(reversed(paths)), str(tmp_path / "b.csv"))
+    assert a == b
+    assert (tmp_path / "a.csv").read_bytes() == (tmp_path / "b.csv").read_bytes()
+
+
+def test_merge_emits_no_duplicate_conflict_key(tmp_path):
+    """Nothing is left for the loader's ON CONFLICT to resolve."""
+    _write_csv(tmp_path / "2023q4.csv", [
+        _row(cusip="037833100"), _row(cusip="LE:N/A", isin=""), _row(cusip="H:1", isin=""),
+    ])
+    _write_csv(tmp_path / "2024q1.csv", [
+        _row(cusip="LE:N/A", isin="", issuer_name="different security, same junk key"),
+        _row(cusip="594918104", isin="US5949181045", series_id="S2"),
+    ])
+    stats = merge.merge_csvs([str(tmp_path / "2023q4.csv"), str(tmp_path / "2024q1.csv")],
+                             str(tmp_path / "out.csv"))
+    with open(tmp_path / "out.csv", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    keys = [tuple(r[c] for c in merge.CONFLICT_KEY) for r in rows]
+    assert len(keys) == len(set(keys)) == 4
+    assert stats["dropped"] == 1
+    assert stats["kept_by_source"] == {"2024q1.csv": 2, "2023q4.csv": 2}
+
+
+def test_merge_rejects_a_csv_that_is_not_the_loader_schema(tmp_path):
+    (tmp_path / "2023q4.csv").write_text("a,b\n1,2\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        merge.merge_csvs([str(tmp_path / "2023q4.csv")], str(tmp_path / "out.csv"))
 
 
 class _FakeCursor:

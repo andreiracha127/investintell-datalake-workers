@@ -513,6 +513,7 @@ jobs:
           scripts/load_nport_fund_flows.py
           tools/nport_dera/__init__.py
           tools/nport_dera/nport_bulk_parse.py
+          tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
           tests/test_nport_lookthrough.py
           tests/test_nport_identifier_coverage.py
@@ -536,6 +537,7 @@ jobs:
           scripts/load_nport_fund_flows.py
           tools/nport_dera/__init__.py
           tools/nport_dera/nport_bulk_parse.py
+          tools/nport_dera/nport_merge.py
           tools/nport_dera/nport_parallel_load.py
 
       - name: Verify certified input pack

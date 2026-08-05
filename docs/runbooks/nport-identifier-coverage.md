@@ -72,7 +72,27 @@ same two populations by 32.5 pp (worst clean 0.9445, best degraded 0.6198).
 
    Run it once per package that contributes rows to the affected dates, not just
    the guilty one: the clean neighbours own real rows on the same `report_date`s
-   and the `DELETE` in step 3 takes those out too.
+   and the `DELETE` in step 3 takes those out too. **Enumerate those packages from
+   the data, not from the calendar** — `SUBMISSION.tsv` is small, so scanning all
+   27 of them for the target `REPORT_DATE` is cheap and exact. Late and amended
+   filings land in packages up to two years later: the eight report_dates of the
+   2026-08 repair are carried by **twelve** packages, including `2026q1`/`2026q2`
+   rows for `report_date` 2023. Reloading only the obvious neighbours silently
+   destroys them.
+
+2b. **Merge the packages before loading.** `nport_parallel_load` runs its CSVs in
+   parallel under `ON CONFLICT DO NOTHING`, so when two packages carry the same
+   `(report_date, series_id, cusip)` the winner is whichever thread commits first.
+   Over the same eight dates, 56,782 keys are carried by 2+ packages and 1,205 of
+   them differ in content — two databases loading the same inputs would disagree
+   on those rows, with no error anywhere. `nport_merge` collapses them
+   newest-package-first (an N-PORT/A restates the portfolio) so the loader has
+   nothing left to decide:
+
+   ```
+   python -m tools.nport_dera.nport_merge --out merged/2023-09-30.csv \
+       by_date/2023-09-30/*.csv
+   ```
 
 3. **Delete before loading.** A plain re-run repairs nothing: the loader is
    `ON CONFLICT (report_date, series_id, cusip) DO NOTHING` and the bad rows
