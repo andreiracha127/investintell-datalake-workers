@@ -1,6 +1,6 @@
 {
  "approval_required_from": "quant_owner",
- "approved": false,
+ "approved": true,
  "artifact_type": "open_macro_v4_formulation_freeze",
  "books": {
   "center": {
@@ -521,8 +521,21 @@
    "src/fiscal_state.py": "0f11bb62d520b3f03f1b0aebf66f00ef88982390c913ba6fcfe5c0a990bb5eb9"
   }
  },
+ "ratification": {
+  "evidence_reviewed": [
+   "dark run: 236 months published (2006-12-31..2026-07-31), decision_basis live=1 / bootstrap_replay=235",
+   "crosstab over the measured window reproduces the signed ledger: contained off/alert/severe 58/25/23, dominance 86/42/0",
+   "single formulation_sha256 across the table (0f154e614a12cea69a77a8d275204b81d1b32dffd1fb6269ef962d0244f84060), single code_commit, single input digest per run",
+   "guard_coverage = full on the live month (2026-07-31)",
+   "A4' 2013 exception acknowledged as DATED: expires with v4.1 and must be re-measured, not renewed by default"
+  ],
+  "ratified_at": "2026-08-04",
+  "ratified_by": "quant_owner",
+  "recorded_by": "orchestrator (session 09dda585), acting on the owner's written statement; self-ratification remains prohibited and did not occur",
+  "statement_verbatim": "RATIFICO O formulation_freeze_001"
+ },
  "schema_version": 1,
- "status": "awaiting_ratification",
+ "status": "ratified",
  "summary": "The complete formula: explicit FRED ids, transforms, thresholds, windows and PIT lags; per-arm freshness in native publication periods with its two measured calibration points; the full book table at exact float precision; the binding gates; and pins tying all of it to a specific tree and input snapshot. Committed UNRATIFIED.",
  "title": "open_macro v4.0-rev — frozen formulation of the three-layer regime engine (M-COMP4)"
 }
