@@ -21,6 +21,15 @@ defect in the first place:
   judged BEFORE it is loaded. The historical defect was a silently
   under-populated ``HOLDING_ID -> ISIN`` map; that is visible in these counters
   and invisible everywhere else.
+* ``--dedupe-conflict-key`` — apply the loader's ``(report_date, series_id,
+  cusip)`` conflict key while streaming, keeping the first row per key. Off by
+  default, so the rescued output is unchanged. It matters because the raw CSV
+  and the table it produces are NOT the same population: ``LE:<lei>`` keys
+  collide across every holding of one issuer inside a series, so the loader
+  discards a large, ISIN-poor slice of the rows on its way in. Judging the raw
+  CSV therefore mis-reads a good parse as a bad one — 2023-08-31 reads 0.586
+  raw and 0.991 as the table will hold it. Only the deduped reading is
+  comparable to what ``verify_isin_fill`` will see afterwards.
 
 THE DEFECT THIS TOOL CAUSED, STATED PLAINLY
 -------------------------------------------
@@ -211,6 +220,7 @@ def parse_dataset(
     src_dir: str,
     out_path: str,
     only_report_dates: "set[str] | None" = None,
+    dedupe_conflict_key: bool = False,
 ) -> dict:
     """Stream one unzipped DERA package into a load-ready CSV.
 
@@ -218,6 +228,13 @@ def parse_dataset(
     quarterly package carries filings for report_dates outside the quarter it is
     named after, so a repair that targets specific report_dates MUST pass this
     or it will write rows it was not chartered to touch.
+
+    ``dedupe_conflict_key`` applies the loader's ``(report_date, series_id,
+    cusip)`` key here, first row wins — the same row the database would keep,
+    since ``ON CONFLICT DO NOTHING`` resolves within-statement duplicates in
+    scan order and the stage table is COPY'd in CSV order. Costs one set of
+    keys in memory (~1 GB for a full quarter) and makes the emitted statistics
+    predict the table instead of describing the file.
     """
     p = lambda name: os.path.join(src_dir, name)  # noqa: E731
 
@@ -241,10 +258,12 @@ def parse_dataset(
 
     stats: dict = {
         "rows": 0, "written": 0, "no_series": 0, "no_date": 0, "synthetic": 0,
-        "series_from_cik": 0, "filtered_report_date": 0,
+        "series_from_cik": 0, "filtered_report_date": 0, "conflict_key_dupes": 0,
         "isin_map_size": len(isin_by_hid),
+        "deduped": dedupe_conflict_key,
         "per_report_date": collections.defaultdict(collections.Counter),
     }
+    seen: set[str] = set()
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
     sys.stderr.write("streaming FUND_REPORTED_HOLDING...\n")
     with open(out_path, "w", encoding="utf-8", newline="") as out_fh:
@@ -278,6 +297,12 @@ def parse_dataset(
             cusip, synth = _synthetic_cusip(
                 row[idx["ISSUER_CUSIP"]], isin, row[idx["ISSUER_LEI"]], hid,
             )
+            if dedupe_conflict_key:
+                key = f"{report_date}\x00{series_id}\x00{cusip}"
+                if key in seen:
+                    stats["conflict_key_dupes"] += 1
+                    continue
+                seen.add(key)
             if synth:
                 stats["synthetic"] += 1
             is_restricted = "true" if row[idx["IS_RESTRICTED_SECURITY"]].strip().upper() == "Y" else "false"
@@ -331,6 +356,11 @@ def main(argv: "list[str] | None" = None) -> int:
         help="comma-separated ISO report_dates; emit ONLY these (repair scope guard)",
     )
     ap.add_argument(
+        "--dedupe-conflict-key", action="store_true",
+        help="drop rows the loader's ON CONFLICT would discard anyway, so the "
+             "reported ISIN fill predicts the table instead of the file",
+    )
+    ap.add_argument(
         "--fill-floor", type=float, default=DEFAULT_FILL_FLOOR,
         help="fail if any emitted report_date parses below this ISIN fill rate",
     )
@@ -340,7 +370,9 @@ def main(argv: "list[str] | None" = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    stats = parse_dataset(args.src_dir, args.out, _parse_dates(args.only_report_dates))
+    stats = parse_dataset(
+        args.src_dir, args.out, _parse_dates(args.only_report_dates), args.dedupe_conflict_key,
+    )
     sys.stderr.write(
         f"\nDONE {args.src_dir}\n"
         f"  ISIN map size     : {stats['isin_map_size']:,}\n"
@@ -350,6 +382,8 @@ def main(argv: "list[str] | None" = None) -> int:
         f"  dropped no_series : {stats['no_series']:,} (no CIK either)\n"
         f"  dropped no_date   : {stats['no_date']:,}\n"
         f"  out-of-scope date : {stats['filtered_report_date']:,}\n"
+        f"  conflict-key dupes: {stats['conflict_key_dupes']:,}"
+        f"{'' if stats['deduped'] else ' (not deduped -- readings below describe the FILE, not the table)'}\n"
         f"  synthetic cusip   : {stats['synthetic']:,}\n"
         f"  -> {args.out}\n\n"
     )
@@ -360,6 +394,31 @@ def main(argv: "list[str] | None" = None) -> int:
             f"{rd:<12} {n:>10,} {c['isin'] / n:>10.4f} {c['real_cusip']:>9,} "
             f"{c['synthetic_is']:>9,} {c['synthetic_le']:>9,} {c['synthetic_h']:>9,}\n"
         )
+
+    if not args.dedupe_conflict_key:
+        sys.stderr.write(
+            f"\nfill floor {args.fill_floor:.2f} NOT applied: without --dedupe-conflict-key the "
+            "readings above are the file's, and the loader will discard a large, ISIN-poor slice "
+            "of it on the conflict key. Re-run with --dedupe-conflict-key to judge the parse, or "
+            "rely on the loader's post-load verify.\n"
+        )
+        return 0
+
+    if args.only_report_dates.strip():
+        # A scoped parse cannot judge a package. Outside its own quarter a package
+        # carries only late and amended filings for a report_date -- a few thousand
+        # rows from a handful of filers, whose ISIN fill is a property of those
+        # filers, not of the ISIN map. 2024q1 reads 0.733 over its 6,743 rows on
+        # 2023-09-30 and is a perfectly healthy package. The reading that decides a
+        # repair is the loader's post-load verify over the MERGED report_date, which
+        # is also the population the weekly monitor measures.
+        sys.stderr.write(
+            f"\nfill floor {args.fill_floor:.2f} NOT applied: --only-report-dates subsamples the "
+            "package, so a per-report_date reading here is not a verdict on its ISIN map. The "
+            "gate for a scoped repair is nport_parallel_load's post-load verify over the merged "
+            "report_date.\n"
+        )
+        return 0
 
     bad = report_dates_below_floor(stats, args.fill_floor, args.fill_floor_min_rows)
     if bad:

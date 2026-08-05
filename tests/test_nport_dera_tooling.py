@@ -175,13 +175,77 @@ def test_the_cli_refuses_to_hand_over_a_parse_below_the_floor(tmp_path):
     """Exit code, not a log line: a bad parse must not reach the loader."""
     proc = subprocess.run(
         [sys.executable, "-m", "tools.nport_dera.nport_bulk_parse", str(FIXTURE),
-         "-o", str(tmp_path / "cli.csv"), "--fill-floor", "0.99", "--fill-floor-min-rows", "1"],
+         "-o", str(tmp_path / "cli.csv"), "--dedupe-conflict-key",
+         "--fill-floor", "0.99", "--fill-floor-min-rows", "1"],
         cwd=Path(__file__).resolve().parent.parent,
         capture_output=True, text=True,
     )
     assert proc.returncode == 2
     assert "REFUSING" in proc.stderr
     assert "ON CONFLICT DO NOTHING" in proc.stderr
+
+
+def test_the_floor_is_not_applied_to_a_reading_that_cannot_predict_the_table(tmp_path):
+    """A raw parse under-reads its own ISIN fill; refusing on it would be noise.
+
+    2023-08-31 parses at 0.586 over the raw file and lands at 0.991 in the table,
+    because the loader discards the ISIN-poor ``LE:`` collisions on the way in.
+    Gating the raw number would fail every correct repair parse, which is the
+    fastest way to teach an operator to ignore the gate.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "tools.nport_dera.nport_bulk_parse", str(FIXTURE),
+         "-o", str(tmp_path / "raw.csv"), "--fill-floor", "0.99", "--fill-floor-min-rows", "1"],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0
+    assert "NOT applied" in proc.stderr
+    assert "REFUSING" not in proc.stderr
+
+
+def test_a_scoped_parse_defers_the_verdict_instead_of_faking_one(tmp_path):
+    """Outside its own quarter a package carries only late and amended filings.
+
+    Those are a few thousand rows from a handful of filers, and their ISIN fill is
+    a property of the filers, not of the package's ISIN map — 2024q1 reads 0.733
+    over its 6,743 rows on 2023-09-30 and is a perfectly healthy package. Refusing
+    on that would fail every correct repair parse.
+    """
+    proc = subprocess.run(
+        [sys.executable, "-m", "tools.nport_dera.nport_bulk_parse", str(FIXTURE),
+         "-o", str(tmp_path / "scoped.csv"), "--dedupe-conflict-key",
+         "--only-report-dates", "2023-09-30", "--fill-floor", "0.99",
+         "--fill-floor-min-rows", "1"],
+        cwd=Path(__file__).resolve().parent.parent,
+        capture_output=True, text=True,
+    )
+    assert proc.returncode == 0
+    assert "NOT applied" in proc.stderr
+    assert "post-load verify" in proc.stderr
+    assert "REFUSING" not in proc.stderr
+
+
+def test_dedupe_applies_the_loaders_conflict_key_and_keeps_the_first_row(tmp_path):
+    """``ON CONFLICT DO NOTHING`` resolves in scan order, so first-row-wins matches."""
+    plain = parse.parse_dataset(str(FIXTURE), str(tmp_path / "plain.csv"))
+    deduped = parse.parse_dataset(str(FIXTURE), str(tmp_path / "dedup.csv"), dedupe_conflict_key=True)
+
+    assert plain["conflict_key_dupes"] == 0 and plain["deduped"] is False
+    assert deduped["deduped"] is True
+    assert deduped["written"] + deduped["conflict_key_dupes"] == plain["written"]
+
+    with open(tmp_path / "dedup.csv", encoding="utf-8", newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    keys = [(r["report_date"], r["series_id"], r["cusip"]) for r in rows]
+    assert len(keys) == len(set(keys)), "the emitted CSV still collides on the loader's key"
+
+    # first-row-wins: the surviving row is the one the plain parse emitted first
+    with open(tmp_path / "plain.csv", encoding="utf-8", newline="") as fh:
+        first_seen: dict = {}
+        for r in csv.DictReader(fh):
+            first_seen.setdefault((r["report_date"], r["series_id"], r["cusip"]), r)
+    assert rows == [first_seen[k] for k in keys]
 
 
 # --------------------------------------------------------------------------
