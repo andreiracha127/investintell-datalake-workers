@@ -134,6 +134,7 @@ jobs:
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
             tests/test_rr1_ingestion.py
+            tests/test_run_worker_calc_date.py
             tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_serving_contract.py
