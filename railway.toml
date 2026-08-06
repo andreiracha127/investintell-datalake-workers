@@ -56,6 +56,17 @@
 #                           o worker só verifica o catálogo, read-only.
 #                           Este arquivo NÃO cria o serviço: criar/agendar é
 #                           passo operacional (docs/open_macro_v4_runbook.md).
+#   nport_fixed_income_serving -> SEM CRON, de propósito. Disparar junto com uma
+#                           ingestão N-PORT nova, nunca em agenda fixa. A fonte
+#                           são 36 campos de nport_fund_reported_info_raw, e
+#                           produção PODA a raw assim que o run é atestado — o
+#                           ciclo é ingere, constrói, atesta, poda. Um cron
+#                           semanal (o que o Cloud Scheduler fazia) reencontra o
+#                           mesmo run já podado em 12 semanas de 13, e o worker
+#                           recusa construir, corretamente: em 2026-08-01 um
+#                           build sobre raw podada publicou quatro das oito
+#                           relações VAZIAS e passou por bem-sucedido. Recusar
+#                           não é falha, é repouso.
 #   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
 #                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
 #                           âncora + INSERT. Cron sugerido:

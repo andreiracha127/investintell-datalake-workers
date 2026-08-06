@@ -56,6 +56,16 @@ CREATE TABLE IF NOT EXISTS mixed_quant_return_observation (
     CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb)
 );
 
+-- Sem este índice a tabela só tem a PK em observation_id, e o worker abre TODA
+-- execução com `max(as_of)` (_resolve_as_of) e `count(*) WHERE as_of=` por tabela
+-- (_watermarks). Medido nesta tabela com 24,7 M linhas / 5,4 GB: Parallel Seq
+-- Scan de 685.632 buffers, 81.918 ms para o max; com o índice, Index Only Scan
+-- Backward de 4 buffers, 0,099 ms. A irmã holding_observation nunca teve esse
+-- custo porque o UNIQUE (as_of, series_id) já servia de índice em as_of — a
+-- diferença entre as duas era só de desenho, não de propósito.
+CREATE INDEX IF NOT EXISTS mixed_quant_return_observation_as_of_idx
+    ON mixed_quant_return_observation (as_of);
+
 CREATE TABLE IF NOT EXISTS mixed_quant_income_observation (
     observation_id   uuid PRIMARY KEY,
     as_of            date NOT NULL,
