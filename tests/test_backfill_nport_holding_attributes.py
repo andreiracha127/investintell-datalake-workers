@@ -492,3 +492,224 @@ def test_parse_only_report_dates_rejects_junk_and_empty_scope() -> None:
     # an empty scope would write nothing while exiting 0
     with pytest.raises(SystemExit, match="lists no date"):
         backfill._parse_only_report_dates(" , ")
+
+
+def _isin_bundle(
+    tmp_path: Path,
+    holdings: list[list[str]],
+    identifiers: list[list[str]],
+    report_date: str = "31-JAN-2026",
+) -> None:
+    """One bundle, one series, whatever holdings and ISIN map the test needs."""
+    accession = "0000000000-26-000040"
+    _write_tsv(
+        tmp_path / "SUBMISSION.tsv",
+        ["ACCESSION_NUMBER", "REPORT_DATE"],
+        [[accession, report_date]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_INFO.tsv",
+        ["ACCESSION_NUMBER", "SERIES_ID"],
+        [[accession, "S000001234"]],
+    )
+    _write_tsv(
+        tmp_path / "IDENTIFIERS.tsv", ["HOLDING_ID", "IDENTIFIER_ISIN"], identifiers
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_HOLDING.tsv",
+        [
+            "ACCESSION_NUMBER",
+            "HOLDING_ID",
+            "ISSUER_CUSIP",
+            "ISSUER_LEI",
+            "PAYOFF_PROFILE",
+            "INVESTMENT_COUNTRY",
+            "ASSET_CAT",
+            "PERCENTAGE",
+        ],
+        [[accession] + row for row in holdings],
+    )
+
+
+def test_isin_key_fill_is_measured_on_the_rollup_not_on_the_parsed_rows(
+    tmp_path: Path,
+) -> None:
+    """The lesson the first ISIN floor taught, kept as a test.
+
+    That floor measured the parsed input and refused the re-parse that FIXED the
+    defect (2023-08-31 read 0.5858 as a file and 0.9912 as the table it
+    produced). One cause: ``LE:<lei>`` is not unique per security, so many input
+    rows land on one key and the ISIN-poor side is over-represented in the file.
+    Here one holding carries an ISIN and forty lots of a single LEI-only issuer
+    do not, so the input reads 1/41 = 0.024 -- under any sane floor -- while the
+    rollup the database will hold is one ``IS:`` key against one ``LE:`` key.
+
+    What is asserted is not which number is prettier: it is that the two
+    readings disagree across a floor, and that the gate uses the second.
+    """
+    holdings = [["HISIN", "N/A", "", "Long", "IE", "EC", "1"]]
+    holdings += [
+        [f"H{i}", "N/A", "LEI0000000000000001", "Long", "IE", "EC", "1"]
+        for i in range(40)
+    ]
+    _isin_bundle(tmp_path, holdings, [["HISIN", "IE00B4L5Y983"]])
+
+    _s, _c, weights = backfill.build_equity_rollups(tmp_path)
+
+    # the rollup: one IS: key, one LE: key with forty lots collapsed onto it
+    assert sorted(w.cusip for w in weights) == [
+        "IS:IE00B4L5Y983",
+        "LE:LEI0000000000000001",
+    ]
+
+    reading = backfill.isin_key_fill_by_report_date(weights)[dt.date(2026, 1, 31)]
+    assert reading["synthetic_keys"] == 2
+    assert reading["isin_key_fill"] == 0.5
+
+    # the reading the discarded design would have taken, over the parsed rows
+    input_side = 1 / 41
+    assert input_side < 0.25 < reading["isin_key_fill"]
+
+    # and the gate takes the rollup one: a floor between them lets this through
+    assert backfill.report_dates_below_isin_floor(weights, 0.25, min_keys=1) == []
+
+
+def test_report_dates_below_isin_floor_catches_a_short_identifier_map(
+    tmp_path: Path,
+) -> None:
+    """A present-but-short IDENTIFIERS.tsv is exactly what a presence check misses."""
+    holdings = [
+        [f"H{i}", "N/A", f"LEI000000000000{i:04d}", "Long", "IE", "EC", "1"]
+        for i in range(10)
+    ]
+    # only two of the ten CUSIP-less holdings are in the map
+    _isin_bundle(
+        tmp_path, holdings, [["H0", "IE00B4L5Y983"], ["H1", "IE00B4L5Y984"]]
+    )
+
+    _s, _c, weights = backfill.build_equity_rollups(tmp_path)
+
+    fills = backfill.isin_key_fill_by_report_date(weights)
+    assert fills[dt.date(2026, 1, 31)]["isin_key_fill"] == 0.2
+    assert backfill.report_dates_below_isin_floor(
+        weights, backfill.DEFAULT_MIN_ISIN_FILL, min_keys=1
+    ) == [(dt.date(2026, 1, 31), 0.2)]
+
+
+def test_isin_floor_does_not_judge_a_thin_report_date(tmp_path: Path) -> None:
+    """Off-cycle month-ends carry a handful of keys and one filer's junk is not a
+    failed bundle. The same gate is what keeps a scoped run over a neighbouring
+    bundle -- a few late or amended declarations -- from reading as one."""
+    holdings = [
+        [f"H{i}", "N/A", f"LEI000000000000{i:04d}", "Long", "IE", "EC", "1"]
+        for i in range(10)
+    ]
+    _isin_bundle(tmp_path, holdings, [])
+
+    _s, _c, weights = backfill.build_equity_rollups(tmp_path)
+
+    fills = backfill.isin_key_fill_by_report_date(weights)
+    assert fills[dt.date(2026, 1, 31)]["isin_key_fill"] == 0.0
+    # ten keys is far under DEFAULT_MIN_ISIN_FILL_KEYS, so nothing is judged
+    assert (
+        backfill.report_dates_below_isin_floor(
+            weights, backfill.DEFAULT_MIN_ISIN_FILL
+        )
+        == []
+    )
+    assert backfill.report_dates_below_isin_floor(
+        weights, backfill.DEFAULT_MIN_ISIN_FILL, min_keys=10
+    ) == [(dt.date(2026, 1, 31), 0.0)]
+
+
+def test_isin_key_fill_ignores_holdings_that_never_needed_the_map(
+    tmp_path: Path,
+) -> None:
+    """A real CUSIP-9 never consults the ISIN map, so it must not dilute the
+    reading. Over the 102 production report_dates that choice is the difference
+    between 12.81 pp and 6.09 pp of separation from the rotten dates."""
+    holdings = [
+        ["H1", "037833100", "", "Long", "US", "EC", "1"],
+        ["H2", "594918104", "", "Long", "US", "EC", "1"],
+        ["H3", "N/A", "LEI0000000000000001", "Long", "IE", "EC", "1"],
+        ["H4", "N/A", "", "Long", "IE", "EC", "1"],
+    ]
+    _isin_bundle(tmp_path, holdings, [["H4", "IE00B4L5Y983"]])
+
+    _s, _c, weights = backfill.build_equity_rollups(tmp_path)
+    reading = backfill.isin_key_fill_by_report_date(weights)[dt.date(2026, 1, 31)]
+
+    assert reading["keys"] == 4
+    assert reading["real"] == 2
+    assert reading["synthetic_keys"] == 2
+    assert reading["isin_key_fill"] == 0.5
+    assert reading["identifiable_share"] == 0.75
+
+
+def test_load_directory_refuses_a_short_map_before_touching_the_database(
+    tmp_path: Path,
+) -> None:
+    """Fail closed, and fail before the connection is used: a short map is a
+    property of the bundle on disk and no database state changes the verdict."""
+
+    class _Exploding:
+        def cursor(self) -> object:
+            raise AssertionError("the database must not be touched")
+
+        def rollback(self) -> None:
+            raise AssertionError("the database must not be touched")
+
+        def commit(self) -> None:
+            raise AssertionError("the database must not be touched")
+
+    holdings = [
+        [f"H{i}", "N/A", f"LEI000000000000{i:04d}", "Long", "IE", "EC", "1"]
+        for i in range(1500)
+    ]
+    _isin_bundle(tmp_path, holdings, [])
+
+    with pytest.raises(ValueError, match="ISIN map too short"):
+        backfill.load_directory(
+            _Exploding(), tmp_path, apply=False, minimum_isin_fill=0.75
+        )
+
+
+def test_min_isin_fill_zero_is_the_documented_opt_out(tmp_path: Path) -> None:
+    """Zero disables the floor. Nothing else does, and it has to be typed."""
+
+    class _Recording:
+        def __init__(self) -> None:
+            self.used = False
+
+        def cursor(self) -> object:
+            self.used = True
+            raise RuntimeError("reached the database")
+
+        def rollback(self) -> None:
+            return None
+
+    holdings = [
+        [f"H{i}", "N/A", f"LEI000000000000{i:04d}", "Long", "IE", "EC", "1"]
+        for i in range(1500)
+    ]
+    _isin_bundle(tmp_path, holdings, [])
+
+    conn = _Recording()
+    with pytest.raises(RuntimeError, match="reached the database"):
+        backfill.load_directory(conn, tmp_path, apply=False, minimum_isin_fill=0.0)
+    assert conn.used, "with the floor off, the run must get past the guard"
+
+
+def test_min_isin_fill_default_sits_between_the_readings_it_was_derived_from() -> None:
+    """The default is derived, so pin the two ends of the derivation.
+
+    Worst healthy reading over the 102 report_dates of
+    nport_equity_holding_weights after the 2026-08-06 repair waves: 0.8296
+    (2023-04-28, which is also the worst clean date of the base table's own
+    probe). Best of the eight the sidecar was rotten on: 0.7015 (2024-11-29).
+    """
+    worst_healthy = 0.8296
+    best_degraded = 0.7015
+    assert best_degraded < backfill.DEFAULT_MIN_ISIN_FILL < worst_healthy
+    assert worst_healthy - backfill.DEFAULT_MIN_ISIN_FILL >= 0.05
+    assert backfill.DEFAULT_MIN_ISIN_FILL - best_degraded >= 0.04
