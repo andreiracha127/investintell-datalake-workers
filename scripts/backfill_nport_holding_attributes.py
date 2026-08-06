@@ -3,6 +3,33 @@
 The cloud holdings primary key collapses some distinct DERA holding lots. This
 loader therefore leaves ``sec_nport_holdings`` untouched and materializes exact,
 compact rollups by series/report date for the look-through producer.
+
+Three guard rails, all three paid for in production:
+
+* **``IDENTIFIERS.tsv`` is mandatory.** ``_identifier_isins`` used to return an
+  empty map when the file was absent, and every CUSIP-less holding then fell one
+  rung down ``_holding_key`` onto ``LE:<issuer_lei>`` — which is not unique per
+  security, so distinct lots of one issuer collapsed onto a single
+  ``(report_date, series_id, cusip)``. That is the same defect the 2026-08-05
+  ``sec_nport_holdings`` repair removed from the base, and on 2026-08-06 the
+  sidecar was found still carrying it on eight report_dates (25k-185k ``LE:``
+  keys per date, against ~1k-4k on the untouched control dates). Nothing errored
+  at the time, because a populated-but-wrong key looks exactly like a right one.
+  Missing identifiers now fail the run instead of silently degrading it.
+* **``--only-report-dates`` scopes the write.** ``load_directory`` otherwise
+  processes a whole quarterly bundle, so rebuilding one report_date rewrites
+  every neighbour that shares the bundle — including the dates being held aside
+  as untouched controls. Declarations for a given period arrive in bundles up to
+  three years later, so a faithful rebuild has to read many bundles while
+  writing only the target dates.
+* **``--min-isin-fill`` is a quality floor, not a presence check.** The bullet
+  above only refuses a bundle whose ``IDENTIFIERS.tsv`` is *absent*. A file that
+  is present but short reads exactly like a good one, and that is not
+  hypothetical: the 2026-07-16 sidecar build had the file on every bundle and
+  still left ~10k keys one rung down the ladder, which cost two repair waves to
+  pay back. This floor makes a short map fail the run. See
+  ``isin_key_fill_by_report_date`` for what is measured and why it is measured
+  on the emitted rollup rather than on the parsed input.
 """
 
 from __future__ import annotations
@@ -33,6 +60,25 @@ from src.workers.nport_lookthrough import (  # noqa: E402
 )
 
 DEFAULT_MINIMUM_MATCH_RATE = 0.99
+
+#: Share of the identifier-map-dependent keys of one ``report_date`` that must
+#: resolve to ``IS:<isin>``. Derived, not chosen: measured over the 102
+#: report_dates of ``nport_equity_holding_weights`` after the 2026-08-06 repair
+#: waves, the 100 judged dates run 0.8296 (2023-04-28, the same date that is the
+#: worst clean reading of the base table's own probe) to 0.9942, median 0.9796.
+#: The eight dates the sidecar was rotten on read 0.1347 to 0.7015. 0.75 sits
+#: 7.96 pp below the worst healthy date ever observed and 4.85 pp above the best
+#: degraded one, and catches all eight.
+DEFAULT_MIN_ISIN_FILL = 0.75
+
+#: report_dates with fewer identifier-dependent keys than this are not judged.
+#: Off-cycle fiscal month-ends are thin (2020-08-30 emits 7 keys and none of
+#: them synthetic, 2022-09-28 emits 291) and one filer's junk would otherwise
+#: read as a failed bundle. This is also what makes a scoped ``--only-report-
+#: dates`` run over a neighbouring bundle safe: outside its own quarter a bundle
+#: carries only late and amended declarations, whose fill is the filer's
+#: property and not the ISIN map's.
+DEFAULT_MIN_ISIN_FILL_KEYS = 1000
 
 
 @dataclass(frozen=True)
@@ -117,7 +163,13 @@ def _accession_map(path: Path, value_column: str) -> dict[str, str]:
 def _identifier_isins(dataset_dir: Path) -> dict[str, str]:
     path = dataset_dir / "IDENTIFIERS.tsv"
     if not path.exists():
-        return {}
+        # Fail closed: without this map every CUSIP-less holding lands on
+        # ``LE:<issuer_lei>``, which collapses distinct securities of one issuer
+        # onto a single key. See the module docstring.
+        raise FileNotFoundError(
+            f"{path} is missing; without it every CUSIP-less holding falls back "
+            "to a non-unique LE:<issuer_lei> key and lots collapse silently"
+        )
     return {
         holding_id: isin
         for row in _rows(path)
@@ -145,7 +197,10 @@ def _holding_key(row: dict[str, str], identifier_isins: dict[str, str]) -> str |
     return f"H:{holding_id}" if holding_id else None
 
 
-def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]]:
+def _selected_series_reports(
+    dataset_dir: Path,
+    only_report_dates: frozenset[dt.date] | None = None,
+) -> dict[str, tuple[dt.date, str]]:
     series_ids = _accession_map(dataset_dir / "FUND_REPORTED_INFO.tsv", "SERIES_ID")
     selected: dict[
         tuple[dt.date, str], tuple[tuple[bool, dt.date, str], str]
@@ -157,6 +212,8 @@ def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]
         report_date = parse_sec_date(row.get("REPORT_DATE"))
         if report_date is None:
             continue
+        if only_report_dates is not None and report_date not in only_report_dates:
+            continue
         filing_date = parse_sec_date(row.get("FILING_DATE")) or dt.date.min
         priority = (_value(row.get("IS_LAST_FILING")) == "Y", filing_date, accession)
         key = (report_date, series_ids[accession])
@@ -167,9 +224,10 @@ def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]
 
 def build_equity_rollups(
     dataset_dir: Path,
+    only_report_dates: frozenset[dt.date] | None = None,
 ) -> tuple[list[EquitySummary], list[CountryExposure], list[HoldingWeight]]:
     dataset_dir = dataset_dir.resolve()
-    selected = _selected_series_reports(dataset_dir)
+    selected = _selected_series_reports(dataset_dir, only_report_dates)
     identifier_isins = _identifier_isins(dataset_dir)
     totals: dict[tuple[dt.date, str], list[Decimal]] = {
         key: [Decimal(0), Decimal(0)] for key in selected.values()
@@ -235,6 +293,84 @@ def build_equity_rollups(
         for (report_date, series_id, cusip), values in sorted(holding_totals.items())
     ]
     return summaries, countries, weights
+
+
+def isin_key_fill_by_report_date(
+    weights: Iterable[HoldingWeight],
+) -> dict[dt.date, dict[str, int | float]]:
+    """Per ``report_date`` ISIN fill of the keys ``build_equity_rollups`` emits.
+
+    MEASURED ON THE OUTPUT, ON PURPOSE
+    ----------------------------------
+    The first ISIN floor written in this codebase measured the parsed input, and
+    it refused the very re-parse that fixed the defect: 2023-08-31 read 0.5858 as
+    a file and 0.9912 as the table it produced. The distortion has one cause in
+    both places — ``LE:<lei>`` is not unique per security, so many input rows
+    land on one key. Downstream of that collapse the ISIN-poor rows are
+    over-represented in the input and under-represented in the output, and only
+    the output is the population the table will hold. So the reading is taken
+    over ``weights``, after aggregation, one row per
+    ``(report_date, series_id, key)`` — the same rows ``copy_rollups`` is about
+    to stage.
+
+    WHY THE DENOMINATOR EXCLUDES REAL CUSIPs
+    ----------------------------------------
+    A holding with a valid CUSIP-9 never consults the ISIN map, so counting it
+    only dilutes. Over the same 102 report_dates the two candidate readings
+    separate healthy from rotten by 12.81 pp (this one) and 6.09 pp (the share
+    of *all* keys that are a CUSIP-9 or an ``IS:``). That is the same argument
+    ``src/workers/nport_identifier_coverage`` makes for gating on the ISIN
+    column instead of on "is the row identifiable at all". Both readings are
+    returned; only ``isin_key_fill`` is gated on.
+    """
+    per: dict[dt.date, dict[str, int | float]] = {}
+    for weight in weights:
+        counts = per.setdefault(
+            weight.report_date,
+            {"keys": 0, "real": 0, "isin": 0, "lei": 0, "holding": 0},
+        )
+        counts["keys"] = int(counts["keys"]) + 1
+        if weight.cusip.startswith("IS:"):
+            bucket = "isin"
+        elif weight.cusip.startswith("LE:"):
+            bucket = "lei"
+        elif weight.cusip.startswith("H:"):
+            bucket = "holding"
+        else:
+            bucket = "real"
+        counts[bucket] = int(counts[bucket]) + 1
+    for counts in per.values():
+        synthetic = int(counts["isin"]) + int(counts["lei"]) + int(counts["holding"])
+        counts["synthetic_keys"] = synthetic
+        counts["isin_key_fill"] = (
+            round(int(counts["isin"]) / synthetic, 4) if synthetic else None
+        )
+        counts["identifiable_share"] = (
+            round((int(counts["real"]) + int(counts["isin"])) / int(counts["keys"]), 4)
+            if counts["keys"]
+            else None
+        )
+    return dict(sorted(per.items()))
+
+
+def report_dates_below_isin_floor(
+    weights: Iterable[HoldingWeight],
+    floor: float,
+    min_keys: int = DEFAULT_MIN_ISIN_FILL_KEYS,
+) -> list[tuple[dt.date, float]]:
+    """report_dates whose emitted ISIN fill is under ``floor``.
+
+    A non-empty return means the bundle's ``HOLDING_ID -> ISIN`` map came back
+    short and the rollup being staged carries the collapsed ``LE:<lei>`` keys
+    that the 2026-08-05 and 2026-08-06 repairs removed. Writing it anyway is how
+    the defect was created the first time.
+    """
+    return [
+        (report_date, float(counts["isin_key_fill"]))
+        for report_date, counts in isin_key_fill_by_report_date(weights).items()
+        if int(counts["synthetic_keys"]) >= min_keys
+        and float(counts["isin_key_fill"]) < floor
+    ]
 
 
 def copy_rollups(
@@ -386,8 +522,31 @@ def load_directory(
     *,
     apply: bool,
     minimum_match_rate: float = DEFAULT_MINIMUM_MATCH_RATE,
-) -> dict[str, int | float | str | bool]:
-    summaries, countries, weights = build_equity_rollups(dataset_dir)
+    minimum_isin_fill: float = DEFAULT_MIN_ISIN_FILL,
+    only_report_dates: frozenset[dt.date] | None = None,
+) -> dict[str, int | float | str | bool | None]:
+    summaries, countries, weights = build_equity_rollups(dataset_dir, only_report_dates)
+    fills = isin_key_fill_by_report_date(weights)
+    judged = [
+        counts
+        for counts in fills.values()
+        if int(counts["synthetic_keys"]) >= DEFAULT_MIN_ISIN_FILL_KEYS
+    ]
+    # Before the connection is opened, let alone before anything is staged: a
+    # short ISIN map is a property of the bundle on disk, and nothing about the
+    # database can change the verdict.
+    if minimum_isin_fill > 0:
+        below = report_dates_below_isin_floor(weights, minimum_isin_fill)
+        if below:
+            raise ValueError(
+                f"{dataset_dir} has an ISIN map too short to load: "
+                + ", ".join(f"{d.isoformat()} {fill:.4f}" for d, fill in below)
+                + f" is under --min-isin-fill {minimum_isin_fill:.4f}. Every "
+                "CUSIP-less holding the map misses falls onto LE:<issuer_lei>, "
+                "which is not unique per security, so distinct lots of one "
+                "issuer collapse onto one (report_date, series_id, cusip). Pass "
+                "--min-isin-fill 0 to write it anyway."
+            )
     try:
         with conn.cursor() as cur:
             _prepare_stage(cur)
@@ -411,11 +570,24 @@ def load_directory(
         raise
     return {
         "directory": str(dataset_dir.resolve()),
+        "only_report_dates": (
+            ",".join(sorted(d.isoformat() for d in only_report_dates))
+            if only_report_dates is not None
+            else ""
+        ),
         "summary_rows": summary_rows,
         "country_rows": country_rows,
         "weight_rows": weight_rows,
         "matched_rows": _matched_again,
         "match_rate": match_rate,
+        "min_isin_fill": minimum_isin_fill,
+        "isin_fill_judged_report_dates": len(judged),
+        "worst_isin_key_fill": min(
+            (float(counts["isin_key_fill"]) for counts in judged), default=None
+        ),
+        "worst_identifiable_share": min(
+            (float(counts["identifiable_share"]) for counts in judged), default=None
+        ),
         "summary_changes": summary_changes,
         "country_changes": country_changes,
         "weight_changes": weight_changes,
@@ -430,7 +602,9 @@ def load_directories(
     apply: bool,
     schema: bool,
     minimum_match_rate: float,
-) -> list[dict[str, int | float | str | bool]]:
+    minimum_isin_fill: float = DEFAULT_MIN_ISIN_FILL,
+    only_report_dates: frozenset[dt.date] | None = None,
+) -> list[dict[str, int | float | str | bool | None]]:
     results = []
     with connect(dsn) as conn:
         if apply and schema:
@@ -441,10 +615,30 @@ def load_directories(
                 dataset_dir,
                 apply=apply,
                 minimum_match_rate=minimum_match_rate,
+                minimum_isin_fill=minimum_isin_fill,
+                only_report_dates=only_report_dates,
             )
             print(json.dumps(result, sort_keys=True))
             results.append(result)
     return results
+
+
+def _parse_only_report_dates(raw: str | None) -> frozenset[dt.date] | None:
+    if raw is None:
+        return None
+    parsed = set()
+    for token in (part.strip() for part in raw.split(",")):
+        if not token:
+            continue
+        try:
+            parsed.add(dt.date.fromisoformat(token))
+        except ValueError:
+            raise SystemExit(f"--only-report-dates: {token!r} is not YYYY-MM-DD")
+    if not parsed:
+        # An empty scope would silently mean "write nothing", which reads as a
+        # successful no-op run. Refuse it rather than paint that green.
+        raise SystemExit("--only-report-dates was given but lists no date")
+    return frozenset(parsed)
 
 
 def main() -> None:
@@ -460,7 +654,32 @@ def main() -> None:
     parser.add_argument(
         "--minimum-match-rate", type=float, default=DEFAULT_MINIMUM_MATCH_RATE
     )
+    parser.add_argument(
+        "--min-isin-fill",
+        type=float,
+        default=DEFAULT_MIN_ISIN_FILL,
+        metavar="FLOAT",
+        help=(
+            "Refuse a bundle whose emitted rollup carries fewer than this share "
+            f"of identifier-dependent keys resolved to IS:<isin> (default "
+            f"{DEFAULT_MIN_ISIN_FILL}, judged per report_date over "
+            f"{DEFAULT_MIN_ISIN_FILL_KEYS}+ such keys). Measured on the rollup "
+            "being staged, never on the parsed input. Pass 0 to disable, "
+            "explicitly and on the record."
+        ),
+    )
+    parser.add_argument(
+        "--only-report-dates",
+        default=None,
+        metavar="YYYY-MM-DD[,YYYY-MM-DD...]",
+        help=(
+            "Restrict every read and write to these report_dates. Without it a "
+            "run rewrites every report_date the given bundles carry, including "
+            "neighbours being held aside as controls."
+        ),
+    )
     args = parser.parse_args()
+    only_report_dates = _parse_only_report_dates(args.only_report_dates)
     dirs = args.dirs or list(DEFAULT_NPORT_DIRS)
     results = load_directories(
         args.dsn,
@@ -468,6 +687,8 @@ def main() -> None:
         apply=args.apply,
         schema=not args.no_schema,
         minimum_match_rate=args.minimum_match_rate,
+        minimum_isin_fill=args.min_isin_fill,
+        only_report_dates=only_report_dates,
     )
     print(
         json.dumps(
@@ -479,6 +700,15 @@ def main() -> None:
                 "summary_changes": sum(int(item["summary_changes"]) for item in results),
                 "country_changes": sum(int(item["country_changes"]) for item in results),
                 "weight_changes": sum(int(item["weight_changes"]) for item in results),
+                "min_isin_fill": args.min_isin_fill,
+                "worst_isin_key_fill": min(
+                    (
+                        float(item["worst_isin_key_fill"])
+                        for item in results
+                        if item["worst_isin_key_fill"] is not None
+                    ),
+                    default=None,
+                ),
                 "applied": args.apply,
             },
             sort_keys=True,

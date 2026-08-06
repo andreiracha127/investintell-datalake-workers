@@ -14,11 +14,13 @@ yfinance is fetched in a small thread pool (it is slow and unofficial; every
 per-symbol failure degrades to a NULL-sector cache row rather than crashing).
 
 Contract: ``run(dsn, *, limit=None, ttl_days=90) -> {"gathered", "figi_resolved",
-"sector_resolved", "upserted"}``. Env: ``OPENFIGI_API_KEY`` (keyed plan ≈250/min).
+"sector_resolved", "upserted", "window_days"}``. Env: ``OPENFIGI_API_KEY`` (keyed
+plan ≈250/min) and ``NPORT_ENRICH_WINDOW_DAYS`` (see ``resolve_window_days``).
 """
 
 from __future__ import annotations
 
+import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -36,6 +38,34 @@ DEFAULT_TTL_DAYS = 90             # re-verify a cached ISIN after this
 YF_WORKERS = 3                    # modest overlap; the global token bucket paces
 # Only recent reports define the live look-through universe — bound the scan.
 _RECENT_REPORT_DAYS = 120
+WINDOW_DAYS_ENV = "NPORT_ENRICH_WINDOW_DAYS"
+
+
+def resolve_window_days(raw: str | None) -> int:
+    """Days of report history the gather scan covers, from ``raw``.
+
+    Unset or empty means ``_RECENT_REPORT_DAYS`` — the 120-day window the cron
+    has always swept, unchanged. The variable exists because that window is
+    anchored on ``max(report_date)`` and is therefore blind to any repaired
+    history behind it: after the 2026-08-05 N-PORT identifier repair, the 3.804
+    foreign-equity ISINs of the eight repaired report_dates sit 8 to 26 months
+    outside it, so no invocation of this worker could reach them and their
+    holdings stay "Unclassified" in the look-through's sector dimension.
+
+    Spelling is strict — plain ASCII digits, no sign, no decimal point, no unit
+    suffix — and anything else raises instead of falling back to the default. A
+    window the platform accepts but this worker silently ignores is the worse
+    failure: the deploy goes green, the run reports success, and the operator
+    reads a verdict for dates that were never scanned.
+    """
+    if raw is None or not raw.strip():
+        return _RECENT_REPORT_DAYS
+    value = raw.strip()
+    if not (value.isascii() and value.isdigit()):
+        raise ValueError(
+            f"{WINDOW_DAYS_ENV}={raw!r} is not a whole number of days"
+        )
+    return int(value)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS sec_isin_sector (
@@ -121,9 +151,9 @@ def ensure_schema(conn) -> None:
     conn.commit()
 
 
-def _gather_isins(conn, limit: int, ttl_days: int) -> list[str]:
+def _gather_isins(conn, limit: int, ttl_days: int, window_days: int) -> list[str]:
     with conn.cursor() as cur:
-        cur.execute(_GATHER_SQL, (_RECENT_REPORT_DAYS, ttl_days, limit))
+        cur.execute(_GATHER_SQL, (window_days, ttl_days, limit))
         return [row[0] for row in cur.fetchall()]
 
 
@@ -159,15 +189,23 @@ def run(
     ttl_days: int = DEFAULT_TTL_DAYS,
 ) -> dict:
     """Enrich one batch of un-cached foreign equity ISINs with a GICS sector."""
+    # Resolved before the connection so a mistyped window fails on its own name,
+    # not three layers down after the advisory lock is taken. It rides in the
+    # stats for the same reason ``calc_date`` does: the run log is the only place
+    # an operator can check which history a green run actually scanned.
+    window_days = resolve_window_days(os.getenv(WINDOW_DAYS_ENV))
     with connect(resolve_dsn(dsn)) as conn:
         with advisory_lock(conn, LOCK_NPORT_CUSIP_ENRICHMENT) as got:
             if not got:
                 return {"skipped": "lock_busy"}
             ensure_schema(conn)
-            isins = _gather_isins(conn, limit or DEFAULT_RUN_LIMIT, ttl_days)
+            isins = _gather_isins(
+                conn, limit or DEFAULT_RUN_LIMIT, ttl_days, window_days
+            )
             if not isins:
                 return {"gathered": 0, "figi_resolved": 0,
-                        "sector_resolved": 0, "upserted": 0}
+                        "sector_resolved": 0, "upserted": 0,
+                        "window_days": window_days}
             with OpenFigiClient() as figi:
                 matches = figi.map_isins(isins)
             sector_by_symbol = _fetch_sectors(matches)
@@ -178,4 +216,5 @@ def run(
                 "figi_resolved": len(matches),
                 "sector_resolved": sum(1 for r in rows if r.gics_sector),
                 "upserted": len(rows),
+                "window_days": window_days,
             }

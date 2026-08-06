@@ -29,7 +29,12 @@ Regras do modelo (decisões do doc, não opcionais):
 
 Contract:  run(dsn, *, calc_date=None, limit=None, serial=False)
            -> {"processed", "upserted_series", "exposure_rows", "calc_date",
-               "workers"}
+               "workers", "identifier_coverage"}
+
+``identifier_coverage`` is the post-verify from
+``src.workers.nport_identifier_coverage``: a bounded read of how much of the
+recent tail of ``sec_nport_holdings`` still carries an ISIN. It observes, it does
+not gate -- see the note at the end of ``run``.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from src.db import LOCK_NPORT_LOOKTHROUGH, advisory_lock, connect
+from src.workers import nport_identifier_coverage
 
 MAX_DEPTH = 2
 MAX_WORKERS_CAP = 24            # Railway vCPU count; bounds the cloud pool
@@ -893,10 +899,21 @@ def run(
                         upserted += u
                         exposure_rows += e
 
+            # Post-verify, not a gate. sec_nport_holdings is loaded a DERA
+            # package at a time by an operator script outside this repo; a
+            # package that lost its ISIN side loads without failing anything,
+            # and this worker is the recurring job that reads the column. The
+            # verdict rides in the stats so a degraded load is legible in the
+            # run log the week it lands. It does NOT raise: the damage is to
+            # history already written, so stopping the look-through would cost
+            # a week of exposures without repairing a single row.
+            coverage = nport_identifier_coverage.probe(conn)
+
             return {
                 "processed": processed,
                 "upserted_series": upserted,
                 "exposure_rows": exposure_rows,
                 "calc_date": cdate_iso,
                 "workers": n_workers,
+                "identifier_coverage": coverage,
             }

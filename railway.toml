@@ -67,6 +67,41 @@
 #                           build sobre raw podada publicou quatro das oito
 #                           relações VAZIAS e passou por bem-sucedido. Recusar
 #                           não é falha, é repouso.
+#   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
+#                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
+#                           âncora + INSERT. Cron sugerido:
+#                           `0 7 15 2,5,8,11 *` (dia 15 dos meses 2/5/8/11,
+#                           07:00 UTC) — DEPOIS da ingestão N-PORT do trimestre,
+#                           que é o que a regra de universo "último report <=
+#                           âncora, defasagem máx. 4m15d" exige. Rodar antes
+#                           disso não quebra: o guard de identificador e os
+#                           pisos de elegibilidade recusam a publicação em vez
+#                           de publicar um trimestre meio ingerido.
+#                           NUNCA usar cronSchedule null nem "": no Railway
+#                           `null` significa RODAR CONTÍNUO e "" envenena o
+#                           patch inteiro do serviço. Para desligar, use uma
+#                           data impossível (`0 0 29 2 *`).
+#                           Env: WORKER=fund_peer_groups, DATABASE_URL (datalake
+#                           `market`). Opcionais (as três primeiras são a
+#                           política de teto medida e entram no params_sha256):
+#                           FUND_PEER_GROUPS_SIZE_CAP (default 0.08),
+#                           FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN (default 0.10
+#                           — dispensa do teto por coesão; o teto nunca esteve
+#                           errado no valor, esteve errado em ser cego à coesão),
+#                           FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING (default
+#                           0.20 — NUNCA dispensado),
+#                           FUND_PEER_GROUPS_IDENT_FLOOR (default 0.95),
+#                           FUND_PEER_GROUPS_ANCHOR (backfill de uma âncora),
+#                           FUND_PEER_GROUPS_UNIVERSE_DSN (só se os read-models
+#                           servidos não estiverem no mesmo banco).
+#                           Recursos: a matriz de sobreposição é n x n float32
+#                           (~200 MB em 7k séries) e o grafo do bloco de equity
+#                           tem ~1,5M arestas — dimensionar o serviço com >= 4 GB.
+#                           O DDL é aplicado pelo OPERADOR
+#                           (schemas/fund_peer_groups_v1.sql); o worker só
+#                           verifica o catálogo, read-only, e falha alto.
+#                           Este arquivo NÃO cria o serviço: criar/agendar é
+#                           passo operacional (docs/fund_peer_groups_runbook.md).
 #
 # nixpacks auto-detects Python via requirements.txt.
 

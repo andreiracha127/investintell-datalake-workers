@@ -1206,7 +1206,9 @@ def _shard(fund_ids: list, n_shards: int) -> list[list]:
 # negativos; menos negativo = melhor → pctl maior). peer_count = tamanho do
 # grupo no calc_date. Labels: manual_override primeiro, senão último
 # proposed_strategy_label por instrumento em strategy_reclassification_stage
-# (réplica cloud). Fundos sem label ficam com peer_* NULL.
+# (réplica cloud). Fundos sem label ficam com peer_* NULL — e "sem label" inclui
+# o rótulo 'Unclassified' e o rótulo em branco, que significam ausência de
+# coorte e são barrados no CTE `labels`.
 # manager_score/elite_flag NÃO são computados aqui (modelo
 # de scoring do allocation ainda não portado).
 #
@@ -1253,7 +1255,7 @@ def _peer_midrank_percentile(
 
 
 _PEER_PERCENTILES_SQL = """
-WITH labels AS (
+WITH winning_labels AS (
     SELECT DISTINCT ON (source_pk)
            source_pk::uuid AS instrument_id,
            proposed_strategy_label AS label
@@ -1264,6 +1266,20 @@ WITH labels AS (
              (classification_source = 'manual_override') DESC,
              classified_at DESC,
              stage_id DESC
+),
+labels AS (
+    -- "Unclassified" and blank are the ABSENCE of a cohort, so they must never
+    -- become one: a fund cannot be ranked against the funds nobody could label,
+    -- and peer_strategy_label is what the Light serves as the peer cohort.
+    -- Filtered AFTER the DISTINCT ON above, on purpose: filtering inside it
+    -- would silently resurrect an older non-empty proposal for a fund whose
+    -- CURRENT winner is 'Unclassified', publishing a stale label as governed.
+    -- Excluded funds keep peer_* NULL (the UPDATE below never reaches them) and
+    -- the Light degrades to its honest "peers unavailable" state.
+    SELECT instrument_id, label
+    FROM winning_labels
+    WHERE btrim(label) <> ''
+      AND label <> 'Unclassified'
 ),
 latest AS (
     SELECT m.instrument_id, m.sharpe_1y, m.sortino_1y, m.return_1y,

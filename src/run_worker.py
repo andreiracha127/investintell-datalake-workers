@@ -8,6 +8,17 @@ Optional WORKER_LIMIT=<n> caps the units one run processes, for workers whose
 resumable sweep across several runs — the way to keep a growing universe inside a
 provider's hourly budget without touching worker code.
 
+Optional WORKER_CALC_DATE=YYYY-MM-DD pins the as-of date, for workers whose
+``run()`` takes ``calc_date``. Without it, a service that builds this repo can
+only ever run each worker at its own default — the root ``railway.toml``
+replaces the whole ``[deploy]`` block, so a per-service ``startCommand`` (and
+therefore ``python -m src.run <worker> --calc-date ...``) is discarded. That is
+why an operator could not reach a historical date: after the 2026-08-05 N-PORT
+identifier repair, the weekly ``nport_lookthrough`` cron at
+``calc_date = max(report_date)`` revisits only the series whose LAST report is
+one of the repaired dates — 499 of 16.774 rows, 3 %. This variable is the
+config-only way to aim the same entry point at a chosen date.
+
 Exit code is the contract with the platform: 0 only when the run finished its
 work. A run that stopped early on a provider budget reports ``aborted`` in its
 stats and exits non-zero, so a truncated sweep is never painted green.
@@ -15,6 +26,7 @@ stats and exits non-zero, so a truncated sweep is never painted green.
 
 from __future__ import annotations
 
+import datetime as _dt
 import importlib
 import inspect
 import json
@@ -38,6 +50,7 @@ def main() -> None:
             "|nport_ingestion|ncen_ingestion|rr1_ingestion"
             "|rr1_derived_profiles|sec_regulatory_serving"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
+            "|fund_peer_groups"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics|open_macro_v03"
             "|open_macro_v04"
@@ -52,7 +65,7 @@ def main() -> None:
     # different hours each stay well inside the provider's hourly budget, where
     # one unbounded run would consume most of it. Config-only: the batching needs
     # no worker change, just this cap plus a multi-hour cron.
-    kwargs: dict[str, int] = {}
+    kwargs: dict[str, int | str] = {}
     raw_limit = os.getenv("WORKER_LIMIT", "").strip()
     if raw_limit:
         try:
@@ -67,6 +80,32 @@ def main() -> None:
             # abort that exits 0.
             sys.exit(f"WORKER_LIMIT is set but {worker}.run() takes no 'limit'")
         kwargs["limit"] = limit
+
+    # WORKER_CALC_DATE pins the as-of date the same way --calc-date does on
+    # ``python -m src.run``, which no Railway service that builds this repo can
+    # reach (see the module docstring). The date is passed through as the ISO
+    # string the workers already parse themselves, so this adds no second
+    # interpretation of what the date means.
+    raw_calc_date = os.getenv("WORKER_CALC_DATE", "").strip()
+    if raw_calc_date:
+        try:
+            parsed = _dt.date.fromisoformat(raw_calc_date)
+        except ValueError:
+            parsed = None
+        # ``date.fromisoformat`` also accepts ISO forms the workers do not
+        # (``20250131``, ``2025-W05-5``); requiring the round trip keeps the
+        # accepted spelling identical to the one ``characteristics`` parses with
+        # ``strptime("%Y-%m-%d")``, so a value that passes here cannot fail
+        # three layers down.
+        if parsed is None or parsed.isoformat() != raw_calc_date:
+            sys.exit(f"WORKER_CALC_DATE={raw_calc_date!r} is not a YYYY-MM-DD date")
+        if "calc_date" not in inspect.signature(mod.run).parameters:
+            # Same failure shape as a silently dropped WORKER_LIMIT: the config
+            # would claim a historical run while the worker swept its own
+            # default date, and the operator would read the wrong verdict off a
+            # green deploy.
+            sys.exit(f"WORKER_CALC_DATE is set but {worker}.run() takes no 'calc_date'")
+        kwargs["calc_date"] = raw_calc_date
 
     stats = mod.run(resolve_dsn(), **kwargs) or {}
     print(json.dumps({"worker": worker, **stats}, default=str), flush=True)

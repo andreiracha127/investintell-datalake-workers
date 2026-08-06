@@ -64,6 +64,7 @@ jobs:
           src/workers/bond_serving.py
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
+          src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
           src/workers/nport_holdings_identity_freshness.py
@@ -126,12 +127,14 @@ jobs:
             tests/test_bond_source_qualify.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
+            tests/test_fund_peer_groups.py
             tests/test_ncen_ingestion.py
             tests/test_nport_schema.py
             tests/test_phase10_gate_machine.py
             tests/test_rr1_custom_tag_crosswalk.py
             tests/test_rr1_derived_profiles_materializer.py
             tests/test_rr1_ingestion.py
+            tests/test_run_worker_calc_date.py
             tests/test_sec_derived_work_units.py
             tests/test_sec_regulatory_contract.py
             tests/test_sec_regulatory_serving_contract.py
@@ -224,6 +227,7 @@ jobs:
           src/workers/bond_serving.py
           src/workers/bond_source_qualify.py
           src/workers/daily_publication_chain.py
+          src/workers/fund_peer_groups.py
           src/workers/mixed_quant_publication.py
           src/workers/ncen_ingestion.py
           src/workers/nport_holdings_identity_freshness.py
@@ -333,6 +337,7 @@ jobs:
             tests/test_nport_holdings_v2.py
             tests/test_nport_effective_views.py
             tests/test_open_macro_v03_resolution_ledger.py
+            tests/test_risk_metrics_peer_cohort_guard.py
             tests/test_rr1_effective_views.py
             tests/test_rr1_fee_profiles.py
             tests/test_sec_derived_publications.py
@@ -487,6 +492,8 @@ jobs:
         run: >-
           python -m pytest
           tests/test_nport_lookthrough.py
+          tests/test_nport_identifier_coverage.py
+          tests/test_nport_dera_tooling.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -499,12 +506,19 @@ jobs:
         run: >-
           ruff check
           src/workers/nport_lookthrough.py
+          src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py
           src/workers/_openfigi.py
           src/workers/_yahoo_sector.py
           scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
+          tools/nport_dera/__init__.py
+          tools/nport_dera/nport_bulk_parse.py
+          tools/nport_dera/nport_merge.py
+          tools/nport_dera/nport_parallel_load.py
           tests/test_nport_lookthrough.py
+          tests/test_nport_identifier_coverage.py
+          tests/test_nport_dera_tooling.py
           tests/test_nport_cusip_enrichment.py
           tests/test_openfigi.py
           tests/test_yahoo_sector.py
@@ -516,11 +530,16 @@ jobs:
         run: >-
           python -m compileall -q
           src/workers/nport_lookthrough.py
+          src/workers/nport_identifier_coverage.py
           src/workers/nport_cusip_enrichment.py
           src/workers/_openfigi.py
           src/workers/_yahoo_sector.py
           scripts/backfill_nport_holding_attributes.py
           scripts/load_nport_fund_flows.py
+          tools/nport_dera/__init__.py
+          tools/nport_dera/nport_bulk_parse.py
+          tools/nport_dera/nport_merge.py
+          tools/nport_dera/nport_parallel_load.py
 
       - name: Verify certified input pack
         if: steps.changes.outputs.quant_changed == 'true'
