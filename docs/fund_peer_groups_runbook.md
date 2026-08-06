@@ -193,6 +193,35 @@ missing or in another database — see `FUND_PEER_GROUPS_UNIVERSE_DSN`), `not on
 N served series passed the eligibility floors` (the quarter is not ingested), and
 `schema catalog verification failed` (§1).
 
+### 5.1 One refusal is NOT zero writes: `post-write verification failed`
+
+Every gate above runs before the first write. **Gate 9 does not.** In `run()`,
+`publish()` issues its `DELETE` + `INSERT` and **commits**, and only then is
+`post_write_verify()` called. So a `post-write verification failed` message means the
+anchor **is in the table** — read it before deciding anything:
+
+```sql
+SELECT anchor_date, count(*), count(DISTINCT computed_at), count(DISTINCT params_sha256)
+FROM fund_peer_groups_v1 GROUP BY anchor_date ORDER BY anchor_date DESC;
+```
+
+If the aggregate invariants are sound, the publication is sound; the exit status is
+reporting on the verifier, not on the data. Roll back only deliberately
+(`DELETE FROM fund_peer_groups_v1 WHERE anchor_date = '<quarter-end>'`), never
+reflexively because the deployment went red.
+
+This is not hypothetical. The **2026-06-30** anchor published 6,872 rows completely —
+82.61% coverage, one `computed_at`, one `params_sha256`, every aggregate invariant
+green — and then failed its own Gate 9 on
+`group_median_overlap re-read as Decimal('0.210447803139687'), computed
+0.21044780313968658`. Nothing was wrong with the row. Postgres stores a float8
+parameter in a `numeric` column through 15 significant digits and an IEEE-754 double
+needs up to 17, so the re-read could not equal the float that was written; 81 of that
+anchor's 87 distinct medians do not fit in 15, and 84 of 2026-03-31's 91 do not
+either. The March anchor passed only because the series that happened to sort first
+had a median that fitted. The comparison now happens in the column's space, so the
+verdict is a property of the data rather than of the row order.
+
 ---
 
 ## 6. The cap, and why it yields to cohesion

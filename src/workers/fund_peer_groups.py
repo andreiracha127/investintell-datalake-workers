@@ -1030,16 +1030,50 @@ READBACK_SQL = (
     "WHERE anchor_date = %(anchor)s AND series_id = %(series_id)s")
 
 
+# Postgres stores a float8 parameter in a NUMERIC column through DBL_DIG = 15
+# significant digits: the float8 -> numeric cast renders the double with "%.15g" and
+# re-parses that string. An IEEE-754 double needs up to 17 digits to round-trip, so a
+# computed median with more than 15 CANNOT be read back as the float that was written.
+# The sibling publishers close the gap at the WRITE — ``_exact_numeric`` in
+# open_macro_v03/v04 sends ``Decimal(repr(x))`` after the same defect was measured
+# there on 2026-07-06 — and adopting that chokepoint here would change what this
+# worker publishes, which is the owner's call, not the verifier's. Until then the
+# table holds the 15-digit rendering and the verifier has to know it.
+FLOAT8_TO_NUMERIC_DIGITS = 15
+
+
 def _equal(read: Any, computed: Any) -> bool:
     """Compare a re-read value to the computed one across the driver's type shifts.
 
-    NUMERIC comes back as Decimal, DATE as date. The tolerance on the float is ZERO:
-    the overlap median is a float32-derived float64 and a mismatch here would be real
-    corruption, not rounding."""
+    NUMERIC comes back as Decimal, DATE as date.
+
+    There is still no tolerance in the ordinary sense: no epsilon was chosen and
+    nothing merely "close enough" passes. The comparison is made IN THE COLUMN'S
+    SPACE. A stored NUMERIC is equal when it is the computed double exactly — the
+    fast path, and what a write through ``Decimal(repr(x))`` would always give — or
+    when it is that double rendered exactly as the float8 -> NUMERIC cast renders it.
+    The second branch REPRODUCES the cast rather than approximating it, so the only
+    difference it can admit is the one Postgres itself introduced; a value that
+    differs anywhere inside the 15 digits Postgres keeps is still a mismatch.
+
+    This is a fidelity question, not a rounding one, and it was measured on the
+    2026-06-30 anchor: ``group_median_overlap`` re-read as Decimal('0.210447803139687')
+    against a computed 0.21044780313968658, and the gate refused — after ``publish()``
+    had already committed, on an anchor whose every aggregate invariant passed. 81 of
+    that anchor's 87 distinct medians, and 84 of 91 on 2026-03-31, are stored with more
+    than 15 significant digits. The previous zero-tolerance form was therefore a coin
+    toss over which series happened to sort into ``rows[0]``: the March anchor passed
+    because its probe fitted in 15 digits, not because its data was sounder. A verifier
+    whose verdict depends on row order is testing the storage rendering, not the data.
+    """
     if computed is None or read is None:
         return computed is None and read is None
     if isinstance(computed, float):
-        return float(read) == computed
+        value = float(read)
+        if value == computed:
+            return True
+        return (f"{value:.{FLOAT8_TO_NUMERIC_DIGITS}g}"
+                == f"{computed:.{FLOAT8_TO_NUMERIC_DIGITS}g}")
     return read == computed
 
 
@@ -1260,4 +1294,4 @@ __all__ = ["run", "main", "FundPeerGroupsError", "block_of", "build_block_graph"
            "resolve_cap_waive_hard_ceiling", "resolve_cap_waive_min_median",
            "resolve_ident_floor", "resolve_size_cap_frac", "to_mixed",
            "triangle_values", "verify_schema",
-           "EXPECTED_COLUMNS", "ROW_COLUMNS", "TABLE"]
+           "EXPECTED_COLUMNS", "FLOAT8_TO_NUMERIC_DIGITS", "ROW_COLUMNS", "TABLE"]

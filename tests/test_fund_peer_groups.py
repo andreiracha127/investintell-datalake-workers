@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import collections
 import datetime as _dt
+import decimal
 import json
 import re
 from pathlib import Path
@@ -683,6 +684,135 @@ def test_post_write_verification_catches_a_mutated_value(golden_run) -> None:
                                  if rows[0]["granularity"] != "mixed" else "issuer")
     with pytest.raises(w.FundPeerGroupsError, match="granularity re-read as"):
         w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
+
+
+# =========================================================================== #
+# 6b. The re-read of a NUMERIC column, at the precision Postgres actually keeps #
+# =========================================================================== #
+# The 2026-06-30 anchor published completely and then FAILED its own Gate 9, because
+# the probe's median came back as Decimal('0.210447803139687') against a computed
+# 0.21044780313968658. Nothing was wrong with the row: Postgres stores a float8
+# parameter in a NUMERIC column through DBL_DIG = 15 significant digits, and an
+# IEEE-754 double needs up to 17. 81 of that anchor's 87 distinct medians do not fit
+# in 15, so the old zero-tolerance form was decided by which series sorted first.
+PROBE_2026_06_30 = (decimal.Decimal("0.210447803139687"), 0.21044780313968658)
+PROBE_2026_03_31 = (decimal.Decimal("0.213141173124313"), 0.213141173124313)
+
+
+def _as_stored(value: float) -> decimal.Decimal:
+    """What the column holds after a float8 parameter is cast to NUMERIC.
+
+    The 15 is Postgres's DBL_DIG, stated here independently of the worker so these
+    tests pin the STORAGE fact rather than the module's opinion of it; the module is
+    cross-checked against it below."""
+    return decimal.Decimal(f"{value:.15g}")
+
+
+def test_the_worker_knows_what_the_cast_keeps() -> None:
+    assert w.FLOAT8_TO_NUMERIC_DIGITS == 15
+
+
+def _probe_first(published: list[dict], series_id: str) -> list[dict]:
+    """``post_write_verify`` probes ``rows[0]``; put the series we mean there."""
+    chosen = [r for r in published if r["series_id"] == series_id]
+    return chosen + [r for r in published if r["series_id"] != series_id]
+
+
+def _an_empirical_series(published: list[dict]) -> str:
+    for row in sorted(published, key=lambda r: r["series_id"]):
+        if row["group_median_overlap"] is not None:
+            return row["series_id"]
+    raise AssertionError("the golden fixture has no empirical row to probe")
+
+
+def _store_median(database, series_id: str, value) -> None:
+    for i, row in enumerate(database.published):
+        if row["series_id"] == series_id:
+            database.published[i] = dict(row, group_median_overlap=value)
+            return
+    raise AssertionError(f"{series_id} was never published")
+
+
+def test_the_fact_sheet_probe_is_not_a_mismatch() -> None:
+    """The exact pair the 2026-06-30 anchor refused on, and the 2026-03-31 pair that
+    passed only because it happened to fit in 15 digits."""
+    assert w._equal(*PROBE_2026_06_30) is True
+    assert w._equal(*PROBE_2026_03_31) is True
+    assert float(PROBE_2026_06_30[0]) != PROBE_2026_06_30[1]    # the loss is real
+
+
+@pytest.mark.parametrize("stored", [
+    # One digit off INSIDE the 15 Postgres keeps — the storage rendering cannot
+    # explain it, so it stays a mismatch. This is the case that proves the fix is a
+    # change of space and not a loosened tolerance.
+    decimal.Decimal("0.210447803139688"),
+    decimal.Decimal("0.210447803139686"),
+    decimal.Decimal("0.21044780313969"),
+    decimal.Decimal("0.310447803139687"),
+    decimal.Decimal("0.5"),
+    decimal.Decimal("0"),
+])
+def test_a_value_the_cast_cannot_explain_is_still_a_mismatch(stored) -> None:
+    assert w._equal(stored, PROBE_2026_06_30[1]) is False
+
+
+def test_a_present_value_never_equals_an_absent_one() -> None:
+    assert w._equal(None, PROBE_2026_06_30[1]) is False
+    assert w._equal(PROBE_2026_06_30[0], None) is False
+    assert w._equal(None, None) is True
+
+
+def test_the_readback_accepts_the_precision_the_column_stores(golden_run) -> None:
+    """The production failure, reproduced end to end through the real gate: the row is
+    intact and only its stored rendering differs, and Gate 9 must certify it."""
+    _, database = golden_run
+    series_id = _an_empirical_series(database.published)
+    rows = _probe_first([dict(r) for r in database.published], series_id)
+    computed = rows[0]["group_median_overlap"]
+    stored = _as_stored(computed)
+    assert float(stored) != computed        # the fixture really exercises the loss
+    _store_median(database, series_id, stored)
+
+    verified = w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                                   hard_ceiling=999.0, waive_min_median=0.0)
+    assert verified["verified_rows"] == len(rows)
+
+
+def test_the_readback_still_catches_a_median_that_moved(golden_run) -> None:
+    """A median genuinely off by one unit in the LAST digit Postgres stores is still
+    corruption, and is still named."""
+    _, database = golden_run
+    series_id = _an_empirical_series(database.published)
+    rows = _probe_first([dict(r) for r in database.published], series_id)
+    stored = _as_stored(rows[0]["group_median_overlap"])
+    # one unit in the last digit the column actually holds
+    moved = stored + decimal.Decimal(1).scaleb(stored.as_tuple().exponent)
+    assert moved != stored
+    _store_median(database, series_id, moved)
+    with pytest.raises(w.FundPeerGroupsError,
+                       match="group_median_overlap re-read as"):
+        w.post_write_verify(database.conn, ANCHOR, rows, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
+
+
+def test_no_series_can_be_the_probe_that_fails_the_anchor(golden_run) -> None:
+    """The defect was that the verdict depended on WHICH series sorted first. With
+    every median stored as the column keeps it, every row must certify the same
+    anchor — the gate is a property of the data again, not of the row order."""
+    _, database = golden_run
+    published = [dict(r) for r in database.published]
+    lossy = 0
+    for row in published:
+        if row["group_median_overlap"] is not None:
+            stored = _as_stored(row["group_median_overlap"])
+            lossy += float(stored) != row["group_median_overlap"]
+            _store_median(database, row["series_id"], stored)
+    assert lossy > 0, "the fixture must contain a median that does not fit in 15 digits"
+
+    for i in range(len(published)):
+        rotated = published[i:] + published[:i]
+        w.post_write_verify(database.conn, ANCHOR, rotated, cap=999.0,
                             hard_ceiling=999.0, waive_min_median=0.0)
 
 
