@@ -3,6 +3,25 @@
 The cloud holdings primary key collapses some distinct DERA holding lots. This
 loader therefore leaves ``sec_nport_holdings`` untouched and materializes exact,
 compact rollups by series/report date for the look-through producer.
+
+Two guard rails, both paid for in production:
+
+* **``IDENTIFIERS.tsv`` is mandatory.** ``_identifier_isins`` used to return an
+  empty map when the file was absent, and every CUSIP-less holding then fell one
+  rung down ``_holding_key`` onto ``LE:<issuer_lei>`` — which is not unique per
+  security, so distinct lots of one issuer collapsed onto a single
+  ``(report_date, series_id, cusip)``. That is the same defect the 2026-08-05
+  ``sec_nport_holdings`` repair removed from the base, and on 2026-08-06 the
+  sidecar was found still carrying it on eight report_dates (25k-185k ``LE:``
+  keys per date, against ~1k-4k on the untouched control dates). Nothing errored
+  at the time, because a populated-but-wrong key looks exactly like a right one.
+  Missing identifiers now fail the run instead of silently degrading it.
+* **``--only-report-dates`` scopes the write.** ``load_directory`` otherwise
+  processes a whole quarterly bundle, so rebuilding one report_date rewrites
+  every neighbour that shares the bundle — including the dates being held aside
+  as untouched controls. Declarations for a given period arrive in bundles up to
+  three years later, so a faithful rebuild has to read many bundles while
+  writing only the target dates.
 """
 
 from __future__ import annotations
@@ -117,7 +136,13 @@ def _accession_map(path: Path, value_column: str) -> dict[str, str]:
 def _identifier_isins(dataset_dir: Path) -> dict[str, str]:
     path = dataset_dir / "IDENTIFIERS.tsv"
     if not path.exists():
-        return {}
+        # Fail closed: without this map every CUSIP-less holding lands on
+        # ``LE:<issuer_lei>``, which collapses distinct securities of one issuer
+        # onto a single key. See the module docstring.
+        raise FileNotFoundError(
+            f"{path} is missing; without it every CUSIP-less holding falls back "
+            "to a non-unique LE:<issuer_lei> key and lots collapse silently"
+        )
     return {
         holding_id: isin
         for row in _rows(path)
@@ -145,7 +170,10 @@ def _holding_key(row: dict[str, str], identifier_isins: dict[str, str]) -> str |
     return f"H:{holding_id}" if holding_id else None
 
 
-def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]]:
+def _selected_series_reports(
+    dataset_dir: Path,
+    only_report_dates: frozenset[dt.date] | None = None,
+) -> dict[str, tuple[dt.date, str]]:
     series_ids = _accession_map(dataset_dir / "FUND_REPORTED_INFO.tsv", "SERIES_ID")
     selected: dict[
         tuple[dt.date, str], tuple[tuple[bool, dt.date, str], str]
@@ -157,6 +185,8 @@ def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]
         report_date = parse_sec_date(row.get("REPORT_DATE"))
         if report_date is None:
             continue
+        if only_report_dates is not None and report_date not in only_report_dates:
+            continue
         filing_date = parse_sec_date(row.get("FILING_DATE")) or dt.date.min
         priority = (_value(row.get("IS_LAST_FILING")) == "Y", filing_date, accession)
         key = (report_date, series_ids[accession])
@@ -167,9 +197,10 @@ def _selected_series_reports(dataset_dir: Path) -> dict[str, tuple[dt.date, str]
 
 def build_equity_rollups(
     dataset_dir: Path,
+    only_report_dates: frozenset[dt.date] | None = None,
 ) -> tuple[list[EquitySummary], list[CountryExposure], list[HoldingWeight]]:
     dataset_dir = dataset_dir.resolve()
-    selected = _selected_series_reports(dataset_dir)
+    selected = _selected_series_reports(dataset_dir, only_report_dates)
     identifier_isins = _identifier_isins(dataset_dir)
     totals: dict[tuple[dt.date, str], list[Decimal]] = {
         key: [Decimal(0), Decimal(0)] for key in selected.values()
@@ -386,8 +417,9 @@ def load_directory(
     *,
     apply: bool,
     minimum_match_rate: float = DEFAULT_MINIMUM_MATCH_RATE,
+    only_report_dates: frozenset[dt.date] | None = None,
 ) -> dict[str, int | float | str | bool]:
-    summaries, countries, weights = build_equity_rollups(dataset_dir)
+    summaries, countries, weights = build_equity_rollups(dataset_dir, only_report_dates)
     try:
         with conn.cursor() as cur:
             _prepare_stage(cur)
@@ -411,6 +443,11 @@ def load_directory(
         raise
     return {
         "directory": str(dataset_dir.resolve()),
+        "only_report_dates": (
+            ",".join(sorted(d.isoformat() for d in only_report_dates))
+            if only_report_dates is not None
+            else ""
+        ),
         "summary_rows": summary_rows,
         "country_rows": country_rows,
         "weight_rows": weight_rows,
@@ -430,6 +467,7 @@ def load_directories(
     apply: bool,
     schema: bool,
     minimum_match_rate: float,
+    only_report_dates: frozenset[dt.date] | None = None,
 ) -> list[dict[str, int | float | str | bool]]:
     results = []
     with connect(dsn) as conn:
@@ -441,10 +479,29 @@ def load_directories(
                 dataset_dir,
                 apply=apply,
                 minimum_match_rate=minimum_match_rate,
+                only_report_dates=only_report_dates,
             )
             print(json.dumps(result, sort_keys=True))
             results.append(result)
     return results
+
+
+def _parse_only_report_dates(raw: str | None) -> frozenset[dt.date] | None:
+    if raw is None:
+        return None
+    parsed = set()
+    for token in (part.strip() for part in raw.split(",")):
+        if not token:
+            continue
+        try:
+            parsed.add(dt.date.fromisoformat(token))
+        except ValueError:
+            raise SystemExit(f"--only-report-dates: {token!r} is not YYYY-MM-DD")
+    if not parsed:
+        # An empty scope would silently mean "write nothing", which reads as a
+        # successful no-op run. Refuse it rather than paint that green.
+        raise SystemExit("--only-report-dates was given but lists no date")
+    return frozenset(parsed)
 
 
 def main() -> None:
@@ -460,7 +517,18 @@ def main() -> None:
     parser.add_argument(
         "--minimum-match-rate", type=float, default=DEFAULT_MINIMUM_MATCH_RATE
     )
+    parser.add_argument(
+        "--only-report-dates",
+        default=None,
+        metavar="YYYY-MM-DD[,YYYY-MM-DD...]",
+        help=(
+            "Restrict every read and write to these report_dates. Without it a "
+            "run rewrites every report_date the given bundles carry, including "
+            "neighbours being held aside as controls."
+        ),
+    )
     args = parser.parse_args()
+    only_report_dates = _parse_only_report_dates(args.only_report_dates)
     dirs = args.dirs or list(DEFAULT_NPORT_DIRS)
     results = load_directories(
         args.dsn,
@@ -468,6 +536,7 @@ def main() -> None:
         apply=args.apply,
         schema=not args.no_schema,
         minimum_match_rate=args.minimum_match_rate,
+        only_report_dates=only_report_dates,
     )
     print(
         json.dumps(

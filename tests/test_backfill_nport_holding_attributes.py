@@ -3,6 +3,8 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import pytest
+
 from scripts import backfill_nport_holding_attributes as backfill
 
 
@@ -10,6 +12,13 @@ def _write_tsv(path: Path, header: list[str], rows: list[list[str]]) -> None:
     path.write_text(
         "\t".join(header) + "\n" + "".join("\t".join(row) + "\n" for row in rows),
         encoding="utf-8",
+    )
+
+
+def _write_identifiers(tmp_path: Path, rows: list[list[str]] | None = None) -> None:
+    """Every DERA bundle carries IDENTIFIERS.tsv; the loader now requires it."""
+    _write_tsv(
+        tmp_path / "IDENTIFIERS.tsv", ["HOLDING_ID", "IDENTIFIER_ISIN"], rows or []
     )
 
 
@@ -42,6 +51,8 @@ def test_build_equity_rollups_preserves_lots_collapsed_by_cloud_pk(tmp_path: Pat
             [accession, "H3", "912810TM0", "Long", "US", "DBT", "40"],
         ],
     )
+
+    _write_identifiers(tmp_path)
 
     summaries, countries, weights = backfill.build_equity_rollups(tmp_path)
 
@@ -100,6 +111,8 @@ def test_build_equity_rollups_uses_latest_filing_per_series_report(tmp_path: Pat
         ],
     )
 
+    _write_identifiers(tmp_path)
+
     summaries, countries, weights = backfill.build_equity_rollups(tmp_path)
 
     assert summaries[0].gross_equity_pct == 20.0
@@ -133,6 +146,8 @@ def test_build_equity_rollups_routes_non_iso_country_to_unknown(tmp_path: Path) 
         ],
         [[accession, "H1", "037833100", "Long", "XX", "EC", "20"]],
     )
+
+    _write_identifiers(tmp_path)
 
     _summaries, countries, _weights = backfill.build_equity_rollups(tmp_path)
 
@@ -260,6 +275,8 @@ def test_build_equity_rollups_emits_zero_tombstone_when_equity_disappears(
         [[accession, "H1", "912810TM0", "Long", "US", "DBT", "100"]],
     )
 
+    _write_identifiers(tmp_path)
+
     summaries, countries, weights = backfill.build_equity_rollups(tmp_path)
 
     assert summaries == [
@@ -288,6 +305,8 @@ def test_build_equity_rollups_skips_seriesless_rows(tmp_path: Path) -> None:
         ["ACCESSION_NUMBER", "PAYOFF_PROFILE", "INVESTMENT_COUNTRY", "ASSET_CAT", "PERCENTAGE"],
         [[accession, "Long", "US", "EC", "100"]],
     )
+
+    _write_identifiers(tmp_path)
 
     assert backfill.build_equity_rollups(tmp_path) == ([], [], [])
 
@@ -371,3 +390,105 @@ def test_upsert_rollups_replaces_holding_weight_sidecars() -> None:
     assert "DELETE FROM nport_equity_holding_weights" in sql
     assert "INSERT INTO nport_equity_holding_weights" in sql
     assert "tmp_nport_equity_holding_weights" in sql
+
+
+def test_build_equity_rollups_refuses_a_bundle_without_identifiers(
+    tmp_path: Path,
+) -> None:
+    """The silent `{}` was how the sidecar rotted: no ISIN map means every
+    CUSIP-less holding lands on the non-unique LE:<issuer_lei> key and lots
+    collapse, with nothing in the output to say so."""
+    accession = "0000000000-26-000021"
+    _write_tsv(
+        tmp_path / "SUBMISSION.tsv",
+        ["ACCESSION_NUMBER", "REPORT_DATE"],
+        [[accession, "31-JAN-2026"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_INFO.tsv",
+        ["ACCESSION_NUMBER", "SERIES_ID"],
+        [[accession, "S000001234"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_HOLDING.tsv",
+        [
+            "ACCESSION_NUMBER",
+            "HOLDING_ID",
+            "ISSUER_CUSIP",
+            "ISSUER_LEI",
+            "PAYOFF_PROFILE",
+            "INVESTMENT_COUNTRY",
+            "ASSET_CAT",
+            "PERCENTAGE",
+        ],
+        [
+            [accession, "H1", "N/A", "LEI0000000000000001", "Long", "IE", "EC", "10"],
+            [accession, "H2", "N/A", "LEI0000000000000001", "Long", "IE", "EC", "20"],
+        ],
+    )
+
+    with pytest.raises(FileNotFoundError, match="IDENTIFIERS.tsv"):
+        backfill.build_equity_rollups(tmp_path)
+
+
+def test_build_equity_rollups_only_report_dates_scopes_the_bundle(
+    tmp_path: Path,
+) -> None:
+    """A quarterly bundle carries several report_dates. Rebuilding one must not
+    drag its neighbours along — they may be the dates held aside as controls."""
+    target = "0000000000-26-000030"
+    neighbour = "0000000000-26-000031"
+    _write_tsv(
+        tmp_path / "SUBMISSION.tsv",
+        ["ACCESSION_NUMBER", "REPORT_DATE"],
+        [[target, "31-JAN-2026"], [neighbour, "28-FEB-2026"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_INFO.tsv",
+        ["ACCESSION_NUMBER", "SERIES_ID"],
+        [[target, "S000001234"], [neighbour, "S000005678"]],
+    )
+    _write_tsv(
+        tmp_path / "FUND_REPORTED_HOLDING.tsv",
+        [
+            "ACCESSION_NUMBER",
+            "HOLDING_ID",
+            "ISSUER_CUSIP",
+            "PAYOFF_PROFILE",
+            "INVESTMENT_COUNTRY",
+            "ASSET_CAT",
+            "PERCENTAGE",
+        ],
+        [
+            [target, "H1", "037833100", "Long", "US", "EC", "10"],
+            [neighbour, "H2", "037833100", "Long", "US", "EC", "20"],
+        ],
+    )
+    _write_identifiers(tmp_path)
+
+    scoped = frozenset({dt.date(2026, 1, 31)})
+    summaries, countries, weights = backfill.build_equity_rollups(tmp_path, scoped)
+
+    assert [row.report_date for row in summaries] == [dt.date(2026, 1, 31)]
+    assert [row.series_id for row in summaries] == ["S000001234"]
+    assert {row.report_date for row in countries} == {dt.date(2026, 1, 31)}
+    assert {row.report_date for row in weights} == {dt.date(2026, 1, 31)}
+
+    # unscoped, the same bundle still yields both dates
+    all_summaries, _c, _w = backfill.build_equity_rollups(tmp_path)
+    assert {row.report_date for row in all_summaries} == {
+        dt.date(2026, 1, 31),
+        dt.date(2026, 2, 28),
+    }
+
+
+def test_parse_only_report_dates_rejects_junk_and_empty_scope() -> None:
+    assert backfill._parse_only_report_dates(None) is None
+    assert backfill._parse_only_report_dates("2026-01-31,2026-02-28") == frozenset(
+        {dt.date(2026, 1, 31), dt.date(2026, 2, 28)}
+    )
+    with pytest.raises(SystemExit, match="not YYYY-MM-DD"):
+        backfill._parse_only_report_dates("31-JAN-2026")
+    # an empty scope would write nothing while exiting 0
+    with pytest.raises(SystemExit, match="lists no date"):
+        backfill._parse_only_report_dates(" , ")
