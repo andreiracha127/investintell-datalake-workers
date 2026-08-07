@@ -68,6 +68,10 @@ WHERE product IN ('bond_security_v1','bond_metric_v1','bond_serving_v1');
 
 ## 2. Load the reference terms (once; before the chain runs)
 
+> **Steps 2 onwards write to production. Do not start them without an explicit
+> GO** — the `\copy` creates and fills a table in the market database, and step 3
+> advances three current pointers.
+
 The reference bodies live on the operator workstation and the workers have no
 access to that filesystem — hence a table, loaded by hand, that the build reads.
 
@@ -90,13 +94,27 @@ railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 \
     FROM STDIN WITH (FORMAT csv, HEADER true)" < bond_reference_terms.csv
 ```
 
-The table is created by the security master's `install_schema`, so either let
-step 3 create it and load afterwards (then re-run step 3), or apply
-`schemas/bond_reference_terms.sql` first. **Loading BEFORE the chain runs saves
-a whole second pass** — the build reads the table once, at build time.
+**Apply `schemas/bond_reference_terms.sql` by hand first**, then `\copy`, then run
+the chain once. The security master's `install_schema` would also create the
+table, but letting it do so means the build reads an EMPTY table, enriches
+nothing, and the whole chain run is wasted — the table is read once, at build
+time. Do not spend a chain run on that.
 
-A load of ~12k rows is a single small statement; the by-slice discipline that
+A load of ~10k rows is a single small statement; the by-slice discipline that
 protects VACUUM applies to the multi-million-row backfills, not to this.
+
+Confirm the load before moving on:
+
+```sql
+SELECT count(*) AS rows,
+       count(seniority) AS seniority,
+       count(callable) AS callable,
+       count(amount_outstanding_mm) AS amount_mm,
+       count(secured) AS secured,
+       count(day_count) AS day_count
+FROM bond_reference_terms;
+-- Expected: 10073 | 9883 | 9858 | 10073 | 982 | 983
+```
 
 ## 3. Execute the chain (deploy = execution)
 
@@ -114,11 +132,28 @@ execution to appear to succeed while doing nothing.
 ```sh
 railway variables --service bond-chain --environment production \
   --set CODE_REVISION=<merge commit sha>
-railway redeploy --service bond-chain --environment production --yes
 ```
 
-Then watch the runtime line the worker prints (the GraphQL `deploymentLogs`
-query often returns only "Starting Container"):
+**Then trigger an actual EXECUTION — and note that not every green Railway
+action is one.** With `restartPolicy=NEVER`, a *deployment* runs the job once,
+but a merge to `main` does NOT deploy, and a plain redeploy of an existing
+deployment has been observed to rebuild and come up without running the worker
+(the incident that cost a full cycle in 2026-07; the current active deployment on
+this service is literally marked `buildOnly: true` with its instance `EXITED`).
+Two paths that do execute:
+
+* **(a) Deploy the new commit** — `serviceInstanceDeploy` with the merge
+  `commitSha` for service `6fca05e1-d90b-4d34-afe8-bd62fe481b87`. A fresh
+  deployment starts the container, which runs the chain once.
+* **(b) Force an existing deployment to run again** — `deploymentRestart` on the
+  service's latest deployment.
+
+Either way, the arbiter is step 4, never the deployment status. If neither is
+convenient, the `0 11 * * *` cron will fire on its own — but then the run happens
+unattended, so still verify in the tables afterwards.
+
+Watch the runtime line the worker prints. Use the **CLI**: the GraphQL
+`deploymentLogs` query often returns only "Starting Container".
 
 ```sh
 railway logs --service bond-chain --environment production
