@@ -129,13 +129,48 @@ def _latest_validated_source(conn: psycopg.Connection) -> tuple[Any, Any] | None
     return (row[0], row[1]) if row else None
 
 
+#: The dense daily serving series. Owned by the serving repository (the app
+#: range-scans it on the request path); read here as an OPTIONAL input, exactly
+#: the shape ``bond_reference_terms`` established — a flat, non-publication
+#: table the build reads and tolerates the absence of.
+LIVE_OBSERVATION_TABLE = "bond_observation_daily"
+
+
+def _live_available(conn: psycopg.Connection) -> bool:
+    """Is the dense daily series readable, WITH the alias view to key it by?
+
+    Both are required: the series is keyed by CUSIP9 and this product is keyed
+    by security_id, so without the alias view there is no honest join and the
+    build falls back to the governed lane alone.
+    """
+    return (_relation_exists(conn, LIVE_OBSERVATION_TABLE)
+            and _relation_exists(conn, "sec_current_bond_security_alias_v1"))
+
+
 def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | None:
+    """The day this build speaks for: the freshest observation ANY input holds.
+
+    Measured 2026-08-07 and the reason this function is not one line: the
+    governed landing table's ``max(as_of)`` is 2025-03-31 while the dense daily
+    series reaches 2026-08-06. Anchoring on the landing table alone made the
+    ``observation_date <= as_of`` no-look-ahead guard exclude EVERY fresh row —
+    the freshness work would have been a silent no-op — and it also aged ``wal``
+    by sixteen months. Taking the greatest of the two anchors keeps the guard
+    doing its job (nothing after the anchor enters the build) while letting the
+    anchor follow the data.
+    """
     if calc_date:
         return date.fromisoformat(calc_date)
-    if not _relation_exists(conn, "bond_price_observation"):
-        return None
-    row = conn.execute("SELECT max(as_of) FROM bond_price_observation").fetchone()
-    return row[0] if row else None
+    anchors: list[date] = []
+    if _relation_exists(conn, "bond_price_observation"):
+        row = conn.execute("SELECT max(as_of) FROM bond_price_observation").fetchone()
+        if row and row[0]:
+            anchors.append(row[0])
+    if _relation_exists(conn, LIVE_OBSERVATION_TABLE):
+        row = conn.execute(f"SELECT max(day) FROM {LIVE_OBSERVATION_TABLE}").fetchone()
+        if row and row[0]:
+            anchors.append(row[0])
+    return max(anchors) if anchors else None
 
 
 # One row per security: published terms joined to the latest eligible price
@@ -144,28 +179,120 @@ def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | No
 # is byte-identical). The ``observation_date <= as_of`` predicate is the
 # no-look-ahead guard: the eligibility view itself knows nothing about the
 # calc-date.
-_INPUTS_SQL = """
-CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS
-WITH latest_price AS (
+_GOVERNED_LANE_CTE = """
+latest_price AS (
     SELECT DISTINCT ON (e.security_id)
            e.security_id, o.price, o.ytm, e.observation_date
     FROM bond_price_eligibility_v1 e
     JOIN bond_price_observation o ON o.observation_id = e.observation_id
     WHERE e.is_eligible AND e.observation_date <= %(as_of)s
     ORDER BY e.security_id, e.observation_date DESC, e.as_of DESC, e.observation_id DESC
-)
+)"""
+
+# The same shape with no rows, for an environment that has no governed price
+# landing at all. Written as an empty CTE rather than as a second SELECT so
+# there is exactly ONE projection tail below and it cannot drift between the
+# two configurations.
+# The stub types ``observation_date`` off the bound ``as_of`` rather than off a
+# bare NULL: it keeps the named placeholder present in EVERY assembled variant,
+# so the one call site can always bind the same parameter dict.
+_GOVERNED_LANE_EMPTY_CTE = """
+latest_price AS (
+    SELECT NULL::uuid AS security_id, NULL::numeric AS price,
+           NULL::numeric AS ytm, %(as_of)s::date AS observation_date
+    WHERE false
+)"""
+
+# --------------------------------------------------------------------------- #
+# The dense daily lane (bond_observation_daily), read PER FIELD.
+# --------------------------------------------------------------------------- #
+# Two separate "latest" reads, not one: a day can carry a price with no yield,
+# and folding them into a single latest-row rule would let a fresh price erase
+# an older bond's yield — trading a stale header for a vanished yield AND a
+# vanished duration (which is solved from the yield). The freshest priced day
+# and the freshest yielded day are resolved independently and each carries its
+# OWN date, so nothing is ever attributed to a day it did not come from. This
+# is the same per-field discipline the monthly continuous aggregate already
+# encodes with its paired ``price_day`` / ``ytm_day`` columns.
+#
+# A security legitimately holds MORE than one CUSIP9 alias, so the dedupe rule
+# is spelled out in full — day, then source precedence, then the CUSIP itself.
+# Without the complete ORDER BY the pick would be arbitrary among ties, the
+# input fingerprint would stop replaying byte-identical, and every run would
+# mint a spurious new publication.
+_LIVE_LANE_CTE = f"""
+live_alias AS (
+    SELECT DISTINCT a.security_id, a.alias_value AS cusip9
+    FROM sec_current_bond_security_alias_v1 a
+    WHERE a.alias_kind = 'cusip9'
+),
+live_price AS (
+    SELECT DISTINCT ON (l.security_id) l.security_id, o.day, o.price
+    FROM live_alias l
+    JOIN {LIVE_OBSERVATION_TABLE} o ON o.cusip9 = l.cusip9
+    WHERE o.price IS NOT NULL AND o.price > 0 AND o.day <= %(as_of)s
+    ORDER BY l.security_id, o.day DESC, o.source_rank DESC, l.cusip9
+),
+live_yield AS (
+    SELECT DISTINCT ON (l.security_id) l.security_id, o.day, o.ytm
+    FROM live_alias l
+    JOIN {LIVE_OBSERVATION_TABLE} o ON o.cusip9 = l.cusip9
+    WHERE o.ytm IS NOT NULL AND o.day <= %(as_of)s
+    ORDER BY l.security_id, o.day DESC, o.source_rank DESC, l.cusip9
+)"""
+
+_LIVE_LANE_EMPTY_CTE = """
+live_price AS (
+    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS price
+    WHERE false
+),
+live_yield AS (
+    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS ytm
+    WHERE false
+)"""
+
+# The projection tail. Each field takes the LATER of its two lanes, so the dense
+# lane never rolls a value backwards and the governed lane keeps every security
+# the dense one does not reach. ``observation_date`` stays the single "as at"
+# stamp the fingerprint and the reports use; the per-field dates are what the
+# arithmetic settles on.
+_INPUTS_TAIL = """
 SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
-       p.price, p.ytm, p.observation_date
+       CASE WHEN lp.day IS NOT NULL
+                 AND (p.observation_date IS NULL OR lp.day > p.observation_date)
+            THEN lp.price ELSE p.price END AS price,
+       CASE WHEN lp.day IS NOT NULL
+                 AND (p.observation_date IS NULL OR lp.day > p.observation_date)
+            THEN lp.day ELSE p.observation_date END AS price_date,
+       CASE WHEN ly.day IS NOT NULL
+                 AND (p.observation_date IS NULL OR ly.day > p.observation_date)
+            THEN ly.ytm ELSE p.ytm END AS ytm,
+       CASE WHEN ly.day IS NOT NULL
+                 AND (p.observation_date IS NULL OR ly.day > p.observation_date)
+            THEN ly.day ELSE p.observation_date END AS ytm_date,
+       greatest(
+           CASE WHEN lp.day IS NOT NULL
+                     AND (p.observation_date IS NULL OR lp.day > p.observation_date)
+                THEN lp.day ELSE p.observation_date END,
+           CASE WHEN ly.day IS NOT NULL
+                     AND (p.observation_date IS NULL OR ly.day > p.observation_date)
+                THEN ly.day ELSE p.observation_date END
+       ) AS observation_date
 FROM sec_current_bond_security_v1 s
-LEFT JOIN latest_price p USING (security_id)
+LEFT JOIN latest_price p ON p.security_id = s.security_id
+LEFT JOIN live_price lp ON lp.security_id = s.security_id
+LEFT JOIN live_yield ly ON ly.security_id = s.security_id
 """
 
-_EMPTY_INPUTS_SQL = """
-CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS
-SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
-       NULL::numeric AS price, NULL::numeric AS ytm, NULL::date AS observation_date
-FROM sec_current_bond_security_v1 s
-"""
+
+def _inputs_sql(*, governed: bool, live: bool) -> str:
+    """Assemble the inputs statement for the lanes this environment actually has."""
+    ctes = ",".join((
+        _GOVERNED_LANE_CTE if governed else _GOVERNED_LANE_EMPTY_CTE,
+        _LIVE_LANE_CTE if live else _LIVE_LANE_EMPTY_CTE,
+    ))
+    return f"CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS\nWITH {ctes}\n{_INPUTS_TAIL}"
+
 
 _FINGERPRINT_SQL = """
 SELECT coalesce(
@@ -175,7 +302,9 @@ SELECT coalesce(
             || '|' || coalesce(coupon_type, '')
             || '|' || coalesce(maturity_date::text, '')
             || '|' || coalesce(price::text, '')
+            || '|' || coalesce(price_date::text, '')
             || '|' || coalesce(ytm::text, '')
+            || '|' || coalesce(ytm_date::text, '')
             || '|' || coalesce(observation_date::text, '')),
         '' ORDER BY security_id)),
     'empty') AS digest,
@@ -207,24 +336,26 @@ FROM _bond_metric_inputs
 # published domain guard is the original's: -0.02 < ytm < 0.60 and a maturity
 # strictly after settlement.
 #
-# Settlement is the PRICE observation date (trade-date settlement), matching the
-# yield the duration is measured against. No price enters the formula: the bond
-# is priced from its own coupon/yield/maturity, so a security with a yield but a
-# stale price still gets an honest duration.
+# Settlement is the date of the YIELD the duration is measured against (trade-date
+# settlement), which since 2026-08-07 is tracked per field: the freshest yielded
+# day, not the freshest priced one. No price enters the formula — the bond is
+# priced from its own coupon/yield/maturity — so a security whose yield is newer
+# than its price (or vice versa) still gets a duration measured at one coherent
+# instant instead of one straddling two dates.
 _DURATION_LATERALS = """
 CROSS JOIN LATERAL (
     SELECT CASE
-             WHEN i.ytm IS NULL OR i.observation_date IS NULL
+             WHEN i.ytm IS NULL OR i.ytm_date IS NULL
                OR i.coupon_rate IS NULL OR i.maturity_date IS NULL
                OR lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed'
-               OR i.maturity_date <= i.observation_date
+               OR i.maturity_date <= i.ytm_date
                OR i.ytm <= -0.02 OR i.ytm >= 0.60
              THEN NULL
              ELSE (nullif(i.ytm, 0) / 2.0)::double precision
            END AS y,
            (i.coupon_rate / 200.0)::double precision AS c,
-           CASE WHEN i.maturity_date IS NULL OR i.observation_date IS NULL THEN NULL
-                ELSE greatest(round(2.0 * ((i.maturity_date - i.observation_date)::numeric
+           CASE WHEN i.maturity_date IS NULL OR i.ytm_date IS NULL THEN NULL
+                ELSE greatest(round(2.0 * ((i.maturity_date - i.ytm_date)::numeric
                                            / 365.25)), 1)::double precision END AS n
 ) dp
 CROSS JOIN LATERAL (
@@ -303,7 +434,7 @@ CROSS JOIN LATERAL (
         ('security_effective_duration',
          de.effective_duration,
          CASE WHEN de.effective_duration IS NOT NULL THEN 'available'
-              WHEN i.ytm IS NULL OR i.observation_date IS NULL THEN 'no_eligible_price'
+              WHEN i.ytm IS NULL OR i.ytm_date IS NULL THEN 'no_eligible_price'
               WHEN i.coupon_rate IS NULL THEN 'terms_insufficient'
               WHEN lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed' THEN 'terms_insufficient'
               WHEN i.maturity_date IS NULL THEN 'terms_insufficient'
@@ -311,7 +442,7 @@ CROSS JOIN LATERAL (
          CASE WHEN i.coupon_rate IS NULL THEN 'coupon_rate_unpublished'
               WHEN lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed' THEN 'coupon_type_unsupported'
               WHEN i.maturity_date IS NULL THEN 'maturity_unpublished'
-              WHEN i.maturity_date <= i.observation_date THEN 'settlement_after_maturity'
+              WHEN i.maturity_date <= i.ytm_date THEN 'settlement_after_maturity'
               WHEN i.ytm <= -0.02 OR i.ytm >= 0.60 OR i.ytm = 0 THEN 'yield_out_of_domain'
               ELSE 'non_finite_result' END,
          'analytic_modified_duration'),
@@ -447,11 +578,10 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             conn.commit()
             return {"state": "no_observations", "product": PRODUCT}
 
-        if (_relation_exists(conn, "bond_price_eligibility_v1")
-                and _relation_exists(conn, "bond_price_observation")):
-            conn.execute(_INPUTS_SQL, {"as_of": as_of})
-        else:
-            conn.execute(_EMPTY_INPUTS_SQL)
+        governed = (_relation_exists(conn, "bond_price_eligibility_v1")
+                    and _relation_exists(conn, "bond_price_observation"))
+        live = _live_available(conn)
+        conn.execute(_inputs_sql(governed=governed, live=live), {"as_of": as_of})
         digest, security_count = conn.execute(_FINGERPRINT_SQL).fetchone()
         # The protocol pins sha256 fingerprints (64 hex); salt the row digest
         # with the product identity and methodology so a semantics change alone

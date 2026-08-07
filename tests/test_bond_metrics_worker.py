@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
@@ -638,3 +638,98 @@ def test_new_surfaces_carry_no_vendor_identity():
         text = path.read_text(encoding="utf-8").lower()
         for token in ("osbap", "openbondassetpricing", "trace", "wrds", "n-port", "nport"):
             assert token not in text, f"{path.name} leaks vendor token {token!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Freshness: the dense daily series carries the build forward (2026-08-07)
+# --------------------------------------------------------------------------- #
+def _seed_dense_series(conn, rows) -> None:
+    """Plain-table stand-in for the bond_observation_daily hypertable.
+
+    The CUSIP9 -> security_id join runs through the alias view the security
+    master already publishes (``publish_security_master`` seeds it), so nothing
+    identity-shaped is invented here.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    for row in rows:
+        conn.execute(
+            "INSERT INTO bond_observation_daily "
+            "VALUES(%s,%s,%s,%s,NULL,'trade','clean','finnhub',1,'reported') "
+            "ON CONFLICT (cusip9, day) DO NOTHING", row,
+        )
+    conn.commit()
+
+
+def test_a_newer_dense_observation_prices_the_metrics(env):
+    """latest_price_pct / current_yield / security_ytm all move to the newer day.
+
+    This is the whole 2e mechanism on the metric side: the governed landing
+    table stops, the dense series continues, and the published numbers follow it
+    instead of freezing at the landing table's last day.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [(CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410"))])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    # The build's own anchor followed the data (it was AS_OF before).
+    assert result["as_of"] == fresh_day.isoformat()
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    # coupon 10.0 over the NEW price, not the old 96.23.
+    assert round(metrics["current_yield"][2], 8) == round(
+        Decimal("10.0") / Decimal("104.50"), 8
+    )
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_price_and_yield_resolve_on_their_own_latest_days(env):
+    """A fresh price with no yield must not erase the yield -- nor the duration.
+
+    The dense series carries a newer PRICED day whose yield is absent. Folding
+    both fields onto one latest row would publish a yield of NULL (and, since
+    duration is solved from the yield, no duration either).
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("100.00"), Decimal("0.0500")),
+        (CUSIP_FIX, AS_OF + timedelta(days=20), Decimal("101.00"), None),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema))
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("101.00"), "freshest PRICED day"
+    assert metrics["security_ytm"][2] == Decimal("0.0500"), "freshest YIELDED day"
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_an_older_dense_observation_never_rolls_a_metric_backwards(env):
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF - timedelta(days=5), Decimal("50.00"), Decimal("0.4000")),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema))
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("96.23")
+    assert metrics["security_ytm"][2] == Decimal("0.076")

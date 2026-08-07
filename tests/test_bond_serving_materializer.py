@@ -28,6 +28,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -479,6 +480,163 @@ def test_materialize_is_idempotent() -> None:
             "SELECT count(*) FROM sec_derived_publications WHERE product='bond_serving_v1'"
         ).fetchone()[0]
         assert count == 1
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Freshness: the dense daily series advances the latest lane (2026-08-07)
+# --------------------------------------------------------------------------- #
+def _seed_dense_series(cur, rows) -> None:
+    """A plain-table stand-in for the bond_observation_daily hypertable.
+
+    The real relation is a TimescaleDB hypertable owned by the serving
+    repository; the columns and the (cusip9, day) key are what this build reads,
+    and neither needs time partitioning to be exercised.
+    """
+    cur.execute("""
+        CREATE TABLE bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    cur.executemany(
+        "INSERT INTO bond_observation_daily VALUES(%s,%s,%s,%s,NULL,%s,%s,%s,%s,'reported')",
+        rows,
+    )
+
+
+def _observation(cur, security_id, lane):
+    return cur.execute(
+        "SELECT observation_date, payload FROM bond_serving_facts "
+        "WHERE surface='observations' AND security_id=%s AND lane=%s",
+        (security_id, lane),
+    ).fetchall()
+
+
+def test_a_newer_dense_observation_advances_the_latest_lane_and_the_price() -> None:
+    """The 2e mechanism: header date and catalog price follow the dense series.
+
+    SEC1's governed latest sits on AS_OF; the dense series carries a strictly
+    newer day for its CUSIP9. Every surface that speaks about "latest" must move
+    to that day -- carrying the REAL observation date, never a re-stamped one.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        result = materializer.materialize(
+            cur.connection, as_of=fresh_day, code_revision="test"
+        )
+        assert result["latest_observation"]["advanced_securities"] == 1
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        assert observation_date == fresh_day, "the header must carry the REAL day"
+        assert float(payload["price"]) == 101.75
+        assert float(payload["ytm"]) == 0.0475
+
+        for surface in ("catalog", "detail"):
+            payload = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert float(payload["latest_price_pct"]) == 101.75, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_older_dense_observation_never_rolls_the_latest_lane_backwards() -> None:
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF - timedelta(days=10), 90.0, 0.09,
+             "trade", "clean", "finnhub", 1),
+        ])
+        result = _materialize(cur)
+        assert result["latest_observation"]["advanced_securities"] == 0
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == AS_OF
+        assert float(payload["price"]) == 99.5
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_securities_the_dense_series_does_not_reach_keep_their_governed_lane() -> None:
+    """SEC2 has no dense row: its (ambiguous, duplicate) governed rows survive."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+        rows = _observation(cur, SEC2, "latest")
+        assert len(rows) == 2, "both duplicate-cohort rows are retained"
+        assert {row[0] for row in rows} == {AS_OF}
+        # An ambiguous cohort still has NO unambiguous price to serve.
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC2,),
+        ).fetchone()[0]
+        assert payload["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_aliases_disagreeing_on_the_latest_day_are_marked_ambiguous() -> None:
+    """Two CUSIP9s of one security, same day, different prices -> no served price.
+
+    An arbitrary winner here would be a silently fabricated price; the build
+    reuses the existing duplicate-cohort state instead, which the surfaces
+    already degrade on.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("degraded", "observation_ambiguous")
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert payload["latest_price_pct"] is None
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
