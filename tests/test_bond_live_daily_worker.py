@@ -203,6 +203,44 @@ def test_the_tick_lane_asks_for_the_previous_session_only() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Stage 5: republish
+# --------------------------------------------------------------------------- #
+def test_a_failed_republication_is_flagged_so_the_run_exits_non_zero(monkeypatch) -> None:
+    """"Load and recompute" -- a day whose recompute failed is not a green day.
+
+    Nothing retries it before tomorrow: the 11:00 chain's run_id does not change
+    just because this worker failed, so a silent success here would leave the
+    product a day stale with no signal at all.
+    """
+    from src.workers import bond_metrics, bond_serving
+
+    monkeypatch.setattr(bond_metrics, "run", lambda *a, **k: {"state": "ok"})
+    monkeypatch.setattr(
+        bond_serving, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    out = bond_live_daily._republish("postgresql://x")
+    assert out["failed"] is True
+    assert out["bond_serving"]["state"] == "failed"
+
+    # A worker that merely REPORTS a failed state counts too, not just a raise.
+    monkeypatch.setattr(bond_serving, "run", lambda *a, **k: {"state": "failed"})
+    assert bond_live_daily._republish("postgresql://x")["failed"] is True
+
+    monkeypatch.setattr(bond_serving, "run", lambda *a, **k: {"state": "ok"})
+    assert bond_live_daily._republish("postgresql://x")["failed"] is False
+
+
+def test_run_worker_reads_the_top_level_aborted_key() -> None:
+    """The exit-code contract lives on that exact key -- keep them wired."""
+    import inspect
+
+    from src import run_worker
+
+    assert 'stats.get("aborted")' in inspect.getsource(run_worker.main)
+    assert '"aborted": aborted' in inspect.getsource(bond_live_daily.run)
+
+
+# --------------------------------------------------------------------------- #
 # Provider client
 # --------------------------------------------------------------------------- #
 class _Response:

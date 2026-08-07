@@ -359,18 +359,29 @@ def _republish(dsn: str) -> dict[str, Any]:
 
     Imported lazily and invoked through their own ``run(dsn)`` so each opens its
     own connection and takes its own advisory lock -- the chain's own idiom. A
-    failure is REPORTED (the loaded data is already durable and the chain will
-    retry at 11:00); it never rolls back the load.
+    failure never rolls back the load (the rows are already durable), but it
+    DOES fail the run: the owner asked for a worker that loads *and* recomputes,
+    and a day whose recompute failed is a truncated day, not a green one.
+    Nothing else will retry it before tomorrow -- the 11:00 chain's run_id does
+    not change just because this worker failed -- so a silent green here would
+    leave the product a day stale with no signal at all.
     """
     from src.workers import bond_metrics, bond_serving
 
     out: dict[str, Any] = {}
+    failed = False
     for name, worker in (("bond_metrics", bond_metrics), ("bond_serving", bond_serving)):
         try:
-            out[name] = worker.run(dsn)
-        except Exception as exc:  # reported, never fatal to the load
+            result = worker.run(dsn)
+        except Exception as exc:
             out[name] = {"state": "failed", "error": f"{type(exc).__name__}: {exc}"}
+            failed = True
             break
+        out[name] = result
+        if str(result.get("state")) == "failed":
+            failed = True
+            break
+    out["failed"] = failed
     return out
 
 
@@ -412,12 +423,16 @@ def run(
     matview = _refresh_curated(resolved)
     republish = _republish(resolved)
 
-    aborted = bool(candles.get("aborted"))
+    # Two ways a day is truncated, and BOTH have to be non-green: a sweep the
+    # provider cut short, and a republication that failed (the load is durable
+    # but unserved). ``run_worker`` reads the top-level ``aborted`` key and
+    # exits non-zero on it, so either shows up as a failed deploy instead of a
+    # log line nobody reads.
+    republish_failed = bool(republish.pop("failed", False))
+    aborted = bool(candles.get("aborted")) or republish_failed
     return {
-        # A sweep the provider cut short is never painted green: ``run_worker``
-        # reads this TOP-LEVEL key and exits non-zero on it, so the truncation
-        # shows up as a failed deploy instead of a log line nobody reads.
-        "state": "aborted" if aborted else "ok",
+        "state": ("republish_failed" if republish_failed
+                  else "aborted" if aborted else "ok"),
         "aborted": aborted,
         "as_of": today.isoformat(),
         "universe": len(universe),
