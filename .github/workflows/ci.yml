@@ -40,6 +40,7 @@ jobs:
         run: >-
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
+          scripts/load_bond_reference_terms.py
           scripts/sync_sec_regulatory_contract.py
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
@@ -102,6 +103,7 @@ jobs:
             tests/bonds/test_curves_resolution.py
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
+            tests/bonds/test_issuer_consensus.py
             tests/bonds/test_matching.py
             tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
@@ -126,6 +128,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_fund_peer_groups.py
@@ -205,6 +208,7 @@ jobs:
         run: >-
           python -m compileall -q
           scripts/verify_mixed_quant_contract.py
+          scripts/load_bond_reference_terms.py
           scripts/sync_sec_regulatory_contract.py
           scripts/compose_fund_regulatory_serving_mappings.py
           scripts/verify_class_mappings_secapi.py
@@ -277,6 +281,7 @@ jobs:
             tests/bonds/test_curves_resolution.py
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
+            tests/bonds/test_issuer_consensus.py
             tests/bonds/test_matching.py
             tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
@@ -301,6 +306,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_ncen_effective_views.py

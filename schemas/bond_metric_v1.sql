@@ -63,9 +63,13 @@ FOR EACH ROW EXECUTE FUNCTION bond_metric_v1_build_guard();
 CREATE TABLE IF NOT EXISTS bond_metric_v1 (
     publication_id       uuid NOT NULL REFERENCES sec_derived_publications(publication_id) ON DELETE RESTRICT,
     security_id          uuid NOT NULL,
-    -- The CLOSED Wave-1 metric vocabulary (owner authorization 2026-07-23).
+    -- The CLOSED metric vocabulary. Extended 2026-08-07 with
+    -- security_effective_duration + latest_price_pct (see the ALTER below, which
+    -- is what actually widens an ALREADY-CREATED table: the inline CHECK in a
+    -- CREATE TABLE IF NOT EXISTS is a no-op on every re-apply).
     metric_id            text NOT NULL CHECK (metric_id IN (
-        'security_ytm', 'security_ytw', 'current_yield', 'wal')),
+        'security_ytm', 'security_ytw', 'current_yield', 'wal',
+        'security_effective_duration', 'latest_price_pct')),
     -- Yields are decimal fractions per annum; wal is years. NULL unless the
     -- row is 'available' (CHECK below) — absence is honest, never a zero.
     value                numeric,
@@ -88,6 +92,42 @@ CREATE TABLE IF NOT EXISTS bond_metric_v1 (
     CHECK ((status IN ('engine_typed_error', 'terms_insufficient'))
            = (engine_error_code IS NOT NULL))
 );
+
+-- ---------------------------------------------------------------------------
+-- Vocabulary migration (2026-08-07): widen the CLOSED metric_id set in place.
+--
+-- CREATE TABLE IF NOT EXISTS never revisits an existing table's constraints, so
+-- editing the inline CHECK above only governs a table created from scratch. This
+-- block is what widens the live table, and it is idempotent by construction:
+-- the constraint is dropped by name and re-added every time the DDL is applied.
+-- The vocabulary stays CLOSED — the two additions are named explicitly and
+-- nothing outside the six ids can ever be written.
+--   security_effective_duration — modified duration (years), analytic closed
+--     form over the published coupon/maturity and the observed price-date yield.
+--   latest_price_pct            — the eligible latest clean price, % of par.
+-- OAS, z-spread and a callable YTW remain DELIBERATELY absent: no validated
+-- model publishes them, and an unmodelled number would be a guess.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE constraint_name text;
+BEGIN
+    IF to_regclass('bond_metric_v1') IS NULL THEN
+        RETURN;
+    END IF;
+    FOR constraint_name IN
+        SELECT con.conname
+        FROM pg_constraint con
+        WHERE con.conrelid = 'bond_metric_v1'::regclass
+          AND con.contype = 'c'
+          AND pg_get_constraintdef(con.oid) LIKE '%metric_id%'
+    LOOP
+        EXECUTE format('ALTER TABLE bond_metric_v1 DROP CONSTRAINT %I', constraint_name);
+    END LOOP;
+    ALTER TABLE bond_metric_v1 ADD CONSTRAINT bond_metric_v1_metric_id_check
+        CHECK (metric_id IN (
+            'security_ytm', 'security_ytw', 'current_yield', 'wal',
+            'security_effective_duration', 'latest_price_pct'));
+END $$;
 
 -- Shared write guard: insert-only, only while the parent publication is
 -- 'prepared', and pinned to the build as_of.

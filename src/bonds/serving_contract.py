@@ -167,11 +167,16 @@ SURFACES: tuple[dict[str, Any], ...] = (
         # reported issuer category) — the reported classification resolved from the
         # holding grain to the security grain by reported consensus; a security no
         # holding classifies serves the key as JSON null, never a guess.
+        # Wave 1c: + security_effective_duration (modified duration in years, the
+        # analytic closed form over the published coupon/maturity and the observed
+        # price-date yield). Publishing the key is what unlocks the reader's gated
+        # duration filter — the app derives its answerable filter set FROM these
+        # keys, so this addition is the whole mechanism, not a cosmetic one.
         "payload_keys": (
             "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
             "display", "identity_state", "is_144a", "issuer_country", "issuer_name",
-            "issuer_sector", "latest_price_pct", "maturity_date", "security_ytm",
-            "security_ytw",
+            "issuer_sector", "latest_price_pct", "maturity_date",
+            "security_effective_duration", "security_ytm", "security_ytw",
         ),
     },
     {
@@ -188,11 +193,19 @@ SURFACES: tuple[dict[str, Any], ...] = (
         # (decimal fractions) and wal (years) from the promoted current metric view —
         # null-honest: any non-available metric row (or no row) serves JSON null,
         # never a synthetic 0. Coupon stays a reported TERM, never a yield.
+        # Wave 1c: + security_effective_duration and latest_price_pct (so the
+        # detail shows the same price the catalog filters on), + the two reference
+        # terms the filing itself never reports: ``callable`` (a boolean fact, NOT
+        # a call schedule — no dates are known, so no schedule is fabricated) and
+        # ``amount_outstanding_mm`` (millions of the issue currency). Both stay
+        # null-honest for a security the reference does not cover.
         "payload_keys": (
-            "aliases", "call_schedule", "coupon_rate", "coupon_schedule", "coupon_type",
-            "currency", "current_yield", "day_count", "identity_evidence", "identity_state",
-            "is_144a", "issuer_name", "maturity_date", "put_schedule", "secured",
-            "security_ytm", "security_ytw", "seniority", "settlement_convention", "wal",
+            "aliases", "amount_outstanding_mm", "call_schedule", "callable", "coupon_rate",
+            "coupon_schedule", "coupon_type", "currency", "current_yield", "day_count",
+            "identity_evidence", "identity_state", "is_144a", "issuer_name",
+            "latest_price_pct", "maturity_date", "put_schedule", "secured",
+            "security_effective_duration", "security_ytm", "security_ytw", "seniority",
+            "settlement_convention", "wal",
         ),
     },
     {
@@ -229,12 +242,22 @@ SURFACES: tuple[dict[str, Any], ...] = (
 # Frozen handshake digest -- MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Independent of
 # the regulatory ``sec_regulatory_serving_v1`` digest (sibling product decision).
-# Deliberately re-synced for Bonds Activation Wave 1b (catalog issuer_country /
-# issuer_sector); previous frozen value: sha256:96d2f0317be3ae287fdae393a3851122
-# 321e65cb26b8aa0094e819085a971e0d (Wave 1 catalog + detail computed metric keys),
-# before that sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b5077
-# 1a35.
-SURFACE_DIGEST = "sha256:5f7fd708b5adb3f1ad638316ed38c243056c1bc413069ff4f3ca0d00551ca6fc"
+#
+# Deliberately re-synced for Bonds Activation Wave 1c (catalog
+# security_effective_duration; detail security_effective_duration +
+# latest_price_pct + callable + amount_outstanding_mm). THE APP REPO MUST BE
+# RE-SYNCED TO THIS SAME VALUE: until it is, the two repos declare different
+# surfaces and the reader keeps its duration filter 422-gated. Publishing the
+# extra payload keys ahead of that sync is harmless (the reader ignores keys it
+# does not map), so the two merges do not have to be simultaneous -- only both.
+#
+# Previous frozen values, newest first:
+#   sha256:5f7fd708b5adb3f1ad638316ed38c243056c1bc413069ff4f3ca0d00551ca6fc
+#     (Wave 1b catalog issuer_country / issuer_sector)
+#   sha256:96d2f0317be3ae287fdae393a3851122321e65cb26b8aa0094e819085a971e0d
+#     (Wave 1 catalog + detail computed metric keys)
+#   sha256:ee64be3339843e73b2d93d4862796b3ac3a94f51e57fb8fb9472592b50771a35
+SURFACE_DIGEST = "sha256:cd14dcbe08339b31176f0f6c65b00d2f15e4b05fbf9e943fc0ca98a158329999"
 
 
 def _surface_surface(surface: dict[str, Any]) -> dict[str, Any]:

@@ -217,8 +217,9 @@ def test_worker_publishes_the_source_delivered_yield(env):
     assert result["state"] == "ok"
     assert result["product"] == "bond_metric_v1"
     assert result["securities"] == 1
-    assert result["rows"] == 4
-    assert result["available"] == 3  # ytm, current_yield, wal
+    assert result["rows"] == 6
+    # ytm, current_yield, wal, security_effective_duration, latest_price_pct
+    assert result["available"] == 5
     assert result["terms_insufficient"] == 1  # ytw: no call schedule published
 
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
@@ -232,6 +233,20 @@ def test_worker_publishes_the_source_delivered_yield(env):
     assert float(rows["wal"][2]) == pytest.approx((date(2030, 1, 1) - AS_OF).days / 365.0, rel=1e-9)
     assert rows["security_ytw"][3] == "terms_insufficient"
     assert rows["security_ytw"][2] is None
+    # latest_price_pct is % of par, straight from the eligible latest lane.
+    assert float(rows["latest_price_pct"][2]) == pytest.approx(96.23, rel=1e-9)
+    # Analytic modified duration of a semiannual 10% bullet at 7.6%, five years
+    # out. The expected value is the closed form evaluated independently here, so
+    # a change to the SQL port has to justify itself against the mathematics
+    # rather than against its own output.
+    y, c = 0.076 / 2.0, 10.0 / 200.0
+    n = round(2 * ((date(2030, 1, 1) - AS_OF).days / 365.25))
+    v = (1 + y) ** (-n)
+    ann = (1 - v) / y
+    px = c * ann + v
+    expected = (((c * ((1 + y) / y * ann - n * v / y) + n * v) / px) / 2.0) / (1 + y)
+    assert float(rows["security_effective_duration"][2]) == pytest.approx(expected, rel=1e-9)
+    assert rows["security_effective_duration"][3] == "available"
 
     assert current_pointer(conn) == UUID(result["publication_id"])
 
@@ -249,7 +264,7 @@ def test_no_qualification_registry_is_needed_to_publish(env):
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert result["state"] == "ok"
-    assert result["available"] == 3
+    assert result["available"] == 5
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
     assert rows["security_ytm"][3] == "available"
 
@@ -282,7 +297,7 @@ def test_per_security_typed_statuses_never_a_fabricated_value(env):
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
     assert result["state"] == "ok"
-    assert result["securities"] == 4 and result["rows"] == 16
+    assert result["securities"] == 4 and result["rows"] == 24
 
     fix = rows_by_metric(current_rows(conn, SEC_FIX))
     for metric in ("security_ytm", "current_yield", "wal"):
@@ -310,6 +325,24 @@ def test_per_security_typed_statuses_never_a_fabricated_value(env):
     # ytw is uniformly terms_insufficient: nothing to compute it from.
     for rows in (fix, nop, noy, ncp):
         assert rows["security_ytw"][3] == "terms_insufficient"
+
+    # The two additions follow the same honesty ladder, each for its own reason.
+    assert fix["security_effective_duration"][3] == "available"
+    assert fix["latest_price_pct"][3] == "available"
+    assert float(fix["latest_price_pct"][2]) == pytest.approx(96.23, rel=1e-9)
+    # NOP has no price at all: no yield to measure duration against, no price.
+    assert nop["security_effective_duration"][3] == "no_eligible_price"
+    assert nop["latest_price_pct"][3] == "no_eligible_price"
+    assert nop["latest_price_pct"][2] is None
+    # NOY has a price but the source delivered no yield: duration needs the
+    # yield, the price metric does not.
+    assert noy["security_effective_duration"][3] == "no_eligible_price"
+    assert noy["latest_price_pct"][3] == "available"
+    # NCP has price AND yield but no published coupon: a TYPED terms refusal
+    # carrying its reason code, never a duration computed off a guessed coupon.
+    assert ncp["security_effective_duration"][3] == "terms_insufficient"
+    assert ncp["security_effective_duration"][2] is None
+    assert ncp["security_effective_duration"][4] == "coupon_rate_unpublished"
 
     # Structural honesty in the DB itself: value present iff available.
     bad = conn.execute(
@@ -352,7 +385,7 @@ def test_future_observation_never_enters_the_build(env):
     conn.commit()
 
     result = bond_metrics.run(search_path_dsn(schema), calc_date=as_of.isoformat())
-    assert result["state"] == "ok" and result["available"] == 3
+    assert result["state"] == "ok" and result["available"] == 5
 
     rows = rows_by_metric(current_rows(conn, SEC_FIX))
     # The STALE print's yield and price serve; the future print's never do.
@@ -439,7 +472,7 @@ def test_replay_is_idempotent_and_input_change_mints_a_new_publication(env):
         "SELECT count(*) FROM bond_metric_v1 WHERE publication_id=%s",
         (UUID(first["publication_id"]),),
     ).fetchone()[0]
-    assert n == 4  # no duplicate rows on replay
+    assert n == len(SERVED_METRICS)  # no duplicate rows on replay
 
     # A fresher eligible observation changes the build inputs: a NEW publication.
     land_price(conn, run_id, cusip9=CUSIP_FIX, price=Decimal("97.10"), ytm=0.071,
@@ -525,12 +558,74 @@ def test_same_inputs_produce_the_same_publication_across_schemas():
     assert payloads[0] == payloads[1]
 
 
-def test_schema_enum_carries_exactly_the_wave1_metrics_and_no_forbidden_family():
-    ddl = (ROOT / "schemas" / "bond_metric_v1.sql").read_text(encoding="utf-8").lower()
-    for metric in SERVED_METRICS:
-        assert metric in ddl
-    for forbidden in ("oas", "zspread", "z_spread", "duration"):
-        assert forbidden not in ddl
+def test_live_metric_vocabulary_is_exactly_the_served_set(env):
+    """The vocabulary is checked on the LIVE constraint, not on the DDL text.
+
+    The inline CHECK inside ``CREATE TABLE IF NOT EXISTS`` is a no-op once the
+    table exists, so only the idempotent ALTER block actually widens a deployed
+    table. Reading the constraint back from ``pg_constraint`` is the only
+    assertion that would have caught a migration that silently did nothing.
+    """
+    import re
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id)
+    from src.workers import bond_metrics
+
+    assert bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())["state"] == "ok"
+
+    definitions = [
+        row[0] for row in conn.execute(
+            "SELECT pg_get_constraintdef(con.oid) FROM pg_constraint con "
+            "WHERE con.conrelid = 'bond_metric_v1'::regclass AND con.contype='c'"
+        ).fetchall()
+        if "metric_id" in row[0]
+    ]
+    assert len(definitions) == 1, definitions
+    declared = set(re.findall(r"'([a-z_0-9]+)'", definitions[0]))
+    assert declared == set(SERVED_METRICS)
+
+
+def test_the_metric_vocabulary_still_refuses_the_unmodelled_families(env):
+    """OAS, z-spread and a callable YTW have no validated model here.
+
+    Widening the vocabulary for duration and price must not have opened the door
+    to the families that would require one — an unmodelled spread is a guess, and
+    the CLOSED enum is what makes that unwritable rather than merely unwritten.
+    """
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id)
+    from src.workers import bond_metrics
+
+    assert bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())["state"] == "ok"
+
+    # Exercise the CHECK itself on a structural copy: the product table's write
+    # guard (publication must be 'prepared') would otherwise refuse the insert
+    # first and the constraint would never be reached, so the copy is what makes
+    # this test about the VOCABULARY rather than about the guard.
+    conn.execute(
+        "CREATE TEMP TABLE _metric_vocabulary_probe "
+        "(LIKE bond_metric_v1 INCLUDING CONSTRAINTS INCLUDING DEFAULTS) ON COMMIT DROP"
+    )
+    for allowed in SERVED_METRICS:
+        conn.execute(
+            "INSERT INTO _metric_vocabulary_probe"
+            "(publication_id,security_id,metric_id,value,status,as_of,"
+            " methodology_version,provenance) "
+            "VALUES (%s,%s,%s,NULL,'no_eligible_price',%s,'bond_metric_v1','{}'::jsonb)",
+            (uuid4(), SEC_FIX, allowed, AS_OF),
+        )
+    for forbidden in ("security_oas", "security_zspread", "effective_duration", "rating_bucket"):
+        with conn.transaction(force_rollback=True):
+            with pytest.raises(psycopg.errors.CheckViolation):
+                conn.execute(
+                    "INSERT INTO _metric_vocabulary_probe"
+                    "(publication_id,security_id,metric_id,value,status,as_of,"
+                    " methodology_version,provenance) "
+                    "VALUES (%s,%s,%s,NULL,'no_eligible_price',%s,'bond_metric_v1','{}'::jsonb)",
+                    (uuid4(), SEC_FIX, forbidden, AS_OF),
+                )
+    conn.rollback()
 
 
 def test_new_surfaces_carry_no_vendor_identity():

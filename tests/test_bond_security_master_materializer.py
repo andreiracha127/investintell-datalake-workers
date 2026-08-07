@@ -26,6 +26,125 @@ pytestmark = pytest.mark.skipif(
 )
 
 AS_OF = date(2026, 6, 30)
+ROOT_SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
+
+
+def _install_enrichment_relations(cur, *, lei_rows=(), reference_rows=()):
+    """Stand up the two OPTIONAL enrichment inputs the build reads when present.
+
+    Both are optional in production (a build with neither still publishes), so
+    they are created here rather than in ``base_fixture``: every other test in
+    this file then exercises the absent path for free.
+    """
+    cur.execute((ROOT_SCHEMAS / "bond_reference_terms.sql").read_text(encoding="utf-8"))
+    cur.execute("CREATE TABLE sec_nport_holdings_v2_current(cusip text, issuer_lei text)")
+    for cusip9, lei in lei_rows:
+        cur.execute(
+            "INSERT INTO sec_nport_holdings_v2_current(cusip, issuer_lei) VALUES(%s,%s)",
+            (cusip9, lei),
+        )
+    for row in reference_rows:
+        cur.execute(
+            "INSERT INTO bond_reference_terms"
+            "(cusip9,seniority,callable,amount_outstanding_mm,coupon_rate,batch_label) "
+            "VALUES(%s,%s,%s,%s,%s,'test')",
+            row,
+        )
+
+
+def test_published_issuer_comes_from_reported_consensus_not_an_arbitrary_pick():
+    """End to end: the spelling variance that used to null the issuer now names it.
+
+    Four funds report one bond four ways (case, punctuation, corporate suffix, an
+    appended coupon and maturity). The published row must carry ONE issuer name,
+    a RESOLVED identity -- the CUSIP9 was never in doubt -- and the evidence
+    needed to audit the choice.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id = base_fixture(cur)
+        _install_enrichment_relations(
+            cur,
+            lei_rows=[("037833100", "5493001KJTIIGC8Y1R12")],
+            reference_rows=[("037833100", "Senior", True, 525.0, None)],
+        )
+        for name in ("AFLAC INC", "Aflac, Inc.", "AFLAC INCORPORATED",
+                     "AFLAC INC 3.6% 04/01/30"):
+            observe(cur, run_id, as_of=AS_OF, observation_date=AS_OF,
+                    cusip9="037833100", issuer_name=name, coupon_type="fixed",
+                    coupon_rate="3.60", maturity_date=date(2030, 4, 1))
+
+        result = security_master.materialize(
+            conn, as_of=AS_OF, source_run_id=run_id,
+            source_package_id=package_id, code_revision="testrev",
+        )
+        assert result["issuer_attributed"] == 1
+        assert result["issuer_abstained"] == 0
+
+        cur.execute(
+            "SELECT issuer_name, identity_state, identity_reason_code, seniority, terms,"
+            "       identity_evidence, coupon_rate "
+            "FROM sec_current_bond_security_v1"
+        )
+        issuer, state, reason, seniority, terms, evidence, coupon = cur.fetchone()
+        assert issuer == "AFLAC INC"
+        # The whole point: reported spelling variance is NOT identity ambiguity.
+        assert state == "resolved" and reason is None
+        attribution = evidence["issuer_attribution"]
+        assert attribution["attribution"] == "cusip9_consensus"
+        assert attribution["n_sources"] == 4
+        assert attribution["top_share"] == 1.0
+        assert attribution["distinct_lei"] == ["5493001KJTIIGC8Y1R12"]
+
+        # ...and the reference filled ONLY the terms the filings never carried.
+        assert seniority == "Senior"
+        assert terms["callable"] is True
+        assert terms["amount_outstanding_mm"] == 525.0
+        assert evidence["reference_terms"]["basis"] == "vendor_reference"
+        assert evidence["reference_terms"]["fields"] == [
+            "amount_outstanding_mm", "callable", "seniority",
+        ]
+        # The chain's own coupon survives: the reference is gap-fill, not override.
+        assert float(coupon) == 3.60
+
+        cur.execute(f'SET search_path TO "{schema}"')
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_disagreeing_reported_legal_entities_abstain_rather_than_name():
+    """Two LEIs for one CUSIP9: the filers disagree about WHO issued it.
+
+    A name consensus cannot settle that, so nothing is published -- and the
+    reason rides on the row, so the abstention is visible rather than silent.
+    """
+    import psycopg
+
+    with psycopg.connect(dsn(), autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id = base_fixture(cur)
+        _install_enrichment_relations(cur, lei_rows=[
+            ("037833100", "5493001KJTIIGC8Y1R12"),
+            ("037833100", "213800LBQA1Y9RPH2N54"),
+        ])
+        for _ in range(3):
+            observe(cur, run_id, as_of=AS_OF, observation_date=AS_OF,
+                    cusip9="037833100", issuer_name="ACME CORP")
+
+        result = security_master.materialize(
+            conn, as_of=AS_OF, source_run_id=run_id,
+            source_package_id=package_id, code_revision="testrev",
+        )
+        assert result["issuer_attributed"] == 0
+        assert result["issuer_abstained"] == 1
+
+        cur.execute("SELECT issuer_name, identity_evidence FROM sec_current_bond_security_v1")
+        issuer, evidence = cur.fetchone()
+        assert issuer is None
+        assert evidence["issuer_attribution"]["abstain_reason"] == "multiple_lei"
+        assert len(evidence["issuer_attribution"]["distinct_lei"]) == 2
+
+        cur.execute(f'SET search_path TO "{schema}"')
+        cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
 
 
 def _seed_full_cohort(cur, run_id):
