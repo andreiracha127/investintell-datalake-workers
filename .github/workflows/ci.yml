@@ -70,6 +70,7 @@ jobs:
           src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
+          src/workers/open_macro_v03_chain.py
           src/workers/rr1_derived_profiles.py
           src/workers/rr1_ingestion.py
           src/workers/sec_class_factors.py
@@ -128,6 +129,7 @@ jobs:
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
             tests/test_fund_peer_groups.py
+            tests/test_open_macro_v03_chain.py
             tests/test_ncen_ingestion.py
             tests/test_nport_schema.py
             tests/test_phase10_gate_machine.py
@@ -233,6 +235,7 @@ jobs:
           src/workers/nport_holdings_identity_freshness.py
           src/workers/nport_ingestion.py
           src/workers/nport_v2_lookthrough.py
+          src/workers/open_macro_v03_chain.py
           src/workers/rr1_derived_profiles.py
           src/workers/rr1_ingestion.py
           src/workers/sec_class_factors.py
