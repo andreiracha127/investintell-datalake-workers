@@ -75,16 +75,32 @@ WHERE product IN ('bond_security_v1','bond_metric_v1','bond_serving_v1');
 The reference bodies live on the operator workstation and the workers have no
 access to that filesystem — hence a table, loaded by hand, that the build reads.
 
-**2a. Create the table by hand.** The security master's `install_schema` would
-also create it, but letting it do so means that build reads an EMPTY table,
-enriches nothing, and the whole chain run is wasted — the table is read once, at
-build time. Do not spend a chain run on that.
+**2a. Create the table by hand — and hand it to the worker role.** The security
+master's `install_schema` would also create it, but letting it do so means that
+build reads an EMPTY table, enriches nothing, and the whole chain run is wasted:
+the table is read once, at build time. Do not spend a chain run on that.
 
 ```sh
 railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 \
   --environment production --service market-clean-serial -- \
   psql -U postgres -d market -f - < schemas/bond_reference_terms.sql
 ```
+
+Then, in the same session, **transfer ownership**:
+
+```sql
+ALTER TABLE bond_reference_terms OWNER TO worker_writer;
+SELECT pg_get_userbyid(relowner) FROM pg_class WHERE relname='bond_reference_terms';
+-- must print worker_writer, like every other bond product table
+```
+
+This is not cosmetic and it is not optional. The worker RE-APPLIES this schema
+file on every build, and the file ends in `COMMENT ON TABLE`, which is owner-only
+DDL. A table created by `postgres` therefore makes the worker's own
+`install_schema` fail closed with `must be owner of table
+bond_reference_terms` — measured 2026-08-07, it killed the `pit_update` stage in
+0 seconds. The general rule: **any schema a worker applies must be owned by the
+role the worker connects as.**
 
 **2b. Flatten the profiles.** (Smoke-run 2026-08-07; these counts are what a
 correct run reproduces.)
@@ -143,23 +159,32 @@ railway variables --service bond-chain --environment production \
   --set CODE_REVISION=<merge commit sha>
 ```
 
-**Then trigger an actual EXECUTION — and note that not every green Railway
-action is one.** With `restartPolicy=NEVER`, a *deployment* runs the job once,
-but a merge to `main` does NOT deploy, and a plain redeploy of an existing
-deployment has been observed to rebuild and come up without running the worker
-(the incident that cost a full cycle in 2026-07; the current active deployment on
-this service is literally marked `buildOnly: true` with its instance `EXITED`).
-Two paths that do execute:
+**Then trigger an actual EXECUTION — and note that on this cron service, NO
+deployment command is one.** Measured end-to-end on 2026-08-07, three commands,
+three different outcomes, only one of which ran the worker:
 
-* **(a) Deploy the new commit** — `serviceInstanceDeploy` with the merge
-  `commitSha` for service `6fca05e1-d90b-4d34-afe8-bd62fe481b87`. A fresh
-  deployment starts the container, which runs the chain once.
-* **(b) Force an existing deployment to run again** — `deploymentRestart` on the
-  service's latest deployment.
+| command | deployment | ran the chain? |
+|---|---|---|
+| `railway redeploy --from-source` | `buildOnly: true`, → SUCCESS | **no** |
+| `railway redeploy` (plain) | `buildOnly: false`, → SUCCESS | **no** |
+| `railway service restart` | reuses the built deployment | **YES** |
 
-Either way, the arbiter is step 4, never the deployment status. If neither is
-convenient, the `0 11 * * *` cron will fire on its own — but then the run happens
-unattended, so still verify in the tables afterwards.
+A deployment on a `restartPolicy=NEVER` cron service only makes an image
+available; the instance sits at `CREATED` and the container is started by the
+schedule. `railway service restart` is the `deploymentRestart` that starts it
+now. So the two-step recipe is:
+
+```sh
+# 1. get the merged code into the service's image (builds; does NOT execute)
+railway redeploy --service bond-chain --environment production --from-source --yes
+# 2. actually run it (blocks for minutes while the container works)
+railway service restart --service bond-chain --environment production
+```
+
+The arbiter is step 4, never the deployment status: all three commands above
+report SUCCESS, and two of them did nothing. If neither step is convenient the
+`0 11 * * *` cron fires on its own — but then the run is unattended, so still
+verify in the tables afterwards.
 
 Watch the runtime line the worker prints. Use the **CLI**: the GraphQL
 `deploymentLogs` query often returns only "Starting Container".
@@ -250,13 +275,64 @@ WHERE publication_id = (SELECT publication_id FROM sec_derived_current_pointers
 -- with_dur must equal catalog_rows: the key is ALWAYS present, null-honest.
 ```
 
-## 5. Repin the app
+## 5. The app repin — VERIFY it, do not perform it
 
 The app reads `bond_serving_facts` **by exact `publication_id`** through its pin
 row (`bond_serving_publications` / the `bond_serving_facts_v` view), never the
-live current pointer. Until the pin moves, the app serves the OLD publication
-and none of the above is visible. Repin to the `bond_serving_v1` publication id
-from 4.1, then re-check the app surface.
+live current pointer. **The `bond_serving` worker already advances that pin at
+the end of the `refresh` stage** (prepared -> validate -> set current, guarded by
+`already_pinned`), so there is nothing to run here. Confirm it landed:
+
+```sql
+SELECT s.app_publication_version, s.worker_publication_id, s.lifecycle_state
+FROM bond_serving_app_current_pointer p
+JOIN bond_serving_publications s ON s.app_publication_id = p.app_publication_id;
+
+-- The pin must EQUAL the worker's current pointer:
+SELECT (SELECT s.worker_publication_id
+        FROM bond_serving_app_current_pointer p
+        JOIN bond_serving_publications s ON s.app_publication_id = p.app_publication_id)
+     = (SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_serving_v1')
+       AS app_pin_matches_worker_current;   -- must be t
+
+-- ...and the served view must carry the new keys on EVERY row (null-honest):
+SELECT count(*) AS detail_rows,
+       count(*) FILTER (WHERE payload ? 'security_effective_duration') AS has_dur_key,
+       count(*) FILTER (WHERE payload ? 'latest_price_pct')            AS has_price_key,
+       count(*) FILTER (WHERE payload ? 'callable')                    AS has_callable_key,
+       count(*) FILTER (WHERE payload ? 'amount_outstanding_mm')       AS has_amount_key
+FROM bond_serving_facts_v WHERE surface='detail';
+```
+
+Only if `app_pin_matches_worker_current` is false does a manual repin apply
+(insert a `prepared` row, `bond_validate_serving_publication`, then
+`bond_set_current_serving_publication`). Run it anyway and it is a correctly
+guarded no-op — which is how this was verified.
+
+---
+
+## Measured on the real execution (2026-08-07)
+
+| | before | after |
+|---|---|---|
+| curated with an issuer | 384 | **8,350** (8,298 CUSIP9 + 52 CUSIP6) |
+| curated `identity_state='ambiguous'` | 9,689 | **1** |
+| seniority / callable / amount outstanding | 0 / 0 / 0 | **9,883 / 9,858 / 10,073** |
+| secured (explicit collateral only) | 0 | **982** |
+| `security_effective_duration` available | — | **10,065** (7 typed `coupon_type_unsupported`, 1 no price) |
+| `latest_price_pct` available | — | **10,072** |
+| abstentions, all reasoned | — | 1,290 `no_consensus` + 433 `multiple_lei` |
+
+Chain run `494d53db` (`code_revision=6753ac8`): **47m17s** end to end —
+7m32s container start + effective-matview refresh, ~15m29s `pit_update`,
+12m18s `materialize`, 11m58s `refresh`. The new LEI read inside `pit_update`
+costs **1m50s** on its own (231,881 pairs over 215,771 distinct CUSIP9), i.e.
+~12% of that stage: real, and not close to disqualifying.
+
+Coverage came in **281 below the 8,631 projection**, entirely on the CUSIP6
+fallback (296 projected -> 52 delivered). That is the widened CUSIP6 LEI veto
+doing its job: the projection was measured before the veto was scoped to every
+reported sibling under the prefix, and tightening it was deliberate.
 
 ## 6. Rollback
 

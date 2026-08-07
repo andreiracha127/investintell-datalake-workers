@@ -28,6 +28,14 @@
 --   relation absent or empty simply enriches nothing and says so.
 --
 -- Idempotent DDL (CREATE ... IF NOT EXISTS) so install_schema may re-apply it.
+--
+-- OWNERSHIP (measured the hard way, 2026-08-07). The worker re-applies this file
+-- on every build and the COMMENT below is owner-only DDL, so this table MUST be
+-- owned by the role the worker connects as (``worker_writer`` in production,
+-- matching every other bond product table). Creating it by hand as a superuser
+-- and leaving it there makes install_schema fail closed with "must be owner of
+-- table bond_reference_terms" and kills the pit_update stage instantly. After a
+-- manual create: ``ALTER TABLE bond_reference_terms OWNER TO worker_writer;``
 
 CREATE TABLE IF NOT EXISTS bond_reference_terms (
     cusip9                text PRIMARY KEY CHECK (cusip9 ~ '^[0-9A-Z]{9}$'),
