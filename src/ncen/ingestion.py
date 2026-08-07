@@ -168,18 +168,28 @@ def _declare_orphan_children(conn, run_id) -> tuple[int, int, int]:
     """
     with conn.cursor() as cur:
         cur.execute("""
+        WITH unresolved AS MATERIALIZED (
+            -- The anti-join collapses millions of children against a few thousand
+            -- funds in one pass; the filing-level tests below then run over the
+            -- handful of groups that survive, never per row.
+            SELECT child.source_table,
+                   split_part(substring(child.parent_key from 6),'_',1) AS accession_number,
+                   count(*) AS orphan_rows
+              FROM ncen_raw_v2_rows child
+              JOIN sec_source_packages p ON p.run_id=%(run)s AND p.source_family='ncen'
+              JOIN ncen_contract_tables c ON c.metadata_sha256=p.metadata_sha256 AND c.source_table=child.source_table
+             WHERE child.ingestion_run_id=%(run)s AND child.parent_key LIKE 'fund:%%'
+               AND c.logical_parents[1]='FUND_REPORTED_INFO.tsv'
+               AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows parent
+                               WHERE parent.ingestion_run_id=%(run)s AND parent.source_table='FUND_REPORTED_INFO.tsv'
+                                 AND parent.entity_key=child.parent_key)
+             GROUP BY 1,2
+        )
         INSERT INTO ncen_orphan_child_quarantine (run_id,source_table,parent_table,accession_number,orphan_rows,reason)
-        SELECT %(run)s, child.source_table, 'FUND_REPORTED_INFO.tsv', orphan.accession_number, count(*), %(reason)s
-          FROM ncen_raw_v2_rows child
-          JOIN sec_source_packages p ON p.run_id=%(run)s AND p.source_family='ncen'
-          JOIN ncen_contract_tables c ON c.metadata_sha256=p.metadata_sha256 AND c.source_table=child.source_table
-          CROSS JOIN LATERAL (SELECT split_part(substring(child.parent_key from 6),'_',1) accession_number) orphan
-         WHERE child.ingestion_run_id=%(run)s AND child.parent_key LIKE 'fund:%%'
-           AND c.logical_parents[1]='FUND_REPORTED_INFO.tsv'
-           AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=%(run)s AND parent.source_table='FUND_REPORTED_INFO.tsv' AND parent.entity_key=child.parent_key)
-           AND EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=%(run)s AND s.source_table='SUBMISSION.tsv' AND s.accession_number=orphan.accession_number)
-           AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows f WHERE f.ingestion_run_id=%(run)s AND f.source_table='FUND_REPORTED_INFO.tsv' AND f.accession_number=orphan.accession_number)
-         GROUP BY 1,2,3,4
+        SELECT %(run)s, u.source_table, 'FUND_REPORTED_INFO.tsv', u.accession_number, u.orphan_rows, %(reason)s
+          FROM unresolved u
+         WHERE EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=%(run)s AND s.source_table='SUBMISSION.tsv' AND s.accession_number=u.accession_number)
+           AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows f WHERE f.ingestion_run_id=%(run)s AND f.source_table='FUND_REPORTED_INFO.tsv' AND f.accession_number=u.accession_number)
         ON CONFLICT (run_id,source_table,parent_table,accession_number) DO NOTHING
         """, {"run": run_id, "reason": ORPHAN_QUARANTINE_REASON})
         cur.execute("""SELECT count(*), COALESCE(sum(orphan_rows),0), count(DISTINCT accession_number)

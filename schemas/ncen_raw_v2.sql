@@ -216,29 +216,24 @@ BEGIN
      OR r.parent_key IS DISTINCT FROM CASE WHEN cardinality(c.logical_parents)=0 THEN NULL WHEN c.logical_parents[1]='FUND_REPORTED_INFO.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'FUND_ID','')='' THEN NULL ELSE 'fund:'||(r.original_lexical_row->>'FUND_ID') END WHEN c.logical_parents[1]='DIRECTOR.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' OR COALESCE(r.original_lexical_row->>'DIRECTOR_SEQNUM','')='' THEN NULL ELSE 'director:'||(r.original_lexical_row->>'ACCESSION_NUMBER')||':'||(r.original_lexical_row->>'DIRECTOR_SEQNUM') END WHEN c.logical_parents[1]='LINE_OF_CREDIT_DETAIL.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'FUND_ID','')='' OR COALESCE(r.original_lexical_row->>'LINE_OF_CREDIT_SEQNUM','')='' THEN NULL ELSE 'credit:'||(r.original_lexical_row->>'FUND_ID')||':'||(r.original_lexical_row->>'LINE_OF_CREDIT_SEQNUM') END WHEN c.logical_parents[1]='VALUATION_METHOD_CHANGE.tsv' THEN CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' OR COALESCE(r.original_lexical_row->>'VALUATION_METHOD_CHANGE_SEQNUM','')='' THEN NULL ELSE 'valuation:'||(r.original_lexical_row->>'ACCESSION_NUMBER')||':'||(r.original_lexical_row->>'VALUATION_METHOD_CHANGE_SEQNUM') END ELSE CASE WHEN COALESCE(r.original_lexical_row->>'ACCESSION_NUMBER','')='' THEN NULL ELSE 'accession:'||(r.original_lexical_row->>'ACCESSION_NUMBER') END END
    )
  ) THEN RETURN false; END IF;
- -- Every declared parent resolves exactly once using all shared structural
- -- identifiers.  This preserves fund/director/provider/event child grains
- -- without pivoting and rejects ambiguous child references outright, and orphan
- -- ones unless they match the ratified pattern documented at
- -- ncen_orphan_child_quarantine above AND are declared there.
+ -- Every declared parent resolves using all shared structural identifiers.  This
+ -- preserves fund/director/provider/event child grains without pivoting.  A
+ -- missing key is a defect and a parent that resolves more than once is
+ -- ambiguous: both are refused outright, exactly as before the carve-out.
  IF EXISTS(
    SELECT 1 FROM ncen_raw_v2_rows child
    JOIN ncen_contract_tables c ON c.metadata_sha256=package_metadata AND c.source_table=child.source_table
    JOIN LATERAL unnest(c.logical_parents) parent_name ON true
    LEFT JOIN LATERAL (SELECT count(*) n FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table=parent_name AND parent.entity_key=child.parent_key) resolved ON true
-   LEFT JOIN LATERAL (SELECT split_part(substring(child.parent_key from 6),'_',1) accession_number WHERE parent_name='FUND_REPORTED_INFO.tsv' AND child.parent_key LIKE 'fund:%') orphan ON true
-   WHERE child.ingestion_run_id=target_run_id AND (child.parent_key IS NULL OR resolved.n<>1)
-    AND NOT (
-      child.parent_key IS NOT NULL AND resolved.n=0 AND orphan.accession_number IS NOT NULL
-      AND EXISTS(SELECT 1 FROM ncen_orphan_child_quarantine q WHERE q.run_id=target_run_id AND q.source_table=child.source_table AND q.parent_table=parent_name AND q.accession_number=orphan.accession_number)
-      AND EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=target_run_id AND s.source_table='SUBMISSION.tsv' AND s.accession_number=orphan.accession_number)
-      AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows p WHERE p.ingestion_run_id=target_run_id AND p.source_table='FUND_REPORTED_INFO.tsv' AND p.accession_number=orphan.accession_number)
-    )
+   WHERE child.ingestion_run_id=target_run_id AND (child.parent_key IS NULL OR resolved.n>1)
  ) THEN RETURN false; END IF;
- -- The declared quarantine and the measured orphan population are the same set,
- -- in both directions: nothing hidden, nothing invented.  The measured side
- -- counts EVERY orphan, whatever its shape, so an orphan the loader chose not to
- -- declare fails here even when the check above would have had nothing to say.
+ -- A parent that resolves ZERO times is the ratified orphan pattern, and it is
+ -- admissible only as a declared quarantine.  Every measured orphan group must
+ -- meet a declaration with the same count, every declaration must have a
+ -- measured group behind it, and the group itself must be the ratified shape:
+ -- parent FUND_REPORTED_INFO.tsv, filing readable off the SEC's composite
+ -- FUND_ID, present in SUBMISSION.tsv, and with no FUND_REPORTED_INFO row at
+ -- all.  Any other orphan shape fails to match a declaration and is refused.
  IF EXISTS(
    SELECT 1 FROM (
      SELECT child.source_table, parent_name AS parent_table,
@@ -255,6 +250,8 @@ BEGIN
      ON declared.source_table=measured.source_table AND declared.parent_table=measured.parent_table
     AND declared.accession_number IS NOT DISTINCT FROM measured.accession_number
    WHERE measured.source_table IS NULL OR declared.source_table IS NULL OR declared.orphan_rows<>measured.orphan_rows
+      OR NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=target_run_id AND s.source_table='SUBMISSION.tsv' AND s.accession_number=measured.accession_number)
+      OR EXISTS(SELECT 1 FROM ncen_raw_v2_rows f WHERE f.ingestion_run_id=target_run_id AND f.source_table='FUND_REPORTED_INFO.tsv' AND f.accession_number=measured.accession_number)
  ) THEN RETURN false; END IF;
  RETURN true;
 END $$;
