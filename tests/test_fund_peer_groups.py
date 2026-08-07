@@ -83,18 +83,58 @@ def golden_run(monkeypatch):
     return run_worker(w, monkeypatch, today=TODAY)
 
 
+def _as_computed(row: dict) -> dict:
+    """A published row with its median back in the space the worker computed it in.
+
+    ``publish()`` hands the driver ``Decimal(repr(x))``, so the fake records — and an
+    unconstrained NUMERIC column stores — that Decimal exactly. ``float`` of it IS the
+    double the partitioner produced, and nothing else: that is what "``repr`` is the
+    shortest round-tripping string" means. So this reverses the write conversion
+    losslessly, and the golden and Gate 9's computed side stay written in floats."""
+    median = row["group_median_overlap"]
+    return dict(row, group_median_overlap=None if median is None else float(median))
+
+
+def _computed_rows(published: list[dict]) -> list[dict]:
+    return [_as_computed(row) for row in published]
+
+
 # =========================================================================== #
 # 1. The golden partition                                                     #
 # =========================================================================== #
 def test_the_partition_reproduces_the_golden_row_for_row(golden_run) -> None:
     stats, database = golden_run
     assert stats["status"] == "published"
-    published = {r["series_id"]: r for r in database.published}
+    published = {r["series_id"]: _as_computed(r) for r in database.published}
     assert sorted(published) == sorted(GOLDEN["rows"])
     for series_id, expected in GOLDEN["rows"].items():
         row = published[series_id]
         for column, value in expected.items():
             assert row[column] == value, f"{series_id}.{column}"
+
+
+def test_the_stored_median_is_the_exact_double_the_golden_records(golden_run) -> None:
+    """The golden is compared in the worker's space above; this is the same claim
+    stated in the COLUMN's space, so the reversal in ``_as_computed`` cannot be what
+    makes the row-for-row test pass.
+
+    Every median reaches the driver as ``Decimal(repr(x))`` — 17 significant digits
+    where a double needs them — and not as the 15-digit rendering a raw float8
+    parameter would have left. The golden's 0.7999998927116394 is the case: its
+    16th and 17th digits only exist in the table because of the write chokepoint."""
+    _, database = golden_run
+    beyond_fifteen = 0
+    for row in database.published:
+        stored = row["group_median_overlap"]
+        if stored is None:
+            continue
+        assert isinstance(stored, decimal.Decimal)
+        expected = GOLDEN["rows"][row["series_id"]]["group_median_overlap"]
+        assert stored == decimal.Decimal(repr(expected))
+        assert float(stored) == expected
+        beyond_fifteen += decimal.Decimal(f"{expected:.15g}") != stored
+    assert beyond_fifteen > 0, ("the golden must contain a median that does not fit "
+                                "in 15 digits, or this proves nothing")
 
 
 def test_the_headline_statistics_reproduce_the_golden(golden_run) -> None:
@@ -765,10 +805,14 @@ def test_a_present_value_never_equals_an_absent_one() -> None:
 
 def test_the_readback_accepts_the_precision_the_column_stores(golden_run) -> None:
     """The production failure, reproduced end to end through the real gate: the row is
-    intact and only its stored rendering differs, and Gate 9 must certify it."""
+    intact and only its stored rendering differs, and Gate 9 must certify it.
+
+    The write chokepoint means a NEW anchor can no longer land in this state — the
+    test forces it, because the already-published anchors ARE in it and a verifier
+    that stopped accepting them would call certified rows corrupt."""
     _, database = golden_run
     series_id = _an_empirical_series(database.published)
-    rows = _probe_first([dict(r) for r in database.published], series_id)
+    rows = _probe_first(_computed_rows(database.published), series_id)
     computed = rows[0]["group_median_overlap"]
     stored = _as_stored(computed)
     assert float(stored) != computed        # the fixture really exercises the loss
@@ -784,7 +828,7 @@ def test_the_readback_still_catches_a_median_that_moved(golden_run) -> None:
     corruption, and is still named."""
     _, database = golden_run
     series_id = _an_empirical_series(database.published)
-    rows = _probe_first([dict(r) for r in database.published], series_id)
+    rows = _probe_first(_computed_rows(database.published), series_id)
     stored = _as_stored(rows[0]["group_median_overlap"])
     # one unit in the last digit the column actually holds
     moved = stored + decimal.Decimal(1).scaleb(stored.as_tuple().exponent)
@@ -801,7 +845,7 @@ def test_no_series_can_be_the_probe_that_fails_the_anchor(golden_run) -> None:
     every median stored as the column keeps it, every row must certify the same
     anchor — the gate is a property of the data again, not of the row order."""
     _, database = golden_run
-    published = [dict(r) for r in database.published]
+    published = _computed_rows(database.published)
     lossy = 0
     for row in published:
         if row["group_median_overlap"] is not None:
@@ -814,6 +858,126 @@ def test_no_series_can_be_the_probe_that_fails_the_anchor(golden_run) -> None:
         rotated = published[i:] + published[:i]
         w.post_write_verify(database.conn, ANCHOR, rotated, cap=999.0,
                             hard_ceiling=999.0, waive_min_median=0.0)
+
+
+# --------------------------------------------------------------------------- #
+# The WRITE chokepoint — _exact_numeric                                        #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("value", [
+    0.1, 0.21044780313968658, 0.7999998927116394, 0.213141173124313,
+    1e-300, 1.7976931348623157e308, 5e-324, 0.0, -0.0, 1.0, 0.05,
+])
+def test_every_float_the_chokepoint_touches_round_trips_exactly(value) -> None:
+    """The property the conversion exists for: ``float(Decimal(repr(x))) == x``.
+
+    This is the fixed point that matters — the value that comes back out of an
+    unconstrained NUMERIC column is the same double that went in, bit for bit. It is
+    a STRONGER statement than surviving a 15-digit rendering: 0.21044780313968658
+    does not survive one (``float(f"{v:.15g}") != v``), which is exactly the loss
+    this change removes rather than accepts."""
+    converted = w._exact_numeric(value)
+    assert isinstance(converted, decimal.Decimal)
+    assert float(converted) == value
+    # the SHORTEST round-tripping digits, not a padded or truncated rendering
+    # (``Decimal`` spells the exponent in upper case; that is the only difference)
+    assert str(converted).lower() == repr(value).lower()
+
+
+def test_the_fifteen_digit_rendering_is_not_a_fixed_point_and_the_exact_one_is() -> None:
+    """Stated on the production probe so the two candidate rulers cannot be confused:
+    rounding to the 15 digits Postgres keeps LOSES the double; ``Decimal(repr(x))``
+    keeps it."""
+    value = PROBE_2026_06_30[1]
+    assert float(f"{value:.15g}") != value
+    assert float(w._exact_numeric(value)) == value
+
+
+def test_the_chokepoint_converts_floats_and_leaves_everything_else_alone() -> None:
+    """It converts by TYPE, so a float column added tomorrow is covered without
+    anyone remembering to list it — and a date, a text id or an int is not quietly
+    turned into something the driver would bind differently."""
+    assert w._exact_numeric(None) is None
+    assert w._exact_numeric("abc") == "abc"
+    assert w._exact_numeric(7) == 7 and type(w._exact_numeric(7)) is int
+    existing = decimal.Decimal("0.5")
+    assert w._exact_numeric(existing) is existing
+    assert w._exact_numeric(ANCHOR) is ANCHOR
+
+    row = {"anchor_date": ANCHOR, "series_id": "S1", "group_size": 10,
+           "group_median_overlap": 0.7999998927116394, "group_id": None}
+    converted = w._exact_numeric_params(row)
+    assert converted["group_median_overlap"] == decimal.Decimal("0.7999998927116394")
+    assert {k: v for k, v in converted.items() if k != "group_median_overlap"} \
+        == {k: v for k, v in row.items() if k != "group_median_overlap"}
+    assert row["group_median_overlap"] == 0.7999998927116394, \
+        "the caller's dict must not be mutated: Gate 9 compares against it"
+
+
+def test_gate_9_needs_no_slack_at_all_on_a_freshly_published_anchor(
+        golden_run, monkeypatch) -> None:
+    """The gate now passes on the FAST path — ``float(read) == computed`` — for every
+    row, not on the branch that reproduces the float8 -> NUMERIC cast.
+
+    Proved by taking the slack away: with the rendering ruler set to 17 digits the
+    fallback can no longer explain any difference, so a row that needed it would
+    fail. Gate 9's code is untouched; only the constant it reads is moved, and only
+    inside this test."""
+    _, database = golden_run
+    rows = _computed_rows(database.published)
+    for read_row in database.published:
+        stored = read_row["group_median_overlap"]
+        if stored is not None:
+            assert float(stored) == _as_computed(read_row)["group_median_overlap"]
+
+    monkeypatch.setattr(w, "FLOAT8_TO_NUMERIC_DIGITS", 17)
+    for i in range(len(rows)):
+        rotated = rows[i:] + rows[:i]
+        w.post_write_verify(database.conn, ANCHOR, rotated, cap=999.0,
+                            hard_ceiling=999.0, waive_min_median=0.0)
+
+
+def test_the_change_moves_only_the_digits_beyond_the_fifteenth(golden_run) -> None:
+    """The regression bound on the CHANGE itself: what this anchor publishes now
+    against what the same run would have published before, value by value.
+
+    ``_as_stored`` is the old write (a float8 parameter rendered by the cast); the
+    published Decimal is the new one. Every pair agrees through the 15 digits
+    Postgres used to keep, and differs by less than 1e-14 relative — i.e. nothing but
+    the 16th digit onwards moved. No median crosses the 0.05 coherence floor or the
+    0.10 waiver threshold as a result, which is the only way a digit that far down
+    could have changed a decision."""
+    _, database = golden_run
+    compared = 0
+    for row in database.published:
+        new = row["group_median_overlap"]
+        if new is None:
+            continue
+        old = _as_stored(float(new))
+        assert f"{new:.15g}" == f"{old:.15g}"
+        assert abs(new - old) / abs(new) < decimal.Decimal("1e-14")
+        assert (new >= w.COHERENCE_MIN_MEDIAN) == (old >= w.COHERENCE_MIN_MEDIAN)
+        assert (new >= w.DEFAULT_CAP_WAIVE_MIN_MEDIAN) \
+            == (old >= w.DEFAULT_CAP_WAIVE_MIN_MEDIAN)
+        compared += 1
+    assert compared > 0
+
+
+def test_the_write_normalisation_cannot_move_params_sha256(golden_run) -> None:
+    """``params_sha256`` fingerprints the PARAMETERS, not the published values.
+
+    Its inputs are ``canonical_params`` — frozen constants and the three env dials —
+    serialised as JSON; ``_exact_numeric`` sits at the driver boundary and is not on
+    that path at all. So the digest of the shipped defaults is still the pinned
+    literal, and the rows this run published still carry it."""
+    stats, database = golden_run
+    assert w.params_sha256(w.canonical_params(**DEFAULT_PARAMS)) \
+        == DEFAULT_PARAMS_SHA256
+    assert stats["params_sha256"] == GOLDEN["params_sha256"]
+    assert {r["params_sha256"] for r in database.published} \
+        == {GOLDEN["params_sha256"]}
+    # nothing the digest serialises is a Decimal: the conversion is downstream of it
+    assert all(isinstance(value, (bool, int, float, str, list, dict))
+               for value in w.canonical_params(**DEFAULT_PARAMS).values())
 
 
 # =========================================================================== #

@@ -94,7 +94,11 @@ FAIL-LOUD ORDER (no side effect precedes any gate)
  5. the anchor's holdings, streamed; per-series weights, shares and eligibility.
  6. IDENTIFIER COVERAGE GUARD (above). Before the matrix, before any write.
  7. the overlap matrix, the pre-split, Louvain under the cap, the coherence layer.
- 8. publish: DELETE the anchor + INSERT, in ONE transaction.
+ 8. publish: DELETE the anchor + INSERT, in ONE transaction. Every float parameter
+    is converted to ``Decimal(repr(x))`` at the driver boundary (``_exact_numeric``,
+    the same chokepoint open_macro_v03/v04 use), so the NUMERIC column stores the
+    exact double the partitioner computed rather than the 15-digit rendering the
+    float8 -> NUMERIC cast would leave.
  9. post-write verification: the row count, one re-read row field by field, and the
     invariants re-measured IN THE DATABASE — no group above the cap, no group whose
     stated size disagrees with its member count, no state/NULL inconsistency, one
@@ -118,6 +122,7 @@ from __future__ import annotations
 
 import collections
 import datetime as _dt
+import decimal
 import hashlib
 import json
 import os
@@ -988,17 +993,56 @@ INSERT_SQL = (
 INSERT_CHUNK = 2_000
 
 
+def _exact_numeric(value: Any) -> Any:
+    """Python float → ``decimal.Decimal(repr(value))`` for EXACT NUMERIC persistence.
+
+    Postgres casts a float8 parameter to NUMERIC through DBL_DIG = 15 significant
+    digits, so passing a raw Python float silently truncates the stored value (the
+    same defect was measured on the v03 pair on 2026-07-06, and on this table's
+    2026-06-30 anchor: a median of 0.21044780313968658 stored as
+    0.210447803139687). ``repr`` of a float is the SHORTEST decimal string that
+    round-trips (17 significant digits when needed), so ``float(Decimal(repr(x))) ==
+    x`` exactly and the NUMERIC column stores the precise float64 the worker
+    computed. ``None`` and non-float values pass through unchanged (dates, strings,
+    ints, Decimals).
+
+    Transcribed from ``open_macro_v03``/``open_macro_v04``: this is the house write
+    chokepoint, not a variant of it."""
+    if isinstance(value, float):
+        return decimal.Decimal(repr(value))
+    return value
+
+
+def _exact_numeric_params(params: dict[str, Any]) -> dict[str, Any]:
+    """A COPY of ``params`` with EVERY float converted via :func:`_exact_numeric` —
+    the single write-fidelity chokepoint for this worker's DB parameters.
+
+    It converts by TYPE, not by column name, so a float column added to
+    ``ROW_COLUMNS`` tomorrow is covered without anyone remembering to list it. The
+    copy matters: ``post_write_verify`` compares the re-read row against the very
+    dicts handed to :func:`publish`, and those must keep holding the Python floats
+    the partitioner computed."""
+    return {key: _exact_numeric(value) for key, value in params.items()}
+
+
 def publish(conn, anchor: _dt.date, rows: list[dict[str, Any]]) -> int:
     """Replace the anchor: DELETE then INSERT, in ONE transaction.
 
     Replace rather than upsert because the partition is a WHOLE: a fund can move
     between groups and a group can cease to exist, so merging a new run into an old
     row set would leave orphan members of a group that no longer has a median. Either
-    the anchor is entirely this run's, or it is entirely the previous one's."""
+    the anchor is entirely this run's, or it is entirely the previous one's.
+
+    Write fidelity: every float parameter goes through :func:`_exact_numeric` before
+    reaching the driver, so ``group_median_overlap`` is stored as the exact double
+    the partitioner computed instead of the float8 -> NUMERIC 15-digit rendering of
+    it. Nothing about the partition changes — only which digits of an already
+    computed number survive the write."""
     with conn.cursor() as cur:
         cur.execute(DELETE_ANCHOR_SQL, {"anchor": anchor})
         for start in range(0, len(rows), INSERT_CHUNK):
-            cur.executemany(INSERT_SQL, rows[start:start + INSERT_CHUNK])
+            cur.executemany(INSERT_SQL, [_exact_numeric_params(row)
+                                         for row in rows[start:start + INSERT_CHUNK]])
     conn.commit()
     return len(rows)
 
@@ -1034,11 +1078,14 @@ READBACK_SQL = (
 # significant digits: the float8 -> numeric cast renders the double with "%.15g" and
 # re-parses that string. An IEEE-754 double needs up to 17 digits to round-trip, so a
 # computed median with more than 15 CANNOT be read back as the float that was written.
-# The sibling publishers close the gap at the WRITE — ``_exact_numeric`` in
-# open_macro_v03/v04 sends ``Decimal(repr(x))`` after the same defect was measured
-# there on 2026-07-06 — and adopting that chokepoint here would change what this
-# worker publishes, which is the owner's call, not the verifier's. Until then the
-# table holds the 15-digit rendering and the verifier has to know it.
+# The WRITE now closes that gap — ``_exact_numeric`` above sends ``Decimal(repr(x))``,
+# the chokepoint open_macro_v03/v04 adopted after the same defect was measured there
+# on 2026-07-06 — so every anchor published from here on takes the exact fast path
+# below on the first branch, and the cast is never applied to this worker's floats.
+# The second branch is NOT dead: the anchors published before that change (2026-03-31
+# and 2026-06-30, certified 31/31 and deliberately NOT re-published) hold the 15-digit
+# rendering, and a verifier that stopped knowing the cast would start calling those
+# rows corrupt. It remains a statement about the storage, never a tolerance.
 FLOAT8_TO_NUMERIC_DIGITS = 15
 
 
