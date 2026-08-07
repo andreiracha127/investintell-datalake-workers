@@ -52,9 +52,11 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     # Cobertura de NAV por fundo: serve os gates de qualidade do universo do
     # builder, que antes reagregavam a hypertable nav_timeseries por request.
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_nav_coverage_mv" in joined
-    # App DB Grupo A aggregate MVs.
+    # App DB Grupo A aggregate MVs and the reveal input read model.
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_style_drift_mv" in joined
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_top_holdings_mv" in joined
+    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_reveal_holdings_mv" in joined
+    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY fund_reveal_13f_holdings_mv" in joined
     # fund_active_share_mv was removed — active share now lives on
     # fund_risk_latest_mv (refreshed by the risk_metrics worker, not here).
     assert "fund_active_share_mv" not in joined
@@ -68,6 +70,8 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         "fund_nav_coverage_mv",
         "fund_style_drift_mv",
         "fund_top_holdings_mv",
+        "fund_reveal_holdings_mv",
+        "fund_reveal_13f_holdings_mv",
     ]
     assert result["refreshed_datalake"] == [
         "stock_institutional_holders_mv",
@@ -85,8 +89,37 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     ]
     event_names = [event[0] for event in sink["events"]]
     snapshot_index = event_names.index("snapshot")
-    assert "fund_top_holdings_mv" in sink["events"][snapshot_index - 1][1]
-    assert "stock_institutional_holders_mv" in sink["events"][snapshot_index + 1][1]
+    top_index = next(
+        index
+        for index, event in enumerate(sink["events"])
+        if event[0] == "sql"
+        and "REFRESH MATERIALIZED VIEW" in event[1]
+        and "fund_top_holdings_mv" in event[1]
+    )
+    reveal_index = next(
+        index
+        for index, event in enumerate(sink["events"])
+        if event[0] == "sql"
+        and "REFRESH MATERIALIZED VIEW" in event[1]
+        and "fund_reveal_holdings_mv" in event[1]
+    )
+    assert top_index < reveal_index < snapshot_index
+    reveal_13f_index = next(
+        index
+        for index, event in enumerate(sink["events"])
+        if event[0] == "sql"
+        and "REFRESH MATERIALIZED VIEW" in event[1]
+        and "fund_reveal_13f_holdings_mv" in event[1]
+    )
+    assert reveal_index < reveal_13f_index < snapshot_index
+    first_datalake_refresh_index = next(
+        index
+        for index, event in enumerate(sink["events"])
+        if event[0] == "sql"
+        and "REFRESH MATERIALIZED VIEW" in event[1]
+        and "stock_institutional_holders_mv" in event[1]
+    )
+    assert first_datalake_refresh_index > snapshot_index
     effective_index = event_names.index("effective_matviews")
     assert effective_index > snapshot_index
     assert sink["events"][effective_index][1] == "postgres://lake"

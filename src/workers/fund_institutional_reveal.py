@@ -19,19 +19,18 @@ WITH matched AS (
     SELECT h.cik,
            COALESCE(mgr.firm_name, 'CIK ' || h.cik) AS manager_name,
            h.report_date AS period, h.report_date,
-           upper(h.cusip) AS cusip, h.issuer_name AS name,
-           h.market_value AS value_usd, h.shares
-    FROM sec_13f_holdings h
+           h.cusip, h.source_cusip, h.name, h.value_usd, h.shares
+    FROM fund_reveal_13f_holdings_mv h
     LEFT JOIN LATERAL (
         SELECT m.firm_name FROM sec_managers m
         WHERE m.cik = h.cik AND m.firm_name IS NOT NULL
         ORDER BY m.aum_total DESC NULLS LAST LIMIT 1
     ) mgr ON true
-    WHERE upper(h.cusip) = ANY(%(cusips)s)
+    WHERE h.cusip = ANY(%(cusips)s)
 ),
 latest AS (SELECT max(period) AS period FROM matched)
 SELECT matched.* FROM matched JOIN latest ON latest.period = matched.period
-ORDER BY value_usd DESC NULLS LAST LIMIT 500
+ORDER BY value_usd DESC NULLS LAST, cik ASC, cusip ASC, source_cusip ASC LIMIT 500
 """
 
 
@@ -109,6 +108,11 @@ ON CONFLICT (series_id, as_of, organization_id) DO UPDATE SET
     schema_version = EXCLUDED.schema_version, payload = EXCLUDED.payload, computed_at = now()
 """
 
+_REVOKE_SERIES_ARTIFACTS = """
+DELETE FROM fund_institutional_reveal_artifacts
+WHERE series_id = %s AND organization_id IS NULL
+"""
+
 
 def _refresh_latest_mv(dsn: str) -> None:
     with connect(dsn, autocommit=True) as conn:
@@ -121,38 +125,90 @@ def _refresh_latest_mv(dsn: str) -> None:
 def _series_with_holdings(conn, limit):
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT DISTINCT series_id FROM sec_nport_holdings"
+            "SELECT DISTINCT series_id FROM fund_top_holdings_mv ORDER BY series_id"
             + (" LIMIT %s" if limit else ""),
             ((limit,) if limit else None),
         )
         return [r[0] for r in cur.fetchall()]
 
 
-def _fund_top_cusips(conn, series_id):
+def _reveal_holdings_for_series(conn, series_id):
     with conn.cursor() as cur:
         cur.execute(
-            "WITH l AS (SELECT max(report_date) rd FROM sec_nport_holdings WHERE series_id=%s) "
-            "SELECT upper(cusip) cusip, SUM(pct_of_nav)/100.0 w, report_date "
-            "FROM sec_nport_holdings WHERE series_id=%s AND cusip IS NOT NULL "
-            "AND report_date=(SELECT rd FROM l) GROUP BY upper(cusip), report_date "
-            "ORDER BY w DESC NULLS LAST LIMIT 100",
-            (series_id, series_id),
+            "SELECT series_id, report_date, rank, cusip, weight, source_row_count, "
+            "nonnull_weight_count, null_weight_count, has_unknown_weight "
+            "FROM fund_reveal_holdings_mv WHERE series_id=%s ORDER BY rank LIMIT 100",
+            (series_id,),
         )
-        rows = cur.fetchall()
-    cusips = [r[0] for r in rows]
-    fund_pct = {r[0]: float(r[1]) for r in rows}
-    as_of = rows[0][2] if rows else None
-    return cusips, fund_pct, as_of
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def _prepare_reveal_holdings(series_id, rows):
+    ordered_rows = sorted(rows, key=lambda row: row["rank"])
+    if not ordered_rows:
+        return None, {
+            "series_id": series_id,
+            "report_date": None,
+            "reason": "no_joinable_cusips",
+        }
+    if any(
+        row["weight"] is None
+        or bool(row.get("has_unknown_weight"))
+        or (row["null_weight_count"] is not None and row["null_weight_count"] > 0)
+        for row in ordered_rows
+    ):
+        report_date = ordered_rows[0]["report_date"] if ordered_rows else None
+        return None, {
+            "series_id": series_id,
+            "report_date": str(report_date) if report_date is not None else None,
+            "reason": "unknown_weight",
+        }
+
+    cusips = []
+    fund_pct = {}
+    for row in ordered_rows:
+        cusip = row["cusip"]
+        if cusip is None:
+            continue
+        cusip = str(cusip).upper()
+        cusips.append(cusip)
+        fund_pct[cusip] = float(row["weight"])
+    as_of = ordered_rows[0]["report_date"] if ordered_rows else None
+    return (cusips, fund_pct, as_of), None
+
+
+def _revoke_series_artifacts(conn, series_id) -> int:
+    with conn.cursor() as cur:
+        cur.execute(_REVOKE_SERIES_ARTIFACTS, (series_id,))
+        return max(cur.rowcount, 0)
 
 
 def run(dsn: str, *, limit: int | None = None) -> dict:
-    processed = upserted = 0
+    processed = upserted = quarantined = revoked_artifacts = 0
+    quarantine_samples = []
     with connect(dsn) as conn:
         with advisory_lock(conn, LOCK_FUND_INSTITUTIONAL_REVEAL) as got:
             if not got:
-                return {"processed": 0, "upserted": 0, "skipped": "lock_busy"}
+                return {
+                    "processed": 0,
+                    "upserted": 0,
+                    "quarantined": 0,
+                    "revoked_artifacts": 0,
+                    "quarantine_samples": [],
+                    "skipped": "lock_busy",
+                }
             for series_id in _series_with_holdings(conn, limit):
-                cusips, fund_pct, as_of = _fund_top_cusips(conn, series_id)
+                holdings, quarantine = _prepare_reveal_holdings(
+                    series_id, _reveal_holdings_for_series(conn, series_id)
+                )
+                if quarantine is not None:
+                    quarantined += 1
+                    revoked_artifacts += _revoke_series_artifacts(conn, series_id)
+                    if len(quarantine_samples) < 10:
+                        quarantine_samples.append(quarantine)
+                    continue
+                cusips, fund_pct, as_of = holdings
                 if not cusips or as_of is None:
                     continue
                 processed += 1
@@ -170,11 +226,16 @@ def run(dsn: str, *, limit: int | None = None) -> dict:
                     })
                 upserted += 1
             conn.commit()
-    result = {"processed": processed, "upserted": upserted}
-    try:
-        _refresh_latest_mv(dsn)
-        result["mv_refreshed"] = True
-    except Exception as exc:  # noqa: BLE001
-        result["mv_refreshed"] = False
-        result["mv_refresh_error"] = str(exc)
+    result = {
+        "processed": processed,
+        "upserted": upserted,
+        "quarantined": quarantined,
+        "revoked_artifacts": revoked_artifacts,
+        "quarantine_samples": quarantine_samples,
+    }
+    # Revocations and upserts are not safely visible until this serving snapshot
+    # advances. Propagate failures so Railway reports the run as failed instead
+    # of serving a stale pre-quarantine artifact behind a green deployment.
+    _refresh_latest_mv(dsn)
+    result["mv_refreshed"] = True
     return result
