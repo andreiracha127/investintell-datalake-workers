@@ -655,6 +655,132 @@ def test_run_writes_nothing_when_a_concurrent_run_holds_the_lock(monkeypatch):
     assert conn.executed == []
 
 
+def _float(value):
+    return float(value) if value is not None else None
+
+
+def _series_matching_the_fixture(new_row: FakeDecision) -> list[FakeDecision]:
+    """The certified rows as the engine would hand them back (floats), plus one new
+    month. Replaying them for real costs 2 minutes; this test is about the WIRING of
+    the publish path, and the replay itself is proved by the golden test."""
+    series = [
+        FakeDecision(as_of, quadrant=r["quadrant"],
+                     candidate_quadrant=r["candidate_quadrant"], status=r["status"],
+                     transition_pending=r["transition_pending"],
+                     candidate_confidence=_float(r["candidate_confidence"]),
+                     growth_score=_float(r["growth_score"]),
+                     inflation_score=_float(r["inflation_score"]),
+                     coverage_quality=_float(r["coverage_quality"]))
+        for as_of, r in sorted(load_certified_rows().items())]
+    return series + [new_row]
+
+
+def test_run_publishes_exactly_one_month_and_verifies_it(monkeypatch):
+    """The HAPPY PATH end to end: readiness passes, the prefix gate passes, ONE row is
+    appended through the exact-numeric chokepoint and read back.
+
+    Without this the publish path would first execute in production, unattended, the
+    day MICH settles."""
+    new_row = FakeDecision(NEXT_MONTH, quadrant="slowdown",
+                           candidate_quadrant="slowdown", status="valid",
+                           transition_pending=False,
+                           candidate_confidence=0.7254330463532251,
+                           growth_score=0.2386835808610429,
+                           inflation_score=1.004267438236338, coverage_quality=1.0)
+    readback = (NEXT_MONTH, "slowdown", "slowdown", "valid",
+                decimal.Decimal(repr(0.7254330463532251)),
+                decimal.Decimal(repr(0.2386835808610429)),
+                decimal.Decimal(repr(1.004267438236338)),
+                decimal.Decimal(repr(1.0)), False, w.BASIS, PACK_SHA,
+                w.CHAIN_START, "b" * 40)
+    # NOTE the fragment order: the delta reads are matched BEFORE the freshness reads,
+    # whose SQL they contain.
+    conn = StubConn({
+        "SET search_path": ([], -1),
+        "SHOW search_path": ([("public",)], -1),
+        "information_schema.columns": (_catalog_rows(), -1),
+        "AND available_at > %(boundary)s": ([], -1),
+        "AND date > %(boundary)s": ([], -1),
+        "FROM open_macro_v03_decision_chain ORDER BY as_of": (_chain_tuples(), -1),
+        "FROM macro_observation_vintage WHERE series_id = ANY": (
+            list(_freshness().items()), -1),
+        "FROM eod_prices WHERE ticker": ([(_dt.date(2026, 9, 2),)], -1),
+        "INSERT INTO open_macro_v03_decision_chain": ([], 1),
+        "WHERE as_of = %(as_of)s": ([readback], -1),
+    })
+    _patch_connection(monkeypatch, conn)
+    monkeypatch.setattr(w, "load_pack_inputs",
+                        lambda: ([], [], _dt.datetime(2026, 6, 25,
+                                                      tzinfo=_dt.timezone.utc),
+                                 _dt.date(2026, 6, 30)))
+    monkeypatch.setattr(w, "compute_series",
+                        lambda macro, eod, target: _series_matching_the_fixture(new_row))
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "b" * 40)
+
+    stats = w.run("stub", today=_dt.date(2026, 9, 3))
+
+    assert stats["published"] == 1
+    assert stats["target"] == "2026-07-31"
+    assert stats["readiness"]["pending"] == []
+    assert stats["prefix"]["months_verified"] == 148
+    assert stats["prefix"]["candidate_quadrant_drift"] == []
+    assert stats["prefix"]["numeric_drift_cells"] == 0
+    assert stats["row"] == {
+        "as_of": "2026-07-31", "quadrant": "slowdown",
+        "candidate_quadrant": "slowdown", "status": "valid",
+        "candidate_confidence": 0.7254330463532251,
+        "growth_score": 0.2386835808610429, "inflation_score": 1.004267438236338,
+        "coverage_quality": 1.0, "transition_pending": False}
+    assert json.dumps(stats, default=str)          # the run's stats must serialize
+
+    inserts = [(sql, params) for sql, params in conn.executed
+               if sql.upper().startswith("INSERT")]
+    assert len(inserts) == 1
+    sql, params = inserts[0]
+    assert "ON CONFLICT (as_of) DO NOTHING" in sql
+    assert params["as_of"] == NEXT_MONTH
+    assert params["pack_sha256"] == PACK_SHA
+    assert params["code_commit"] == "b" * 40
+    assert not [k for k, v in params.items() if isinstance(v, float)]
+    assert params["candidate_confidence"] == decimal.Decimal("0.7254330463532251")
+    # and the row was read back and compared (post_write_verify ran)
+    assert [s for s, _ in conn.executed if "WHERE as_of = " in s]
+
+
+def test_run_does_not_verify_a_row_it_did_not_write(monkeypatch):
+    """A raced month (already inserted by a concurrent run) is a no-op: rowcount 0,
+    no readback, and the stats say published=0."""
+    new_row = FakeDecision(NEXT_MONTH, quadrant="slowdown",
+                           candidate_quadrant="slowdown", status="valid",
+                           transition_pending=False, candidate_confidence=0.5,
+                           growth_score=0.1, inflation_score=0.2,
+                           coverage_quality=1.0)
+    conn = StubConn({
+        "SET search_path": ([], -1),
+        "SHOW search_path": ([("public",)], -1),
+        "information_schema.columns": (_catalog_rows(), -1),
+        "AND available_at > %(boundary)s": ([], -1),
+        "AND date > %(boundary)s": ([], -1),
+        "FROM open_macro_v03_decision_chain ORDER BY as_of": (_chain_tuples(), -1),
+        "FROM macro_observation_vintage WHERE series_id = ANY": (
+            list(_freshness().items()), -1),
+        "FROM eod_prices WHERE ticker": ([(_dt.date(2026, 9, 2),)], -1),
+        "INSERT INTO open_macro_v03_decision_chain": ([], 0),
+    })
+    _patch_connection(monkeypatch, conn)
+    monkeypatch.setattr(w, "load_pack_inputs",
+                        lambda: ([], [], _dt.datetime(2026, 6, 25,
+                                                      tzinfo=_dt.timezone.utc),
+                                 _dt.date(2026, 6, 30)))
+    monkeypatch.setattr(w, "compute_series",
+                        lambda macro, eod, target: _series_matching_the_fixture(new_row))
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "b" * 40)
+
+    stats = w.run("stub", today=_dt.date(2026, 9, 3))
+    assert stats["published"] == 0
+    assert not [s for s, _ in conn.executed if "WHERE as_of = " in s]
+
+
 def test_run_refuses_a_non_public_search_path(monkeypatch):
     conn = _run_conn(_chain_tuples(), _freshness(), _dt.date(2026, 8, 6))
     conn.answers["SHOW search_path"] = ([("mirror, public",)], -1)
