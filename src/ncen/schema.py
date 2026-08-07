@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from src.sec_regulatory.contracts import ContractColumn, ContractError, SourceTableContract, load_source_table_contract, sha256_file
-from .inventory import CANONICAL_PACKAGE_INVENTORIES, PackageInventory, count_tsv_rows, inventory_digest
+from .inventory import CANONICAL_PACKAGE_INVENTORIES, PackageInventory, build_package_inventory, count_tsv_rows, inventory_digest
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = ROOT / "contracts" / "sec-regulatory" / "v1" / "source-tables" / "ncen.json"
@@ -45,16 +45,30 @@ def load_ncen_contract(metadata_sha256: str) -> SourceTableContract:
     return load_source_table_contract(CONTRACT_PATH, family="ncen", metadata_sha256=metadata_sha256)
 
 def verify_package(package: Path, *, inventory: PackageInventory | None = None) -> VerifiedPackage:
-    """Select exactly one metadata variant, then close the physical TSV set."""
+    """Select exactly one metadata variant, then close the physical TSV set.
+
+    A package already in the frozen corpus keeps verifying against its committed
+    canonical inventory, exactly as before.  A package outside it is
+    *self-certifying*: its physical evidence (per-file SHA-256, byte size, row
+    count) is derived from the delivery on first sight instead of demanding a
+    pre-committed inventory file.  Activating a new quarter is therefore a data
+    operation, not a code change.
+
+    What stays fail-closed is the data-honesty scaffold, not the paperwork: the
+    metadata SHA must still select exactly one governed contract variant, every
+    physical TSV must belong to that variant with the exact header order, and the
+    physical set plus the explicit zero tables must close the catalog.  The
+    derived evidence is then written into the run manifests on the first
+    ingestion, so every later ingestion of the same path compares against
+    recorded bytes and counts (see ``ingest_package``).
+    """
     metadata = package / "ncen_metadata.json"
     readme = package / "ncen_readme.htm"
     if not metadata.is_file() or not readme.is_file():
         raise ContractError("ncen_metadata.json ou ncen_readme.htm ausente")
     metadata_hash = sha256_file(metadata)
     contract = load_ncen_contract(metadata_hash)
-    expected = inventory or CANONICAL_PACKAGE_INVENTORIES.get(package.name)
-    if expected is None:
-        raise ContractError("pacote N-CEN fora do corpus canônico exige inventário explícito")
+    expected = inventory or CANONICAL_PACKAGE_INVENTORIES.get(package.name) or build_package_inventory(package, contract)
     if expected.metadata_sha256 != metadata_hash:
         raise ContractError("metadata SHA-256 diverge do inventário N-CEN imutável")
     actual = {path.name for path in package.iterdir() if path.is_file()}

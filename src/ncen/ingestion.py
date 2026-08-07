@@ -77,7 +77,7 @@ def _ingest_locked(conn: psycopg.Connection, package: Path, relative_path: str, 
             if table.source_file in verified.file_hashes:
                 path = package / table.source_file
                 if not _file_is_complete(conn, run.run_id, table.source_file, verified.file_hashes[table.source_file], path.stat().st_size):
-                    total += _load_file(conn, run.run_id, parser_version, path, table, verified.file_hashes[table.source_file])
+                    total += _load_file(conn, run.run_id, parser_version, path, table, verified.file_hashes[table.source_file], verified.file_inventory[table.source_file].row_count)
             else: _register_absent_table(conn, run.run_id, package, table.source_file, verified.metadata_sha256)
             conn.commit()
         with conn.transaction():
@@ -109,7 +109,7 @@ def _release_digest_lock(conn: psycopg.Connection, digest: str) -> None:
         if cur.fetchone() != (True,):
             raise NcenIngestionError("lock consultivo N-CEN não estava retido pela sessão")
 
-def _load_file(conn, run_id: UUID, parser_version: str, path: Path, table, source_sha256: str) -> int:
+def _load_file(conn, run_id: UUID, parser_version: str, path: Path, table, source_sha256: str, expected_rows: int) -> int:
     header, rows = stream_tsv(path, expected_sha256=source_sha256)
     if header != table.headers: raise NcenIngestionError(f"cabeçalho ou ordem divergente: {table.source_file}")
     lexical = typed = quarantined = 0; batch=[]
@@ -122,6 +122,11 @@ def _load_file(conn, run_id: UUID, parser_version: str, path: Path, table, sourc
             if len(batch) >= BATCH_SIZE: _insert_rows(conn,batch); batch.clear()
             for seq, issue in enumerate(parsed.issues, 1): record_issue(conn, source_file_id=file_id, source_row_number=row_number, issue_sequence=seq, table_name=table.source_file, column_name=issue.column_name, raw_lexical_value=issue.raw_value, typed_error_code=issue.code, typed_error_detail=issue.detail, status="quarantined")
         if batch: _insert_rows(conn,batch)
+        # Two independent readers must agree on how many physical records the
+        # delivery has: the inventory's csv.reader pass and the loader's own
+        # streaming parser.  This is the cheap counting scaffold that survives
+        # the retirement of the pre-committed canonical inventory.
+        if lexical != expected_rows: raise NcenIngestionError(f"contagem física divergente em {table.source_file}: inventário={expected_rows}, carregado={lexical}")
         register_file(conn, run_id=run_id, source_file_id=file_id, relative_path=table.source_file, sha256=source_sha256, byte_size=path.stat().st_size, schema_metadata={"headers":list(table.headers)}, expected_count=lexical,data_count=lexical,lexical_count=lexical,typed_success_count=typed,quarantine_count=quarantined,reject_count=0,state="accounted")
         register_table_reconciliation(conn,run_id=run_id,source_file_id=file_id,table_name=table.source_file,expected_count=lexical,source_count=lexical,lexical_count=lexical,typed_success_count=typed,quarantine_count=quarantined,reject_count=0,state="accounted")
     return lexical
