@@ -18,8 +18,10 @@ _SCHEMA_SQL = (
 
 # The shared handshake value; MUST equal the app repo's
 # ``app.contracts.bond_serving_v1.SURFACE_DIGEST`` byte-for-byte. Re-synced for
-# Bonds Activation Wave 1b (catalog issuer_country / issuer_sector).
-SHARED_SURFACE_DIGEST = "sha256:5f7fd708b5adb3f1ad638316ed38c243056c1bc413069ff4f3ca0d00551ca6fc"
+# Bonds Activation Wave 1c (catalog security_effective_duration; detail
+# security_effective_duration + latest_price_pct + callable +
+# amount_outstanding_mm). The app repo carries the mirror edit.
+SHARED_SURFACE_DIGEST = "sha256:cd14dcbe08339b31176f0f6c65b00d2f15e4b05fbf9e943fc0ca98a158329999"
 
 
 def test_workers_declare_serving_product() -> None:
@@ -78,28 +80,47 @@ def test_catalog_carries_searchable_alias_arrays() -> None:
 
 def test_catalog_payload_serves_computed_metric_keys_in_order() -> None:
     """Wave 1 gave the catalog payload latest_price_pct + security_ytm +
-    security_ytw; Wave 1b adds issuer_country + issuer_sector. Each sits in its
-    alphabetical position (the contract's key-ordering convention), pinned as a
-    full-tuple equality so a drive-by key can't ride in."""
+    security_ytw; Wave 1b added issuer_country + issuer_sector; Wave 1c adds
+    security_effective_duration. Each sits in its alphabetical position (the
+    contract's key-ordering convention), pinned as a full-tuple equality so a
+    drive-by key can't ride in."""
     catalog = next(s for s in contract.SURFACES if s["surface"] == "catalog")
     assert catalog["payload_keys"] == (
         "aliases_cusip9", "aliases_isin", "coupon_rate", "coupon_type", "currency",
         "display", "identity_state", "is_144a", "issuer_country", "issuer_name",
-        "issuer_sector", "latest_price_pct", "maturity_date", "security_ytm",
-        "security_ytw",
+        "issuer_sector", "latest_price_pct", "maturity_date",
+        "security_effective_duration", "security_ytm", "security_ytw",
     )
 
 
 def test_detail_payload_serves_computed_metric_keys_in_order() -> None:
-    """Wave 1: the detail payload gains EXACTLY current_yield + security_ytm +
-    security_ytw + wal, each in its alphabetical position (full-tuple pin)."""
+    """Wave 1 gave the detail payload current_yield + security_ytm +
+    security_ytw + wal; Wave 1c adds security_effective_duration,
+    latest_price_pct and the two reference terms (callable,
+    amount_outstanding_mm). Full-tuple pin, alphabetical."""
     detail = next(s for s in contract.SURFACES if s["surface"] == "detail")
     assert detail["payload_keys"] == (
-        "aliases", "call_schedule", "coupon_rate", "coupon_schedule", "coupon_type",
-        "currency", "current_yield", "day_count", "identity_evidence", "identity_state",
-        "is_144a", "issuer_name", "maturity_date", "put_schedule", "secured",
-        "security_ytm", "security_ytw", "seniority", "settlement_convention", "wal",
+        "aliases", "amount_outstanding_mm", "call_schedule", "callable", "coupon_rate",
+        "coupon_schedule", "coupon_type", "currency", "current_yield", "day_count",
+        "identity_evidence", "identity_state", "is_144a", "issuer_name",
+        "latest_price_pct", "maturity_date", "put_schedule", "secured",
+        "security_effective_duration", "security_ytm", "security_ytw", "seniority",
+        "settlement_convention", "wal",
     )
+
+
+def test_callability_is_published_as_a_fact_and_never_as_a_schedule() -> None:
+    """``callable`` reaching the detail must NOT be read as call DATES existing.
+
+    The reference states only THAT a bond is callable; no call date is known, so
+    the call_schedule key stays whatever the filing reported and the worst-case
+    yield stays out of the metric vocabulary. If someone ever adds a call
+    schedule derived from the callable flag, this pin is the thing that argues.
+    """
+    detail = next(s for s in contract.SURFACES if s["surface"] == "detail")
+    assert "callable" in detail["payload_keys"]
+    assert "call_schedule" in detail["payload_keys"]
+    assert "security_ytw" in detail["payload_keys"]
 
 
 def test_observations_raw_ytm_surface_is_untouched() -> None:

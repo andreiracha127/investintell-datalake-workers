@@ -60,9 +60,16 @@ ELIGIBILITY_SCHEMA_PATH = ROOT / "schemas" / "bond_price_eligibility_v1.sql"
 DERIVED_PROTOCOL_PATH = ROOT / "schemas" / "sec_derived_publications.sql"
 
 PRODUCT = "bond_metric_v1"
-METHODOLOGY_VERSION = "bond_metric_v1_source_projection"
+# Bumped 2026-08-07: the projection now also publishes latest_price_pct and the
+# analytic security_effective_duration. The fingerprint is salted with this
+# string precisely so a semantics change alone mints a NEW build rather than
+# replaying the old one.
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v2"
 
-SERVED_METRICS = ("security_ytm", "security_ytw", "current_yield", "wal")
+SERVED_METRICS = (
+    "security_ytm", "security_ytw", "current_yield", "wal",
+    "security_effective_duration", "latest_price_pct",
+)
 
 # Deterministic namespace for the metric publication identity (unchanged).
 _NAMESPACE_PUBLICATION = UUID("b0d5ec00-0000-5000-a000-6d6574726963")
@@ -147,7 +154,7 @@ WITH latest_price AS (
     WHERE e.is_eligible AND e.observation_date <= %(as_of)s
     ORDER BY e.security_id, e.observation_date DESC, e.as_of DESC, e.observation_id DESC
 )
-SELECT s.security_id, s.coupon_rate, s.maturity_date,
+SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
        p.price, p.ytm, p.observation_date
 FROM sec_current_bond_security_v1 s
 LEFT JOIN latest_price p USING (security_id)
@@ -155,7 +162,7 @@ LEFT JOIN latest_price p USING (security_id)
 
 _EMPTY_INPUTS_SQL = """
 CREATE TEMP TABLE _bond_metric_inputs ON COMMIT DROP AS
-SELECT s.security_id, s.coupon_rate, s.maturity_date,
+SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
        NULL::numeric AS price, NULL::numeric AS ytm, NULL::date AS observation_date
 FROM sec_current_bond_security_v1 s
 """
@@ -165,6 +172,7 @@ SELECT coalesce(
     md5(string_agg(
         md5(security_id::text
             || '|' || coalesce(coupon_rate::text, '')
+            || '|' || coalesce(coupon_type, '')
             || '|' || coalesce(maturity_date::text, '')
             || '|' || coalesce(price::text, '')
             || '|' || coalesce(ytm::text, '')
@@ -175,17 +183,94 @@ SELECT coalesce(
 FROM _bond_metric_inputs
 """
 
-# The four metric projections in one set-based insert. Value present iff
-# status='available' (the product CHECK also enforces it).
-_METRIC_ROWS_SQL = """
+# --------------------------------------------------------------------------- #
+# Analytic modified duration (security_effective_duration)
+# --------------------------------------------------------------------------- #
+# Closed form for a SEMIANNUAL fixed-rate bullet, priced from its own observed
+# yield. Ported field-for-field from the panel's ``analytical_mod_dur``; the
+# mathematics is copied, never imported across repositories.
+#
+#     y  = ytm / 2                      (observed yield is a decimal FRACTION)
+#     c  = coupon_rate / 200            (published coupon is PERCENT of par)
+#     n  = round(2 * years_to_maturity), floored at 1 half-periods
+#     v  = (1 + y)^(-n)
+#     ann= (1 - v) / y
+#     px = c*ann + v
+#     D  = (c * ((1+y)/y*ann - n*v/y) + n*v) / px      [Macaulay, half-periods]
+#     modified_duration = (D / 2) / (1 + y)            [years]
+#
+# Two differences from the pandas original, both forced by SQL semantics and
+# both fail-closed: numpy silently yields NaN on y = 0 and the caller's mask
+# discards it, whereas Postgres RAISES on division by zero, so y = 0 is excluded
+# by ``nullif`` BEFORE any division; and a non-finite result is never stored (the
+# pandas version would have written NaN) but becomes a typed engine error. The
+# published domain guard is the original's: -0.02 < ytm < 0.60 and a maturity
+# strictly after settlement.
+#
+# Settlement is the PRICE observation date (trade-date settlement), matching the
+# yield the duration is measured against. No price enters the formula: the bond
+# is priced from its own coupon/yield/maturity, so a security with a yield but a
+# stale price still gets an honest duration.
+_DURATION_LATERALS = """
+CROSS JOIN LATERAL (
+    SELECT CASE
+             WHEN i.ytm IS NULL OR i.observation_date IS NULL
+               OR i.coupon_rate IS NULL OR i.maturity_date IS NULL
+               OR lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed'
+               OR i.maturity_date <= i.observation_date
+               OR i.ytm <= -0.02 OR i.ytm >= 0.60
+             THEN NULL
+             ELSE (nullif(i.ytm, 0) / 2.0)::double precision
+           END AS y,
+           (i.coupon_rate / 200.0)::double precision AS c,
+           CASE WHEN i.maturity_date IS NULL OR i.observation_date IS NULL THEN NULL
+                ELSE greatest(round(2.0 * ((i.maturity_date - i.observation_date)::numeric
+                                           / 365.25)), 1)::double precision END AS n
+) dp
+CROSS JOIN LATERAL (
+    SELECT dp.y, dp.c, dp.n,
+           CASE WHEN dp.y IS NOT NULL AND dp.n IS NOT NULL
+                THEN power(1.0 + dp.y, -dp.n) END AS v
+) dv
+CROSS JOIN LATERAL (
+    SELECT dv.y, dv.c, dv.n, dv.v,
+           CASE WHEN dv.v IS NOT NULL THEN (1.0 - dv.v) / dv.y END AS ann
+) da
+CROSS JOIN LATERAL (
+    SELECT da.y, da.c, da.n, da.v, da.ann,
+           CASE WHEN da.ann IS NOT NULL AND da.c IS NOT NULL
+                THEN da.c * da.ann + da.v END AS px
+) dx
+CROSS JOIN LATERAL (
+    SELECT CASE WHEN dx.px IS NOT NULL AND dx.px > 0 THEN
+             (((dx.c * ((1.0 + dx.y) / dx.y * dx.ann - dx.n * dx.v / dx.y) + dx.n * dx.v)
+               / dx.px) / 2.0) / (1.0 + dx.y)
+           END AS raw_dur
+) dd
+CROSS JOIN LATERAL (
+    -- Fail-closed finiteness: NaN fails the self-equality test and an infinity
+    -- fails the bounds, so neither can be stored as a value.
+    SELECT CASE WHEN dd.raw_dur IS NOT NULL AND dd.raw_dur = dd.raw_dur
+                 AND dd.raw_dur > 0
+                 AND dd.raw_dur < 'Infinity'::double precision
+                THEN dd.raw_dur::numeric END AS effective_duration
+) de
+"""
+
+# The six metric projections in one set-based insert. Value present iff
+# status='available' (the product CHECK also enforces it), and a typed reason
+# code accompanies BOTH reason-bearing statuses (terms_insufficient and
+# engine_typed_error) exactly as the product CHECK requires.
+_METRIC_ROWS_SQL = f"""
 INSERT INTO bond_metric_v1
     (publication_id, security_id, metric_id, value, status, engine_error_code, as_of, provenance)
 SELECT %(pub)s, i.security_id, m.metric_id, m.value, m.status,
-       CASE WHEN m.status = 'terms_insufficient' THEN m.reason END,
+       CASE WHEN m.status IN ('terms_insufficient', 'engine_typed_error') THEN m.reason END,
        %(as_of)s,
        jsonb_build_object('origin', m.origin, 'methodology_version', %(methodology)s::text,
                           'code_revision', %(code_revision)s::text)
 FROM _bond_metric_inputs i
+{_DURATION_LATERALS}
 CROSS JOIN LATERAL (
     VALUES
         ('security_ytm',
@@ -212,7 +297,33 @@ CROSS JOIN LATERAL (
          CASE WHEN i.maturity_date IS NOT NULL THEN 'available'
               ELSE 'terms_insufficient' END,
          'maturity_unpublished',
-         'derived_terms')
+         'derived_terms'),
+        -- Analytic modified duration (years). OAS/z-spread and a callable YTW
+        -- stay absent: no validated model publishes them here.
+        ('security_effective_duration',
+         de.effective_duration,
+         CASE WHEN de.effective_duration IS NOT NULL THEN 'available'
+              WHEN i.ytm IS NULL OR i.observation_date IS NULL THEN 'no_eligible_price'
+              WHEN i.coupon_rate IS NULL THEN 'terms_insufficient'
+              WHEN lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed' THEN 'terms_insufficient'
+              WHEN i.maturity_date IS NULL THEN 'terms_insufficient'
+              ELSE 'engine_typed_error' END,
+         CASE WHEN i.coupon_rate IS NULL THEN 'coupon_rate_unpublished'
+              WHEN lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed' THEN 'coupon_type_unsupported'
+              WHEN i.maturity_date IS NULL THEN 'maturity_unpublished'
+              WHEN i.maturity_date <= i.observation_date THEN 'settlement_after_maturity'
+              WHEN i.ytm <= -0.02 OR i.ytm >= 0.60 OR i.ytm = 0 THEN 'yield_out_of_domain'
+              ELSE 'non_finite_result' END,
+         'analytic_modified_duration'),
+        -- The eligible latest CLEAN price in percent of par, as its own metric
+        -- row so the value is auditable next to the yields it prices. (No literal
+        -- percent sign in this string: psycopg would read it as a placeholder.)
+        ('latest_price_pct',
+         CASE WHEN i.price IS NOT NULL AND i.price > 0 THEN i.price END,
+         CASE WHEN i.price IS NOT NULL AND i.price > 0 THEN 'available'
+              ELSE 'no_eligible_price' END,
+         NULL,
+         'qualified_price_source')
 ) AS m(metric_id, value, status, reason, origin)
 ON CONFLICT (publication_id, security_id, metric_id) DO NOTHING
 """
@@ -290,7 +401,7 @@ def _materialize(
         conn.execute("SELECT sec_set_current_derived_publication(%s,%s)", (PRODUCT, publication_id))
 
     status_counts = {status: 0 for status in (
-        "available", "no_eligible_price", "terms_insufficient")}
+        "available", "no_eligible_price", "terms_insufficient", "engine_typed_error")}
     for status, count in conn.execute(
         "SELECT status, count(*) FROM bond_metric_v1 WHERE publication_id=%s GROUP BY status",
         (publication_id,),

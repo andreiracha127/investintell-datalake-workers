@@ -44,6 +44,7 @@ rejected rather than published.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
@@ -53,11 +54,13 @@ from uuid import UUID, uuid5
 import psycopg
 from psycopg.types.json import Jsonb
 
+from src.bonds import issuer_consensus
 from src.bonds.identifiers import normalize_cusip9
 from src.bonds.states import IdentifierState
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "schemas" / "bond_security_v1.sql"
+REFERENCE_TERMS_SCHEMA_PATH = ROOT / "schemas" / "bond_reference_terms.sql"
 PRODUCT = "bond_security_v1"
 METHODOLOGY_VERSION = "bond_security_v1"
 
@@ -135,6 +138,13 @@ class ResolvedSecurity:
     identity_evidence: dict[str, Any]
     aliases: tuple[SecurityAlias, ...]
     contributing_observation_ids: tuple[str, ...]
+    # The qualified CUSIP9 this identity resolves to (None for an ISIN-only
+    # identity). Carried so issuer attribution can scope its vote by the exact
+    # CUSIP9 and, on fallback, by the 6-character issuer prefix.
+    cusip9: str | None = None
+    # Reported issuer spellings for THIS security with their holding-lot vote
+    # weight: the raw input to ``issuer_consensus``. Never published as-is.
+    issuer_votes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -376,6 +386,9 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
         isin_by_date: dict[date, set[str]] = {}
         issuer_by_date: dict[date, set[str]] = {}
         cusip_by_date: dict[date, set[str]] = {}
+        # One vote per contributing observation (= one N-PORT holding lot), which
+        # is exactly the grain the issuer-consensus coverage was measured at.
+        issuer_votes: Counter[str] = Counter()
         for obs in members:
             oid = str(obs.observation_id)
             isin_v = keyed_isin[key].get(oid)
@@ -384,26 +397,27 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
             issuer_v = _normalized_text(obs.issuer_name)
             if issuer_v:
                 issuer_by_date.setdefault(obs.observation_date, set()).add(issuer_v)
+                issuer_votes[issuer_v] += 1
             cusip_v = keyed_cusip.get(oid)
             if cusip_v:
                 cusip_by_date.setdefault(obs.observation_date, set()).add(cusip_v)
 
         isin_conflict = any(len(vs) > 1 for vs in isin_by_date.values())
-        issuer_conflict = any(len(vs) > 1 for vs in issuer_by_date.values())
+        # Reported issuer spellings VARY (case, punctuation, corporate suffixes,
+        # an appended coupon/maturity) across the funds that hold one bond. That
+        # variance is reporting noise about a NAME, never competing evidence about
+        # WHICH INSTRUMENT this is, so it no longer flips identity_state.
+        # Measured 2026-08-07: treating it as an identity conflict marked 9,688 of
+        # 10,073 curated securities 'ambiguous' and nulled their issuer, while the
+        # underlying CUSIP9/ISIN evidence was a singleton in every one of them.
+        # The name is resolved downstream by ``issuer_consensus`` (fail-closed,
+        # abstains rather than guessing); until then it stays honestly NULL.
+        issuer_variance = any(len(vs) > 1 for vs in issuer_by_date.values())
         conflicts: dict[str, list[str]] = {}
         if isin_conflict:
             conflicts["isin"] = sorted({v for vs in isin_by_date.values() for v in vs})
-        if issuer_conflict:
-            conflicts["issuer_name"] = sorted({v for vs in issuer_by_date.values() for v in vs})
 
-        if isin_conflict and issuer_conflict:
-            reason = "conflicting_identity_evidence"
-        elif isin_conflict:
-            reason = "conflicting_isin_evidence"
-        elif issuer_conflict:
-            reason = "conflicting_issuer_evidence"
-        else:
-            reason = None
+        reason = "conflicting_isin_evidence" if isin_conflict else None
         identity_state = "ambiguous" if reason else "resolved"
 
         aliases: list[SecurityAlias] = []
@@ -429,14 +443,22 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
                 summary[conflicting_term] = None
             if conflicting_term in terms:
                 terms[conflicting_term] = None
+        if issuer_variance:
+            # More than one reported spelling and no consensus applied yet: the
+            # latest-non-null pick would be an arbitrary winner, so publish
+            # NOTHING here. ``attribute_issuers`` decides (or abstains) next.
+            summary["issuer_name"] = None
+            terms["issuer_name"] = None
         evidence = {
             "contributing_observation_ids": sorted(str(o.observation_id) for o in members),
             "observation_dates": sorted({o.observation_date.isoformat() for o in members}),
             "distinct_cusip9": sorted({v for vs in cusip_by_date.values() for v in vs}),
             "distinct_isin": sorted({v for vs in isin_by_date.values() for v in vs}),
             "distinct_issuer_name": sorted({v for vs in issuer_by_date.values() for v in vs}),
+            "issuer_name_variance": issuer_variance,
             "conflicts": conflicts,
         }
+        identity_cusip9 = key[len("cusip9:"):] if key.startswith("cusip9:") else None
         securities.append(
             ResolvedSecurity(
                 security_id=security_id,
@@ -448,11 +470,162 @@ def resolve_securities(observations: Iterable[SecurityObservation]) -> Resolutio
                 identity_evidence=evidence,
                 aliases=tuple(aliases),
                 contributing_observation_ids=tuple(sorted(str(o.observation_id) for o in members)),
+                cusip9=identity_cusip9,
+                issuer_votes=tuple(sorted(issuer_votes.items())),
             )
         )
 
     securities = _withhold_cross_identity_alias_collisions(securities)
     return ResolutionResult(securities=tuple(securities), rejected=tuple(rejected))
+
+
+# ---------------------------------------------------------------------------
+# Issuer attribution overlay (pure; see src/bonds/issuer_consensus.py)
+# ---------------------------------------------------------------------------
+def attribute_issuers(
+    securities: Sequence[ResolvedSecurity],
+    *,
+    lei_by_cusip9: Mapping[str, Iterable[str]] | None = None,
+) -> tuple[ResolvedSecurity, ...]:
+    """Fill ``issuer_name`` by layered reported-name consensus, or abstain.
+
+    Layer 1 votes on the security's OWN reported spellings — the exact-identity
+    scope, which for a CUSIP9-keyed identity is the exact CUSIP9 (an ISIN-keyed
+    identity uses the same own-security scope and has no CUSIP6 fallback, since
+    it has no CUSIP prefix to fall back to). Only when layer 1 abstains does
+    layer 2 widen the vote to every security sharing the 6-character CUSIP
+    prefix — that INFERS across securities, so it also carries the vehicle-name
+    veto. A security whose vote is split, or whose reported LEIs disagree, ends
+    with a NULL issuer and the reason recorded. The verdict and its evidence
+    always land in ``identity_evidence['issuer_attribution']``, attributed or not.
+
+    Every security goes through the rule, including one every filer already
+    spells identically: a unanimous vote is simply a single cluster at share 1.0.
+    Routing it through anyway is what lets the LEI veto reach a name that filers
+    agree on but attach to two different legal entities.
+
+    ``lei_by_cusip9`` carries the reported legal-entity identifiers per CUSIP9.
+    It is OPTIONAL: with no LEI evidence the rule degrades to name consensus
+    alone (an honest weakening, never a fabricated agreement).
+    """
+    leis = {str(k): tuple(v) for k, v in (lei_by_cusip9 or {}).items()}
+
+    votes_by_cusip6: dict[str, Counter[str]] = {}
+    lei_by_cusip6: dict[str, set[str]] = {}
+    for security in securities:
+        if not security.cusip9:
+            continue
+        prefix = security.cusip9[:6]
+        bucket = votes_by_cusip6.setdefault(prefix, Counter())
+        for name, count in security.issuer_votes:
+            bucket[name] += count
+        lei_by_cusip6.setdefault(prefix, set()).update(leis.get(security.cusip9, ()))
+
+    resolved: list[ResolvedSecurity] = []
+    for security in securities:
+        # Consensus owns the name outright — including for a security every filer
+        # already spells identically. A unanimous vote simply resolves to one
+        # cluster at share 1.0, and routing it through the same rule is what lets
+        # the LEI veto reach it: filers can agree on the NAME while reporting two
+        # different legal entities, and that disagreement must still abstain.
+        verdict = issuer_consensus.resolve_issuer(
+            dict(security.issuer_votes),
+            layer=issuer_consensus.ATTRIBUTION_CUSIP9,
+            leis=leis.get(security.cusip9 or "", ()),
+        )
+        if not verdict.attributed and security.cusip9:
+            prefix = security.cusip9[:6]
+            verdict = issuer_consensus.resolve_issuer(
+                dict(votes_by_cusip6.get(prefix, Counter())),
+                layer=issuer_consensus.ATTRIBUTION_CUSIP6,
+                leis=lei_by_cusip6.get(prefix, set()),
+            )
+        resolved.append(_with_issuer(security, verdict))
+    return tuple(resolved)
+
+
+def _with_issuer(security: ResolvedSecurity, verdict: issuer_consensus.IssuerVerdict) -> ResolvedSecurity:
+    """Write the verdict onto the security — including an ABSTENTION.
+
+    An abstention actively CLEARS any name the term resolution had picked up. The
+    consensus is the only authority on this field, so "the rule declined to name
+    it" must beat "an earlier pass happened to have a value"; otherwise a
+    multi-LEI veto would be silently overridden by the very value it rejected.
+    """
+    evidence = dict(security.identity_evidence)
+    evidence["issuer_attribution"] = {
+        "attribution": verdict.attribution, **verdict.evidence,
+    }
+    summary = dict(security.measured_terms)
+    terms = dict(security.terms)
+    summary["issuer_name"] = verdict.issuer_name
+    terms["issuer_name"] = verdict.issuer_name
+    return replace(
+        security, measured_terms=summary, terms=terms, identity_evidence=evidence,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Vendor reference terms overlay (fills ABSENCE only; never overrides the chain)
+# ---------------------------------------------------------------------------
+# The published universe reports coupon and maturity almost completely (measured
+# 2026-08-07 on the 10,073 curated securities: 8 missing coupons, 0 missing
+# maturities) but reports NO seniority, secured flag, callability or amount
+# outstanding at all. Those come from a neutral reference table
+# (``bond_reference_terms``), recorded as basis ``vendor_reference`` — a neutral
+# label, because no serving copy ever names a source.
+_REFERENCE_SCALARS = ("coupon_rate", "coupon_type", "maturity_date", "seniority", "day_count")
+_REFERENCE_TRISTATE = ("secured",)
+_REFERENCE_TERMS_ONLY = ("callable", "amount_outstanding_mm", "payment_frequency")
+
+REFERENCE_BASIS = "vendor_reference"
+
+
+def apply_reference_terms(
+    securities: Sequence[ResolvedSecurity],
+    reference: Mapping[str, Mapping[str, Any]] | None,
+) -> tuple[ResolvedSecurity, ...]:
+    """Fill terms the chain does NOT carry from the neutral reference table.
+
+    Strictly gap-filling: a field the published observations already resolved is
+    never touched, and a tri-state at ``not_reported`` counts as absent. Fields
+    the reference itself does not carry stay absent — no default, no guess. Every
+    filled field is listed under ``identity_evidence['reference_terms']``.
+    """
+    if not reference:
+        return tuple(securities)
+    resolved: list[ResolvedSecurity] = []
+    for security in securities:
+        row = reference.get(security.cusip9 or "")
+        if not row:
+            resolved.append(security)
+            continue
+        summary = dict(security.measured_terms)
+        terms = dict(security.terms)
+        filled: list[str] = []
+        for name in _REFERENCE_SCALARS:
+            if summary.get(name) is None and row.get(name) is not None:
+                summary[name] = row[name]
+                terms[name] = row[name]
+                filled.append(name)
+        for name in _REFERENCE_TRISTATE:
+            if summary.get(name) in (None, "not_reported") and row.get(name) is not None:
+                summary[name] = row[name]
+                terms[name] = row[name]
+                filled.append(name)
+        for name in _REFERENCE_TERMS_ONLY:
+            if terms.get(name) is None and row.get(name) is not None:
+                terms[name] = row[name]
+                filled.append(name)
+        if not filled:
+            resolved.append(security)
+            continue
+        evidence = dict(security.identity_evidence)
+        evidence["reference_terms"] = {"basis": REFERENCE_BASIS, "fields": sorted(filled)}
+        resolved.append(replace(
+            security, measured_terms=summary, terms=terms, identity_evidence=evidence,
+        ))
+    return tuple(resolved)
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +636,59 @@ def install_schema(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
         cur.execute((ROOT / "schemas" / "sec_derived_publications.sql").read_text(encoding="utf-8"))
         cur.execute(SCHEMA_PATH.read_text(encoding="utf-8"))
+        cur.execute(REFERENCE_TERMS_SCHEMA_PATH.read_text(encoding="utf-8"))
+
+
+def _relation_exists(conn: psycopg.Connection, name: str) -> bool:
+    row = conn.execute("SELECT to_regclass(%s)", (name,)).fetchone()
+    return bool(row and row[0] is not None)
+
+
+def load_issuer_lei(conn: psycopg.Connection) -> dict[str, list[str]]:
+    """Reported legal-entity identifiers per CUSIP9 (empty when unavailable).
+
+    The LEI is the second half of the fail-closed issuer rule: more than one
+    reported LEI in a vote scope means the reported legal entities genuinely
+    disagree and the attribution abstains. It lives only on the N-PORT holding
+    grain, not on ``bond_security_observation``, so it is read here. A missing
+    relation degrades the rule to name consensus alone — honestly weaker, never
+    a fabricated agreement.
+    """
+    if not _relation_exists(conn, "sec_nport_holdings_v2_current"):
+        return {}
+    rows = conn.execute(
+        "SELECT DISTINCT upper(btrim(cusip)) AS cusip9, btrim(issuer_lei) AS lei "
+        "FROM sec_nport_holdings_v2_current "
+        "WHERE nullif(btrim(coalesce(cusip,'')),'') IS NOT NULL "
+        "  AND nullif(btrim(coalesce(issuer_lei,'')),'') IS NOT NULL"
+    ).fetchall()
+    out: dict[str, list[str]] = {}
+    for cusip9, lei in rows:
+        out.setdefault(cusip9, []).append(lei)
+    return out
+
+
+def load_reference_terms(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
+    """The neutral reference terms keyed by CUSIP9 (empty when unavailable)."""
+    if not _relation_exists(conn, "bond_reference_terms"):
+        return {}
+    rows = conn.execute(
+        "SELECT cusip9, coupon_rate, coupon_type, maturity_date, seniority, secured, "
+        "day_count, payment_frequency, callable, amount_outstanding_mm "
+        "FROM bond_reference_terms"
+    ).fetchall()
+    keys = ("coupon_rate", "coupon_type", "maturity_date", "seniority", "secured",
+            "day_count", "payment_frequency", "callable", "amount_outstanding_mm")
+    numeric = {"coupon_rate", "amount_outstanding_mm"}
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        # DB numerics arrive as Decimal, which json.dumps cannot encode and which
+        # would blow up when the enriched terms are written back as jsonb.
+        out[row[0]] = {
+            key: (float(value) if key in numeric and value is not None else value)
+            for key, value in zip(keys, row[1:])
+        }
+    return out
 
 
 def publication_id_for(as_of: date, code_revision: str) -> UUID:
@@ -492,7 +718,20 @@ def _load_observations(conn: psycopg.Connection, as_of: date) -> list[SecurityOb
     return result
 
 
-def _input_fingerprint(as_of: date, observations: Sequence[SecurityObservation]) -> str:
+def _input_fingerprint(
+    as_of: date,
+    observations: Sequence[SecurityObservation],
+    *,
+    lei_by_cusip9: Mapping[str, Iterable[str]] | None = None,
+    reference_terms: Mapping[str, Mapping[str, Any]] | None = None,
+) -> str:
+    """Digest of every input the snapshot is built from (identity + enrichment).
+
+    The enrichment inputs are digested too, so a build pinned to one reference
+    cohort cannot be silently completed against another one. They are appended
+    AFTER the observation block and omitted entirely when empty, so a build with
+    no enrichment available keeps its historical fingerprint byte-for-byte.
+    """
     parts = [f"{PRODUCT}|{as_of.isoformat()}"]
     for obs in sorted(observations, key=lambda o: str(o.observation_id)):
         parts.append(
@@ -504,6 +743,17 @@ def _input_fingerprint(as_of: date, observations: Sequence[SecurityObservation])
                 )
             )
         )
+    if lei_by_cusip9:
+        parts.append("lei")
+        for cusip9 in sorted(lei_by_cusip9):
+            parts.append(f"{cusip9}|{'|'.join(sorted(str(v) for v in lei_by_cusip9[cusip9]))}")
+    if reference_terms:
+        parts.append("reference_terms")
+        for cusip9 in sorted(reference_terms):
+            row = reference_terms[cusip9]
+            parts.append(
+                cusip9 + "|" + "|".join(f"{k}={row[k]!r}" for k in sorted(row))
+            )
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
@@ -533,7 +783,13 @@ def materialize(
     """
     publication_id = publication_id_for(as_of, code_revision)
     observations = _load_observations(conn, as_of)
-    fingerprint = _input_fingerprint(as_of, observations)
+    # Enrichment inputs are read BEFORE the fingerprint so the build pin digests
+    # what the snapshot was actually built from, not only the identity inputs.
+    lei_by_cusip9 = load_issuer_lei(conn)
+    reference_terms = load_reference_terms(conn)
+    fingerprint = _input_fingerprint(
+        as_of, observations, lei_by_cusip9=lei_by_cusip9, reference_terms=reference_terms,
+    )
 
     existing = conn.execute(
         "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s",
@@ -555,6 +811,15 @@ def materialize(
         lifecycle = existing[0]
 
     result = resolve_securities(observations)
+    # Overlay order matters: attribute the issuer from the REPORTED evidence
+    # first, then gap-fill the remaining terms from the neutral reference. The
+    # reference carries no issuer name at all, so the two never compete.
+    securities = attribute_issuers(result.securities, lei_by_cusip9=lei_by_cusip9)
+    securities = apply_reference_terms(securities, reference_terms)
+    result = ResolutionResult(securities=securities, rejected=result.rejected)
+    attributed = sum(
+        1 for sec in result.securities if sec.measured_terms.get("issuer_name")
+    )
     if lifecycle == "prepared":
         conn.execute(
             "INSERT INTO bond_security_v1_builds"
@@ -619,6 +884,10 @@ def materialize(
         "as_of": as_of.isoformat(),
         "securities": len(result.securities),
         "rejected": len(result.rejected),
+        "issuer_attributed": attributed,
+        "issuer_abstained": len(result.securities) - attributed,
+        "reference_terms_rows": len(reference_terms),
+        "lei_cusip9s": len(lei_by_cusip9),
         "state": "current",
     }
 

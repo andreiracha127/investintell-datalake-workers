@@ -84,9 +84,12 @@ _SURFACE_REQUIRED_RELATIONS: dict[str, tuple[str, ...]] = {
         # missing two contract keys -> the coverage gate fails closed.
         "sec_nport_holdings_v2_current",
     ),
+    # detail reads the metric view for current_yield/security_ytm/security_ytw/
+    # security_effective_duration/wal, and (since Wave 1c) the promoted latest
+    # price lane for its own latest_price_pct key.
     "detail": (
         "sec_current_bond_security_v1", "sec_current_bond_security_alias_v1",
-        "sec_current_bond_metric_v1",
+        "sec_current_bond_metric_v1", "bond_price_latest_v1",
     ),
     "observations": ("bond_price_latest_v1",),
     "fund_exposure": (
@@ -126,9 +129,13 @@ class BondFundExposureMultiplicationError(RuntimeError):
 # with the promoted current metric view + latest price lane (Wave 1).
 # ---------------------------------------------------------------------------
 
-# The CLOSED Wave-1 metric vocabulary this projection may serve (owner
-# authorization 2026-07-23; matches the bond_metric_v1 CHECK constraint).
-_WAVE1_SERVED_METRICS = ("security_ytm", "security_ytw", "current_yield", "wal")
+# The CLOSED metric vocabulary this projection may serve (owner authorization
+# 2026-07-23; extended 2026-08-07 with the analytic duration and the price
+# metric). Matches the bond_metric_v1 CHECK constraint.
+_WAVE1_SERVED_METRICS = (
+    "security_ytm", "security_ytw", "current_yield", "wal",
+    "security_effective_duration", "latest_price_pct",
+)
 
 
 def _metric_value_sql(metric_id: str) -> str:
@@ -271,6 +278,7 @@ SELECT %(pub)s, 'catalog', s.security_id, '', '', '',
            'latest_price_pct', {_LATEST_PRICE_PCT_SQL},
            'security_ytm', {_metric_value_sql("security_ytm")},
            'security_ytw', {_metric_value_sql("security_ytw")},
+           'security_effective_duration', {_metric_value_sql("security_effective_duration")},
            -- Reported issuer classification, resolved to the security grain by
            -- reported consensus (null-honest: unclassified serves JSON null).
            'issuer_country', {_ISSUER_COUNTRY_SQL},
@@ -301,12 +309,22 @@ SELECT %(pub)s, 'detail', s.security_id, '', '', '',
            'is_144a', s.is_144a,
            'day_count', s.day_count,
            'settlement_convention', s.settlement_convention,
+           -- Reference terms the filing itself never reports. ``callable`` is a
+           -- boolean FACT, deliberately not a call_schedule: no call dates are
+           -- known, and a fabricated schedule would be a guess (which is also why
+           -- security_ytw stays absent even now that callability is known).
+           'callable', s.terms -> 'callable',
+           'amount_outstanding_mm', s.terms -> 'amount_outstanding_mm',
            -- Wave 1 computed metrics (null-honest; promoted current metric view
            -- only). Coupon above stays a reported TERM, never a yield.
            'current_yield', {_metric_value_sql("current_yield")},
            'security_ytm', {_metric_value_sql("security_ytm")},
            'security_ytw', {_metric_value_sql("security_ytw")},
+           'security_effective_duration', {_metric_value_sql("security_effective_duration")},
            'wal', {_metric_value_sql("wal")},
+           -- Same inline eligibility predicate the catalog uses, so a security's
+           -- price is byte-identical on both surfaces.
+           'latest_price_pct', {_LATEST_PRICE_PCT_SQL},
            'identity_state', s.identity_state,
            -- ambiguous identity surfaces the conflicting VALUES only (neutral
            -- evidence), never the internal contributing_observation_ids lineage.

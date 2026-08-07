@@ -148,7 +148,16 @@ def test_conflicting_isin_same_date_is_ambiguous_with_evidence_no_winner() -> No
     ]
 
 
-def test_conflicting_issuer_same_date_is_ambiguous() -> None:
+def test_differing_issuer_names_do_not_make_the_identity_ambiguous() -> None:
+    """Reported issuer-name variance is a NAME question, never an identity one.
+
+    Two funds spelling one bond's issuer differently says nothing about which
+    instrument it is -- the CUSIP9 evidence is a singleton either way. Treating
+    it as an identity conflict marked 9,688 of the 10,073 curated securities
+    'ambiguous' (measured 2026-08-07), which the app serves as degraded. The
+    resolver now records the variance and leaves the NAME null for the consensus
+    pass to decide; it never invents a winner here.
+    """
     result = resolve_securities(
         [
             _obs("o1", date(2026, 6, 30), cusip9_input="037833100", issuer_name="Acme Corp"),
@@ -156,13 +165,32 @@ def test_conflicting_issuer_same_date_is_ambiguous() -> None:
         ]
     )
     sec = result.securities[0]
-    assert sec.identity_state == "ambiguous"
-    assert "issuer_name" in sec.identity_evidence["conflicts"]
-    # A conflicting summary term exposes no arbitrary winner: it is nulled out,
-    # while the full conflicting set stays in identity_evidence.conflicts.
+    assert sec.identity_state == "resolved"
+    assert sec.identity_reason_code is None
+    assert "issuer_name" not in sec.identity_evidence["conflicts"]
+    assert sec.identity_evidence["issuer_name_variance"] is True
+    # No arbitrary winner at this stage: the name stays absent and every reported
+    # spelling stays visible as evidence.
     assert sec.measured_terms["issuer_name"] is None
     assert sec.terms["issuer_name"] is None
-    assert sorted(sec.identity_evidence["conflicts"]["issuer_name"]) == ["Acme Corp", "Beta Corp"]
+    assert sorted(sec.identity_evidence["distinct_issuer_name"]) == ["Acme Corp", "Beta Corp"]
+    # ...and the votes the consensus pass will use are carried on the row.
+    assert dict(sec.issuer_votes) == {"Acme Corp": 1, "Beta Corp": 1}
+
+
+def test_conflicting_isin_is_still_an_identity_ambiguity() -> None:
+    """The narrowing above must not weaken the REAL identity conflict rule."""
+    result = resolve_securities(
+        [
+            _obs("o1", date(2026, 6, 30), cusip9_input="037833100",
+                 isin_input="US0378331005", issuer_name="Acme Corp"),
+            _obs("o2", date(2026, 6, 30), cusip9_input="037833100",
+                 isin_input="US0378331099", issuer_name="Acme Corp"),
+        ]
+    )
+    sec = result.securities[0]
+    assert sec.identity_state == "ambiguous"
+    assert sec.identity_reason_code == "conflicting_isin_evidence"
 
 
 def test_isin_alias_window_closes_when_superseded_across_dates() -> None:
