@@ -203,9 +203,18 @@ SELECT m.metric_id, m.status, count(*)
 FROM cur c JOIN sec_current_bond_metric_v1 m USING (security_id)
 WHERE m.metric_id IN ('security_effective_duration','latest_price_pct')
 GROUP BY 1,2 ORDER BY 1,2;
--- Expected: latest_price_pct available ~10,072; security_effective_duration
--- available ~9,500-10,000 (549 of the 68k-security lane sit at ytm >= 0.60 and
--- 4 at <= -0.02: those are engine_typed_error/yield_out_of_domain BY DESIGN).
+-- Expected on the curated set, PROJECTED from the same predicates the worker
+-- applies (measured 2026-08-07, before the reference load):
+--   latest_price_pct            available 10,072 | no_eligible_price 1
+--   security_effective_duration available 10,057 | no_eligible_price 1
+--                               terms_insufficient 15 | engine_typed_error 0
+-- The 15 are 8 securities with no published coupon and 7 whose coupon_type is
+-- not 'Fixed' (4 'None', 3 'Variable') -- the closed form is a fixed-rate bullet
+-- and refuses the rest by TYPE, never by guessing. After the reference fills the
+-- 8 coupons, expect available 10,065 / terms_insufficient 7.
+-- engine_typed_error is 0 here but is NOT dead code: across the full 68k-security
+-- price lane, 549 observations sit at ytm >= 0.60 and 4 at <= -0.02, and those
+-- would land as yield_out_of_domain BY DESIGN.
 
 -- 4.5 Structural honesty: a value exists iff the row is available.
 SELECT count(*) FROM sec_current_bond_metric_v1
