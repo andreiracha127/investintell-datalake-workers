@@ -43,12 +43,22 @@ CREATE INDEX IF NOT EXISTS nport_lookthrough_exposures_series_idx
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
-        PERFORM create_hypertable(
-            'nport_lookthrough_exposures', 'report_date',
-            chunk_time_interval => INTERVAL '1 month',
-            if_not_exists => TRUE,
-            migrate_data => TRUE
-        );
+        IF EXISTS (
+            SELECT 1 FROM timescaledb_information.hypertables
+            WHERE hypertable_schema = current_schema()
+              AND hypertable_name = 'nport_lookthrough_exposures'
+        ) THEN
+            NULL; -- Existing hypertable: safe, idempotent schema installation.
+        ELSIF EXISTS (SELECT 1 FROM nport_lookthrough_exposures LIMIT 1) THEN
+            RAISE EXCEPTION
+                'refusing to convert populated nport_lookthrough_exposures; use an empty shadow table, bounded backfill, and cutover';
+        ELSE
+            PERFORM create_hypertable(
+                'nport_lookthrough_exposures', 'report_date',
+                chunk_time_interval => INTERVAL '1 month',
+                if_not_exists => TRUE
+            );
+        END IF;
     END IF;
 END$$;
 
@@ -94,11 +104,21 @@ CREATE INDEX IF NOT EXISTS nport_lookthrough_summary_series_idx
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'timescaledb') THEN
-        PERFORM create_hypertable(
-            'nport_lookthrough_summary', 'report_date',
-            chunk_time_interval => INTERVAL '1 month',
-            if_not_exists => TRUE,
-            migrate_data => TRUE
-        );
+        IF EXISTS (
+            SELECT 1 FROM timescaledb_information.hypertables
+            WHERE hypertable_schema = current_schema()
+              AND hypertable_name = 'nport_lookthrough_summary'
+        ) THEN
+            NULL; -- Existing hypertable: safe, idempotent schema installation.
+        ELSIF EXISTS (SELECT 1 FROM nport_lookthrough_summary LIMIT 1) THEN
+            RAISE EXCEPTION
+                'refusing to convert populated nport_lookthrough_summary; use an empty shadow table, bounded backfill, and cutover';
+        ELSE
+            PERFORM create_hypertable(
+                'nport_lookthrough_summary', 'report_date',
+                chunk_time_interval => INTERVAL '1 month',
+                if_not_exists => TRUE
+            );
+        END IF;
     END IF;
 END$$;

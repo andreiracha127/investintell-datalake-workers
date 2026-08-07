@@ -302,3 +302,15 @@ LOCK_NPORT_FIXED_INCOME_SERVING = 900_351
 # selection twice at once. 900_352 is the next free id after
 # LOCK_NPORT_FIXED_INCOME_SERVING.
 LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352
+# Explicit risk -> momentum -> catalogue publication chain.  It coordinates
+# existing workers (which retain their own locks) and must not share a lock with
+# either child: the chain holds this outer lock while invoking both of them.
+LOCK_ANALYTICS_REFRESH_CHAIN = 900_353
+# SEC 13F publication and dependent read-model/CAGG refresh chain.
+LOCK_SEC_13F_PUBLICATION_CHAIN = 900_354
+# Post-publication N-PORT V2 identity + fixed-income coupling.  This outer lock
+# serializes the refresh/probe/downstream handoff without sharing either child's
+# lock, so a retry observes a complete prior stage or reruns it idempotently.
+LOCK_NPORT_V2_PUBLICATION_CHAIN = 900_356
+# Incremental SEC XBRL statement materializer (routine changed-filing path).
+LOCK_STOCK_FUNDAMENTALS_STATEMENTS = 900_355

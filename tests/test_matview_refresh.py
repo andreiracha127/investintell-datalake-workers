@@ -125,7 +125,7 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     assert sink["events"][effective_index][1] == "postgres://lake"
 
 
-def test_datalake_step_skipped_when_no_dsn(monkeypatch):
+def test_single_database_refreshes_datalake_objects_without_legacy_dsn(monkeypatch):
     sink: dict = {}
 
     def _fake_connect(dsn=None, *, autocommit=False):
@@ -138,9 +138,15 @@ def test_datalake_step_skipped_when_no_dsn(monkeypatch):
         "run",
         lambda dsn: {"published": 1, "as_of": "2026-07-13"},
     )
+    monkeypatch.setattr(
+        mr.sec_effective_matviews,
+        "refresh_stale",
+        lambda dsn: [{"matview": "ncen_effective_filings_mv", "state": "fresh"}],
+    )
     result = mr.run("postgres://app", datalake_dsn=None)
-    assert result["refreshed_datalake"] == []
+    assert result["refreshed_datalake"] == mr._DATALAKE_MVS
     assert result["market_overview_snapshot"]["published"] == 1
+    assert "postgres://app" in sink["dsns"]
 
 
 def test_app_mv_failure_prevents_snapshot_publication(monkeypatch):

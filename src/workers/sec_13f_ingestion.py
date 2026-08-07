@@ -451,6 +451,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                 }
 
             fetched = upserted = diff_rows = 0
+            affected_report_dates: list[_dt.date] = []
             processed_ciks: list[str] = []
             with httpx.Client(timeout=60.0, headers=_headers()) as client:
                 for manager in managers:
@@ -464,6 +465,7 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
                     upserted += upsert_holdings(conn, rows)
                     if rows:
                         processed_ciks.append(manager.cik)
+                        affected_report_dates.extend(row.report_date for row in rows)
                     conn.commit()
             if processed_ciks:
                 diff_rows = refresh_diffs(conn, processed_ciks)
@@ -475,4 +477,10 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
         "upserted": upserted,
         "diff_rows": diff_rows,
         "seeded": seeded,
+        "affected_report_date_start": (
+            min(affected_report_dates).isoformat() if affected_report_dates else None
+        ),
+        "affected_report_date_end": (
+            max(affected_report_dates).isoformat() if affected_report_dates else None
+        ),
     }
