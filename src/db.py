@@ -181,6 +181,14 @@ LOCK_OPEN_MACRO_V04 = 900_218
 # table with any worker above, so it gets its own id rather than borrowing one:
 # 900_219 is the next free id in the metrics band (900_2xx) after LOCK_OPEN_MACRO_V04.
 LOCK_FUND_PEER_GROUPS = 900_219
+# open_macro_v03_decision_chain producer. It APPENDS the next missing month to the
+# certified chain; two concurrent runs would both replay the same series and race on
+# the same primary key (the second insert is a no-op, but the ~2 min replay is pure
+# waste). It shares no table with LOCK_OPEN_MACRO_V03 (that worker writes the daily
+# ledger, never the chain) nor with LOCK_OPEN_MACRO_V04 (which only READS the chain
+# and must stay free to run), so it takes its own id: 900_220 is the next free one in
+# the metrics band (900_2xx) after LOCK_FUND_PEER_GROUPS.
+LOCK_OPEN_MACRO_V03_CHAIN = 900_220
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211

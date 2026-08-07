@@ -56,6 +56,35 @@
 #                           o worker só verifica o catálogo, read-only.
 #                           Este arquivo NÃO cria o serviço: criar/agendar é
 #                           passo operacional (docs/open_macro_v4_runbook.md).
+#   open_macro_v03_chain -> DIÁRIO 07:45 UTC. Produtor APPEND-ONLY da
+#                           open_macro_v03_decision_chain: publica NO MÁXIMO o
+#                           próximo mês faltante por run e NUNCA reescreve um mês
+#                           já publicado (INSERT ... ON CONFLICT (as_of) DO
+#                           NOTHING; não existe DELETE nem UPDATE no módulo). A
+#                           revisão de história continua sendo o script manual
+#                           scripts/rebuild_decision_chain_v3.py, sob ordem do
+#                           dono. ORDEM OBRIGATÓRIA no dia: macro_ingestion
+#                           (05:00) e eod_prices_warmer (06:15) ANTES — são os
+#                           insumos; e open_macro_v04 (08:45) DEPOIS, para que o
+#                           v04 do dia leia o mês novo em vez de carregar o mês
+#                           anterior por chain_carry. 07:45 fica no meio da
+#                           janela e ainda deixa 1h de folga se a ingestão
+#                           atrasar. Rodar diariamente é seguro e barato de
+#                           raciocinar: em quase todo dia o run é um no-op — ou o
+#                           mês corrente ainda não fechou, ou algum braço ainda
+#                           não publicou depois do corte. Custo de um run que
+#                           publica: ~2 min (a série é encadeada, então o mês
+#                           novo exige reproduzir o prefixo inteiro).
+#                           Env: WORKER=open_macro_v03_chain, DATABASE_URL
+#                           (datalake `market`). Sem variáveis próprias.
+#                           WORKER_LIMIT/WORKER_CALC_DATE NÃO se aplicam (o
+#                           run_worker aborta se forem setadas, de propósito).
+#                           O DDL NÃO é aplicado por este worker: a tabela é o
+#                           contrato que o open_macro_v04 e o Light leem, e o
+#                           worker só verifica o catálogo, read-only, e falha
+#                           alto. Verificação de um run: SEMPRE na tabela
+#                           (docs/open_macro_v03_chain_runbook.md §4) — um deploy
+#                           verde só significa que o contêiner subiu.
 #   nport_fixed_income_serving -> SEM CRON, de propósito. Disparar junto com uma
 #                           ingestão N-PORT nova, nunca em agenda fixa. A fonte
 #                           são 36 campos de nport_fund_reported_info_raw, e

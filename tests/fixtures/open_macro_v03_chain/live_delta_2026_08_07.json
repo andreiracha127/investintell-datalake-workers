@@ -1,0 +1,330 @@
+{
+ "captured_at": "2026-08-07",
+ "note": "READ-ONLY capture of the live datalake: macro_observation_vintage rows with available_at > the certified pack's 2026-06-25 boundary, and SPY sessions after the pack's last (2026-06-30). This is the live delta the worker assembles on top of the pack; the extension test replays it so the prefix-stability claim is pinned, not asserted.",
+ "macro_delta": [
+  {
+   "series_id": "ACOGNO",
+   "observation_period": "2026-04-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 1,
+   "value": 264069.0
+  },
+  {
+   "series_id": "ACOGNO",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 0,
+   "value": 271060.0
+  },
+  {
+   "series_id": "ACOGNO",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-08-04T00:00:00+00:00",
+   "vintage_date": "2026-08-04",
+   "revision_number": 1,
+   "value": 271138.0
+  },
+  {
+   "series_id": "ACOGNO",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-08-04T00:00:00+00:00",
+   "vintage_date": "2026-08-04",
+   "revision_number": 0,
+   "value": 267119.0
+  },
+  {
+   "series_id": "AHETPI",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 0,
+   "value": 32.38
+  },
+  {
+   "series_id": "CPILFESL",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-14T00:00:00+00:00",
+   "vintage_date": "2026-07-14",
+   "revision_number": 0,
+   "value": 336.065
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-01-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 5,
+   "value": 101.0388
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-02-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 4,
+   "value": 101.9263
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-03-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 3,
+   "value": 101.6172
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-04-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 2,
+   "value": 102.4196
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 1,
+   "value": 102.5606
+  },
+  {
+   "series_id": "INDPRO",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-17T00:00:00+00:00",
+   "vintage_date": "2026-07-17",
+   "revision_number": 0,
+   "value": 102.6395
+  },
+  {
+   "series_id": "MICH",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-06-26T00:00:00+00:00",
+   "vintage_date": "2026-06-26",
+   "revision_number": 0,
+   "value": 4.6
+  },
+  {
+   "series_id": "PAYEMS",
+   "observation_period": "2026-04-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 2,
+   "value": 158798.0
+  },
+  {
+   "series_id": "PAYEMS",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 1,
+   "value": 158927.0
+  },
+  {
+   "series_id": "PAYEMS",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-02T00:00:00+00:00",
+   "vintage_date": "2026-07-02",
+   "revision_number": 0,
+   "value": 158984.0
+  },
+  {
+   "series_id": "PCEC96",
+   "observation_period": "2026-04-01",
+   "available_at": "2026-07-30T00:00:00+00:00",
+   "vintage_date": "2026-07-30",
+   "revision_number": 2,
+   "value": 16751.5
+  },
+  {
+   "series_id": "PCEC96",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-07-30T00:00:00+00:00",
+   "vintage_date": "2026-07-30",
+   "revision_number": 1,
+   "value": 16817.2
+  },
+  {
+   "series_id": "PCEC96",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-30T00:00:00+00:00",
+   "vintage_date": "2026-07-30",
+   "revision_number": 0,
+   "value": 16885.2
+  },
+  {
+   "series_id": "PPIFIS",
+   "observation_period": "2026-02-01",
+   "available_at": "2026-07-15T00:00:00+00:00",
+   "vintage_date": "2026-07-15",
+   "revision_number": 4,
+   "value": 153.204
+  },
+  {
+   "series_id": "PPIFIS",
+   "observation_period": "2026-03-01",
+   "available_at": "2026-07-15T00:00:00+00:00",
+   "vintage_date": "2026-07-15",
+   "revision_number": 3,
+   "value": 154.405
+  },
+  {
+   "series_id": "PPIFIS",
+   "observation_period": "2026-04-01",
+   "available_at": "2026-07-15T00:00:00+00:00",
+   "vintage_date": "2026-07-15",
+   "revision_number": 2,
+   "value": 156.03
+  },
+  {
+   "series_id": "PPIFIS",
+   "observation_period": "2026-05-01",
+   "available_at": "2026-07-15T00:00:00+00:00",
+   "vintage_date": "2026-07-15",
+   "revision_number": 1,
+   "value": 157.001
+  },
+  {
+   "series_id": "PPIFIS",
+   "observation_period": "2026-06-01",
+   "available_at": "2026-07-15T00:00:00+00:00",
+   "vintage_date": "2026-07-15",
+   "revision_number": 0,
+   "value": 156.566
+  }
+ ],
+ "eod_delta": [
+  {
+   "ticker": "SPY",
+   "date": "2026-07-01",
+   "adjusted_close": 745.76
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-02",
+   "adjusted_close": 744.78
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-06",
+   "adjusted_close": 751.28
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-07",
+   "adjusted_close": 747.71
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-08",
+   "adjusted_close": 745.4
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-09",
+   "adjusted_close": 751.71
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-10",
+   "adjusted_close": 754.95
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-13",
+   "adjusted_close": 749.17
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-14",
+   "adjusted_close": 751.83
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-15",
+   "adjusted_close": 754.81
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-16",
+   "adjusted_close": 750.72
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-17",
+   "adjusted_close": 743.29
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-20",
+   "adjusted_close": 742.09
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-21",
+   "adjusted_close": 748.28
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-22",
+   "adjusted_close": 747.41
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-23",
+   "adjusted_close": 738.18
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-24",
+   "adjusted_close": 738.93
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-27",
+   "adjusted_close": 739.09
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-28",
+   "adjusted_close": 740.86
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-29",
+   "adjusted_close": 729.46
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-30",
+   "adjusted_close": 741.69
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-07-31",
+   "adjusted_close": 747.03
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-08-03",
+   "adjusted_close": 757.67
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-08-04",
+   "adjusted_close": 771.33
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-08-05",
+   "adjusted_close": 769.79
+  },
+  {
+   "ticker": "SPY",
+   "date": "2026-08-06",
+   "adjusted_close": 768.56
+  }
+ ]
+}

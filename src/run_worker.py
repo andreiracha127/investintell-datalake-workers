@@ -53,6 +53,7 @@ def main() -> None:
             "|fund_peer_groups"
             "|matview_refresh|stock_daily_returns"
             "|active_share_metrics|momentum_metrics|open_macro_v03"
+            "|open_macro_v03_chain"
             "|open_macro_v04"
             "|open_macro_v03_monitor|gamma_drift|ipca_production_gate"
             "|tiingo_fund_meta|mixed_quant_publication|mixed_quant_retention)"

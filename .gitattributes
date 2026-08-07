@@ -24,6 +24,11 @@ artifacts/quant/**/*.json text eol=lf
 # open_macro v4 pinned fixtures — the golden ledger sha256 is over raw bytes
 tests/fixtures/open_macro_v4/** text eol=lf
 
+# open_macro_v03 decision-chain producer fixtures — a READ-ONLY capture of the live
+# certified chain and of the live vintage/price delta. The golden replay compares
+# against these values cell by cell, so the bytes must not be rewritten on checkout.
+tests/fixtures/open_macro_v03_chain/** text eol=lf
+
 # N-PORT DERA slice — carved verbatim from a real quarterly package; the tests
 # pin exact row and ISIN counts, so the bytes must not be rewritten on checkout.
 tests/fixtures/nport_dera/** text eol=lf
