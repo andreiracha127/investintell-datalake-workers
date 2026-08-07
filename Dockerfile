@@ -53,6 +53,12 @@ COPY artifacts/a5/open_macro_v03_direct_activation_stage_b_001/ \
      /app/artifacts/a5/open_macro_v03_direct_activation_stage_b_001/
 COPY fixtures/p1_packs/open_macro_v03_certified_input_pack_003/ \
      /app/fixtures/p1_packs/open_macro_v03_certified_input_pack_003/
+# The pinned vintage backfill of that pack: the prints that were inside the certified
+# prefix's information set but outside the pack's export window (MICH 2026-06-26). It
+# is a RUNTIME input of the same fail-closed gate — open_macro_v03_chain sha256s it
+# before opening a connection — so it ships with the pack, never without it.
+COPY fixtures/p1_packs/open_macro_v03_pack_003_vintage_backfill/ \
+     /app/fixtures/p1_packs/open_macro_v03_pack_003_vintage_backfill/
 # open_macro_v04 runtime input: the frozen formulation its gate 1 verifies
 # (module sha256 pins + formulation_sha256) before any side effect. Same
 # scoping rule as the a5 artifact above — the one directory the worker pins.

@@ -1,0 +1,12 @@
+[
+  {
+    "available_at": "2026-06-26T00:00:00+00:00",
+    "observation_period": "2026-06-01",
+    "revision_number": 0,
+    "series_id": "MICH",
+    "source": "alfred",
+    "source_spec_version": "macro_quadrant_us_v1.0",
+    "value": 4.6,
+    "vintage_date": "2026-06-26"
+  }
+]

@@ -1,6 +1,6 @@
 {
  "captured_at": "2026-08-07",
- "note": "READ-ONLY capture of the live datalake: macro_observation_vintage rows with available_at > the certified pack's 2026-06-25 boundary, and SPY sessions after the pack's last (2026-06-30). This is the live delta the worker assembles on top of the pack; the extension test replays it so the prefix-stability claim is pinned, not asserted.",
+ "note": "READ-ONLY capture of the live datalake: macro_observation_vintage rows with available_at > the certified inputs' 2026-06-26 boundary (the pack's 2026-06-25 export window extended by the pinned vintage backfill), and SPY sessions after the pack's last (2026-06-30). This is the live delta the worker assembles on top of the certified inputs; the extension test replays it so the prefix-stability claim is pinned, not asserted. MICH's 2026-06-26 print was captured here on 2026-08-07 and MOVED into the vintage backfill on the same day: it belonged to the 2026-06-30 decision's information set, so the certified inputs own it and the live delta must not read it twice.",
  "macro_delta": [
   {
    "series_id": "ACOGNO",
@@ -97,14 +97,6 @@
    "vintage_date": "2026-07-17",
    "revision_number": 0,
    "value": 102.6395
-  },
-  {
-   "series_id": "MICH",
-   "observation_period": "2026-06-01",
-   "available_at": "2026-06-26T00:00:00+00:00",
-   "vintage_date": "2026-06-26",
-   "revision_number": 0,
-   "value": 4.6
   },
   {
    "series_id": "PAYEMS",

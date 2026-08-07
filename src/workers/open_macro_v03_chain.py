@@ -39,22 +39,47 @@ carved from the live table: the port reproduces the certified series exactly (th
 stored NUMERICs carry the float8->NUMERIC 15-digit rendering of the same doubles,
 because the 2026-07-17 rebuild predates the house ``_exact_numeric`` chokepoint).
 
-INPUTS: CERTIFIED PREFIX + LIVE TAIL
--------------------------------------
-The rebuild computed the series from the CERTIFIED INPUT PACK _003 only, whose window
-stops at ``available_at`` 2026-06-25. A producer must see what came after, so the
-inputs are assembled as:
+INPUTS: CERTIFIED PREFIX + PINNED VINTAGE BACKFILL + LIVE TAIL
+---------------------------------------------------------------
+The rebuild computed the series from the CERTIFIED INPUT PACK _003 only, whose export
+window stops at ``available_at`` 2026-06-25 — one day BELOW the 2026-06-30 decision
+cutoff it was used to compute. A producer must see what came after, so the inputs are
+assembled as:
 
-  macro vintages = pack rows  UNION  live rows with ``available_at > pack max``
+  macro vintages = pack rows  UNION  VINTAGE BACKFILL  UNION  live rows after boundary
   SPY sessions   = pack rows  UNION  live rows with ``date > pack max``
 
-Both boundaries are DERIVED from the pack, never hardcoded. The consequence is
-deliberate: for every decision date at or before the pack's window the PIT read sees
-EXACTLY the certified pack, so a late ingestion backfill of an OLD vintage can never
-silently rewrite the inputs of certified history. (Audited 2026-08-07: the live
-vintage store equals the pack row-for-row per series below the boundary — 8/8 series
-— so today the two definitions coincide. The pack is the guarantee that they keep
-coinciding.)
+Both boundaries are DERIVED from the assembled certified inputs, never hardcoded. The
+consequence is deliberate: for every decision date at or before the certified window
+the PIT read sees EXACTLY the pinned bytes, so a late ingestion backfill of an OLD
+vintage can never silently rewrite the inputs of certified history. (Audited
+2026-08-07: the live vintage store equals the pack row-for-row per series below the
+boundary — 8/8 series — so today the two definitions coincide. The pinned bytes are
+the guarantee that they keep coinciding.)
+
+THE VINTAGE BACKFILL — WHY THE PACK ITSELF IS NOT EDITED
+---------------------------------------------------------
+``fixtures/p1_packs/open_macro_v03_pack_003_vintage_backfill/`` holds the vintages
+that were inside the certified prefix's INFORMATION SET (``available_at`` at or below
+:data:`CERTIFIED_PREFIX_CUTOFF`) but outside the pack's export window. Today that is
+exactly one row: MICH's 2026-06 observation, published 2026-06-26, which the pack
+froze one day too early and which the 2026-07-17 rebuild therefore never saw when it
+computed 2026-06-30. Repaired under owner order 2026-08-07; the stored 2026-06-30 row
+was corrected manually in the same operation (``docs/open_macro_v03_chain_runbook.md``
+§7).
+
+It is a SIDECAR, not an edit of the pack, because the pack's ``input_pack_sha256``
+(``914b06b5…``) is stamped on all 148 stored rows and :func:`verify_is_the_certified_chain`
+requires the chain to carry exactly ONE pack sha and for it to be this pack's. Editing
+the pack's bytes would either forge its self-declared identity (the builder's hash tree
+would no longer describe it) or force a new identity onto 147 rows of certified history
+that the same order does not authorize touching. The sidecar keeps the pack's identity
+true and puts the repair where it can be read, sha-pinned and reasoned about.
+
+:func:`load_pack_inputs` REFUSES a backfill row that is not strictly after the pack's
+own window, that is after the certified cutoff, or that collides with a pack row's
+natural key — so this file can never become a back door for arbitrary live rows
+wearing certified provenance.
 
 ENDPOINT DEPENDENCE — MEASURED, REPORTED, GATED
 ------------------------------------------------
@@ -118,6 +143,16 @@ PACK = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_certified_input_pack_003
 MACRO_JSON = PACK / "data" / "canonical" / "macro_observation_vintage.json"
 EOD_JSON = PACK / "data" / "canonical" / "eod_prices.json"
 
+# The pinned vintage backfill (module docstring). Sibling of the pack, never inside it:
+# the pack's bytes and its self-declared identity stay exactly as certified.
+BACKFILL = ROOT / "fixtures" / "p1_packs" / "open_macro_v03_pack_003_vintage_backfill"
+BACKFILL_MACRO_JSON = BACKFILL / "macro_observation_vintage.json"
+
+# The decision cutoff of the certified prefix's LAST month (2026-06-30). A backfill row
+# published after it was NOT in that month's information set, so admitting one would be
+# inventing history rather than restoring it.
+CERTIFIED_PREFIX_CUTOFF = _dt.datetime(2026, 6, 30, tzinfo=_dt.timezone.utc)
+
 CHAIN_TABLE = "open_macro_v03_decision_chain"
 VINTAGE_TABLE = "macro_observation_vintage"
 EOD_TABLE = "eod_prices"
@@ -136,6 +171,14 @@ CANONICAL_SHA256 = {
         "53c367771e79f3671379d0c7bdc780a288113b9e90621c6f15d162d2bf9f87c4",
     "data/canonical/eod_prices.json":
         "2ddd58be82164a156e125a26535cf3361c7ea8efa7adba317497142c1a1f2407",
+}
+
+# The backfill is pinned by raw-byte digest exactly like the pack's own files, and
+# verified in the same gate: a repair of the certified information set has to be as
+# tamper-evident as the thing it repairs.
+BACKFILL_SHA256 = {
+    "macro_observation_vintage.json":
+        "07c62117694658803e8543609a8cc02ccb5335b4543c4d923f3a1141edfc4711",
 }
 
 # The 8 seed arms are read from the model registry, never re-listed here: a series
@@ -157,22 +200,32 @@ class DecisionChainError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # Gate 1 — certified pack integrity (zero side effects)
 # --------------------------------------------------------------------------- #
+def _verify_digests(base: Path, pinned: dict[str, str], label: str) -> None:
+    for relative, expected in pinned.items():
+        path = base / relative
+        if not path.is_file():
+            raise DecisionChainError(f"{label} input missing: {path}")
+        got = hashlib.sha256(path.read_bytes()).hexdigest()
+        if got != expected:
+            raise DecisionChainError(
+                f"{label} input {relative} sha256 {got} != pinned {expected}")
+
+
 def verify_pack() -> dict[str, Any]:
-    """sha256 the pack's canonical inputs and return its identity.
+    """sha256 the certified inputs — pack AND vintage backfill — and return the identity.
 
     Runs before a connection is opened: a byte of the certified prefix missing must
     abort the run, not be shrugged off. Returns the ``input_pack_sha256`` the row's
     ``pack_sha256`` column is stamped with — the same value the 148 stored rows carry,
     which is what makes "this row extends THAT chain" checkable in SQL.
+
+    The backfill does NOT change that identity, and must not: it restores rows the pack
+    was supposed to carry (module docstring), it is not a different pack. Its own bytes
+    are pinned separately in :data:`BACKFILL_SHA256`, so it is tamper-evident on its own
+    terms without pretending to re-certify anything.
     """
-    for relative, expected in CANONICAL_SHA256.items():
-        path = PACK / relative
-        if not path.is_file():
-            raise DecisionChainError(f"certified pack input missing: {path}")
-        got = hashlib.sha256(path.read_bytes()).hexdigest()
-        if got != expected:
-            raise DecisionChainError(
-                f"certified pack input {relative} sha256 {got} != pinned {expected}")
+    _verify_digests(PACK, CANONICAL_SHA256, "certified pack")
+    _verify_digests(BACKFILL, BACKFILL_SHA256, "certified vintage backfill")
     manifest = json.loads((PACK / "manifest.json").read_text(encoding="utf-8"))
     pack_sha = manifest["input_pack_sha256"]
     if len(pack_sha) != 64:
@@ -181,11 +234,62 @@ def verify_pack() -> dict[str, Any]:
             "input_pack_id": manifest["input_pack_id"]}
 
 
-def load_pack_inputs() -> tuple[list[dict], list[dict], _dt.datetime, _dt.date]:
-    """The pack's canonical rows plus the two boundaries the live delta starts after.
+def _natural_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    """The vintage store's own identity: one value per (series, period, print, revision)."""
+    return (row["series_id"], row["observation_period"], row["available_at"],
+            row.get("revision_number"))
 
-    Both boundaries are OBSERVED from the pack's own content:
-      * ``macro_boundary`` = max ``available_at`` over the vintage rows;
+
+def verify_backfill(pack_rows: list[dict], backfill_rows: list[dict]) -> None:
+    """The backfill may only RESTORE the gap between the pack's window and the cutoff.
+
+    Three refusals, all of them about what the file is allowed to mean:
+
+      * a row at or below the pack's own window would be a REWRITE of a certified
+        input, not a restoration — the pack is the authority below its boundary. This
+        rule also makes a collision with a pack row impossible without a second check:
+        every pack key sits at or below the pack's boundary by construction;
+      * a row after :data:`CERTIFIED_PREFIX_CUTOFF` was not in the certified prefix's
+        information set, so pinning it here would launder a live row into certified
+        provenance (the live delta is where such a row belongs, and it is read from
+        the database, not from a committed file);
+      * two backfill rows sharing a natural key would create two vintages of one print
+        and let the PIT tie-break decide which history happened.
+    """
+    if not backfill_rows:
+        raise DecisionChainError(
+            "certified vintage backfill is empty; delete the pin instead of shipping "
+            "a file that claims to repair nothing")
+    pack_boundary = max(_parse_available_at(r["available_at"]) for r in pack_rows)
+    seen: set[tuple[Any, ...]] = set()
+    for row in backfill_rows:
+        at = _parse_available_at(row["available_at"])
+        if at <= pack_boundary:
+            raise DecisionChainError(
+                f"vintage backfill row {row['series_id']} {row['observation_period']} "
+                f"@ {row['available_at']} is at or below the pack's window "
+                f"({pack_boundary.isoformat()}) — that would rewrite a certified input")
+        if at > CERTIFIED_PREFIX_CUTOFF:
+            raise DecisionChainError(
+                f"vintage backfill row {row['series_id']} {row['observation_period']} "
+                f"@ {row['available_at']} is after the certified prefix cutoff "
+                f"{CERTIFIED_PREFIX_CUTOFF.isoformat()} — it was not in that "
+                "information set; a row published later belongs to the live delta")
+        key = _natural_key(row)
+        if key in seen:
+            raise DecisionChainError(
+                f"vintage backfill carries two rows for {row['series_id']} "
+                f"{row['observation_period']} @ {row['available_at']}")
+        seen.add(key)
+
+
+def load_pack_inputs() -> tuple[list[dict], list[dict], _dt.datetime, _dt.date]:
+    """The certified rows — pack UNION vintage backfill — plus the two live boundaries.
+
+    Both boundaries are OBSERVED from the assembled content:
+      * ``macro_boundary`` = max ``available_at`` over the vintage rows, AFTER the
+        backfill is unioned in, so a row this repo has pinned is never also read from
+        the live store (one row, one authority);
       * ``eod_boundary``   = max ``date`` over the market ticker's sessions.
     Hardcoding them would rot the day the pack is re-certified.
     """
@@ -193,6 +297,9 @@ def load_pack_inputs() -> tuple[list[dict], list[dict], _dt.datetime, _dt.date]:
     eod = json.loads(EOD_JSON.read_text(encoding="utf-8"))
     if not macro or not eod:
         raise DecisionChainError("certified pack canonical inputs are empty")
+    backfill = json.loads(BACKFILL_MACRO_JSON.read_text(encoding="utf-8"))
+    verify_backfill(macro, backfill)
+    macro = macro + backfill
     macro_boundary = max(_parse_available_at(r["available_at"]) for r in macro)
     ticker = market_ticker()
     sessions = [r["date"] for r in eod if r.get("ticker") == ticker]

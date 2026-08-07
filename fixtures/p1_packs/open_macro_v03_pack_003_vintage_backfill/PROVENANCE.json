@@ -1,0 +1,26 @@
+{
+  "backfills_pack": "open_macro_v03_certified_input_pack_003",
+  "backfills_pack_sha256": "914b06b52dc966049d5c680c7c840b204864451dc6b9ba1332106245ee7ca804",
+  "read_from": {
+    "database": "market (Railway investintell-db / market-clean-serial)",
+    "predicate": "series_id = 'MICH' AND available_at = '2026-06-26 00:00:00+00'",
+    "read_at": "2026-08-07",
+    "row_as_read": {
+      "available_at": "2026-06-26T00:00:00+00:00",
+      "ingested_at": "2026-08-05T17:45:22.89612+00:00",
+      "observation_period": "2026-06-01",
+      "revision_number": 0,
+      "series_id": "MICH",
+      "source": "alfred",
+      "source_spec_version": "macro_quadrant_us_v1.0",
+      "value": "4.600000",
+      "vintage_date": "2026-06-26"
+    },
+    "table": "macro_observation_vintage"
+  },
+  "reason": "The pack's export window stops at available_at 2026-06-25, but the certified chain's last month 2026-06-30 reads available_at <= 2026-06-30. MICH published its 2026-06 observation on 2026-06-26 \u2014 inside the decision's information set, outside the frozen pack. The 2026-07-17 rebuild therefore computed 2026-06-30 without it. Repaired under owner order 2026-08-07.",
+  "window": {
+    "at_or_before_certified_decision_cutoff": "2026-06-30T00:00:00+00:00",
+    "strictly_after_pack_available_at": "2026-06-25T00:00:00+00:00"
+  }
+}
