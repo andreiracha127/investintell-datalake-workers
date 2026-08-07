@@ -82,6 +82,24 @@ over the anchor's own rows, on rows AND on weight, and REFUSES TO PUBLISH below 
 floor, naming both numbers and the worst report dates. That refusal is the point: an
 anchor computed on a poisoned quarter must not exist.
 
+THE GROUP-COUNT BAND — AN OBSERVATION TURNED INTO A GATE
+---------------------------------------------------------
+``params_sha256`` catches a changed PARAMETER. It cannot catch a changed WORLD: a
+networkx release that reorders Louvain's aggregation, an upstream read-model that
+quietly halves the served universe, an ingestion that lands a quarter with the wrong
+asset classes. Each of those leaves every declared parameter identical and moves the
+one number the product actually consumes — HOW MANY peer groups the quarter has.
+
+That number was an observation in the runbook, checked by whoever remembered to look.
+It is now ``GROUP_COUNT_BAND``, and a count outside it REFUSES THE PUBLICATION. The
+previous anchor keeps serving, which is the fail-safe direction: a stale-but-certified
+partition is a smaller harm than a fresh-but-broken one.
+
+The band is NOT part of ``canonical_params`` and never will be. It is a guard on the
+PUBLICATION, not an input to the partition: two anchors that agree on every parameter
+must carry the same digest whether or not one of them was refused. Same reason
+``CAP_WAIVE_ALERT_FRAC`` sits outside it.
+
 FAIL-LOUD ORDER (no side effect precedes any gate)
 --------------------------------------------------
  1. resolve the anchor (last CLOSED quarter-end) and the parameters; compute
@@ -94,6 +112,7 @@ FAIL-LOUD ORDER (no side effect precedes any gate)
  5. the anchor's holdings, streamed; per-series weights, shares and eligibility.
  6. IDENTIFIER COVERAGE GUARD (above). Before the matrix, before any write.
  7. the overlap matrix, the pre-split, Louvain under the cap, the coherence layer.
+ 7b. THE GROUP-COUNT BAND (below). Before the rows are built, before any write.
  8. publish: DELETE the anchor + INSERT, in ONE transaction. Every float parameter
     is converted to ``Decimal(repr(x))`` at the driver boundary (``_exact_numeric``,
     the same chokepoint open_macro_v03/v04 use), so the NUMERIC column stores the
@@ -128,6 +147,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -147,6 +167,7 @@ CAP_WAIVE_MEDIAN_ENV = "FUND_PEER_GROUPS_CAP_WAIVE_MIN_MEDIAN"
 CAP_WAIVE_CEILING_ENV = "FUND_PEER_GROUPS_CAP_WAIVE_HARD_CEILING"
 IDENT_FLOOR_ENV = "FUND_PEER_GROUPS_IDENT_FLOOR"
 UNIVERSE_DSN_ENV = "FUND_PEER_GROUPS_UNIVERSE_DSN"
+ACCEPT_OUT_OF_BAND_ENV = "FUND_PEER_GROUPS_ACCEPT_OUT_OF_BAND"
 
 
 class FundPeerGroupsError(RuntimeError):
@@ -176,6 +197,34 @@ DEFAULT_IDENT_FLOOR = 0.95          # the guard for the known identifier hole
 # on the last anchor with the biggest jump of the series, so the quarter it approaches
 # the 20% ceiling should be visible before it hits it.
 CAP_WAIVE_ALERT_FRAC = 0.15
+
+# The publication band on the COHERENT group count — inclusive on both ends, and, like
+# CAP_WAIVE_ALERT_FRAC, deliberately OUTSIDE params_sha256 (see the module docstring).
+#
+# DERIVED, NOT CHOSEN. Population: the ten anchors ever computed under the SHIPPED
+# policy (cap 0.08 + cohesion waiver 0.10 + ceiling 0.20) —
+#
+#   the eight-anchor validation, arm C5 of the cap measurement
+#     2024-03-31  90   2024-06-30  88   2024-09-30  85   2024-12-31 102
+#     2025-03-31  90   2025-06-30  96   2025-09-30  92   2025-12-31  93
+#   the two anchors published to fund_peer_groups_v1, both certified
+#     2026-03-31  91   2026-06-30  87
+#
+# — observed range [85, 102], mean 91.4, sd 4.9. MARGIN = 6, the largest
+# quarter-over-quarter step the series ever took across a pair that no UPSTREAM gate
+# would refuse today (2025-03-31 -> 2025-06-30, 90 -> 96). The two larger steps in the
+# series, +17 and -12, both touch 2024-12-31, the anchor of the identifier hole: Gate 6
+# refuses that quarter before this gate can see it, so its STEPS cannot size this
+# margin. Its VALUE stays in the population, because keeping it only widens the band
+# and a wider band never refuses a legitimate anchor.
+#
+#   band = [85 - 6, 102 + 6] = [79, 108]     (2.6 sd below / 3.4 sd above the mean)
+#
+# The runbook's earlier "~90-105" was read off the PRE-WAIVER validation and would have
+# refused the certified 2026-06-30 anchor at 87. Re-derivation procedure — the only
+# sanctioned way to move these two numbers — is docs/fund_peer_groups_runbook.md,
+# section "9. The group-count band".
+GROUP_COUNT_BAND = (79, 108)
 
 # Universe rule — P0 §0 / P1.5 §1, unchanged across every anchor of the evidence.
 MAX_LAG = "4 months 15 days"
@@ -947,6 +996,76 @@ def partition_anchor(sids: list[str], meta: dict[str, dict[str, Any]],
 
 
 # --------------------------------------------------------------------------- #
+# Gate 7b — the group-count band
+# --------------------------------------------------------------------------- #
+def resolve_accept_out_of_band() -> bool:
+    """Whether this run publishes a count outside :data:`GROUP_COUNT_BAND`.
+
+    The owner's escape valve, and deliberately the only dial the band has: the BOUNDS
+    are not environment-tunable. A numeric override would let a quarter widen the band
+    to fit itself and leave no trace that it did; a boolean cannot hide what it did,
+    because the run that used it says so in its own stats and on stderr.
+
+    Spelling is strict, exactly like ``WORKER_RETRY_NO_FIGI``: ``1`` is on, unset or
+    empty or ``0`` is off, anything else RAISES rather than silently running the gate
+    while the config believes it was disabled."""
+    raw = os.environ.get(ACCEPT_OUT_OF_BAND_ENV)
+    if raw is None or not raw.strip():
+        return False
+    value = raw.strip()
+    if value == "1":
+        return True
+    if value == "0":
+        return False
+    raise FundPeerGroupsError(
+        f"{ACCEPT_OUT_OF_BAND_ENV}={raw!r} is not 0 or 1")
+
+
+def check_group_count_band(n_coherent_communities: int, anchor: _dt.date, *,
+                           accept_out_of_band: bool = False) -> dict[str, Any]:
+    """Refuse to publish an anchor whose COHERENT group count leaves the band.
+
+    Counts the same thing the product counts — ``count(DISTINCT group_id)``, the groups
+    that get a ``group_id`` at all — not the raw community count, which sits near 190
+    to 210 and includes every incoherent block the coherence layer discards.
+
+    Refusing is the fail-safe: ``publish()`` has not run, so the previous anchor is
+    untouched and keeps serving. A stale certified partition beats a fresh broken one.
+    """
+    low, high = GROUP_COUNT_BAND
+    in_band = low <= n_coherent_communities <= high
+    stats = {
+        "group_count_band": [low, high],
+        "group_count_band_status": "in_band",
+        "group_count_band_override": False,
+    }
+    if in_band:
+        return stats
+
+    detail = (
+        f"anchor {anchor.isoformat()}: the partition produced "
+        f"{n_coherent_communities} coherent peer groups, OUTSIDE the band "
+        f"[{low}, {high}] (inclusive). Every anchor ever computed under this policy "
+        f"landed in [85, 102]; the band is that range plus the largest "
+        f"quarter-over-quarter step the series ever took (6). A count outside it is "
+        "either a genuine structural break in the market — in which case the band is "
+        "RE-DERIVED and moved in a pull request, procedure in "
+        'docs/fund_peer_groups_runbook.md section "9. The group-count band" — or a '
+        "defect upstream of the partitioner that no parameter digest can see.")
+    if not accept_out_of_band:
+        raise FundPeerGroupsError(
+            detail + " REFUSING TO PUBLISH: nothing was written, and the previously "
+            f"published anchor keeps serving. Set {ACCEPT_OUT_OF_BAND_ENV}=1 to "
+            "publish this anchor anyway; the override is recorded in the run's stats.")
+
+    print(f"WARNING {ACCEPT_OUT_OF_BAND_ENV}=1 — publishing OUT OF BAND. {detail}",
+          file=sys.stderr, flush=True)
+    stats["group_count_band_status"] = "out_of_band_accepted"
+    stats["group_count_band_override"] = True
+    return stats
+
+
+# --------------------------------------------------------------------------- #
 # Rows
 # --------------------------------------------------------------------------- #
 def build_rows(anchor: _dt.date, sids: list[str], partition: dict[str, Any], *,
@@ -1209,6 +1328,10 @@ def run(dsn: str, *, anchor: str | None = None,
     cap_waive_min_median = resolve_cap_waive_min_median()
     cap_waive_hard_ceiling = resolve_cap_waive_hard_ceiling(size_cap_frac)
     ident_floor = resolve_ident_floor()
+    # Read here, with the other environment spellings, so a typo in the valve fails
+    # before the connection rather than after a minute of matrix work. It is NOT a
+    # parameter and therefore NOT an argument to canonical_params below.
+    accept_out_of_band = resolve_accept_out_of_band()
     params = canonical_params(size_cap_frac=size_cap_frac,
                               cap_waive_min_median=cap_waive_min_median,
                               cap_waive_hard_ceiling=cap_waive_hard_ceiling,
@@ -1261,6 +1384,11 @@ def run(dsn: str, *, anchor: str | None = None,
                 cap_waive_hard_ceiling=cap_waive_hard_ceiling)
             del M
 
+            # Gate 7b — the group-count band, BEFORE the rows and before any write.
+            band = check_group_count_band(
+                partition["n_coherent_communities"], anchor_date,
+                accept_out_of_band=accept_out_of_band)
+
             computed_at = _dt.datetime.now(_dt.timezone.utc)
             rows = build_rows(anchor_date, sids, partition,
                               computed_at=computed_at, commit=commit,
@@ -1304,6 +1432,10 @@ def run(dsn: str, *, anchor: str | None = None,
                 "cap_waive_alert_frac": CAP_WAIVE_ALERT_FRAC,
                 "community_status_counts": partition["status_counts"],
                 "coherent_coverage_pct": partition["coherent_coverage_pct"],
+                # Gate 7b. ``group_count_band_override`` true means a human aimed
+                # FUND_PEER_GROUPS_ACCEPT_OUT_OF_BAND at this anchor: the count left
+                # the band and it was published anyway.
+                **band,
                 "size_cap_frac": size_cap_frac,
                 "cap_waive_min_median": cap_waive_min_median,
                 "cap_waive_hard_ceiling": cap_waive_hard_ceiling,
@@ -1333,12 +1465,14 @@ if __name__ == "__main__":
 
 
 __all__ = ["run", "main", "FundPeerGroupsError", "block_of", "build_block_graph",
-           "build_rows", "canonical_params", "check_identifier_coverage",
+           "build_rows", "canonical_params", "check_group_count_band",
+           "check_identifier_coverage",
            "code_commit", "last_closed_quarter_end", "load_anchor", "median_overlap",
            "norm_id", "overlap_matrix", "params_sha256", "partition_anchor",
            "partition_with_cap", "pin_search_path", "post_write_verify", "publish",
-           "read_served_universe", "resolve_anchor",
+           "read_served_universe", "resolve_accept_out_of_band", "resolve_anchor",
            "resolve_cap_waive_hard_ceiling", "resolve_cap_waive_min_median",
            "resolve_ident_floor", "resolve_size_cap_frac", "to_mixed",
            "triangle_values", "verify_schema",
-           "EXPECTED_COLUMNS", "FLOAT8_TO_NUMERIC_DIGITS", "ROW_COLUMNS", "TABLE"]
+           "ACCEPT_OUT_OF_BAND_ENV", "EXPECTED_COLUMNS", "FLOAT8_TO_NUMERIC_DIGITS",
+           "GROUP_COUNT_BAND", "ROW_COLUMNS", "TABLE"]
