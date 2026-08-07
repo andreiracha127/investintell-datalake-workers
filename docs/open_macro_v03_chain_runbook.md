@@ -145,3 +145,100 @@ owner reruns the rebuild at a later end date — so the worker does not change i
 never writes an existing month, it hard-fails if the consumable projection of a
 published month changes, and it reports the rest in its stats. Re-certifying the chain
 against a later end is an owner decision, not a worker behaviour.
+
+---
+
+## 7. History revisions — the table's own changelog
+
+Rows in this table are certified history. Anything that changes one is a **manual,
+owner-ordered operation**, never a worker behaviour, and it gets an entry here. There
+is exactly one entry.
+
+### 7.1 — 2026-08-07, `2026-06-30`: the MICH vintage the pack froze one day too early
+
+**Defect.** Certified input pack `_003`'s export window stops at `available_at`
+2026-06-25. The 2026-06-30 decision reads `available_at <= 2026-06-30`. MICH published
+its 2026-06 observation on **2026-06-26** — inside that information set, outside the
+pack. The 2026-07-17 rebuild computed `2026-06-30` from the pack alone and therefore
+without it. Found while activating this worker (workers#102, item 2): the live replay
+of that month disagreed with the stored row by 0.135 on `inflation_score`, which the
+Light `DecisionChainPanel` renders. Not cosmetic, and not archivable.
+
+**Repair, ordered by the owner on 2026-08-07.**
+
+1. `fixtures/p1_packs/open_macro_v03_pack_003_vintage_backfill/` pins the missing
+   print, read verbatim from `macro_observation_vintage`. It is a **sidecar, not an
+   edit of the pack**: the pack's `input_pack_sha256` (`914b06b5…`) is stamped on all
+   148 rows, and `verify_is_the_certified_chain` requires the chain to carry exactly
+   one pack sha and for it to be this pack's. Editing the pack's bytes would either
+   forge its self-declared identity or force a new one onto 147 rows of history the
+   order did not authorize touching. The pack's canonical files are byte-identical
+   before and after (`53c36777…` / `2ddd58be…`); what changed is the worker's pinned
+   digest SET, which now also carries
+   `macro_observation_vintage.json = 07c62117694658803e8543609a8cc02ccb5335b4543c4d923f3a1141edfc4711`.
+2. `load_pack_inputs()` unions the backfill in **before** deriving `macro_boundary`,
+   so the boundary moves 2026-06-25 → 2026-06-26 and the print is read from the pinned
+   bytes instead of the live store. One row, one authority. `verify_backfill()` refuses
+   a backfill row at or below the pack's window, after the certified cutoff, or
+   colliding with a pack key — so the file cannot become a back door.
+3. **Measured before writing.** Replay of the repaired inputs to `end=2026-06-30`
+   against the stored 148: **zero categorical changes** (`quadrant`,
+   `candidate_quadrant`, `status`, `transition_pending`), months 1–147 bit-identical,
+   and exactly two numeric cells moving, both on `2026-06-30`. Had any categorical cell
+   moved the operation would have stopped: that is a re-certification, a different
+   decision.
+
+   | column | before | after | delta |
+   |---|---|---|---|
+   | `inflation_score` | 0.984120320224821 | 0.849222168329502 | -0.13489815 |
+   | `candidate_confidence` | 0.935915603372554 | 0.9199745171998517 | -0.01594109 |
+
+4. **The write**, one row, guarded on every column of the row as measured:
+
+   ```sql
+   BEGIN;
+   -- pg_try_advisory_xact_lock(900220): the producer's own lock id
+   UPDATE open_macro_v03_decision_chain
+      SET inflation_score      = 0.849222168329502,
+          candidate_confidence = 0.9199745171998517,
+          loaded_at            = now()
+    WHERE as_of = DATE '2026-06-30'
+      AND inflation_score      = 0.984120320224821
+      AND candidate_confidence = 0.935915603372554
+      AND growth_score         = 0.2437211948637
+      AND coverage_quality     = 1
+      AND quadrant             = 'slowdown'
+      AND candidate_quadrant   = 'slowdown'
+      AND status               = 'valid'
+      AND transition_pending   = false
+      AND basis                = 'certified_chain'
+      AND chain_start          = DATE '2014-03-01'
+      AND code_commit          = '9aadeaae02a533751407b43d89426852850c166b';
+   -- RAISE unless ROW_COUNT = 1
+   COMMIT;
+   ```
+
+   `pack_sha256`, `code_commit`, `basis` and `chain_start` are deliberately **not**
+   touched: the row still is the certified model's answer over the certified pack's
+   information set, which is what those four columns claim. `loaded_at` **is** bumped,
+   so the correction is discoverable in SQL and not only in this file:
+
+   ```sql
+   SELECT loaded_at, count(*), min(as_of), max(as_of)
+   FROM open_macro_v03_decision_chain GROUP BY loaded_at ORDER BY loaded_at;
+   -- 2026-07-17 03:05:52.552015+00 | 147 | 2014-03-31 | 2026-05-31   the rebuild
+   -- 2026-08-07 16:00:41.121583+00 |   1 | 2026-06-30 | 2026-06-30   this repair
+   ```
+
+5. `tests/fixtures/open_macro_v03_chain/certified_chain_2026_06.csv` was re-carved
+   from the corrected table (one line differs) and the golden replay closes 148/148
+   against it. `live_delta_2026_08_07.json` lost its MICH row: that print is now
+   certified input, and reading it twice is exactly what the boundary prevents.
+
+**Consumers.** `open_macro_v04` reads `(as_of, quadrant, status, candidate_confidence)`
+and — through the Light service — `growth_score`; the Light backend reads
+`(as_of, quadrant, candidate_confidence)` filtered on `status='valid'`. The quadrant is
+unchanged, `growth_score` is unchanged, and `candidate_confidence` moved 0.9359 → 0.9200,
+which is far above the 0.60 governance floor, so no classification flips. The v04 tables
+were **not** touched: v04 is append-monthly and its next decision reads the corrected
+row naturally.

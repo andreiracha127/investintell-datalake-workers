@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import decimal
+import hashlib
 import json
 import os
 import re
@@ -375,13 +376,106 @@ def test_the_pinned_pack_digests_match_the_checked_out_pack():
     assert identity["input_pack_id"] == "open_macro_v03_certified_input_pack_003"
 
 
-def test_the_pack_boundaries_are_observed_not_hardcoded():
+def test_the_pack_bytes_and_identity_are_untouched_by_the_backfill():
+    """The repair is a SIDECAR. The pack's canonical bytes and its self-declared
+    ``input_pack_sha256`` are exactly what was certified — which is what lets the 148
+    stored rows keep carrying that sha and lets ``verify_is_the_certified_chain``
+    keep meaning something."""
+    manifest = json.loads(
+        (w.PACK / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["input_pack_sha256"] == PACK_SHA
+    assert w.CANONICAL_SHA256["data/canonical/macro_observation_vintage.json"] == (
+        "53c367771e79f3671379d0c7bdc780a288113b9e90621c6f15d162d2bf9f87c4")
+    # the backfill lives OUTSIDE the pack directory
+    assert w.PACK not in w.BACKFILL.parents and w.BACKFILL != w.PACK
+
+
+def test_the_backfill_is_pinned_by_its_own_bytes():
+    """A repair of the certified information set is as tamper-evident as the pack."""
+    for relative, expected in w.BACKFILL_SHA256.items():
+        got = hashlib.sha256((w.BACKFILL / relative).read_bytes()).hexdigest()
+        assert got == expected
+
+
+def test_the_backfill_is_the_one_print_the_pack_froze_a_day_too_early():
+    rows = json.loads(w.BACKFILL_MACRO_JSON.read_text(encoding="utf-8"))
+    assert len(rows) == 1
+    (row,) = rows
+    assert row["series_id"] == "MICH"
+    assert row["observation_period"] == "2026-06-01"
+    assert row["available_at"] == "2026-06-26T00:00:00+00:00"
+    assert row["value"] == 4.6
+    # inside the 2026-06-30 decision's information set, above the pack's window
+    assert w._parse_available_at(row["available_at"]) <= w.CERTIFIED_PREFIX_CUTOFF
+
+
+def test_the_boundaries_are_observed_not_hardcoded():
     _macro, _eod, macro_boundary, eod_boundary = w.load_pack_inputs()
-    assert macro_boundary == _dt.datetime(2026, 6, 25, tzinfo=_dt.timezone.utc)
+    # the pack's own export window ends 2026-06-25; the backfill restores the
+    # 2026-06-26 print, so the certified window now reaches the decision cutoff and
+    # the live delta starts strictly after it.
+    assert macro_boundary == _dt.datetime(2026, 6, 26, tzinfo=_dt.timezone.utc)
     assert eod_boundary == _dt.date(2026, 6, 30)
-    # the boundary is BELOW the chain's last month: the live MICH vintage of
-    # 2026-06-26 is exactly the row the pack does not have.
-    assert macro_boundary.date() < CERTIFIED_END
+    assert macro_boundary <= w.CERTIFIED_PREFIX_CUTOFF
+
+
+def _pack_row(**over):
+    row = {"series_id": "MICH", "observation_period": "2026-06-01",
+           "available_at": "2026-06-20T00:00:00+00:00",
+           "vintage_date": "2026-06-20", "revision_number": 0, "value": 4.6}
+    row.update(over)
+    return row
+
+
+def test_the_backfill_may_not_rewrite_a_certified_input():
+    pack = [_pack_row(available_at="2026-06-25T00:00:00+00:00")]
+    with pytest.raises(w.DecisionChainError, match="at or below the pack's window"):
+        w.verify_backfill(pack, [_pack_row(
+            series_id="PAYEMS", available_at="2026-06-24T00:00:00+00:00")])
+
+
+def test_the_backfill_may_not_launder_a_post_cutoff_row():
+    """A print published after the certified cutoff belongs to the live delta, which
+    is read from the database — not to a committed file wearing certified provenance."""
+    pack = [_pack_row(available_at="2026-06-25T00:00:00+00:00")]
+    with pytest.raises(w.DecisionChainError, match="after the certified prefix cutoff"):
+        w.verify_backfill(pack, [_pack_row(
+            series_id="PAYEMS", available_at="2026-07-02T00:00:00+00:00")])
+
+
+def test_the_backfill_may_not_carry_one_print_twice():
+    pack = [_pack_row(available_at="2026-06-25T00:00:00+00:00")]
+    twice = [_pack_row(series_id="PAYEMS",
+                       available_at="2026-06-26T00:00:00+00:00")] * 2
+    with pytest.raises(w.DecisionChainError, match="two rows for PAYEMS"):
+        w.verify_backfill(pack, twice)
+
+
+def test_a_collision_with_a_pack_print_is_impossible_by_the_boundary_rule():
+    """No separate check exists for it, so pin WHY: every pack key sits at or below
+    the pack's boundary, and every backfill row must sit strictly above it."""
+    pack = json.loads(w.MACRO_JSON.read_text(encoding="utf-8"))
+    pack_boundary = max(w._parse_available_at(r["available_at"]) for r in pack)
+    assert all(w._parse_available_at(r["available_at"]) <= pack_boundary for r in pack)
+    backfill = json.loads(w.BACKFILL_MACRO_JSON.read_text(encoding="utf-8"))
+    assert all(w._parse_available_at(r["available_at"]) > pack_boundary
+               for r in backfill)
+    assert not ({w._natural_key(r) for r in backfill}
+                & {w._natural_key(r) for r in pack})
+
+
+def test_an_empty_backfill_is_refused_rather_than_shipped():
+    with pytest.raises(w.DecisionChainError, match="repair nothing"):
+        w.verify_backfill([_pack_row()], [])
+
+
+def test_verify_pack_fails_loud_on_a_tampered_backfill(tmp_path, monkeypatch):
+    fake = tmp_path / "macro_observation_vintage.json"
+    fake.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(w, "BACKFILL", tmp_path)
+    with pytest.raises(w.DecisionChainError,
+                       match="certified vintage backfill input .* sha256"):
+        w.verify_pack()
 
 
 # --------------------------------------------------------------------------- #
@@ -859,14 +953,20 @@ def _agrees_to_stored_precision(stored, computed) -> bool:
 
 @SLOW
 def test_golden_replay_reproduces_the_certified_chain(replay_to_certified_end):
-    """THE GOLDEN: the pinned certified pack, replayed through the worker's own call,
-    reproduces every one of the 148 published months.
+    """THE GOLDEN: the pinned certified inputs — pack PLUS the vintage backfill —
+    replayed through the worker's own call, reproduce every one of the 148 published
+    months.
 
     Categorical columns — the certified answer — EXACTLY, with no allowance at all.
     NUMERICs to the float8->NUMERIC 15-digit rendering the 2026-07-17 rebuild wrote,
     with at most a handful of cells needing the last-place allowance above (float
     portability, not model drift). This is what makes "the ported logic IS the
     script's logic" a measurement.
+
+    2026-06-30 is the exception that proves the repair: its two corrected cells were
+    written on 2026-08-07 through ``_exact_numeric``, so they carry all 17 digits and
+    match ``repr`` exactly rather than through the 15-digit escape hatch. The other
+    147 months are untouched and still need it.
     """
     stored = load_certified_rows()
     series = replay_to_certified_end
@@ -912,18 +1012,22 @@ def test_the_prefix_gate_passes_on_the_real_extension(replay_to_next_month):
     # measured 2026-08-07 — one candidate_quadrant cell moves, nothing consumable
     assert report["candidate_quadrant_drift"] == [
         {"as_of": "2023-11-30", "stored": "contraction", "replayed": "recovery"}]
-    # MATERIAL drift (> 1e-9) is the model's endpoint dependence: 44 cells over
+    # MATERIAL drift (> 1e-9) is the model's endpoint dependence: 43 cells over
     # 2022-10-31 .. 2026-06-30, all at 1e-3 or above. It is platform-stable because
     # nothing sits near the threshold — the other cells ``numeric_drift_cells`` counts
     # are last-place float noise at ~1e-16, which is NOT portable (see LAST_PLACE
     # above), so the total is bounded rather than pinned.
-    assert report["numeric_drift_material_cells"] == 44
-    assert 44 <= report["numeric_drift_cells"] <= 55
+    assert report["numeric_drift_material_cells"] == 43
+    assert 43 <= report["numeric_drift_cells"] <= 55
     assert report["numeric_drift_months"][0] == "2022-10-31"
     assert report["numeric_drift_months"][-1] == "2026-06-30"
-    # the largest single move is not the grid at all: it is the MICH vintage of
-    # 2026-06-26 that the pack froze one day too early, on the last stored month.
-    assert report["numeric_drift_max"] == pytest.approx(0.1349, abs=1e-3)
+    # Every remaining move is the GRID, at 1e-3. Before the 2026-08-07 vintage repair
+    # the largest was 0.1349 and it was not the grid at all: it was the MICH print of
+    # 2026-06-26, which the pack froze one day too early and the stored 2026-06-30 row
+    # was therefore computed without (runbook §7.1). That row is corrected and that
+    # print is pinned, so the only endpoint effect left is the standardizer's.
+    assert report["numeric_drift_max"] == pytest.approx(0.0047, abs=1e-3)
+    assert report["numeric_drift_max"] < 1e-2
 
 
 @SLOW
@@ -941,22 +1045,32 @@ def test_the_extension_appends_exactly_one_month(replay_to_next_month):
 
 
 @SLOW
-def test_the_certified_prefix_is_pinned_to_the_pack_not_to_the_live_store(
+def test_the_certified_prefix_is_pinned_to_the_repo_not_to_the_live_store(
         pack_inputs, replay_to_next_month):
-    """The live delta starts STRICTLY after the pack's window, so no decision at or
-    before 2026-06-25 can see a row the certified rebuild did not see. The MICH
-    vintage of 2026-06-26 — present live, absent from the pack — is the row that makes
-    this concrete: it enters the replay (it is after the boundary) and it is why the
-    recomputed 2026-06-30 inflation_score differs from the stored one, on a row this
-    worker never writes."""
+    """The live delta starts STRICTLY after the CERTIFIED boundary, so no decision at
+    or before 2026-06-26 can see a row the repo has not pinned.
+
+    The MICH print of 2026-06-26 is the row that makes this concrete, and it is now on
+    the right side of the line. It was published INSIDE the 2026-06-30 decision's
+    information set but OUTSIDE the pack's export window, so before 2026-08-07 it
+    reached the replay as live delta and the stored 2026-06-30 row — computed by the
+    2026-07-17 rebuild from the pack alone — disagreed with it by 0.135 on
+    ``inflation_score``. Under owner order it was pinned into the vintage backfill and
+    the stored row was corrected (runbook §7.1). So: it is certified input, it is NOT
+    in the live delta, and the recomputed June now AGREES with the table."""
     _macro, _eod, macro_boundary, _eb = pack_inputs
     delta = json.loads(LIVE_DELTA_JSON.read_text(encoding="utf-8"))
-    mich = [r for r in delta["macro_delta"] if r["series_id"] == "MICH"]
-    assert len(mich) == 1
-    assert mich[0]["available_at"].startswith("2026-06-26")
-    assert w._parse_available_at(mich[0]["available_at"]) > macro_boundary
+    assert [r for r in delta["macro_delta"] if r["series_id"] == "MICH"] == []
+    assert all(w._parse_available_at(r["available_at"]) > macro_boundary
+               for r in delta["macro_delta"])
+    # the print is pinned in the repo, and the boundary reaches the decision cutoff
+    backfill = json.loads(w.BACKFILL_MACRO_JSON.read_text(encoding="utf-8"))
+    assert [r["available_at"] for r in backfill] == ["2026-06-26T00:00:00+00:00"]
+    assert macro_boundary == w._parse_available_at("2026-06-26T00:00:00+00:00")
+
     june = [r for r in replay_to_next_month if r.as_of == CERTIFIED_END][0]
     stored_june = load_certified_rows()[CERTIFIED_END]
     assert june.quadrant == stored_june["quadrant"]
-    assert not w._stored_matches_double(stored_june["inflation_score"],
-                                        june.inflation_score)
+    # the 0.135 gap is closed; what is left on this month is the grid's ~1e-3
+    assert abs(float(stored_june["inflation_score"])
+               - float(june.inflation_score)) < 1e-2
