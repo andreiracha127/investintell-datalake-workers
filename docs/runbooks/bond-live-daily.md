@@ -145,9 +145,15 @@ facts of every publication outside a three-part keep-set:
 Disk is re-used, not returned (`bond_serving_facts` is a plain table): steady
 state is ~3 publications instead of unbounded growth.
 
-The sibling question — `bond_metric_v1` now mints ~1.3M rows a day — is a
-**known follow-up**, deliberately not bundled here. It is an order of magnitude
-smaller than the serving facts and wants its own keep-set reasoning.
+The sibling question — `bond_metric_v1` now mints one publication a day —
+is a **known follow-up**, deliberately not bundled here. Measured 2026-08-07:
+8 publications, 5.40M rows, 1807 MB, i.e. ~1.27M rows (211,406 securities x 6
+metrics) and **~270 MB per day**. That is smaller than the serving facts in
+BYTES (no jsonb payload) but comparable in ROWS — do not carry over the serving
+keep-set by analogy. Its restore targets are different (the chain compensates
+metric pointers too, and `bond_serving` consumes the metric view at build time,
+so a pruned metric publication can strand a serving rebuild) and that reasoning
+has to be done on its own terms.
 
 ## 7. Free property
 
