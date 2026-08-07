@@ -6,6 +6,9 @@ enrichment worker's integration test with a fake client.
 
 from __future__ import annotations
 
+import sys
+import types
+
 from src.workers import _openfigi as of
 
 
@@ -55,6 +58,29 @@ def test_parse_mapping_handles_empty_and_malformed_entries():
     assert of.parse_mapping_response(jobs, payload) == {}
 
 
+def _stub_httpx(monkeypatch):
+    """Make the client constructible where httpx is not installed.
+
+    The CI lane that runs this file (quant-engine) installs only the quant
+    lock, which has no httpx; the client imports it lazily inside
+    ``__init__``. Keeping to this file's contract — no network, and no real
+    HTTP client ever built — the module is stubbed in ``sys.modules`` so the
+    real ``__init__`` (keyed batch size, headers, token bucket) still runs,
+    and the HTTP edge is replaced per-test as usual.
+    """
+
+    class _NullHTTPClient:
+        def __init__(self, **_kw):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules, "httpx", types.SimpleNamespace(Client=_NullHTTPClient)
+    )
+
+
 def _capture_requests(client, ok_record):
     """Replace the HTTP edge with a canned per-job response, capturing jobs."""
     calls = []
@@ -67,7 +93,8 @@ def _capture_requests(client, ok_record):
     return calls
 
 
-def test_map_cusips_asks_the_cusip_index_and_keys_by_cusip():
+def test_map_cusips_asks_the_cusip_index_and_keys_by_cusip(monkeypatch):
+    _stub_httpx(monkeypatch)
     record = {"figi": "BBG000X", "ticker": "APTV", "exchCode": "US",
               "securityType": "Common Stock", "marketSector": "Equity"}
     with of.OpenFigiClient(key="test-key") as client:
@@ -81,7 +108,8 @@ def test_map_cusips_asks_the_cusip_index_and_keys_by_cusip():
     assert out["000000000"].ticker == "APTV"
 
 
-def test_map_isins_still_asks_the_isin_index():
+def test_map_isins_still_asks_the_isin_index(monkeypatch):
+    _stub_httpx(monkeypatch)
     record = {"figi": "BBG000Y", "ticker": "NOVO-B", "exchCode": "DC",
               "securityType": "Common Stock", "marketSector": "Equity"}
     with of.OpenFigiClient(key="test-key") as client:
