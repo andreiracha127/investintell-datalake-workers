@@ -511,7 +511,6 @@ def attribute_issuers(
     leis = {str(k): tuple(v) for k, v in (lei_by_cusip9 or {}).items()}
 
     votes_by_cusip6: dict[str, Counter[str]] = {}
-    lei_by_cusip6: dict[str, set[str]] = {}
     for security in securities:
         if not security.cusip9:
             continue
@@ -519,7 +518,18 @@ def attribute_issuers(
         bucket = votes_by_cusip6.setdefault(prefix, Counter())
         for name, count in security.issuer_votes:
             bucket[name] += count
-        lei_by_cusip6.setdefault(prefix, set()).update(leis.get(security.cusip9, ()))
+
+    # The CUSIP6 LEI scope spans EVERY reported CUSIP9 under the prefix, not only
+    # the ones this batch happens to publish. Narrowing it to the published
+    # universe would hide a disagreement carried by a sibling security and make
+    # the fallback layer quietly more permissive than the rule it was measured
+    # under. Fail-closed means the veto sees everything the filings say.
+    lei_by_cusip6: dict[str, set[str]] = {}
+    prefixes = set(votes_by_cusip6)
+    for cusip9, values in leis.items():
+        prefix = cusip9[:6]
+        if prefix in prefixes:
+            lei_by_cusip6.setdefault(prefix, set()).update(values)
 
     resolved: list[ResolvedSecurity] = []
     for security in securities:

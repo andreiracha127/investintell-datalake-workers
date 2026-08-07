@@ -251,6 +251,36 @@ def test_a_security_with_no_name_anywhere_abstains_and_says_why() -> None:
     )
 
 
+def test_the_cusip6_lei_veto_sees_siblings_this_batch_does_not_publish() -> None:
+    """The fallback's LEI scope is the whole prefix, not just the built universe.
+
+    A disagreement reported against a sibling CUSIP9 that never made it into this
+    publication still means the filings disagree about who issues under this
+    prefix. Scoping the veto to the published rows would make the fallback layer
+    quietly more permissive than the rule its coverage was measured under.
+    """
+    resolved = resolve_securities([
+        _obs("o1", "037833100", "ACME CORP"),
+        _obs("o2", "037833100", "ACME CORP"),
+        _obs("o3", "037833BB2", None),      # unnamed -> falls through to CUSIP6
+    ])
+    attributed = _by_cusip9(attribute_issuers(
+        resolved.securities,
+        lei_by_cusip9={
+            "037833100": ["5493001KJTIIGC8Y1R12"],
+            # Never published in this batch, but reported under the same prefix.
+            "037833ZZ9": ["213800LBQA1Y9RPH2N54"],
+        },
+    ))
+    borrowed = attributed["037833BB2"]
+    assert borrowed.measured_terms["issuer_name"] is None
+    assert borrowed.identity_evidence["issuer_attribution"]["abstain_reason"] == (
+        ic.ABSTAIN_MULTIPLE_LEI
+    )
+    # The exact-CUSIP9 layer is untouched: only ITS own LEI is in ITS scope.
+    assert attributed["037833100"].measured_terms["issuer_name"] == "ACME CORP"
+
+
 def test_a_disagreeing_lei_blocks_attribution_end_to_end() -> None:
     resolved = resolve_securities([
         _obs("o1", "037833100", "ACME CORP"),
