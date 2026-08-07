@@ -46,6 +46,15 @@ def test_unknown_weight_gate_is_computed_before_top_100_truncation() -> None:
     assert quality_gate < top_100
 
 
+def test_reveal_holdings_mv_excludes_normalized_synthetic_cusip_keys() -> None:
+    ddl = SCHEMA.read_text(encoding="utf-8").lower()
+
+    # N-PORT identity contracts classify IS:/LE:/H:/CIK: as synthetic after
+    # trimming and uppercasing. They cannot participate in the CUSIP-based
+    # N-PORT x 13F join, so their missing weights must not quarantine a series.
+    assert "upper(btrim(h.cusip)) !~ '^(is:|le:|h:|cik:)'" in ddl
+
+
 class _Cursor:
     def __init__(self, sink: dict[str, object]) -> None:
         self.sink = sink

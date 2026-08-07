@@ -20,12 +20,17 @@ def test_reveal_13f_mv_keeps_only_each_cusips_latest_rows() -> None:
         "group by upper(cusip)",
         "from sec_13f_holdings",
         "latest.report_date = h.report_date",
+        "coalesce((to_jsonb(h) ->> 'period')::date, h.report_date) as source_period",
+        "h.accession_number",
         "h.cusip as source_cusip",
-        "h.issuer_name as name",
-        "h.market_value as value_usd",
+        "to_jsonb(h) ->> 'name'",
+        "to_jsonb(h) ->> 'issuer_name'",
+        "to_jsonb(h) ->> 'value_usd'",
+        "to_jsonb(h) ->> 'market_value'",
+        ") as value_usd",
         "with no data",
         "create unique index if not exists fund_reveal_13f_holdings_mv_identity_uidx",
-        "(report_date, cik, source_cusip)",
+        "report_date, cik, source_period, accession_number, source_cusip",
         "create index if not exists fund_reveal_13f_holdings_mv_cusip_report_idx",
         "(cusip, report_date desc)",
     ):
@@ -45,6 +50,8 @@ def test_reveal_query_reads_indexed_13f_mv_but_keeps_set_latest_semantics() -> N
     assert "matched join latest on latest.period = matched.period" in sql
     assert "left join lateral" in sql
     assert "from sec_managers" in sql
+    assert "where h.cusip = any(%(cusips)s)" in sql
+    assert "upper(h.cusip)" not in sql
     assert "order by value_usd desc nulls last, cik asc, cusip asc, source_cusip asc" in sql
 
 

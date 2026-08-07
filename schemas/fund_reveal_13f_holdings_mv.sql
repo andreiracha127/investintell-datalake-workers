@@ -16,10 +16,18 @@ WITH latest_by_cusip AS (
 SELECT
     h.cik,
     h.report_date,
+    coalesce((to_jsonb(h) ->> 'period')::date, h.report_date) AS source_period,
+    h.accession_number,
     h.cusip AS source_cusip,
     latest.cusip,
-    h.issuer_name AS name,
-    h.market_value AS value_usd,
+    -- The versioned schema uses name/value_usd while the live legacy table
+    -- still exposes issuer_name/market_value. Reading through the row JSON
+    -- keeps one bootstrap definition compatible with both shapes.
+    coalesce(to_jsonb(h) ->> 'name', to_jsonb(h) ->> 'issuer_name') AS name,
+    coalesce(
+        (to_jsonb(h) ->> 'value_usd')::numeric,
+        (to_jsonb(h) ->> 'market_value')::numeric
+    ) AS value_usd,
     h.shares
 FROM sec_13f_holdings h
 JOIN latest_by_cusip latest
@@ -27,11 +35,13 @@ JOIN latest_by_cusip latest
  AND latest.report_date = h.report_date
 WITH NO DATA;
 
--- Production sec_13f_holdings is keyed by (report_date, cik, cusip).  Keeping
--- the source spelling in the identity avoids collapsing case/whitespace
--- variants while the normalized CUSIP remains the lookup key.
+-- Preserve the source filing identity for concurrent refreshes.  Keeping the
+-- source spelling also avoids collapsing case/whitespace variants while the
+-- normalized CUSIP remains the lookup key.
 CREATE UNIQUE INDEX IF NOT EXISTS fund_reveal_13f_holdings_mv_identity_uidx
-    ON fund_reveal_13f_holdings_mv (report_date, cik, source_cusip);
+    ON fund_reveal_13f_holdings_mv (
+        report_date, cik, source_period, accession_number, source_cusip
+    );
 
 CREATE INDEX IF NOT EXISTS fund_reveal_13f_holdings_mv_cusip_report_idx
     ON fund_reveal_13f_holdings_mv (cusip, report_date DESC)

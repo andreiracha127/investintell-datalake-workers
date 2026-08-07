@@ -26,7 +26,7 @@ WITH matched AS (
         WHERE m.cik = h.cik AND m.firm_name IS NOT NULL
         ORDER BY m.aum_total DESC NULLS LAST LIMIT 1
     ) mgr ON true
-    WHERE upper(h.cusip) = ANY(%(cusips)s)
+    WHERE h.cusip = ANY(%(cusips)s)
 ),
 latest AS (SELECT max(period) AS period FROM matched)
 SELECT matched.* FROM matched JOIN latest ON latest.period = matched.period

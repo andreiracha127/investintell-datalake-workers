@@ -20,6 +20,10 @@ WITH latest_reports AS (
       ON latest.series_id = h.series_id
      AND latest.report_date = h.report_date
     WHERE nullif(btrim(h.cusip), '') IS NOT NULL
+      -- Fallback N-PORT identity keys are never 13F CUSIPs. Exclude them
+      -- before aggregation so an unknown synthetic weight cannot quarantine
+      -- otherwise joinable holdings for the same series.
+      AND upper(btrim(h.cusip)) !~ '^(IS:|LE:|H:|CIK:)'
 ), aggregated_holdings AS (
     SELECT
         series_id,
@@ -42,8 +46,9 @@ WITH latest_reports AS (
         nonnull_weight_count,
         null_weight_count,
         -- Calculated before top-100 truncation so an unknown group at rank 101+
-        -- still quarantines the whole series. CUSIP-less rows are excluded
-        -- because they cannot participate in the N-PORT x 13F join.
+        -- still quarantines the whole series. CUSIP-less and synthetic-key
+        -- rows are excluded because they cannot participate in the N-PORT x
+        -- 13F join.
         bool_or(weight IS NULL OR null_weight_count > 0) OVER (
             PARTITION BY series_id, report_date
         ) AS has_unknown_weight,
