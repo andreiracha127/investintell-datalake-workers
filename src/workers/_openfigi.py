@@ -173,13 +173,27 @@ class OpenFigiClient:
             return payload if isinstance(payload, list) else None
         return None
 
-    def map_isins(self, isins: list[str]) -> dict[str, FigiMatch]:
-        """Resolve many ISINs → FigiMatch (batched, paced). Unresolved omitted."""
+    def _map_ids(self, id_type: str, values: list[str]) -> dict[str, FigiMatch]:
+        """Resolve many identifiers → FigiMatch (batched, paced). Unresolved omitted."""
         out: dict[str, FigiMatch] = {}
-        for chunk in _batches(list(isins), self.batch_size):
+        for chunk in _batches(list(values), self.batch_size):
             payload = self._request(
-                [{"idType": "ID_ISIN", "idValue": isin} for isin in chunk]
+                [{"idType": id_type, "idValue": value} for value in chunk]
             )
             if payload is not None:
                 out.update(parse_mapping_response(chunk, payload))
         return out
+
+    def map_isins(self, isins: list[str]) -> dict[str, FigiMatch]:
+        """Resolve many ISINs → FigiMatch (batched, paced). Unresolved omitted."""
+        return self._map_ids("ID_ISIN", isins)
+
+    def map_cusips(self, cusips: list[str]) -> dict[str, FigiMatch]:
+        """Resolve many CUSIP-9s → FigiMatch, keyed by CUSIP.
+
+        The CUSIP index covers listings the ISIN index has expunged (retired
+        ISINs of live issuers), so a ``no_figi`` by ISIN is not final for a
+        holding that carries a real CUSIP-9 — same endpoint, same pacing, just
+        ``idType=ID_CUSIP``.
+        """
+        return self._map_ids("ID_CUSIP", cusips)
