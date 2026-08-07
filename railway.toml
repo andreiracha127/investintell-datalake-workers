@@ -96,6 +96,29 @@
 #                           build sobre raw podada publicou quatro das oito
 #                           relações VAZIAS e passou por bem-sucedido. Recusar
 #                           não é falha, é repouso.
+#   bond_live_daily      -> DIÁRIO 07:30 UTC, serviço `bond-live-daily`
+#                           (e673db8e-…). Carrega o dia (candles por CUSIP na
+#                           bond_observation_daily, curva em
+#                           bond_yield_curve_daily, tape do pregão anterior em
+#                           bond_tick_daily), refresca a matview curada e
+#                           REPUBLICA (bond_metrics + bond_serving).
+#                           ORDEM OBRIGATÓRIA: ANTES da bond-chain (11:00). A
+#                           varredura + republicação leva ~80 min, então 07:30
+#                           deixa ~2h de folga; as duas não se corrompem (locks
+#                           distintos), mas sobrepor paga a mesma publicação
+#                           duas vezes.
+#                           A republicação NÃO é redundante com a chain: a
+#                           daily_chain indexa um run por (chain, source_day,
+#                           code_revision, config_version) e devolve o resumo de
+#                           um run COMPLETO sem re-executar, e o source_day sai
+#                           de watermarks que não se movem quando candles
+#                           chegam — num dia sem deploy e sem filing a chain não
+#                           executaria nada. Ver docs/runbooks/bond-live-daily.md.
+#                           Env: WORKER=bond_live_daily, DATABASE_URL,
+#                           FINNHUB_API_KEY (sem ela o run reporta no_api_key e
+#                           não escreve nada). Opcionais: WORKER_LIMIT (teto do
+#                           universo por run), WORKER_CALC_DATE (replay),
+#                           BOND_TICK_TOP_N (default 500).
 #   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
 #                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
 #                           âncora + INSERT. Cron sugerido:
