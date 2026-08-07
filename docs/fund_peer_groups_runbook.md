@@ -59,6 +59,7 @@ Optional:
 | `FUND_PEER_GROUPS_IDENT_FLOOR` | `0.95` | identifier-coverage floor (§5). Also part of `params_sha256`. |
 | `FUND_PEER_GROUPS_ANCHOR` | — | publish a specific quarter-end instead of the last closed one (backfill). |
 | `FUND_PEER_GROUPS_UNIVERSE_DSN` | — | **only** if `funds_profile_mv` / `fund_risk_latest_mv` do not live in the same database as `sec_nport_holdings`. |
+| `FUND_PEER_GROUPS_ACCEPT_OUT_OF_BAND` | — (off) | publish an anchor whose coherent group count is outside `[79, 108]` (§9). `1` on, `0`/empty off, anything else raises. **Not** part of `params_sha256` — it gates the publication, not the partition — and it is loud: stderr warning + `group_count_band_override: true` in the stats. Unset it after the run. |
 
 **Cron: `0 7 15 2,5,8,11 *`** — the 15th of February, May, August and November at
 07:00 UTC, i.e. after the quarter's N-PORT ingestion has landed. Running earlier does
@@ -105,7 +106,7 @@ What a healthy anchor looks like, from the eight-quarter validation:
 | reading | expected range |
 |:--|:--|
 | `coverage_pct` (funds with an empirical group) | **81.6% – 87.1%** (mean 83.5) |
-| `groups` | ~90 – 105 coherent groups |
+| `groups` | **79 – 108**, and this one is a GATE, not an eyeball check — see §9 |
 | `largest / series` | **12.8% – 16.8%** under the shipped cohesion waiver (§6); never above the 20% ceiling |
 | `recipes` | **exactly 1** per anchor |
 | `computed_at` | one distinct value per anchor (the publication is atomic) |
@@ -190,8 +191,8 @@ under a different recipe and cannot be compared to a clean one.
 
 Other refusals, all with zero writes: `served universe is EMPTY` (the read-models are
 missing or in another database — see `FUND_PEER_GROUPS_UNIVERSE_DSN`), `not one of the
-N served series passed the eligibility floors` (the quarter is not ingested), and
-`schema catalog verification failed` (§1).
+N served series passed the eligibility floors` (the quarter is not ingested),
+`schema catalog verification failed` (§1), and the group-count band (§9).
 
 ### 5.1 One refusal is NOT zero writes: `post-write verification failed`
 
@@ -347,3 +348,127 @@ ceiling, coverage outside 81%–88%, or a waived community whose median is under
    successor. Anything that needs "is this the same group as last quarter" needs a
    matching step this worker does not do.
 5. **No significance testing anywhere.** Every number here is descriptive.
+
+---
+
+## 9. The group-count band (NORMATIVE — this is a gate)
+
+```
+FundPeerGroupsError: anchor 2026-09-30: the partition produced 61 coherent peer
+groups, OUTSIDE the band [79, 108] (inclusive). … REFUSING TO PUBLISH: nothing was
+written, and the previously published anchor keeps serving.
+```
+
+**The band is `[79, 108]`, inclusive on both ends, on the count of COHERENT groups**
+— `count(DISTINCT group_id)`, the number §3's query reports as `groups`, not the raw
+community count (~190–210). It lives in `src/workers/fund_peer_groups.py` as
+`GROUP_COUNT_BAND` and is checked as **Gate 7b**, after the partition and **before**
+any row is built or written. A count outside it refuses the publication with zero
+writes: the previously published anchor is untouched and keeps serving, which is the
+fail-safe direction — a stale certified partition is a smaller harm than a fresh
+broken one.
+
+### 9.1 Why it exists
+
+`params_sha256` catches a changed **parameter**. It cannot catch a changed **world**:
+a networkx release that reorders Louvain's aggregation, a served read-model that
+quietly halves the universe, a quarter ingested with the wrong asset classes. Each of
+those leaves every declared parameter identical and moves the one number the product
+consumes. The band is therefore **outside** `canonical_params` on purpose — it guards
+the publication, it is not an input to the partition, and two anchors that agree on
+every parameter must carry the same digest whether or not one of them was refused.
+
+### 9.2 The evidence it was derived from
+
+Every anchor ever computed under the **shipped** policy (cap 0.08 + cohesion waiver
+0.10 + hard ceiling 0.20). Nothing else belongs in this table:
+
+| anchor | coherent groups | source |
+|:--|--:|:--|
+| 2024-03-31 | 90 | eight-anchor validation, arm C5 of the cap measurement |
+| 2024-06-30 | 88 | idem |
+| 2024-09-30 | **85** ← min | idem |
+| 2024-12-31 | **102** ← max | idem — **and the identifier-hole quarter** (§5) |
+| 2025-03-31 | 90 | idem |
+| 2025-06-30 | 96 | idem |
+| 2025-09-30 | 92 | idem |
+| 2025-12-31 | 93 | idem |
+| 2026-03-31 | 91 | published to `fund_peer_groups_v1`, certified |
+| 2026-06-30 | 87 | published to `fund_peer_groups_v1`, certified |
+
+Observed range **[85, 102]**, mean 91.4, sd 4.9.
+
+**Margin = 6**, and it is a measured number, not a taste: it is the largest
+quarter-over-quarter step the series ever took across a pair that **no upstream gate
+would refuse today** (2025-03-31 → 2025-06-30, 90 → 96). The two larger steps in the
+series, **+17** and **−12**, both touch 2024-12-31 — the anchor of the identifier hole,
+which Gate 6 now refuses outright, so its *steps* cannot size this margin. Its *value*
+(102) stays in the population, because keeping it only widens the band and a wider band
+never refuses a legitimate anchor.
+
+```
+band = [85 − 6, 102 + 6] = [79, 108]        2.6 sd below / 3.4 sd above the mean
+```
+
+Two consequences worth stating:
+
+* **The old "~90–105" in §3 was pre-waiver** — it was read off the P1.6/P1.7 figures,
+  which the shipped cohesion waiver moves. A band built on it would have refused the
+  certified 2026-06-30 anchor at 87 on the day it was published. A gate that refuses
+  its own certified evidence is born wrong; this one contains all ten values.
+* **`[79, 108]` still refuses the granularity regressions that were actually measured**:
+  arms C4/C6 of the cap measurement (cap raised to 0.16, or removed) collapsed the
+  count to 71–78, and arm D2 (a finer resolution ladder) shattered it to 251–275.
+
+### 9.3 When the market really changes: RE-DERIVE, do not edit
+
+This is the contract the band was accepted under. A legitimate structural break in the
+market **will** eventually push a quarter outside `[79, 108]`, and the answer is a
+re-derivation with the same recipe — **never** a blind widening to fit the quarter that
+failed.
+
+1. **Establish that the quarter is sound, not broken.** Read the refused run's stats
+   line: `n_universe` against the previous anchor, `identifier_coverage`,
+   `coherent_coverage_pct`, `block_sizes`, `n_cap_waived`. A count outside the band
+   *with* a shrunken universe or thin coverage is a defect, not a market — fix the
+   ingestion and re-run. Do not touch the band.
+2. **Re-measure the population** from the table (this is the whole population — the
+   worker only ever publishes into it):
+
+   ```sql
+   SELECT anchor_date, count(DISTINCT group_id) AS groups, params_sha256
+   FROM fund_peer_groups_v1
+   WHERE group_id IS NOT NULL
+   GROUP BY anchor_date, params_sha256
+   ORDER BY anchor_date;
+   ```
+
+   Keep only the anchors whose `params_sha256` is the shipped digest — a different
+   digest is a different recipe and its counts are not comparable. Add the eight
+   validation anchors in §9.2 (they predate the table and cannot be re-queried).
+3. **Re-derive with the same rule**, mechanically: `band = [min − m, max + m]`, where
+   `m` is the largest adjacent quarter-over-quarter step over pairs in which neither
+   anchor was refused by an upstream gate. Recompute `m`; do not carry 6 forward.
+4. **Move `GROUP_COUNT_BAND` in a pull request**, with the new table and the new `m` in
+   this section and in the module comment, and update the literal in
+   `tests/test_fund_peer_groups.py::test_the_shipped_band_is_pinned_to_its_derived_numbers`.
+   The digest does not change and must not: run the suite and confirm
+   `test_the_band_is_not_in_the_parameter_digest` still passes.
+5. **Publish the quarter that triggered it** only after the band moved — or, if it must
+   ship first, with the valve below, which leaves a record.
+
+### 9.4 The valve
+
+`FUND_PEER_GROUPS_ACCEPT_OUT_OF_BAND=1` publishes an out-of-band anchor anyway. It is
+the owner's escape hatch and it is deliberately the only dial the band has — **the
+bounds themselves are not environment-tunable**, because a numeric override would let a
+quarter silently widen the band to fit itself.
+
+* Spelling is strict, like `WORKER_RETRY_NO_FIGI`: `1` on, unset/empty/`0` off,
+  **anything else raises** — before the first connection, so a typo costs no compute.
+* It cannot hide. The run prints a `WARNING … publishing OUT OF BAND` line on stderr,
+  and its stats carry `group_count_band_status: "out_of_band_accepted"` and
+  `group_count_band_override: true`.
+* It changes no digest and no partition. An anchor published through the valve is
+  byte-identical to what the gate refused; the only difference is that a human decided.
+* **Unset it after the run.** Left on, the gate is off for every quarter that follows.

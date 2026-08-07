@@ -53,13 +53,24 @@ DEFAULT_PARAMS = dict(size_cap_frac=w.DEFAULT_SIZE_CAP_FRAC,
                       cap_waive_hard_ceiling=w.DEFAULT_CAP_WAIVE_HARD_CEILING,
                       ident_floor=w.DEFAULT_IDENT_FLOOR)
 
+# The SHIPPED band, captured at import — before the autouse fixture below widens the
+# module constant — so section 10 can pin the real numbers against a literal.
+SHIPPED_GROUP_COUNT_BAND = w.GROUP_COUNT_BAND
+
 
 @pytest.fixture(autouse=True)
 def _pinned_environment(monkeypatch):
     monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", FAKE_COMMIT)
     for name in (w.ANCHOR_ENV, w.SIZE_CAP_ENV, w.CAP_WAIVE_MEDIAN_ENV,
-                 w.CAP_WAIVE_CEILING_ENV, w.IDENT_FLOOR_ENV, w.UNIVERSE_DSN_ENV):
+                 w.CAP_WAIVE_CEILING_ENV, w.IDENT_FLOOR_ENV, w.UNIVERSE_DSN_ENV,
+                 w.ACCEPT_OUT_OF_BAND_ENV):
         monkeypatch.delenv(name, raising=False)
+    # The synthetic anchor is 49 funds in 5 coherent groups; the shipped band is a
+    # statement about a 7000-fund production quarter and would refuse every run() in
+    # this file. Widening it here keeps the band OUT of the tests that are about
+    # something else, and section 10 tests the real one head on — against the literal
+    # captured above and against the gate function directly.
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (1, 10_000))
 
 
 def _set_cap_policy(monkeypatch, *, cap: float, ceiling: float,
@@ -1121,3 +1132,241 @@ def test_the_advisory_lock_is_unique_to_this_worker() -> None:
     others = [value for name, value in vars(db).items()
               if name.startswith("LOCK_") and name != "LOCK_FUND_PEER_GROUPS"]
     assert db.LOCK_FUND_PEER_GROUPS not in others
+
+
+# =========================================================================== #
+# 10. The group-count band — Gate 7b                                          #
+# =========================================================================== #
+# Every test below reaches PAST the autouse widening in ``_pinned_environment``:
+# each one either restores the shipped tuple or sets a band of its own. Nothing
+# here silently inherits (1, 10_000).
+
+# The ten anchors the band was derived from: the eight-anchor validation under the
+# shipped cap+waiver policy (arm C5 of the cap measurement) and the two anchors
+# published to fund_peer_groups_v1, both certified.
+DERIVED_FROM = {"2024-03-31": 90, "2024-06-30": 88, "2024-09-30": 85,
+                "2024-12-31": 102, "2025-03-31": 90, "2025-06-30": 96,
+                "2025-09-30": 92, "2025-12-31": 93,
+                "2026-03-31": 91, "2026-06-30": 87}
+
+
+def _no_connection(dsn, **kwargs):
+    raise AssertionError("run() reached the database with an unreadable environment")
+
+
+def _golden_cap_policy(monkeypatch) -> None:
+    """The cap policy the golden was recorded under, so the run() tests below gate the
+    SAME synthetic partition section 1 pins: 10 communities, 5 of them coherent."""
+    _set_cap_policy(monkeypatch, cap=GOLDEN["size_cap_frac"],
+                    ceiling=GOLDEN["cap_waive_hard_ceiling"],
+                    waive=GOLDEN["cap_waive_min_median"])
+
+
+def test_the_shipped_band_is_pinned_to_its_derived_numbers() -> None:
+    """``[min - 6, max + 6]`` over the ten anchors above: observed [85, 102], and a
+    margin of 6 — the largest quarter-over-quarter step the series ever took across a
+    pair that no UPSTREAM gate would refuse today. (The two larger steps, +17 and -12,
+    both touch 2024-12-31, the identifier-hole anchor Gate 6 now refuses outright.)
+
+    Pinned as a literal for the same reason ``params_sha256`` is: these two numbers
+    move through the runbook's re-derivation, never through a convenient edit."""
+    assert SHIPPED_GROUP_COUNT_BAND == (79, 108)
+
+
+def test_every_anchor_ever_computed_under_this_policy_is_in_band(monkeypatch) -> None:
+    """The evidence the band was derived from has to survive it. 87 is the one that
+    matters: the runbook's earlier observed range of ~90-105 was read off the
+    PRE-WAIVER validation, and a band built on it would have refused the certified
+    2026-06-30 anchor on the day it was born."""
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", SHIPPED_GROUP_COUNT_BAND)
+    for anchor, count in DERIVED_FROM.items():
+        stats = w.check_group_count_band(count, _dt.date.fromisoformat(anchor))
+        assert stats == {"group_count_band": [79, 108],
+                         "group_count_band_status": "in_band",
+                         "group_count_band_override": False}, anchor
+
+
+@pytest.mark.parametrize("count", [79, 108])
+def test_the_band_is_inclusive_at_both_ends(count, monkeypatch) -> None:
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", SHIPPED_GROUP_COUNT_BAND)
+    assert w.check_group_count_band(count, ANCHOR)["group_count_band_status"] \
+        == "in_band"
+
+
+@pytest.mark.parametrize("count", [78, 109, 0, 5, 275])
+def test_a_count_outside_the_band_refuses_and_names_all_three_numbers(
+        count, monkeypatch) -> None:
+    """The refusal answers the operator's only two questions — what did it measure,
+    and against what — without a second lookup."""
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", SHIPPED_GROUP_COUNT_BAND)
+    with pytest.raises(w.FundPeerGroupsError) as excinfo:
+        w.check_group_count_band(count, ANCHOR)
+    message = str(excinfo.value)
+    assert f"{count} coherent peer groups" in message
+    assert "[79, 108]" in message
+    assert ANCHOR.isoformat() in message
+    assert "REFUSING TO PUBLISH" in message
+    assert "keeps serving" in message                  # the fail-safe is stated
+    assert w.ACCEPT_OUT_OF_BAND_ENV in message         # and so is the way out
+    assert "fund_peer_groups_runbook.md" in message    # and the re-derivation
+
+
+def test_the_gate_refuses_the_granularity_regressions_that_were_measured(
+        monkeypatch) -> None:
+    """Not hypothetical counts: these are the coherent counts the cap measurement
+    actually produced under policies this worker does NOT ship — arms C4/C6 (cap
+    raised to 0.16, or removed) collapsed granularity to 71-78, arm D2 (a finer
+    resolution ladder) shattered it to 251-275. Both shapes are the band's job."""
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", SHIPPED_GROUP_COUNT_BAND)
+    for count in (71, 75, 77, 78, 251, 262, 275):
+        with pytest.raises(w.FundPeerGroupsError, match="OUTSIDE the band"):
+            w.check_group_count_band(count, ANCHOR)
+
+
+# --------------------------------------------------------------------------- #
+# The band guards the PUBLICATION: it must not touch params_sha256
+# --------------------------------------------------------------------------- #
+def test_the_band_is_not_in_the_parameter_digest() -> None:
+    """The property that makes this a gate rather than a parameter. Two anchors that
+    agree on every input carry the same digest whether or not one of them was
+    refused, so no band bound and no valve may appear in ``canonical_params``."""
+    params = w.canonical_params(**DEFAULT_PARAMS)
+    assert not [key for key in params if "band" in key]
+    assert w.ACCEPT_OUT_OF_BAND_ENV.lower() not in json.dumps(params).lower()
+    assert w.params_sha256(params) == DEFAULT_PARAMS_SHA256
+
+
+def test_neither_the_valve_nor_a_moved_band_moves_the_digest(monkeypatch) -> None:
+    """Both dials at once — the valve set and the band moved off its shipped value —
+    and the published rows still carry the pinned digest."""
+    monkeypatch.setenv(w.ACCEPT_OUT_OF_BAND_ENV, "1")
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (1, 2))
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    assert stats["status"] == "published"
+    assert stats["params_sha256"] == DEFAULT_PARAMS_SHA256
+    assert {r["params_sha256"] for r in database.published} == {DEFAULT_PARAMS_SHA256}
+
+
+# --------------------------------------------------------------------------- #
+# The valve — explicit, strict, and never silent
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("raw,expected", [(None, False), ("", False), ("  ", False),
+                                          ("0", False), ("1", True), (" 1 ", True)])
+def test_the_valve_spelling_is_the_house_strict_one(raw, expected,
+                                                    monkeypatch) -> None:
+    if raw is None:
+        monkeypatch.delenv(w.ACCEPT_OUT_OF_BAND_ENV, raising=False)
+    else:
+        monkeypatch.setenv(w.ACCEPT_OUT_OF_BAND_ENV, raw)
+    assert w.resolve_accept_out_of_band() is expected
+
+
+@pytest.mark.parametrize("raw", ["true", "TRUE", "yes", "y", "2", "-1", "on", "01"])
+def test_a_misspelled_valve_raises_instead_of_running_the_gate(raw,
+                                                               monkeypatch) -> None:
+    """``WORKER_RETRY_NO_FIGI``'s rule, for the mirror-image reason: a value that
+    silently meant 'off' would refuse a quarter while the operator believes the
+    override was in force."""
+    monkeypatch.setenv(w.ACCEPT_OUT_OF_BAND_ENV, raw)
+    with pytest.raises(w.FundPeerGroupsError, match="is not 0 or 1"):
+        w.resolve_accept_out_of_band()
+
+
+def test_a_misspelled_valve_fails_before_the_first_connection(monkeypatch) -> None:
+    """Gate 1 territory: an unreadable environment must not cost a minute of matrix
+    work to discover."""
+    monkeypatch.setenv(w.ACCEPT_OUT_OF_BAND_ENV, "yes")
+    monkeypatch.setattr(w, "connect", _no_connection)
+    with pytest.raises(w.FundPeerGroupsError, match="is not 0 or 1"):
+        w.run("postgresql://fake", today=TODAY)
+
+
+def test_the_override_publishes_and_says_so_on_stderr_and_in_the_stats(
+        monkeypatch, capsys) -> None:
+    _golden_cap_policy(monkeypatch)
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (1, 2))
+    monkeypatch.setenv(w.ACCEPT_OUT_OF_BAND_ENV, "1")
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    assert stats["status"] == "published"
+    assert stats["n_coherent_communities"] == 5
+    assert stats["group_count_band"] == [1, 2]
+    assert stats["group_count_band_status"] == "out_of_band_accepted"
+    assert stats["group_count_band_override"] is True
+    assert len(database.published) == stats["n_published"]
+
+    warning = capsys.readouterr().err
+    assert w.ACCEPT_OUT_OF_BAND_ENV in warning
+    assert "OUT OF BAND" in warning
+    assert "5 coherent peer groups" in warning
+    assert "[1, 2]" in warning
+
+
+def test_an_in_band_run_still_reports_the_band_it_passed(monkeypatch) -> None:
+    """A quarter that passes carries the band it was measured against, so the stats
+    of any run say which band was in force when it published."""
+    _golden_cap_policy(monkeypatch)
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (5, 5))
+    stats, _ = run_worker(w, monkeypatch, today=TODAY)
+    assert stats["group_count_band"] == [5, 5]
+    assert stats["group_count_band_status"] == "in_band"
+    assert stats["group_count_band_override"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Fail-safe: a refused anchor is a NO-OP, not a broken one
+# --------------------------------------------------------------------------- #
+def test_an_out_of_band_run_writes_absolutely_nothing(monkeypatch) -> None:
+    """Why the gate sits before ``build_rows``: nothing is written, so whatever was
+    published before is still there and still serving."""
+    _golden_cap_policy(monkeypatch)
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (900, 1000))
+    database = FakeDatabase(w)
+    conn = FakeConn(database)
+    database.conn = conn
+    monkeypatch.setattr(w, "connect", lambda dsn, **kw: conn)
+
+    with pytest.raises(w.FundPeerGroupsError) as excinfo:
+        w.run("postgresql://fake", today=TODAY)
+
+    message = str(excinfo.value)
+    assert "5 coherent peer groups" in message
+    assert "[900, 1000]" in message
+    assert database.published == []
+    assert database.deleted_anchors == []
+    assert not any(sql is w.DELETE_ANCHOR_SQL for sql, _ in conn.executed)
+    assert not any(sql is w.INSERT_SQL for sql, _ in conn.executed)
+    assert conn.closed
+
+
+def test_the_previous_anchor_survives_a_refused_rerun(monkeypatch) -> None:
+    """A refusal on the SAME anchor must not delete what is already published: the
+    DELETE and the INSERT live in one transaction the gate never reaches."""
+    _golden_cap_policy(monkeypatch)
+    database = FakeDatabase(w)
+    conn = FakeConn(database)
+    database.conn = conn
+    monkeypatch.setattr(w, "connect", lambda dsn, **kw: conn)
+
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (1, 10_000))
+    first = w.run("postgresql://fake", today=TODAY)
+    served = [dict(row) for row in database.published]
+    assert served
+
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (900, 1000))
+    with pytest.raises(w.FundPeerGroupsError, match="OUTSIDE the band"):
+        w.run("postgresql://fake", today=TODAY)
+    assert database.published == served
+    assert database.deleted_anchors == [_dt.date.fromisoformat(first["anchor_date"])]
+
+
+def test_the_gate_counts_coherent_groups_not_communities(monkeypatch) -> None:
+    """The number gated is the one the product consumes — ``count(DISTINCT
+    group_id)``, 91 and 87 on the two published anchors — not the raw community
+    count, which sits near 190-210 in production and at 10 on this fixture."""
+    _golden_cap_policy(monkeypatch)
+    monkeypatch.setattr(w, "GROUP_COUNT_BAND", (5, 5))
+    stats, database = run_worker(w, monkeypatch, today=TODAY)
+    assert stats["n_communities"] == 10
+    assert stats["n_coherent_communities"] == 5
+    assert len({r["group_id"] for r in database.published
+                if r["group_id"] is not None}) == 5
