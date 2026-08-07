@@ -38,6 +38,78 @@ ALTER TABLE ncen_contract_tables ADD COLUMN IF NOT EXISTS column_contract jsonb 
 CREATE OR REPLACE FUNCTION ncen_contract_catalog_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'N-CEN contract catalog is immutable'; END $$;
 
+-- ---------------------------------------------------------------------------
+-- Orphan-child quarantine (owner-ratified carve-out, 2026-08-07)
+-- ---------------------------------------------------------------------------
+-- The raw layer is an archive of what the SEC delivered, so a child row whose
+-- declared parent is absent from the delivery lands verbatim: no parent is
+-- fabricated and no child is dropped.  What the relationship invariant at the
+-- end of ncen_raw_run_reconciles() used to do was refuse the whole quarter,
+-- because every declared parent had to resolve exactly once.
+--
+-- DERA's 2026q1 N-CEN package (zip Last-Modified 2026-04-06, never reissued)
+-- carries three filings -- 0000940400-26-009908, 0001410368-26-023903 and
+-- 0001410368-26-023904 -- with 120 child rows (114 AUTHORIZED_PARTICIPANT, 3
+-- ETF, 3 SECURITY_EXCHANGE) and not one FUND_REPORTED_INFO row, their FUND_ID
+-- degenerated to `<accession>_1` instead of `<accession>_<cik>_<seriesId>`.
+-- Three of 1.927 filings (0,16%), 120 of 1.986.751 rows (0,006%).
+--
+-- The carve-out replaces the refusal with a NAMED and COUNTED quarantine.  The
+-- run declares its orphans here -- one row per (source table, filing) with the
+-- exact row count -- and the reconciler re-derives the same population from the
+-- landed rows and demands equality in BOTH directions.  A declaration therefore
+-- buys nothing on its own: an orphan outside the ratified pattern is refused
+-- even when declared, and a declaration with no measured orphan behind it is
+-- refused too.
+--
+-- The admissible pattern is exactly one shape, and the CHECKs below plus the
+-- reconciler say so:
+--   * the child's declared parent is FUND_REPORTED_INFO.tsv, nothing else;
+--   * the child's parent key is present -- a blank key is a defect, not an
+--     orphan, and stays refused;
+--   * the parent resolves ZERO times -- an ambiguous parent stays refused;
+--   * the filing is present in SUBMISSION.tsv of the same run, and that filing
+--     has NO FUND_REPORTED_INFO row at all.  The delivery omitted the parent
+--     grain for the entire filing; a child pointing at a fund that WAS
+--     delivered under another identifier remains a referential error.
+-- The filing is read off the SEC's own composite FUND_ID (its first component),
+-- and the SUBMISSION.tsv existence test above is what keeps that derivation
+-- honest: a value that names no delivered filing resolves to nothing and the
+-- run is refused.
+--
+-- Scope: this is the N-CEN overlay only.  The shared dispatcher
+-- sec_validate_raw_run() is untouched, and nport_raw_run_reconciles() /
+-- rr1_raw_run_reconciles() keep their own invariants verbatim.
+CREATE TABLE IF NOT EXISTS ncen_orphan_child_quarantine (
+ quarantine_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ run_id uuid NOT NULL REFERENCES sec_ingestion_runs(run_id) ON DELETE RESTRICT,
+ source_table text NOT NULL CHECK(source_table ~ '^[A-Z0-9_]+[.]tsv$'),
+ parent_table text NOT NULL CHECK(parent_table='FUND_REPORTED_INFO.tsv'),
+ accession_number text NOT NULL CHECK(accession_number ~ '^[0-9]{10}-[0-9]{2}-[0-9]{6}$'),
+ orphan_rows bigint NOT NULL CHECK(orphan_rows>0),
+ reason text NOT NULL CHECK(reason<>''),
+ created_at timestamptz NOT NULL DEFAULT now(),
+ UNIQUE(run_id,source_table,parent_table,accession_number)
+);
+CREATE INDEX IF NOT EXISTS ncen_orphan_child_quarantine_run_idx ON ncen_orphan_child_quarantine(run_id);
+
+CREATE OR REPLACE FUNCTION ncen_orphan_quarantine_family_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM sec_ingestion_runs WHERE run_id=NEW.run_id AND source_family='ncen') THEN
+  RAISE EXCEPTION 'N-CEN orphan quarantine requires an N-CEN run';
+ END IF;
+ RETURN NEW;
+END $$;
+DROP TRIGGER IF EXISTS ncen_orphan_child_quarantine_family_guard ON ncen_orphan_child_quarantine;
+CREATE TRIGGER ncen_orphan_child_quarantine_family_guard BEFORE INSERT OR UPDATE ON ncen_orphan_child_quarantine
+FOR EACH ROW EXECUTE FUNCTION ncen_orphan_quarantine_family_guard();
+-- A declaration is part of the run's raw accounting, so it obeys the same
+-- lineage rule as every other manifest table: writable only while the run is
+-- still loading, frozen once the run is validated.
+DROP TRIGGER IF EXISTS ncen_orphan_child_quarantine_raw_immutable ON ncen_orphan_child_quarantine;
+CREATE TRIGGER ncen_orphan_child_quarantine_raw_immutable BEFORE INSERT OR UPDATE OR DELETE ON ncen_orphan_child_quarantine
+FOR EACH ROW EXECUTE FUNCTION sec_lock_manifest_run_lineage();
+
 CREATE OR REPLACE FUNCTION ncen_validate_raw_statement() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  PERFORM 1 FROM sec_ingestion_runs r WHERE r.run_id IN (SELECT ingestion_run_id FROM new_rows) ORDER BY r.run_id FOR UPDATE;
@@ -146,13 +218,43 @@ BEGIN
  ) THEN RETURN false; END IF;
  -- Every declared parent resolves exactly once using all shared structural
  -- identifiers.  This preserves fund/director/provider/event child grains
- -- without pivoting and rejects both orphan and ambiguous child references.
+ -- without pivoting and rejects ambiguous child references outright, and orphan
+ -- ones unless they match the ratified pattern documented at
+ -- ncen_orphan_child_quarantine above AND are declared there.
  IF EXISTS(
    SELECT 1 FROM ncen_raw_v2_rows child
    JOIN ncen_contract_tables c ON c.metadata_sha256=package_metadata AND c.source_table=child.source_table
    JOIN LATERAL unnest(c.logical_parents) parent_name ON true
    LEFT JOIN LATERAL (SELECT count(*) n FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table=parent_name AND parent.entity_key=child.parent_key) resolved ON true
+   LEFT JOIN LATERAL (SELECT split_part(substring(child.parent_key from 6),'_',1) accession_number WHERE parent_name='FUND_REPORTED_INFO.tsv' AND child.parent_key LIKE 'fund:%') orphan ON true
    WHERE child.ingestion_run_id=target_run_id AND (child.parent_key IS NULL OR resolved.n<>1)
+    AND NOT (
+      child.parent_key IS NOT NULL AND resolved.n=0 AND orphan.accession_number IS NOT NULL
+      AND EXISTS(SELECT 1 FROM ncen_orphan_child_quarantine q WHERE q.run_id=target_run_id AND q.source_table=child.source_table AND q.parent_table=parent_name AND q.accession_number=orphan.accession_number)
+      AND EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=target_run_id AND s.source_table='SUBMISSION.tsv' AND s.accession_number=orphan.accession_number)
+      AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows p WHERE p.ingestion_run_id=target_run_id AND p.source_table='FUND_REPORTED_INFO.tsv' AND p.accession_number=orphan.accession_number)
+    )
+ ) THEN RETURN false; END IF;
+ -- The declared quarantine and the measured orphan population are the same set,
+ -- in both directions: nothing hidden, nothing invented.  The measured side
+ -- counts EVERY orphan, whatever its shape, so an orphan the loader chose not to
+ -- declare fails here even when the check above would have had nothing to say.
+ IF EXISTS(
+   SELECT 1 FROM (
+     SELECT child.source_table, parent_name AS parent_table,
+            CASE WHEN parent_name='FUND_REPORTED_INFO.tsv' AND child.parent_key LIKE 'fund:%' THEN split_part(substring(child.parent_key from 6),'_',1) END AS accession_number,
+            count(*) AS orphan_rows
+     FROM ncen_raw_v2_rows child
+     JOIN ncen_contract_tables c ON c.metadata_sha256=package_metadata AND c.source_table=child.source_table
+     JOIN LATERAL unnest(c.logical_parents) parent_name ON true
+     LEFT JOIN LATERAL (SELECT count(*) n FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=target_run_id AND parent.source_table=parent_name AND parent.entity_key=child.parent_key) resolved ON true
+     WHERE child.ingestion_run_id=target_run_id AND child.parent_key IS NOT NULL AND resolved.n=0
+     GROUP BY 1,2,3
+   ) measured
+   FULL JOIN (SELECT source_table,parent_table,accession_number,orphan_rows FROM ncen_orphan_child_quarantine WHERE run_id=target_run_id) declared
+     ON declared.source_table=measured.source_table AND declared.parent_table=measured.parent_table
+    AND declared.accession_number IS NOT DISTINCT FROM measured.accession_number
+   WHERE measured.source_table IS NULL OR declared.source_table IS NULL OR declared.orphan_rows<>measured.orphan_rows
  ) THEN RETURN false; END IF;
  RETURN true;
 END $$;

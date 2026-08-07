@@ -390,8 +390,13 @@ def retry_run(conn: psycopg.Connection, *, run_id: UUID, detail: str | None = No
     return _status(row)
 
 
-def validate_raw_run(conn: psycopg.Connection, *, run_id: UUID) -> RunStatus:
-    """Fecha as contas brutas e cria a visibilidade validada na mesma transação."""
+def validate_raw_run(conn: psycopg.Connection, *, run_id: UUID, audit_detail: str | None = None) -> RunStatus:
+    """Fecha as contas brutas e cria a visibilidade validada na mesma transação.
+
+    ``audit_detail`` é gravado em ``sec_run_transitions``; famílias que admitem
+    uma quarentena nomeada a declaram por aqui, para que o motivo fique visível
+    na trilha do run e não apenas na tabela da família.
+    """
     with conn.cursor() as cur:
         cur.execute("SELECT current_state FROM sec_ingestion_runs WHERE run_id = %s FOR UPDATE", (run_id,))
         state_row = cur.fetchone()
@@ -438,7 +443,7 @@ def validate_raw_run(conn: psycopg.Connection, *, run_id: UUID) -> RunStatus:
             raise RawValidationError("as contagens de issues quarentenadas/rejeitadas não reconciliam")
         if bad_counts:
             raise RawValidationError("as contagens source/lexical/tipadas não reconciliam exatamente")
-        cur.execute("SELECT sec_validate_raw_run(%s, %s)", (run_id, "reconciliação exata"))
+        cur.execute("SELECT sec_validate_raw_run(%s, %s)", (run_id, audit_detail or "reconciliação exata"))
         if cur.fetchone() is None:
             raise ManifestStateError("a execução mudou durante a validação bruta")
     status = get_run_status(conn, run_id=run_id)

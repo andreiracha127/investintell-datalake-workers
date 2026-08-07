@@ -83,7 +83,8 @@ def _ingest_locked(conn: psycopg.Connection, package: Path, relative_path: str, 
         with conn.transaction():
             if verify_package(package, inventory=inventory) != verified: raise NcenIngestionError("bytes do pacote mudaram durante o carregamento")
             _resolve_accession_parents(conn, run.run_id, contract)
-            validated = validate_raw_run(conn, run_id=run.run_id)
+            quarantine = _declare_orphan_children(conn, run.run_id)
+            validated = validate_raw_run(conn, run_id=run.run_id, audit_detail=_audit_detail(quarantine))
             _discover(conn, relative_path, quarter, digest, verified, "loaded", run_id=run.run_id)
     except Exception as error:
         failed = fail_run(conn, run_id=run.run_id, expected_state="loading", failure_code="ncen_raw_load_failed", failure_detail=str(error))
@@ -149,6 +150,50 @@ def _resolve_accession_parents(conn, run_id, contract):
     with conn.cursor() as cur:
         cur.execute("""SELECT r.source_table FROM ncen_raw_v2_rows r JOIN ncen_contract_tables c ON c.source_table=r.source_table LEFT JOIN (SELECT accession_number,count(*) n FROM ncen_raw_v2_rows WHERE ingestion_run_id=%s AND source_table='SUBMISSION.tsv' AND typed_projection->>'ACCESSION_NUMBER' IS NOT NULL GROUP BY accession_number) s ON s.accession_number=r.accession_number WHERE r.ingestion_run_id=%s AND 'SUBMISSION.tsv'=ANY(c.logical_parents) AND (r.accession_number IS NULL OR s.n<>1) LIMIT 1""",(run_id,run_id))
         if cur.fetchone(): raise NcenIngestionError("ACCESSION_NUMBER órfão ou ambíguo em tabela filha N-CEN")
+
+ORPHAN_QUARANTINE_REASON = "entrega SEC sem nenhuma linha FUND_REPORTED_INFO para o filing"
+
+
+def _declare_orphan_children(conn, run_id) -> tuple[int, int, int]:
+    """Declare the ratified orphan-child pattern before raw validation.
+
+    Nothing written here is authoritative.  ncen_raw_run_reconciles() re-derives
+    the same population from the landed rows and refuses the run unless the
+    declared set matches it exactly in both directions, so this statement can
+    neither hide an orphan nor invent one — it can only name and count what the
+    SEC actually delivered.  The predicate is the ratified pattern verbatim: a
+    child whose declared parent is FUND_REPORTED_INFO.tsv, whose parent key
+    resolves zero times, and whose filing is present in SUBMISSION.tsv while
+    exposing no FUND_REPORTED_INFO row at all.  Anything else stays refused.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+        INSERT INTO ncen_orphan_child_quarantine (run_id,source_table,parent_table,accession_number,orphan_rows,reason)
+        SELECT %(run)s, child.source_table, 'FUND_REPORTED_INFO.tsv', orphan.accession_number, count(*), %(reason)s
+          FROM ncen_raw_v2_rows child
+          JOIN sec_source_packages p ON p.run_id=%(run)s AND p.source_family='ncen'
+          JOIN ncen_contract_tables c ON c.metadata_sha256=p.metadata_sha256 AND c.source_table=child.source_table
+          CROSS JOIN LATERAL (SELECT split_part(substring(child.parent_key from 6),'_',1) accession_number) orphan
+         WHERE child.ingestion_run_id=%(run)s AND child.parent_key LIKE 'fund:%%'
+           AND c.logical_parents[1]='FUND_REPORTED_INFO.tsv'
+           AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows parent WHERE parent.ingestion_run_id=%(run)s AND parent.source_table='FUND_REPORTED_INFO.tsv' AND parent.entity_key=child.parent_key)
+           AND EXISTS(SELECT 1 FROM ncen_raw_v2_rows s WHERE s.ingestion_run_id=%(run)s AND s.source_table='SUBMISSION.tsv' AND s.accession_number=orphan.accession_number)
+           AND NOT EXISTS(SELECT 1 FROM ncen_raw_v2_rows f WHERE f.ingestion_run_id=%(run)s AND f.source_table='FUND_REPORTED_INFO.tsv' AND f.accession_number=orphan.accession_number)
+         GROUP BY 1,2,3,4
+        ON CONFLICT (run_id,source_table,parent_table,accession_number) DO NOTHING
+        """, {"run": run_id, "reason": ORPHAN_QUARANTINE_REASON})
+        cur.execute("""SELECT count(*), COALESCE(sum(orphan_rows),0), count(DISTINCT accession_number)
+                         FROM ncen_orphan_child_quarantine WHERE run_id=%s""", (run_id,))
+        declarations, rows, filings = cur.fetchone()
+    return int(declarations), int(rows), int(filings)
+
+
+def _audit_detail(quarantine: tuple[int, int, int]) -> str:
+    declarations, rows, filings = quarantine
+    if not declarations: return "reconciliação exata"
+    return (f"reconciliação exata com quarentena de filhos órfãos declarada: "
+            f"{rows} linhas em {filings} filings ({declarations} declarações)")
+
 
 def _relationship_keys(table, row: dict[str, str]) -> tuple[str | None, str | None]:
     """Stable child-to-parent identities for the frozen N-CEN relationship graph."""
