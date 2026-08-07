@@ -52,6 +52,32 @@ def test_ncen_effective_view_uses_validated_typed_submission_rows_and_rejects_no
         assert token in ddl
 
 
+def test_ncen_fund_reported_info_carve_out_admits_only_the_two_known_defects() -> None:
+    ddl = (ROOT / "schemas" / "ncen_effective_views.sql").read_text(encoding="utf-8")
+    for token in (
+        "FUND_REPORTED_INFO.tsv",
+        "IS_COLLATERAL_LIQUIDATED",
+        "IS_TARGET_DATE",
+        "invalid_date",
+        "jsonb_array_elements(f.parse_errors) err",
+        "build_ncen_provider_network_profiles",
+    ):
+        assert token in ddl
+    # Fail-closed shape: the admission is written as "no error outside the
+    # allowed set", never as a blanket acceptance of quarantined rows.
+    assert "WHERE NOT (err->>'code' = 'invalid_date'" in ddl
+    assert (
+        "err->>'column_name' IN ('IS_COLLATERAL_LIQUIDATED','IS_TARGET_DATE')" in ddl
+    )
+    # Both lexical domains are pinned, and blank stays a reported state.
+    for column in ("IS_COLLATERAL_LIQUIDATED", "IS_TARGET_DATE"):
+        assert (
+            f"COALESCE(f.original_lexical_row->>'{column}','') IN ('Y','N','')" in ddl
+        )
+    # The carve-out must never widen into a view or a new serving surface here.
+    assert "CREATE OR REPLACE VIEW ncen_effective_fund_reported_info" not in ddl
+
+
 def test_ncen_effective_view_never_uses_raw_run_state_as_a_serving_surface() -> None:
     ddl = (ROOT / "schemas" / "ncen_effective_views.sql").read_text(encoding="utf-8")
     assert "sec_w1_nport_real" not in ddl
