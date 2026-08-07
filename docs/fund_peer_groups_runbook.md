@@ -449,9 +449,14 @@ failed.
 3. **Re-derive with the same rule**, mechanically: `band = [min − m, max + m]`, where
    `m` is the largest adjacent quarter-over-quarter step over pairs in which neither
    anchor was refused by an upstream gate. Recompute `m`; do not carry 6 forward.
-4. **Move `GROUP_COUNT_BAND` in a pull request**, with the new table and the new `m` in
-   this section and in the module comment, and update the literal in
-   `tests/test_fund_peer_groups.py::test_the_shipped_band_is_pinned_to_its_derived_numbers`.
+4. **Move `GROUP_COUNT_BAND` in a pull request.** Four places carry the derivation and
+   all four move together — the table and `m` in **this section**; the derivation block
+   above the constant in `src/workers/fund_peer_groups.py`; the prose inside
+   `check_group_count_band`'s refusal message, which states the observed range and the
+   margin **as literals** (the bounds it prints track the constant, that sentence does
+   not); and the literal in
+   `tests/test_fund_peer_groups.py::test_the_shipped_band_is_pinned_to_its_derived_numbers`
+   together with `DERIVED_FROM` beside it.
    The digest does not change and must not: run the suite and confirm
    `test_the_band_is_not_in_the_parameter_digest` still passes.
 5. **Publish the quarter that triggered it** only after the band moved — or, if it must
