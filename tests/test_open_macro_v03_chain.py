@@ -840,27 +840,65 @@ def replay_to_next_month(pack_inputs):
                             eod + delta["eod_delta"], NEXT_MONTH)
 
 
+# Two units in the 15th significant digit — the precision the NUMERIC column actually
+# stores. It is NOT a tolerance on the model: the endpoint drift this suite also
+# measures is ~1e-3, twelve orders of magnitude away, so nothing real can hide under
+# it. It exists because a double's last unit in the last place is not portable: the
+# same replay of the same pack yields candidate_confidence 0.5609607665696874 on
+# Windows and ...75 on the Linux CI runner for 2014-09-30, and those two render as
+# different 15-digit NUMERICs. The CATEGORICAL projection is identical on both.
+LAST_PLACE = 2e-15
+
+
+def _agrees_to_stored_precision(stored, computed) -> bool:
+    if stored is None or computed is None:
+        return stored is None and computed is None
+    return abs(float(stored) - float(computed)) <= LAST_PLACE * max(
+        1.0, abs(float(stored)))
+
+
 @SLOW
 def test_golden_replay_reproduces_the_certified_chain(replay_to_certified_end):
     """THE GOLDEN: the pinned certified pack, replayed through the worker's own call,
-    reproduces every one of the 148 published months — categorical columns exactly,
-    NUMERICs to the float8->NUMERIC rendering the 2026-07-17 rebuild wrote.
+    reproduces every one of the 148 published months.
 
-    This is what makes "the ported logic IS the script's logic" a measurement.
+    Categorical columns — the certified answer — EXACTLY, with no allowance at all.
+    NUMERICs to the float8->NUMERIC 15-digit rendering the 2026-07-17 rebuild wrote,
+    with at most a handful of cells needing the last-place allowance above (float
+    portability, not model drift). This is what makes "the ported logic IS the
+    script's logic" a measurement.
     """
     stored = load_certified_rows()
     series = replay_to_certified_end
     assert [r.as_of for r in series] == sorted(stored)
+
+    categorical_mismatches = []
+    exact_15_digit = 0
+    last_place_only = []
     for row in series:
         want = stored[row.as_of]
-        assert row.quadrant == want["quadrant"], row.as_of
-        assert row.candidate_quadrant == want["candidate_quadrant"], row.as_of
-        assert row.status == want["status"], row.as_of
-        assert bool(row.transition_pending) == want["transition_pending"], row.as_of
+        for column, got in (("quadrant", row.quadrant),
+                            ("candidate_quadrant", row.candidate_quadrant),
+                            ("status", row.status),
+                            ("transition_pending", bool(row.transition_pending))):
+            if want[column] != got:
+                categorical_mismatches.append((str(row.as_of), column,
+                                               want[column], got))
         for column in w.NUMERIC_COLUMNS:
-            assert w._stored_matches_double(want[column], getattr(row, column)), (
-                f"{row.as_of} {column}: stored {want[column]} vs "
-                f"replayed {getattr(row, column)!r}")
+            got = getattr(row, column)
+            if w._stored_matches_double(want[column], got):
+                exact_15_digit += 1
+                continue
+            assert _agrees_to_stored_precision(want[column], got), (
+                f"{row.as_of} {column}: stored {want[column]} vs replayed {got!r} — "
+                "beyond the precision the column stores, this is model drift")
+            last_place_only.append((str(row.as_of), column, str(want[column]), got))
+
+    assert categorical_mismatches == [], categorical_mismatches
+    total_cells = len(series) * len(w.NUMERIC_COLUMNS)
+    assert exact_15_digit + len(last_place_only) == total_cells
+    # measured: 592/592 exact on Windows, 591/592 on the Linux CI runner
+    assert len(last_place_only) <= 5, last_place_only
 
 
 @SLOW
@@ -874,9 +912,18 @@ def test_the_prefix_gate_passes_on_the_real_extension(replay_to_next_month):
     # measured 2026-08-07 — one candidate_quadrant cell moves, nothing consumable
     assert report["candidate_quadrant_drift"] == [
         {"as_of": "2023-11-30", "stored": "contraction", "replayed": "recovery"}]
-    assert report["numeric_drift_cells"] == 46
+    # MATERIAL drift (> 1e-9) is the model's endpoint dependence: 44 cells over
+    # 2022-10-31 .. 2026-06-30, all at 1e-3 or above. It is platform-stable because
+    # nothing sits near the threshold — the other cells ``numeric_drift_cells`` counts
+    # are last-place float noise at ~1e-16, which is NOT portable (see LAST_PLACE
+    # above), so the total is bounded rather than pinned.
+    assert report["numeric_drift_material_cells"] == 44
+    assert 44 <= report["numeric_drift_cells"] <= 55
     assert report["numeric_drift_months"][0] == "2022-10-31"
     assert report["numeric_drift_months"][-1] == "2026-06-30"
+    # the largest single move is not the grid at all: it is the MICH vintage of
+    # 2026-06-26 that the pack froze one day too early, on the last stored month.
+    assert report["numeric_drift_max"] == pytest.approx(0.1349, abs=1e-3)
 
 
 @SLOW

@@ -513,6 +513,16 @@ def compute_series(macro_rows: list[dict], eod_rows: list[dict], target: _dt.dat
 # the storage of the OLD rows, never a tolerance on the new one.
 FLOAT8_TO_NUMERIC_DIGITS = 15
 
+# A recomputed cell can differ from the stored one for two very different reasons: the
+# model's endpoint dependence (module docstring — order 1e-3 and up), or the last unit
+# in the last place of a double, which is not portable across platforms (measured
+# 2026-08-07: the same replay of the same pack yields candidate_confidence
+# 0.5609607665696874 on Windows and ...75 on the Linux CI runner for 2014-09-30, and
+# those render as different 15-digit NUMERICs). The report separates them so nobody
+# reads float noise as model drift; the gate itself never looks at either, because it
+# gates on the CONSUMABLE projection, which is identical on both platforms.
+MATERIAL_DRIFT = 1e-9
+
 
 def _stored_matches_double(stored: decimal.Decimal | None, computed: float | None) -> bool:
     if stored is None or computed is None:
@@ -569,13 +579,16 @@ def prefix_gate(series, stored: dict[_dt.date, dict[str, Any]]) -> dict[str, Any
             "prefix gate: the extended replay changes the CONSUMABLE projection of "
             f"{len({d['as_of'] for d in consumable_drift})} already-published "
             f"month(s) — nothing was written. First diffs: {consumable_drift[:5]}")
+    material = [d for d in numeric_drift
+                if d["delta"] is None or d["delta"] > MATERIAL_DRIFT]
     return {
         "months_verified": len(stored),
         "candidate_quadrant_drift": candidate_drift,
         "numeric_drift_cells": len(numeric_drift),
+        "numeric_drift_material_cells": len(material),
         "numeric_drift_max": max((d["delta"] for d in numeric_drift
                                   if d["delta"] is not None), default=0.0),
-        "numeric_drift_months": sorted({d["as_of"] for d in numeric_drift}),
+        "numeric_drift_months": sorted({d["as_of"] for d in material}),
     }
 
 
