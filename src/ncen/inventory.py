@@ -55,7 +55,13 @@ def count_tsv_rows(path: Path) -> int:
 
 
 def build_package_inventory(package: Path, contract: SourceTableContract) -> PackageInventory:
-    """Create an explicit inventory for a deliberately synthetic test package."""
+    """Derive the physical evidence of a delivery from the delivery itself.
+
+    Used for synthetic test packages and, since the canonical inventory stopped
+    being a precondition, for any real package outside the frozen corpus: the
+    evidence is measured on first sight and then recorded in the run manifests,
+    which is what later ingestions compare against.
+    """
     files: dict[str, FileEvidence] = {}
     for path in sorted(path for path in package.iterdir() if path.is_file()):
         files[path.name] = FileEvidence(sha256_file(path), path.stat().st_size, count_tsv_rows(path) if path.suffix.lower() == ".tsv" else 0)
