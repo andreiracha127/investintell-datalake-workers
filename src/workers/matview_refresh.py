@@ -32,6 +32,17 @@ _APP_MVS = [
     "fund_style_drift_mv",
     "fund_top_holdings_mv",
 ]
+_APP_BOOTSTRAP_MVS = [
+    # This additive view is installed WITH NO DATA and depends on the completed
+    # fund_top_holdings_mv snapshot above. Its first refresh must be plain; all
+    # pre-existing MVs retain their original always-concurrent path.
+    "fund_reveal_holdings_mv",
+    # sec_13f_holdings is compressed by report date. This indexed projection
+    # keeps only each CUSIP's latest rows so reveal does not rescan all 97
+    # chunks for every fund. It follows the N-PORT read model to keep the
+    # reveal dependency chain explicit.
+    "fund_reveal_13f_holdings_mv",
+]
 _DATALAKE_MVS = [
     "stock_institutional_holders_mv",
     "stock_fund_holders_mv",
@@ -56,6 +67,27 @@ def _refresh_all(dsn: str, mvs: list[str]) -> list[str]:
     return refreshed
 
 
+def _refresh_bootstrap_mvs(dsn: str, mvs: list[str]) -> list[str]:
+    refreshed: list[str] = []
+    with connect(dsn, autocommit=True) as conn:
+        for mv in mvs:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT c.relispopulated FROM pg_class c "
+                    "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                    "WHERE c.relkind = 'm' AND c.relname = %s "
+                    "  AND n.nspname = ANY (current_schemas(true)) "
+                    "ORDER BY array_position(current_schemas(true), n.nspname) LIMIT 1",
+                    (mv,),
+                )
+                row = cur.fetchone()
+                populated = bool(row and row[0])
+                concurrently = "CONCURRENTLY " if populated else ""
+                cur.execute(f"REFRESH MATERIALIZED VIEW {concurrently}{mv}")
+            refreshed.append(mv)
+    return refreshed
+
+
 def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
     if datalake_dsn is None:
         datalake_dsn = os.getenv("DATALAKE_DB_URL")
@@ -66,6 +98,7 @@ def run(dsn: str, *, datalake_dsn: str | None = None) -> dict:
             if not got:
                 return {"refreshed": [], "refreshed_datalake": [], "skipped": "lock_busy"}
             refreshed = _refresh_all(dsn, _APP_MVS)
+            refreshed.extend(_refresh_bootstrap_mvs(dsn, _APP_BOOTSTRAP_MVS))
             snapshot_stats = market_overview_snapshot.run(dsn)
             if snapshot_stats.get("published") != 1:
                 raise RuntimeError("market overview snapshot did not publish")
