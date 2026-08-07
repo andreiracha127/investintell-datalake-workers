@@ -254,6 +254,209 @@ def test_real_db_reconciles_candidate_parse_error_and_exponent_decimal(tmp_path:
     assert (decimal, evidence) == ("0.0000001", {"columns": ["ACCESSION_NUMBER", "CCO_SEQNUM"], "complete": False, "values": None})
 
 
+# ---------------------------------------------------------------------------
+# Orphan-child carve-out (ratified 2026-08-07)
+# ---------------------------------------------------------------------------
+# The relationship invariant used to refuse a whole quarter when the SEC shipped
+# child rows whose parent filing carries no FUND_REPORTED_INFO row at all.  The
+# carve-out turns exactly that shape into a named, counted quarantine and leaves
+# every other reconciliation failure refusing, which is what these exercise.
+
+NORMAL_FILING = "0000000001-26-000001"
+ORPHAN_FILING = "0000000002-26-000002"
+NORMAL_FUND = f"{NORMAL_FILING}_0000000001_S000000001"
+
+
+def _relationship_delivery(tmp_path: Path, name: str, *, submissions, funds, children) -> Path:
+    """A delivery over the real frozen contract, shaped only by its parent graph."""
+    source = CORPUS / "2021q3_ncen"
+    package = tmp_path / name
+    package.mkdir()
+    for meta in ("ncen_metadata.json", "ncen_readme.htm"):
+        (package / meta).write_bytes((source / meta).read_bytes())
+    contract = verify_package(source).contract
+
+    def write(source_file: str, rows: list[dict[str, str]]) -> None:
+        table = contract.table_for_filename(source_file)
+        lines = ["\t".join(table.headers)]
+        for values in rows:
+            row = {header: "" for header in table.headers}
+            row.update(values)
+            lines.append("\t".join(row[header] for header in table.headers))
+        (package / source_file).write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    write("SUBMISSION.tsv", [{"ACCESSION_NUMBER": accession} for accession in submissions])
+    write("FUND_REPORTED_INFO.tsv", [{"ACCESSION_NUMBER": accession, "FUND_ID": fund} for accession, fund in funds])
+    for source_file, fund_ids in children.items():
+        write(source_file, [{"FUND_ID": fund} for fund in fund_ids])
+    return package
+
+
+def _land(package: Path, tmp_path: Path, version: str) -> dict[str, object]:
+    import psycopg
+    from src.ncen.ingestion import ingest_package
+    from src.ncen.storage import install_schema
+    from src.sec_regulatory.manifests import install_schema as install_manifest_schema
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        install_manifest_schema(conn)
+        install_schema(conn)
+        conn.commit()
+        result = ingest_package(conn, package=package, source_root=tmp_path, parser_version=version)
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SELECT ncen_raw_run_reconciles(%s)", (result["run_id"],))
+            result["reconciles"] = cur.fetchone()[0]
+            cur.execute(
+                """SELECT source_table, parent_table, accession_number, orphan_rows, reason
+                     FROM ncen_orphan_child_quarantine WHERE run_id=%s
+                    ORDER BY source_table, accession_number""",
+                (result["run_id"],),
+            )
+            result["quarantine"] = cur.fetchall()
+            cur.execute(
+                "SELECT detail FROM sec_run_transitions WHERE run_id=%s AND to_state='raw_validated'",
+                (result["run_id"],),
+            )
+            row = cur.fetchone()
+            result["audit_detail"] = row[0] if row else None
+    return result
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_orphan_children_land_as_a_named_and_counted_quarantine(tmp_path: Path) -> None:
+    """The SEC's own defect no longer costs the quarter — it costs a declaration."""
+    from src.ncen.ingestion import ORPHAN_QUARANTINE_REASON
+
+    package = _relationship_delivery(
+        tmp_path, "2029q1_ncen",
+        submissions=[NORMAL_FILING, ORPHAN_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND)],
+        children={
+            "AUTHORIZED_PARTICIPANT.tsv": [NORMAL_FUND, f"{ORPHAN_FILING}_1", f"{ORPHAN_FILING}_1"],
+            "ETF.tsv": [f"{ORPHAN_FILING}_0000000002_1"],
+        },
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-carveout-v2")
+
+    assert landed["state"] == "raw_validated", landed
+    assert landed["reconciles"] is True
+    # Named per source table and per filing, counted per row: nothing is summed
+    # away and nothing is fabricated to stand in for the missing parent.
+    assert landed["quarantine"] == [
+        ("AUTHORIZED_PARTICIPANT.tsv", "FUND_REPORTED_INFO.tsv", ORPHAN_FILING, 2, ORPHAN_QUARANTINE_REASON),
+        ("ETF.tsv", "FUND_REPORTED_INFO.tsv", ORPHAN_FILING, 1, ORPHAN_QUARANTINE_REASON),
+    ]
+    assert "quarentena de filhos órfãos" in landed["audit_detail"]
+    assert "3 linhas em 1 filings (2 declarações)" in landed["audit_detail"]
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_a_delivery_without_orphans_declares_nothing(tmp_path: Path) -> None:
+    """The empty case is the regression for every quarter already validated."""
+    package = _relationship_delivery(
+        tmp_path, "2029q2_ncen",
+        submissions=[NORMAL_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND)],
+        children={"AUTHORIZED_PARTICIPANT.tsv": [NORMAL_FUND]},
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-empty-v2")
+
+    assert landed["state"] == "raw_validated", landed
+    assert (landed["reconciles"], landed["quarantine"]) == (True, [])
+    assert landed["audit_detail"] == "reconciliação exata"
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_an_undeclared_orphan_is_still_refused(tmp_path: Path, monkeypatch) -> None:
+    """A declaration is what buys admission; the rows alone never do."""
+    monkeypatch.setattr("src.ncen.ingestion._declare_orphan_children", lambda conn, run_id: (0, 0, 0))
+    package = _relationship_delivery(
+        tmp_path, "2029q3_ncen",
+        submissions=[NORMAL_FILING, ORPHAN_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND)],
+        children={"AUTHORIZED_PARTICIPANT.tsv": [f"{ORPHAN_FILING}_1"]},
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-undeclared-v2")
+
+    assert landed["state"] == "failed", landed
+    assert (landed["reconciles"], landed["quarantine"]) == (False, [])
+    assert "NCEN raw validation failed" in landed["reason"]
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_a_child_of_a_filing_that_did_deliver_funds_is_still_refused(tmp_path: Path) -> None:
+    """A dangling fund id inside a filing that reported funds is a referential error."""
+    package = _relationship_delivery(
+        tmp_path, "2029q4_ncen",
+        submissions=[NORMAL_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND)],
+        children={"AUTHORIZED_PARTICIPANT.tsv": [f"{NORMAL_FILING}_0000000001_S000000009"]},
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-wrong-id-v2")
+
+    assert landed["state"] == "failed", landed
+    assert (landed["reconciles"], landed["quarantine"]) == (False, [])
+    assert "NCEN raw validation failed" in landed["reason"]
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_an_ambiguous_parent_is_still_refused(tmp_path: Path) -> None:
+    """The carve-out admits a missing parent, never a duplicated one."""
+    package = _relationship_delivery(
+        tmp_path, "2030q1_ncen",
+        submissions=[NORMAL_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND), (NORMAL_FILING, NORMAL_FUND)],
+        children={"AUTHORIZED_PARTICIPANT.tsv": [NORMAL_FUND]},
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-ambiguous-v2")
+
+    assert landed["state"] == "failed", landed
+    assert (landed["reconciles"], landed["quarantine"]) == (False, [])
+    assert "NCEN raw validation failed" in landed["reason"]
+
+
+@requires_corpus
+@pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
+def test_a_declaration_without_a_measured_orphan_is_refused(tmp_path: Path, monkeypatch) -> None:
+    """The declaration is verified against the rows, not trusted."""
+    probes: list[bool] = []
+
+    def invent(conn, run_id):
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO ncen_orphan_child_quarantine
+                       (run_id, source_table, parent_table, accession_number, orphan_rows, reason)
+                   VALUES (%s,'AUTHORIZED_PARTICIPANT.tsv','FUND_REPORTED_INFO.tsv',%s,1,'inventada')""",
+                (run_id, ORPHAN_FILING),
+            )
+            # Read the verdict while the invented declaration is still visible:
+            # the refusal takes the whole transaction down with it, declaration
+            # included, so a post-mortem probe would find a clean run.
+            cur.execute("SELECT ncen_raw_run_reconciles(%s)", (run_id,))
+            probes.append(cur.fetchone()[0])
+        return 1, 1, 1
+
+    monkeypatch.setattr("src.ncen.ingestion._declare_orphan_children", invent)
+    package = _relationship_delivery(
+        tmp_path, "2030q2_ncen",
+        submissions=[NORMAL_FILING, ORPHAN_FILING],
+        funds=[(NORMAL_FILING, NORMAL_FUND)],
+        children={"AUTHORIZED_PARTICIPANT.tsv": [NORMAL_FUND]},
+    )
+    landed = _land(package, tmp_path, "ncen-orphan-invented-v2")
+
+    assert landed["state"] == "failed", landed
+    assert probes == [False]
+    assert "NCEN raw validation failed" in landed["reason"]
+    assert landed["quarantine"] == []
+
+
 @requires_corpus
 @pytest.mark.skipif(not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente")
 def test_uninventoried_package_lands_resumes_and_still_refuses_corruption(tmp_path: Path) -> None:
