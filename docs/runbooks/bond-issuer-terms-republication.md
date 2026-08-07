@@ -75,15 +75,31 @@ WHERE product IN ('bond_security_v1','bond_metric_v1','bond_serving_v1');
 The reference bodies live on the operator workstation and the workers have no
 access to that filesystem — hence a table, loaded by hand, that the build reads.
 
+**2a. Create the table by hand.** The security master's `install_schema` would
+also create it, but letting it do so means that build reads an EMPTY table,
+enriches nothing, and the whole chain run is wasted — the table is read once, at
+build time. Do not spend a chain run on that.
+
+```sh
+railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 \
+  --environment production --service market-clean-serial -- \
+  psql -U postgres -d market -f - < schemas/bond_reference_terms.sql
+```
+
+**2b. Flatten the profiles.** (Smoke-run 2026-08-07; these counts are what a
+correct run reproduces.)
+
 ```sh
 python scripts/load_bond_reference_terms.py \
   --profiles C:/Users/andre/Downloads/stage1_osbap_0k_volume_2025/finnhub/finnhub_cache/profiles \
   --out bond_reference_terms.csv --batch-label 2026-08-07
+# rows=10073 skipped=0
+#   seniority 9883 | callable 9858 | amount_outstanding_mm 10073
+#   secured 982 | day_count 983
 ```
 
-Expected on the curated cohort (measured): 10,073 rows; `seniority` ~9,883,
-`callable` ~9,858, `amount_outstanding_mm` 10,073, `secured` ~1,005,
-`day_count` ~983. Then:
+**2c. Load it.** A ~10k-row `\copy` is one small statement; the by-slice
+discipline that protects VACUUM is for the multi-million-row backfills, not this.
 
 ```sh
 railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 \
@@ -93,15 +109,6 @@ railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 \
      secured,day_count,payment_frequency,callable,amount_outstanding_mm,batch_label) \
     FROM STDIN WITH (FORMAT csv, HEADER true)" < bond_reference_terms.csv
 ```
-
-**Apply `schemas/bond_reference_terms.sql` by hand first**, then `\copy`, then run
-the chain once. The security master's `install_schema` would also create the
-table, but letting it do so means the build reads an EMPTY table, enriches
-nothing, and the whole chain run is wasted — the table is read once, at build
-time. Do not spend a chain run on that.
-
-A load of ~10k rows is a single small statement; the by-slice discipline that
-protects VACUUM applies to the multi-million-row backfills, not to this.
 
 Confirm the load before moving on:
 
@@ -114,6 +121,8 @@ SELECT count(*) AS rows,
        count(day_count) AS day_count
 FROM bond_reference_terms;
 -- Expected: 10073 | 9883 | 9858 | 10073 | 982 | 983
+-- ``secured`` is low ON PURPOSE: the flattener emits it only where a debt-type
+-- token states collateral in so many words. Seniority is not evidence about it.
 ```
 
 ## 3. Execute the chain (deploy = execution)
