@@ -481,6 +481,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
 
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
         schema, run_id, _package_id, holdings_id = _seed(cur)
+        evidence_run_id = str(uuid4())
         try:
             _holding(
                 cur, holdings_id, run_id, "C1", "SER1", "2026-01-31", 100,
@@ -502,6 +503,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
                     encoding="utf-8"
                 )
             )
+            monkeypatch.setenv("NPORT_FI_SECAPI_SOURCE_RUN_ID", evidence_run_id)
             document_id = str(uuid4())
             payload_hash = "b" * 64
             response_hash = "c" * 64
@@ -513,7 +515,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
                     VALUES(%s,%s,'A1',%s,0,%s,'success',1,%s,%s)""",
                     (
                         holdings_id,
-                        run_id,
+                        evidence_run_id,
                         document_id,
                         worker.secapi_parser.EXTRACTOR_VERSION,
                         payload_hash,
@@ -529,7 +531,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
                 VALUES(%s,%s,'A1',%s,0,%s,%s,%s,'{}','{}','present',1,200,3,-4)""",
                 (
                     holdings_id,
-                    run_id,
+                    evidence_run_id,
                     document_id,
                     worker.secapi_parser.EXTRACTOR_VERSION,
                     payload_hash,
@@ -545,7 +547,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
                 VALUES(%s,%s,'A1',%s,0,0,'risk-1',%s,'USD',%s,%s,'{}','{}',-12,-120)""",
                 (
                     holdings_id,
-                    run_id,
+                    evidence_run_id,
                     document_id,
                     worker.secapi_parser.EXTRACTOR_VERSION,
                     payload_hash,
@@ -553,7 +555,7 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
                 ),
             )
 
-            readiness = worker._secapi_scope_state(conn, holdings_id, run_id)
+            readiness = worker._secapi_scope_state(conn, holdings_id, evidence_run_id)
             refused = _run_in_schema(DSN, schema)
             assert refused["state"] == "no_source"
             assert refused["reason"] == "secapi_activation_not_approved"

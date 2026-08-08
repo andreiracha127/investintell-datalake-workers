@@ -469,6 +469,10 @@ def run(
             if source is None:
                 return {"state": "no_source", "reason": "no_current_holdings_publication", "rows": 0}
             source_publication_id, source_run_id = source
+            secapi_source_run_id = (
+                os.getenv("NPORT_FI_SECAPI_SOURCE_RUN_ID", "").strip()
+                or source_run_id
+            )
 
             as_of = _resolve_as_of(conn, calc_date, source_publication_id)
             if as_of is None:
@@ -509,7 +513,7 @@ def run(
             evidence = _pinned_raw_evidence(conn, source_run_id)
             pruned = sorted(name for name, present in evidence.items() if not present)
             secapi_state = (
-                _secapi_scope_state(conn, source_publication_id, source_run_id)
+                _secapi_scope_state(conn, source_publication_id, secapi_source_run_id)
                 if pruned
                 else {"ready": False, "source_hash": None}
             )
@@ -558,6 +562,7 @@ def run(
                         "reason": "secapi_activation_not_approved",
                         "source_publication_id": source_publication_id,
                         "source_run_id": source_run_id,
+                        "secapi_source_run_id": secapi_source_run_id,
                         "supplemental_source_hash": supplemental_source["source_hash"],
                         "rows": 0,
                     }
@@ -599,7 +604,7 @@ def run(
                         raise RuntimeError("current fixed-income publication changed during build")
                     if supplemental_source["kind"] == "sec_api":
                         current_secapi_state = _secapi_scope_state(
-                            conn, source_publication_id, source_run_id
+                            conn, source_publication_id, secapi_source_run_id
                         )
                         if (
                             not current_secapi_state.get("ready")
@@ -634,8 +639,15 @@ def run(
                             ),
                         )
                     cur.execute(
-                        "SELECT build_nport_fixed_income_features(%s,%s,%s)",
-                        (publication_id, as_of, supplemental_source["kind"]),
+                        "SELECT build_nport_fixed_income_features(%s,%s,%s,%s)",
+                        (
+                            publication_id,
+                            as_of,
+                            supplemental_source["kind"],
+                            secapi_source_run_id
+                            if supplemental_source["kind"] == "sec_api"
+                            else None,
+                        ),
                     )
                     counts = _relation_counts(conn, publication_id)
                     manifest, manifest_sha256 = _build_manifest(

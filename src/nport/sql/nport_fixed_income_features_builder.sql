@@ -43,15 +43,18 @@ BEGIN
     END IF;
 END $$;
 
+DROP FUNCTION IF EXISTS build_nport_fixed_income_features(uuid,date,text);
 CREATE OR REPLACE FUNCTION build_nport_fixed_income_features(
     target_publication_id uuid,
     as_of_date date,
-    supplemental_source_kind text DEFAULT 'dera_raw'
+    supplemental_source_kind text DEFAULT 'dera_raw',
+    p_supplemental_source_run_id uuid DEFAULT NULL
 ) RETURNS integer LANGUAGE plpgsql AS $$
 DECLARE
     parent_state text;
     source_publication_id uuid;
     source_run_id uuid;
+    supplemental_source_run_id uuid;
     pinned_source_publication_id uuid;
     pinned_as_of_date date;
 
@@ -94,6 +97,7 @@ BEGIN
     IF source_run_id IS NULL THEN
         RAISE EXCEPTION 'N-PORT fixed-income feature build requires a source run pinned by holdings publication';
     END IF;
+    supplemental_source_run_id := COALESCE(p_supplemental_source_run_id, source_run_id);
 
     -- Fail closed if this DDL is applied over a still-prepared publication
     -- containing rows created before the build-identity table existed.
@@ -345,13 +349,13 @@ BEGIN
       SELECT r.accession_number, nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') AS net_assets
 
       FROM nport_fixed_income_fund_info_source_v1(
-        source_publication_id,source_run_id,supplemental_source_kind
+        source_publication_id,supplemental_source_run_id,supplemental_source_kind
       ) r
     ), rate_values AS (
       SELECT s.series_id,s.report_date,s.accession_number,r.source_row_id source_raw_row_id,r.source_document_id source_file_id,r.source_row_number,COALESCE(NULLIF(r.typed_projection->>'INTEREST_RATE_RISK_ID',''),'not_reported') AS interest_rate_risk_id,COALESCE(NULLIF(r.typed_projection->>'CURRENCY_CODE',''),'not_reported') AS currency_code,f.net_assets,
              v.tenor,v.sensitivity,nport_fixed_income_safe_numeric(v.value) AS raw_value
       FROM snapshot_filings s JOIN nport_fixed_income_rate_risk_source_v1(
-        source_publication_id,source_run_id,supplemental_source_kind
+        source_publication_id,supplemental_source_run_id,supplemental_source_kind
       ) r ON r.accession_number=s.accession_number
       LEFT JOIN fund_info f ON f.accession_number=s.accession_number
       CROSS JOIN LATERAL (VALUES
@@ -374,7 +378,7 @@ BEGIN
       SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,r.source_kind,v.metric_key,nport_fixed_income_safe_numeric(v.raw_value) parsed_value,
         CASE WHEN r.source_row_id IS NULL THEN 'source_row_absent' WHEN nport_fixed_income_safe_numeric(v.raw_value) IS NULL THEN 'field_missing_or_invalid' ELSE 'reported_numeric' END availability_state
       FROM snapshot_filings s LEFT JOIN nport_fixed_income_rate_risk_source_v1(
-        source_publication_id,source_run_id,supplemental_source_kind
+        source_publication_id,supplemental_source_run_id,supplemental_source_kind
       ) r ON r.accession_number=s.accession_number
       CROSS JOIN LATERAL (VALUES
         ('key_rate.dv01.3mon',r.typed_projection->>'INTRST_RATE_CHANGE_3MON_DV01'),('key_rate.dv01.1yr',r.typed_projection->>'INTRST_RATE_CHANGE_1YR_DV01'),('key_rate.dv01.5yr',r.typed_projection->>'INTRST_RATE_CHANGE_5YR_DV01'),('key_rate.dv01.10yr',r.typed_projection->>'INTRST_RATE_CHANGE_10YR_DV01'),('key_rate.dv01.30yr',r.typed_projection->>'INTRST_RATE_CHANGE_30YR_DV01'),
@@ -434,13 +438,13 @@ BEGIN
     ), values_rows AS MATERIALIZED (
       SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,r.source_kind,'credit_spread_sensitivity' family,v.metric_key,v.raw_value
       FROM snapshot_filings s LEFT JOIN nport_fixed_income_fund_info_source_v1(
-        source_publication_id,source_run_id,supplemental_source_kind
+        source_publication_id,supplemental_source_run_id,supplemental_source_kind
       ) r ON r.accession_number=s.accession_number
       CROSS JOIN LATERAL (VALUES ('credit_spread.investment.3mon',r.typed_projection->>'CREDIT_SPREAD_3MON_INVEST'),('credit_spread.noninvestment.3mon',r.typed_projection->>'CREDIT_SPREAD_3MON_NONINVEST'),('credit_spread.investment.1yr',r.typed_projection->>'CREDIT_SPREAD_1YR_INVEST'),('credit_spread.noninvestment.1yr',r.typed_projection->>'CREDIT_SPREAD_1YR_NONINVEST'),('credit_spread.investment.5yr',r.typed_projection->>'CREDIT_SPREAD_5YR_INVEST'),('credit_spread.noninvestment.5yr',r.typed_projection->>'CREDIT_SPREAD_5YR_NONINVEST'),('credit_spread.investment.10yr',r.typed_projection->>'CREDIT_SPREAD_10YR_INVEST'),('credit_spread.noninvestment.10yr',r.typed_projection->>'CREDIT_SPREAD_10YR_NONINVEST'),('credit_spread.investment.30yr',r.typed_projection->>'CREDIT_SPREAD_30YR_INVEST'),('credit_spread.noninvestment.30yr',r.typed_projection->>'CREDIT_SPREAD_30YR_NONINVEST')) v(metric_key,raw_value)
       UNION ALL
       SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,r.source_kind,'balance_sheet',v.metric_key,v.raw_value
       FROM snapshot_filings s LEFT JOIN nport_fixed_income_fund_info_source_v1(
-        source_publication_id,source_run_id,supplemental_source_kind
+        source_publication_id,supplemental_source_run_id,supplemental_source_kind
       ) r ON r.accession_number=s.accession_number
 
       CROSS JOIN LATERAL (VALUES ('balance.net_assets',r.typed_projection->>'NET_ASSETS'),('balance.total_assets',r.typed_projection->>'TOTAL_ASSETS'),('balance.total_liabilities',r.typed_projection->>'TOTAL_LIABILITIES'),('balance.borrowing_pay_within_1yr',r.typed_projection->>'BORROWING_PAY_WITHIN_1YR'),('balance.controlled_companies_pay_within_1yr',r.typed_projection->>'CTRLD_COMPANIES_PAY_WITHIN_1YR'),('balance.other_affiliates_pay_within_1yr',r.typed_projection->>'OTHER_AFFILIA_PAY_WITHIN_1YR'),('balance.other_pay_within_1yr',r.typed_projection->>'OTHER_PAY_WITHIN_1YR'),('balance.borrowing_pay_after_1yr',r.typed_projection->>'BORROWING_PAY_AFTER_1YR'),('balance.controlled_companies_pay_after_1yr',r.typed_projection->>'CTRLD_COMPANIES_PAY_AFTER_1YR'),('balance.other_affiliates_pay_after_1yr',r.typed_projection->>'OTHER_AFFILIA_PAY_AFTER_1YR'),('balance.other_pay_after_1yr',r.typed_projection->>'OTHER_PAY_AFTER_1YR'),('balance.standby_commitment',r.typed_projection->>'STANDBY_COMMITMENT'),('balance.delayed_delivery',r.typed_projection->>'DELAYED_DELIVERY'),('balance.cash_not_reported_in_c_or_d',r.typed_projection->>'CASH_NOT_RPTD_IN_C_OR_D')) v(metric_key,raw_value)
@@ -494,7 +498,7 @@ BEGIN
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
         AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
     ), source_rows AS MATERIALIZED (
-      SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') AS net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fixed_income_fund_info_source_v1(source_publication_id,source_run_id,supplemental_source_kind) r ON r.accession_number=s.accession_number
+      SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') AS net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fixed_income_fund_info_source_v1(source_publication_id,supplemental_source_run_id,supplemental_source_kind) r ON r.accession_number=s.accession_number
     ), values_rows AS MATERIALIZED (
       SELECT s.*,v.bucket,v.tenor,nport_fixed_income_safe_numeric(v.value) raw_value FROM source_rows s CROSS JOIN LATERAL (VALUES
         ('investment','3mon',s.typed_projection->>'CREDIT_SPREAD_3MON_INVEST'),('noninvestment','3mon',s.typed_projection->>'CREDIT_SPREAD_3MON_NONINVEST'),
@@ -516,7 +520,7 @@ BEGIN
       WHERE h.publication_id=source_publication_id AND b.resolution_state='resolved' AND h.report_date<=as_of_date
         AND h.report_date>=b.valid_from AND (b.valid_to IS NULL OR h.report_date<=b.valid_to)
     ), source_rows AS MATERIALIZED (
-      SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fixed_income_fund_info_source_v1(source_publication_id,source_run_id,supplemental_source_kind) r ON r.accession_number=s.accession_number
+      SELECT s.*,r.source_row_id raw_row_id,r.source_document_id source_file_id,r.source_row_number,nport_fixed_income_safe_numeric(r.typed_projection->>'NET_ASSETS') net_assets,r.typed_projection FROM snapshot_filings s JOIN nport_fixed_income_fund_info_source_v1(source_publication_id,supplemental_source_run_id,supplemental_source_kind) r ON r.accession_number=s.accession_number
     ), values_rows AS MATERIALIZED (
       SELECT s.*,v.key,nport_fixed_income_safe_numeric(v.value) raw_value FROM source_rows s CROSS JOIN LATERAL (VALUES
         ('net_assets',s.typed_projection->>'NET_ASSETS'),('total_assets',s.typed_projection->>'TOTAL_ASSETS'),('total_liabilities',s.typed_projection->>'TOTAL_LIABILITIES'),('borrowing_pay_within_1yr',s.typed_projection->>'BORROWING_PAY_WITHIN_1YR'),('controlled_companies_pay_within_1yr',s.typed_projection->>'CTRLD_COMPANIES_PAY_WITHIN_1YR'),('other_affiliates_pay_within_1yr',s.typed_projection->>'OTHER_AFFILIA_PAY_WITHIN_1YR'),('other_pay_within_1yr',s.typed_projection->>'OTHER_PAY_WITHIN_1YR'),('borrowing_pay_after_1yr',s.typed_projection->>'BORROWING_PAY_AFTER_1YR'),('controlled_companies_pay_after_1yr',s.typed_projection->>'CTRLD_COMPANIES_PAY_AFTER_1YR'),('other_affiliates_pay_after_1yr',s.typed_projection->>'OTHER_AFFILIA_PAY_AFTER_1YR'),('other_pay_after_1yr',s.typed_projection->>'OTHER_PAY_AFTER_1YR'),('standby_commitment',s.typed_projection->>'STANDBY_COMMITMENT'),('delayed_delivery',s.typed_projection->>'DELAYED_DELIVERY'),('cash_not_reported_in_c_or_d',s.typed_projection->>'CASH_NOT_RPTD_IN_C_OR_D')

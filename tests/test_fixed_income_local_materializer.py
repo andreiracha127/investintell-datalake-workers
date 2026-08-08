@@ -331,7 +331,8 @@ def test_schema_never_defines_the_builder_and_the_pinned_resource_does() -> None
     assert "SQLSTATE '0A000'" not in schema
     assert "CREATE OR REPLACE FUNCTION build_nport_fixed_income_features" not in schema
     builder = materializer.BUILDER_SQL_PATH.read_text(encoding="utf-8")
-    assert builder.count("FUNCTION build_nport_fixed_income_features(") == 1
+    assert builder.count("CREATE OR REPLACE FUNCTION build_nport_fixed_income_features(") == 1
+    assert "DROP FUNCTION IF EXISTS build_nport_fixed_income_features(uuid,date,text)" in builder
 
 
 def test_compute_is_delegated_to_guarded_local_postgres_not_duckdb_or_python_formulas() -> (
