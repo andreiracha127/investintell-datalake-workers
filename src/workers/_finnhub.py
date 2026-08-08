@@ -178,18 +178,30 @@ class FinnhubClient:
                 return merged
             page = payload.get("t")
             total = payload.get("total")
-            if not isinstance(page, list) or not isinstance(total, int) or total < 0:
+            if not isinstance(page, list) or (
+                total is not None and (not isinstance(total, int) or total < 0)
+            ):
                 merged[self.TICK_PAYLOAD_STATE] = "malformed_payload"
                 return merged
             if not page:
                 merged[self.TICK_PAYLOAD_STATE] = (
-                    "valid_zero_trades" if skip == 0 and total == 0 else "malformed_payload"
+                    "valid_zero_trades"
+                    if skip == 0 and total in {None, 0}
+                    else "malformed_payload"
                 )
                 return merged
             for key in self.TICK_ARRAY_KEYS:
                 values = payload.get(key)
                 if isinstance(values, list):
                     merged[key].extend(values)
+            if total is None:
+                # The live endpoint currently omits ``total`` and returns a
+                # single page with ``skip`` plus columnar arrays. A short page
+                # is complete; a full page cannot prove it was not truncated.
+                merged[self.TICK_PAYLOAD_STATE] = (
+                    "ok" if len(page) < limit else "malformed_payload"
+                )
+                return merged
             if len(merged["t"]) >= total:
                 merged[self.TICK_PAYLOAD_STATE] = "ok"
                 return merged

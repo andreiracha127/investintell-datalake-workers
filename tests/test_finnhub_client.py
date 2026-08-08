@@ -175,6 +175,7 @@ def test_bond_profile_empty_or_non_object_is_a_typed_failure(body: bytes) -> Non
         (b'{"error":"not entitled"}', "api_error"),
         (b'{"t":"not-an-array"}', "malformed_payload"),
         (b'{"t":[],"total":0}', "valid_zero_trades"),
+        (b'{"c":[],"cp":[],"p":[],"si":[],"skip":0,"t":[],"v":[]}', "valid_zero_trades"),
     ],
 )
 def test_tick_client_preserves_empty_and_malformed_response_state(
