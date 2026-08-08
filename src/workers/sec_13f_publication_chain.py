@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from typing import Any, Callable
 
 from src.db import LOCK_SEC_13F_PUBLICATION_CHAIN, advisory_lock, connect
@@ -9,6 +10,39 @@ from src.workers import sec_13f_ingestion
 
 _TOTALS_CAGG = "institution_13f_totals_history_cagg"
 _SECTOR_CAGG = "institution_13f_sector_history_cagg"
+
+
+def _canonical_source_window(dsn: str) -> dict[str, Any]:
+    """Return the latest externally published canonical 13F period.
+
+    Production's canonical hypertable intentionally has a different contract
+    from the legacy ingestion worker. Refresh-only mode keeps that publisher's
+    ownership intact and only advances the dependent read models.
+    """
+    with connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT array_agg(column_name ORDER BY column_name) "
+                "FROM information_schema.columns "
+                "WHERE table_schema='public' AND table_name='sec_13f_holdings' "
+                "AND column_name IN ('period','report_date','market_value')"
+            )
+            columns = set(cur.fetchone()[0] or ())
+            if columns != {"report_date", "market_value"}:
+                raise RuntimeError(
+                    "SEC_13F_REFRESH_ONLY requires canonical sec_13f_holdings "
+                    "(report_date/market_value, without legacy period)"
+                )
+            cur.execute("SELECT max(report_date) FROM public.sec_13f_holdings")
+            row = cur.fetchone()
+    latest = row[0] if row else None
+    if latest is None:
+        return {"source": "canonical_sec_13f_holdings"}
+    return {
+        "source": "canonical_sec_13f_holdings",
+        "affected_report_date_start": latest.isoformat(),
+        "affected_report_date_end": latest.isoformat(),
+    }
 
 
 def _quarter_start(value: dt.date) -> dt.date:
@@ -62,7 +96,10 @@ def run(
             if not got:
                 return {"published": False, "stages": [], "skipped": "lock_busy"}
 
-            ingestion = ingestion_runner(dsn, calc_date=calc_date, limit=limit)
+            if os.getenv("SEC_13F_REFRESH_ONLY", "").strip() == "1":
+                ingestion = _canonical_source_window(dsn)
+            else:
+                ingestion = ingestion_runner(dsn, calc_date=calc_date, limit=limit)
             if ingestion.get("skipped") or ingestion.get("failed_packages"):
                 raise RuntimeError(f"13F publication did not complete: {ingestion}")
             start_raw = ingestion.get("affected_report_date_start")

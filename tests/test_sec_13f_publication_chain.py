@@ -56,6 +56,34 @@ def test_no_changed_filings_is_idempotent_noop(monkeypatch):
     assert result["refresh_skipped"] == "no_changed_filings"
 
 
+def test_refresh_only_mode_uses_canonical_source_window_without_legacy_ingestion(monkeypatch):
+    _wire(monkeypatch)
+    monkeypatch.setenv("SEC_13F_REFRESH_ONLY", "1")
+    monkeypatch.setattr(
+        chain,
+        "_canonical_source_window",
+        lambda _dsn: {
+            "source": "canonical_sec_13f_holdings",
+            "affected_report_date_start": "2026-03-31",
+            "affected_report_date_end": "2026-03-31",
+        },
+    )
+    monkeypatch.setattr(
+        chain,
+        "_refresh_mv",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(chain, "_refresh_caggs", lambda *_args: None)
+
+    def legacy_ingestion(*_args, **_kwargs):
+        pytest.fail("legacy ingestion must not run against the canonical production schema")
+
+    result = chain.run("db", ingestion_runner=legacy_ingestion)
+
+    assert result["published"] is True
+    assert result["stages"][0]["stats"]["source"] == "canonical_sec_13f_holdings"
+
+
 def test_middle_step_failure_stops_caggs(monkeypatch):
     _wire(monkeypatch)
     calls = []
