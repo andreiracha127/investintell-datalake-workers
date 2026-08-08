@@ -1,0 +1,10 @@
+from src.bonds.panel_config import FROZEN, config_hash
+
+
+def test_frozen_config_hash_is_the_preregistered_literal() -> None:
+    assert config_hash() == "0c0d78a866bc1090"
+    assert FROZEN["clock"] == {
+        "signal_month": "t", "execution_month": "t+1", "return_window": "t+1->t+2"
+    }
+    assert FROZEN["spread_definition"] == "ytm_minus_interpolated_dgs"
+    assert FROZEN["signal_name"] == "yield_spread_residual"
