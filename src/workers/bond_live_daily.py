@@ -133,6 +133,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -162,10 +163,9 @@ CURATED_MATVIEW = "bond_curated_securities"
 #: provider later drops is reported as a failed unit, not a crashed run.
 CURVE_TENORS = ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
 
-#: How many bonds get the (expensive, one-call-per-bond-day) tick treatment.
-#: The tape is only informative where it is liquid, and the cost lane is a head
-#: product by construction. Override with BOND_TICK_TOP_N.
-DEFAULT_TICK_TOP_N = 500
+#: Ticks are a full-universe daily obligation. ``BOND_TICK_TOP_N`` exists only
+#: as an explicit, reported emergency throttle; an unset value means every
+#: eligible resolved CUSIP is attempted.
 
 #: Rows per commit. Long transactions hold back VACUUM for the WHOLE database
 #: (a trap this repo has already paid for), so the sweep commits in slices.
@@ -670,31 +670,86 @@ def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[
 # --------------------------------------------------------------------------- #
 # Stage 3: ticks
 # --------------------------------------------------------------------------- #
-def _load_ticks(
-    conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
-) -> dict[str, Any]:
-    top_n = _int_env("BOND_TICK_TOP_N", DEFAULT_TICK_TOP_N)
-    day = live_daily.previous_business_day(today)
+def _tick_scope(
+    conn: psycopg.Connection, universe: list[tuple[Any, ...]], today: _dt.date
+) -> tuple[list[str], dict[str, Any]]:
+    """Return the tick CUSIPs and the operator-visible scope contract."""
+    eligible = sorted({str(cusip9) for cusip9, isin, _, _ in universe if str(isin).strip()})
+    raw_cap = (os.getenv("BOND_TICK_TOP_N") or "").strip()
+    if not raw_cap:
+        return eligible, {
+            "scope": "full_universe", "configured_top_n": None,
+            "degraded": False, "degraded_reason": None,
+        }
+    try:
+        top_n = int(raw_cap)
+    except ValueError:
+        top_n = 0
+    if top_n <= 0:
+        return eligible, {
+            "scope": "invalid_top_n_ignored", "configured_top_n": raw_cap,
+            "degraded": True, "degraded_reason": "invalid_tick_top_n",
+        }
     activity = conn.execute(
         _ACTIVITY_SQL,
         {"since": today - _dt.timedelta(days=90), "until": today},
     ).fetchall()
-    cohort = set(live_daily.rank_by_activity(activity, top_n))
+    return live_daily.rank_by_activity(activity, top_n), {
+        "scope": "bounded_top_n", "configured_top_n": top_n,
+        "degraded": True, "degraded_reason": "bounded_tick_scope",
+    }
+
+
+def _tick_payload_outcome(ticks: Any) -> str:
+    """Classify a returned tick payload without logging its contents."""
+    if not isinstance(ticks, Mapping):
+        return "malformed_payload"
+    client_state = ticks.get("__finnhub_payload_state")
+    if client_state in {
+        "api_empty", "api_error", "malformed_payload", "valid_zero_trades", "ok",
+    }:
+        return str(client_state)
+    if not ticks:
+        return "api_empty"
+    if ticks.get("error") is not None or ticks.get("s") in {"error", "no_data"}:
+        return "api_error"
+    stamps = ticks.get("t")
+    if not isinstance(stamps, list):
+        return "malformed_payload"
+    if not stamps:
+        return "valid_zero_trades"
+    prices = ticks.get("p")
+    if not isinstance(prices, list) or len(prices) != len(stamps):
+        return "malformed_payload"
+    return "ok"
+
+
+def _load_ticks(
+    conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
+) -> dict[str, Any]:
+    started = time.monotonic()
+    day = live_daily.previous_business_day(today)
+    cohort, scope = _tick_scope(conn, universe, today)
     isin_by_cusip = {str(c): str(i) for c, i, _, _ in universe}
 
-    swept = traded = upserted = failed = 0
+    swept = traded = upserted = failed = successes = no_trades = api_calls = 0
+    failure_reasons: dict[str, int] = {}
+    no_trade_reasons: dict[str, int] = {}
+    transient_failures = 0
     consecutive = 0
     aborted = False
-    for cusip9 in sorted(cohort):
+    for cusip9 in cohort:
         isin = isin_by_cusip.get(cusip9)
         if not isin:
             continue
         swept += 1
+        api_calls += 1
         try:
             ticks = client.ticks(isin, day.isoformat())
-            consecutive = 0
         except FinnhubTransientError:
             failed += 1
+            transient_failures += 1
+            failure_reasons["transient_error"] = failure_reasons.get("transient_error", 0) + 1
             consecutive += 1
             if consecutive >= MAX_CONSECUTIVE_FAILURES:
                 # The SAME breaker as the candle sweep, on the same constant and
@@ -708,8 +763,25 @@ def _load_ticks(
                 aborted = True
                 break
             continue
+        outcome = _tick_payload_outcome(ticks)
+        if outcome in {"api_empty", "api_error", "malformed_payload"}:
+            failed += 1
+            failure_reasons[outcome] = failure_reasons.get(outcome, 0) + 1
+            consecutive += 1
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                aborted = True
+                break
+            continue
+        successes += 1
+        consecutive = 0
+        if outcome == "valid_zero_trades":
+            no_trades += 1
+            no_trade_reasons[outcome] = no_trade_reasons.get(outcome, 0) + 1
+            continue
         aggregate = live_daily.aggregate_ticks(cusip9, day, ticks)
         if aggregate is None:
+            no_trades += 1
+            no_trade_reasons["no_usable_trades"] = no_trade_reasons.get("no_usable_trades", 0) + 1
             continue
         traded += 1
         with conn.cursor() as cur:
@@ -719,12 +791,16 @@ def _load_ticks(
             conn.commit()
     conn.commit()
     return {
-        # ``cohort`` vs ``swept``: the cost lane is the top-N by activity, but it
-        # can only ask about bonds the CANDLE sweep carried an ISIN for, so a
-        # capped run silently shrinks it. Reporting both is what makes that
-        # truncation readable instead of inferred.
+        # Keep the existing counters while making both the work and the scope
+        # auditable in the run JSON.
         "day": day.isoformat(), "cohort": len(cohort), "swept": swept,
-        "traded": traded, "rows_upserted": upserted, "transient_failures": failed,
+        "traded": traded, "rows_upserted": upserted,
+        "transient_failures": transient_failures,
+        "attempted_cusips": swept, "api_calls": api_calls,
+        "successes": successes, "no_trades": no_trades, "failures": failed,
+        "failure_reasons": failure_reasons, "no_trade_reasons": no_trade_reasons,
+        "elapsed_seconds": time.monotonic() - started,
+        **scope,
         # Reported next to the counts, exactly as the candle sweep does it,
         # because the two ways stage 3 comes up short read identically in the
         # totals otherwise: "every call failed" and "the breaker stopped a lane
@@ -1050,8 +1126,13 @@ def run(
         # tomorrow's session and the tape of every bond the outage cut off is
         # gone for good. ``ticks.aborted`` in the JSON says which shape it was.
         (ticks["swept"] > 0 and (
-            ticks["transient_failures"] == ticks["swept"] or bool(ticks["aborted"])
+            ticks.get("failures", ticks["transient_failures"]) == ticks["swept"]
+            or bool(ticks["aborted"])
         ), "ticks_failed"),
+        # A requested emergency cap is a valid operational escape hatch, never
+        # a completed daily full-universe tick run. Stage 4/5 still execute; the
+        # typed state keeps the resulting report and deploy non-green.
+        (bool(ticks.get("degraded")), "ticks_degraded_scope"),
         # A capped run covered its BUDGET, not the day. It still republishes --
         # the rows it loaded are real and every security carries its own
         # observation date, so the payload stays honest -- but the run must not

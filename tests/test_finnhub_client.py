@@ -165,3 +165,26 @@ def test_bond_profile_empty_or_non_object_is_a_typed_failure(body: bytes) -> Non
 
     with pytest.raises(_finnhub.FinnhubProfileError, match="empty_profile"):
         client.profile_by_cusip("00033GAA3")
+
+
+@pytest.mark.parametrize(
+    ("body", "state"),
+    [
+        (b"{}", "api_empty"),
+        (b"[]", "malformed_payload"),
+        (b'{"error":"not entitled"}', "api_error"),
+        (b'{"t":"not-an-array"}', "malformed_payload"),
+        (b'{"t":[],"total":0}', "valid_zero_trades"),
+    ],
+)
+def test_tick_client_preserves_empty_and_malformed_response_state(
+    body: bytes, state: str
+) -> None:
+    """The client must not normalize a failed HTTP-200 body into zero trades."""
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    assert client.ticks("US912828XX10", "2026-08-06")[
+        "__finnhub_payload_state"
+    ] == state

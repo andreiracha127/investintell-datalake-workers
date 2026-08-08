@@ -478,6 +478,46 @@ def test_the_tick_lane_asks_for_the_previous_session_only() -> None:
     assert stats["aborted"] is False
 
 
+def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None:
+    """An unset cap is the full resolved universe, not an activity head."""
+    universe = [_bond("FULLSCOPE1"), _bond("FULLSCOPE2"), _bond("FULLSCOPE3")]
+    client = FakeClient(ticks={
+        row[1]: {"t": [], "total": 0}
+        for row in universe
+    })
+
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+
+    assert [isin for isin, _ in client.tick_calls] == [row[1] for row in universe]
+    assert stats["scope"] == "full_universe"
+    assert stats["configured_top_n"] is None
+    assert stats["degraded"] is False
+    assert stats["attempted_cusips"] == 3 and stats["api_calls"] == 3
+    assert stats["successes"] == 3 and stats["no_trades"] == 3
+    assert stats["failures"] == 0 and stats["elapsed_seconds"] >= 0
+
+
+def test_tick_payload_outcomes_distinguish_empty_error_malformed_and_zero_trades() -> None:
+    """A 200 without a usable tape fails; an explicit empty tape is a quiet day."""
+    universe = [_bond("EMPTYTAPE"), _bond("ERRORTAPE"), _bond("BADTAPE00"), _bond("ZEROTAPE0")]
+    client = FakeClient(ticks={
+        "USEMPTYTAPE0": {},
+        "USERRORTAPE0": {"error": "unavailable"},
+        "USBADTAPE000": {"t": "not-a-list"},
+        "USZEROTAPE00": {"t": [], "total": 0},
+    })
+
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+
+    assert stats["successes"] == 1 and stats["no_trades"] == 1
+    assert stats["failures"] == 3 and stats["transient_failures"] == 0
+    assert stats["failure_reasons"] == {
+        "api_empty": 1, "api_error": 1, "malformed_payload": 1,
+    }
+    assert stats["no_trade_reasons"] == {"valid_zero_trades": 1}
+    assert stats["aborted"] is False
+
+
 class _NoTape(FakeClient):
     """Every tick call exhausts its retry ladder and raises."""
 
@@ -1479,11 +1519,32 @@ def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch
     assert total == 3, "the cap must not hide how big the universe is"
 
 
-def test_the_tick_cohort_reports_the_truncation_a_capped_run_imposes() -> None:
-    """A capped run shrinks the cost lane too; ``cohort`` vs ``swept`` says so."""
+def test_an_explicit_tick_cap_is_reported_as_a_degraded_scope(monkeypatch) -> None:
+    """Emergency top-N is available, but can never read like full daily coverage."""
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
     conn = FakeConn({Q_ACTIVITY: [("912828XX1", 1_000_000), ("NOTSWEPT1", 5)]})
     stats = bond_live_daily._load_ticks(conn, FakeClient(), UNIVERSE, TODAY)
-    assert stats["cohort"] == 2 and stats["swept"] == 1
+    assert stats["scope"] == "bounded_top_n"
+    assert stats["configured_top_n"] == 1
+    assert stats["degraded"] is True
+    assert stats["degraded_reason"] == "bounded_tick_scope"
+    assert stats["cohort"] == 1 and stats["attempted_cusips"] == 1
+
+
+def test_an_emergency_tick_cap_makes_the_run_verdict_non_green(monkeypatch) -> None:
+    """A successful capped tape sweep is explicitly degraded, not ``ok``."""
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_ACTIVITY: [("912828XX1", 1_000_000)],
+    })
+
+    out = _drive_run(monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE))
+
+    assert out["ticks"]["degraded"] is True
+    assert out["state"] == "ticks_degraded_scope"
+    assert out["aborted"] is True
+    assert "ticks_degraded_scope" in out["halted_by"]
 
 
 # --------------------------------------------------------------------------- #
