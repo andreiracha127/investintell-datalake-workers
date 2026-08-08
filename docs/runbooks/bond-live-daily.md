@@ -220,6 +220,26 @@ Verified by refreshing it `SET ROLE worker_writer` (10,073 rows). If the matview
 is ever rebuilt by an operator running as `postgres`, this has to be re-applied —
 the run reports `matview_failed` and exits non-zero if it is not.
 
+## 3e. One-shot T3 parity gate before the first Stage 6 run
+
+Run `WORKER=bond_panel_parity` once before allowing the first live panel
+publication. The worker opens a read-only transaction, pins base publication
+`92740098-1571-559d-9fb3-119de8321754` and fingerprint
+`5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb`, and
+rebuilds only `2025-01` and `2026-06` from database inputs. It never inserts
+facts or moves the panel pointer.
+
+Set the temporary worker variable, deploy the exact revision, and execute with
+`railway service restart`. A successful build is not execution evidence. Read
+the emitted worker JSON and require `state=parity_passed`, `aborted=false`, and
+both monthly gate records. Then restore `WORKER=bond_live_daily` before the live
+run. Any `parity_failed` result is a stop: do not execute Stage 6 and do not
+change the predeclared thresholds to make the result pass.
+
+The parity transaction must still see the frozen publication as current. Run it
+before Stage 6, because a successful Stage 6 publication intentionally advances
+the pointer and makes a later replay fail `current_publication_id_mismatch`.
+
 ## 4. Reading the result
 
 **One rule: a run exits green only when it actually did the day's work.**
