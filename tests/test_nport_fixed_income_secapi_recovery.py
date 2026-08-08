@@ -136,8 +136,177 @@ def test_fetch_exactly_one_uses_accession_query_and_rejects_wrong_response():
     with pytest.raises(secapi.AccessionMismatchError):
         secapi.fetch_exact_filing(Wrong(), "0000123456-26-000001")
 
+    class WrongForm:
+        def get_data(self, *_a, **_k):
+            return {"filings": [{**_payload(), "formType": "NPORT-P/A"}]}
+
+    with pytest.raises(secapi.AccessionMismatchError, match="form type"):
+        secapi.fetch_exact_filing(WrongForm(), "0000123456-26-000001")
+
     with pytest.raises(secapi.PayloadError, match="invalid SEC format"):
         secapi.fetch_exact_filing(client, 'bad" OR formType:"NPORT-P')
+
+
+def test_exact_client_falls_back_to_verified_rendered_xml_without_positions():
+    accession = "0000123456-26-000001"
+    calls = []
+
+    class FormClient:
+        def get_data(self, payload):
+            calls.append(("form", payload))
+            return {"filings": []}
+
+    class QueryClient:
+        def get_filings(self, payload):
+            calls.append(("query", payload))
+            return {
+                "filings": [
+                    {
+                        "accessionNo": accession,
+                        "formType": "NPORT-P",
+                        "linkToFilingDetails": (
+                            "https://www.sec.gov/Archives/edgar/data/123456/"
+                            "000012345626000001/xslFormNPORT-P_X01/primary_doc.xml"
+                        ),
+                    }
+                ]
+            }
+
+    class RenderClient:
+        def get_file(self, url):
+            calls.append(("render", url))
+            return """<?xml version="1.0"?>
+            <edgarSubmission xmlns="http://www.sec.gov/edgar/nport">
+              <headerData><submissionType>NPORT-P</submissionType></headerData>
+              <formData>
+                <fundInfo>
+                  <totAssets>100.25</totAssets>
+                  <curMetrics><curMetric><curCd>USD</curCd></curMetric></curMetrics>
+                </fundInfo>
+                <invstOrSecs><invstOrSec><cusip>SECRET</cusip></invstOrSec></invstOrSecs>
+              </formData>
+            </edgarSubmission>"""
+
+    client = secapi.ExactNportClient(FormClient(), QueryClient(), RenderClient())
+    provider_calls = []
+    result = secapi.fetch_exact_filing(
+        client, accession, on_provider_call=lambda: provider_calls.append(1)
+    )
+
+    assert result["accessionNo"] == accession
+    assert result["formType"] == "NPORT-P"
+    assert result["fundInfo"]["totAssets"] == "100.25"
+    assert result["fundInfo"]["curMetrics"]["curMetric"] == [{"curCd": "USD"}]
+    assert "invstOrSecs" not in result
+    assert len(provider_calls) == 3
+    assert calls[-1] == (
+        "render",
+        "https://www.sec.gov/Archives/edgar/data/123456/"
+        "000012345626000001/primary_doc.xml",
+    )
+
+
+@pytest.mark.parametrize(
+    "filing",
+    [
+        {
+            "accessionNo": "0000123456-26-999999",
+            "formType": "NPORT-P",
+            "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/1/2/primary_doc.xml",
+        },
+        {
+            "accessionNo": "0000123456-26-000001",
+            "formType": "13F-HR",
+            "linkToFilingDetails": "https://www.sec.gov/Archives/edgar/data/1/2/primary_doc.xml",
+        },
+        {
+            "accessionNo": "0000123456-26-000001",
+            "formType": "NPORT-P",
+            "linkToFilingDetails": "https://example.com/primary_doc.xml",
+        },
+    ],
+)
+def test_exact_client_rejects_unverified_render_fallback_identity(filing):
+    class FormClient:
+        def get_data(self, _payload):
+            return {"filings": []}
+
+    class QueryClient:
+        def get_filings(self, _payload):
+            return {"filings": [filing]}
+
+    class RenderClient:
+        def get_file(self, _url):
+            raise AssertionError("unsafe render URL must not be fetched")
+
+    client = secapi.ExactNportClient(FormClient(), QueryClient(), RenderClient())
+    with pytest.raises(secapi.AccessionMismatchError):
+        secapi.fetch_exact_filing(client, "0000123456-26-000001")
+
+
+def test_exact_client_rejects_unsafe_or_oversized_xml():
+    accession = "0000123456-26-000001"
+    filing = {
+        "accessionNo": accession,
+        "formType": "NPORT-P",
+        "linkToFilingDetails": (
+            "https://www.sec.gov/Archives/edgar/data/123456/"
+            "000012345626000001/xslFormNPORT-P_X01/primary_doc.xml"
+        ),
+    }
+
+    class FormClient:
+        def get_data(self, _payload):
+            return {"filings": []}
+
+    class QueryClient:
+        def get_filings(self, _payload):
+            return {"filings": [filing]}
+
+    class RenderClient:
+        def __init__(self, value):
+            self.value = value
+
+        def get_file(self, _url):
+            return self.value
+
+    for xml in ("<!DOCTYPE x><fundInfo/>", "x" * (secapi.MAX_RENDER_XML_BYTES + 1)):
+        client = secapi.ExactNportClient(
+            FormClient(), QueryClient(), RenderClient(xml)
+        )
+        with pytest.raises(secapi.PayloadError):
+            secapi.fetch_exact_filing(client, accession)
+
+
+def test_render_fallback_requires_three_calls_of_remaining_budget():
+    accession = "0000123456-26-000001"
+
+    class FormClient:
+        def get_data(self, _payload):
+            return {"filings": []}
+
+    class QueryClient:
+        def get_filings(self, _payload):
+            return {
+                "filings": [{
+                    "accessionNo": accession,
+                    "formType": "NPORT-P",
+                    "linkToFilingDetails": (
+                        "https://www.sec.gov/Archives/edgar/data/123456/"
+                        "000012345626000001/xslFormNPORT-P_X01/primary_doc.xml"
+                    ),
+                }]
+            }
+
+    class RenderClient:
+        def get_file(self, _url):
+            raise AssertionError("render must not run after the budget is exhausted")
+
+    client = secapi.ExactNportClient(FormClient(), QueryClient(), RenderClient())
+    with pytest.raises(RuntimeError, match="budget exhausted"):
+        worker._fetch_with_retry(
+            client, accession, lambda _seconds: None, max_calls=2
+        )
 
 
 def test_retry_only_retries_transient_and_sanitizes_error():
@@ -401,6 +570,66 @@ def test_terminal_payload_failure_is_persisted_and_not_retried() -> None:
     )
     assert second["state"] == "blocked"
     assert second["terminal"] == 1
+
+
+def test_existing_terminal_does_not_prevent_recovering_other_accessions() -> None:
+    terminal_accession = "0000123456-26-999999"
+
+    class Db:
+        def expected_accessions(self, _p):
+            return [terminal_accession, "0000123456-26-000001"]
+
+        def successful_accessions(self, *_args):
+            return set()
+
+        def terminal_accessions(self, *_args):
+            return {terminal_accession: "terminal_error"}
+
+        def advisory_lock(self, *_args):
+            class Lock:
+                def __enter__(self):
+                    return True
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Lock()
+
+        def transaction(self):
+            class Tx:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Tx()
+
+        def existing_hash(self, *_args):
+            return None
+
+        def write(self, projection):
+            self.projection = projection
+
+    class Client:
+        def get_data(self, *_args, **_kwargs):
+            return {"filings": [_payload()]}
+
+    db = Db()
+    result = worker.run(
+        "ignored",
+        publication_id="pub",
+        source_run_id="run",
+        db=db,
+        client_factory=Client,
+        max_accessions=2,
+        max_api_calls=2,
+        sleeper=lambda _x: None,
+    )
+    assert result["state"] == "blocked"
+    assert result["terminal"] == 1
+    assert result["processed"] == 1
+    assert db.projection.accession_number == "0000123456-26-000001"
 
 
 def test_worker_initializes_every_expected_manifest_before_constructing_client():

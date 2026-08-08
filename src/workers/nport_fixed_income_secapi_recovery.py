@@ -448,7 +448,7 @@ def _run_with_db(
         "max_api_calls": max_api_calls,
         "request_interval_seconds": request_interval_seconds,
     }
-    if terminal:
+    if terminal and not pending:
         return {
             "state": "blocked",
             **base,
@@ -558,7 +558,11 @@ def _run_with_db(
             processed += 1
         remaining = max(0, len(pending) - processed)
         return {
-            "state": "complete" if not remaining else "partial",
+            "state": (
+                "blocked"
+                if terminal
+                else ("complete" if not remaining else "partial")
+            ),
             "expected": len(expected),
             "success": len(success) + processed,
             "pending": len(pending),
@@ -567,6 +571,7 @@ def _run_with_db(
             "max_api_calls": max_api_calls,
             "processed": processed,
             "api_calls": api_calls,
+            "terminal": len(terminal),
         }
 
 
@@ -578,23 +583,37 @@ def _fetch_with_retry(
     max_calls: int = 3,
     on_call: Callable[[], None] | None = None,
 ) -> Any:
+    provider_calls = 0
+
+    def record_provider_call() -> None:
+        nonlocal provider_calls
+        if provider_calls >= max_calls:
+            raise RuntimeError("SEC API call budget exhausted")
+        provider_calls += 1
+        if on_call is not None:
+            on_call()
+
     def call() -> Any:
-        return parser.fetch_exact_filing(client, accession)
+        return parser.fetch_exact_filing(
+            client, accession, on_provider_call=record_provider_call
+        )
 
     # This local loop deliberately calls only the one exact search expression;
     # no generic SDK retry can alter query scope or paginate on our behalf.
     if max_calls < 1:
         raise RuntimeError("SEC API call budget exhausted")
-    attempts = min(3, max_calls)
+    attempts = 3
     for attempt in range(attempts):
         try:
-            if on_call is not None:
-                on_call()
             return call()
         except (parser.AccessionMismatchError, parser.PayloadError):
             raise
         except Exception as exc:
-            if not _transient(exc) or attempt + 1 == attempts:
+            if (
+                not _transient(exc)
+                or attempt + 1 == attempts
+                or provider_calls >= max_calls
+            ):
                 raise
             retry_after = parser._retry_after(exc)
             sleeper(retry_after if retry_after is not None else float(2**attempt))

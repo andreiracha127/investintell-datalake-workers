@@ -7,19 +7,26 @@ projection cannot contain ``invstOrSecs`` (the position-level payload).
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import re
 import uuid
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Iterable, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 PROVIDER = "sec-api.io"
 EXTRACTOR_VERSION = "nport-secapi-fixed-income/v1"
 _NAMESPACE = uuid.UUID("3d266eaa-1baa-552c-8e73-ed3676b1ed7f")
 _POSITION_KEYS = frozenset(("invstOrSecs", "invstOrSec", "investments", "holdings"))
 _ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_DETAIL_PATH_RE = re.compile(
+    r"^/Archives/edgar/data/\d+/\d{18}/xslFormNPORT-P_X01/primary_doc\.xml$"
+)
+MAX_RENDER_XML_BYTES = 64 * 1024 * 1024
 _PERIODS = (
     ("period3Mon", "3mon"),
     ("period1Yr", "1yr"),
@@ -63,6 +70,141 @@ class FilingProjection:
     fund: dict[str, Any]
     fund_presence: dict[str, str]
     rates: list[dict[str, Any]]
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xml_value(element: ET.Element) -> Any:
+    children = list(element)
+    if not children:
+        value = (element.text or "").strip()
+        return value or None
+    grouped: dict[str, list[Any]] = {}
+    for child in children:
+        grouped.setdefault(_local_name(child.tag), []).append(_xml_value(child))
+    return {
+        name: values if name == "curMetric" or len(values) > 1 else values[0]
+        for name, values in grouped.items()
+    }
+
+
+def _fund_info_from_render_xml(document: str | bytes) -> tuple[str, Mapping[str, Any]]:
+    raw = document.encode("utf-8") if isinstance(document, str) else document
+    if not isinstance(raw, bytes):
+        raise PayloadError("Render API response is not text or bytes")
+    if len(raw) > MAX_RENDER_XML_BYTES:
+        raise PayloadError("Render API XML exceeds the bounded payload size")
+    upper_prefix = raw[:4096].upper()
+    if b"<!DOCTYPE" in upper_prefix or b"<!ENTITY" in upper_prefix:
+        raise PayloadError("Render API XML contains a forbidden declaration")
+    submission_type: str | None = None
+    fund_info: Mapping[str, Any] | None = None
+    try:
+        for _event, element in ET.iterparse(io.BytesIO(raw), events=("end",)):
+            name = _local_name(element.tag)
+            if name == "submissionType":
+                if submission_type is not None:
+                    raise PayloadError("Render API XML has duplicate submissionType")
+                submission_type = (element.text or "").strip()
+            elif name == "fundInfo":
+                if fund_info is not None:
+                    raise PayloadError("Render API XML has duplicate fundInfo")
+                value = _xml_value(element)
+                if not isinstance(value, Mapping):
+                    raise PayloadError("Render API fundInfo is not an object")
+                fund_info = value
+                break
+    except ET.ParseError as exc:
+        raise PayloadError("Render API XML is malformed") from exc
+    if submission_type != "NPORT-P":
+        raise AccessionMismatchError("Render API form type mismatch")
+    if fund_info is None:
+        raise PayloadError("Render API XML has no fundInfo")
+    return submission_type, fund_info
+
+
+class ExactNportClient:
+    """Exact N-PORT retrieval with a bounded Render fallback for dataset gaps."""
+
+    def __init__(self, form_client: Any, query_client: Any, render_client: Any):
+        self._form = form_client
+        self._query = query_client
+        self._render = render_client
+
+    def fetch_exact_filing(
+        self,
+        accession_number: str,
+        *,
+        on_provider_call: Callable[[], None] | None = None,
+    ) -> Mapping[str, Any]:
+        call = on_provider_call or (lambda: None)
+        payload = {
+            "query": f'accessionNo:"{accession_number}"',
+            "from": "0",
+            "size": "1",
+            "sort": [{"filedAt": {"order": "asc"}}],
+        }
+        call()
+        response = self._form.get_data(payload)
+        if not isinstance(response, Mapping):
+            raise AccessionMismatchError("SEC API response is not an object")
+        records = response.get("filings") or response.get("data") or []
+        if not isinstance(records, list):
+            raise AccessionMismatchError("SEC API filings is not an array")
+        if records:
+            return _validate_exact_record(records, accession_number)
+
+        call()
+        resolved = self._query.get_filings(
+            {
+                "query": {
+                    "query_string": {
+                        "query": f'accessionNo:"{accession_number}"'
+                    }
+                },
+                "from": "0",
+                "size": "2",
+                "sort": [{"filedAt": {"order": "asc"}}],
+            }
+        )
+        if not isinstance(resolved, Mapping):
+            raise AccessionMismatchError("SEC API resolver response is not an object")
+        filing = _validate_exact_record(
+            resolved.get("filings") or [], accession_number
+        )
+        detail_url = filing.get("linkToFilingDetails")
+        if not isinstance(detail_url, str):
+            raise AccessionMismatchError("SEC API resolver has no filing URL")
+        parts = urlsplit(detail_url)
+        if (
+            parts.scheme != "https"
+            or parts.netloc != "www.sec.gov"
+            or not _DETAIL_PATH_RE.fullmatch(parts.path)
+            or parts.query
+            or parts.fragment
+        ):
+            raise AccessionMismatchError("SEC API resolver filing URL is not canonical")
+        raw_path = parts.path.replace("/xslFormNPORT-P_X01/", "/")
+        raw_url = urlunsplit((parts.scheme, parts.netloc, raw_path, "", ""))
+        call()
+        document = self._render.get_file(raw_url)
+        form_type, fund_info = _fund_info_from_render_xml(document)
+        return {
+            "accessionNo": accession_number,
+            "formType": form_type,
+            "fundInfo": fund_info,
+            "retrievalMode": "query-render-xml",
+        }
+
+
+def build_exact_nport_client(api_key: str) -> ExactNportClient:
+    from sec_api import FormNportApi, QueryApi, RenderApi
+
+    return ExactNportClient(
+        FormNportApi(api_key), QueryApi(api_key=api_key), RenderApi(api_key)
+    )
 
 
 def canonical_json(value: Any) -> str:
@@ -255,10 +397,33 @@ def extract_filing(
     )
 
 
-def fetch_exact_filing(client: Any, accession_number: str) -> Mapping[str, Any]:
+def _validate_exact_record(records: Any, accession_number: str) -> Mapping[str, Any]:
+    if not isinstance(records, list) or len(records) != 1:
+        raise AccessionMismatchError("SEC API did not return exactly one filing")
+    record = records[0]
+    if not isinstance(record, Mapping) or record.get("accessionNo") != accession_number:
+        raise AccessionMismatchError("SEC API accession mismatch")
+    if record.get("formType") != "NPORT-P":
+        raise AccessionMismatchError("SEC API form type mismatch")
+    return record
+
+
+def fetch_exact_filing(
+    client: Any,
+    accession_number: str,
+    *,
+    on_provider_call: Callable[[], None] | None = None,
+) -> Mapping[str, Any]:
     if not _ACCESSION_RE.fullmatch(accession_number):
         raise PayloadError("accession number has an invalid SEC format")
+    exact_fetch = getattr(client, "fetch_exact_filing", None)
+    if exact_fetch is not None:
+        return exact_fetch(
+            accession_number, on_provider_call=on_provider_call
+        )
     query = f'accessionNo:"{accession_number}"'
+    if on_provider_call is not None:
+        on_provider_call()
     response = client.get_data(
         {
             "query": query,
@@ -270,12 +435,7 @@ def fetch_exact_filing(client: Any, accession_number: str) -> Mapping[str, Any]:
     if not isinstance(response, Mapping):
         raise AccessionMismatchError("SEC API response is not an object")
     records = response.get("filings") or response.get("data") or []
-    if not isinstance(records, list) or len(records) != 1:
-        raise AccessionMismatchError("SEC API did not return exactly one filing")
-    record = records[0]
-    if not isinstance(record, Mapping) or record.get("accessionNo") != accession_number:
-        raise AccessionMismatchError("SEC API accession mismatch")
-    return record
+    return _validate_exact_record(records, accession_number)
 
 
 def _retry_after(exc: Exception) -> float | None:
