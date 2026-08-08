@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import threading
+import time
 
 from src.nport import secapi_fixed_income as secapi
 from src.workers import nport_fixed_income_secapi_fallback as worker
@@ -65,10 +66,10 @@ class _Client:
         self.evidence = evidence or _evidence()
         self.calls = 0
 
-    def fetch_render_fallback_evidence(self, accession: str, *, on_provider_call):
+    def fetch_render_fallback_evidence(self, accession: str, *, on_provider_call=None, invoke_provider_call=None):
         assert accession == ACCESSION
         for _ in range(3):
-            on_provider_call()
+            invoke_provider_call(lambda: None)
             self.calls += 1
         return self.evidence
 
@@ -160,7 +161,9 @@ def test_budget_below_a_complete_form_query_render_chain_makes_no_calls():
 
 def test_unsafe_resolver_fails_without_writing_overlay():
     class UnsafeClient(_Client):
-        def fetch_render_fallback_evidence(self, accession: str, *, on_provider_call):
+        def fetch_render_fallback_evidence(
+            self, accession: str, *, on_provider_call=None, invoke_provider_call=None
+        ):
             raise secapi.AccessionMismatchError("resolver filing URL is not canonical")
 
     db = _Db()
@@ -216,11 +219,13 @@ def test_concurrent_fetches_use_distinct_clients_and_keep_db_writes_on_main_thre
             super().write(projection, evidence)
 
     class Client:
-        def fetch_render_fallback_evidence(self, accession: str, *, on_provider_call):
-            on_provider_call()
+        def fetch_render_fallback_evidence(
+            self, accession: str, *, on_provider_call=None, invoke_provider_call=None
+        ):
+            invoke_provider_call(lambda: None)
             barrier.wait(timeout=2)
-            on_provider_call()
-            on_provider_call()
+            invoke_provider_call(lambda: None)
+            invoke_provider_call(lambda: None)
             return evidence_for(accession)
 
     db = Db()
@@ -261,8 +266,10 @@ def test_failure_keeps_prior_commits_and_does_not_write_the_failed_accession():
     accession_two = "0000123456-26-000002"
 
     class FailingClient:
-        def fetch_render_fallback_evidence(self, _accession: str, *, on_provider_call):
-            on_provider_call()
+        def fetch_render_fallback_evidence(
+            self, _accession: str, *, on_provider_call=None, invoke_provider_call=None
+        ):
+            invoke_provider_call(lambda: None)
             raise secapi.PayloadError("unsafe response")
 
     db = _Db([ACCESSION, accession_two])
@@ -285,3 +292,144 @@ def test_concurrency_defaults_to_one_without_an_environment_override(monkeypatch
     result = _run(db, client)
 
     assert result["concurrency"] == 1
+
+
+def test_later_success_is_committed_when_an_earlier_accession_fails_and_resume_skips_it():
+    accession_two = "0000123456-26-000002"
+    later_finished = threading.Event()
+    fail_first = True
+    provider_accessions: list[str] = []
+
+    class StatefulDb(_Db):
+        def __init__(self):
+            super().__init__([ACCESSION, accession_two])
+            self.persisted: set[str] = set()
+
+        def existing_hashes(self, _publication: str, _run: str, accession: str):
+            if accession not in self.persisted:
+                return None
+            return {
+                "parser_version": worker.PARSER_VERSION,
+                "resolver_version": worker.RESOLVER_VERSION,
+            }
+
+        def write(self, projection, evidence) -> None:
+            self.persisted.add(projection.accession_number)
+            super().write(projection, evidence)
+
+    class Client:
+        def fetch_render_fallback_evidence(
+            self, accession: str, *, on_provider_call=None, invoke_provider_call=None
+        ):
+            nonlocal fail_first
+            provider_accessions.append(accession)
+            for _ in range(3):
+                invoke_provider_call(lambda: None)
+            if accession == ACCESSION and fail_first:
+                later_finished.wait(timeout=2)
+                raise secapi.PayloadError("first accession failed")
+            if accession == accession_two:
+                later_finished.set()
+            return secapi.RenderFallbackEvidence(
+                filing={**_filing(), "accessionNo": accession},
+                form_response={"filings": []},
+                query_response={"filings": [{"accessionNo": accession}]},
+                render_raw=b"<edgarSubmission/>",
+                document_url=(
+                    "https://www.sec.gov/Archives/edgar/data/123456/"
+                    f"{accession.replace('-', '')}/primary_doc.xml"
+                ),
+            )
+
+    db = StatefulDb()
+    first = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=6, request_interval_seconds=0.0001, concurrency=2, db=db,
+        client_factory=Client, sleeper=lambda _seconds: None,
+    )
+
+    assert first["state"] == "failed"
+    assert db.persisted == {accession_two}
+
+    fail_first = False
+    later_finished.clear()
+    provider_accessions.clear()
+    resumed = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=3, request_interval_seconds=0.0001, concurrency=2, db=db,
+        client_factory=Client, sleeper=lambda _seconds: None,
+    )
+
+    assert resumed["state"] == "complete"
+    assert provider_accessions == [ACCESSION]
+
+
+def test_global_limiter_wraps_actual_sdk_request_starts():
+    accession_two = "0000123456-26-000002"
+    guard = threading.Lock()
+    active_requests = 0
+    max_active_requests = 0
+
+    def tracked(operation):
+        def run(*args, **kwargs):
+            nonlocal active_requests, max_active_requests
+            with guard:
+                active_requests += 1
+                max_active_requests = max(max_active_requests, active_requests)
+            try:
+                time.sleep(0.005)
+                return operation(*args, **kwargs)
+            finally:
+                with guard:
+                    active_requests -= 1
+
+        return run
+
+    class State:
+        accession = ACCESSION
+
+    class FormClient:
+        def __init__(self, state):
+            self.state = state
+
+        @tracked
+        def get_data(self, payload):
+            self.state.accession = payload["query"].split('"')[1]
+            return {"filings": []}
+
+    class QueryClient:
+        def __init__(self, state):
+            self.state = state
+
+        @tracked
+        def get_filings(self, _payload):
+            accession = self.state.accession
+            return {"filings": [{
+                "accessionNo": accession,
+                "formType": "NPORT-P",
+                "linkToFilingDetails": (
+                    "https://www.sec.gov/Archives/edgar/data/123456/"
+                    f"{accession.replace('-', '')}/xslFormNPORT-P_X01/primary_doc.xml"
+                ),
+            }]}
+
+    class RenderClient:
+        @tracked
+        def get_file(self, _url):
+            return """<edgarSubmission><submissionType>NPORT-P</submissionType>
+            <fundInfo><totAssets>100</totAssets><curMetrics /></fundInfo>
+            </edgarSubmission>"""
+
+    def factory():
+        state = State()
+        return secapi.ExactNportClient(FormClient(state), QueryClient(state), RenderClient())
+
+    result = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=6, request_interval_seconds=0.0001, concurrency=2,
+        db=_Db([ACCESSION, accession_two]), client_factory=factory,
+        sleeper=lambda _seconds: None,
+    )
+
+    assert result["state"] == "complete"
+    assert max_active_requests == 1

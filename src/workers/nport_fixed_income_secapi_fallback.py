@@ -124,8 +124,8 @@ class _GlobalCallLimiter:
             self._reserved_calls += 3
             return True
 
-    def provider_call(self) -> None:
-        """Take one globally paced call from the synchronized hard budget."""
+    def invoke(self, operation: Callable[[], Any]) -> Any:
+        """Pace and start the actual SDK request while holding the global permit."""
         with self._lock:
             if self._calls >= self._reserved_calls or self._calls >= self._max_calls:
                 raise RuntimeError("SEC API fallback call budget exhausted")
@@ -135,6 +135,7 @@ class _GlobalCallLimiter:
                 )
             self._previous_request_at = self._clock()
             self._calls += 1
+            return operation()
 
     @property
     def calls(self) -> int:
@@ -152,7 +153,7 @@ def _fetch_and_parse(
     """Network/parsing-only worker task: it intentionally receives no DB object."""
     client = client_factory()
     evidence = parser.fetch_render_fallback_evidence(
-        client, accession, on_provider_call=limiter.provider_call
+        client, accession, invoke_provider_call=limiter.invoke
     )
     projection = parser.extract_filing(
         evidence.filing,
@@ -408,11 +409,11 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
                     try:
                         ready[accession] = future.result()
                     except Exception as exc:
-                        failure = (accession, exc)
-                        for pending in futures:
-                            pending.cancel()
-                        break
+                        if failure is None:
+                            failure = (accession, exc)
                 if failure:
+                    for pending in futures:
+                        pending.cancel()
                     break
                 while next_to_write < len(scheduled):
                     accession = scheduled[next_to_write]
@@ -423,6 +424,9 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
                         with db.transaction():
                             db.write(*completed)
                     except Exception as exc:
+                        # A failed transaction must not be retried by the
+                        # completed-result drain below.
+                        del ready[accession]
                         failure = (accession, exc)
                         for pending in futures:
                             pending.cancel()
@@ -435,6 +439,26 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
                     break
 
         if failure:
+            # Executor shutdown has now joined requests that were already
+            # running when the first failure was observed. Keep every completed
+            # success append-only instead of forcing a later run to re-download
+            # its large Render response. Queued futures cancelled successfully
+            # have no result and are intentionally skipped.
+            for future, accession in futures.items():
+                if future.cancelled():
+                    continue
+                try:
+                    ready[accession] = future.result()
+                except Exception:
+                    continue
+            for completed_accession in sorted(ready):
+                try:
+                    with db.transaction():
+                        db.write(*ready[completed_accession])
+                except Exception:
+                    continue
+                processed += 1
+                success += 1
             accession, exc = failure
             return {"state": "conflict" if "conflict" in str(exc) else "failed", "accession_number": accession,
                     "reason": _safe_error(exc), **base, "processed": processed, "success": success,

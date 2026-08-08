@@ -154,16 +154,22 @@ class ExactNportClient:
         accession_number: str,
         *,
         on_provider_call: Callable[[], None] | None = None,
+        invoke_provider_call: Callable[[Callable[[], Any]], Any] | None = None,
     ) -> Mapping[str, Any]:
-        call = on_provider_call or (lambda: None)
+        def invoke(operation: Callable[[], Any]) -> Any:
+            if invoke_provider_call is not None:
+                return invoke_provider_call(operation)
+            if on_provider_call is not None:
+                on_provider_call()
+            return operation()
+
         payload = {
             "query": f'accessionNo:"{accession_number}"',
             "from": "0",
             "size": "1",
             "sort": [{"filedAt": {"order": "asc"}}],
         }
-        call()
-        response = self._form.get_data(payload)
+        response = invoke(lambda: self._form.get_data(payload))
         if not isinstance(response, Mapping):
             raise AccessionMismatchError("SEC API response is not an object")
         records = response.get("filings") or response.get("data") or []
@@ -172,9 +178,7 @@ class ExactNportClient:
         if records:
             return _validate_exact_record(records, accession_number)
 
-        call()
-        resolved = self._query.get_filings(
-            {
+        resolved = invoke(lambda: self._query.get_filings({
                 "query": {
                     "query_string": {
                         "query": f'accessionNo:"{accession_number}"'
@@ -183,8 +187,7 @@ class ExactNportClient:
                 "from": "0",
                 "size": "2",
                 "sort": [{"filedAt": {"order": "asc"}}],
-            }
-        )
+            }))
         if not isinstance(resolved, Mapping):
             raise AccessionMismatchError("SEC API resolver response is not an object")
         filing = _validate_exact_record(
@@ -204,8 +207,7 @@ class ExactNportClient:
             raise AccessionMismatchError("SEC API resolver filing URL is not canonical")
         raw_path = parts.path.replace("/xslFormNPORT-P_X01/", "/")
         raw_url = urlunsplit((parts.scheme, parts.netloc, raw_path, "", ""))
-        call()
-        document = self._render.get_file(raw_url)
+        document = invoke(lambda: self._render.get_file(raw_url))
         form_type, fund_info = _fund_info_from_render_xml(document)
         return {
             "accessionNo": accession_number,
@@ -219,6 +221,7 @@ class ExactNportClient:
         accession_number: str,
         *,
         on_provider_call: Callable[[], None] | None = None,
+        invoke_provider_call: Callable[[Callable[[], Any]], Any] | None = None,
     ) -> RenderFallbackEvidence:
         """Resolve only a verified Form API exact-zero gap through Render.
 
@@ -227,15 +230,20 @@ class ExactNportClient:
         and canonical SEC document URL, while callers of v1 must not gain an
         alternate persistence path.
         """
-        call = on_provider_call or (lambda: None)
+        def invoke(operation: Callable[[], Any]) -> Any:
+            if invoke_provider_call is not None:
+                return invoke_provider_call(operation)
+            if on_provider_call is not None:
+                on_provider_call()
+            return operation()
+
         payload = {
             "query": f'accessionNo:"{accession_number}"',
             "from": "0",
             "size": "1",
             "sort": [{"filedAt": {"order": "asc"}}],
         }
-        call()
-        response = self._form.get_data(payload)
+        response = invoke(lambda: self._form.get_data(payload))
         if not isinstance(response, Mapping):
             raise AccessionMismatchError("SEC API response is not an object")
         records = response.get("filings") or response.get("data") or []
@@ -244,15 +252,12 @@ class ExactNportClient:
         if records:
             raise AccessionMismatchError("Form API exact search was not zero")
 
-        call()
-        resolved = self._query.get_filings(
-            {
+        resolved = invoke(lambda: self._query.get_filings({
                 "query": {"query_string": {"query": f'accessionNo:"{accession_number}"'}},
                 "from": "0",
                 "size": "2",
                 "sort": [{"filedAt": {"order": "asc"}}],
-            }
-        )
+            }))
         if not isinstance(resolved, Mapping):
             raise AccessionMismatchError("SEC API resolver response is not an object")
         filing = _validate_exact_record(resolved.get("filings") or [], accession_number)
@@ -270,8 +275,7 @@ class ExactNportClient:
             raise AccessionMismatchError("SEC API resolver filing URL is not canonical")
         raw_path = parts.path.replace("/xslFormNPORT-P_X01/", "/")
         raw_url = urlunsplit((parts.scheme, parts.netloc, raw_path, "", ""))
-        call()
-        document = self._render.get_file(raw_url)
+        document = invoke(lambda: self._render.get_file(raw_url))
         form_type, fund_info = _fund_info_from_render_xml(document)
         return RenderFallbackEvidence(
             filing={"accessionNo": accession_number, "formType": form_type, "fundInfo": fund_info},
@@ -527,6 +531,7 @@ def fetch_render_fallback_evidence(
     accession_number: str,
     *,
     on_provider_call: Callable[[], None] | None = None,
+    invoke_provider_call: Callable[[Callable[[], Any]], Any] | None = None,
 ) -> RenderFallbackEvidence:
     """Fetch v2-only fallback evidence without permitting a generic client path."""
     if not _ACCESSION_RE.fullmatch(accession_number):
@@ -534,7 +539,11 @@ def fetch_render_fallback_evidence(
     fetch = getattr(client, "fetch_render_fallback_evidence", None)
     if fetch is None:
         raise PayloadError("SEC API client does not support the verified Render fallback")
-    evidence = fetch(accession_number, on_provider_call=on_provider_call)
+    evidence = fetch(
+        accession_number,
+        on_provider_call=on_provider_call,
+        invoke_provider_call=invoke_provider_call,
+    )
     if not isinstance(evidence, RenderFallbackEvidence):
         raise PayloadError("SEC API fallback client returned invalid evidence")
     return evidence
