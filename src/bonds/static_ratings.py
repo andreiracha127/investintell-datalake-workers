@@ -66,7 +66,7 @@ def build_static_mapping(path: str | Path, *, expected_sha256: str) -> StaticMap
     required = {"cusip_id", "month", "rating_bucket"}
     if not required.issubset(parquet.schema_arrow.names):
         raise StaticRatingRefusal("missing_parquet_columns")
-    selected: dict[str, StaticRating] = {}
+    observations: dict[str, dict[date, list[tuple[str | None, int]]]] = {}
     rejects: list[StaticRatingReject] = []
     source_rows = 0
     for batch in parquet.iter_batches(columns=["cusip_id", "month", "rating_bucket"], batch_size=10_000):
@@ -83,13 +83,20 @@ def build_static_mapping(path: str | Path, *, expected_sha256: str) -> StaticMap
                 continue
             if bucket not in _BUCKETS:
                 rejects.append(StaticRatingReject(source_rows, "invalid_rating_bucket", _text(raw_cusip), _text(raw_month), _text(raw_bucket)))
-                continue
-            candidate = StaticRating(
-                cusip.normalized_cusip9, bucket, month, "not_rated" if bucket == "NR" else "rated", actual, source_rows
-            )
-            prior = selected.get(candidate.cusip9)
-            if prior is None or (candidate.rating_as_of_month, candidate.source_row_number) >= (prior.rating_as_of_month, prior.source_row_number):
-                selected[candidate.cusip9] = candidate
+                bucket = None
+            observations.setdefault(cusip.normalized_cusip9, {}).setdefault(month, []).append((bucket, source_rows))
+    selected: dict[str, StaticRating] = {}
+    for cusip9, by_month in observations.items():
+        latest_month = max(by_month)
+        latest = by_month[latest_month]
+        buckets = {bucket for bucket, _row_number in latest if bucket is not None}
+        if any(bucket is None for bucket, _row_number in latest) or len(buckets) != 1:
+            raise StaticRatingRefusal("ambiguous_latest_rating")
+        bucket = buckets.pop()
+        row_number = max(row_number for candidate, row_number in latest if candidate == bucket)
+        selected[cusip9] = StaticRating(
+            cusip9, bucket, latest_month, "not_rated" if bucket == "NR" else "rated", actual, row_number
+        )
     if not selected:
         raise StaticRatingRefusal("zero_usable_rows")
     return StaticMappingResult(selected, tuple(rejects), source_rows, actual)
@@ -107,6 +114,15 @@ def attach_static_ratings(targets: Iterable[Mapping[str, Any]], mapping: Mapping
             row.update(rating_bucket="NR", rating_as_of_month=None, rating_state="missing", reason_code="static_rating_absent")
         else:
             target_month = _month(row.get("month"))
+            if target_month is not None and target_month < rating.rating_as_of_month:
+                row.update(
+                    rating_bucket="NR",
+                    rating_as_of_month=None,
+                    rating_state="missing",
+                    reason_code="static_rating_future",
+                )
+                output.append(row)
+                continue
             carry = target_month is not None and target_month > rating.rating_as_of_month
             row.update(
                 rating_bucket=rating.rating_bucket,
@@ -137,7 +153,7 @@ def mapping_evidence(result: StaticMappingResult) -> dict[str, object]:
         "rejected_rows": result.rejected_rows,
         "rating_month_max": max(rating.rating_as_of_month for rating in result.mapping.values()).isoformat(),
         "bucket_counts": dict(sorted(buckets.items())),
-        "parity": equivalence_report(result.mapping, result.mapping),
+        "selection_rule": "one_generic_bucket_at_each_cusip_latest_month",
     }
 
 
@@ -146,7 +162,26 @@ def verify_mapping_against_artifact(
 ) -> dict[str, int]:
     """Independently re-read the pinned source and compare its final-row mapping."""
 
-    source_final = build_static_mapping(path, expected_sha256=expected_sha256).mapping
+    artifact = Path(path)
+    actual = _hash_file(artifact)
+    if actual != expected_sha256:
+        raise StaticRatingRefusal("sha256_mismatch")
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:  # pragma: no cover
+        raise StaticRatingRefusal("pyarrow_unavailable") from exc
+    source_final: dict[str, StaticRating] = {}
+    table = pq.read_table(artifact, columns=["cusip_id", "month", "rating_bucket"])
+    for row_number, row in enumerate(table.to_pylist(), 1):
+        cusip = normalize_cusip9(row["cusip_id"]).normalized_cusip9
+        month = _month(row["month"])
+        bucket = None if row["rating_bucket"] is None else str(row["rating_bucket"]).strip().upper()
+        if cusip is None or month is None or bucket not in _BUCKETS:
+            continue
+        candidate = StaticRating(cusip, bucket, month, "not_rated" if bucket == "NR" else "rated", actual, row_number)
+        prior = source_final.get(cusip)
+        if prior is None or (candidate.rating_as_of_month, candidate.source_row_number) > (prior.rating_as_of_month, prior.source_row_number):
+            source_final[cusip] = candidate
     return equivalence_report(mapping, source_final)
 
 

@@ -156,5 +156,13 @@ SELECT jsonb_build_object(
 
 
 def render_schema(schema_sql: str) -> str:
-    """Emit a standalone schema application transaction for a role-enabled psql session."""
-    return "\\set ON_ERROR_STOP on\nBEGIN;\nSET LOCAL ROLE worker_writer;\n" + schema_sql.rstrip() + "\nCOMMIT;\n"
+    """Emit DDL as the administrative session; each schema transfers ownership.
+
+    ``worker_writer`` intentionally has no blanket ``CREATE`` privilege on a
+    hardened ``public`` schema.  Switching roles before ``CREATE TABLE`` would
+    therefore fail before the DDL's explicit ``ALTER ... OWNER`` clauses run.
+    Fact batches still use ``SET LOCAL ROLE worker_writer``; schema installation
+    instead fails closed unless the psql session can create and transfer every
+    declared object.
+    """
+    return "\\set ON_ERROR_STOP on\nBEGIN;\n" + schema_sql.rstrip() + "\nCOMMIT;\n"

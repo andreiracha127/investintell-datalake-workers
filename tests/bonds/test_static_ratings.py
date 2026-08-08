@@ -19,7 +19,7 @@ def _artifact(tmp_path: Path) -> Path:
         pa.table(
             {
                 "cusip_id": ["037833100", "037833100", "594918104", "BAD", "594918104"],
-                "month": [date(2025, 1, 1), date(2025, 2, 1), date(2025, 1, 1), date(2025, 1, 1), date(2025, 2, 1)],
+                "month": [date(2025, 1, 1), date(2025, 2, 1), date(2025, 1, 1), date(2025, 1, 1), date(2024, 12, 1)],
                 "rating_bucket": ["A", "NR", "AA", "BBB", "X"],
             }
         ),
@@ -78,6 +78,8 @@ def test_equivalence_and_copy_cursor_are_deterministic_and_stdout_pure(tmp_path:
     assert "'committed_through', 1" in copy
     assert "'remaining', 1" in copy
     assert "'inserted'" in copy and "'existing'" in copy and "'conflicted'" in copy
+    assert "mixed static-rating source_sha256" in copy
+    assert "non-contiguous static-rating cursor" in copy
     assert "037833100" in copy
     assert "594918104" not in copy
 
@@ -96,6 +98,35 @@ def test_hash_mismatch_refuses_before_parquet_read(tmp_path: Path) -> None:
     artifact = _artifact(tmp_path)
     with pytest.raises(StaticRatingRefusal, match="sha256_mismatch"):
         build_static_mapping(artifact, expected_sha256="0" * 64)
+
+
+@pytest.mark.parametrize(
+    "latest_buckets",
+    [
+        ["A", "BBB"],
+        ["A", "X"],
+    ],
+)
+def test_latest_month_ambiguity_or_invalid_value_refuses_the_mapping(
+    tmp_path: Path, latest_buckets: list[str]
+) -> None:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from src.bonds.static_ratings import StaticRatingRefusal, build_static_mapping
+
+    artifact = tmp_path / "ambiguous.parquet"
+    pq.write_table(
+        pa.table({
+            "cusip_id": ["037833100", "037833100", "037833100"],
+            "month": [date(2025, 1, 1), date(2025, 2, 1), date(2025, 2, 1)],
+            "rating_bucket": ["AA", *latest_buckets],
+        }),
+        artifact,
+    )
+
+    with pytest.raises(StaticRatingRefusal, match="ambiguous_latest_rating"):
+        build_static_mapping(artifact, expected_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest())
 
 
 def test_static_backfill_cli_emits_a_stdout_pure_copy_slice(tmp_path: Path) -> None:
@@ -120,12 +151,16 @@ def test_copy_cursor_refuses_past_the_mapping_and_schema_emit_is_psql_only(tmp_p
     result = build_static_mapping(artifact, expected_sha256=hashlib.sha256(artifact.read_bytes()).hexdigest())
     with pytest.raises(StaticRatingRefusal, match="cursor_beyond_mapping"):
         render_copy_slice(tuple(result.mapping.values()), cursor=3, limit=1)
+    with pytest.raises(StaticRatingRefusal, match="cursor_at_end_requires_no_batch"):
+        render_copy_slice(tuple(result.mapping.values()), cursor=2, limit=1)
     schema = subprocess.run(
         [sys.executable, "scripts/backfill_bond_rating_static.py", "--emit-schema"],
         cwd=Path(__file__).resolve().parents[2], check=False, capture_output=True, text=True,
     )
     assert schema.returncode == 0, schema.stderr
-    assert schema.stdout.startswith("\\set ON_ERROR_STOP on\nBEGIN;\nSET LOCAL ROLE worker_writer;")
+    assert schema.stdout.startswith("\\set ON_ERROR_STOP on\nBEGIN;\n")
+    assert "SET LOCAL ROLE worker_writer" not in schema.stdout
+    assert "ALTER TABLE bond_rating_static OWNER TO worker_writer" in schema.stdout
     assert schema.stderr == ""
 
 
@@ -154,7 +189,7 @@ def test_mapping_evidence_reports_last_row_parity_shape(tmp_path: Path) -> None:
     assert evidence["mapping_rows"] == 2
     assert evidence["rating_month_max"] == "2025-02-01"
     assert evidence["bucket_counts"] == {"AA": 1, "NR": 1}
-    assert evidence["parity"] == {"rows": 2, "matches": 2, "differences": 0}
+    assert evidence["selection_rule"] == "one_generic_bucket_at_each_cusip_latest_month"
     assert verify_mapping_against_artifact(artifact, expected_sha256=result.source_sha256, mapping=result.mapping) == {
         "rows": 2, "matches": 2, "differences": 0
     }
@@ -189,24 +224,33 @@ def test_local_postgres_static_mapping_is_immutable_and_conflicts_fail(tmp_path:
         with psycopg.connect(dsn) as conn:
             install_schema(conn)
             install_schema(conn)
+            conn.commit()
             owner, function_owner, runtime_select = conn.execute(
                 """SELECT (SELECT tableowner FROM pg_tables WHERE tablename='bond_rating_static'),
                           (SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE proname='bond_rating_static_prevent_mutation'),
                           has_table_privilege('app_runtime', 'bond_rating_static', 'SELECT')"""
             ).fetchone()
             assert (owner, function_owner, runtime_select) == ("worker_writer", "worker_writer", False)
-            first = load_static_mapping(conn, rows, batch_size=1)
-            second = load_static_mapping(conn, rows, batch_size=1)
+            conn.commit()
+            with conn.transaction():
+                conn.execute("SET LOCAL ROLE worker_writer")
+                first = load_static_mapping(conn, rows, batch_size=1)
+            with conn.transaction():
+                conn.execute("SET LOCAL ROLE worker_writer")
+                second = load_static_mapping(conn, rows, batch_size=1)
             assert first == {"inserted": 2, "existing": 0, "conflicted": 0, "skipped": 0, "reconciled": 2}
             assert second == {"inserted": 0, "existing": 2, "conflicted": 0, "skipped": 0, "reconciled": 2}
-            conn.commit()
+            with pytest.raises(StaticRatingRefusal, match="writer_role_required"):
+                load_static_mapping(conn, rows)
             with pytest.raises(psycopg.Error, match="immutable"):
                 conn.execute("UPDATE bond_rating_static SET rating_bucket='AAA'")
             conn.rollback()
             altered = list(rows)
             altered[0] = altered[0].__class__(altered[0].cusip9, "AAA", altered[0].rating_as_of_month, "rated", altered[0].source_sha256, altered[0].source_row_number)
-            with pytest.raises(StaticRatingRefusal, match="immutable_conflict"):
-                load_static_mapping(conn, altered)
+            with conn.transaction():
+                conn.execute("SET LOCAL ROLE worker_writer")
+                with pytest.raises(StaticRatingRefusal, match="immutable_conflict"):
+                    load_static_mapping(conn, altered)
     finally:
         with psycopg.connect(admin_dsn, autocommit=True) as admin:
             admin.execute("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=%s", (database,))

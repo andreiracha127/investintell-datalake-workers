@@ -42,8 +42,10 @@ def main() -> int:
 
         with connect(args.dsn) as conn:
             install_schema(conn)
-            counters = load_static_mapping(conn, rows)
             conn.commit()
+            with conn.transaction():
+                conn.execute("SET LOCAL ROLE worker_writer")
+                counters = load_static_mapping(conn, rows)
         print(counters)
         return 0
     evidence = mapping_evidence(result)
