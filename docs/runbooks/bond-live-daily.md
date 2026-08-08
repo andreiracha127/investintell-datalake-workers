@@ -50,6 +50,23 @@ mean paying for the same publication twice.
 | `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). |
 | `BOND_TICK_TOP_N` | no | Tick cohort size (default 500). |
 
+## 3a. One-time privilege prerequisite (already applied 2026-08-07)
+
+Postgres requires **ownership** to refresh a materialized view — a `GRANT` is not
+enough — and `bond_curated_securities` was owned by `postgres` while the worker
+connects as `worker_writer`. Stage 4 would have failed on every run. Applied on
+the production datalake, aligning it with the other bond relations
+(`bond_metric_v1`, `bond_reference_terms`, `bond_serving_facts` were already
+`worker_writer`-owned):
+
+```sql
+ALTER MATERIALIZED VIEW bond_curated_securities OWNER TO worker_writer;
+```
+
+Verified by refreshing it `SET ROLE worker_writer` (10,073 rows). If the matview
+is ever rebuilt by an operator running as `postgres`, this has to be re-applied —
+the run reports `matview_failed` and exits non-zero if it is not.
+
 ## 4. Reading the result
 
 `state` is `ok`, or `aborted` when the provider cut the sweep short — the

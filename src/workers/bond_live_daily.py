@@ -342,12 +342,25 @@ def _load_ticks(
 # Stage 4: matview
 # --------------------------------------------------------------------------- #
 def _refresh_curated(dsn: str) -> dict[str, Any]:
-    """REFRESH ... CONCURRENTLY needs autocommit (it cannot run in a transaction)."""
+    """REFRESH ... CONCURRENTLY needs autocommit (it cannot run in a transaction).
+
+    Postgres requires OWNERSHIP to refresh a materialized view -- a GRANT is not
+    enough -- so this is the one stage whose failure mode is a privilege, not
+    data. It is caught rather than raised: the refresh runs between the load and
+    the republication, and letting it abort would mean a permission problem
+    silently costs the product the day's prices, which is the larger harm by
+    far. The caller still folds the failure into the run's exit code, so it
+    lands as a failed deploy instead of a line in a JSON blob nobody reads.
+    """
     with connect(dsn, autocommit=True) as conn:
         if not _relation_exists(conn, CURATED_MATVIEW):
             return {"state": "absent", "matview": CURATED_MATVIEW}
-        with conn.cursor() as cur:
-            cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {CURATED_MATVIEW}")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {CURATED_MATVIEW}")
+        except Exception as exc:
+            return {"state": "failed", "matview": CURATED_MATVIEW,
+                    "error": f"{type(exc).__name__}: {exc}"}
     return {"state": "refreshed", "matview": CURATED_MATVIEW}
 
 
@@ -423,15 +436,18 @@ def run(
     matview = _refresh_curated(resolved)
     republish = _republish(resolved)
 
-    # Two ways a day is truncated, and BOTH have to be non-green: a sweep the
-    # provider cut short, and a republication that failed (the load is durable
-    # but unserved). ``run_worker`` reads the top-level ``aborted`` key and
-    # exits non-zero on it, so either shows up as a failed deploy instead of a
-    # log line nobody reads.
+    # Three ways a day is truncated, and NONE may be painted green: a sweep the
+    # provider cut short, a matview left stale, and a republication that failed
+    # (the load is durable but unserved). ``run_worker`` reads the top-level
+    # ``aborted`` key and exits non-zero on it, so each shows up as a failed
+    # deploy instead of a log line nobody reads. Every stage still RAN -- the
+    # verdict is computed at the end, never used to skip work.
     republish_failed = bool(republish.pop("failed", False))
-    aborted = bool(candles.get("aborted")) or republish_failed
+    matview_failed = matview.get("state") == "failed"
+    aborted = bool(candles.get("aborted")) or republish_failed or matview_failed
     return {
         "state": ("republish_failed" if republish_failed
+                  else "matview_failed" if matview_failed
                   else "aborted" if aborted else "ok"),
         "aborted": aborted,
         "as_of": today.isoformat(),

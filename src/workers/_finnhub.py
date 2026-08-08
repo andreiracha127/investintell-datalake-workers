@@ -188,6 +188,24 @@ class FinnhubClient:
         # urllib's default opener follows 3xx, which /bond/tick requires.
         return urllib.request.urlopen(request, timeout=self._timeout_s)
 
+    @staticmethod
+    def _read_body(response: Any) -> tuple[Any, Any]:
+        """Drain and close one response; whatever it raises is the caller's.
+
+        Called from inside :meth:`_get_json`'s retrying scope, so a body that
+        dies mid-stream is retried and, when retries run out, surfaces as a
+        :class:`FinnhubTransientError` like any other network failure. The
+        socket is closed on both paths -- a retried attempt must not leak one.
+        """
+        try:
+            body = response.read()
+            headers = getattr(response, "headers", {}) or {}
+        finally:
+            closer = getattr(response, "close", None)
+            if callable(closer):
+                closer()
+        return body, headers
+
     def _get_json(self, endpoint: str, params: dict[str, Any]) -> Any:
         """One logical GET with throttle, retries and exponential backoff.
 
@@ -207,6 +225,14 @@ class FinnhubClient:
                 self.retries += 1
             try:
                 response = self._open(url)
+                # A call whose body then dies still burned quota.
+                self.http_calls += 1
+                # The read is INSIDE this scope on purpose: a socket that dies
+                # while the body is being consumed is exactly as transient as
+                # one that dies at connect time. Outside, it escaped as a raw
+                # timeout/OSError past loaders that only catch
+                # FinnhubTransientError and killed the whole unsupervised sweep.
+                body, headers = self._read_body(response)
             except urllib.error.HTTPError as exc:
                 self.http_calls += 1
                 status = exc.code
@@ -224,21 +250,13 @@ class FinnhubClient:
                     continue
                 self._count_error(f"http_{status}")
                 raise FinnhubConfigError(f"Finnhub {endpoint} returned HTTP {status}")
-            except Exception as exc:  # network layer -- transient
+            except Exception as exc:  # network layer, at connect OR mid-body
                 self._count_error("network")
                 last_error = f"network: {type(exc).__name__}"
                 self._sleep(min(delay, BACKOFF_CAP_S))
                 delay *= 2
                 continue
 
-            self.http_calls += 1
-            try:
-                body = response.read()
-                headers = getattr(response, "headers", {}) or {}
-            finally:
-                closer = getattr(response, "close", None)
-                if callable(closer):
-                    closer()
             self._respect_rate_headers(headers)
             try:
                 return json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)

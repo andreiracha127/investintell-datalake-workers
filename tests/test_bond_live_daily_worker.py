@@ -230,6 +230,26 @@ def test_a_failed_republication_is_flagged_so_the_run_exits_non_zero(monkeypatch
     assert bond_live_daily._republish("postgresql://x")["failed"] is False
 
 
+def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication() -> None:
+    """REFRESH needs OWNERSHIP, not a grant -- so this stage can fail on privilege.
+
+    It sits between the load and the republication, so raising would mean a
+    permission problem silently costs the product the day's prices. It is caught
+    and folded into the exit code instead: all the work runs, then the verdict.
+    """
+    import inspect
+
+    source = inspect.getsource(bond_live_daily._refresh_curated)
+    assert "except Exception" in source
+    assert '"state": "failed"' in source
+    run_source = inspect.getsource(bond_live_daily.run)
+    assert 'matview.get("state") == "failed"' in run_source
+    assert "or matview_failed" in run_source
+    # The refresh still happens BEFORE the republication -- the verdict is
+    # computed at the end and never used to skip work.
+    assert run_source.index("_refresh_curated") < run_source.index("_republish(")
+
+
 def test_run_worker_reads_the_top_level_aborted_key() -> None:
     """The exit-code contract lives on that exact key -- keep them wired."""
     import inspect
@@ -300,6 +320,78 @@ def test_retries_are_finite_and_end_in_a_typed_transient_error() -> None:
     with pytest.raises(_finnhub.FinnhubTransientError):
         client.daily_candles("X", 0, 1)
     assert client.errors["network"] == _finnhub.MAX_RETRIES + 1
+
+
+class _DyingResponse:
+    """Connects, then dies while the body is being consumed."""
+
+    def __init__(self, error: BaseException, closed: list[str]) -> None:
+        self._error = error
+        self._closed = closed
+        self.headers: dict = {}
+
+    def read(self):
+        raise self._error
+
+    def close(self):
+        self._closed.append("closed")
+
+
+def test_a_body_read_failure_is_retried_and_then_succeeds() -> None:
+    """urlopen can return and the socket still die mid-body.
+
+    That failure used to sit outside the retrying scope and escaped as a raw
+    timeout, past loaders that only catch FinnhubTransientError -- one bad read
+    aborted the whole unsupervised nightly sweep.
+    """
+    closed: list[str] = []
+    calls = {"n": 0}
+
+    def flaky(url, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _DyingResponse(TimeoutError("read timed out"), closed)
+        return _Response(b'{"s": "ok"}')
+
+    client = _finnhub.FinnhubClient("k", opener=flaky, sleep=lambda _s: None)
+    assert client.daily_candles("X", 0, 1) == {"s": "ok"}
+    assert client.retries == 1
+    # The half-read call still burned quota, and its socket was released.
+    assert client.http_calls == 2
+    assert client.errors["network"] == 1
+    assert closed == ["closed"]
+
+
+def test_a_persistent_body_read_failure_is_a_typed_transient_error() -> None:
+    """A dead body ends as FinnhubTransientError, never as a raw OSError."""
+    closed: list[str] = []
+
+    def dying(url, timeout):
+        return _DyingResponse(OSError("connection reset by peer"), closed)
+
+    client = _finnhub.FinnhubClient("k", opener=dying, sleep=lambda _s: None)
+    with pytest.raises(_finnhub.FinnhubTransientError):
+        client.daily_candles("X", 0, 1)
+    assert client.errors["network"] == _finnhub.MAX_RETRIES + 1
+    # Every attempt closed its response -- retrying must not leak sockets.
+    assert len(closed) == _finnhub.MAX_RETRIES + 1
+
+
+def test_a_credential_failure_still_fails_fast_after_one_call() -> None:
+    """Retrying a rejected key only burns quota: 4xx stays non-transient."""
+    import urllib.error
+
+    calls = {"n": 0}
+
+    def forbidden(url, timeout):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(url, 401, "bad key", {}, None)
+
+    client = _finnhub.FinnhubClient("k", opener=forbidden, sleep=lambda _s: None)
+    with pytest.raises(_finnhub.FinnhubConfigError):
+        client.daily_candles("X", 0, 1)
+    assert calls["n"] == 1
+    assert client.retries == 0
 
 
 def test_a_nearly_drained_window_sleeps_to_the_reset_instant() -> None:
