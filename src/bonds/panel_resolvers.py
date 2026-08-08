@@ -469,7 +469,10 @@ fuse_live_panel = fuse_backfill_reference_frames
 
 
 def _design(frame: pd.DataFrame) -> pd.DataFrame:
-    x = pd.DataFrame({"log_maturity": np.log(frame["bond_maturity"].clip(lower=.25)), "log_amt": np.log(frame["amt_outstanding_k"].clip(lower=1)), "log_volume": np.log1p(frame["dollar_volume"].clip(lower=0)), "is_144a": frame["db_type"].eq(2).astype(float)}, index=frame.index)
+    maturity = pd.to_numeric(frame["bond_maturity"], errors="coerce").astype(float)
+    amount = pd.to_numeric(frame["amt_outstanding_k"], errors="coerce").astype(float)
+    volume = pd.to_numeric(frame["dollar_volume"], errors="coerce").astype(float)
+    x = pd.DataFrame({"log_maturity": np.log(maturity.clip(lower=.25)), "log_amt": np.log(amount.clip(lower=1)), "log_volume": np.log1p(volume.clip(lower=0)), "is_144a": frame["db_type"].eq(2).astype(float)}, index=frame.index)
     rating = pd.get_dummies(frame["rating_bucket"], prefix="q", dtype=float).drop(columns=["q_BBB"], errors="ignore")
     sector = pd.get_dummies(frame["ff17num"].astype(int), prefix="s", dtype=float)
     return pd.concat([x, rating, sector.iloc[:, 1:] if len(sector.columns) > 1 else sector], axis=1)

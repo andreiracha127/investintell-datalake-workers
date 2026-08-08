@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
@@ -127,7 +128,9 @@ def test_spread_model_clusters_by_resolved_issuer_not_cusip6(monkeypatch: pytest
     rows = pd.DataFrame({
         "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": [f"issuer-{i % 3}" for i in range(300)],
         "month": pd.Timestamp("2024-01-01"), "spread_final": np.linspace(.01, .03, 300), "bond_maturity": np.linspace(2., 8., 300),
-        "amt_outstanding_k": np.linspace(300_000., 700_000., 300), "dollar_volume": np.linspace(1., 5., 300), "db_type": 1, "rating_bucket": "A", "ff17num": 10,
+        "amt_outstanding_k": [Decimal(300_000 + index * 1_000) for index in range(300)],
+        "dollar_volume": [Decimal(1 + index) for index in range(300)],
+        "db_type": 1, "rating_bucket": "A", "ff17num": 10,
     })
     observed: dict[str, object] = {}
 
