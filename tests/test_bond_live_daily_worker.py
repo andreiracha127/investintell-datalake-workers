@@ -1,4 +1,4 @@
-"""DB-free tests for the bond_live_daily worker and its provider client.
+"""Tests for the bond_live_daily worker and its provider client.
 
 The stage functions are exercised against a tiny fake connection rather than a
 disposable Postgres, because what needs pinning here is ORCHESTRATION -- which
@@ -6,11 +6,20 @@ window each bond is asked for, what is written, when a commit lands, and how a
 provider failure is reported -- none of which needs a real planner. The SQL these
 stages emit is separately drift-locked below and validated against production
 before deploy.
+
+ONE test needs a real database and says so (``SEC_TEST_DATABASE_URL``, skipped
+without it): the one about what happens when PostgreSQL REFUSES a write. Its
+whole subject is the aborted-transaction state -- the second statement raising
+``InFailedSqlTransaction`` on top of the first -- which is a property of the
+server, not of the worker, and a fake that raised on cue would be pinning the
+test author's belief about Postgres rather than Postgres.
 """
 from __future__ import annotations
 
 import contextlib
 import datetime as _dt
+import os
+from uuid import uuid4
 
 import pytest
 
@@ -103,6 +112,17 @@ DAY = _dt.date(2026, 8, 6)
 TODAY = _dt.date(2026, 8, 7)
 UNIVERSE = [("912828XX1", "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
 
+#: A curve that answered for every tenor. Handed to RUN-level fixtures on
+#: purpose: since 2026-08-08 a stage 2 that loaded no tenor at all is a red run
+#: (an all-empty curve used to read exactly like a healthy one), so a fixture
+#: meant to represent a green day has to give the curve a day. Stage 2's own
+#: unit tests below script individual tenors and read the totals, so they keep
+#: ``FakeClient``'s empty default -- an empty answer is what they are about.
+HEALTHY_CURVE = {
+    tenor: {"data": [{"d": TODAY.isoformat(), "v": 4.0}]}
+    for tenor in bond_live_daily.CURVE_TENORS
+}
+
 #: Markers the FakeConn answers by. Kept next to each other because a run()-level
 #: test drives all four query shapes through one connection.
 Q_UNIVERSE = "FROM bond_reference_terms r"
@@ -194,7 +214,7 @@ def _drive_run(
     def _client():
         if client_error is not None:
             raise client_error
-        return client if client is not None else FakeClient()
+        return client if client is not None else FakeClient(curve=HEALTHY_CURVE)
 
     monkeypatch.setattr(bond_live_daily, "client_from_env", _client)
     return bond_live_daily.run(calc_date=calc_date.isoformat(), limit=limit)
@@ -432,6 +452,14 @@ def test_a_tenor_already_past_the_replay_date_writes_nothing_rather_than_crashin
     assert stats["tenors"] == 0 and stats["rows_upserted"] == 0
     # Nothing to load is not a failure: the tenor answered, it had no new day.
     assert stats["failed_tenors"] == []
+    # And it is the ONE empty fold that proves nothing about the provider, so it
+    # is filed apart from the empties that do. The other twelve tenors have no
+    # watermark here and the fake answers them with `{"data": []}`: a 200 that
+    # folded to nothing for a reason no bound explains.
+    assert stats["skipped_tenors"] == ["10y"]
+    assert stats["empty_tenors"] == [
+        t for t in bond_live_daily.CURVE_TENORS if t != "10y"
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -529,7 +557,7 @@ def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked
                 raise _finnhub.FinnhubTransientError("down")
             return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
 
-    out = _drive_run(monkeypatch, conn=conn, client=_OutageAfter())
+    out = _drive_run(monkeypatch, conn=conn, client=_OutageAfter(curve=HEALTHY_CURVE))
 
     ticks = out["ticks"]
     assert ticks["aborted"] is True
@@ -931,8 +959,9 @@ def test_a_stage_that_did_no_work_is_not_a_stage_that_had_nothing_to_do(
     assert out["aborted"] is True
 
     # One dead tenor out of thirteen is still a green day.
-    ok = _drive_run(monkeypatch, client=FakeClient(fail={"30y"}))
+    ok = _drive_run(monkeypatch, client=FakeClient(curve=HEALTHY_CURVE, fail={"30y"}))
     assert ok["curve"]["failed_tenors"] == ["30y"]
+    assert ok["curve"]["tenors"] == len(bond_live_daily.CURVE_TENORS) - 1
     assert ok["state"] == "ok"
 
 
@@ -945,10 +974,346 @@ def test_a_tick_lane_that_failed_every_call_is_reported_not_swallowed(monkeypatc
         Q_UNIVERSE: list(UNIVERSE),
         Q_ACTIVITY: [("912828XX1", 1_000_000)],
     })
-    out = _drive_run(monkeypatch, conn=conn, client=_NoTape())
+    out = _drive_run(monkeypatch, conn=conn, client=_NoTape(curve=HEALTHY_CURVE))
     assert out["ticks"]["swept"] == 1 and out["ticks"]["transient_failures"] == 1
     assert out["state"] == "ticks_failed"
     assert out["aborted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# An EMPTY lane is a lane that did no work
+#
+# The hole both of these close is the same one, in the two stages that load from
+# a window: a provider that keeps answering 200 with nothing in it. Every call
+# succeeds, every counter stays plausible, and the run republishes yesterday and
+# exits green having loaded zero rows for the whole universe. What makes it a
+# judgeable event rather than a guess is that each stage has a day it can PROVE
+# the provider owes it -- a day this feed already loaded from that same endpoint.
+# --------------------------------------------------------------------------- #
+def _loaded(*cusips: str, day: _dt.date = DAY) -> list[tuple]:
+    """Watermark rows: bonds this lane has already loaded up to ``day``."""
+    return [(cusip, day) for cusip in cusips]
+
+
+def _curve_at(day: _dt.date) -> list[tuple]:
+    """A curve table loaded up to ``day`` for every tenor."""
+    return [(tenor, day) for tenor in bond_live_daily.CURVE_TENORS]
+
+
+def test_a_sweep_that_re_asked_for_loaded_days_and_got_nothing_is_not_green(
+    monkeypatch,
+) -> None:
+    """The all-empty candle sweep, which used to be indistinguishable from a
+    quiet day.
+
+    Entitlement lost and surfaced as JSON, a shape change under ``s``/``t``/``c``,
+    an ISIN mapping that stopped resolving: none of them raise. ``_load_candles``
+    counted ``no_data`` and left ``aborted`` false, so stage 1 loaded nothing for
+    the entire curated universe and the run still refreshed, republished and
+    exited **ok** -- serving yesterday's observations as today's work.
+
+    The evidence that makes it judgeable is the WINDOW. Every bond here carries a
+    watermark, so its window re-opens on a day this feed already loaded FROM THIS
+    PROVIDER: the provider served that day once, so an empty answer for it is a
+    fault and not a market. That is what ``resumed`` counts.
+    """
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE), Q_WATERMARK: _loaded("912828XX1")})
+    out = _drive_run(monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE))
+
+    assert out["candles"]["resumed"] == 1
+    assert out["candles"]["with_data"] == 0 and out["candles"]["no_data"] == 1
+    # Not the breaker: every call SUCCEEDED. That is the whole point.
+    assert out["candles"]["aborted"] is False
+    assert out["candles"]["transient_failures"] == 0
+    assert out["state"] == "candles_failed"
+    assert out["aborted"] is True
+
+    # The control, on the same connection shape: one bond that answered is the
+    # difference between a broken provider and a working one.
+    green = _drive_run(
+        monkeypatch,
+        conn=FakeConn({Q_UNIVERSE: list(UNIVERSE), Q_WATERMARK: _loaded("912828XX1")}),
+        client=FakeClient(
+            candles={"US912828XX10": _candle_payload(TODAY, 99.0)}, curve=HEALTHY_CURVE
+        ),
+    )
+    assert green["candles"]["with_data"] == 1
+    assert green["state"] == "ok"
+
+
+def test_a_cold_table_is_not_evidence_that_the_provider_broke(monkeypatch) -> None:
+    """``resumed``, not ``swept`` -- and this is the first reason why.
+
+    A bond this lane has never loaded gets ``fetch_window``'s 30-day cold-start
+    window, and nothing in the database says the provider ever had a day for it.
+    409 of the 10,073 curated bonds are exactly that (measured on production
+    2026-08-08: attempted, never once returned data), and the sweep RING sorts
+    never-loaded bonds first inside a round -- so a thin ``WORKER_LIMIT`` slice
+    is *systematically* all-dataless, not unluckily so. Judged on ``swept`` this
+    clause would fire on every capped run and mean nothing.
+    """
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})   # no watermark rows at all
+    out = _drive_run(monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE))
+
+    assert out["candles"]["swept"] == 1 and out["candles"]["with_data"] == 0
+    assert out["candles"]["resumed"] == 0, "no bond was asked about a day it had"
+    assert out["state"] == "ok"
+    assert out["halted_by"] == []
+
+
+def test_a_replay_of_a_day_the_table_is_already_past_is_benign_in_both_lanes(
+    monkeypatch,
+) -> None:
+    """The second reason, and it is the same event in stage 1 and stage 2.
+
+    An operator replays a session in May against a table loaded to August.
+    ``fetch_window`` clamps every bond's window to ``[calc_date, calc_date]`` and
+    ``curve_points`` gets ``not_before > not_after`` for every tenor. If the
+    replayed day was a Saturday -- or any session this provider has no tape for
+    -- BOTH lanes come back with nothing, legitimately, for the entire universe.
+
+    This repo deliberately owns no trading calendar (see
+    ``live_daily.previous_business_day``: inventing one would make the lane wrong
+    on exactly the days a holiday calendar is meant to fix), so the honest
+    reading is that such a run proves nothing about the provider. Neither clause
+    may fire.
+    """
+    replay = _dt.date(2026, 5, 15)
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_WATERMARK: _loaded("912828XX1", day=TODAY),   # already past the replay
+        Q_CURVE_WATERMARK: _curve_at(TODAY),            # ...and so is every tenor
+    })
+    out = _drive_run(
+        monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE), calc_date=replay
+    )
+
+    assert out["candles"]["with_data"] == 0 and out["candles"]["resumed"] == 0
+    assert out["curve"]["tenors"] == 0
+    assert out["curve"]["skipped_tenors"] == list(bond_live_daily.CURVE_TENORS)
+    assert out["curve"]["empty_tenors"] == []
+    assert out["state"] == "ok"
+    assert out["halted_by"] == []
+
+
+def test_a_curve_that_answered_with_nothing_for_every_tenor_did_no_work(
+    monkeypatch,
+) -> None:
+    """The same hole in stage 2, and it did not need a failure to open.
+
+    ``curve_points`` returns ``[]`` for a 200 whose ``data`` is empty, absent, or
+    renamed. The loop just continued, so ``failed_tenors`` stayed EMPTY and the
+    only run-level check -- all 13 tenors in ``failed_tenors`` -- could never
+    fire: a curve table that received zero rows for every tenor read exactly like
+    a healthy one.
+
+    Unlike a candle window, this response is never empty for a market reason: one
+    call returns the tenor's WHOLE history, so a weekend cannot empty it. A tenor
+    whose watermark is at or before the requested day must return at least that
+    watermark day, because this feed loaded that day out of this same response.
+    """
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_WATERMARK: _loaded("912828XX1"),
+        Q_CURVE_WATERMARK: _curve_at(DAY),
+    })
+    # Stage 1 is healthy, so the verdict is unambiguously about stage 2.
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client)
+
+    assert out["candles"]["with_data"] == 1
+    assert out["curve"]["tenors"] == 0 and out["curve"]["rows_upserted"] == 0
+    # Nothing FAILED -- which is exactly why the old check could not see it.
+    assert out["curve"]["failed_tenors"] == []
+    assert out["curve"]["empty_tenors"] == list(bond_live_daily.CURVE_TENORS)
+    assert out["state"] == "curve_failed"
+    assert out["aborted"] is True
+
+
+def test_a_replay_with_one_dead_tenor_is_red_even_though_twelve_were_benign(
+    monkeypatch,
+) -> None:
+    """A documented consequence, so the next reviewer does not reopen it.
+
+    "A handful of failed tenors stays green" is still true -- of a run that
+    LOADED something. The clause asserts the success state, which is that stage 2
+    loaded a tenor: a run in which nothing loaded and something failed is a run
+    with a provider problem in it, whatever the other twelve were doing. The
+    benign-empty exemption therefore has to be unanimous.
+    """
+    replay = _dt.date(2026, 5, 15)
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_CURVE_WATERMARK: _curve_at(TODAY),
+    })
+    out = _drive_run(
+        monkeypatch,
+        conn=conn,
+        client=FakeClient(curve=HEALTHY_CURVE, fail={"30y"}),
+        calc_date=replay,
+    )
+
+    assert out["curve"]["failed_tenors"] == ["30y"]
+    assert len(out["curve"]["skipped_tenors"]) == len(bond_live_daily.CURVE_TENORS) - 1
+    assert out["curve"]["tenors"] == 0
+    assert out["state"] == "curve_failed"
+
+
+def test_resumed_counts_the_attempt_not_the_outcome() -> None:
+    """What ``resumed`` is measured over, pinned: the WINDOW, before the answer.
+
+    A bond with a watermark that then failed transiently is still a bond that was
+    asked about a day it had -- so an all-transient sweep too short to trip the
+    breaker (``WORKER_LIMIT`` below ``MAX_CONSECUTIVE_FAILURES``) is red, which is
+    the "every call failed" half that stage 3 always had and stage 1 did not.
+    """
+    universe = [_bond("LOADED0001"), _bond("LOADED0002"), _bond("COLDSTART1")]
+    conn = FakeConn({Q_WATERMARK: _loaded("LOADED0001", "LOADED0002")})
+    client = FakeClient(fail={"USLOADED00020"})    # one no-data, one failure
+
+    stats = bond_live_daily._load_candles(conn, client, universe, TODAY)
+
+    assert stats["swept"] == 3
+    assert stats["resumed"] == 2, "the cold-start bond carries no promise"
+    assert stats["no_data"] == 2 and stats["transient_failures"] == 1
+    assert stats["with_data"] == 0 and stats["aborted"] is False
+
+    # ...and a watermark PAST the requested day is not a re-read either: the
+    # window inverts and `fetch_window` clamps it to the single replayed day.
+    replay = _dt.date(2026, 5, 15)
+    ahead = FakeConn({Q_WATERMARK: _loaded("LOADED0001", "LOADED0002", day=TODAY)})
+    assert bond_live_daily._load_candles(ahead, FakeClient(), universe, replay)[
+        "resumed"
+    ] == 0
+
+
+# --------------------------------------------------------------------------- #
+# A refused write must surface its OWN error
+# --------------------------------------------------------------------------- #
+class _RefusingCursor(_Cursor):
+    """A cursor that refuses one statement and then behaves like an aborted tx."""
+
+    def execute(self, sql, params=None):
+        if "INSERT INTO bond_observation_daily" in sql:
+            self._conn.aborted = True
+            raise RuntimeError("check constraint bond_observation_daily_price_sane")
+        if self._conn.aborted:
+            raise RuntimeError("current transaction is aborted")
+        return super().execute(sql, params)
+
+
+class RefusingConn(FakeConn):
+    """FakeConn whose observation insert is refused, Postgres-style.
+
+    Not a substitute for the real-database test below -- it cannot be, since the
+    aborted-transaction rule is the server's. It pins the cheap half: which
+    statement the worker attempts NEXT once a write has been refused.
+    """
+
+    def __init__(self, answers) -> None:
+        super().__init__(answers)
+        self.aborted = False
+
+    def cursor(self):
+        return _RefusingCursor(self)
+
+
+def test_a_refused_insert_is_not_buried_under_the_progress_stamp() -> None:
+    """The ``finally`` that stamped progress used to be the last thing to raise.
+
+    An insert PostgreSQL refuses -- a constraint, a column the DDL never grew --
+    leaves the transaction ABORTED, so every following statement raises
+    ``InFailedSqlTransaction``. Stamping from a ``finally`` therefore ran exactly
+    when it could not succeed, and a ``finally``-raised exception REPLACES the one
+    already unwinding: the operator got "current transaction is aborted" and the
+    actionable error was gone. The same incident ``src.db._release_advisory_lock``
+    documents one frame up (2026-07-24), one frame further in.
+
+    The stamp is called explicitly on the three HANDLED paths now, so the refused
+    write simply propagates. The progress property is untouched, because the two
+    never actually collided: the only path that loses its stamp is the one where
+    the stamp could not have been written at all.
+    """
+    conn = RefusingConn({Q_WATERMARK: []})
+    client = FakeClient(candles={"USBADBOND010": _candle_payload(TODAY, 99.0)})
+
+    with pytest.raises(RuntimeError, match="check constraint"):
+        bond_live_daily._load_candles(conn, client, [_bond("BADBOND01")], TODAY)
+
+    # Nothing was attempted after the refusal -- not even the stamp, which is
+    # what used to raise second and win.
+    assert not any("bond_live_daily_sweep" in sql for sql, _ in conn.writes)
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"), reason="SEC_TEST_DATABASE_URL ausente"
+)
+def test_a_refused_insert_surfaces_its_own_error_against_a_real_transaction() -> None:
+    """The same claim, proved where the aborted-transaction rule actually lives.
+
+    A fake can be told to raise second; only a real server proves that it WOULD.
+    So this one builds a disposable schema, gives ``bond_observation_daily`` a
+    constraint the second bond's candle violates, and asserts two things at once:
+
+      * the exception that escapes is the CheckViolation -- the actionable one --
+        and not the ``InFailedSqlTransaction`` the progress stamp used to raise
+        on top of it;
+      * the sweep progress that was already committed SURVIVES. The first bond's
+        row and its stamp are durable, so the next run resumes rather than
+        repeating -- the property the ``finally`` existed for, kept without it.
+        The bond that broke is deliberately NOT stamped: the ring must not
+        advance past a bond whose rows never landed.
+    """
+    import psycopg
+
+    schema = f"bld_{uuid4().hex[:12]}"
+    universe = [_bond("GOODBOND1"), _bond("BADBOND02")]
+    client = FakeClient(candles={
+        "USGOODBOND10": _candle_payload(TODAY, 10.0),
+        "USBADBOND020": _candle_payload(TODAY, 99.0),
+    })
+
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(f"CREATE SCHEMA {schema}")
+        conn.execute(f"SET search_path TO {schema}")
+        conn.execute(
+            "CREATE TABLE bond_observation_daily ("
+            " cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,"
+            " volume numeric, price_type text, accrued text, source text,"
+            " source_rank int NOT NULL, ytm_basis text,"
+            " PRIMARY KEY (cusip9, day),"
+            # Stands in for any constraint the served DDL carries that a payload
+            # can violate. What matters is that Postgres refuses the statement.
+            " CONSTRAINT bond_observation_daily_price_sane CHECK (price < 50))"
+        )
+        conn.execute("CREATE TABLE bond_curated_universe (cusip9 text PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE bond_live_daily_sweep ("
+            " cusip9 text PRIMARY KEY, last_attempt_at timestamptz NOT NULL)"
+        )
+        conn.commit()
+        try:
+            # One bond per commit, so the good bond's progress is durable before
+            # the bad one breaks the transaction.
+            original = bond_live_daily.COMMIT_EVERY
+            bond_live_daily.COMMIT_EVERY = 1
+            with pytest.raises(psycopg.errors.CheckViolation) as refused:
+                bond_live_daily._load_candles(conn, client, universe, TODAY)
+            assert "bond_observation_daily_price_sane" in str(refused.value)
+
+            conn.rollback()
+            assert conn.execute(
+                "SELECT cusip9 FROM bond_observation_daily"
+            ).fetchall() == [("GOODBOND1",)]
+            assert conn.execute(
+                "SELECT cusip9 FROM bond_live_daily_sweep ORDER BY 1"
+            ).fetchall() == [("GOODBOND1",)]
+        finally:
+            bond_live_daily.COMMIT_EVERY = original
+            conn.rollback()
+            conn.execute(f"DROP SCHEMA {schema} CASCADE")
+            conn.commit()
 
 
 # --------------------------------------------------------------------------- #

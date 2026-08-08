@@ -150,6 +150,44 @@ REVOKE ALL ON bond_serving_purge_tokens FROM PUBLIC;
 -- product with a different trust model than the protocol it rides on, and that is
 -- an owner decision, not a side effect of shipping retention.
 
+-- ---------------------------------------------------------------------------
+-- Purge ledger: "this publication has lost facts and can never serve again".
+-- ---------------------------------------------------------------------------
+-- The publication identity is deterministic (`uuid5(product | as_of | revision)`,
+-- and the revision carries a content digest), so the SAME inputs resolve to the
+-- SAME publication_id forever -- that is the replay invariant, and it is wanted.
+-- Retention deletes facts while deliberately KEEPING the publication and build
+-- rows (`sec_derived_publication_as_of` reads the build row). Put together, an
+-- input reversion that reproduces a purged publication's digest lands on an id
+-- that already exists, which the materializer treats as ALREADY BUILT: it skips
+-- the projection and merely re-points. The product would then serve a publication
+-- holding no rows, with a green run.
+--
+-- The worker closes that by REBUILDING under a fresh identity when the resolved
+-- publication holds no facts (`_servable_revision`, src/workers/bond_serving.py).
+-- "Holds no facts" answers the COMPLETED purge. This ledger answers the other
+-- half: the purge commits ONE BATCH PER TRANSACTION on purpose (40 batches /
+-- 107.6 s for the first production purge -- one 2M-row DELETE would hold back
+-- VACUUM for the whole database), so a crash, a lock timeout or a redeploy
+-- between batches leaves a publication with SOME of its rows. Facts > 0 would
+-- then read as "already built" and the product would serve a partial payload --
+-- the same defect one door along.
+--
+-- The row is written INSIDE the routine, in the same transaction as the batch it
+-- precedes, so it exists if and only if at least one batch committed. Monotone
+-- (it is never deleted while the publication exists), which is what keeps the
+-- worker's resolution deterministic: a rebuilt identity stays rebuilt.
+--
+-- Not revoked from PUBLIC, unlike the token table above, and the difference is
+-- the point: a token AUTHORISES a delete, this is EVIDENCE that one happened. It
+-- is also not the only line of defence -- a fully purged publication is caught by
+-- its own emptiness, with no ledger consulted, which is what covers the eight
+-- zero-fact publications production already carried before this table existed.
+CREATE TABLE IF NOT EXISTS bond_serving_purged_publications (
+    publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE CASCADE,
+    first_purged_at timestamptz NOT NULL DEFAULT now()
+);
+
 -- Write guard: serving rows/builds are insert-only while their publication is
 -- prepared, immutable afterwards (mirrors the snapshot guards) -- with ONE
 -- sanctioned exception, below.
@@ -260,6 +298,14 @@ BEGIN
             RAISE EXCEPTION 'the app-pinned bond serving publication cannot be purged';
         END IF;
     END IF;
+    -- Mark BEFORE deleting, and after the refusals above: the mark commits with
+    -- the batch, so it exists iff this publication lost rows, and a refusal marks
+    -- nothing. It is what tells a HALF-purged publication (the caller commits per
+    -- batch, so a crash mid-purge is a real state) from a built one -- see the
+    -- ledger's own comment. ON CONFLICT because every batch re-asserts it.
+    INSERT INTO bond_serving_purged_publications(publication_id)
+        VALUES (target_publication_id)
+        ON CONFLICT (publication_id) DO NOTHING;
     INSERT INTO bond_serving_purge_tokens(publication_id, backend_pid)
         VALUES (target_publication_id, pg_backend_pid());
     DELETE FROM bond_serving_facts

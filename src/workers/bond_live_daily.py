@@ -73,7 +73,23 @@ state                        green  why
 ``no_api_key``               no     FINNHUB_API_KEY unset: no candles, no republication
 ``provider_rejected``        no     the key was rejected mid-sweep (401/403)
 ``aborted``                  no     the provider cut the candle sweep short
-``curve_failed``             no     ALL 13 tenors failed: stage 2 did no work
+``candles_failed``           no     stage 1 loaded nothing: not one bond whose
+                                    window re-opened on a day this lane had
+                                    ALREADY loaded came back with a candle. Not a
+                                    quiet market -- the provider served those
+                                    days once. A cold table and a replay of a day
+                                    every bond is already past make no such
+                                    promise and are excluded
+``curve_failed``             no     stage 2 loaded NO tenor: all 13 failed, or
+                                    their payloads folded to nothing (a 200 with
+                                    empty/renamed ``data`` used to read as a
+                                    healthy run). Green needs one loaded tenor --
+                                    a handful of failures still self-heals via
+                                    the per-tenor watermarks. The one benign
+                                    empty is a replay in which EVERY tenor is
+                                    already past the requested day;
+                                    ``failed_tenors``/``empty_tenors``/
+                                    ``skipped_tenors`` say which shape
 ``ticks_failed``             no     stage 3 did not cover its cohort: every tick
                                     call failed, OR the same consecutive-failure
                                     breaker cut the lane short mid-cohort
@@ -426,7 +442,7 @@ def _load_candles(
     conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
 ) -> dict[str, Any]:
     watermarks = _watermarks(conn)
-    swept = fetched = upserted = no_data = failed = 0
+    swept = fetched = upserted = no_data = failed = resumed = 0
     consecutive = 0
     aborted = False
     pending = 0
@@ -434,64 +450,99 @@ def _load_candles(
     first_day: _dt.date | None = None
     last_day: _dt.date | None = None
 
+    def stamp(cusip: str) -> None:
+        """Record the ATTEMPT, whatever came of it -- data, no data, or a
+        transient failure -- AFTER the bond's own rows, so the sweep never
+        advances its ring past a bond it did not finish.
+
+        This is the only progress record a capped run leaves, and it rides the
+        same commit cadence as the data: a run the provider cuts short keeps the
+        progress of the prefix it did sweep, so the next one resumes rather than
+        repeating it. The cadence lives here rather than on the data-bearing path
+        because a bond with no data is a write too -- leaving it there would let
+        10k stamps accumulate in ONE transaction, the long-transaction/VACUUM
+        trap this slicing exists to avoid.
+
+        CALLED EXPLICITLY on each of the three handled paths, never from a
+        ``finally``, and that is a fix rather than a style: a ``finally`` also
+        runs while an UNhandled exception is unwinding, and the exception that
+        gets here first is an insert that PostgreSQL refused (a constraint, a
+        column the DDL never grew). That leaves the transaction ABORTED, so this
+        statement raises ``InFailedSqlTransaction`` -- which, raised from a
+        ``finally``, REPLACES the original error and becomes the only one anybody
+        sees. Exactly the incident ``src.db._release_advisory_lock`` documents
+        one frame up (2026-07-24: ``must be owner of view ...`` lost behind
+        ``current transaction is aborted ... pg_advisory_unlock``).
+
+        The progress property survives intact, because the two do not actually
+        collide: the only path that loses its stamp is the one where the stamp
+        could not have been written at all. Every path that HAS a transaction to
+        write in still stamps.
+        """
+        nonlocal pending
+        with conn.cursor() as cur:
+            cur.execute(_SWEEP_STAMP_UPSERT, (cusip,))
+        pending += 1
+        if pending >= COMMIT_EVERY:
+            conn.commit()
+            pending = 0
+
     for cusip9, isin, coupon_rate, maturity_date in universe:
         swept += 1
-        start, end = live_daily.fetch_window(watermarks.get(str(cusip9)), today)
+        watermark = watermarks.get(str(cusip9))
+        # A window that RE-OPENS on a day this lane already loaded is the only
+        # kind whose emptiness proves something: the provider served that exact
+        # day once, so an empty response for it is a fault, never a quiet market.
+        # Counted here, at the one place the window is decided, because the
+        # verdict cannot reconstruct it (see ``candles_failed`` in ``run``).
+        # A cold-start bond and a bond whose watermark is already PAST ``today``
+        # (the inverted window a replay creates, clamped by ``fetch_window``)
+        # are both excluded: they get a window nobody has evidence about.
+        if watermark is not None and watermark <= today:
+            resumed += 1
+        start, end = live_daily.fetch_window(watermark, today)
         try:
-            try:
-                payload = client.daily_candles(
-                    str(isin), live_daily.to_epoch(start), live_daily.to_epoch(end)
-                )
-                consecutive = 0
-            except FinnhubTransientError:
-                failed += 1
-                consecutive += 1
-                if consecutive >= MAX_CONSECUTIVE_FAILURES:
-                    # The provider is down, not the data missing. Stop rather
-                    # than spend the window proving it; the watermark resumes
-                    # tomorrow.
-                    aborted = True
-                    break
-                continue
-            fold = live_daily.candle_rows(
-                str(cusip9), payload, not_before=start, not_after=end,
-                coupon_pct=_as_float(coupon_rate), maturity_date=maturity_date,
+            payload = client.daily_candles(
+                str(isin), live_daily.to_epoch(start), live_daily.to_epoch(end)
             )
-            dropped_after_window += fold.dropped_after_window
-            rows = fold.rows
-            if not rows:
-                no_data += 1
-                continue
-            fetched += 1
-            with conn.cursor() as cur:
-                for row in rows:
-                    cur.execute(_OBSERVATION_UPSERT, row.as_tuple())
-                    upserted += cur.rowcount
-                    pending += 1
-                    first_day = row.day if first_day is None or row.day < first_day else first_day
-                    last_day = row.day if last_day is None or row.day > last_day else last_day
-        finally:
-            # Stamp the ATTEMPT, whatever came of it -- data, no data, or a
-            # transient failure -- and stamp it AFTER the bond's own rows so the
-            # sweep never advances its ring past a bond it did not finish. This
-            # is the only progress record a capped run leaves, and it rides the
-            # same commit cadence as the data: a run the provider cuts short
-            # keeps the progress of the prefix it did sweep, so the next one
-            # resumes rather than repeating it.
-            with conn.cursor() as cur:
-                cur.execute(_SWEEP_STAMP_UPSERT, (str(cusip9),))
-            pending += 1
-            # Checked in ``finally`` because a bond with no data is now a write
-            # too: leaving the cadence on the data-bearing path would let 10k
-            # stamps accumulate in ONE transaction, which is the long-transaction
-            # /VACUUM trap this slicing exists to avoid.
-            if pending >= COMMIT_EVERY:
-                conn.commit()
-                pending = 0
+            consecutive = 0
+        except FinnhubTransientError:
+            failed += 1
+            consecutive += 1
+            stamp(str(cusip9))
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                # The provider is down, not the data missing. Stop rather
+                # than spend the window proving it; the watermark resumes
+                # tomorrow.
+                aborted = True
+                break
+            continue
+        fold = live_daily.candle_rows(
+            str(cusip9), payload, not_before=start, not_after=end,
+            coupon_pct=_as_float(coupon_rate), maturity_date=maturity_date,
+        )
+        dropped_after_window += fold.dropped_after_window
+        rows = fold.rows
+        if not rows:
+            no_data += 1
+            stamp(str(cusip9))
+            continue
+        fetched += 1
+        with conn.cursor() as cur:
+            for row in rows:
+                cur.execute(_OBSERVATION_UPSERT, row.as_tuple())
+                upserted += cur.rowcount
+                pending += 1
+                first_day = row.day if first_day is None or row.day < first_day else first_day
+                last_day = row.day if last_day is None or row.day > last_day else last_day
+        stamp(str(cusip9))
     conn.commit()
     return {
         "swept": swept, "with_data": fetched, "rows_upserted": upserted,
         "no_data": no_data, "transient_failures": failed,
+        # How many of the swept bonds were asked about a day this lane had
+        # already loaded. The denominator of ``candles_failed``: see ``run``.
+        "resumed": resumed,
         "first_day": first_day.isoformat() if first_day else None,
         "last_day": last_day.isoformat() if last_day else None,
         # A candle dated past the requested window is refused before it can
@@ -537,8 +588,11 @@ def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[
     tenors_loaded = 0
     upserted = 0
     failed: list[str] = []
+    empty: list[str] = []
+    skipped: list[str] = []
     latest: _dt.date | None = None
     for tenor in CURVE_TENORS:
+        watermark = watermarks.get(tenor)
         try:
             payload = client.yield_curve(tenor)
         except (FinnhubTransientError, FinnhubConfigError):
@@ -560,9 +614,35 @@ def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[
         # ``today`` is the execution date (a later one is refused in ``run``) and
         # the provider has no rates past it.
         points = live_daily.curve_points(
-            tenor, payload, not_before=watermarks.get(tenor), not_after=today
+            tenor, payload, not_before=watermark, not_after=today
         )
         if not points:
+            # A 200 that folded to nothing, split into the two things it can
+            # mean. The split is possible at all because of what this endpoint
+            # IS: one call returns the tenor's WHOLE history, not a session, so
+            # -- unlike the candle lane -- it is never empty for a market
+            # reason. A weekend does not empty a full history.
+            #
+            #   * BENIGN, and only this one: the fold is INVERTED. On a replay
+            #     (``WORKER_CALC_DATE``) of a day before this tenor's watermark,
+            #     ``not_before > not_after`` selects nothing by construction --
+            #     the normal state of a replay against a healthy table, where
+            #     every tenor is loaded up to yesterday and the operator asks
+            #     for a day in May.
+            #   * PATHOLOGICAL otherwise: an entitlement loss surfaced as JSON,
+            #     a schema change under ``data``/``d``/``v``, a tenor code the
+            #     provider retired. A tenor with a watermark AT OR BEFORE
+            #     ``today`` must return at least its own watermark day, because
+            #     that day is in this very response's history -- this feed
+            #     loaded it from here. A cold tenor has no such proof, but 13
+            #     cold tenors all folding to nothing is the endpoint, not the
+            #     table, so it lands here too.
+            #
+            # Both are REPORTED and neither is raised; the verdict in ``run``
+            # decides. Kept apart from ``failed_tenors`` on purpose: a call that
+            # never returned and a call that returned garbage are different
+            # provider conversations even though they cost the same day.
+            (skipped if watermark is not None and watermark > today else empty).append(tenor)
             continue
         tenors_loaded += 1
         with conn.cursor() as cur:
@@ -575,6 +655,13 @@ def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[
     return {
         "tenors": tenors_loaded, "rows_upserted": upserted,
         "failed_tenors": failed,
+        # The two shapes of a 200 that wrote nothing, so an operator reads WHICH
+        # from the JSON rather than inferring it from a row count that is zero
+        # either way. ``empty_tenors`` is the provider answering with nothing
+        # usable; ``skipped_tenors`` is a replay asking for a day this tenor is
+        # already past.
+        "empty_tenors": empty,
+        "skipped_tenors": skipped,
         "lagging_tenors": lagging,
         "latest_day": latest.isoformat() if latest else None,
     }
@@ -903,11 +990,58 @@ def run(
         (matview.get("state") != "refreshed", "matview_failed"),
         # The provider cut the candle sweep short.
         (bool(candles.get("aborted")), "aborted"),
-        # A stage that did NO work is not a stage that had nothing to do. All 13
-        # tenors failing is the provider or the key, not a dropped tenor -- while
-        # a handful of failures is the case the per-tenor watermarks self-heal,
-        # so it stays green on purpose.
-        (len(curve.get("failed_tenors") or ()) == len(CURVE_TENORS), "curve_failed"),
+        # Stage 1 asked about days it had already loaded and got NOTHING back.
+        # The success state is asserted, as everywhere else in this list: the
+        # only outcome in which the price stage did its work is that at least
+        # one bond returned a usable candle. Without this clause a sweep in
+        # which every call returned a successful-but-empty payload -- an
+        # entitlement loss surfaced as JSON, a provider shape change, a broken
+        # ISIN mapping -- only incremented ``no_data``, left ``aborted`` false,
+        # and let the run republish yesterday's observations and exit green with
+        # zero rows loaded for the whole universe.
+        #
+        # The denominator is ``resumed``, not ``swept``, and the difference is
+        # what keeps this from crying wolf. A bond whose window re-opens on a
+        # day THIS lane already loaded must come back with that day; a
+        # cold-start bond and a replay's inverted window carry no such promise.
+        # Two false positives fall out of that distinction, both systematic
+        # rather than unlucky:
+        #
+        #   * a REPLAY of a non-trading day. Every loaded bond's window collapses
+        #     to ``[calc_date, calc_date]`` (``fetch_window`` clamps a watermark
+        #     past ``today``), and a Saturday legitimately has no candle for any
+        #     of 10k bonds. This repo deliberately has no trading calendar
+        #     (``previous_business_day``), so the honest reading is that such a
+        #     run proves nothing -- ``resumed`` is 0 and the clause stays quiet.
+        #   * a small ``WORKER_LIMIT``. The ring sorts never-loaded bonds FIRST
+        #     inside a round, and 409 of the 10,073 curated bonds have been
+        #     attempted and never returned data (measured 2026-08-08; 9,779 do
+        #     carry a live watermark). A thin capped slice is therefore EXPECTED
+        #     to be all-dataless -- and a slice that does contain resumed bonds
+        #     is still judged, which no coarser gate would manage.
+        #
+        # It also gives the candle lane the "every call failed" half that stage 3
+        # already had: below ``MAX_CONSECUTIVE_FAILURES`` bonds, a total outage
+        # never trips the breaker, so ``aborted`` alone could not see it.
+        (candles.get("resumed", 0) > 0 and candles.get("with_data") == 0, "candles_failed"),
+        # A stage that did NO work is not a stage that had nothing to do -- and
+        # the way stage 2 does no work is not only by failing. A 200 whose
+        # ``data`` folds to nothing left ``failed_tenors`` empty, so a curve
+        # table that received zero rows for every tenor read exactly like a
+        # healthy one. Asserted on the SUCCESS state instead: the stage did its
+        # work when it loaded a tenor. The one exception is the empty that is
+        # not an absence -- a replay whose every tenor is already past the
+        # requested day (see ``_load_curve``) -- and it has to be EVERY tenor,
+        # because a run in which nothing loaded and something failed is a run
+        # with a provider problem in it.
+        #
+        # A handful of failures on a run that still loaded something stays green
+        # on purpose: that is precisely the case the per-tenor watermarks heal by
+        # themselves on the next run. ``failed_tenors``/``empty_tenors``/
+        # ``skipped_tenors`` in the JSON say which shape it was, the way
+        # ``matview.state`` does for stage 4.
+        (curve["tenors"] == 0
+         and len(curve["skipped_tenors"]) < len(CURVE_TENORS), "curve_failed"),
         # Stage 3 comes up short in two shapes and they get ONE state, because
         # they are one event -- the provider is not answering -- and they take
         # one hand. Either every call failed, or the breaker stopped the lane

@@ -1037,6 +1037,262 @@ def test_a_run_frees_the_publication_it_supersedes() -> None:
         admin.close()
 
 
+# --------------------------------------------------------------------------- #
+# A purged identity must never be re-served (review round 7)
+# --------------------------------------------------------------------------- #
+# The two properties this product deliberately has, together, open a hole:
+#   * retention deletes a superseded publication's FACTS and KEEPS its
+#     publication/build rows (``sec_derived_publication_as_of`` reads the build
+#     row and that feeds the current-pointer regression guard);
+#   * identity is deterministic -- ``uuid5(product | as_of | revision)`` with a
+#     content digest inside the revision -- so the same inputs resolve to the same
+#     publication_id forever, which is the replay invariant and is WANTED.
+# So an input reversion (the candle loader re-reading a corrected close back to
+# its earlier value, a metric pointer restored) reproduces the digest of a purged
+# publication, ``materialize`` sees an existing id, treats it as already built,
+# skips the projection and merely re-points -- and the app pin advances onto a
+# publication holding NO rows. A green run serving an EMPTY product.
+#
+# Measured in production 2026-08-08: EIGHT of the ten bond_serving_v1
+# publications are validated and hold zero facts (five freed by the first purge,
+# three born empty before the coverage gate existed), every one of them still
+# carrying its build row. The scenario is not hypothetical -- it waits on an input
+# resolving to one of those eight.
+#
+# The as_of regression guard is a PARTIAL net and only that: all eight carry an
+# as_of at or before 2026-07-23 while the pointer sits at 2026-08-07, so a replay
+# of an OLDER day dies loudly inside ``sec_set_current_derived_publication``. What
+# it cannot see is the SAME-as_of case -- and same-day content revisions are
+# exactly what puts several publications on one as_of in the first place
+# (production carries four on 2025-03-31 and three on 2026-07-23).
+def _revise_dense_price(admin, schema: str, price: str) -> None:
+    admin.execute(
+        f'UPDATE "{schema}".bond_observation_daily SET price=%s '
+        "WHERE cusip9='037833100' AND day=%s",
+        (price, DENSE_DAY),
+    )
+    admin.commit()
+
+
+def _fact_count(admin, schema: str, publication_id: str) -> int:
+    return admin.execute(
+        f'SELECT count(*) FROM "{schema}".bond_serving_facts WHERE publication_id=%s',
+        (publication_id,),
+    ).fetchone()[0]
+
+
+def _publication_count(admin, schema: str) -> int:
+    return admin.execute(
+        f'SELECT count(*) FROM "{schema}".sec_derived_publications '
+        "WHERE product='bond_serving_v1'"
+    ).fetchone()[0]
+
+
+def test_an_input_reversion_onto_a_purged_publication_rebuilds_and_serves_rows() -> None:
+    """The whole cycle: purge -> the SAME input comes back -> a served product.
+
+    ``_three_publications`` leaves the first publication purged (the third run's
+    retention frees it). Reverting the close to its original value reproduces that
+    publication's digest EXACTLY -- same as_of, same revision, same
+    ``uuid5`` -- which is precisely the replay the identity is designed to
+    guarantee. Before this fix the worker took that guarantee as "already built",
+    re-pointed the worker pointer and advanced the APP pin onto a publication with
+    zero facts: catalog, detail and observations all empty, run reporting success.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        admin.commit()
+        _install_app_pin_protocol(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        published = _three_publications(admin, schema)
+        purged = published[0]
+        assert _fact_count(admin, schema, purged) == 0  # retention freed it
+        admin.commit()
+
+        # The reversion: back to the value the purged publication was built from.
+        _revise_dense_price(admin, schema, "101.5")
+        rebuilt = bond_serving.run(dsn)
+
+        # The defect, stated as the assertions that fail without the fix.
+        assert rebuilt["publication_id"] != purged
+        assert rebuilt["rows"] > 0
+        assert _served_latest_price(admin, schema, rebuilt["publication_id"]) == "101.5"
+        # ... under a NEW identity for the same data date, derived deterministically
+        # from the one that cannot serve.
+        assert _build_as_of(admin, schema, rebuilt["publication_id"]) == DENSE_DAY
+        assert rebuilt["code_revision"].endswith("+rebuild1")
+        assert rebuilt["rebuilt_over"] == [purged]
+        # ... and the app is pinned to the publication that HAS rows.
+        pinned = admin.execute(
+            f'SELECT s.worker_publication_id::text '
+            f'FROM "{schema}".bond_serving_current_pointer p '
+            f'JOIN "{schema}".bond_serving_publications s '
+            "  ON s.app_publication_id = p.app_publication_id"
+        ).fetchone()[0]
+        assert pinned == rebuilt["publication_id"]
+        assert _fact_count(admin, schema, pinned) > 0
+        # The purged publication is untouched: still in the ledger, still empty.
+        assert _fact_count(admin, schema, purged) == 0
+        assert admin.execute(
+            f'SELECT count(*) FROM "{schema}".bond_serving_builds WHERE publication_id=%s',
+            (purged,),
+        ).fetchone()[0] == 1
+        admin.commit()
+
+        # IDEMPOTENCE SURVIVES: a further run over unchanged inputs walks past the
+        # same purged id and replays onto the REBUILT publication -- it does not
+        # rebuild again, and mints nothing.
+        before = _publication_count(admin, schema)
+        admin.commit()
+        replay = bond_serving.run(dsn)
+        assert replay["publication_id"] == rebuilt["publication_id"]
+        assert replay["code_revision"] == rebuilt["code_revision"]
+        assert replay["rebuilt_over"] == [purged]
+        assert _publication_count(admin, schema) == before
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_a_half_purged_publication_is_rebuilt_too() -> None:
+    """Facts > 0 is not "built": the purge commits ONE BATCH PER TRANSACTION.
+
+    That batching is deliberate (one 2M-row DELETE would hold back VACUUM for the
+    whole database), which makes "some rows gone, some rows left" a REAL state
+    after a crash, a lock timeout or a redeploy between batches. Emptiness alone
+    would read that publication as already built and re-point onto a PARTIAL
+    payload -- the same defect one door along, and harder to see because the
+    product is not obviously broken. The purge routine therefore records the
+    publication in ``bond_serving_purged_publications`` in the same transaction as
+    the batch it precedes, so the mark exists iff rows were actually lost.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        first = bond_serving.run(dsn)["publication_id"]
+        _revise_dense_price(admin, schema, "102.25")
+        second = bond_serving.run(dsn)["publication_id"]
+        assert second != first
+        # Nothing is stale yet (keep-set = current + the two most recent), so the
+        # first publication still holds every row it was built with.
+        assert _fact_count(admin, schema, first) > 1
+        admin.commit()
+
+        # ONE batch of ONE row, then "the process dies": a half-purged publication.
+        admin.execute(f'SET search_path TO "{schema}"')
+        deleted = admin.execute(
+            "SELECT bond_purge_serving_publication(%s, 1)", (first,)
+        ).fetchone()[0]
+        admin.execute("SET search_path TO public")
+        admin.commit()
+        assert deleted == 1
+        partial = _fact_count(admin, schema, first)
+        assert partial > 0  # NOT empty: emptiness cannot be the whole test
+        assert admin.execute(
+            f'SELECT count(*) FROM "{schema}".bond_serving_purged_publications '
+            "WHERE publication_id=%s",
+            (first,),
+        ).fetchone()[0] == 1
+        admin.commit()
+
+        # The reversion that resolves back onto that half-purged identity.
+        _revise_dense_price(admin, schema, "101.5")
+        rebuilt = bond_serving.run(dsn)
+        assert rebuilt["publication_id"] != first
+        assert rebuilt["rows"] > partial
+        assert _served_latest_price(admin, schema, rebuilt["publication_id"]) == "101.5"
+        assert rebuilt["rebuilt_over"] == [first]
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_the_rebuild_chain_refuses_rather_than_walking_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded walk, and its exhaustion is a FAILED run -- never a dark state.
+
+    The chain terminates on its own (a purged publication can never regain facts:
+    the write guard only admits an INSERT under a ``prepared`` parent), so the cap
+    is a guard against a pathology, not the terminator. When it does fire the run
+    must fail loudly: every candidate was unservable, so re-pointing to any of
+    them is the empty product this whole path exists to prevent. It must not be a
+    ``RuntimeError`` either -- ``run`` launders those into the ``no_source`` dark
+    state, which is the one verdict this must never become.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        purged = _three_publications(admin, schema)[0]
+        assert _fact_count(admin, schema, purged) == 0
+        admin.commit()
+
+        monkeypatch.setattr(bond_serving, "REBUILD_ATTEMPT_LIMIT", 1)
+        _revise_dense_price(admin, schema, "101.5")
+        with pytest.raises(bond_serving.BondServingRebuildExhausted) as exhausted:
+            bond_serving.run(dsn)
+        assert not isinstance(exhausted.value, RuntimeError)
+        assert purged in str(exhausted.value)
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_the_servable_probe_asks_materializes_own_question_and_stays_indexed() -> None:
+    """Two measured properties of the resolution probes, pinned against regression.
+
+    THE SAME QUESTION. "Already built" is decided by ``materialize`` on the bare
+    existence of the publication row -- no product filter, no lifecycle filter. The
+    worker's probe has to ask that IDENTICAL question or the two disagree about
+    which candidate the build will skip, and the disagreement is silent.
+
+    PLAN STABILITY, measured against production 2026-08-08 (4.05M facts, ~2.0M per
+    live publication). The obvious form -- ``SELECT EXISTS (SELECT 1 ... WHERE
+    publication_id=$1)`` -- is a TRAP here: ``publication_id`` has a handful of
+    distinct values, so an equality estimate is ~2M rows and the planner takes a
+    Seq Scan that can only stop early if a row matches. For the EMPTY publication
+    that is the whole table: 8.4 s on a warm cache under a generic plan, 40.2 s
+    cold (342,480 buffer reads). ``count(*)`` cannot stop early by construction,
+    so the index-only scan wins on cost under BOTH plan modes -- measured 0.5 ms
+    (custom) / 11.0 ms (generic) on an empty publication and 91.7 ms / 126.2 ms on
+    the 2,031,147-row live one. The probe only runs at all when the resolved id
+    already exists, i.e. on a replay, next to the ~6 s the same run's input digest
+    already pays.
+    """
+    import inspect
+
+    assert bond_serving._EXISTING_PUBLICATION_SQL == (
+        "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s"
+    )
+    assert bond_serving._EXISTING_PUBLICATION_SQL in inspect.getsource(
+        materializer.materialize
+    )
+    assert "count(*)" in bond_serving._PUBLICATION_FACT_COUNT_SQL
+    assert "EXISTS" not in bond_serving._PUBLICATION_FACT_COUNT_SQL
+    assert "LIMIT" not in bond_serving._PUBLICATION_FACT_COUNT_SQL
+
+
 def test_a_fact_delete_needs_a_purge_token_belonging_to_this_backend() -> None:
     """The token is the ONLY key, and it is per-backend.
 
