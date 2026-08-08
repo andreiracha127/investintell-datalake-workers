@@ -119,6 +119,22 @@ def test_compare_month_requires_99_percent_rv_key_overlap_at_equal_size() -> Non
     assert "rv_matched_coverage" in result["failed_gates"]
 
 
+def test_compare_month_measures_snapshot_gates_when_rebuilt_rv_is_empty() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._compare_month(
+        month, _snapshot(month), _rv(month), _snapshot(month), pd.DataFrame(),
+        input_max_day=date(2025, 1, 31), fit_as_of=month,
+        monthly_curve=_curve(month),
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["rebuilt_rv_size"] == 0
+    assert result["metrics"]["ytm_abs_bps"]["median"] == 0
+    assert result["metrics"]["rv_abs"] == {"median": None, "p90": None, "p99": None}
+    assert "rebuilt_rv_nonempty" in result["failed_gates"]
+
+
 def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: "wrong")
     monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))

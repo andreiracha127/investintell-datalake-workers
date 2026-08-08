@@ -195,9 +195,11 @@ def _typed_exclusions(frame: pd.DataFrame) -> float:
     return float(excluded["eligibility_reason"].map(lambda value: isinstance(value, str) and bool(value.strip())).mean())
 
 
-def _quantile_gate(values: pd.Series, limits: tuple[float, float, float]) -> tuple[dict[str, float], bool]:
+def _quantile_gate(
+    values: pd.Series, limits: tuple[float, float, float],
+) -> tuple[dict[str, float | None], bool]:
     if values.empty or values.isna().any() or not np.isfinite(values.to_numpy(dtype=float)).all():
-        return {"median": float("nan"), "p90": float("nan"), "p99": float("nan")}, False
+        return {"median": None, "p90": None, "p99": None}, False
     stats = {"median": float(values.quantile(.5)), "p90": float(values.quantile(.9)), "p99": float(values.quantile(.99))}
     return stats, all(stats[key] <= limit for key, limit in zip(("median", "p90", "p99"), limits))
 
@@ -256,13 +258,13 @@ def _compare_month(
         return {"month": label, "state": "parity_failed", "reason": "frozen_rv_empty", "aborted": True, "failed_gates": ["frozen_rv_empty"]}
     if rebuilt_snapshot.empty:
         return {"month": label, "state": "parity_failed", "reason": "rebuilt_snapshot_empty", "aborted": True, "failed_gates": ["rebuilt_snapshot_empty"]}
-    if rebuilt_rv.empty:
-        return {"month": label, "state": "parity_failed", "reason": "rebuilt_rv_empty", "aborted": True, "failed_gates": ["rebuilt_rv_empty"]}
     snapshot_fields = {"cusip_id", "month", "eligibility_state", "eligibility_reason", "ytm", "mod_dur", "spread_final", "spread_final_bps", "spread_definition"}
     rv_fields = {"cusip_id", "month", "rv_signal", "spread_definition"}
     if not snapshot_fields.issubset(frozen_snapshot) or not snapshot_fields.issubset(rebuilt_snapshot):
         return {"month": label, "state": "parity_failed", "reason": "snapshot_untyped", "aborted": True, "failed_gates": ["snapshot_types"]}
-    if not rv_fields.issubset(frozen_rv) or not rv_fields.issubset(rebuilt_rv):
+    if not rv_fields.issubset(frozen_rv) or (
+        not rebuilt_rv.empty and not rv_fields.issubset(rebuilt_rv)
+    ):
         return {"month": label, "state": "parity_failed", "reason": "rv_untyped", "aborted": True, "failed_gates": ["rv_types"]}
     if not _valid_lineage(frozen_snapshot) or not _valid_lineage(frozen_rv):
         return {"month": label, "state": "parity_failed", "reason": "frozen_lineage_missing", "aborted": True, "failed_gates": ["frozen_lineage"]}
@@ -285,7 +287,7 @@ def _compare_month(
         "universe_delta": abs(frozen_n - rebuilt_n) <= universe_limit,
         "matched_coverage": coverage >= .99,
         "typed_exclusions": _typed_exclusions(frozen_snapshot) == 1.0 and _typed_exclusions(rebuilt_snapshot) == 1.0,
-        "spread_definition": set(frozen_snapshot["spread_definition"].dropna()) == {SPREAD_DEFINITION} and set(rebuilt_snapshot["spread_definition"].dropna()) == {SPREAD_DEFINITION} and set(frozen_rv["spread_definition"].dropna()) == {SPREAD_DEFINITION} and set(rebuilt_rv["spread_definition"].dropna()) == {SPREAD_DEFINITION},
+        "spread_definition": set(frozen_snapshot["spread_definition"].dropna()) == {SPREAD_DEFINITION} and set(rebuilt_snapshot["spread_definition"].dropna()) == {SPREAD_DEFINITION} and set(frozen_rv["spread_definition"].dropna()) == {SPREAD_DEFINITION} and "spread_definition" in rebuilt_rv and set(rebuilt_rv["spread_definition"].dropna()) == {SPREAD_DEFINITION},
         "spread_numeric_semantics": False,
         "walk_forward": input_max_day is not None and input_max_day <= _month_end(month) and fit_as_of == month,
     }
@@ -297,33 +299,46 @@ def _compare_month(
         "duration_abs_years": ("mod_dur", "mod_dur", 1.0, (.10, .50, 1.0)),
         "spread_abs_bps": ("spread_final_bps", "spread_final_bps", 1.0, (5.0, 25.0, 75.0)),
     }
-    metrics: dict[str, dict[str, float]] = {}
+    metrics: dict[str, dict[str, float | None]] = {}
     for gate, (frozen_key, rebuilt_key, scale, limits) in metric_specs.items():
         delta = (pd.to_numeric(merged[f"{frozen_key}_frozen"], errors="coerce") - pd.to_numeric(merged[f"{rebuilt_key}_rebuilt"], errors="coerce")).abs() * scale
         metrics[gate], gates[gate] = _quantile_gate(delta, limits)
     relative = (pd.to_numeric(merged["mod_dur_frozen"], errors="coerce") - pd.to_numeric(merged["mod_dur_rebuilt"], errors="coerce")).abs() / pd.to_numeric(merged["mod_dur_frozen"], errors="coerce").abs().clip(lower=1e-12)
     metrics["duration_relative"], gates["duration_relative"] = _quantile_gate(relative, (.02, .10, float("inf")))
-    rv_merged = frozen_rv.merge(rebuilt_rv, on=["cusip_id", "month"], suffixes=("_frozen", "_rebuilt"))
-    if rv_merged.empty:
-        return {"month": label, "state": "parity_failed", "reason": "zero_overlap_rv", "aborted": True, "failed_gates": ["zero_overlap_rv"]}
     frozen_rv_n, rebuilt_rv_n = len(frozen_rv), len(rebuilt_rv)
+    rv_merged = (
+        frozen_rv.merge(
+            rebuilt_rv,
+            on=["cusip_id", "month"],
+            suffixes=("_frozen", "_rebuilt"),
+        )
+        if rebuilt_rv_n
+        else pd.DataFrame()
+    )
     rv_limit = max(25, .005 * max(frozen_rv_n, rebuilt_rv_n))
     rv_smaller = min(frozen_rv_n, rebuilt_rv_n)
+    rv_coverage = len(rv_merged) / rv_smaller if rv_smaller else 0.0
+    gates["rebuilt_rv_nonempty"] = rebuilt_rv_n > 0
     gates["unique_rv_keys"] = not (
         frozen_rv.duplicated(["cusip_id", "month"]).any()
         or rebuilt_rv.duplicated(["cusip_id", "month"]).any()
     )
     gates["rv_universe_delta"] = abs(frozen_rv_n - rebuilt_rv_n) <= rv_limit
-    gates["rv_matched_coverage"] = len(rv_merged) / rv_smaller >= .99
-    rv_delta = (pd.to_numeric(rv_merged.get("rv_signal_frozen"), errors="coerce") - pd.to_numeric(rv_merged.get("rv_signal_rebuilt"), errors="coerce")).abs()
-    metrics["rv_abs"], gates["rv_abs"] = _quantile_gate(rv_delta, (.05, .25, .75))
+    gates["rv_matched_coverage"] = rv_coverage >= .99
+    if rv_merged.empty:
+        metrics["rv_abs"], gates["rv_abs"] = _quantile_gate(
+            pd.Series(dtype=float), (.05, .25, .75),
+        )
+    else:
+        rv_delta = (pd.to_numeric(rv_merged.get("rv_signal_frozen"), errors="coerce") - pd.to_numeric(rv_merged.get("rv_signal_rebuilt"), errors="coerce")).abs()
+        metrics["rv_abs"], gates["rv_abs"] = _quantile_gate(rv_delta, (.05, .25, .75))
     failed = [name for name, passed in gates.items() if not passed]
     return {
         "month": label, "state": "parity_passed" if not failed else "parity_failed", "reason": None if not failed else "gate_failed", "aborted": bool(failed),
         "frozen_universe_size": frozen_n, "rebuilt_universe_size": rebuilt_n, "universe_delta_limit": universe_limit,
         "frozen_rv_size": frozen_rv_n, "rebuilt_rv_size": rebuilt_rv_n,
         "rv_universe_delta_limit": rv_limit,
-        "rv_matched_coverage": len(rv_merged) / rv_smaller,
+        "rv_matched_coverage": rv_coverage,
         "matched_coverage": coverage, "typed_exclusions": {"frozen": _typed_exclusions(frozen_snapshot), "rebuilt": _typed_exclusions(rebuilt_snapshot)},
         "spread_definition": SPREAD_DEFINITION,
         "spread_semantics": {"frozen": frozen_semantics, "rebuilt": rebuilt_semantics},
