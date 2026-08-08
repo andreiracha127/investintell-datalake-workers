@@ -495,9 +495,10 @@ def _validate_exact_record(records: Any, accession_number: str) -> Mapping[str, 
     submission_type = record.get("submissionType")
     if form_type is None:
         form_type = submission_type
-    if form_type != "NPORT-P" or submission_type not in (None, "NPORT-P"):
+    reported_types = {value for value in (form_type, submission_type) if value is not None}
+    if not reported_types or len(reported_types) != 1 or not reported_types <= {"NPORT-P", "NPORT-P/A"}:
         raise AccessionMismatchError("SEC API form type mismatch")
-    if record.get("formType") == "NPORT-P":
+    if record.get("formType") == "NPORT-P" and submission_type in (None, "NPORT-P"):
         return record
     return {**record, "formType": "NPORT-P"}
 

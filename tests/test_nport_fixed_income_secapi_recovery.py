@@ -138,7 +138,7 @@ def test_fetch_exactly_one_uses_accession_query_and_rejects_wrong_response():
 
     class WrongForm:
         def get_data(self, *_a, **_k):
-            return {"filings": [{**_payload(), "formType": "NPORT-P/A"}]}
+            return {"filings": [{**_payload(), "formType": "13F-HR"}]}
 
     with pytest.raises(secapi.AccessionMismatchError, match="form type"):
         secapi.fetch_exact_filing(WrongForm(), "0000123456-26-000001")
@@ -161,6 +161,18 @@ def test_form_nport_submission_type_is_normalized_to_canonical_form_type():
 
     assert result["accessionNo"] == accession
     assert result["formType"] == "NPORT-P"
+
+
+def test_form_nport_amendment_is_normalized_to_canonical_form_type():
+    filing = _payload()
+    filing.pop("formType")
+    filing["submissionType"] = "NPORT-P/A"
+
+    class Client:
+        def get_data(self, _payload):
+            return {"filings": [filing]}
+
+    assert secapi.fetch_exact_filing(Client(), filing["accessionNo"])["formType"] == "NPORT-P"
 
 
 def test_exact_client_falls_back_to_verified_rendered_xml_without_positions():
