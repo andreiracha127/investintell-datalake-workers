@@ -1,3 +1,5 @@
+from datetime import date
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -169,7 +171,7 @@ def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spr
     terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500], "db_type": [1]})
     curve = pd.DataFrame({"day": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02"]), "tenor": ["1y", "5y", "10y"], "yield_pct": [4., 4., 4.]})
     sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10]})
-    liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": pd.to_datetime(["2024-01-01"]), "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [3.], "quote_state": ["quoted"], "reason_code": [None]})
+    liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": [date(2024, 1, 1)], "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [3.], "quote_state": ["quoted"], "reason_code": [None]})
     rows = build_db_monthly_panel(daily, terms, curve, sector, liquidity, pd.DataFrame(), months=[pd.Timestamp("2024-01-01")])
     row = rows.iloc[0]
     assert row["ytm_basis"] == "analytical"

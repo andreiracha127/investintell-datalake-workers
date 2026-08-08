@@ -365,6 +365,10 @@ def build_db_monthly_panel(
     liquidity = monthly_liquidity.rename(columns={"cusip9": "cusip_id"}).copy()
     if liquidity.empty and not {"cusip_id", "month"}.issubset(liquidity.columns):
         liquidity = pd.DataFrame(columns=["cusip_id", "month"])
+    if "month" in liquidity:
+        # psycopg returns PostgreSQL DATE as datetime.date/object; the resolver's
+        # canonical monthly key is Timestamp, matching observation-derived rows.
+        liquidity["month"] = pd.to_datetime(liquidity["month"])
     ratings_input = static_rating_mapping.rename(columns={"cusip9": "cusip_id"}).copy()
     if "issuer_id" not in sector.columns:
         raise ValueError("resolved issuer_id is required for the DB monthly panel")
