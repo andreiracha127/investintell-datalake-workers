@@ -154,3 +154,14 @@ def test_the_worst_case_sleep_before_an_outage_is_reported_is_bounded() -> None:
     per_request = sum(slept)
     assert per_request == 126.0
     assert per_request * _finnhub.MAX_CONSECUTIVE_FAILURES == 3150.0
+
+
+@pytest.mark.parametrize("body", [b"{}", b"[]", b'{"profile": {}}', b'{"profile": []}'])
+def test_bond_profile_empty_or_non_object_is_a_typed_failure(body: bytes) -> None:
+    """A successful HTTP envelope is not successful enrichment by itself."""
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    with pytest.raises(_finnhub.FinnhubProfileError, match="empty_profile"):
+        client.profile_by_cusip("00033GAA3")

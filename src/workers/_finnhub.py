@@ -84,6 +84,10 @@ class FinnhubConfigError(RuntimeError):
     """A non-retryable 4xx: wrong key, missing entitlement, bad parameter."""
 
 
+class FinnhubProfileError(RuntimeError):
+    """A successful profile HTTP response with no usable profile object."""
+
+
 class FinnhubClient:
     """Throttled, retrying access to the Finnhub bond endpoints.
 
@@ -120,7 +124,10 @@ class FinnhubClient:
 
     def profile_by_cusip(self, cusip: str) -> dict[str, Any]:
         payload = self._get_json("/bond/profile", {"cusip": cusip})
-        return payload if isinstance(payload, dict) else {}
+        profile = payload.get("profile", payload) if isinstance(payload, dict) else None
+        if not isinstance(profile, dict) or not profile:
+            raise FinnhubProfileError("empty_profile")
+        return profile
 
     def daily_candles(self, isin: str, from_ts: int, to_ts: int) -> dict[str, Any]:
         payload = self._get_json(
