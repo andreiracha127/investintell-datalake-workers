@@ -22,7 +22,7 @@ def _canonical_source_window(dsn: str) -> dict[str, Any]:
     with connect(dsn) as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT array_agg(column_name ORDER BY column_name) "
+                "SELECT array_agg(column_name::text ORDER BY column_name::text) "
                 "FROM information_schema.columns "
                 "WHERE table_schema='public' AND table_name='sec_13f_holdings' "
                 "AND column_name IN ('period','report_date','market_value')"

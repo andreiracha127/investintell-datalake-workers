@@ -84,6 +84,11 @@ def test_refresh_only_mode_uses_canonical_source_window_without_legacy_ingestion
     assert result["stages"][0]["stats"]["source"] == "canonical_sec_13f_holdings"
 
 
+def test_canonical_schema_probe_casts_information_schema_domain_to_text():
+    source = __import__("inspect").getsource(chain._canonical_source_window)
+    assert "column_name::text" in source
+
+
 def test_middle_step_failure_stops_caggs(monkeypatch):
     _wire(monkeypatch)
     calls = []
