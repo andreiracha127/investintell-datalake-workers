@@ -67,10 +67,27 @@ class Watermark:
 
 
 @dataclass(frozen=True)
+class UniverseConstituent:
+    """The subset of the served universe that determines statement output."""
+
+    ticker: str
+    fingerprint: str
+    cik: int
+
+
+@dataclass(frozen=True)
+class UniverseWatermark:
+    fingerprint: str
+    cik: int
+
+
+@dataclass(frozen=True)
 class ChangePlan:
     upserts: tuple[SourceFact, ...]
     deletes: tuple[str, ...]
     affected_ciks: tuple[int, ...]
+    universe_upserts: tuple[UniverseConstituent, ...] = ()
+    universe_deletes: tuple[str, ...] = ()
 
 
 _FACTS_SQL = """
@@ -90,6 +107,16 @@ WHERE f.taxonomy = 'us-gaap'
   -- scan so the quarantine observes them instead of silently losing evidence.
   AND (f.period_end >= CURRENT_DATE - INTERVAL '12 years'
        OR f.period_end >= DATE '2100-01-01')
+"""
+
+_UNIVERSE_SQL = """
+SELECT u.ticker, u.cik,
+       md5(concat_ws(E'\\x1f', u.ticker, u.cik::text)) AS universe_fingerprint
+FROM (
+    SELECT DISTINCT upper(ticker) AS ticker, cik
+    FROM universe_constituents
+    WHERE cik IS NOT NULL
+) AS u
 """
 
 
@@ -120,6 +147,36 @@ def load_watermarks(conn: Any) -> dict[str, Watermark]:
         return {row[0]: Watermark(fingerprint=row[1], cik=int(row[2])) for row in cur.fetchall()}
 
 
+def universe_identity(ticker: str, cik: int) -> str:
+    """Return the app-MV semantic identity for one universe membership."""
+    return f"{ticker}\x1f{cik}"
+
+
+def load_universe_constituents(conn: Any) -> list[UniverseConstituent]:
+    """Load the normalized ticker/CIK memberships consumed by the source MV."""
+    with conn.cursor() as cur:
+        cur.execute(_UNIVERSE_SQL)
+        rows = cur.fetchall()
+    return [
+        UniverseConstituent(ticker=str(row[0]), fingerprint=str(row[2]), cik=int(row[1]))
+        for row in rows
+    ]
+
+
+def load_universe_watermarks(conn: Any) -> dict[str, UniverseWatermark]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT ticker, cik, universe_fingerprint "
+            "FROM stock_fundamentals_statement_universe_watermarks"
+        )
+        return {
+            universe_identity(str(row[0]), int(row[1])): UniverseWatermark(
+                fingerprint=str(row[2]), cik=int(row[1])
+            )
+            for row in cur.fetchall()
+        }
+
+
 def is_valid_fact_date(fact: SourceFact, *, today: dt.date | None = None) -> bool:
     """Reject impossible, reversed, or implausibly future reporting periods."""
     today = today or dt.date.today()
@@ -131,7 +188,10 @@ def is_valid_fact_date(fact: SourceFact, *, today: dt.date | None = None) -> boo
 
 
 def plan_changes(
-    facts: list[SourceFact], watermarks: dict[str, Watermark], *, rebuild: bool = False
+    facts: list[SourceFact], watermarks: dict[str, Watermark], *,
+    universe: list[UniverseConstituent] | None = None,
+    universe_watermarks: dict[str, UniverseWatermark] | None = None,
+    rebuild: bool = False,
 ) -> ChangePlan:
     current = {fact.identity: fact for fact in facts}
     upserts = tuple(
@@ -144,7 +204,30 @@ def plan_changes(
     if rebuild:
         affected.update(fact.cik for fact in facts)
         affected.update(mark.cik for mark in watermarks.values())
-    return ChangePlan(upserts=upserts, deletes=deletes, affected_ciks=tuple(sorted(affected)))
+
+    current_universe = {
+        universe_identity(member.ticker, member.cik): member
+        for member in (universe or [])
+    }
+    previous_universe = universe_watermarks or {}
+    universe_upserts = tuple(
+        member for identity, member in current_universe.items()
+        if rebuild or identity not in previous_universe
+        or previous_universe[identity].fingerprint != member.fingerprint
+    )
+    universe_deletes = tuple(sorted(identity for identity in previous_universe if identity not in current_universe))
+    affected.update(member.cik for member in universe_upserts)
+    affected.update(previous_universe[identity].cik for identity in universe_deletes)
+    if rebuild:
+        affected.update(member.cik for member in current_universe.values())
+        affected.update(mark.cik for mark in previous_universe.values())
+    return ChangePlan(
+        upserts=upserts,
+        deletes=deletes,
+        affected_ciks=tuple(sorted(affected)),
+        universe_upserts=universe_upserts,
+        universe_deletes=universe_deletes,
+    )
 
 
 def quarantine_invalid_facts(conn: Any, facts: list[SourceFact]) -> None:
@@ -236,17 +319,32 @@ def apply_watermark_changes(conn: Any, plan: ChangePlan) -> None:
                 "cik=EXCLUDED.cik, processed_at=now()",
                 [(fact.identity, fact.fingerprint, fact.cik) for fact in plan.upserts],
             )
+        if plan.universe_deletes:
+            cur.execute(
+                "DELETE FROM stock_fundamentals_statement_universe_watermarks "
+                "WHERE concat_ws(E'\\x1f', ticker, cik::text) = ANY(%s)",
+                (list(plan.universe_deletes),),
+            )
+        if plan.universe_upserts:
+            cur.executemany(
+                "INSERT INTO stock_fundamentals_statement_universe_watermarks "
+                "(ticker,cik,universe_fingerprint) VALUES (%s,%s,%s) "
+                "ON CONFLICT (ticker,cik) DO UPDATE SET "
+                "universe_fingerprint=EXCLUDED.universe_fingerprint, processed_at=now()",
+                [(member.ticker, member.cik, member.fingerprint) for member in plan.universe_upserts],
+            )
 
 
-def record_run(conn: Any, *, rebuild: bool, changed_facts: int, affected_ciks: int,
+def record_run(conn: Any, *, rebuild: bool, changed_facts: int, changed_universe_constituents: int,
+               affected_ciks: int,
                rows_deleted: int, rows_upserted: int, quarantined_facts: int) -> None:
     with conn.cursor() as cur:
         cur.execute(
             "INSERT INTO stock_fundamentals_statement_runs "
-            "(run_id,mode,changed_facts,affected_ciks,rows_deleted,rows_upserted,quarantined_facts) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
-            (uuid.uuid4(), "rebuild" if rebuild else "incremental", changed_facts, affected_ciks,
-             rows_deleted, rows_upserted, quarantined_facts),
+            "(run_id,mode,changed_facts,changed_universe_constituents,affected_ciks,rows_deleted,"
+            "rows_upserted,quarantined_facts) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (uuid.uuid4(), "rebuild" if rebuild else "incremental", changed_facts,
+             changed_universe_constituents, affected_ciks, rows_deleted, rows_upserted, quarantined_facts),
         )
 
 
@@ -264,24 +362,39 @@ def run(dsn: str, *, rebuild: bool = False) -> dict[str, int | str | bool]:
                 source = load_source_facts(conn)
                 invalid = [fact for fact in source if not is_valid_fact_date(fact)]
                 valid = [fact for fact in source if is_valid_fact_date(fact)]
-                plan = plan_changes(valid, load_watermarks(conn), rebuild=rebuild)
+                plan = plan_changes(
+                    valid,
+                    load_watermarks(conn),
+                    universe=load_universe_constituents(conn),
+                    universe_watermarks=load_universe_watermarks(conn),
+                    rebuild=rebuild,
+                )
                 changed_facts = len(plan.upserts) + len(plan.deletes)
+                changed_universe_constituents = len(plan.universe_upserts) + len(plan.universe_deletes)
                 quarantine_invalid_facts(conn, invalid)
                 if not plan.affected_ciks:
                     if invalid:
                         record_run(
-                            conn, rebuild=rebuild, changed_facts=0, affected_ciks=0,
+                            conn, rebuild=rebuild, changed_facts=0, changed_universe_constituents=0,
+                            affected_ciks=0,
                             rows_deleted=0, rows_upserted=0, quarantined_facts=len(invalid),
                         )
                         conn.commit()
                     return {
                         "affected_ciks": 0, "changed_facts": 0, "rows_deleted": 0,
-                        "rows_upserted": 0, "quarantined_facts": len(invalid), "skipped": "no_changes",
+                        "rows_upserted": 0, "quarantined_facts": len(invalid),
+                        "changed_universe_constituents": 0, "skipped": "no_changes",
                     }
                 rows_deleted, rows_upserted = recompute_scoped(conn, plan.affected_ciks)
+                # Hold the session advisory lock through both commits.  First make
+                # the target relation durable; only then advance the replay-safe
+                # input state.  A second-step failure therefore repeats work but
+                # can never skip an unmaterialized fact or universe membership.
+                conn.commit()
                 apply_watermark_changes(conn, plan)
                 record_run(
                     conn, rebuild=rebuild, changed_facts=changed_facts,
+                    changed_universe_constituents=changed_universe_constituents,
                     affected_ciks=len(plan.affected_ciks), rows_deleted=rows_deleted,
                     rows_upserted=rows_upserted, quarantined_facts=len(invalid),
                 )
@@ -292,5 +405,7 @@ def run(dsn: str, *, rebuild: bool = False) -> dict[str, int | str | bool]:
     return {
         "affected_ciks": len(plan.affected_ciks), "changed_facts": changed_facts,
         "rows_deleted": rows_deleted, "rows_upserted": rows_upserted,
-        "quarantined_facts": len(invalid), "rebuild": rebuild,
+        "quarantined_facts": len(invalid),
+        "changed_universe_constituents": changed_universe_constituents,
+        "rebuild": rebuild,
     }

@@ -1,0 +1,12 @@
+# One-shot activation config for the incremental stock-fundamentals materializer.
+# Attach this file only to its dedicated Railway service.  The service sets
+# WORKER=stock_fundamentals_statements and DATABASE_URL; it begins parked so a
+# deploy builds the image but cannot start an unreviewed database run.
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python -m src.run_worker"
+restartPolicyType = "never"
+cronSchedule = "0 0 29 2 *"

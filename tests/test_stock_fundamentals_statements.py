@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import tomllib
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -11,10 +12,14 @@ import pytest
 import src.workers.stock_fundamentals_statements as statements
 
 
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class _Conn:
     def __init__(self) -> None:
         self.commits = 0
         self.rollbacks = 0
+        self.events: list[str] = []
 
     def __enter__(self):
         return self
@@ -24,6 +29,7 @@ class _Conn:
 
     def commit(self) -> None:
         self.commits += 1
+        self.events.append("commit")
 
     def rollback(self) -> None:
         self.rollbacks += 1
@@ -61,6 +67,8 @@ def _wire_run(monkeypatch, source, watermarks, *, acquired=True, recompute=None)
     monkeypatch.setattr(statements, "install_schema", lambda _conn: None)
     monkeypatch.setattr(statements, "load_source_facts", lambda _conn: source)
     monkeypatch.setattr(statements, "load_watermarks", lambda _conn: watermarks)
+    monkeypatch.setattr(statements, "load_universe_constituents", lambda _conn: [])
+    monkeypatch.setattr(statements, "load_universe_watermarks", lambda _conn: {})
     monkeypatch.setattr(
         statements,
         "quarantine_invalid_facts",
@@ -69,7 +77,7 @@ def _wire_run(monkeypatch, source, watermarks, *, acquired=True, recompute=None)
     monkeypatch.setattr(
         statements,
         "apply_watermark_changes",
-        lambda _conn, plan: applied.append(plan),
+        lambda _conn, plan: (applied.append(plan), conn.events.append("watermarks")),
     )
     monkeypatch.setattr(statements, "record_run", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -91,7 +99,8 @@ def test_first_run_materializes_new_fact_and_advances_its_watermark(monkeypatch)
     assert result["rows_upserted"] == 2
     assert [fact.identity for fact in applied[0].upserts] == ["fact-a"]
     assert not quarantined
-    assert conn.commits == 1
+    assert conn.commits == 2
+    assert conn.events == ["commit", "watermarks", "commit"]
 
 
 def test_unchanged_source_is_a_noop(monkeypatch) -> None:
@@ -122,6 +131,53 @@ def test_changed_and_removed_facts_recompute_their_ciks_and_cleanup_watermarks(m
     assert result["affected_ciks"] == 2
     assert [fact.identity for fact in applied[0].upserts] == ["fact-a"]
     assert applied[0].deletes == ("fact-removed",)
+
+
+def test_universe_ticker_reassignment_recomputes_both_ciks_without_a_fact_change() -> None:
+    """A ticker moving CIK must refresh its old and new statement rows."""
+    current = [
+        statements.UniverseConstituent(ticker="ACME", fingerprint="new-cik", cik=2),
+    ]
+    prior = {
+        statements.universe_identity("ACME", 1): statements.UniverseWatermark(
+            fingerprint="old-cik", cik=1
+        ),
+    }
+
+    plan = statements.plan_changes([], {}, universe=current, universe_watermarks=prior)
+
+    assert plan.upserts == ()
+    assert plan.universe_upserts == tuple(current)
+    assert plan.universe_deletes == (statements.universe_identity("ACME", 1),)
+    assert plan.affected_ciks == (1, 2)
+
+
+def test_run_advances_universe_state_only_after_recomputing_unchanged_facts(monkeypatch) -> None:
+    source = [_fact("fact-a", "v1", cik=2)]
+    watermarks = {"fact-a": statements.Watermark(fingerprint="v1", cik=2)}
+    conn, applied, _ = _wire_run(monkeypatch, source, watermarks)
+    monkeypatch.setattr(
+        statements,
+        "load_universe_constituents",
+        lambda _conn: [statements.UniverseConstituent(ticker="ACME", fingerprint="new-cik", cik=2)],
+    )
+    monkeypatch.setattr(
+        statements,
+        "load_universe_watermarks",
+        lambda _conn: {
+            statements.universe_identity("ACME", 1): statements.UniverseWatermark(
+                fingerprint="old-cik", cik=1
+            )
+        },
+    )
+
+    result = statements.run("postgres://test")
+
+    assert result["changed_facts"] == 0
+    assert result["changed_universe_constituents"] == 2
+    assert result["affected_ciks"] == 2
+    assert applied[0].universe_deletes == (statements.universe_identity("ACME", 1),)
+    assert conn.events == ["commit", "watermarks", "commit"]
 
 
 def test_impossible_source_dates_are_quarantined_and_never_enter_the_watermark(monkeypatch) -> None:
@@ -194,3 +250,15 @@ def test_scoped_definition_rebinds_the_universe_before_the_multiuse_fact_cte() -
         statements.scope_definition_to_changed_universe(
             "SELECT * FROM universe_constituents JOIN universe_constituents u2 ON true"
         )
+
+
+def test_railway_one_shot_starts_parked_without_a_healthcheck() -> None:
+    config = tomllib.loads(
+        (ROOT / "railway.stock-fundamentals-statements.toml").read_text(encoding="utf-8")
+    )
+
+    assert config["deploy"] == {
+        "startCommand": "python -m src.run_worker",
+        "restartPolicyType": "never",
+        "cronSchedule": "0 0 29 2 *",
+    }

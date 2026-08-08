@@ -30,6 +30,19 @@ CREATE TABLE IF NOT EXISTS stock_fundamentals_statement_fact_watermarks (
 CREATE INDEX IF NOT EXISTS stock_fundamentals_statement_fact_watermarks_cik_idx
     ON stock_fundamentals_statement_fact_watermarks (cik);
 
+-- The source MV derives output from the normalized ticker/CIK universe as well
+-- as XBRL facts.  Keep a separate membership watermark so a ticker reassignment
+-- or removal re-materializes both affected CIKs even when every fact is unchanged.
+CREATE TABLE IF NOT EXISTS stock_fundamentals_statement_universe_watermarks (
+    ticker text NOT NULL,
+    cik bigint NOT NULL,
+    universe_fingerprint text NOT NULL,
+    processed_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ticker, cik)
+);
+CREATE INDEX IF NOT EXISTS stock_fundamentals_statement_universe_watermarks_cik_idx
+    ON stock_fundamentals_statement_universe_watermarks (cik);
+
 -- Invalid source dates are retained as evidence but are never allowed into the
 -- materializer or its watermark.  This specifically blocks historical parser
 -- failures such as a period date in year 6016 from creating absurd chunks.
@@ -56,3 +69,8 @@ CREATE TABLE IF NOT EXISTS stock_fundamentals_statement_runs (
     quarantined_facts integer NOT NULL CHECK (quarantined_facts >= 0),
     completed_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Existing staged installations retain their history while gaining an explicit
+-- audit count for autonomous universe membership changes.
+ALTER TABLE stock_fundamentals_statement_runs
+    ADD COLUMN IF NOT EXISTS changed_universe_constituents integer NOT NULL DEFAULT 0;
