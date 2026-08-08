@@ -10,6 +10,12 @@ RETURNS boolean LANGUAGE sql IMMUTABLE AS $$
     SELECT value IS NOT NULL
        AND jsonb_typeof(value) = 'object'
        AND NOT jsonb_path_exists(value, '$.**.invstOrSecs')
+       AND NOT jsonb_path_exists(value, '$.**.invstOrSec')
+       AND NOT jsonb_path_exists(value, '$.**.investments')
+       AND NOT jsonb_path_exists(value, '$.**.holdings')
+       AND position('<EDGARSUBMISSION' IN upper(value::text)) = 0
+       AND position('<!DOCTYPE' IN upper(value::text)) = 0
+       AND position('<!ENTITY' IN upper(value::text)) = 0
 $$;
 
 CREATE TABLE IF NOT EXISTS nport_fixed_income_secapi_recovery_v1 (

@@ -224,6 +224,8 @@ def _secapi_scope_state(
         " WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s AND m.status='success' "
         " UNION ALL "
         " SELECT m.accession_number, 'v2'::text AS source_version, concat_ws(':', 'v2', m.accession_number, m.parser_version, m.resolver_version, "
+        " m.fallback_reason, array_to_string(m.api_chain, '>'), m.form_type, m.document_name, m.document_url, "
+        " m.form_nport_query, m.form_nport_result_count::text, "
         " m.form_nport_response_sha256, m.query_response_sha256, m.render_raw_sha256, m.compact_payload_sha256, "
         " f.compact_payload_sha256, f.projection_sha256, COALESCE(q.rate_hashes,'')) AS item "
         " FROM nport_fixed_income_secapi_fallback_manifest_v2 m "

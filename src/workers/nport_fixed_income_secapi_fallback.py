@@ -188,9 +188,13 @@ class PostgresFallbackDb:
             "SELECT r.accession_number FROM nport_fixed_income_secapi_recovery_v1 r "
             "WHERE r.source_holdings_publication_id=%s AND r.source_run_id=%s "
             "AND r.status='terminal_error' AND NOT EXISTS ("
-            f"SELECT 1 FROM {_MANIFEST_TABLE} m WHERE "
+            f"SELECT 1 FROM {_MANIFEST_TABLE} m JOIN {_FUND_TABLE} f USING "
+            "(source_holdings_publication_id,source_run_id,accession_number) WHERE "
             "(m.source_holdings_publication_id,m.source_run_id,m.accession_number)="
-            "(r.source_holdings_publication_id,r.source_run_id,r.accession_number)) "
+            "(r.source_holdings_publication_id,r.source_run_id,r.accession_number) "
+            f"AND f.cur_metric_count=(SELECT count(*) FROM {_RATE_TABLE} q WHERE "
+            "(q.source_holdings_publication_id,q.source_run_id,q.accession_number)="
+            "(r.source_holdings_publication_id,r.source_run_id,r.accession_number))) "
             "ORDER BY r.accession_number",
             (publication_id, source_run_id),
         ).fetchall()
@@ -218,7 +222,8 @@ class PostgresFallbackDb:
     ) -> dict[str, str] | None:
         row = self.conn.execute(
             f"SELECT form_nport_response_sha256,query_response_sha256,render_raw_sha256,"
-            f"compact_payload_sha256,parser_version,resolver_version FROM {_MANIFEST_TABLE} "
+            f"compact_payload_sha256,parser_version,resolver_version,source_document_id,"
+            f"document_url,form_nport_query,form_nport_result_count FROM {_MANIFEST_TABLE} "
             "WHERE source_holdings_publication_id=%s AND source_run_id=%s AND accession_number=%s",
             (publication_id, source_run_id, accession_number),
         ).fetchone()
@@ -227,6 +232,8 @@ class PostgresFallbackDb:
         return dict(zip((
             "form_nport_response_sha256", "query_response_sha256", "render_raw_sha256",
             "compact_payload_sha256", "parser_version", "resolver_version",
+            "source_document_id", "document_url", "form_nport_query",
+            "form_nport_result_count",
         ), row, strict=True))
 
     def write(
@@ -237,12 +244,14 @@ class PostgresFallbackDb:
         manifest = self.conn.execute(
             f"INSERT INTO {_MANIFEST_TABLE} (source_holdings_publication_id,source_run_id,accession_number,"
             "source_document_id,parser_version,resolver_version,document_url,"
+            "form_nport_query,form_nport_result_count,"
             "form_nport_response_sha256,query_response_sha256,render_raw_sha256,compact_payload_sha256) "
-            "VALUES(%s,%s,%s,nport_fixed_income_secapi_fallback_document_id_v2(%s,%s,%s),%s,%s,%s,%s,%s,%s) "
+            "VALUES(%s,%s,%s,nport_fixed_income_secapi_fallback_document_id_v2(%s,%s,%s),%s,%s,%s,%s,0,%s,%s,%s,%s) "
             "ON CONFLICT DO NOTHING RETURNING source_document_id",
             (source["source_holdings_publication_id"], source["source_run_id"], projection.accession_number,
              source["source_holdings_publication_id"], source["source_run_id"], projection.accession_number,
              PARSER_VERSION, RESOLVER_VERSION, evidence.document_url,
+             f'accessionNo:"{projection.accession_number}"',
              hashes["form_nport_response_sha256"], hashes["query_response_sha256"],
              hashes["render_raw_sha256"], hashes["compact_payload_sha256"]),
         ).fetchone()
@@ -250,11 +259,21 @@ class PostgresFallbackDb:
             existing = self.existing_hashes(
                 str(source["source_holdings_publication_id"]), str(source["source_run_id"]), projection.accession_number
             )
-            expected = {**hashes, "parser_version": PARSER_VERSION, "resolver_version": RESOLVER_VERSION}
+            if existing is None:
+                raise RuntimeError("SEC API fallback manifest disappeared after conflict")
+            document_id = existing.pop("source_document_id")
+            expected = {
+                **hashes,
+                "parser_version": PARSER_VERSION,
+                "resolver_version": RESOLVER_VERSION,
+                "document_url": evidence.document_url,
+                "form_nport_query": f'accessionNo:"{projection.accession_number}"',
+                "form_nport_result_count": 0,
+            }
             if existing != expected:
                 raise RuntimeError("immutable SEC API fallback overlay hash conflict")
-            return
-        document_id = manifest[0]
+        else:
+            document_id = manifest[0]
         fund = {
             "source_holdings_publication_id": source["source_holdings_publication_id"],
             "source_run_id": source["source_run_id"], "accession_number": projection.accession_number,

@@ -138,12 +138,26 @@ def test_sidecar_scope_readiness_is_identity_bounded_and_rejects_compact_holding
             assert ready["expected_count"] == 2
             assert ready["declared_cur_metric_count"] == ready["rate_row_count"] == 1
 
-            _recovery(cur, publication_id, run_id, "A3")
-            with pytest.raises(psycopg.errors.CheckViolation):
-                _fund(cur, publication_id, run_id, "A3", state="empty", count=0, payload='{"invstOrSecs":[]}')
-            _recovery(cur, publication_id, run_id, "A4")
-            with pytest.raises(psycopg.errors.CheckViolation):
-                _fund(cur, publication_id, run_id, "A4", state="empty", count=0, presence='{"invstOrSecs":"present"}')
+            forbidden = (
+                '{"invstOrSecs":[]}',
+                '{"invstOrSec":[]}',
+                '{"investments":[]}',
+                '{"holdings":[]}',
+                '{"document":"<edgarSubmission/>"}',
+            )
+            for ordinal, payload in enumerate(forbidden, start=3):
+                accession = f"A{ordinal}"
+                _recovery(cur, publication_id, run_id, accession)
+                with pytest.raises(psycopg.errors.CheckViolation):
+                    _fund(
+                        cur,
+                        publication_id,
+                        run_id,
+                        accession,
+                        state="empty",
+                        count=0,
+                        payload=payload,
+                    )
             with pytest.raises(psycopg.errors.RaiseException):
                 cur.execute(
                     "UPDATE nport_fixed_income_secapi_recovery_v1 SET attempt_count=2 "

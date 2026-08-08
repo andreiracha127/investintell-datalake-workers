@@ -34,6 +34,8 @@ def test_fallback_schema_is_a_compact_append_only_overlay() -> None:
     assert "QueryApi" in ddl and "RenderApi" in ddl
     assert "raw_xml" not in ddl.lower()
     assert "render_raw_sha256" in ddl
+    assert "NULL::bigint" not in ddl
+    assert "(q.provider_ordinal + 1)::bigint" in ddl
 
 
 def _install(cur) -> tuple[str, str, str]:
@@ -91,9 +93,10 @@ def _fallback_manifest(cur, publication_id: str, run_id: str, accession: str, *,
         """INSERT INTO nport_fixed_income_secapi_fallback_manifest_v2
         (source_holdings_publication_id,source_run_id,accession_number,source_document_id,
          parser_version,resolver_version,form_type,document_name,document_url,
+         form_nport_query,form_nport_result_count,
          form_nport_response_sha256,query_response_sha256,render_raw_sha256,compact_payload_sha256,status)
         VALUES(%s,%s,%s,%s,%s,'query-render-v1','NPORT-P','primary_doc.xml',
-               %s,%s,%s,%s,%s,'success')""",
+               %s,%s,0,%s,%s,%s,%s,'success')""",
         (
             publication_id,
             run_id,
@@ -102,6 +105,7 @@ def _fallback_manifest(cur, publication_id: str, run_id: str, accession: str, *,
             parser,
             "https://www.sec.gov/Archives/edgar/data/1/"
             f"{accession.replace('-', '')}/primary_doc.xml",
+            f'accessionNo:"{accession}"',
             SHA,
             SHA,
             SHA,
@@ -150,10 +154,10 @@ def test_fallback_only_overlays_immutable_v1_terminal_rows_and_requires_complete
             assert ready["selected_v1_count"] == ready["selected_v2_count"] == 1
 
             rows = cur.execute(
-                "SELECT accession_number FROM nport_fixed_income_fund_info_source_v2(%s,%s,'sec_api',%s,%s,%s) ORDER BY accession_number",
+                "SELECT accession_number,source_row_number FROM nport_fixed_income_fund_info_source_v2(%s,%s,'sec_api',%s,%s,%s) ORDER BY accession_number",
                 (publication_id, run_id, "v1-active", "v2-active", "query-render-v1"),
             ).fetchall()
-            assert rows == [(A1,), (A2,)]
+            assert rows == [(A1, 0), (A2, 0)]
 
             with pytest.raises(psycopg.errors.RaiseException, match="terminal"):
                 _fallback_manifest(cur, publication_id, run_id, A1)

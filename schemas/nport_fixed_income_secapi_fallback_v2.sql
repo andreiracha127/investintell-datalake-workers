@@ -33,8 +33,13 @@ CREATE TABLE IF NOT EXISTS nport_fixed_income_secapi_fallback_manifest_v2 (
     form_type text NOT NULL DEFAULT 'NPORT-P' CHECK (form_type = 'NPORT-P'),
     document_name text NOT NULL DEFAULT 'primary_doc.xml' CHECK (document_name = 'primary_doc.xml'),
     document_url text NOT NULL CHECK (
-        document_url ~ '^https://www[.]sec[.]gov/Archives/edgar/data/.+/primary_doc[.]xml$'
+        document_url ~ ('^https://www[.]sec[.]gov/Archives/edgar/data/[0-9]+/'
+            || replace(accession_number, '-', '') || '/primary_doc[.]xml$')
     ),
+    form_nport_query text NOT NULL CHECK (
+        form_nport_query = 'accessionNo:"' || accession_number || '"'
+    ),
+    form_nport_result_count integer NOT NULL CHECK (form_nport_result_count = 0),
     form_nport_response_sha256 char(64) NOT NULL CHECK (form_nport_response_sha256 ~ '^[0-9a-f]{64}$'),
     query_response_sha256 char(64) NOT NULL CHECK (query_response_sha256 ~ '^[0-9a-f]{64}$'),
     render_raw_sha256 char(64) NOT NULL CHECK (render_raw_sha256 ~ '^[0-9a-f]{64}$'),
@@ -46,6 +51,14 @@ CREATE TABLE IF NOT EXISTS nport_fixed_income_secapi_fallback_manifest_v2 (
         REFERENCES nport_fixed_income_secapi_recovery_v1
         (source_holdings_publication_id, source_run_id, accession_number) ON DELETE RESTRICT
 );
+
+-- Upgrade an already-installed, still-empty v2 overlay without rewriting it.
+ALTER TABLE nport_fixed_income_secapi_fallback_manifest_v2
+    ADD COLUMN IF NOT EXISTS form_nport_query text NOT NULL DEFAULT '';
+ALTER TABLE nport_fixed_income_secapi_fallback_manifest_v2
+    ALTER COLUMN form_nport_query DROP DEFAULT;
+ALTER TABLE nport_fixed_income_secapi_fallback_manifest_v2
+    ADD COLUMN IF NOT EXISTS form_nport_result_count integer NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS nport_fixed_income_secapi_fallback_fund_info_v2 (
     source_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -131,9 +144,14 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'SEC API fallback source document id is not deterministic';
         END IF;
-        IF position('/' || replace(NEW.accession_number, '-', '') || '/primary_doc.xml'
-                    IN NEW.document_url) = 0 THEN
+        IF NEW.document_url !~ ('^https://www[.]sec[.]gov/Archives/edgar/data/[0-9]+/'
+            || replace(NEW.accession_number, '-', '') || '/primary_doc[.]xml$') THEN
             RAISE EXCEPTION 'SEC API fallback document URL does not match accession';
+        END IF;
+        IF NEW.form_nport_query IS DISTINCT FROM
+           ('accessionNo:"' || NEW.accession_number || '"')
+           OR NEW.form_nport_result_count IS DISTINCT FROM 0 THEN
+            RAISE EXCEPTION 'SEC API fallback requires immutable FormNport exact-zero evidence';
         END IF;
         RETURN NEW;
     END IF;
@@ -285,7 +303,7 @@ BEGIN
      WHERE f.source_holdings_publication_id=p_publication_id AND f.source_run_id=p_run_id
        AND r.status='success' AND r.extractor_version=p_v1_extractor_version
     UNION ALL
-    SELECT f.source_row_id,f.source_document_id,NULL::bigint,f.accession_number,
+    SELECT f.source_row_id,f.source_document_id,0::bigint,f.accession_number,
            jsonb_strip_nulls(jsonb_build_object(
              'TOTAL_ASSETS',f.total_assets,'TOTAL_LIABILITIES',f.total_liabilities,'NET_ASSETS',f.net_assets,
              'BORROWING_PAY_WITHIN_1YR',f.borrowing_pay_within_1yr,'CTRLD_COMPANIES_PAY_WITHIN_1YR',f.ctrld_companies_pay_within_1yr,
@@ -331,7 +349,7 @@ BEGIN
         ON (r.source_holdings_publication_id,r.source_run_id,r.accession_number)=(q.source_holdings_publication_id,q.source_run_id,q.accession_number)
      WHERE q.source_holdings_publication_id=p_publication_id AND q.source_run_id=p_run_id AND r.status='success' AND r.extractor_version=p_v1_extractor_version
     UNION ALL
-    SELECT q.source_row_id,q.source_document_id,NULL::bigint,q.accession_number,
+    SELECT q.source_row_id,q.source_document_id,(q.provider_ordinal + 1)::bigint,q.accession_number,
            jsonb_strip_nulls(jsonb_build_object('INTEREST_RATE_RISK_ID',q.provider_rate_risk_id,'CURRENCY_CODE',q.currency_code,
              'INTRST_RATE_CHANGE_3MON_DV01',q.dv01_3mon,'INTRST_RATE_CHANGE_1YR_DV01',q.dv01_1yr,
              'INTRST_RATE_CHANGE_5YR_DV01',q.dv01_5yr,'INTRST_RATE_CHANGE_10YR_DV01',q.dv01_10yr,
