@@ -4,7 +4,9 @@
 # nport_fixed_income_secapi_fallback plus DATABASE_URL, SEC_API_IO_KEY,
 # NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID, NPORT_SECAPI_SOURCE_RUN_ID,
 # NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS, NPORT_SECAPI_FALLBACK_MAX_API_CALLS,
-# and NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS.  Do not add a cron:
+# NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS, and
+# NPORT_SECAPI_FALLBACK_CONCURRENCY=4. Each task constructs its own SDK client;
+# the worker still applies one global paced call budget. Do not add a cron:
 # deployment is a deliberately bounded execution and partial is non-zero.
 
 [build]

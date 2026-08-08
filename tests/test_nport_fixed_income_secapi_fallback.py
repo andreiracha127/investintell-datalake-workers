@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import threading
 
 from src.nport import secapi_fixed_income as secapi
 from src.workers import nport_fixed_income_secapi_fallback as worker
@@ -185,3 +186,102 @@ def test_existing_overlay_is_idempotent_and_scoped_lock_prevents_calls():
     locked, locked_client = _Db(locked=True), _Client()
     assert _run(locked, locked_client)["state"] == "locked"
     assert locked_client.calls == 0
+
+
+def test_concurrent_fetches_use_distinct_clients_and_keep_db_writes_on_main_thread():
+    accession_two = "0000123456-26-000002"
+    barrier = threading.Barrier(2)
+    main_thread = threading.get_ident()
+    created: list[object] = []
+
+    def evidence_for(accession: str) -> secapi.RenderFallbackEvidence:
+        return secapi.RenderFallbackEvidence(
+            filing={**_filing(), "accessionNo": accession},
+            form_response={"filings": []},
+            query_response={"filings": [{"accessionNo": accession}]},
+            render_raw=b"<edgarSubmission/>",
+            document_url=(
+                "https://www.sec.gov/Archives/edgar/data/123456/"
+                f"{accession.replace('-', '')}/primary_doc.xml"
+            ),
+        )
+
+    class Db(_Db):
+        def __init__(self):
+            super().__init__([ACCESSION, accession_two])
+            self.write_threads: list[int] = []
+
+        def write(self, projection, evidence) -> None:
+            self.write_threads.append(threading.get_ident())
+            super().write(projection, evidence)
+
+    class Client:
+        def fetch_render_fallback_evidence(self, accession: str, *, on_provider_call):
+            on_provider_call()
+            barrier.wait(timeout=2)
+            on_provider_call()
+            on_provider_call()
+            return evidence_for(accession)
+
+    db = Db()
+
+    def factory():
+        client = Client()
+        created.append(client)
+        return client
+
+    result = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=6, request_interval_seconds=0.0001, concurrency=2, db=db,
+        client_factory=factory, sleeper=lambda _seconds: None,
+    )
+
+    assert result["state"] == "complete"
+    assert result["api_calls"] == 6
+    assert len({id(client) for client in created}) == 2
+    assert db.write_threads == [main_thread, main_thread]
+
+
+def test_concurrent_scheduler_reserves_complete_chains_under_the_hard_call_budget():
+    db = _Db([ACCESSION, "0000123456-26-000002"])
+    client = _Client()
+
+    result = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=5, request_interval_seconds=0.01, concurrency=4, db=db,
+        client_factory=lambda: client, sleeper=lambda _seconds: None,
+    )
+
+    assert result["state"] == "partial"
+    assert result["api_calls"] == 3
+    assert client.calls == 3
+
+
+def test_failure_keeps_prior_commits_and_does_not_write_the_failed_accession():
+    accession_two = "0000123456-26-000002"
+
+    class FailingClient:
+        def fetch_render_fallback_evidence(self, _accession: str, *, on_provider_call):
+            on_provider_call()
+            raise secapi.PayloadError("unsafe response")
+
+    db = _Db([ACCESSION, accession_two])
+    clients = iter([_Client(), FailingClient()])
+    result = worker.run(
+        publication_id=PUBLICATION, source_run_id=RUN, max_accessions=2,
+        max_api_calls=6, request_interval_seconds=0.01, concurrency=1, db=db,
+        client_factory=lambda: next(clients), sleeper=lambda _seconds: None,
+    )
+
+    assert result["state"] == "failed"
+    assert result["accession_number"] == accession_two
+    assert [projection.accession_number for projection, _evidence in db.writes] == [ACCESSION]
+
+
+def test_concurrency_defaults_to_one_without_an_environment_override(monkeypatch):
+    monkeypatch.delenv(worker.ENV_CONCURRENCY, raising=False)
+    db, client = _Db(), _Client()
+
+    result = _run(db, client)
+
+    assert result["concurrency"] == 1

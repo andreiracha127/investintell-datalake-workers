@@ -11,8 +11,10 @@ import contextlib
 import hashlib
 import math
 import os
+import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from typing import Any, Callable
 
 from src.db import connect
@@ -31,6 +33,7 @@ ENV_SOURCE_RUN_ID = "NPORT_SECAPI_SOURCE_RUN_ID"
 ENV_MAX_ACCESSIONS = "NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS"
 ENV_MAX_API_CALLS = "NPORT_SECAPI_FALLBACK_MAX_API_CALLS"
 ENV_REQUEST_INTERVAL_SECONDS = "NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS"
+ENV_CONCURRENCY = "NPORT_SECAPI_FALLBACK_CONCURRENCY"
 
 
 def _required_env(name: str) -> str:
@@ -92,6 +95,72 @@ def evidence_hashes(
             projection.compact_json.encode("utf-8")
         ).hexdigest(),
     }
+
+
+class _GlobalCallLimiter:
+    """Reserve complete chains and serialize every provider call across threads."""
+
+    def __init__(
+        self,
+        max_calls: int,
+        request_interval_seconds: float,
+        sleeper: Callable[[float], None],
+        clock: Callable[[], float],
+    ):
+        self._max_calls = max_calls
+        self._interval = request_interval_seconds
+        self._sleep = sleeper
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._reserved_calls = 0
+        self._calls = 0
+        self._previous_request_at: float | None = None
+
+    def reserve_chain(self) -> bool:
+        """Reserve the Form, Query, and Render calls before a task starts."""
+        with self._lock:
+            if self._reserved_calls + 3 > self._max_calls:
+                return False
+            self._reserved_calls += 3
+            return True
+
+    def provider_call(self) -> None:
+        """Take one globally paced call from the synchronized hard budget."""
+        with self._lock:
+            if self._calls >= self._reserved_calls or self._calls >= self._max_calls:
+                raise RuntimeError("SEC API fallback call budget exhausted")
+            if self._previous_request_at is not None:
+                self._sleep(
+                    max(0.0, self._interval - (self._clock() - self._previous_request_at))
+                )
+            self._previous_request_at = self._clock()
+            self._calls += 1
+
+    @property
+    def calls(self) -> int:
+        with self._lock:
+            return self._calls
+
+
+def _fetch_and_parse(
+    accession: str,
+    publication_id: str,
+    source_run_id: str,
+    client_factory: Callable[[], Any],
+    limiter: _GlobalCallLimiter,
+) -> tuple[parser.FilingProjection, parser.RenderFallbackEvidence]:
+    """Network/parsing-only worker task: it intentionally receives no DB object."""
+    client = client_factory()
+    evidence = parser.fetch_render_fallback_evidence(
+        client, accession, on_provider_call=limiter.provider_call
+    )
+    projection = parser.extract_filing(
+        evidence.filing,
+        publication_id=publication_id,
+        source_run_id=source_run_id,
+        extractor_version=PARSER_VERSION,
+    )
+    return projection, evidence
 
 
 class PostgresFallbackDb:
@@ -240,7 +309,7 @@ class PostgresFallbackDb:
 def run(
     dsn: str | None = None, *, publication_id: str | None = None, source_run_id: str | None = None,
     max_accessions: int | None = None, max_api_calls: int | None = None,
-    request_interval_seconds: float | None = None, dry_run: bool = False,
+    request_interval_seconds: float | None = None, concurrency: int | None = None, dry_run: bool = False,
     calc_date: str | None = None, limit: int | None = None, db: Any | None = None,
     client_factory: Callable[[], Any] | None = None, sleeper: Callable[[float], None] | None = None,
     clock: Callable[[], float] | None = None,
@@ -254,17 +323,20 @@ def run(
     max_accessions = max_accessions if max_accessions is not None else (_positive_env(ENV_MAX_ACCESSIONS) if service else 1)
     max_api_calls = max_api_calls if max_api_calls is not None else (_positive_env(ENV_MAX_API_CALLS) if service else 3)
     request_interval_seconds = request_interval_seconds if request_interval_seconds is not None else (_positive_float_env(ENV_REQUEST_INTERVAL_SECONDS) if service else 1.0)
-    if max_accessions < 1 or max_api_calls < 1 or not math.isfinite(request_interval_seconds) or request_interval_seconds <= 0:
+    concurrency = concurrency if concurrency is not None else (
+        _positive_env(ENV_CONCURRENCY) if os.getenv(ENV_CONCURRENCY, "").strip() else 1
+    )
+    if max_accessions < 1 or max_api_calls < 1 or concurrency < 1 or not math.isfinite(request_interval_seconds) or request_interval_seconds <= 0:
         raise ValueError("fallback budgets and request interval must be positive")
     if db is None:
         conn = connect(dsn, autocommit=True)
         with conn:
-            return _run_with_db(conn, publication_id, source_run_id, max_accessions, max_api_calls, request_interval_seconds, dry_run, client_factory, sleeper, clock)
-    return _run_with_db(db, publication_id, source_run_id, max_accessions, max_api_calls, request_interval_seconds, dry_run, client_factory, sleeper, clock)
+            return _run_with_db(conn, publication_id, source_run_id, max_accessions, max_api_calls, request_interval_seconds, concurrency, dry_run, client_factory, sleeper, clock)
+    return _run_with_db(db, publication_id, source_run_id, max_accessions, max_api_calls, request_interval_seconds, concurrency, dry_run, client_factory, sleeper, clock)
 
 
 def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_accessions: int,
-                 max_api_calls: int, request_interval_seconds: float, dry_run: bool,
+                 max_api_calls: int, request_interval_seconds: float, concurrency: int, dry_run: bool,
                  client_factory: Callable[[], Any] | None, sleeper: Callable[[float], None] | None,
                  clock: Callable[[], float] | None) -> dict[str, Any]:
     db = db_or_conn if hasattr(db_or_conn, "terminal_accessions") else PostgresFallbackDb(db_or_conn)
@@ -273,7 +345,7 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
     if len(candidates) != len(set(candidates)):
         raise RuntimeError("terminal fallback accession set contains duplicates")
     base = {"terminal": len(candidates), "max_accessions": max_accessions, "max_api_calls": max_api_calls,
-            "request_interval_seconds": request_interval_seconds}
+            "request_interval_seconds": request_interval_seconds, "concurrency": concurrency}
     if dry_run:
         return {"state": "dry_run", **base, "remaining": len(candidates)}
     with db.advisory_lock(publication_id, source_run_id) as acquired:
@@ -282,43 +354,91 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
         candidates = db.terminal_accessions(publication_id, source_run_id)
         if not candidates:
             return {"state": "complete", **base, "success": 0, "processed": 0, "api_calls": 0, "remaining": 0}
-        try:
-            client = (client_factory or _default_client)()
-        except Exception as exc:
-            return {"state": "failed", "reason": _safe_error(exc), **base, "processed": 0, "api_calls": 0, "remaining": len(candidates)}
         sleep, now = sleeper or time.sleep, clock or time.monotonic
-        api_calls = processed = success = 0
-        previous_request_at: float | None = None
-        for accession in candidates:
-            existing = db.existing_hashes(publication_id, source_run_id, accession)
-            if existing is not None:
-                if existing.get("parser_version") != PARSER_VERSION or existing.get("resolver_version") != RESOLVER_VERSION:
-                    return {"state": "conflict", "accession_number": accession, **base, "processed": processed, "success": success, "api_calls": api_calls, "remaining": len(candidates) - processed}
-                processed += 1
-                success += 1
-                continue
-            if processed >= max_accessions or api_calls + 3 > max_api_calls:
-                break
+        limiter = _GlobalCallLimiter(max_api_calls, request_interval_seconds, sleep, now)
+        factory = client_factory or _default_client
+        processed = success = 0
+        candidates_iter = iter(candidates)
+        scheduled: list[str] = []
+        next_to_write = 0
+        ready: dict[str, tuple[parser.FilingProjection, parser.RenderFallbackEvidence]] = {}
+        futures: dict[Future[tuple[parser.FilingProjection, parser.RenderFallbackEvidence]], str] = {}
+        failure: tuple[str, Exception] | None = None
+        exhausted = False
 
-            def record_call() -> None:
-                nonlocal api_calls, previous_request_at
-                if api_calls >= max_api_calls:
-                    raise RuntimeError("SEC API fallback call budget exhausted")
-                if previous_request_at is not None:
-                    sleep(max(0.0, request_interval_seconds - (now() - previous_request_at)))
-                previous_request_at = now()
-                api_calls += 1
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="nport-secapi-fallback") as executor:
+            while True:
+                # A completed Render XML remains in ``ready`` until its turn for
+                # serial persistence, so in-flight plus buffered projections is
+                # bounded by concurrency rather than by the terminal-gap count.
+                while not failure and not exhausted and len(futures) + len(ready) < concurrency:
+                    try:
+                        accession = next(candidates_iter)
+                    except StopIteration:
+                        break
+                    existing = db.existing_hashes(publication_id, source_run_id, accession)
+                    if existing is not None:
+                        if existing.get("parser_version") != PARSER_VERSION or existing.get("resolver_version") != RESOLVER_VERSION:
+                            failure = (accession, RuntimeError("immutable SEC API fallback overlay version conflict"))
+                            break
+                        processed += 1
+                        success += 1
+                        continue
+                    if processed + len(futures) + len(ready) >= max_accessions:
+                        exhausted = True
+                        break
+                    if not limiter.reserve_chain():
+                        exhausted = True
+                        break
+                    future = executor.submit(
+                        _fetch_and_parse, accession, publication_id, source_run_id, factory, limiter
+                    )
+                    futures[future] = accession
+                    scheduled.append(accession)
 
-            try:
-                evidence = parser.fetch_render_fallback_evidence(client, accession, on_provider_call=record_call)
-                projection = parser.extract_filing(evidence.filing, publication_id=publication_id, source_run_id=source_run_id, extractor_version=PARSER_VERSION)
-                with db.transaction():
-                    db.write(projection, evidence)
-            except Exception as exc:
-                return {"state": "failed", "accession_number": accession, "reason": _safe_error(exc), **base,
-                        "processed": processed, "success": success, "api_calls": api_calls, "remaining": len(candidates) - processed}
-            processed += 1
-            success += 1
+                if failure:
+                    for future in futures:
+                        future.cancel()
+                    break
+                if not futures:
+                    break
+                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                for future in done:
+                    accession = futures.pop(future)
+                    try:
+                        ready[accession] = future.result()
+                    except Exception as exc:
+                        failure = (accession, exc)
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                if failure:
+                    break
+                while next_to_write < len(scheduled):
+                    accession = scheduled[next_to_write]
+                    completed = ready.get(accession)
+                    if completed is None:
+                        break
+                    try:
+                        with db.transaction():
+                            db.write(*completed)
+                    except Exception as exc:
+                        failure = (accession, exc)
+                        for pending in futures:
+                            pending.cancel()
+                        break
+                    del ready[accession]
+                    next_to_write += 1
+                    processed += 1
+                    success += 1
+                if failure:
+                    break
+
+        if failure:
+            accession, exc = failure
+            return {"state": "conflict" if "conflict" in str(exc) else "failed", "accession_number": accession,
+                    "reason": _safe_error(exc), **base, "processed": processed, "success": success,
+                    "api_calls": limiter.calls, "remaining": len(candidates) - processed}
         remaining = len(candidates) - processed
         return {"state": "complete" if not remaining else "partial", **base, "processed": processed,
-                "success": success, "api_calls": api_calls, "remaining": remaining}
+                "success": success, "api_calls": limiter.calls, "remaining": remaining}

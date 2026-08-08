@@ -229,15 +229,24 @@ NPORT_SECAPI_SOURCE_RUN_ID=<the same source run UUID>
 NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS=1
 NPORT_SECAPI_FALLBACK_MAX_API_CALLS=3
 NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS=0.1
+NPORT_SECAPI_FALLBACK_CONCURRENCY=4
 ```
 
-One fallback accession reserves exactly three paced calls: FormNportApi,
-QueryApi, and RenderApi. It begins only when the remaining budget can pay for
-all three. The stored overlay contains only their separate hashes, the canonical
-SEC document URL, and compact fund/rate projections; raw XML and positions are
-never stored. `partial`, `failed`, `conflict`, and `locked` exit non-zero. A
-dry-run verifies schema and reports the immutable terminal candidate set without
-constructing an API client or writing overlay rows.
+The concurrency default is `1`; use `4` only for the intended production
+throughput, paired with `NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS>=4` and
+`NPORT_SECAPI_FALLBACK_MAX_API_CALLS>=12`. Every task creates a separate SEC
+API SDK client, while a single thread-safe limiter applies the request interval
+and hard API-call budget across all tasks. One fallback accession reserves exactly three paced calls:
+FormNportApi, QueryApi, and RenderApi. It begins only when the remaining budget
+can pay for all three. Worker threads fetch and parse only; the advisory-lock
+holder writes completed accessions serially, so no database connection crosses
+threads. On a task failure it stops scheduling, cancels queued work where
+possible, and exits non-zero; earlier committed overlays remain append-only and
+resume idempotently. The stored overlay contains only separate hashes, the
+canonical SEC document URL, and compact fund/rate projections; raw XML and
+positions are never stored. A dry-run verifies schema and reports the immutable
+terminal candidate set without constructing an API client or writing overlay
+rows.
 
 Before any later serving authorization, require this exact gate to report
 `"ready": true`; the fallback worker itself does not publish or move a pointer:
