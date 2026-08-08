@@ -491,9 +491,15 @@ def _validate_exact_record(records: Any, accession_number: str) -> Mapping[str, 
     record = records[0]
     if not isinstance(record, Mapping) or record.get("accessionNo") != accession_number:
         raise AccessionMismatchError("SEC API accession mismatch")
-    if record.get("formType") != "NPORT-P":
+    form_type = record.get("formType")
+    submission_type = record.get("submissionType")
+    if form_type is None:
+        form_type = submission_type
+    if form_type != "NPORT-P" or submission_type not in (None, "NPORT-P"):
         raise AccessionMismatchError("SEC API form type mismatch")
-    return record
+    if record.get("formType") == "NPORT-P":
+        return record
+    return {**record, "formType": "NPORT-P"}
 
 
 def fetch_exact_filing(

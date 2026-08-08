@@ -147,6 +147,22 @@ def test_fetch_exactly_one_uses_accession_query_and_rejects_wrong_response():
         secapi.fetch_exact_filing(client, 'bad" OR formType:"NPORT-P')
 
 
+def test_form_nport_submission_type_is_normalized_to_canonical_form_type():
+    accession = "0000123456-26-000001"
+    filing = _payload()
+    filing.pop("formType")
+    filing["submissionType"] = "NPORT-P"
+
+    class Client:
+        def get_data(self, _payload):
+            return {"total": {"value": 1, "relation": "eq"}, "filings": [filing]}
+
+    result = secapi.fetch_exact_filing(Client(), accession)
+
+    assert result["accessionNo"] == accession
+    assert result["formType"] == "NPORT-P"
+
+
 def test_exact_client_falls_back_to_verified_rendered_xml_without_positions():
     accession = "0000123456-26-000001"
     calls = []
