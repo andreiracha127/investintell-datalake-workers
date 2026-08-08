@@ -42,8 +42,8 @@ _APP_BOOTSTRAP_MVS = [
     "fund_reveal_13f_holdings_mv",
 ]
 _DATALAKE_MVS = [
-    "stock_institutional_holders_mv",
-    "stock_fund_holders_mv",
+    # The two stock-holder MVs were retired with their API surface in July.
+    # Keep only the canonical reverse lookup that remains deployed.
     "holding_reverse_lookup_mv",
 ]
 # The SEC "effective" selection caches are refreshed CONDITIONALLY, next to the

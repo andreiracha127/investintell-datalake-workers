@@ -60,9 +60,9 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
     # fund_active_share_mv was removed — active share now lives on
     # fund_risk_latest_mv (refreshed by the risk_metrics worker, not here).
     assert "fund_active_share_mv" not in joined
-    # Datalake MVs (Grupo B).
-    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY stock_institutional_holders_mv" in joined
-    assert "REFRESH MATERIALIZED VIEW CONCURRENTLY stock_fund_holders_mv" in joined
+    # The retired stock-holder MVs must not be refreshed.
+    assert "stock_institutional_holders_mv" not in joined
+    assert "stock_fund_holders_mv" not in joined
     assert "REFRESH MATERIALIZED VIEW CONCURRENTLY holding_reverse_lookup_mv" in joined
     assert result["refreshed"] == [
         "price_latest_mv",
@@ -73,11 +73,7 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         "fund_reveal_holdings_mv",
         "fund_reveal_13f_holdings_mv",
     ]
-    assert result["refreshed_datalake"] == [
-        "stock_institutional_holders_mv",
-        "stock_fund_holders_mv",
-        "holding_reverse_lookup_mv",
-    ]
+    assert result["refreshed_datalake"] == ["holding_reverse_lookup_mv"]
     assert result["market_overview_snapshot"] == {
         "published": 1,
         "as_of": "2026-07-13",
@@ -117,7 +113,7 @@ def test_refresh_runs_app_and_datalake_mvs(monkeypatch):
         for index, event in enumerate(sink["events"])
         if event[0] == "sql"
         and "REFRESH MATERIALIZED VIEW" in event[1]
-        and "stock_institutional_holders_mv" in event[1]
+        and "holding_reverse_lookup_mv" in event[1]
     )
     assert first_datalake_refresh_index > snapshot_index
     effective_index = event_names.index("effective_matviews")
@@ -171,7 +167,7 @@ def test_app_mv_failure_prevents_snapshot_publication(monkeypatch):
         raise AssertionError("MV failure must propagate")
 
     assert called["snapshot"] is False
-    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])
+    assert not any("holding_reverse_lookup_mv" in sql for sql in sink["sql"])
 
 
 def test_snapshot_failure_propagates_before_datalake_refresh(monkeypatch):
@@ -193,7 +189,7 @@ def test_snapshot_failure_propagates_before_datalake_refresh(monkeypatch):
     else:
         raise AssertionError("snapshot failure must propagate")
 
-    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])
+    assert not any("holding_reverse_lookup_mv" in sql for sql in sink["sql"])
 
 
 def test_unpublished_snapshot_fails_before_datalake_refresh(monkeypatch):
@@ -216,4 +212,4 @@ def test_unpublished_snapshot_fails_before_datalake_refresh(monkeypatch):
     else:
         raise AssertionError("unpublished snapshot must fail")
 
-    assert not any("stock_institutional_holders_mv" in sql for sql in sink["sql"])
+    assert not any("holding_reverse_lookup_mv" in sql for sql in sink["sql"])
