@@ -272,7 +272,7 @@ def test_scoped_definition_rebinds_the_universe_before_the_multiuse_fact_cte() -
         )
 
 
-def test_railway_one_shot_starts_parked_without_a_healthcheck() -> None:
+def test_railway_recurring_run_precedes_snapshot_refresh_without_healthcheck() -> None:
     config = tomllib.loads(
         (ROOT / "railway.stock-fundamentals-statements.toml").read_text(encoding="utf-8")
     )
@@ -280,5 +280,5 @@ def test_railway_one_shot_starts_parked_without_a_healthcheck() -> None:
     assert config["deploy"] == {
         "startCommand": "python -m src.run_worker",
         "restartPolicyType": "never",
-        "cronSchedule": "0 0 29 2 *",
+        "cronSchedule": "0 7 * * *",
     }
