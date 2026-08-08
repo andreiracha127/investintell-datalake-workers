@@ -34,8 +34,10 @@ def test_builder_uses_one_scoped_supplemental_source_adapter() -> None:
     ).read_text(encoding="utf-8")
     build_function = builder[builder.index("CREATE OR REPLACE FUNCTION build_nport_fixed_income_features"):]
     assert "supplemental_source_kind text" in builder
-    assert "nport_fixed_income_fund_info_source_v1(" in builder
-    assert "nport_fixed_income_rate_risk_source_v1(" in builder
+    assert "nport_fixed_income_fund_info_source_v2(" in builder
+    assert "nport_fixed_income_rate_risk_source_v2(" in builder
+    assert "RETURN QUERY SELECT * FROM nport_fixed_income_fund_info_source_v2" in builder
+    assert "RETURN QUERY SELECT * FROM nport_fixed_income_rate_risk_source_v2" in builder
     assert "FROM nport_fund_reported_info_raw" not in build_function
     assert "JOIN nport_interest_rate_risk_raw" not in build_function
     # Existing local/offline callers retain an explicit DERA wrapper; the
@@ -86,6 +88,34 @@ def test_secapi_approval_hash_is_bound_to_publication_run_and_extractor() -> Non
     baseline = worker._secapi_source_hash("publication-a", "run-a", "ordered-evidence")
     assert baseline != worker._secapi_source_hash("publication-b", "run-a", "ordered-evidence")
     assert baseline != worker._secapi_source_hash("publication-a", "run-b", "ordered-evidence")
+
+
+def test_secapi_approval_hash_is_bound_to_v2_parser_resolver_and_all_evidence() -> None:
+    baseline = worker._secapi_source_hash(
+        "publication-a", "run-a", "v1:A1:recovery:fund:rate|v2:A2:manifest:fund:rate"
+    )
+    assert baseline != worker._secapi_source_hash(
+        "publication-a", "run-a", "v1:A1:recovery:fund:rate|v2:A2:changed:fund:rate"
+    )
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    assert "nport_fixed_income_secapi_fallback_scope_ready_v2" in source
+    assert "nport-secapi-fixed-income/v2" in source
+    assert "secapi-query-render/v1" in source
+    for evidence_hash in (
+        "form_nport_response_sha256",
+        "query_response_sha256",
+        "render_raw_sha256",
+        "compact_payload_sha256",
+        "projection_sha256",
+    ):
+        assert evidence_hash in source
+
+
+def test_serving_installs_fallback_overlay_before_the_builder() -> None:
+    source = Path(worker.__file__).read_text(encoding="utf-8")
+    fallback_install = source.index("_SECAPI_FALLBACK_SCHEMA.read_text")
+    builder_install = source.index("materializer.install_builder(cur)")
+    assert fallback_install < builder_install
 
 
 def test_supplemental_source_never_mixes_partial_legacy_evidence() -> None:
@@ -464,6 +494,11 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
             )
             cur.execute(
                 (ROOT / "schemas" / "nport_fixed_income_secapi_sidecars_v1.sql").read_text(
+                    encoding="utf-8"
+                )
+            )
+            cur.execute(
+                (ROOT / "schemas" / "nport_fixed_income_secapi_fallback_v2.sql").read_text(
                     encoding="utf-8"
                 )
             )

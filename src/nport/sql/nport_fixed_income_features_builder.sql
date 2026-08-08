@@ -9,38 +9,9 @@ CREATE OR REPLACE FUNCTION nport_fixed_income_fund_info_source_v1(
 ) LANGUAGE plpgsql STABLE AS $$
 BEGIN
     IF p_source_kind = 'sec_api' THEN
-        RETURN QUERY
-        SELECT f.source_row_id, f.source_document_id, f.source_row_number, f.accession_number,
-               jsonb_strip_nulls(jsonb_build_object(
-                   'TOTAL_ASSETS', f.total_assets, 'TOTAL_LIABILITIES', f.total_liabilities,
-                   'NET_ASSETS', f.net_assets,
-                   'BORROWING_PAY_WITHIN_1YR', f.borrowing_pay_within_1yr,
-                   'CTRLD_COMPANIES_PAY_WITHIN_1YR', f.ctrld_companies_pay_within_1yr,
-                   'OTHER_AFFILIA_PAY_WITHIN_1YR', f.other_affilia_pay_within_1yr,
-                   'OTHER_PAY_WITHIN_1YR', f.other_pay_within_1yr,
-                   'BORROWING_PAY_AFTER_1YR', f.borrowing_pay_after_1yr,
-                   'CTRLD_COMPANIES_PAY_AFTER_1YR', f.ctrld_companies_pay_after_1yr,
-                   'OTHER_AFFILIA_PAY_AFTER_1YR', f.other_affilia_pay_after_1yr,
-                   'OTHER_PAY_AFTER_1YR', f.other_pay_after_1yr,
-                   'DELAYED_DELIVERY', f.delayed_delivery, 'STANDBY_COMMITMENT', f.standby_commitment,
-                   'CASH_NOT_RPTD_IN_C_OR_D', f.cash_not_rptd_in_c_or_d,
-                   'CREDIT_SPREAD_3MON_INVEST', f.credit_spread_3mon_invest,
-                   'CREDIT_SPREAD_1YR_INVEST', f.credit_spread_1yr_invest,
-                   'CREDIT_SPREAD_5YR_INVEST', f.credit_spread_5yr_invest,
-                   'CREDIT_SPREAD_10YR_INVEST', f.credit_spread_10yr_invest,
-                   'CREDIT_SPREAD_30YR_INVEST', f.credit_spread_30yr_invest,
-                   'CREDIT_SPREAD_3MON_NONINVEST', f.credit_spread_3mon_noninvest,
-                   'CREDIT_SPREAD_1YR_NONINVEST', f.credit_spread_1yr_noninvest,
-                   'CREDIT_SPREAD_5YR_NONINVEST', f.credit_spread_5yr_noninvest,
-                   'CREDIT_SPREAD_10YR_NONINVEST', f.credit_spread_10yr_noninvest,
-                   'CREDIT_SPREAD_30YR_NONINVEST', f.credit_spread_30yr_noninvest
-               )), 'sec_api'::text, f.payload_sha256
-          FROM nport_fixed_income_secapi_fund_info_v1 f
-          JOIN nport_fixed_income_secapi_recovery_v1 r
-            ON (r.source_holdings_publication_id, r.source_run_id, r.accession_number) =
-               (f.source_holdings_publication_id, f.source_run_id, f.accession_number)
-         WHERE f.source_holdings_publication_id = p_publication_id
-           AND f.source_run_id = p_run_id AND r.status = 'success';
+        RETURN QUERY SELECT * FROM nport_fixed_income_fund_info_source_v2(
+            p_publication_id, p_run_id, p_source_kind
+        );
     ELSIF p_source_kind = 'dera_raw' THEN
         IF to_regclass('nport_fund_reported_info_raw') IS NULL THEN RETURN; END IF;
         RETURN QUERY EXECUTE
@@ -59,27 +30,9 @@ CREATE OR REPLACE FUNCTION nport_fixed_income_rate_risk_source_v1(
 ) LANGUAGE plpgsql STABLE AS $$
 BEGIN
     IF p_source_kind = 'sec_api' THEN
-        RETURN QUERY
-        SELECT r.source_row_id, r.source_document_id, r.source_row_number, r.accession_number,
-               jsonb_strip_nulls(jsonb_build_object(
-                   'INTEREST_RATE_RISK_ID', r.provider_rate_risk_id, 'CURRENCY_CODE', r.currency_code,
-                   'INTRST_RATE_CHANGE_3MON_DV01', r.dv01_3mon,
-                   'INTRST_RATE_CHANGE_1YR_DV01', r.dv01_1yr,
-                   'INTRST_RATE_CHANGE_5YR_DV01', r.dv01_5yr,
-                   'INTRST_RATE_CHANGE_10YR_DV01', r.dv01_10yr,
-                   'INTRST_RATE_CHANGE_30YR_DV01', r.dv01_30yr,
-                   'INTRST_RATE_CHANGE_3MON_DV100', r.dv100_3mon,
-                   'INTRST_RATE_CHANGE_1YR_DV100', r.dv100_1yr,
-                   'INTRST_RATE_CHANGE_5YR_DV100', r.dv100_5yr,
-                   'INTRST_RATE_CHANGE_10YR_DV100', r.dv100_10yr,
-                   'INTRST_RATE_CHANGE_30YR_DV100', r.dv100_30yr
-               )), 'sec_api'::text, r.payload_sha256
-          FROM nport_fixed_income_secapi_rate_risk_v1 r
-          JOIN nport_fixed_income_secapi_recovery_v1 m
-            ON (m.source_holdings_publication_id, m.source_run_id, m.accession_number) =
-               (r.source_holdings_publication_id, r.source_run_id, r.accession_number)
-         WHERE r.source_holdings_publication_id = p_publication_id
-           AND r.source_run_id = p_run_id AND m.status = 'success';
+        RETURN QUERY SELECT * FROM nport_fixed_income_rate_risk_source_v2(
+            p_publication_id, p_run_id, p_source_kind
+        );
     ELSIF p_source_kind = 'dera_raw' THEN
         IF to_regclass('nport_interest_rate_risk_raw') IS NULL THEN RETURN; END IF;
         RETURN QUERY EXECUTE

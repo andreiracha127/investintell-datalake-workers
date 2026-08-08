@@ -69,6 +69,9 @@ _PUBLICATION_NAMESPACE = uuid.UUID("6f2f1f2c-0f5a-5d3b-9c47-3f2b1c8a54d1")
 
 _REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
 _SECAPI_SIDECAR_SCHEMA = Path(__file__).resolve().parents[2] / "schemas" / "nport_fixed_income_secapi_sidecars_v1.sql"
+_SECAPI_FALLBACK_SCHEMA = Path(__file__).resolve().parents[2] / "schemas" / "nport_fixed_income_secapi_fallback_v2.sql"
+_SECAPI_FALLBACK_PARSER_VERSION = "nport-secapi-fixed-income/v2"
+_SECAPI_FALLBACK_RESOLVER_VERSION = "secapi-query-render/v1"
 
 
 def _code_revision() -> str:
@@ -104,6 +107,7 @@ def install_schema(conn: Any) -> str:
     with conn.cursor() as cur:
         materializer.install_product_schema(cur)
         cur.execute(_SECAPI_SIDECAR_SCHEMA.read_text(encoding="utf-8"))
+        cur.execute(_SECAPI_FALLBACK_SCHEMA.read_text(encoding="utf-8"))
         return materializer.install_builder(cur)
 
 
@@ -201,29 +205,47 @@ def _secapi_scope_state(
 ) -> dict[str, Any]:
     """Return bounded readiness plus a deterministic hash of compact evidence."""
     row = conn.execute(
-        "WITH rate_hashes AS ("
-        " SELECT accession_number, string_agg(provider_ordinal::text || ':' || projection_sha256, ',' "
-        " ORDER BY provider_ordinal) AS rate_projection_hashes "
+        "WITH v1_rate_hashes AS ("
+        " SELECT accession_number, string_agg(concat_ws(':', provider_ordinal::text, payload_sha256, projection_sha256), ',' "
+        " ORDER BY provider_ordinal) AS rate_hashes "
         " FROM nport_fixed_income_secapi_rate_risk_v1 "
-        " WHERE source_holdings_publication_id=%s AND source_run_id=%s "
-        " GROUP BY accession_number) "
-        "SELECT nport_fixed_income_secapi_scope_ready(%s,%s,%s), "
-        "COALESCE(string_agg(concat_ws(':', m.accession_number, m.extractor_version, "
-        "m.provider_response_sha256, m.payload_sha256, f.projection_sha256, "
-        "COALESCE(q.rate_projection_hashes,'')), ',' ORDER BY m.accession_number), '') "
-        "FROM nport_fixed_income_secapi_recovery_v1 m "
-        "LEFT JOIN nport_fixed_income_secapi_fund_info_v1 f USING "
-        "(source_holdings_publication_id,source_run_id,accession_number) "
-        "LEFT JOIN rate_hashes q USING (accession_number) "
-        "WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s AND m.status='success'",
+        " WHERE source_holdings_publication_id=%s AND source_run_id=%s GROUP BY accession_number), "
+        "v2_rate_hashes AS ("
+        " SELECT accession_number, string_agg(concat_ws(':', provider_ordinal::text, compact_payload_sha256, projection_sha256), ',' "
+        " ORDER BY provider_ordinal) AS rate_hashes "
+        " FROM nport_fixed_income_secapi_fallback_rate_risk_v2 "
+        " WHERE source_holdings_publication_id=%s AND source_run_id=%s GROUP BY accession_number), "
+        "evidence AS ("
+        " SELECT m.accession_number, 'v1'::text AS source_version, concat_ws(':', 'v1', m.accession_number, m.extractor_version, "
+        " m.provider_response_sha256, m.payload_sha256, f.payload_sha256, f.projection_sha256, COALESCE(q.rate_hashes,'')) AS item "
+        " FROM nport_fixed_income_secapi_recovery_v1 m "
+        " LEFT JOIN nport_fixed_income_secapi_fund_info_v1 f USING (source_holdings_publication_id,source_run_id,accession_number) "
+        " LEFT JOIN v1_rate_hashes q USING (accession_number) "
+        " WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s AND m.status='success' "
+        " UNION ALL "
+        " SELECT m.accession_number, 'v2'::text AS source_version, concat_ws(':', 'v2', m.accession_number, m.parser_version, m.resolver_version, "
+        " m.form_nport_response_sha256, m.query_response_sha256, m.render_raw_sha256, m.compact_payload_sha256, "
+        " f.compact_payload_sha256, f.projection_sha256, COALESCE(q.rate_hashes,'')) AS item "
+        " FROM nport_fixed_income_secapi_fallback_manifest_v2 m "
+        " LEFT JOIN nport_fixed_income_secapi_fallback_fund_info_v2 f USING (source_holdings_publication_id,source_run_id,accession_number) "
+        " LEFT JOIN v2_rate_hashes q USING (accession_number) "
+        " WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s AND m.status='success') "
+        "SELECT nport_fixed_income_secapi_fallback_scope_ready_v2(%s,%s,%s,%s,%s), "
+        " COALESCE(string_agg(item, ',' ORDER BY accession_number, source_version), '') FROM evidence",
         (
             source_publication_id,
             source_run_id,
             source_publication_id,
             source_run_id,
-            secapi_parser.EXTRACTOR_VERSION,
             source_publication_id,
             source_run_id,
+            source_publication_id,
+            source_run_id,
+            source_publication_id,
+            source_run_id,
+            secapi_parser.EXTRACTOR_VERSION,
+            _SECAPI_FALLBACK_PARSER_VERSION,
+            _SECAPI_FALLBACK_RESOLVER_VERSION,
         ),
     ).fetchone()
     readiness = dict(row[0]) if row and row[0] else {"ready": False}
@@ -243,7 +265,9 @@ def _secapi_source_hash(
         {
             "source_publication_id": source_publication_id,
             "source_run_id": source_run_id,
-            "extractor_version": secapi_parser.EXTRACTOR_VERSION,
+            "v1_extractor_version": secapi_parser.EXTRACTOR_VERSION,
+            "v2_parser_version": _SECAPI_FALLBACK_PARSER_VERSION,
+            "resolver_version": _SECAPI_FALLBACK_RESOLVER_VERSION,
             "ordered_projection_evidence": ordered_evidence,
         },
         sort_keys=True,
