@@ -50,6 +50,7 @@ def main() -> None:
             "|sec_company_tickers_mf|nport_cusip_enrichment"
             "|nport_ingestion|ncen_ingestion|rr1_ingestion"
             "|nport_fixed_income_secapi_recovery"
+            "|nport_fixed_income_secapi_fallback"
             "|nport_v2_publication_chain"
             "|rr1_derived_profiles|sec_regulatory_serving"
             "|screener_metrics|fund_factors|fund_institutional_reveal"
@@ -121,7 +122,11 @@ def main() -> None:
     # run was truncated, which is exactly how the 2026-08-02 Tiingo starvation went
     # unnoticed for five days. Emit the stats first (operators need the progress),
     # then fail, so the truncation is visible as a failure and not just a log line.
-    if stats.get("aborted") or stats.get("state") in {"failed", "conflict", "blocked"}:
+    if stats.get("aborted") or stats.get("state") in {"failed", "conflict", "blocked"} or (
+        worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "partial"
+    ) or (
+        worker == "nport_fixed_income_secapi_fallback" and stats.get("state") == "locked"
+    ):
         sys.exit(1)
 
 

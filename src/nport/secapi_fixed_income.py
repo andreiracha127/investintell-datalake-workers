@@ -72,6 +72,22 @@ class FilingProjection:
     rates: list[dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class RenderFallbackEvidence:
+    """Ephemeral Form -> Query -> Render evidence for the v2 overlay.
+
+    The raw Render document is deliberately available only while the worker
+    computes its digest and compact projection.  Database writers must persist
+    its digest, never this field.
+    """
+
+    filing: Mapping[str, Any]
+    form_response: Mapping[str, Any]
+    query_response: Mapping[str, Any]
+    render_raw: str | bytes
+    document_url: str
+
+
 def _local_name(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
 
@@ -198,6 +214,73 @@ class ExactNportClient:
             "retrievalMode": "query-render-xml",
         }
 
+    def fetch_render_fallback_evidence(
+        self,
+        accession_number: str,
+        *,
+        on_provider_call: Callable[[], None] | None = None,
+    ) -> RenderFallbackEvidence:
+        """Resolve only a verified Form API exact-zero gap through Render.
+
+        This is intentionally separate from ``fetch_exact_filing``: callers
+        that write the v2 overlay need the three independent response hashes
+        and canonical SEC document URL, while callers of v1 must not gain an
+        alternate persistence path.
+        """
+        call = on_provider_call or (lambda: None)
+        payload = {
+            "query": f'accessionNo:"{accession_number}"',
+            "from": "0",
+            "size": "1",
+            "sort": [{"filedAt": {"order": "asc"}}],
+        }
+        call()
+        response = self._form.get_data(payload)
+        if not isinstance(response, Mapping):
+            raise AccessionMismatchError("SEC API response is not an object")
+        records = response.get("filings") or response.get("data") or []
+        if not isinstance(records, list):
+            raise AccessionMismatchError("SEC API filings is not an array")
+        if records:
+            raise AccessionMismatchError("Form API exact search was not zero")
+
+        call()
+        resolved = self._query.get_filings(
+            {
+                "query": {"query_string": {"query": f'accessionNo:"{accession_number}"'}},
+                "from": "0",
+                "size": "2",
+                "sort": [{"filedAt": {"order": "asc"}}],
+            }
+        )
+        if not isinstance(resolved, Mapping):
+            raise AccessionMismatchError("SEC API resolver response is not an object")
+        filing = _validate_exact_record(resolved.get("filings") or [], accession_number)
+        detail_url = filing.get("linkToFilingDetails")
+        if not isinstance(detail_url, str):
+            raise AccessionMismatchError("SEC API resolver has no filing URL")
+        parts = urlsplit(detail_url)
+        if (
+            parts.scheme != "https"
+            or parts.netloc != "www.sec.gov"
+            or not _DETAIL_PATH_RE.fullmatch(parts.path)
+            or parts.query
+            or parts.fragment
+        ):
+            raise AccessionMismatchError("SEC API resolver filing URL is not canonical")
+        raw_path = parts.path.replace("/xslFormNPORT-P_X01/", "/")
+        raw_url = urlunsplit((parts.scheme, parts.netloc, raw_path, "", ""))
+        call()
+        document = self._render.get_file(raw_url)
+        form_type, fund_info = _fund_info_from_render_xml(document)
+        return RenderFallbackEvidence(
+            filing={"accessionNo": accession_number, "formType": form_type, "fundInfo": fund_info},
+            form_response=response,
+            query_response=resolved,
+            render_raw=document,
+            document_url=raw_url,
+        )
+
 
 def build_exact_nport_client(api_key: str) -> ExactNportClient:
     from sec_api import FormNportApi, QueryApi, RenderApi
@@ -287,7 +370,8 @@ def _compact(response: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def extract_filing(
-    response: Mapping[str, Any], *, publication_id: str, source_run_id: str
+    response: Mapping[str, Any], *, publication_id: str, source_run_id: str,
+    extractor_version: str = EXTRACTOR_VERSION,
 ) -> FilingProjection:
     if not isinstance(response, Mapping):
         raise PayloadError("response: expected object")
@@ -389,7 +473,7 @@ def extract_filing(
         accession,
         response_sha256(response),
         document_id,
-        EXTRACTOR_VERSION,
+        extractor_version,
         encoded,
         fund,
         presence,
@@ -436,6 +520,24 @@ def fetch_exact_filing(
         raise AccessionMismatchError("SEC API response is not an object")
     records = response.get("filings") or response.get("data") or []
     return _validate_exact_record(records, accession_number)
+
+
+def fetch_render_fallback_evidence(
+    client: Any,
+    accession_number: str,
+    *,
+    on_provider_call: Callable[[], None] | None = None,
+) -> RenderFallbackEvidence:
+    """Fetch v2-only fallback evidence without permitting a generic client path."""
+    if not _ACCESSION_RE.fullmatch(accession_number):
+        raise PayloadError("accession number has an invalid SEC format")
+    fetch = getattr(client, "fetch_render_fallback_evidence", None)
+    if fetch is None:
+        raise PayloadError("SEC API client does not support the verified Render fallback")
+    evidence = fetch(accession_number, on_provider_call=on_provider_call)
+    if not isinstance(evidence, RenderFallbackEvidence):
+        raise PayloadError("SEC API fallback client returned invalid evidence")
+    return evidence
 
 
 def _retry_after(exc: Exception) -> float | None:

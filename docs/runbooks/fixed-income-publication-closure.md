@@ -208,7 +208,51 @@ Deploying the service runs that one bounded batch. A green deployment only means
 the job exited; inspect the returned JSON and the database. Never set an empty
 or continuous cron for this worker.
 
-### Completeness gate before any activation
+### v2 fallback overlay for Form exact-zero terminals
+
+Use this only after the v1 worker has recorded immutable `terminal_error`
+accessions for the exact publication/run. Apply the explicit release migration
+first; the worker is verify-only and never performs DDL:
+
+```bash
+psql "$DATALAKE_DSN" -v ON_ERROR_STOP=1 -f schemas/nport_fixed_income_secapi_fallback_v2.sql
+```
+
+Create a separate one-shot Railway service using
+`railway.nport-fixed-income-secapi-fallback.toml` and set:
+
+```text
+WORKER=nport_fixed_income_secapi_fallback
+SEC_API_IO_KEY=<Railway secret; never print it>
+NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID=<validated holdings publication UUID>
+NPORT_SECAPI_SOURCE_RUN_ID=<the same source run UUID>
+NPORT_SECAPI_FALLBACK_MAX_ACCESSIONS=1
+NPORT_SECAPI_FALLBACK_MAX_API_CALLS=3
+NPORT_SECAPI_FALLBACK_REQUEST_INTERVAL_SECONDS=0.1
+```
+
+One fallback accession reserves exactly three paced calls: FormNportApi,
+QueryApi, and RenderApi. It begins only when the remaining budget can pay for
+all three. The stored overlay contains only their separate hashes, the canonical
+SEC document URL, and compact fund/rate projections; raw XML and positions are
+never stored. `partial`, `failed`, `conflict`, and `locked` exit non-zero. A
+dry-run verifies schema and reports the immutable terminal candidate set without
+constructing an API client or writing overlay rows.
+
+Before any later serving authorization, require this exact gate to report
+`"ready": true`; the fallback worker itself does not publish or move a pointer:
+
+```sql
+SELECT nport_fixed_income_secapi_fallback_scope_ready_v2(
+  '<holdings-publication-uuid>'::uuid,
+  '<source-run-uuid>'::uuid,
+  'nport-secapi-fixed-income/v1',
+  'nport-secapi-fixed-income/v2',
+  'secapi-query-render/v1'
+);
+```
+
+### v1 recovery completeness gate
 
 After enough bounded runs have completed, the following must return
 `"ready": true`, zero missing/non-success/unexpected counts, and matching
