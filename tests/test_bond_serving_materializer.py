@@ -641,3 +641,140 @@ def test_aliases_disagreeing_on_the_latest_day_are_marked_ambiguous() -> None:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Retired aliases: the latest lane reads the identity valid AT as_of
+# --------------------------------------------------------------------------- #
+# The alias snapshot is temporal — a superseded CUSIP9 keeps its row with a
+# CLOSED window — while the dense series is keyed by CUSIP9 alone. Joining every
+# historical alias lets a row filed against a retired identifier win the
+# latest-day ordering and be SERVED as this security's latest price, or mark the
+# cohort ambiguous against the identity that actually holds it. The filter is the
+# PIT fund-exposure join's: half-open [valid_from, valid_to), valid_from
+# inclusive, valid_to exclusive and open when NULL. The metric worker's dense
+# lane applies the identical predicate; the two surfaces must agree about which
+# numbers exist.
+CUSIP_RETIRED = "037833777"
+
+
+@pytest.mark.parametrize(
+    ("valid_to_offset", "retired_alias_serves_the_price"),
+    [
+        (None, True),  # open window: the alias is current
+        (1, True),     # closes the day AFTER as_of: still held on as_of
+        (0, False),    # closes ON as_of: valid_to is EXCLUSIVE
+        (-3, False),   # closed before as_of
+    ],
+)
+def test_the_latest_lane_reads_only_the_aliases_held_at_as_of(
+    valid_to_offset, retired_alias_serves_the_price
+) -> None:
+    """The freshest dense row must not be served when its CUSIP9 is retired.
+
+    The retired identifier carries the NEWER row, so the alias window is the only
+    thing that can decide the outcome: unfiltered, it always wins and the header
+    renders a day and a price belonging to an identifier the security no longer
+    holds.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,'2020-01-01',%s)",
+            (SEC1, CUSIP_RETIRED,
+             None if valid_to_offset is None else as_of + timedelta(days=valid_to_offset)),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF + timedelta(days=2), 101.75, 0.0475,
+             "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        if retired_alias_serves_the_price:
+            assert observation_date == as_of
+            assert float(payload["price"]) == 95.10
+        else:
+            # The HELD identity's own latest day, never the retired alias's.
+            assert observation_date == AS_OF + timedelta(days=2)
+            assert float(payload["price"]) == 101.75
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_retired_alias_cannot_manufacture_an_ambiguous_cohort() -> None:
+    """A closed window must not cost the security a price it unambiguously has.
+
+    Same day, two values, and the ambiguity rule is blunt by design: unfiltered,
+    the surface degrades and serves NO price at all while the held identity
+    reports a perfectly good one.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,'2020-01-01',%s)", (SEC1, CUSIP_RETIRED, AS_OF),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", as_of, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert float(payload["latest_price_pct"]) == 101.75
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_alias_not_yet_in_effect_never_serves_the_latest_price() -> None:
+    """valid_from is INCLUSIVE, so a window opening AFTER as_of is out."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,%s,NULL)", (SEC1, CUSIP_RETIRED, as_of + timedelta(days=1)),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF + timedelta(days=2), 101.75, 0.0475,
+             "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == AS_OF + timedelta(days=2)
+        assert float(payload["price"]) == 101.75
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()

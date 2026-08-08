@@ -70,8 +70,12 @@ PRODUCT = "bond_metric_v1"
 # refusing the field instead. The fingerprint is salted with this string
 # precisely so a semantics change alone mints a NEW build rather than replaying
 # the old one — here that matters twice over, because the build it must not
-# replay is the one that published an arbitrary alias's number.
-METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v3"
+# replay is the one that published an arbitrary alias's number. Bumped to v4 when
+# the dense lane stopped reading a security's RETIRED CUSIP9 aliases and began
+# joining only the aliases valid at ``as_of`` — the same reason again: the build
+# this must not replay is the one that could publish a number filed against an
+# identifier the security no longer holds.
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v4"
 
 SERVED_METRICS = (
     "security_ytm", "security_ytw", "current_yield", "wal",
@@ -253,11 +257,29 @@ latest_price AS (
 # cohort whose members disagree HAS no eligible price; the row-level "why"
 # (``identity_ambiguous`` / ``observation_ambiguous``) is carried by those two
 # surfaces, and the build reports the counts (see ``_AMBIGUITY_COUNTS_SQL``).
+#
+# The alias set is POINT-IN-TIME, not "every CUSIP9 this security ever wore".
+# ``bond_security_alias_v1`` is versioned: a superseded CUSIP9 keeps its row with
+# a CLOSED window, and the dense series is keyed by CUSIP9 with no notion of which
+# identity was current. Reading the alias view unfiltered therefore lets a row
+# filed against a retired CUSIP9 — a reassignment, or an unrelated security that
+# later inherited the number — win the latest-day ordering and be published as
+# this security's price or yield, or manufacture a disagreement against the
+# identity that actually holds. The window predicate is the one the PIT
+# fund-exposure joins already use (``_FUND_EXPOSURE_MATCHES``,
+# src/bonds/serving_materializer.py): HALF-OPEN [valid_from, valid_to), so
+# ``valid_from`` is inclusive and ``valid_to`` is exclusive and open when NULL —
+# the convention bond_security_v1.sql states and its CHECK enforces. The same
+# filter is applied to the serving materializer's latest lane
+# (``_LATEST_OBSERVATION_LIVE``); the two surfaces resolve the same cohort or
+# they serve numbers each other refuses.
 _LIVE_LANE_CTE = f"""
 live_alias AS (
     SELECT DISTINCT a.security_id, a.alias_value AS cusip9
     FROM sec_current_bond_security_alias_v1 a
     WHERE a.alias_kind = 'cusip9'
+      AND a.valid_from <= %(as_of)s
+      AND (a.valid_to IS NULL OR a.valid_to > %(as_of)s)
 ),
 live_price_cohort AS (
     SELECT l.security_id, l.cusip9, o.day, o.price, o.source_rank,

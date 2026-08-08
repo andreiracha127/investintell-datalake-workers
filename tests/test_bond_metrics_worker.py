@@ -750,8 +750,15 @@ def test_an_older_dense_observation_never_rolls_a_metric_backwards(env):
 CUSIP_ALT = "BNDALT009"  # a SECOND cusip9 alias of the SAME security
 
 
-def add_cusip9_alias(conn, security_id: UUID, cusip9: str, *, valid_from: date = AS_OF) -> None:
+def add_cusip9_alias(conn, security_id: UUID, cusip9: str, *, valid_from: date = AS_OF,
+                     valid_to: date | None = None) -> None:
     """Give one PUBLISHED security a second cusip9 alias.
+
+    ``valid_to`` closes the alias's PIT window — the shape a SUPERSEDED CUSIP9
+    takes: the row stays in the published snapshot forever, it just stops being
+    the identity the security wears. The window is HALF-OPEN [valid_from,
+    valid_to) (bond_security_v1.sql), so ``valid_to`` is the FIRST day the alias
+    no longer holds.
 
     Seeded directly rather than through ``security_master``: a group's qualified
     CUSIP9 IS its identity key, so the resolver's alias timeline collapses to
@@ -771,8 +778,8 @@ def add_cusip9_alias(conn, security_id: UUID, cusip9: str, *, valid_from: date =
     conn.execute(
         "INSERT INTO bond_security_alias_v1 "
         "(publication_id, security_id, alias_kind, alias_value, valid_from, valid_to, source_lineage) "
-        "VALUES (%s,%s,'cusip9',%s,%s,NULL,%s::jsonb)",
-        (publication_id, security_id, cusip9, valid_from,
+        "VALUES (%s,%s,'cusip9',%s,%s,%s,%s::jsonb)",
+        (publication_id, security_id, cusip9, valid_from, valid_to,
          json.dumps({"engine": "fixture", "reason": "second_cusip9_alias"})),
     )
     conn.execute(
@@ -884,3 +891,124 @@ def test_an_ambiguous_day_the_build_does_not_read_changes_nothing(env):
     metrics = rows_by_metric(current_rows(conn, SEC_FIX))
     assert metrics["latest_price_pct"][2] == Decimal("96.23")
     assert metrics["security_ytm"][2] == Decimal("0.076")
+
+
+# --------------------------------------------------------------------------- #
+# Retired aliases: the dense lane reads the identity valid AT as_of
+# --------------------------------------------------------------------------- #
+# ``bond_security_alias_v1`` is versioned and temporal: a superseded CUSIP9 keeps
+# its row with a CLOSED window. The dense series is keyed by CUSIP9 with no
+# notion of which identity was current, so an unfiltered alias join lets a row
+# filed against a RETIRED identifier win the latest-day ordering — publishing, as
+# this security's price or yield, a number that belongs to an identifier the
+# security no longer holds (or manufacturing a disagreement against the identity
+# that does). The filter is the PIT fund-exposure join's, HALF-OPEN
+# [valid_from, valid_to): valid_from INCLUSIVE, valid_to EXCLUSIVE and open when
+# NULL. The scope is the alias's validity at ``as_of``, not per observation day —
+# the same question ``_FUND_EXPOSURE_MATCHES`` asks.
+
+CUSIP_OLD = "BNDOLD010"  # a cusip9 the security USED to wear
+
+
+@pytest.mark.parametrize(
+    ("valid_to_offset", "retired_alias_prices_the_build"),
+    [
+        (None, True),  # open window: the alias is current, its row is the security's
+        (1, True),     # closes the day AFTER as_of: still held on as_of
+        (0, False),    # closes ON as_of: valid_to is EXCLUSIVE, so it is already gone
+        (-10, False),  # closed long before as_of: plainly gone
+    ],
+)
+def test_the_dense_lane_reads_only_the_aliases_held_at_as_of(
+    env, valid_to_offset, retired_alias_prices_the_build
+):
+    """The freshest dense row does NOT win when its CUSIP9 is no longer held.
+
+    Both aliases carry a dense row and the second alias's is the NEWER one, so
+    the alias filter is the only thing that can decide the outcome. With no
+    filter the retired identifier always wins (that is the defect); with the
+    half-open window it wins only while the security still wears it.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(
+        conn, SEC_FIX, CUSIP_OLD,
+        valid_to=None if valid_to_offset is None else as_of + timedelta(days=valid_to_offset),
+    )
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, as_of, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok" and result["as_of"] == as_of.isoformat()
+    # One alias per winning day either way: nothing here is ambiguous.
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    if retired_alias_prices_the_build:
+        assert metrics["latest_price_pct"][2] == Decimal("95.10")
+        assert metrics["security_ytm"][2] == Decimal("0.0620")
+    else:
+        # The held identity's OWN latest day, never the retired one's fresher row.
+        assert metrics["latest_price_pct"][2] == Decimal("104.50")
+        assert metrics["security_ytm"][2] == Decimal("0.0410")
+
+
+def test_a_retired_alias_cannot_manufacture_a_disagreement(env):
+    """A closed window must not cost the security a metric it unambiguously has.
+
+    The refusal rule is deliberately blunt — two values on one day and the field
+    is dropped — so an unfiltered alias set does not merely publish the wrong
+    number here, it publishes NOTHING while the held identity reports a perfectly
+    good one.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_OLD, valid_to=AS_OF + timedelta(days=20))
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, as_of, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, as_of, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["latest_price_pct"][3] == "available"
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+@pytest.mark.parametrize(
+    ("valid_from_offset", "alias_prices_the_build"),
+    [(0, True), (1, False)],  # valid_from is INCLUSIVE on as_of, and only then
+)
+def test_an_alias_not_yet_in_effect_never_prices_the_build(
+    env, valid_from_offset, alias_prices_the_build
+):
+    """``as_of`` is pinned so a window can legitimately open AFTER it."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_OLD,
+                     valid_from=as_of + timedelta(days=valid_from_offset))
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, AS_OF + timedelta(days=20), Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema), calc_date=as_of.isoformat())
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    expected = Decimal("95.10") if alias_prices_the_build else Decimal("104.50")
+    assert metrics["latest_price_pct"][2] == expected

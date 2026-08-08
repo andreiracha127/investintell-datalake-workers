@@ -9,6 +9,7 @@ before deploy.
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 
 import pytest
@@ -101,6 +102,78 @@ class FakeClient:
 DAY = _dt.date(2026, 8, 6)
 TODAY = _dt.date(2026, 8, 7)
 UNIVERSE = [("912828XX1", "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+
+#: Markers the FakeConn answers by. Kept next to each other because a run()-level
+#: test drives all four query shapes through one connection.
+Q_UNIVERSE = "FROM bond_reference_terms r"
+Q_WATERMARK = "max(o.day)"
+Q_ATTEMPTS = "FROM bond_live_daily_sweep"
+Q_CURVE_WATERMARK = "GROUP BY tenor"
+Q_ACTIVITY = "coalesce(sum(o.volume)"
+
+
+class _FakeConnect:
+    """Stands in for src.db.connect: hands the same FakeConn to every caller."""
+
+    def __init__(self, conn: FakeConn) -> None:
+        self._conn = conn
+
+    def __call__(self, dsn, **kwargs):
+        return self
+
+    def __enter__(self):
+        return self._conn
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _drive_run(
+    monkeypatch,
+    *,
+    conn: FakeConn | None = None,
+    client=None,
+    client_error: BaseException | None = None,
+    acquired: bool = True,
+    relations: bool = True,
+    matview: dict | None = None,
+    republish: dict | None = None,
+    limit: int | None = None,
+):
+    """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
+
+    Only the seams that need a database are replaced (the connection, the lock,
+    the DDL install, the matview refresh, the two publication workers). The stage
+    functions, the coverage arithmetic and the state/abort decision are the
+    shipping ones -- which is the whole point: what these tests pin is which
+    outcomes are allowed to exit green.
+    """
+    conn = conn if conn is not None else FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+
+    @contextlib.contextmanager
+    def _lock(_conn, _lock_id):
+        yield acquired
+
+    monkeypatch.setattr(bond_live_daily, "resolve_dsn", lambda dsn=None: "postgresql://x")
+    monkeypatch.setattr(bond_live_daily, "connect", _FakeConnect(conn))
+    monkeypatch.setattr(bond_live_daily, "advisory_lock", _lock)
+    monkeypatch.setattr(bond_live_daily, "install_schema", lambda _c: None)
+    monkeypatch.setattr(bond_live_daily, "_relation_exists", lambda _c, _n: relations)
+    monkeypatch.setattr(
+        bond_live_daily, "_refresh_curated",
+        lambda _dsn: matview or {"state": "refreshed", "matview": "bond_curated_securities"},
+    )
+    monkeypatch.setattr(
+        bond_live_daily, "_republish", lambda _dsn: republish or {"verdict": "recomputed"}
+    )
+
+    def _client():
+        if client_error is not None:
+            raise client_error
+        return client if client is not None else FakeClient()
+
+    monkeypatch.setattr(bond_live_daily, "client_from_env", _client)
+    return bond_live_daily.run(calc_date=TODAY.isoformat(), limit=limit)
 
 
 def _candle_payload(day: _dt.date, price: float, yield_pct: float | None = 4.5):
@@ -318,18 +391,83 @@ def test_a_failed_republication_is_flagged_so_the_run_exits_non_zero(monkeypatch
         bond_serving, "run", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
     )
     out = bond_live_daily._republish("postgresql://x")
-    assert out["failed"] is True
+    assert out["verdict"] == "failed"
     assert out["bond_serving"]["state"] == "failed"
 
     # A worker that merely REPORTS a failed state counts too, not just a raise.
     monkeypatch.setattr(bond_serving, "run", lambda *a, **k: {"state": "failed"})
-    assert bond_live_daily._republish("postgresql://x")["failed"] is True
+    assert bond_live_daily._republish("postgresql://x")["verdict"] == "failed"
 
     monkeypatch.setattr(bond_serving, "run", lambda *a, **k: {"state": "ok"})
-    assert bond_live_daily._republish("postgresql://x")["failed"] is False
+    assert bond_live_daily._republish("postgresql://x")["verdict"] == "recomputed"
 
 
-def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication() -> None:
+@pytest.mark.parametrize(
+    "result, verdict",
+    [
+        # The publication protocol's own success states. ``current`` is a
+        # self-promoted publication: a success, not an unrecognised result.
+        ({"state": "ok"}, "recomputed"),
+        ({"state": "current"}, "recomputed"),
+        ({"state": "ready"}, "recomputed"),
+        # The lock is already held -- by the 11:00 chain, or by a manual
+        # rebuild. The worker RETURNED; it did not publish.
+        ({"state": "locked"}, "locked"),
+        # Dark: it ran and had nothing to publish. Also not a recompute.
+        ({"state": "no_source"}, "no_op"),
+        ({"state": "no_securities"}, "no_op"),
+        ({"state": "no_observations"}, "no_op"),
+        ({"state": "failed"}, "failed"),
+        # Contract drift is never tolerated into a success (the chain's rule).
+        ({"state": "half_published"}, "failed"),
+        ({}, "failed"),
+    ],
+)
+def test_only_a_worker_that_says_it_published_counts_as_a_recompute(result, verdict) -> None:
+    """The whole vocabulary of the two publication workers, classified once.
+
+    ``locked`` is the case that used to pass: both workers return it when their
+    advisory lock is already held, and the old check only looked for ``failed``,
+    so an overlapping chain or manual rebuild left this run green with stage 5
+    never executed -- the day loaded and unserved behind a successful deploy.
+    """
+    assert bond_live_daily.republish_verdict(result) == verdict
+
+
+def test_a_locked_publication_worker_stops_the_chain_and_fails_the_run(monkeypatch) -> None:
+    """And it stops at the FIRST one: serving consumes the metric view."""
+    from src.workers import bond_metrics, bond_serving
+
+    seen: list[str] = []
+    monkeypatch.setattr(
+        bond_metrics, "run", lambda *a, **k: seen.append("metrics") or {"state": "locked"}
+    )
+    monkeypatch.setattr(
+        bond_serving, "run", lambda *a, **k: seen.append("serving") or {"state": "ok"}
+    )
+    out = bond_live_daily._republish("postgresql://x")
+
+    assert out["verdict"] == "locked"
+    assert seen == ["metrics"], "a serving build over a stale metric view is not a recovery"
+
+    run_out = _drive_run(monkeypatch, republish=out)
+    assert run_out["state"] == "republish_locked"
+    assert run_out["aborted"] is True
+
+
+def test_a_dark_republication_is_not_a_green_day(monkeypatch) -> None:
+    """Nothing was published, so the day's rows are loaded and unserved."""
+    out = _drive_run(
+        monkeypatch,
+        republish={"bond_metrics": {"state": "no_source"}, "verdict": "no_op"},
+    )
+    assert out["state"] == "republish_no_op"
+    assert out["aborted"] is True
+
+
+def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication(
+    monkeypatch,
+) -> None:
     """REFRESH needs OWNERSHIP, not a grant -- so this stage can fail on privilege.
 
     It sits between the load and the republication, so raising would mean a
@@ -341,22 +479,291 @@ def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication(
     source = inspect.getsource(bond_live_daily._refresh_curated)
     assert "except Exception" in source
     assert '"state": "failed"' in source
-    run_source = inspect.getsource(bond_live_daily.run)
-    assert 'matview.get("state") == "failed"' in run_source
-    assert "or matview_failed" in run_source
-    # The refresh still happens BEFORE the republication -- the verdict is
-    # computed at the end and never used to skip work.
-    assert run_source.index("_refresh_curated") < run_source.index("_republish(")
+
+    out = _drive_run(
+        monkeypatch,
+        matview={"state": "failed", "error": "InsufficientPrivilege: must be owner"},
+    )
+    assert out["state"] == "matview_failed"
+    assert out["aborted"] is True
+    # The refresh failing must not skip the republication: all the work runs,
+    # then the verdict. Read off the shipping code path's own output -- a flag
+    # set while building the fixture would be set whether stage 5 ran or not.
+    assert out["republish"]["verdict"] == "recomputed"
 
 
-def test_run_worker_reads_the_top_level_aborted_key() -> None:
+def test_run_worker_reads_the_top_level_aborted_key(monkeypatch) -> None:
     """The exit-code contract lives on that exact key -- keep them wired."""
     import inspect
 
     from src import run_worker
 
     assert 'stats.get("aborted")' in inspect.getsource(run_worker.main)
-    assert '"aborted": aborted' in inspect.getsource(bond_live_daily.run)
+    assert _drive_run(monkeypatch)["aborted"] is False
+
+
+# --------------------------------------------------------------------------- #
+# The exit contract: which outcomes are allowed to exit green
+# --------------------------------------------------------------------------- #
+def test_a_complete_run_is_the_only_green_one(monkeypatch) -> None:
+    out = _drive_run(monkeypatch)
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert out["halted_by"] == []
+    assert out["coverage"] == {
+        "universe": 1, "swept": 1, "remaining": 0, "complete": True, "limit": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs, state",
+    [
+        # Another holder has the lock: this run did NOTHING. Typed abort rather
+        # than an in-process retry -- the cron/restartPolicy=NEVER argument.
+        ({"acquired": False}, "locked"),
+        # The serving repository never applied the hypertable's DDL.
+        ({"relations": False}, "no_observation_table"),
+        # The curated universe is empty or absent.
+        ({"conn": FakeConn({})}, "no_universe"),
+        # The Railway service is missing FINNHUB_API_KEY: no candles, no curve,
+        # no ticks, no republication -- and, before this, a green deploy.
+        ({"client_error": _finnhub.FinnhubConfigError("FINNHUB_API_KEY is not set")},
+         "no_api_key"),
+    ],
+)
+def test_a_run_that_did_no_work_never_exits_green(monkeypatch, kwargs, state) -> None:
+    """The no-op exits are the ones most easily laundered into a green deploy.
+
+    Each of these returns early having loaded nothing at all, and ``run_worker``
+    exits non-zero on the top-level ``aborted`` key alone -- so an early return
+    that omits it IS the silent failure. A missing secret, an absent hypertable
+    and a held lock are operational faults with an operator behind them; the
+    only place they can be seen is the deploy's exit code.
+    """
+    out = _drive_run(monkeypatch, **kwargs)
+    assert out["state"] == state
+    assert out["aborted"] is True
+    # Same key on every result, so one log query reads them all.
+    assert out["halted_by"] == [state]
+
+
+def test_a_key_revoked_mid_sweep_is_typed_rather_than_a_traceback(monkeypatch) -> None:
+    """4xx is non-transient by design, so it RAISES past the sweep's counter."""
+    class _Revoked(FakeClient):
+        def daily_candles(self, isin, from_ts, to_ts):
+            raise _finnhub.FinnhubConfigError("401 bad key")
+
+    out = _drive_run(monkeypatch, client=_Revoked())
+    assert out["state"] == "provider_rejected"
+    assert out["aborted"] is True
+
+
+def test_a_stage_that_did_no_work_is_not_a_stage_that_had_nothing_to_do(
+    monkeypatch,
+) -> None:
+    """ALL 13 tenors failing is the provider or the key, not a dropped tenor.
+
+    A handful of failed tenors stays green on purpose -- that is precisely the
+    case the per-tenor watermarks heal on the next run -- but a stage that
+    returned nothing at all has done no work, and the run must say so.
+    """
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    out = _drive_run(
+        monkeypatch, conn=conn, client=FakeClient(fail=set(bond_live_daily.CURVE_TENORS))
+    )
+    assert out["curve"]["failed_tenors"] == list(bond_live_daily.CURVE_TENORS)
+    assert out["state"] == "curve_failed"
+    assert out["aborted"] is True
+
+    # One dead tenor out of thirteen is still a green day.
+    ok = _drive_run(monkeypatch, client=FakeClient(fail={"30y"}))
+    assert ok["curve"]["failed_tenors"] == ["30y"]
+    assert ok["state"] == "ok"
+
+
+def test_a_tick_lane_that_failed_every_call_is_reported_not_swallowed(monkeypatch) -> None:
+    class _NoTape(FakeClient):
+        def ticks(self, isin, day, **kwargs):
+            raise _finnhub.FinnhubTransientError("down")
+
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_ACTIVITY: [("912828XX1", 1_000_000)],
+    })
+    out = _drive_run(monkeypatch, conn=conn, client=_NoTape())
+    assert out["ticks"]["swept"] == 1 and out["ticks"]["transient_failures"] == 1
+    assert out["state"] == "ticks_failed"
+    assert out["aborted"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Thread 3: a capped sweep must advance, and must not claim the day
+# --------------------------------------------------------------------------- #
+def _order(rows, attempts=None, watermarks=None) -> list[str]:
+    return [
+        row[0]
+        for row in bond_live_daily.sweep_priority_order(
+            rows, attempts or {}, watermarks or {}
+        )
+    ]
+
+
+def _bond(cusip: str) -> tuple:
+    return (cusip, f"US{cusip}0", 4.0, _dt.date(2031, 8, 6))
+
+
+def _stamp(minute: int) -> _dt.datetime:
+    return _dt.datetime(2026, 8, 7, 7, minute, tzinfo=_dt.timezone.utc)
+
+
+def test_successive_capped_sweeps_cover_the_universe_instead_of_one_prefix() -> None:
+    """The ring property, stated as the thing an operator actually gets.
+
+    A CUSIP-sorted prefix hands every capped run the same first N bonds, so the
+    rest of the curated universe is never loaded -- the budget-bounded catch-up
+    documented in the runbook never catches anything up. Ordering by the sweep
+    RING makes ceil(universe / limit) runs cover everything.
+    """
+    universe = [_bond(f"91282800{i}") for i in range(6)]
+    attempts: dict[str, _dt.datetime] = {}
+    limit = 2
+    seen: list[str] = []
+
+    for run_index in range(3):
+        batch = _order(universe, attempts)[:limit]
+        seen.extend(batch)
+        for cusip in batch:
+            attempts[cusip] = _stamp(run_index)
+
+    assert sorted(seen) == sorted(c for c, *_ in universe)
+    assert len(set(seen)) == len(universe), "no bond was swept twice before all were swept"
+
+    # And it WRAPS: the fourth run returns to the cohort of the first.
+    assert _order(universe, attempts)[:limit] == seen[:limit]
+
+
+def test_a_bond_the_provider_has_no_data_for_cannot_own_the_head_forever() -> None:
+    """Why the ring is keyed on the attempt and not on the loaded watermark.
+
+    A bond the provider has nothing for never gains a watermark. Under a
+    "most behind first" order keyed on the watermark alone it is permanently the
+    most behind, so it re-takes the head of every capped run -- and once that
+    dataless cohort reaches WORKER_LIMIT the sweep stops advancing at all, which
+    is the same starvation as the CUSIP prefix under a better name.
+    """
+    dataless = [_bond("DEAD00001"), _bond("DEAD00002")]
+    fresh = [_bond("LIVE00001"), _bond("LIVE00002")]
+    universe = dataless + fresh
+    # Round 1 asked about the two dataless bonds and loaded nothing from them.
+    attempts = {"DEAD00001": _stamp(0), "DEAD00002": _stamp(0)}
+    watermarks: dict[str, _dt.date] = {}
+
+    assert _order(universe, attempts, watermarks)[:2] == ["LIVE00001", "LIVE00002"]
+
+    # The watermark still orders WITHIN a round: swept together, the one
+    # furthest behind goes first -- which is also how a transient failure
+    # (stamped, watermark unmoved) retries ahead of a clean load.
+    same_round = {c: _stamp(0) for c, *_ in universe}
+    assert _order(universe, same_round, {
+        "DEAD00001": _dt.date(2026, 8, 6), "DEAD00002": _dt.date(2026, 1, 2),
+        "LIVE00001": _dt.date(2026, 8, 7), "LIVE00002": _dt.date(2026, 8, 7),
+    }) == ["DEAD00002", "DEAD00001", "LIVE00001", "LIVE00002"]
+
+
+def test_every_bond_the_sweep_reaches_is_stamped_whatever_came_of_it() -> None:
+    """Data, no data, or a transient failure -- the attempt is what advances.
+
+    Stamping only successes would leave exactly the bonds the provider is worst
+    at parked at the head of the ring forever.
+    """
+    universe = [_bond("AAAAAAAA1"), _bond("BBBBBBBB2"), _bond("CCCCCCCC3")]
+    conn = FakeConn({Q_WATERMARK: []})
+    client = FakeClient(
+        candles={"USAAAAAAAA10": _candle_payload(TODAY, 99.0)},   # data
+        fail={"USCCCCCCCC30"},                                   # transient failure
+    )                                                            # B: no data
+
+    stats = bond_live_daily._load_candles(conn, client, universe, TODAY)
+
+    stamped = [
+        params[0] for sql, params in conn.writes
+        if "INSERT INTO bond_live_daily_sweep" in sql
+    ]
+    assert stamped == ["AAAAAAAA1", "BBBBBBBB2", "CCCCCCCC3"]
+    assert stats["with_data"] == 1 and stats["no_data"] == 1
+    assert stats["transient_failures"] == 1
+
+    # The stamp lands AFTER the bond's own rows, so the ring never advances past
+    # a bond whose rows did not land.
+    kinds = [sql.split()[2] for sql, _ in conn.writes]
+    assert kinds[:2] == ["bond_observation_daily", "bond_live_daily_sweep"]
+
+
+def test_a_sweep_the_provider_cut_short_keeps_the_progress_it_made() -> None:
+    """An aborted run must resume, not restart: the stamps are committed."""
+    isins = [f"US91282800{i:02d}" for i in range(60)]
+    universe = [(f"9128280{i:02d}", isin, 4.0, _dt.date(2031, 8, 6))
+                for i, isin in enumerate(isins)]
+    conn = FakeConn({Q_WATERMARK: []})
+
+    stats = bond_live_daily._load_candles(conn, FakeClient(fail=set(isins)), universe, TODAY)
+
+    assert stats["aborted"] is True
+    stamped = [
+        params[0] for sql, params in conn.writes
+        if "INSERT INTO bond_live_daily_sweep" in sql
+    ]
+    # Exactly the prefix it swept, including the bond it aborted on.
+    assert stamped == [c for c, *_ in universe[:stats["swept"]]]
+    assert conn.commits >= 1, "the progress has to be durable or the next run repeats it"
+
+
+def test_a_capped_run_reports_the_budget_it_covered_not_the_day(monkeypatch) -> None:
+    """The second half of the defect: coverage is not a matter of taste.
+
+    The republication still runs -- the rows it loaded are real, and every
+    security carries its own observation date, so the payload stays honest. What
+    must not happen is the RUN reporting a covered day while most of the curated
+    universe was never asked about. It goes green on the run that finally
+    finishes the ring, and that transition is the signal.
+    """
+    universe = [_bond(f"91282800{i}") for i in range(5)]
+    conn = FakeConn({Q_UNIVERSE: universe})
+
+    out = _drive_run(monkeypatch, conn=conn, limit=2)
+
+    assert out["state"] == "partial_sweep"
+    assert out["aborted"] is True
+    assert out["coverage"] == {
+        "universe": 5, "swept": 2, "remaining": 3, "complete": False, "limit": 2,
+    }
+    # A limit WIDER than the universe covered the day; it is not a partial run.
+    assert _drive_run(monkeypatch, conn=FakeConn({Q_UNIVERSE: universe}), limit=50)[
+        "state"
+    ] == "ok"
+
+
+def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch) -> None:
+    """End to end through _universe: the cap slices the RING."""
+    universe = [_bond("AAAAAAAA1"), _bond("BBBBBBBB2"), _bond("CCCCCCCC3")]
+    conn = FakeConn({
+        "to_regclass": [(1,)],   # both input relations exist
+        Q_UNIVERSE: universe,
+        # AAAAAAAA1 was swept this morning; the other two never have been.
+        Q_ATTEMPTS: [("AAAAAAAA1", _stamp(0))],
+    })
+
+    rows, total = bond_live_daily._universe(conn, 2)
+
+    assert [row[0] for row in rows] == ["BBBBBBBB2", "CCCCCCCC3"]
+    assert total == 3, "the cap must not hide how big the universe is"
+
+
+def test_the_tick_cohort_reports_the_truncation_a_capped_run_imposes() -> None:
+    """A capped run shrinks the cost lane too; ``cohort`` vs ``swept`` says so."""
+    conn = FakeConn({Q_ACTIVITY: [("912828XX1", 1_000_000), ("NOTSWEPT1", 5)]})
+    stats = bond_live_daily._load_ticks(conn, FakeClient(), UNIVERSE, TODAY)
+    assert stats["cohort"] == 2 and stats["swept"] == 1
 
 
 # --------------------------------------------------------------------------- #

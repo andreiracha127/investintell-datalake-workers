@@ -199,12 +199,26 @@ SELECT l.security_id, l.observation_date, l.source_row_number, l.price,
 FROM bond_price_latest_v1 l
 """
 
+#
+# The alias set is POINT-IN-TIME. ``bond_security_alias_v1`` keeps a superseded
+# CUSIP9 as a row with a CLOSED window, and the dense series is keyed by CUSIP9
+# alone; joining every historical alias would let a row filed against a retired
+# identifier win the latest-day ordering and be served as this security's price,
+# or manufacture a disagreement against the identity that actually holds it. The
+# window predicate is the PIT fund-exposure join's (``_FUND_EXPOSURE_MATCHES``
+# below): HALF-OPEN [valid_from, valid_to), valid_from inclusive, valid_to
+# exclusive and open when NULL. The metric worker's dense lane
+# (``_LIVE_LANE_CTE``, src/workers/bond_metrics.py) applies the identical filter
+# — the two surfaces must resolve the same cohort or each serves numbers the
+# other refuses.
 _LATEST_OBSERVATION_LIVE = """
 CREATE TEMP TABLE _bond_live_latest ON COMMIT DROP AS
 WITH alias AS (
     SELECT DISTINCT a.security_id, a.alias_value AS cusip9
     FROM sec_current_bond_security_alias_v1 a
     WHERE a.alias_kind = 'cusip9'
+      AND a.valid_from <= %(as_of)s
+      AND (a.valid_to IS NULL OR a.valid_to > %(as_of)s)
 ), priced AS (
     SELECT al.security_id, o.cusip9, o.day, o.price, o.ytm, o.price_type,
            o.accrued, o.source_rank,

@@ -95,6 +95,43 @@ COMMENT ON COLUMN bond_tick_daily.bid_ask_bps IS
 CREATE INDEX IF NOT EXISTS bond_tick_daily_day_idx ON bond_tick_daily (day);
 
 -- ---------------------------------------------------------------------------
+-- Sweep progress: when this worker last ASKED the provider about each bond.
+-- ---------------------------------------------------------------------------
+-- WHY THIS IS NOT THE WATERMARK. The delta window is driven by the last day
+-- LOADED (max(day) on the live source). That is the right window, and it is the
+-- wrong sweep ORDER for a capped run: a bond the provider simply has no data
+-- for never gains a watermark, so a "most behind first" ordering keyed on the
+-- watermark alone hands the head of EVERY capped run to the same permanently
+-- dataless cohort. Once that cohort reaches WORKER_LIMIT the sweep stops
+-- advancing entirely -- the same starvation as the CUSIP-sorted prefix this
+-- replaces, wearing a better name.
+--
+-- So the ring is keyed on the ATTEMPT, which nothing the provider does can
+-- withhold: every bond the sweep reaches is stamped here whether it returned
+-- data, returned nothing, or failed. Ordering by (attempt NULLS FIRST,
+-- watermark NULLS FIRST, cusip9) then makes a capped sweep a true ring -- never
+-- attempted first, then least recently attempted, most behind first inside a
+-- round -- and ceil(universe / WORKER_LIMIT) runs cover the universe regardless
+-- of provider coverage.
+--
+-- One row per curated bond (~10k), one upsert per bond per run, riding the
+-- sweep's existing per-slice commits. It is progress state, not data: dropping
+-- it costs one re-swept round and nothing else.
+-- No format CHECK on cusip9, deliberately, and unlike every other bond table
+-- here: this one is written for EVERY curated bond (~10k) rather than for the
+-- 500-bond tick cohort, so a single malformed identifier in the curated universe
+-- would abort the whole daily sweep on a progress row. Progress state must not
+-- be able to cost the day's prices; a malformed key merely occupies a ring slot.
+CREATE TABLE IF NOT EXISTS bond_live_daily_sweep (
+    cusip9          text        NOT NULL PRIMARY KEY,
+    last_attempt_at timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE bond_live_daily_sweep IS
+    'Sweep ring cursor for bond_live_daily: when the worker last ASKED the provider '
+    'about each bond (data or not). Orders capped sweeps so no bond starves. Not data.';
+
+-- ---------------------------------------------------------------------------
 -- The live lane's own watermark index on the SHARED observation hypertable.
 -- ---------------------------------------------------------------------------
 -- This worker does not own bond_observation_daily's shape and does not create

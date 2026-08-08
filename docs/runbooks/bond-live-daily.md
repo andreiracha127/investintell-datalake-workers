@@ -14,7 +14,7 @@ cron **`30 7 * * *` UTC**.
 
 | # | Stage | Writes | Notes |
 |---|-------|--------|-------|
-| 1 | `candles` | `bond_observation_daily` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
+| 1 | `candles` | `bond_observation_daily`, `bond_live_daily_sweep` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
 | 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Backfills itself on a cold table. |
 | 3 | `ticks` | `bond_tick_daily` | Previous session, top `BOND_TICK_TOP_N` (500) by recent activity. |
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
@@ -45,10 +45,52 @@ mean paying for the same publication twice.
 | Variable | Required | Meaning |
 |----------|----------|---------|
 | `DATABASE_URL` | yes | The datalake (project-private network). |
-| `FINNHUB_API_KEY` | yes | Absent ⇒ the run reports `no_api_key` and writes nothing. |
-| `WORKER_LIMIT` | no | Caps the universe swept in one run (budget-bounded catch-up). |
+| `FINNHUB_API_KEY` | yes | Absent ⇒ the run reports `no_api_key`, writes nothing **and exits non-zero**. |
+| `WORKER_LIMIT` | no | Caps the universe swept in one run (budget-bounded catch-up). **Every capped run is red** — see §3b. |
 | `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). |
 | `BOND_TICK_TOP_N` | no | Tick cohort size (default 500). |
+
+## 3b. `WORKER_LIMIT`: the sweep is a ring, and a capped run is red on purpose
+
+Two properties, both load-bearing, and the second one surprises people.
+
+**The cap slices a ring, not a prefix.** The sweep is ordered by
+`(last attempt NULLS FIRST, watermark NULLS FIRST, cusip9)`. The attempt stamps
+live in `bond_live_daily_sweep` — one row per curated bond, written for every
+bond the sweep *reaches*, whether it returned data, returned nothing, or failed.
+So the bonds a capped run swept carry the newest stamp, sink to the back, and
+the next run takes the next slice: `ceil(universe / WORKER_LIMIT)` runs cover
+everything, then it wraps. Sorted by CUSIP — what this replaces — the cap took
+the same first N bonds every run and the rest of the universe was never loaded.
+
+The stamp is keyed on the **attempt**, not on the loaded watermark, and that is
+the whole reason the extra table exists. A bond the provider has no data for
+never gains a watermark, so a "most behind first" order keyed on the watermark
+alone hands the head of every capped run to the same permanently dataless
+cohort — and once that cohort reaches `WORKER_LIMIT` the sweep stops advancing
+at all. Nothing the provider does can withhold an attempt. The watermark is
+still the tie-break *inside* a round, which is also what makes a
+transient-failed bond (stamped, watermark unmoved) retry ahead of one that
+loaded cleanly when the ring comes back around.
+
+The table is progress state, not data: dropping it costs one re-swept round.
+
+```sql
+SELECT count(*) FILTER (WHERE last_attempt_at >= current_date) AS swept_today,
+       count(*) AS ring_size
+FROM bond_live_daily_sweep;
+```
+
+**A capped run reports `partial_sweep` and exits non-zero.** It covered its
+budget, not the day. It still republishes — the rows it loaded are real, and
+every security carries its own observation date, so the payload stays honest —
+but the *run* must not claim a day in which most of the universe was never asked
+about. Consequence to expect rather than "fix": **a service left with
+`WORKER_LIMIT` set is red on every run until the ring closes the gap or the
+variable is removed.** That red is the signal that the catch-up is not finished;
+the run that finally covers the universe is the one that goes green. `coverage`
+in the run's JSON (`universe`, `swept`, `remaining`, `complete`) is where the
+progress is read.
 
 ## 3a. One-time privilege prerequisite (already applied 2026-08-07)
 
@@ -69,10 +111,55 @@ the run reports `matview_failed` and exits non-zero if it is not.
 
 ## 4. Reading the result
 
-`state` is `ok`, or `aborted` when the provider cut the sweep short — the
-top-level `aborted` key makes `run_worker` exit non-zero, so a truncated day
-shows up as a failed deploy rather than a log line. Reported no-ops:
-`no_observation_table`, `no_universe`, `no_api_key`, `locked`.
+**One rule: a run exits green only when it actually did the day's work.**
+`run_worker` exits non-zero on the top-level `aborted` key, and every state
+below except `ok` sets it. There is no "reported no-op" tier any more — a polite
+JSON blob describing a run that loaded nothing is exactly how a broken service
+stays invisible for a week.
+
+| `state` | green? | what it means |
+|---------|--------|---------------|
+| `ok` | **yes** | all five stages ran; both publications reported that they published |
+| `locked` | no | another holder had this worker's advisory lock; **this run did nothing** (§4a) |
+| `no_observation_table` | no | `bond_observation_daily` is absent (the serving repo owns its DDL); nothing loaded |
+| `no_universe` | no | the curated universe is empty or its tables are absent |
+| `no_api_key` | no | `FINNHUB_API_KEY` unset: no candles, no curve, no ticks, no republication |
+| `provider_rejected` | no | the key was rejected mid-sweep (401/403 is non-transient by design) |
+| `aborted` | no | the provider cut the candle sweep short (`MAX_CONSECUTIVE_FAILURES`) |
+| `curve_failed` | no | **all 13** tenors failed — stage 2 did no work. A handful failing stays green: that is the case the per-tenor watermarks heal by themselves |
+| `ticks_failed` | no | every tick call failed — stage 3 did no work |
+| `matview_failed` | no | `REFRESH` failed (ownership — see §3a); the cohort the publications read is stale |
+| `republish_locked` | no | a publication worker's own lock was held: stage 5 did not recompute |
+| `republish_no_op` | no | a publication worker reported a dark state (`no_source`/`no_securities`/`no_observations`): nothing was published |
+| `republish_failed` | no | a publication worker failed, raised, or returned a state this contract does not know (drift is never read as success) |
+| `partial_sweep` | no | `WORKER_LIMIT` truncated the universe — the budget was covered, the day was not (§3b) |
+
+`halted_by` lists every clause that fired, in severity order; `state` is the
+first of them. `coverage` carries `universe / swept / remaining / complete`.
+
+### 4a. Why a held lock aborts instead of retrying
+
+Decided 2026-08-07. Both publication workers return `{"state": "locked"}` when
+their advisory lock is already held, and so does this worker for its own. The
+alternative was an in-process retry with backoff. It loses on three counts:
+
+* **Overlap is anomalous, not routine.** This service is a daily cron at
+  `30 7 * * *` with `restartPolicy=NEVER` — a deploy *is* the execution — and the
+  publication chain runs at `0 11 * * *`. A ~2-hour buffer separates them, so a
+  collision means something already went wrong (a previous run still going, a
+  manual rebuild, an operator restart). Retrying papers over exactly the event
+  worth seeing.
+* **A seconds-scale backoff cannot win.** The metric build takes minutes and the
+  serving build carries ~2M facts. A retry loop short enough to be safe would
+  sleep and fail anyway.
+* **Waiting is the expensive kind of wrong.** An unbounded wait holds *this*
+  worker's advisory lock and its database connection open for an unknown time —
+  the long-transaction trap that already cost this repo a VACUUM window (§6).
+
+So it fails loudly and hands the decision to an operator: check who holds the
+lock, then re-run the service (`railway service restart`, not `redeploy`). The
+state name stays `locked` on purpose — `daily_chain.classify_worker_result`
+reads that exact string and classifies it as transient/retryable.
 
 **Verify in the tables, never on the dashboard** — and note that on this project
 `railway redeploy` reports SUCCESS *without executing*; only
