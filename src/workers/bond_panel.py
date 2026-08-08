@@ -152,7 +152,7 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
             conn,
             "SELECT upper(btrim(u.cusip9)) AS cusip9, map.issuer_cik AS issuer_id, "
             "COALESCE(map.issuer_identity_state, 'unresolved') AS issuer_identity_state, s.currency, "
-            "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ILIKE '%corporate%' THEN 'corporate' "
+            "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ILIKE '%%corporate%%' THEN 'corporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num "
             "FROM bond_curated_universe u "
             "LEFT JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
