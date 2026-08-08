@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS nport_fixed_income_secapi_fallback_manifest_v2 (
 );
 
 -- Upgrade an already-installed, still-empty v2 overlay without rewriting it.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = 'nport_fixed_income_secapi_fallback_manifest_v2'
+           AND column_name = 'form_nport_query'
+    ) AND EXISTS (
+        SELECT 1 FROM nport_fixed_income_secapi_fallback_manifest_v2
+    ) THEN
+        RAISE EXCEPTION 'cannot upgrade a non-empty SEC API fallback overlay without exact-zero evidence';
+    END IF;
+END $$;
+
 ALTER TABLE nport_fixed_income_secapi_fallback_manifest_v2
     ADD COLUMN IF NOT EXISTS form_nport_query text NOT NULL DEFAULT '';
 ALTER TABLE nport_fixed_income_secapi_fallback_manifest_v2
@@ -234,6 +248,12 @@ WITH expected AS (
         WHERE r.status NOT IN ('success','terminal_error')) AS nonterminal_v1_count,
       (SELECT count(*) FROM v1 r LEFT JOIN expected e USING (accession_number) WHERE e.accession_number IS NULL) AS unexpected_v1_count,
       (SELECT count(*) FROM v2 m LEFT JOIN expected e USING (accession_number) WHERE e.accession_number IS NULL) AS unexpected_v2_count,
+      (SELECT count(*) FROM v2 m WHERE m.status='success' AND (
+          m.form_nport_query IS DISTINCT FROM 'accessionNo:"' || m.accession_number || '"'
+          OR m.form_nport_result_count IS DISTINCT FROM 0
+          OR m.document_url !~ ('^https://www[.]sec[.]gov/Archives/edgar/data/[0-9]+/'
+              || replace(m.accession_number, '-', '') || '/primary_doc[.]xml$')
+      )) AS invalid_fallback_evidence_count,
       (SELECT count(*) FROM expected e JOIN v1 r USING (accession_number) WHERE r.status='success'
         AND r.extractor_version IS DISTINCT FROM p_v1_extractor_version)
        + (SELECT count(*) FROM expected e JOIN v2 m USING (accession_number) WHERE m.status='success'
@@ -258,11 +278,13 @@ SELECT jsonb_build_object(
     'ready', expected_count > 0 AND selected_v1_count + selected_v2_count = expected_count
        AND missing_v1_count=0 AND missing_fallback_count=0 AND nonterminal_v1_count=0
        AND unexpected_v1_count=0 AND unexpected_v2_count=0 AND active_parameter_mismatch_count=0
+       AND invalid_fallback_evidence_count=0
        AND missing_fund_count=0 AND declared_cur_metric_count=rate_row_count,
     'expected_count',expected_count,'selected_v1_count',selected_v1_count,'selected_v2_count',selected_v2_count,
     'missing_v1_count',missing_v1_count,'missing_fallback_count',missing_fallback_count,
     'nonterminal_v1_count',nonterminal_v1_count,'unexpected_v1_count',unexpected_v1_count,
     'unexpected_v2_count',unexpected_v2_count,'active_parameter_mismatch_count',active_parameter_mismatch_count,
+    'invalid_fallback_evidence_count',invalid_fallback_evidence_count,
     'missing_fund_count',missing_fund_count,'declared_cur_metric_count',declared_cur_metric_count,
     'rate_row_count',rate_row_count
 ) FROM counts

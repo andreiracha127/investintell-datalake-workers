@@ -111,6 +111,19 @@ def test_no_terminal_accessions_makes_no_provider_calls():
     assert db.writes == []
 
 
+def test_complete_but_incompatible_overlay_fails_before_provider_calls():
+    class IncompatibleDb(_Db):
+        def incompatible_accessions(self, *_args: str) -> list[str]:
+            return [ACCESSION]
+
+    db, client = IncompatibleDb([]), _Client()
+    result = _run(db, client)
+
+    assert result["state"] == "conflict"
+    assert result["accession_number"] == ACCESSION
+    assert client.calls == 0
+
+
 def test_happy_path_writes_manifest_then_fund_and_rates_in_one_transaction():
     db, client = _Db(), _Client()
 
@@ -173,7 +186,7 @@ def test_unsafe_resolver_fails_without_writing_overlay():
     assert db.writes == []
 
 
-def test_existing_overlay_is_idempotent_and_scoped_lock_prevents_calls():
+def test_incomplete_existing_overlay_is_refetched_for_projection_repair():
     class ExistingDb(_Db):
         def existing_hashes(self, *_args: str):
             return {**worker.evidence_hashes(_evidence(), secapi.extract_filing(
@@ -184,11 +197,15 @@ def test_existing_overlay_is_idempotent_and_scoped_lock_prevents_calls():
     db, client = ExistingDb(), _Client()
     result = _run(db, client)
     assert result["state"] == "complete"
-    assert client.calls == 0
+    assert client.calls == 3
+    assert len(db.writes) == 1
 
+
+def test_scoped_lock_prevents_calls():
     locked, locked_client = _Db(locked=True), _Client()
     assert _run(locked, locked_client)["state"] == "locked"
     assert locked_client.calls == 0
+
 
 
 def test_concurrent_fetches_use_distinct_clients_and_keep_db_writes_on_main_thread():
@@ -312,6 +329,9 @@ def test_later_success_is_committed_when_an_earlier_accession_fails_and_resume_s
                 "parser_version": worker.PARSER_VERSION,
                 "resolver_version": worker.RESOLVER_VERSION,
             }
+
+        def terminal_accessions(self, *_args: str) -> list[str]:
+            return [accession for accession in self.accessions if accession not in self.persisted]
 
         def write(self, projection, evidence) -> None:
             self.persisted.add(projection.accession_number)

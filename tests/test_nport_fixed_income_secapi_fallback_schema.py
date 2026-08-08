@@ -53,6 +53,37 @@ def _install(cur) -> tuple[str, str, str]:
     return schema, publication_id, run_id
 
 
+def test_nonempty_pre_evidence_overlay_upgrade_fails_closed() -> None:
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema = f"secapi_fallback_upgrade_{uuid4().hex}"
+        cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
+        try:
+            cur.execute(
+                "CREATE MATERIALIZED VIEW nport_holdings_snapshot_identity_v1 AS "
+                "SELECT NULL::uuid AS publication_id, NULL::text AS accession_number WHERE false"
+            )
+            cur.execute(V1_DDL.read_text(encoding="utf-8"))
+            cur.execute(
+                "CREATE TABLE nport_fixed_income_secapi_fallback_manifest_v2 "
+                "(accession_number text NOT NULL)"
+            )
+            cur.execute(
+                "INSERT INTO nport_fixed_income_secapi_fallback_manifest_v2 VALUES(%s)",
+                (A1,),
+            )
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="cannot upgrade a non-empty SEC API fallback overlay",
+            ):
+                cur.execute(DDL.read_text(encoding="utf-8"))
+        finally:
+            conn.rollback()
+            cur.execute("SET search_path TO public")
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
 def _v1_manifest(cur, publication_id: str, run_id: str, accession: str, status: str) -> None:
     values = [publication_id, run_id, accession, _v1_document_id(publication_id, accession), status]
     if status == "success":

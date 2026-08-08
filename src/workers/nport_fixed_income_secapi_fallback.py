@@ -200,6 +200,22 @@ class PostgresFallbackDb:
         ).fetchall()
         return [row[0] for row in rows]
 
+    def incompatible_accessions(self, publication_id: str, source_run_id: str) -> list[str]:
+        rows = self.conn.execute(
+            f"SELECT m.accession_number FROM {_MANIFEST_TABLE} m "
+            f"JOIN {_FUND_TABLE} f USING "
+            "(source_holdings_publication_id,source_run_id,accession_number) "
+            "WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s "
+            f"AND f.cur_metric_count=(SELECT count(*) FROM {_RATE_TABLE} q WHERE "
+            "(q.source_holdings_publication_id,q.source_run_id,q.accession_number)="
+            "(m.source_holdings_publication_id,m.source_run_id,m.accession_number)) "
+            "AND (m.parser_version<>%s OR m.resolver_version<>%s "
+            "OR m.form_nport_query<>'accessionNo:\"' || m.accession_number || '\"' "
+            "OR m.form_nport_result_count<>0) ORDER BY m.accession_number",
+            (publication_id, source_run_id, PARSER_VERSION, RESOLVER_VERSION),
+        ).fetchall()
+        return [row[0] for row in rows]
+
     @contextlib.contextmanager
     def advisory_lock(self, publication_id: str, source_run_id: str) -> Iterator[bool]:
         key = f"{PRODUCT}|{publication_id}|{source_run_id}"
@@ -366,12 +382,20 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
         raise RuntimeError("terminal fallback accession set contains duplicates")
     base = {"terminal": len(candidates), "max_accessions": max_accessions, "max_api_calls": max_api_calls,
             "request_interval_seconds": request_interval_seconds, "concurrency": concurrency}
+    incompatible = getattr(db, "incompatible_accessions", lambda *_args: [])(publication_id, source_run_id)
+    if incompatible:
+        return {"state": "conflict", **base, "accession_number": incompatible[0],
+                "incompatible": len(incompatible), "remaining": len(candidates)}
     if dry_run:
         return {"state": "dry_run", **base, "remaining": len(candidates)}
     with db.advisory_lock(publication_id, source_run_id) as acquired:
         if not acquired:
             return {"state": "locked", **base, "remaining": len(candidates)}
         candidates = db.terminal_accessions(publication_id, source_run_id)
+        incompatible = getattr(db, "incompatible_accessions", lambda *_args: [])(publication_id, source_run_id)
+        if incompatible:
+            return {"state": "conflict", **base, "accession_number": incompatible[0],
+                    "incompatible": len(incompatible), "remaining": len(candidates)}
         if not candidates:
             return {"state": "complete", **base, "success": 0, "processed": 0, "api_calls": 0, "remaining": 0}
         sleep, now = sleeper or time.sleep, clock or time.monotonic
@@ -401,9 +425,9 @@ def _run_with_db(db_or_conn: Any, publication_id: str, source_run_id: str, max_a
                         if existing.get("parser_version") != PARSER_VERSION or existing.get("resolver_version") != RESOLVER_VERSION:
                             failure = (accession, RuntimeError("immutable SEC API fallback overlay version conflict"))
                             break
-                        processed += 1
-                        success += 1
-                        continue
+                        # ``terminal_accessions`` returns only incomplete
+                        # overlays. Re-fetch their immutable evidence so
+                        # ``write`` can repair missing child projections.
                     if processed + len(futures) + len(ready) >= max_accessions:
                         exhausted = True
                         break
