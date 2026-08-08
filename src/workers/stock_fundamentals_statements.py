@@ -254,14 +254,20 @@ def _source_definition(conn: Any) -> str:
 
 def scope_definition_to_changed_universe(definition: str) -> str:
     """Bind the source CTE to a tiny changed-CIK universe before it reads facts."""
-    pattern = r"(?<![\w.])(?:[a-z_][\w$]*\.)?universe_constituents\b"
-    if len(re.findall(pattern, definition, flags=re.IGNORECASE)) != 1:
+    relation_pattern = r"\b(FROM|JOIN)\s+(?:public\.)?universe_constituents\b"
+    if len(re.findall(relation_pattern, definition, flags=re.IGNORECASE)) != 1:
         raise RuntimeError("unexpected universe relation in stock fundamentals MV definition")
-    return re.sub(
-        pattern,
-        "stock_fundamentals_statements_scope_universe",
+    scoped = re.sub(
+        relation_pattern,
+        r"\1 stock_fundamentals_statements_scope_universe",
         definition,
         count=1,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"\buniverse_constituents\.",
+        "stock_fundamentals_statements_scope_universe.",
+        scoped,
         flags=re.IGNORECASE,
     )
 

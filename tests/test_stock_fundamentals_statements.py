@@ -236,9 +236,10 @@ def test_scoped_recompute_filters_impossible_periods_from_mv_definition() -> Non
 def test_scoped_definition_rebinds_the_universe_before_the_multiuse_fact_cte() -> None:
     definition = """
         WITH uni AS (
-            SELECT DISTINCT upper(ticker) AS ticker, cik
-            FROM public.universe_constituents
-            WHERE cik IS NOT NULL
+            SELECT DISTINCT upper(universe_constituents.ticker::text) AS ticker,
+                universe_constituents.cik
+            FROM universe_constituents
+            WHERE universe_constituents.cik IS NOT NULL
         ) SELECT * FROM uni
     """
 
