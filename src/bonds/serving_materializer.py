@@ -179,27 +179,44 @@ def _metric_value_sql(metric_id: str) -> str:
 # The dense series is keyed by CUSIP9 and this product by security_id, so the
 # join runs through the published alias view. A security legitimately holds more
 # than one CUSIP9 alias, which forces two decisions:
-#   * WHICH row wins is spelled out in full -- day, then source precedence, then
-#     the CUSIP -- the same rule the request-path series read uses. An arbitrary
-#     tie-break would make the served price flip between builds.
 #   * WHETHER the aliases AGREE is a real ambiguity, judged PER FIELD -- the
 #     rule the metric worker's dense lane already applies (``price_lo IS
 #     DISTINCT FROM price_hi`` for the price, the same spread on ``ytm`` for the
-#     yield, each field refused by its OWN disagreement):
-#       - a price disagreement marks the row ``duplicate_in_matching_cohort``,
-#         the existing state the projections already degrade on, rather than
-#         silently serving one of two prices as if unique;
-#       - a yield disagreement suppresses the YIELD ALONE. Folding it into the
-#         cohort state would NULL ``latest_price_pct`` on catalog/detail over a
-#         price every alias agrees on, while bond_metrics -- whose price lane
-#         sees no disagreement -- would keep publishing its price-derived
-#         metrics. The two surfaces would then serve numbers each other refuses,
-#         which is precisely the drift the cross-surface lock exists to prevent.
+#     yield, each field refused by its OWN disagreement).
+#   * WHICH rows survive follows from that answer, and it is NOT always one row.
 #
-# The governed lane retains EVERY same-date duplicate (that is how an ambiguous
-# cohort stays visible), so this table is deliberately NOT unique per security:
-# ``source_row_number`` rides along and the ambiguity filter -- not a unique
-# index -- is what keeps the inline price subquery scalar.
+# A PRICE disagreement is a duplicate cohort, and the governed lane's contract
+# for a duplicate cohort is RETENTION: ``bond_price_observation_v1`` keeps every
+# same-(security, date) row from a distinct source row and marks them all
+# ``duplicate_in_matching_cohort`` -- "no arbitrary winner is chosen"
+# (schemas/bond_price_observations_v1.sql), which ``serving_contract`` restates
+# as "both rows are retained, never an arbitrary winner". So the dense lane emits
+# ONE ROW PER CONFLICTING ALIAS, each carrying the price its own source reported.
+# Collapsing them would leave a single degraded row whose payload still showed
+# the tie-break winner's price -- an arbitrary number dressed as the security's,
+# and a semantics neither lane has.
+#
+# When the aliases AGREE on the price there is no cohort to retain, so the row is
+# collapsed to one -- ``source_rank`` then the CUSIP, the same rule the
+# request-path series read uses, so the served row never flips between builds --
+# and only THERE does the per-field yield refusal apply: a collapsed row is a
+# synthesis that cannot carry two yields, so a disputed yield is suppressed while
+# the agreed price is still served (folding the yield into the cohort state would
+# NULL ``latest_price_pct`` on catalog/detail over a price every alias agrees on,
+# while bond_metrics -- whose price lane sees no disagreement -- would keep
+# publishing its price-derived metrics; the two surfaces would then serve numbers
+# each other refuses, which is precisely the drift the cross-surface lock exists
+# to prevent). A RETAINED row needs no such refusal: it speaks for one alias, so
+# its own yield is exactly what that source reported and no sibling's value can
+# contaminate it -- which is how the governed lane already serves a duplicate
+# cohort, each retained row carrying its own distinct yield.
+#
+# This table is therefore deliberately NOT unique per security: ``source_row_number``
+# rides along (0-based, in the tie-break order, so the retained rows get stable
+# distinct serving fact keys) and the ambiguity filter -- not a unique index -- is
+# what keeps the inline price subquery scalar, since every retained row is marked
+# ``duplicate_in_matching_cohort`` and the eligibility predicate takes only unique
+# ones.
 _LATEST_OBSERVATION_GOVERNED = """
 CREATE TEMP TABLE _bond_latest_observation ON COMMIT DROP AS
 SELECT l.security_id, l.observation_date, l.source_row_number, l.price,
@@ -250,23 +267,39 @@ WITH alias AS (
            min(ytm) OVER (PARTITION BY security_id) AS ytm_lo,
            max(ytm) OVER (PARTITION BY security_id) AS ytm_hi
     FROM priced WHERE day = latest_day
+), ranked AS (
+    -- The tie-break, expressed once and reused for both outcomes: it PICKS the
+    -- row when the cohort agrees (srn = 0) and merely NUMBERS the rows when it
+    -- does not. ``bond_observation_daily`` is keyed (cusip9, day) and the alias
+    -- CTE is DISTINCT, so the CUSIP is unique inside a security's latest-day
+    -- cohort and the numbering is total -- the same row wins, and the same row
+    -- carries source_row_number 0, on every rebuild.
+    SELECT *,
+           (row_number() OVER (PARTITION BY security_id
+                               ORDER BY source_rank DESC, cusip9) - 1)::integer AS srn
+    FROM on_latest
 )
-SELECT DISTINCT ON (security_id)
-       security_id, day AS observation_date, 0 AS source_row_number, price,
+SELECT security_id, day AS observation_date, srn AS source_row_number, price,
        coalesce(price_type, 'not_reported') AS price_type,
        coalesce(accrued, 'not_reported') AS accrued_treatment,
        'present'::text AS price_state,
-       -- The aliases disagree about the yield -> serve NO yield. The winning
-       -- row's own value is kept when they agree (never ``ytm_lo``): a sibling
-       -- alias's yield must not appear on a row whose winning source reported
-       -- none.
-       CASE WHEN ytm_lo IS DISTINCT FROM ytm_hi THEN NULL ELSE ytm END AS ytm,
+       -- A RETAINED row speaks for one alias, so it carries that alias's own
+       -- yield -- the governed lane's behaviour for a duplicate cohort. Only the
+       -- COLLAPSED row refuses a disputed yield: it is a synthesis that cannot
+       -- carry two, and a sibling alias's yield must not appear on a row whose
+       -- winning source reported none (which is also why the kept value is the
+       -- winner's own ``ytm``, never ``ytm_lo``).
+       CASE WHEN price_lo IS DISTINCT FROM price_hi THEN ytm
+            WHEN ytm_lo IS DISTINCT FROM ytm_hi THEN NULL
+            ELSE ytm END AS ytm,
        -- The dense series carries no 144A flag; an honest NULL, never a guess.
        NULL::boolean AS is_144a,
        CASE WHEN price_lo IS DISTINCT FROM price_hi THEN 'duplicate_in_matching_cohort'
             ELSE 'unique_in_matching_cohort' END AS daily_key_state
-FROM on_latest
-ORDER BY security_id, source_rank DESC, cusip9
+FROM ranked
+-- Retain the WHOLE conflicting cohort; collapse to the tie-break winner only
+-- when there is nothing to conflict about.
+WHERE price_lo IS DISTINCT FROM price_hi OR srn = 0
 """
 
 # Merge, in two ordered statements. PRUNE first, then INSERT: the reverse order

@@ -66,6 +66,13 @@ DEFAULT_BASE_SLEEP_S = 0.15
 #: spending its whole window on a provider that is down. The run then reports
 #: ``aborted`` and exits non-zero (run_worker's budget contract), so a truncated
 #: sweep is never painted green.
+#:
+#: Costed against the backoff ladder: one exhausted logical request now spends
+#: 2+4+8+16+32+64 = 126s sleeping (the seventh attempt no longer sleeps -- see
+#: ``_get_json``), so the worst case before an outage is REPORTED is 25 x 126s
+#: ~= 52min of backoff, against ~102min while the trailing 120s sleep was still
+#: charged per request. Wall clock adds the connect/read timeouts on top. This
+#: constant is the lever if that window still has to shrink.
 MAX_CONSECUTIVE_FAILURES = 25
 
 
@@ -223,6 +230,14 @@ class FinnhubClient:
         for attempt in range(MAX_RETRIES + 1):
             if attempt > 0:
                 self.retries += 1
+            # The retry budget is checked BEFORE every backoff below, never
+            # after. On the last attempt the loop exits and raises immediately,
+            # so a sleep there buys no further try: it is dead time added to the
+            # abort the caller is already waiting for -- up to the 120s cap (or
+            # a provider-dictated Retry-After) per failed logical request, times
+            # MAX_CONSECUTIVE_FAILURES before an outage is reported. It changes
+            # neither how many attempts are made nor how an error is classified.
+            retries_left = attempt < MAX_RETRIES
             try:
                 response = self._open(url)
                 # A call whose body then dies still burned quota.
@@ -239,13 +254,15 @@ class FinnhubClient:
                 if status == 429:
                     self._count_error("http_429")
                     last_error = "http_429"
-                    self._sleep(self._retry_after_s(exc, min(delay, BACKOFF_CAP_S)))
+                    if retries_left:
+                        self._sleep(self._retry_after_s(exc, min(delay, BACKOFF_CAP_S)))
                     delay *= 2
                     continue
                 if status >= 500:
                     self._count_error(f"http_{status}")
                     last_error = f"http_{status}"
-                    self._sleep(min(delay, BACKOFF_CAP_S))
+                    if retries_left:
+                        self._sleep(min(delay, BACKOFF_CAP_S))
                     delay *= 2
                     continue
                 self._count_error(f"http_{status}")
@@ -253,7 +270,8 @@ class FinnhubClient:
             except Exception as exc:  # network layer, at connect OR mid-body
                 self._count_error("network")
                 last_error = f"network: {type(exc).__name__}"
-                self._sleep(min(delay, BACKOFF_CAP_S))
+                if retries_left:
+                    self._sleep(min(delay, BACKOFF_CAP_S))
                 delay *= 2
                 continue
 
@@ -263,7 +281,8 @@ class FinnhubClient:
             except (ValueError, AttributeError):
                 self._count_error("bad_json")
                 last_error = "bad_json"
-                self._sleep(min(delay, BACKOFF_CAP_S))
+                if retries_left:
+                    self._sleep(min(delay, BACKOFF_CAP_S))
                 delay *= 2
                 continue
         raise FinnhubTransientError(f"retries exhausted for {endpoint}: {last_error}")

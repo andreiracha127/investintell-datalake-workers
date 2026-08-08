@@ -132,6 +132,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_finnhub_client.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
@@ -314,6 +315,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_finnhub_client.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py

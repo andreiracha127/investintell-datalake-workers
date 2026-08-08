@@ -627,11 +627,14 @@ def test_aliases_disagreeing_on_the_latest_day_are_marked_ambiguous() -> None:
             ("037833999", fresh_day, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
         ])
         materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
-        state, reason = cur.execute(
-            "SELECT state, reason_code FROM bond_serving_facts "
+        marks = cur.execute(
+            "SELECT state, reason_code, ambiguity_state FROM bond_serving_facts "
             "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
-        ).fetchone()
-        assert (state, reason) == ("degraded", "observation_ambiguous")
+        ).fetchall()
+        # BOTH conflicting aliases keep their row -- reading only the first one
+        # would pass even if the loser had been dropped.
+        assert len(marks) == 2
+        assert all(m == ("degraded", "observation_ambiguous", "ambiguous") for m in marks)
         payload = cur.execute(
             "SELECT payload FROM bond_serving_facts "
             "WHERE surface='catalog' AND security_id=%s", (SEC1,),
@@ -751,14 +754,129 @@ def test_a_price_disagreement_still_carries_a_yield_the_aliases_agree_on() -> No
         ])
         materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
 
-        payload = _observation(cur, SEC1, "latest")[0][1]
-        assert payload["daily_key_state"] == "duplicate_in_matching_cohort"
-        assert float(payload["ytm"]) == 0.0475, "the agreed yield is not collateral damage"
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 2, "a conflicting cohort is retained, never collapsed"
+        for _, payload in rows:
+            assert payload["daily_key_state"] == "duplicate_in_matching_cohort"
+            assert float(payload["ytm"]) == 0.0475, "the agreed yield is not collateral damage"
         served = cur.execute(
             "SELECT payload FROM bond_serving_facts "
             "WHERE surface='catalog' AND security_id=%s", (SEC1,),
         ).fetchone()[0]
         assert served["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_price_conflict_retains_one_row_per_conflicting_alias() -> None:
+    """The conflicting cohort stays VISIBLE: every alias keeps its own row.
+
+    This is the governed lane's contract, not a new one for the dense series:
+    ``bond_price_observation_v1`` retains every same-(security, date) row from a
+    distinct source row -- "no arbitrary winner is chosen" -- and
+    ``serving_contract`` restates it for this very reason code ("both rows are
+    retained, never an arbitrary winner"). SEC2's governed cohort already ships
+    that way (two rows, 100.2 and 100.4, both degraded).
+
+    Collapsing the dense cohort to one row does NOT hide the tie-break: the
+    surviving row keeps carrying the winner's price in its payload, so the
+    product would show an arbitrary number where the conflict is. Three aliases
+    disagree here on BOTH fields, so a collapse is visible three ways -- the row
+    count, the set of prices, and the set of yields.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL),"
+            "(%s,'cusip9','037833888','2020-01-01',NULL)", (SEC1, SEC1),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+            ("037833888", fresh_day, 99.00, 0.0550, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = cur.execute(
+            "SELECT fact_key, state, reason_code, ambiguity_state, observation_date, payload "
+            "FROM bond_serving_facts WHERE surface='observations' AND security_id=%s "
+            "AND lane='latest' ORDER BY fact_key", (SEC1,),
+        ).fetchall()
+        assert len(rows) == 3, "every conflicting alias keeps its observation"
+        # Each retained row carries what ITS OWN source reported -- no field is
+        # blanked (that refusal belongs to the collapsed row, which cannot carry
+        # two values) and no sibling's value is copied onto it.
+        assert {float(r[5]["price"]) for r in rows} == {101.75, 95.10, 99.00}
+        assert {float(r[5]["ytm"]) for r in rows} == {0.0475, 0.0620, 0.0550}
+        # Distinct serving keys, or the projection would collide them away.
+        assert len({r[0] for r in rows}) == 3
+        for r in rows:
+            assert (r[1], r[2], r[3]) == ("degraded", "observation_ambiguous", "ambiguous")
+            assert r[4] == fresh_day
+            assert r[5]["daily_key_state"] == "duplicate_in_matching_cohort"
+        # ...and the ambiguity still costs the security its served price on BOTH
+        # security-grain surfaces: an ambiguous cohort has no unambiguous latest.
+        for surface in ("catalog", "detail"):
+            served = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert served["latest_price_pct"] is None, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_agreed_price_cohort_still_collapses_to_the_tie_break_winner() -> None:
+    """Retention is scoped to the CONFLICT; agreement is not a duplicate cohort.
+
+    Three aliases report the SAME price on the same day. There is nothing to
+    retain -- the observation is one fact reported three times -- so the lane
+    still serves a single row, and the security keeps its price. Retaining here
+    would degrade every multi-alias security to ``observation_ambiguous`` and
+    NULL a price nobody disputes.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL),"
+            "(%s,'cusip9','037833888','2020-01-01',NULL)", (SEC1, SEC1),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 3),
+            ("037833888", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 2),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        payload = rows[0][1]
+        assert float(payload["price"]) == 101.75
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        served = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert float(served["latest_price_pct"]) == 101.75
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

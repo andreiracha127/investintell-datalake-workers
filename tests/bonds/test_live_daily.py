@@ -10,7 +10,11 @@ What is actually being pinned:
     between a right answer and a plausible wrong one;
   * the empirical bid/ask side semantics and the refusal to invent a spread on a
     one-sided day;
-  * determinism of the tick cohort and of same-day supersession.
+  * determinism of the tick cohort and of same-day supersession;
+  * the WINDOW -- both ends of it. The upper bound is the one that carries
+    blast radius: ``max(day)`` of the observation table anchors the as-of of
+    both downstream publications, so a candle dated past the request would date
+    the product into the future and jam every later publication as a regression.
 """
 from __future__ import annotations
 
@@ -118,7 +122,7 @@ def _candles(**overrides):
 
 
 def test_reported_yield_is_converted_from_percent_to_fraction() -> None:
-    rows = live_daily.candle_rows("912828XX1", _candles())
+    rows = live_daily.candle_rows("912828XX1", _candles()).rows
     assert [r.day for r in rows] == [DAY_1, DAY_2]
     assert rows[0].price == pytest.approx(98.25)
     # The single unit boundary in the whole feed.
@@ -130,7 +134,7 @@ def test_reported_yield_is_converted_from_percent_to_fraction() -> None:
 
 def test_volume_is_absent_not_zero() -> None:
     """The provider sends no volume; a 0 would read as "traded nothing"."""
-    rows = live_daily.candle_rows("912828XX1", _candles())
+    rows = live_daily.candle_rows("912828XX1", _candles()).rows
     assert all(row.volume is None for row in rows)
 
 
@@ -138,27 +142,103 @@ def test_a_day_without_a_reported_yield_is_solved_and_labelled_computed() -> Non
     rows = live_daily.candle_rows(
         "912828XX1", _candles(y=[None, None]),
         coupon_pct=4.0, maturity_date=_dt.date(2031, 8, 6),
-    )
+    ).rows
     assert [r.ytm_basis for r in rows] == [live_daily.BASIS_COMPUTED] * 2
     assert all(0.0 < r.ytm < 0.20 for r in rows)
 
 
 def test_a_day_whose_yield_cannot_be_solved_still_keeps_its_price() -> None:
     """Dropping the row would punch a hole in the PRICE series to protect a yield."""
-    rows = live_daily.candle_rows("912828XX1", _candles(y=[None, None]))
+    rows = live_daily.candle_rows("912828XX1", _candles(y=[None, None])).rows
     assert len(rows) == 2
     assert all(r.ytm is None and r.ytm_basis is None for r in rows)
     assert all(r.price is not None for r in rows)
 
 
 def test_days_without_a_usable_price_are_dropped() -> None:
-    rows = live_daily.candle_rows("912828XX1", _candles(c=[None, 0.0]))
-    assert rows == []
+    fold = live_daily.candle_rows("912828XX1", _candles(c=[None, 0.0]))
+    assert fold.rows == []
+    # Dropped for want of a price, not for falling outside the window.
+    assert fold.dropped_after_window == 0
 
 
 def test_not_before_bounds_the_delta_inclusively() -> None:
-    rows = live_daily.candle_rows("912828XX1", _candles(), not_before=DAY_2)
-    assert [r.day for r in rows] == [DAY_2]
+    fold = live_daily.candle_rows("912828XX1", _candles(), not_before=DAY_2)
+    assert [r.day for r in fold.rows] == [DAY_2]
+    # The lower side is expected provider over-return, so it stays SILENT.
+    assert fold.dropped_after_window == 0
+
+
+# --------------------------------------------------------------------------- #
+# The upper bound of the requested window.
+#
+# ``max(day)`` of ``bond_observation_daily`` is the as-of anchor of BOTH
+# downstream publications, so a single future-dated candle does not merely add a
+# bad row: it dates the product into the future and then makes every legitimate
+# later publication look like an as-of regression, jamming the chain until
+# someone deletes the row by hand in production. These pin the refusal.
+# --------------------------------------------------------------------------- #
+FUTURE_DAY = _dt.date(2027, 1, 4)
+
+
+def _candles_with_a_future_element():
+    """An otherwise-good response carrying one future-dated element."""
+    return _candles(
+        t=[live_daily.to_epoch(DAY_1), live_daily.to_epoch(DAY_2),
+           live_daily.to_epoch(FUTURE_DAY)],
+        c=[98.25, 98.50, 97.00],
+        y=[4.058191, 4.040360, 4.200000],
+    )
+
+
+def test_a_candle_past_the_requested_window_cannot_move_the_anchor() -> None:
+    """The thread's case: a good response with one future-dated element.
+
+    Before the bound existed this returned three rows and ``max(day)`` was
+    2027-01-04 -- the value both publications would have anchored on.
+    """
+    fold = live_daily.candle_rows(
+        "912828XX1", _candles_with_a_future_element(),
+        not_before=DAY_1, not_after=DAY_2,
+    )
+    assert [r.day for r in fold.rows] == [DAY_1, DAY_2]
+    assert max(r.day for r in fold.rows) == DAY_2
+    assert FUTURE_DAY not in {r.day for r in fold.rows}
+    # ... and the refusal is REPORTED, not silent: a provider that starts
+    # emitting garbage has to show up in the stage report on the day it starts.
+    assert fold.dropped_after_window == 1
+
+
+def test_the_last_day_of_the_window_is_kept_the_bound_is_inclusive() -> None:
+    """``day == not_after`` is the day a daily run exists to collect."""
+    fold = live_daily.candle_rows(
+        "912828XX1", _candles(), not_before=DAY_1, not_after=DAY_2
+    )
+    assert [r.day for r in fold.rows] == [DAY_1, DAY_2]
+    assert fold.dropped_after_window == 0
+
+
+def test_an_unbounded_call_still_keeps_everything() -> None:
+    """``not_after=None`` is unbounded, symmetric with ``not_before``."""
+    fold = live_daily.candle_rows("912828XX1", _candles_with_a_future_element())
+    assert [r.day for r in fold.rows] == [DAY_1, DAY_2, FUTURE_DAY]
+    assert fold.dropped_after_window == 0
+
+
+def test_a_future_candle_is_refused_before_its_price_is_even_looked_at() -> None:
+    """Out-of-window is decided on the DAY, whatever the element carries.
+
+    Ordering the price check first would let a future candle with a null price
+    be dropped as "no price" and vanish from the count -- the provider's clock
+    going wrong would then be invisible until the day it also sent a price.
+    """
+    payload = _candles(
+        t=[live_daily.to_epoch(DAY_1), live_daily.to_epoch(FUTURE_DAY)],
+        c=[98.25, None], y=[4.0, None],
+    )
+    fold = live_daily.candle_rows("912828XX1", payload, not_after=DAY_1)
+    assert [r.day for r in fold.rows] == [DAY_1]
+    assert fold.dropped_after_window == 1
 
 
 def test_a_repeated_day_in_one_payload_supersedes_rather_than_conflicts() -> None:
@@ -167,18 +247,18 @@ def test_a_repeated_day_in_one_payload_supersedes_rather_than_conflicts() -> Non
         t=[live_daily.to_epoch(DAY_1), live_daily.to_epoch(DAY_1)],
         c=[98.25, 99.75], y=[4.0, 3.9],
     )
-    rows = live_daily.candle_rows("912828XX1", payload)
+    rows = live_daily.candle_rows("912828XX1", payload).rows
     assert len(rows) == 1
     assert rows[0].price == pytest.approx(99.75)  # last element wins
 
 
 def test_a_no_data_payload_is_empty_not_an_error() -> None:
-    assert live_daily.candle_rows("912828XX1", {"s": "no_data"}) == []
-    assert live_daily.candle_rows("912828XX1", None) == []
+    assert live_daily.candle_rows("912828XX1", {"s": "no_data"}).rows == []
+    assert live_daily.candle_rows("912828XX1", None).rows == []
 
 
 def test_the_row_tuple_matches_the_declared_column_protocol() -> None:
-    rows = live_daily.candle_rows("912828XX1", _candles())
+    rows = live_daily.candle_rows("912828XX1", _candles()).rows
     assert len(rows[0].as_tuple()) == len(live_daily.OBSERVATION_COLUMNS)
 
 
@@ -281,6 +361,31 @@ def test_a_cold_table_asks_for_a_small_window_not_the_whole_history() -> None:
 def test_a_watermark_ahead_of_today_never_inverts_the_window() -> None:
     start, end = live_daily.fetch_window(_dt.date(2026, 9, 1), _dt.date(2026, 8, 7))
     assert start == end == _dt.date(2026, 8, 7)
+
+
+def test_the_window_never_asks_past_the_execution_date() -> None:
+    """``to`` is ALWAYS today -- the second barrier behind ``not_after``.
+
+    ``candle_rows`` is clock-free by design (it runs in the no-DSN CI job), so
+    its upper bound can only be as good as what the caller passes. What makes
+    ``not_after=to`` an EXECUTION-DATE ceiling rather than just a parameter is
+    this invariant: no watermark, past, present, future, or absent, can make
+    ``fetch_window`` ask for a day beyond ``today``. Pinned here so an edit that
+    widens ``to`` -- "ask a day ahead, the provider clips anyway" -- fails
+    instead of quietly re-opening the future-day hole.
+    """
+    today = _dt.date(2026, 8, 7)
+    watermarks = [
+        None,                      # cold table
+        _dt.date(2020, 1, 1),      # far behind
+        today - _dt.timedelta(days=1),
+        today,                     # caught up
+        _dt.date(2027, 6, 30),     # already ahead of today
+    ]
+    for watermark in watermarks:
+        start, end = live_daily.fetch_window(watermark, today)
+        assert end == today, watermark
+        assert start <= end, watermark
 
 
 def test_previous_business_day_skips_the_weekend() -> None:

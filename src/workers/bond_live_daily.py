@@ -385,6 +385,7 @@ def _load_candles(
     consecutive = 0
     aborted = False
     pending = 0
+    dropped_after_window = 0
     first_day: _dt.date | None = None
     last_day: _dt.date | None = None
 
@@ -407,10 +408,12 @@ def _load_candles(
                     aborted = True
                     break
                 continue
-            rows = live_daily.candle_rows(
-                str(cusip9), payload, not_before=start,
+            fold = live_daily.candle_rows(
+                str(cusip9), payload, not_before=start, not_after=end,
                 coupon_pct=_as_float(coupon_rate), maturity_date=maturity_date,
             )
+            dropped_after_window += fold.dropped_after_window
+            rows = fold.rows
             if not rows:
                 no_data += 1
                 continue
@@ -446,6 +449,15 @@ def _load_candles(
         "no_data": no_data, "transient_failures": failed,
         "first_day": first_day.isoformat() if first_day else None,
         "last_day": last_day.isoformat() if last_day else None,
+        # A candle dated past the requested window is refused before it can
+        # become a row, because both publications anchor their as_of on this
+        # table's max(day): one bad future candle would move the product's
+        # as_of forward and then reject every legitimate publication after it
+        # as a regression. Counted rather than silent -- a provider that
+        # starts emitting them must be visible -- but deliberately NOT a
+        # reason to fail the run: the guard already held, and dropping the day
+        # would turn a defended anomaly into an outage.
+        "dropped_after_window": dropped_after_window,
         "aborted": aborted,
     }
 

@@ -181,6 +181,29 @@ OBSERVATION_COLUMNS = (
 )
 
 
+@dataclass(frozen=True)
+class CandleFold:
+    """What one candle payload folded into: the rows, and what was REFUSED.
+
+    ``dropped_after_window`` counts candles whose day fell PAST the requested
+    upper bound. It is carried out of the pure layer rather than dropped on the
+    floor because a provider that starts emitting future-dated candles is a
+    silent, compounding failure: both ``bond_metric_v1`` and the serving surface
+    anchor their ``as_of`` on ``max(day)`` of ``bond_observation_daily``, so one
+    such candle would date the whole product into the future and then make every
+    legitimate later publication look like an as-of REGRESSION -- a jam only a
+    manual delete in production clears. A counter in the stage report is what
+    turns that from an outage into a line someone can read.
+
+    Deliberately asymmetric: the LOWER bound is trimmed silently, because a
+    provider returning more history than was asked for is expected and
+    harmless. Only the upper side is anomaly, so only the upper side is counted.
+    """
+
+    rows: list[ObservationRow]
+    dropped_after_window: int = 0
+
+
 def day_from_timestamp(ts: Any) -> _dt.date | None:
     """UTC calendar day of a provider epoch-second stamp, or ``None``.
 
@@ -204,14 +227,33 @@ def candle_rows(
     candles: Mapping[str, Any] | None,
     *,
     not_before: _dt.date | None = None,
+    not_after: _dt.date | None = None,
     coupon_pct: float | None = None,
     maturity_date: _dt.date | None = None,
-) -> list[ObservationRow]:
+) -> CandleFold:
     """Fold one provider candle payload into observation rows.
 
-    ``not_before`` is an INCLUSIVE lower bound: it is the same day the request
-    window opened on, so a provider that returns more history than was asked for
-    cannot widen a delta run into a re-load. Passing ``None`` keeps everything.
+    ``not_before`` and ``not_after`` are the INCLUSIVE bounds of the window the
+    request actually asked for -- ``[from, to]``, the same pair
+    :func:`fetch_window` handed the client. Both are enforced here, at the only
+    place observation rows are minted, and for different reasons:
+
+      * BELOW ``not_before``: a provider that returns more history than was
+        asked for would widen a delta run into a re-load. Expected, harmless,
+        trimmed silently.
+      * ABOVE ``not_after``: a candle dated past the end of the requested window
+        cannot be a real session -- the request could not have covered it. It is
+        a provider bug, a bad stamp, or a timezone slip, and it is DANGEROUS
+        rather than merely wrong: ``max(day)`` of ``bond_observation_daily`` is
+        the as-of anchor of both downstream publications, so one such row dates
+        the product into the future and turns every legitimate later publication
+        into an as-of regression. Refused, and COUNTED (see :class:`CandleFold`)
+        so a provider that starts emitting garbage shows up in the stage report
+        instead of in a stuck chain three days later.
+
+    ``day == not_after`` is kept: the window is inclusive at both ends, and the
+    last day of the window is the whole point of a daily run. Passing ``None``
+    for either bound leaves that side unbounded.
 
     The yield is taken from the payload when present (``ytm_basis='reported'``)
     and otherwise SOLVED from the reported terms against that day's own price
@@ -224,18 +266,25 @@ def candle_rows(
     is a price series, and a row with neither price nor yield carries nothing.
     """
     if not candles or str(candles.get("s") or "") != "ok":
-        return []
+        return CandleFold(rows=[])
     stamps = candles.get("t")
     if not isinstance(stamps, list):
-        return []
+        return CandleFold(rows=[])
     closes = _column(candles, "c", len(stamps))
     yields = _column(candles, "y", len(stamps))
 
     rows: list[ObservationRow] = []
     seen: set[_dt.date] = set()
+    dropped_after = 0
     for index, stamp in enumerate(stamps):
         day = day_from_timestamp(stamp)
         if day is None or (not_before is not None and day < not_before):
+            continue
+        # Checked BEFORE the price and before the supersession bookkeeping: a
+        # future-dated candle is refused whatever it carries, and must never be
+        # able to evict a valid row for a day it happens to collide with.
+        if not_after is not None and day > not_after:
+            dropped_after += 1
             continue
         price = _finite(closes[index])
         if price is None or price <= 0:
@@ -264,7 +313,7 @@ def candle_rows(
             )
         )
     rows.sort(key=lambda r: r.day)
-    return rows
+    return CandleFold(rows=rows, dropped_after_window=dropped_after)
 
 
 def _column(payload: Mapping[str, Any], key: str, length: int) -> list[Any]:
@@ -468,6 +517,13 @@ def fetch_window(
     small window, not the full history: bulk history is a load, not a daily job,
     and a worker that silently pulls 24 years on a fresh table would exhaust the
     provider budget before anyone noticed the table was empty.
+
+    CONTRACT, relied on by :func:`candle_rows`: ``to`` is ALWAYS ``today`` --
+    never later, for any watermark, including one already ahead of today. That
+    is what makes the ``not_after`` bound an execution-date ceiling rather than
+    merely a request parameter, without this clock-free module ever reading a
+    clock. It is pinned by test, so an edit that lets ``to`` run past the
+    execution date fails rather than quietly re-opening the future-day hole.
     """
     if watermark is None:
         start = today - _dt.timedelta(days=cold_start_days)
