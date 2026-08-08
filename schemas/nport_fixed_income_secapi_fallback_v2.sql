@@ -131,6 +131,10 @@ BEGIN
         ) THEN
             RAISE EXCEPTION 'SEC API fallback source document id is not deterministic';
         END IF;
+        IF position('/' || replace(NEW.accession_number, '-', '') || '/primary_doc.xml'
+                    IN NEW.document_url) = 0 THEN
+            RAISE EXCEPTION 'SEC API fallback document URL does not match accession';
+        END IF;
         RETURN NEW;
     END IF;
 

@@ -13,6 +13,8 @@ V1_DDL = ROOT / "schemas" / "nport_fixed_income_secapi_sidecars_v1.sql"
 DDL = ROOT / "schemas" / "nport_fixed_income_secapi_fallback_v2.sql"
 DSN = "host=127.0.0.1 port=65431 dbname=postgres user=postgres"
 SHA = "b" * 64
+A1 = "0000000001-26-000001"
+A2 = "0000000001-26-000002"
 
 
 def _v1_document_id(publication_id: str, accession: str) -> str:
@@ -40,8 +42,8 @@ def _install(cur) -> tuple[str, str, str]:
     cur.execute(f'CREATE SCHEMA "{schema}"; SET search_path TO "{schema}"')
     cur.execute(
         "CREATE MATERIALIZED VIEW nport_holdings_snapshot_identity_v1 AS "
-        f"SELECT '{publication_id}'::uuid AS publication_id, 'A1'::text AS accession_number "
-        f"UNION ALL SELECT '{publication_id}'::uuid, 'A2'::text"
+        f"SELECT '{publication_id}'::uuid AS publication_id, '{A1}'::text AS accession_number "
+        f"UNION ALL SELECT '{publication_id}'::uuid, '{A2}'::text"
     )
     cur.execute(V1_DDL.read_text(encoding="utf-8"))
     cur.execute(DDL.read_text(encoding="utf-8"))
@@ -91,8 +93,20 @@ def _fallback_manifest(cur, publication_id: str, run_id: str, accession: str, *,
          parser_version,resolver_version,form_type,document_name,document_url,
          form_nport_response_sha256,query_response_sha256,render_raw_sha256,compact_payload_sha256,status)
         VALUES(%s,%s,%s,%s,%s,'query-render-v1','NPORT-P','primary_doc.xml',
-               'https://www.sec.gov/Archives/edgar/data/1/2/primary_doc.xml',%s,%s,%s,%s,'success')""",
-        (publication_id, run_id, accession, document_id, parser, SHA, SHA, SHA, SHA),
+               %s,%s,%s,%s,%s,'success')""",
+        (
+            publication_id,
+            run_id,
+            accession,
+            document_id,
+            parser,
+            "https://www.sec.gov/Archives/edgar/data/1/"
+            f"{accession.replace('-', '')}/primary_doc.xml",
+            SHA,
+            SHA,
+            SHA,
+            SHA,
+        ),
     )
     return document_id
 
@@ -114,9 +128,9 @@ def test_fallback_only_overlays_immutable_v1_terminal_rows_and_requires_complete
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
         schema, publication_id, run_id = _install(cur)
         try:
-            _v1_manifest(cur, publication_id, run_id, "A1", "success")
-            _v1_fund(cur, publication_id, run_id, "A1")
-            _v1_manifest(cur, publication_id, run_id, "A2", "terminal_error")
+            _v1_manifest(cur, publication_id, run_id, A1, "success")
+            _v1_fund(cur, publication_id, run_id, A1)
+            _v1_manifest(cur, publication_id, run_id, A2, "terminal_error")
 
             blocked = cur.execute(
                 "SELECT nport_fixed_income_secapi_fallback_scope_ready_v2(%s,%s,%s,%s,%s)",
@@ -125,8 +139,8 @@ def test_fallback_only_overlays_immutable_v1_terminal_rows_and_requires_complete
             assert blocked["ready"] is False
             assert blocked["missing_fallback_count"] == 1
 
-            document_id = _fallback_manifest(cur, publication_id, run_id, "A2")
-            _fallback_fund(cur, publication_id, run_id, "A2", document_id)
+            document_id = _fallback_manifest(cur, publication_id, run_id, A2)
+            _fallback_fund(cur, publication_id, run_id, A2, document_id)
             ready = cur.execute(
                 "SELECT nport_fixed_income_secapi_fallback_scope_ready_v2(%s,%s,%s,%s,%s)",
                 (publication_id, run_id, "v1-active", "v2-active", "query-render-v1"),
@@ -139,21 +153,21 @@ def test_fallback_only_overlays_immutable_v1_terminal_rows_and_requires_complete
                 "SELECT accession_number FROM nport_fixed_income_fund_info_source_v2(%s,%s,'sec_api',%s,%s,%s) ORDER BY accession_number",
                 (publication_id, run_id, "v1-active", "v2-active", "query-render-v1"),
             ).fetchall()
-            assert rows == [("A1",), ("A2",)]
+            assert rows == [(A1,), (A2,)]
 
             with pytest.raises(psycopg.errors.RaiseException, match="terminal"):
-                _fallback_manifest(cur, publication_id, run_id, "A1")
+                _fallback_manifest(cur, publication_id, run_id, A1)
             with pytest.raises(psycopg.errors.RaiseException):
                 cur.execute(
                     "UPDATE nport_fixed_income_secapi_recovery_v1 SET attempt_count=2 "
-                    "WHERE source_holdings_publication_id=%s AND source_run_id=%s AND accession_number='A2'",
-                    (publication_id, run_id),
+                    "WHERE source_holdings_publication_id=%s AND source_run_id=%s AND accession_number=%s",
+                    (publication_id, run_id, A2),
                 )
             with pytest.raises(psycopg.errors.RaiseException, match="immutable"):
                 cur.execute(
                     "UPDATE nport_fixed_income_secapi_fallback_manifest_v2 SET status='terminal_error' "
-                    "WHERE source_holdings_publication_id=%s AND source_run_id=%s AND accession_number='A2'",
-                    (publication_id, run_id),
+                    "WHERE source_holdings_publication_id=%s AND source_run_id=%s AND accession_number=%s",
+                    (publication_id, run_id, A2),
                 )
         finally:
             cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
@@ -165,13 +179,13 @@ def test_fallback_hash_linkage_and_active_parameters_fail_closed() -> None:
     with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
         schema, publication_id, run_id = _install(cur)
         try:
-            _v1_manifest(cur, publication_id, run_id, "A1", "success")
-            _v1_fund(cur, publication_id, run_id, "A1")
-            _v1_manifest(cur, publication_id, run_id, "A2", "terminal_error")
-            document_id = _fallback_manifest(cur, publication_id, run_id, "A2")
+            _v1_manifest(cur, publication_id, run_id, A1, "success")
+            _v1_fund(cur, publication_id, run_id, A1)
+            _v1_manifest(cur, publication_id, run_id, A2, "terminal_error")
+            document_id = _fallback_manifest(cur, publication_id, run_id, A2)
             with pytest.raises(psycopg.errors.RaiseException, match="hash"):
-                _fallback_fund(cur, publication_id, run_id, "A2", document_id, compact_sha="c" * 64)
-            _fallback_fund(cur, publication_id, run_id, "A2", document_id)
+                _fallback_fund(cur, publication_id, run_id, A2, document_id, compact_sha="c" * 64)
+            _fallback_fund(cur, publication_id, run_id, A2, document_id)
 
             mismatch = cur.execute(
                 "SELECT nport_fixed_income_secapi_fallback_scope_ready_v2(%s,%s,%s,%s,%s)",
