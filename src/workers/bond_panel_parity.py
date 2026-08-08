@@ -278,7 +278,36 @@ def _compare_month(
     merged = frozen_included.merge(rebuilt_included, on=["cusip_id", "month"], suffixes=("_frozen", "_rebuilt"))
     frozen_n, rebuilt_n, matched = len(frozen_included), len(rebuilt_included), len(merged)
     if not frozen_n or not rebuilt_n or not matched:
-        return {"month": label, "state": "parity_failed", "reason": "zero_overlap", "aborted": True, "failed_gates": ["zero_overlap"]}
+        return {
+            "month": label,
+            "state": "parity_failed",
+            "reason": "zero_overlap",
+            "aborted": True,
+            "frozen_universe_size": frozen_n,
+            "rebuilt_universe_size": rebuilt_n,
+            "matched_bonds": matched,
+            "matched_coverage": 0.0,
+            "typed_exclusions": {
+                "frozen": _typed_exclusions(frozen_snapshot),
+                "rebuilt": _typed_exclusions(rebuilt_snapshot),
+            },
+            "walk_forward": {
+                "max_input_day": input_max_day.isoformat() if input_max_day else None,
+                "calendar_month_end": _month_end(month).isoformat(),
+                "fit_as_of": fit_as_of.date().isoformat(),
+                "input_exclusions": input_exclusions or {"static_rating_after_month": 0},
+            },
+            "metrics_unavailable_reason": "zero_overlap",
+            "failed_gates": [
+                "zero_overlap",
+                "matched_coverage",
+                "ytm_abs_bps",
+                "duration_abs_years",
+                "duration_relative",
+                "spread_abs_bps",
+                "rv_abs",
+            ],
+        }
     smaller = min(frozen_n, rebuilt_n)
     universe_limit = max(25, .005 * max(frozen_n, rebuilt_n))
     coverage = matched / smaller

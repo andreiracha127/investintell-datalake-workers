@@ -135,6 +135,23 @@ def test_compare_month_measures_snapshot_gates_when_rebuilt_rv_is_empty() -> Non
     assert "rebuilt_rv_nonempty" in result["failed_gates"]
 
 
+def test_compare_month_records_universe_sizes_when_overlap_is_zero() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt = _snapshot(month).assign(cusip_id="OTHER")
+
+    result = parity._compare_month(
+        month, _snapshot(month), _rv(month), rebuilt, pd.DataFrame(),
+        input_max_day=date(2025, 1, 31), fit_as_of=month,
+        monthly_curve=_curve(month),
+    )
+
+    assert result["reason"] == "zero_overlap"
+    assert result["frozen_universe_size"] == 1
+    assert result["rebuilt_universe_size"] == 1
+    assert result["matched_bonds"] == 0
+    assert result["metrics_unavailable_reason"] == "zero_overlap"
+
+
 def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: "wrong")
     monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))
