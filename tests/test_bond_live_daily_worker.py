@@ -160,6 +160,7 @@ def _drive_run(
     relations: bool = True,
     matview: dict | None = None,
     republish: dict | None = None,
+    panel: dict | None = None,
     limit: int | None = None,
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
@@ -208,8 +209,13 @@ def _drive_run(
         _note("republish")
         return republish or {"verdict": "recomputed"}
 
+    def _panel_stub(_dsn, *, as_of=None):
+        _note("panel")
+        return panel or {"state": "published", "aborted": False}
+
     monkeypatch.setattr(bond_live_daily, "_refresh_curated", _matview)
     monkeypatch.setattr(bond_live_daily, "_republish", _republish_stub)
+    monkeypatch.setattr(bond_live_daily, "_publish_panel", _panel_stub)
 
     def _client():
         if client_error is not None:
@@ -812,6 +818,19 @@ def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication(
     assert out["republish"]["verdict"] == "recomputed"
 
 
+def test_matview_connection_failure_is_a_typed_stage_result(monkeypatch) -> None:
+    def fail_connect(*_args, **_kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(bond_live_daily, "connect", fail_connect)
+
+    outcome = bond_live_daily._refresh_curated("postgresql://unreachable")
+
+    assert outcome["state"] == "failed"
+    assert outcome["matview"] == "bond_curated_securities"
+    assert outcome["error"] == "OSError: database unavailable"
+
+
 def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> None:
     """The hole the state table had: ``absent`` is not ``failed``, and used to pass.
 
@@ -848,10 +867,10 @@ def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> No
     assert _drive_run(monkeypatch, matview={"state": "refreshed"})["state"] == "ok"
 
 
-def test_the_daily_lock_is_held_through_the_matview_and_the_republication(
+def test_the_daily_lock_is_held_through_the_panel_publication(
     monkeypatch,
 ) -> None:
-    """Stages 4 and 5 run INSIDE the lock, or the lock protects only the writes.
+    """Stages 4 through 6 run INSIDE the lock, or the lock protects only writes.
 
     Released after stage 3, an overlapping manual restart takes this worker's
     lock while the first run is still refreshing and republishing. The second run
@@ -872,14 +891,29 @@ def test_the_daily_lock_is_held_through_the_matview_and_the_republication(
 
     assert out["state"] == "ok"
     assert [name for name, _ in events] == [
-        "lock_acquired", "matview", "republish", "lock_released"
+        "lock_acquired", "matview", "republish", "panel", "lock_released"
     ]
 
     commits = dict(events)
     assert commits["matview"] > 0, "the load connection must be committed before stage 4"
-    assert commits["republish"] == commits["matview"] == commits["lock_released"], (
+    assert commits["panel"] == commits["republish"] == commits["matview"] == commits["lock_released"], (
         "nothing may run on the held connection while the publications build"
     )
+
+
+def test_missing_provider_configuration_still_runs_the_end_stages(monkeypatch) -> None:
+    """A typed upstream failure is reported only after refresh/republication/panel."""
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        client_error=_finnhub.FinnhubConfigError("rejected"),
+        events=events,
+    )
+
+    assert out["state"] == "no_api_key"
+    assert [name for name, _ in events] == [
+        "lock_acquired", "matview", "republish", "panel", "lock_released"
+    ]
 
 
 def test_run_worker_reads_the_top_level_aborted_key(monkeypatch) -> None:
@@ -903,6 +937,14 @@ def test_a_complete_run_is_the_only_green_one(monkeypatch) -> None:
     assert out["coverage"] == {
         "universe": 1, "swept": 1, "remaining": 0, "complete": True, "limit": None,
     }
+
+
+@pytest.mark.parametrize("panel_state", ["failed", "publish_failed", "gate_failed"])
+def test_panel_failures_are_end_only_verdict_reasons(monkeypatch, panel_state) -> None:
+    out = _drive_run(monkeypatch, panel={"state": panel_state, "aborted": True})
+
+    assert out["state"] == f"panel_{panel_state}"
+    assert f"panel_{panel_state}" in out["halted_by"]
 
 
 @pytest.mark.parametrize(
@@ -934,7 +976,9 @@ def test_a_run_that_did_no_work_never_exits_green(monkeypatch, kwargs, state) ->
     assert out["state"] == state
     assert out["aborted"] is True
     # Same key on every result, so one log query reads them all.
-    assert out["halted_by"] == [state]
+    assert out["halted_by"][0] == state
+    if state != "no_api_key":
+        assert out["halted_by"] == [state]
 
 
 def test_a_calc_date_past_the_execution_date_is_refused_never_clamped(monkeypatch) -> None:

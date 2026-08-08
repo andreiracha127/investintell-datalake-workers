@@ -5,7 +5,7 @@ recomputes the data daily"*. This is that worker. It runs BEFORE the publication
 chain, on its own Railway service, and it leaves the product fresh with no human
 in the loop.
 
-Five stages, each REPORTED separately so a partial day is visible rather than
+Six stages, each REPORTED separately so a partial day is visible rather than
 laundered into a green run:
 
   1. ``candles``  -- delta of daily price/YTM candles for the curated universe
@@ -25,6 +25,8 @@ laundered into a green run:
                      bond_curated_securities``.
   5. ``republish``-- re-run ``bond_metrics`` then ``bond_serving`` so the served
                      payloads carry the day just loaded.
+  6. ``panel``    -- publish the DB-only monthly research-panel delta after the
+                     serving inputs have been recomputed.
 
 WHY STAGE 5 EXISTS AT ALL (measured 2026-08-07, do not remove it):
 ``daily_chain`` keys a run by ``(chain, source_day, code_revision,
@@ -64,13 +66,14 @@ universe sets it. That includes the paths that look like polite no-ops:
 ===========================  =====  ====================================
 state                        green  why
 ===========================  =====  ====================================
-``ok``                       yes    all five stages ran, publications recomputed
+``ok``                       yes    all six stages ran, publications and panel published
 ``calc_date_in_future``      no     WORKER_CALC_DATE past the execution date:
                                     refused before anything opens, never clamped
 ``locked``                   no     another holder; this run did NOTHING
 ``no_observation_table``     no     the target hypertable is absent; nothing loaded
 ``no_universe``              no     the curated universe is empty/absent
-``no_api_key``               no     FINNHUB_API_KEY unset: no candles, no republication
+``no_api_key``               no     FINNHUB_API_KEY unset: input lanes are typed red;
+                                    downstream stages still run before the verdict
 ``provider_rejected``        no     the key was rejected mid-sweep (401/403)
 ``aborted``                  no     the provider cut the candle sweep short
 ``candles_failed``           no     stage 1 loaded nothing: not one bond whose
@@ -113,7 +116,7 @@ second run commits a PREFIX of its revised candles into the very table this
 run's publication build is reading, then aborts on the publication locks -- and
 this run exits green having served a mix of two sweeps. Holding it is free,
 because a session advisory lock is not a transaction: the connection is
-committed and left IDLE for the minutes stage 5 takes, so it pins no snapshot
+committed and left IDLE for the minutes stages 5-6 take, so it pins no snapshot
 and holds back no VACUUM. (Same two-level shape as ``daily_chain``, which holds
 its own lock across these same workers while each takes its own underneath.)
 
@@ -833,15 +836,15 @@ def _refresh_curated(dsn: str) -> dict[str, Any]:
     survives a week. The caller asserts ``refreshed``, so a state added here
     later is red until someone decides otherwise.
     """
-    with connect(dsn, autocommit=True) as conn:
-        if not _relation_exists(conn, CURATED_MATVIEW):
-            return {"state": "absent", "matview": CURATED_MATVIEW}
-        try:
+    try:
+        with connect(dsn, autocommit=True) as conn:
+            if not _relation_exists(conn, CURATED_MATVIEW):
+                return {"state": "absent", "matview": CURATED_MATVIEW}
             with conn.cursor() as cur:
                 cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {CURATED_MATVIEW}")
-        except Exception as exc:
-            return {"state": "failed", "matview": CURATED_MATVIEW,
-                    "error": f"{type(exc).__name__}: {exc}"}
+    except Exception as exc:
+        return {"state": "failed", "matview": CURATED_MATVIEW,
+                "error": f"{type(exc).__name__}: {exc}"}
     return {"state": "refreshed", "matview": CURATED_MATVIEW}
 
 
@@ -904,9 +907,13 @@ def _republish(dsn: str) -> dict[str, Any]:
     verdict here is the one thing that is true of a good run and of nothing
     else: **both publications reported that they published.**
     """
-    from src.workers import bond_metrics, bond_serving
-
     out: dict[str, Any] = {}
+    try:
+        from src.workers import bond_metrics, bond_serving
+    except Exception as exc:
+        out["import"] = {"state": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        out["verdict"] = "failed"
+        return out
     verdict = "recomputed"
     for name, worker in (("bond_metrics", bond_metrics), ("bond_serving", bond_serving)):
         try:
@@ -924,6 +931,22 @@ def _republish(dsn: str) -> dict[str, Any]:
             break
     out["verdict"] = verdict
     return out
+
+
+def _publish_panel(dsn: str, *, as_of: _dt.date) -> dict[str, Any]:
+    """Run the immutable panel delta after the serving recomputation.
+
+    The panel owns its transaction and pointer flip.  It is deliberately called
+    while this worker's daily lock remains held, so its DB snapshot cannot race
+    a second live sweep.  An operational exception is a typed stage result;
+    it must not suppress the end-only verdict of the preceding stages.
+    """
+    try:
+        from src.workers import bond_panel
+
+        return bond_panel.run(dsn, as_of=as_of)
+    except Exception as exc:
+        return {"state": "publish_failed", "aborted": True, "error": type(exc).__name__}
 
 
 # --------------------------------------------------------------------------- #
@@ -991,28 +1014,41 @@ def run(
         if not universe:
             conn.commit()
             return _halted("no_universe")
+        # An upstream fault is still a stage outcome, never a reason to skip the
+        # downstream refresh/republication/panel sequence.  The input stages are
+        # typed individually below; stages 4-6 always get their chance under the
+        # same daily lock and the final verdict names every triggered condition.
+        client = None
+        provider_error: str | None = None
+        provider_detail: str | None = None
         try:
             client = client_from_env()
         except FinnhubConfigError as exc:
-            # A configuration fault, not an empty day: it must look different --
-            # and it must not be green. Without the secret there are no candles,
-            # no curve, no ticks and no republication, which is a Railway service
-            # doing nothing every morning behind a successful deploy.
-            conn.commit()
-            return _halted("no_api_key", detail=str(exc))
+            provider_error = "no_api_key"
+            provider_detail = str(exc)
 
-        try:
-            candles = _load_candles(conn, client, universe, today)
-            curve = _load_curve(conn, client, today)
-            ticks = _load_ticks(conn, client, universe, today)
-        except FinnhubConfigError as exc:
-            # A key REVOKED mid-sweep (401/403 is non-transient by design, so it
-            # is raised rather than counted). Whatever was loaded before it is
-            # already committed; the run is typed and red instead of a traceback.
-            conn.commit()
-            return _halted("provider_rejected", detail=str(exc), provider=client.stats())
+        if client is None:
+            candles = {"aborted": True, "resumed": 0, "with_data": 0, "state": provider_error}
+            curve = {"tenors": 0, "skipped_tenors": [], "state": provider_error}
+            ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
+        else:
+            try:
+                candles = _load_candles(conn, client, universe, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                candles = {"aborted": True, "resumed": 0, "with_data": 0, "state": provider_error}
+            try:
+                curve = _load_curve(conn, client, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                curve = {"tenors": 0, "skipped_tenors": [], "state": provider_error}
+            try:
+                ticks = _load_ticks(conn, client, universe, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
 
-        # Stages 4 and 5 run INSIDE the daily lock, and that placement is the
+        # Stages 4 through 6 run INSIDE the daily lock, and that placement is the
         # whole of what makes the lock mean anything. Held only through stage 3,
         # a manual restart could take it while this run was still refreshing and
         # republishing: the second run would commit a PREFIX of its own revised
@@ -1027,10 +1063,9 @@ def run(
         # connection IDLE rather than IDLE IN TRANSACTION for the minutes the two
         # publication builds take, so nothing here holds back the global xmin
         # horizon -- the VACUUM trap this repo has already paid for (runbook §6).
-        # KEEP IT: an added read on ``conn`` between here and stage 5 would
-        # silently re-open a minutes-long transaction. Both stages below open
-        # their OWN connections (``_refresh_curated`` autocommit; each
-        # publication worker its own), so this one only carries the lock.
+        # KEEP IT: an added read on ``conn`` between here and stage 6 would
+        # silently re-open a minutes-long transaction. Every downstream stage
+        # below opens its OWN connection, so this one only carries the lock.
         #
         # This is ``daily_publication_chain``'s idiom, not a new one: it holds
         # LOCK_DAILY_PUBLICATION_CHAIN across these same two workers while each
@@ -1040,6 +1075,7 @@ def run(
         conn.commit()
         matview = _refresh_curated(resolved)
         republish = _republish(resolved)
+        panel = _publish_panel(resolved, as_of=today)
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
@@ -1047,8 +1083,19 @@ def run(
     # top-level ``aborted`` key. In severity order, so ``state`` names the thing
     # an operator should look at first.
     verdict = str(republish.get("verdict") or "failed")
+    panel_state = str(panel.get("state") or "failed")
+    panel_reason = {
+        "failed": "panel_failed",
+        "publish_failed": "panel_publish_failed",
+        "gate_failed": "panel_gate_failed",
+    }.get(panel_state, "panel_failed")
     swept = len(universe)
     reasons: list[tuple[bool, str]] = [
+        (provider_error is not None, provider_error or "provider_rejected"),
+        # Stage 6 is successful only when its own immutable pointer protocol
+        # says it published.  Every empty/degraded/refused shape remains typed
+        # in ``panel`` and cannot be laundered into an otherwise green day.
+        (panel_state != "published" or bool(panel.get("aborted")), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),
@@ -1159,5 +1206,6 @@ def run(
         "ticks": ticks,
         "matview": matview,
         "republish": republish,
-        "provider": client.stats(),
+        "panel": panel,
+        "provider": client.stats() if client is not None else {"state": provider_error, "detail": provider_detail},
     }
