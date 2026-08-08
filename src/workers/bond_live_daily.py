@@ -39,7 +39,15 @@ idempotent on their input fingerprint -- so the chain re-running them at 11:00
 re-points to the same publication instead of rebuilding it.
 
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
-``calc_date`` pins "today" for the window arithmetic (replay/backfill).
+``calc_date`` pins "today" for the window arithmetic (replay/backfill); a date
+PAST the execution date is refused rather than clamped (see
+``calc_date_in_future`` below), and every window this worker REQUESTS -- the
+candle window, the tick session, the activity ranking behind the tick cohort --
+is bounded above by it, so a replay sees the day it asked for and not the days
+the table has since accumulated. (The curve is the deliberate exception: it is
+not a windowed request at all but one full-history response trimmed by each
+tenor's own watermark, and days past a replay date are real sessions no later
+than the execution date, which nothing anchors an as_of on.)
 ``limit`` caps the universe swept in one run, for a budget-bounded catch-up;
 the sweep is ordered as a ring (see ``sweep_priority_order``) so successive
 capped runs advance instead of re-refreshing the same prefix.
@@ -53,6 +61,8 @@ universe sets it. That includes the paths that look like polite no-ops:
 state                        green  why
 ===========================  =====  ====================================
 ``ok``                       yes    all five stages ran, publications recomputed
+``calc_date_in_future``      no     WORKER_CALC_DATE past the execution date:
+                                    refused before anything opens, never clamped
 ``locked``                   no     another holder; this run did NOTHING
 ``no_observation_table``     no     the target hypertable is absent; nothing loaded
 ``no_universe``              no     the curated universe is empty/absent
@@ -60,7 +70,9 @@ state                        green  why
 ``provider_rejected``        no     the key was rejected mid-sweep (401/403)
 ``aborted``                  no     the provider cut the candle sweep short
 ``curve_failed``             no     ALL 13 tenors failed: stage 2 did no work
-``ticks_failed``             no     every tick call failed: stage 3 did no work
+``ticks_failed``             no     stage 3 did not cover its cohort: every tick
+                                    call failed, OR the same consecutive-failure
+                                    breaker cut the lane short mid-cohort
 ``matview_failed``           no     REFRESH failed (ownership); the cohort is stale
 ``republish_locked``         no     a publication worker's lock was held: nothing recomputed
 ``republish_no_op``          no     a publication worker reported a dark state: nothing published
@@ -259,11 +271,23 @@ ON CONFLICT (cusip9, day) DO UPDATE SET
 # Activity ranking for the tick cohort: par volume where the tape reported it,
 # otherwise trade days. Bounded to a recent window so the cohort tracks what is
 # liquid NOW, not what was liquid in 2008.
+#
+# BOTH bounds are the REQUESTED date's, never the table's. The ceiling is what
+# makes a replay a replay: ``WORKER_CALC_DATE`` aims this worker at an earlier
+# session against a database that already holds LATER ones, and an open-ended
+# window then ranks the cohort on activity that had not happened yet on the day
+# being replayed. The run would ask the provider for the replay day's tape of
+# bonds that only became liquid afterwards, and skip the ones that were actually
+# trading then -- a wrong cohort, silently, with every call still succeeding.
+# Inclusive at the top, because the requested day's own session is both the
+# freshest evidence of what is liquid and the day the cohort is chosen for.
+# In normal operation it binds nothing (``calc_date`` is the execution date and
+# the candle loader already refuses future-dated rows); it exists for replay.
 _ACTIVITY_SQL = f"""
 SELECT o.cusip9, coalesce(sum(o.volume), count(*))
 FROM {OBSERVATION_TABLE} o
 JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
-WHERE o.day >= %(since)s
+WHERE o.day >= %(since)s AND o.day <= %(until)s
 GROUP BY o.cusip9
 """
 
@@ -450,13 +474,17 @@ def _load_candles(
         "first_day": first_day.isoformat() if first_day else None,
         "last_day": last_day.isoformat() if last_day else None,
         # A candle dated past the requested window is refused before it can
-        # become a row, because both publications anchor their as_of on this
-        # table's max(day): one bad future candle would move the product's
-        # as_of forward and then reject every legitimate publication after it
-        # as a regression. Counted rather than silent -- a provider that
-        # starts emitting them must be visible -- but deliberately NOT a
-        # reason to fail the run: the guard already held, and dropping the day
-        # would turn a defended anomaly into an outage.
+        # become a row, because the publications anchor their as_of on this
+        # table: one bad future candle would move the product's as_of forward
+        # and then reject every legitimate publication after it as a
+        # regression. (The anchors read this table through the PIT alias join,
+        # so a future row only carries that far when its CUSIP is aliased --
+        # which is the common case for the curated universe, and the guard is
+        # cheaper than the reasoning about when it is not.) Counted rather
+        # than silent -- a provider that starts emitting them must be visible
+        # -- but deliberately NOT a reason to fail the run: the guard already
+        # held, and dropping the day would turn a defended anomaly into an
+        # outage.
         "dropped_after_window": dropped_after_window,
         "aborted": aborted,
     }
@@ -529,12 +557,15 @@ def _load_ticks(
     top_n = _int_env("BOND_TICK_TOP_N", DEFAULT_TICK_TOP_N)
     day = live_daily.previous_business_day(today)
     activity = conn.execute(
-        _ACTIVITY_SQL, {"since": today - _dt.timedelta(days=90)}
+        _ACTIVITY_SQL,
+        {"since": today - _dt.timedelta(days=90), "until": today},
     ).fetchall()
     cohort = set(live_daily.rank_by_activity(activity, top_n))
     isin_by_cusip = {str(c): str(i) for c, i, _, _ in universe}
 
     swept = traded = upserted = failed = 0
+    consecutive = 0
+    aborted = False
     for cusip9 in sorted(cohort):
         isin = isin_by_cusip.get(cusip9)
         if not isin:
@@ -542,8 +573,21 @@ def _load_ticks(
         swept += 1
         try:
             ticks = client.ticks(isin, day.isoformat())
+            consecutive = 0
         except FinnhubTransientError:
             failed += 1
+            consecutive += 1
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                # The SAME breaker as the candle sweep, on the same constant and
+                # for the same reason: by the time this raises, the client has
+                # already spent its whole retry ladder (measured 2026-08-07:
+                # 126s of backoff per exhausted logical request, plus the
+                # connect/read timeouts on top). Unbraked, an outage walks the
+                # entire default 500-bond cohort to prove what the first 25
+                # calls already established: ~17.5h of backoff alone, taken out
+                # of a morning that has to reach the 11:00 publication window.
+                aborted = True
+                break
             continue
         aggregate = live_daily.aggregate_ticks(cusip9, day, ticks)
         if aggregate is None:
@@ -562,6 +606,12 @@ def _load_ticks(
         # truncation readable instead of inferred.
         "day": day.isoformat(), "cohort": len(cohort), "swept": swept,
         "traded": traded, "rows_upserted": upserted, "transient_failures": failed,
+        # Reported next to the counts, exactly as the candle sweep does it,
+        # because the two ways stage 3 comes up short read identically in the
+        # totals otherwise: "every call failed" and "the breaker stopped a lane
+        # that had already loaded 300 bonds" are the same ``transient_failures``
+        # arithmetic to nobody's eye but this flag's.
+        "aborted": aborted,
     }
 
 
@@ -695,8 +745,28 @@ def _halted(state: str, **detail: Any) -> dict[str, Any]:
 def run(
     dsn: str | None = None, *, calc_date: str | None = None, limit: int | None = None
 ) -> dict[str, Any]:
+    execution_date = _dt.date.today()
+    today = _dt.date.fromisoformat(calc_date) if calc_date else execution_date
+    if today > execution_date:
+        # REFUSED, not clamped. A ``calc_date`` past the execution date is the
+        # one input that can put ``fetch_window``'s ``to`` in the future, and
+        # ``candle_rows``' ``not_after`` bound is that same ``to``: every stamp
+        # in ``(execution_date, calc_date]`` would then be accepted as a real
+        # session, re-opening exactly the as-of hole the upper bound closes --
+        # ``max(day)`` of the observation table anchors BOTH publications, so one
+        # future row dates the product forward and turns every legitimate
+        # publication after it into an as-of regression that only a manual delete
+        # in production clears. Silently rewriting the operator's own explicit
+        # parameter to today would hide that, and would replay a date nobody
+        # asked for while the logs claimed the one they did. So it stops here,
+        # before a connection is even opened, and exits non-zero like every other
+        # halt: the operator fixes WORKER_CALC_DATE and re-runs.
+        return _halted(
+            "calc_date_in_future",
+            calc_date=today.isoformat(),
+            execution_date=execution_date.isoformat(),
+        )
     resolved = resolve_dsn(dsn)
-    today = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
 
     with connect(resolved) as conn, advisory_lock(conn, LOCK_BOND_LIVE_DAILY) as acquired:
         if not acquired:
@@ -761,8 +831,16 @@ def run(
         # a handful of failures is the case the per-tenor watermarks self-heal,
         # so it stays green on purpose.
         (len(curve.get("failed_tenors") or ()) == len(CURVE_TENORS), "curve_failed"),
-        (ticks["swept"] > 0 and ticks["transient_failures"] == ticks["swept"],
-         "ticks_failed"),
+        # Stage 3 comes up short in two shapes and they get ONE state, because
+        # they are one event -- the provider is not answering -- and they take
+        # one hand. Either every call failed, or the breaker stopped the lane
+        # mid-cohort. The second is red for a reason the candle lane does not
+        # share: there is no tick watermark, so tomorrow's run asks for
+        # tomorrow's session and the tape of every bond the outage cut off is
+        # gone for good. ``ticks.aborted`` in the JSON says which shape it was.
+        (ticks["swept"] > 0 and (
+            ticks["transient_failures"] == ticks["swept"] or bool(ticks["aborted"])
+        ), "ticks_failed"),
         # A capped run covered its BUDGET, not the day. It still republishes --
         # the rows it loaded are real and every security carries its own
         # observation date, so the payload stays honest -- but the run must not

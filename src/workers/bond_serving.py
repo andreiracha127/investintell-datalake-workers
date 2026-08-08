@@ -51,6 +51,135 @@ def _code_revision() -> str:
         return "unknown"
 
 
+#: The dense daily serving series. Read here as an OPTIONAL input; the build
+#: (``_prepare_latest_observation``, src/bonds/serving_materializer.py) tolerates
+#: its absence and falls back to the governed price lane alone.
+LIVE_OBSERVATION_TABLE = "bond_observation_daily"
+
+#: The published CUSIP9 alias view the dense series is keyed through. Without it
+#: the build's dense lane is skipped entirely, so the dense anchor and the dense
+#: digest arm are both silent.
+LIVE_ALIAS_VIEW = "sec_current_bond_security_alias_v1"
+
+
+def _relation_exists(conn: Any, relation: str) -> bool:
+    return conn.execute("SELECT to_regclass(%s) IS NOT NULL", (relation,)).fetchone()[0]
+
+
+def _alias_pit_window(at: str) -> str:
+    """The CUSIP9 alias-validity predicate for ``sec_current_bond_security_alias_v1 a``.
+
+    ONE predicate rendered at two different instants: the digest asks it AT
+    ``as_of`` (``_DIGEST_DENSE_SQL``, mirroring the build's own dense lane), the
+    anchor asks it at the observation's OWN day (``_LIVE_ANCHOR_SQL``). Written
+    once because the two must agree on the convention -- HALF-OPEN
+    [valid_from, valid_to), ``valid_from`` INCLUSIVE and ``valid_to`` EXCLUSIVE
+    and open when NULL, as bond_security_v1.sql states and its CHECK enforces --
+    and a second copy is somewhere for them to drift apart. It is the same
+    convention ``_LATEST_OBSERVATION_LIVE`` (src/bonds/serving_materializer.py)
+    spells out inline, which is what the anchor and the digest are BOUND to: the
+    build owns the read rule, these two only have to ask it faithfully.
+    """
+    return (f"a.alias_kind = 'cusip9'\n"
+            f"      AND a.valid_from <= {at}\n"
+            f"      AND (a.valid_to IS NULL OR a.valid_to > {at})")
+
+
+# The dense anchor, resolved through the SAME rule the serving build READS by.
+#
+# The series' bare ``max(day)`` was wrong here for the same reason it was wrong in
+# bond_metrics, and worse: this is the SERVING anchor. ``as_of`` is half of the
+# publication identity (``uuid5(product | as_of | code_revision)``), it is what
+# ``sec_derived_publication_as_of`` feeds the current-pointer REGRESSION GUARD,
+# and it is the date the payload claims. The build's dense lane
+# (``_LATEST_OBSERVATION_LIVE``, src/bonds/serving_materializer.py) IGNORES a row
+# whose CUSIP9 no published alias holds at ``as_of``; a day contributed only by
+# such rows therefore let the publication claim a date not one of its dense
+# inputs carries, and pushed the pointer's as_of forward on the strength of it.
+#
+# THE CIRCULARITY, and how it is closed. The lane filters aliases by validity at
+# ``as_of``; ``as_of`` is what this query computes. "Which rows are joinable at
+# as_of" asked before ``as_of`` exists is not a definition, and iterating to a
+# fixed point would make the anchor depend on how many times one iterated. The way
+# out is to ask the alias question at the observation's OWN day. Write the lane's
+# reading rule as
+#
+#     f(t) = max{ o.day : o.day <= t AND o.cusip9 IN alias(t) }
+#
+# and this query returns t* = max{ o.day : o.cusip9 IN alias(o.day) }. Then
+# f(t*) = t*: the witness row sits ON t* and its alias is valid AT t*, so the lane
+# does read it at ``as_of`` = t*, and nothing later can be read because f(t) <= t
+# always. And t* is the GREATEST such fixed point -- any t > t* with f(t) = t would
+# need a row on day t whose alias is valid at t, which is exactly a candidate for
+# t*, so t <= t*. One pass, no iteration, no wall-clock tie-break.
+#
+# THE VALUE PREDICATE IS THE SERVING'S, NOT THE METRIC WORKER'S. This is the one
+# place the two anchors legitimately differ and it is deliberate: bond_metrics
+# reads TWO cohorts (``price > 0`` for its price family and ``ytm IS NOT NULL``
+# for its yield family), so its anchor carries an OR arm. The serving build has
+# ONE cohort -- ``_LATEST_OBSERVATION_LIVE`` starts from
+# ``o.price IS NOT NULL AND o.price > 0`` and lets ``ytm`` ride along on a row
+# that already cleared it -- so a day carrying only yields is a day this build
+# cannot read, and anchoring on it would be a fixed point of the JOIN rule instead
+# of the READ rule: the same defect through a different door. Mirroring the twin's
+# OR here would have been the copy that looks right and is not.
+#
+# MEASURED IN PRODUCTION 2026-08-08. The two key spaces are simply not the same
+# set: the series holds 149,762 distinct CUSIP9s against 194,521 published cusip9
+# aliases, and on the series' freshest day (2026-08-06, 7,716 rows) 41 rows carry
+# a CUSIP9 with no alias valid that day -- 7,675 are readable by this build. The
+# old anchor and this one both answer 2026-08-06 TODAY, so this changes no live
+# publication: it is a structural guarantee, not a production correction. (The
+# value arm is structural too on that day: 0 of the 7,716 rows are unpriced.)
+#
+# COST, EXPLAIN ANALYZE in production 2026-08-08, and stated honestly -- unlike
+# the metric worker's case this one is NOT free. Newest-day-first, stopping at the
+# first readable row: 2.8 ms planning + 24.3 ms execution, 4,658 shared buffers,
+# an ordered ChunkAppend that touches ONE chunk and never executes the other 25
+# (warm plain repeat: 23.3 ms). The table-wide ``max(day)`` it replaces is 0.2 ms
+# over 4 buffers on the same warm cache, so the honest price of the correct answer
+# is ~24 ms once per chain execution -- next to the ~6 s the input digest in this
+# same module already pays, and next to the 40.9 s / 449,827 buffer READS measured
+# for the obvious alternative (``max(o.day)`` over the join, which cannot stop
+# early). Twenty-four milliseconds to stop claiming a date the payload does not
+# carry is not a trade, it is a rounding error.
+_LIVE_ANCHOR_SQL = f"""
+SELECT o.day
+FROM {LIVE_OBSERVATION_TABLE} o
+WHERE o.price IS NOT NULL AND o.price > 0
+  AND EXISTS (
+    SELECT 1 FROM {LIVE_ALIAS_VIEW} a
+    WHERE {_alias_pit_window("o.day")}
+      AND a.alias_value = o.cusip9)
+ORDER BY o.day DESC
+LIMIT 1
+"""
+
+
+def _live_anchor(conn: Any) -> date | None:
+    """The freshest dense day the serving build can actually READ (see above)."""
+    if not (_relation_exists(conn, LIVE_OBSERVATION_TABLE)
+            and _relation_exists(conn, LIVE_ALIAS_VIEW)):
+        # No alias view is the same answer as no joinable row, and it has to be
+        # this one: with the view absent ``_prepare_latest_observation`` skips the
+        # dense merge entirely, so a dense anchor would date the publication off an
+        # input the build never opened. This gate is the second hole the twin
+        # found -- the old code checked only the SERIES, so an environment with the
+        # table and no alias view served the governed lane while claiming the dense
+        # lane's date.
+        return None
+    # An EMPTY alias view is the degenerate case of the same question, and it has
+    # to be answered BEFORE the scan: with nothing to match, the newest-first walk
+    # has no early exit and reads the whole 34.6M-row series to return NULL. The
+    # probe itself is 1.0 ms (production, 2026-08-08).
+    if conn.execute(
+        f"SELECT 1 FROM {LIVE_ALIAS_VIEW} WHERE alias_kind = 'cusip9' LIMIT 1"
+    ).fetchone() is None:
+        return None
+    row = conn.execute(_LIVE_ANCHOR_SQL).fetchone()
+    return row[0] if row else None
+
+
 def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     """The day this serving snapshot speaks for: the freshest input it carries.
 
@@ -75,6 +204,13 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     The free property survives: on a day nothing advances (a weekend), as_of does
     not move, the digest is identical, the identity replays, and the build is a
     cheap re-point instead of a needless 2M-row rewrite.
+
+    The dense side of that ``greatest`` is ``bond_observation_daily``, but NOT its
+    own ``max(day)``: it is ``_live_anchor``, which asks the BUILD's own read rule
+    (a CUSIP9 alias valid at the observation's day, and a usable price), so the day
+    the publication claims is always a day its dense inputs actually carry. The
+    master side needs no such treatment -- ``sec_current_bond_security_v1`` is
+    keyed by ``security_id`` and resolves no identifier at all.
     """
     if calc_date:
         return date.fromisoformat(calc_date)
@@ -82,10 +218,9 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     row = conn.execute("SELECT max(measured_at) FROM sec_current_bond_security_v1").fetchone()
     if row and row[0]:
         anchors.append(row[0])
-    if conn.execute("SELECT to_regclass('bond_observation_daily')").fetchone()[0]:
-        row = conn.execute("SELECT max(day) FROM bond_observation_daily").fetchone()
-        if row and row[0]:
-            anchors.append(row[0])
+    live = _live_anchor(conn)
+    if live is not None:
+        anchors.append(live)
     return max(anchors) if anchors else None
 
 
@@ -213,25 +348,30 @@ _DIGEST_PRODUCTS = sorted(
     {surface["source_product"] for surface in contract.SURFACES} | {"bond_metric_v1"}
 )
 
-_DIGEST_DENSE_SQL = """
+#
+# The PIT predicate is rendered from ``_alias_pit_window`` rather than spelled out
+# again: the digest asks it AT ``as_of`` and the anchor asks it at the
+# observation's own day, and a second hand-written copy is somewhere for the two
+# to drift apart on the half-open convention -- a slipped ``>`` for ``>=`` here
+# would be a silent correctness change no replay test can see, because a replay is
+# consistent under either reading.
+_DIGEST_DENSE_SQL = f"""
 SELECT count(*),
        md5(coalesce(string_agg(
-           a.cusip9 || '|' || l.day::text
-                    || '|' || round(l.price, 10)::text
-                    || '|' || coalesce(round(l.ytm, 10)::text, '')
-                    || '|' || coalesce(l.price_type, '')
-                    || '|' || coalesce(l.accrued, '')
-                    || '|' || l.source_rank::text,
-           E'\\n' ORDER BY a.cusip9), ''))
-FROM (SELECT DISTINCT alias_value AS cusip9
-      FROM sec_current_bond_security_alias_v1
-      WHERE alias_kind = 'cusip9'
-        AND valid_from <= %(as_of)s
-        AND (valid_to IS NULL OR valid_to > %(as_of)s)) a
+           held.cusip9 || '|' || l.day::text
+                       || '|' || round(l.price, 10)::text
+                       || '|' || coalesce(round(l.ytm, 10)::text, '')
+                       || '|' || coalesce(l.price_type, '')
+                       || '|' || coalesce(l.accrued, '')
+                       || '|' || l.source_rank::text,
+           E'\\n' ORDER BY held.cusip9), ''))
+FROM (SELECT DISTINCT a.alias_value AS cusip9
+      FROM {LIVE_ALIAS_VIEW} a
+      WHERE {_alias_pit_window("%(as_of)s")}) held
 CROSS JOIN LATERAL (
     SELECT o.day, o.price, o.ytm, o.price_type, o.accrued, o.source_rank
-    FROM bond_observation_daily o
-    WHERE o.cusip9 = a.cusip9 AND o.day <= %(as_of)s
+    FROM {LIVE_OBSERVATION_TABLE} o
+    WHERE o.cusip9 = held.cusip9 AND o.day <= %(as_of)s
       AND o.price IS NOT NULL AND o.price > 0
     ORDER BY o.day DESC
     LIMIT 1
@@ -257,11 +397,9 @@ def _input_digest(conn: Any, as_of: date) -> str:
         _DIGEST_POINTERS_SQL, (_DIGEST_PRODUCTS,)
     ).fetchall():
         parts.append(f"{product}={publication_id}")
-    if not conn.execute("SELECT to_regclass('bond_observation_daily')").fetchone()[0]:
+    if not _relation_exists(conn, LIVE_OBSERVATION_TABLE):
         parts.append("dense=absent")
-    elif not conn.execute(
-        "SELECT to_regclass('sec_current_bond_security_alias_v1')"
-    ).fetchone()[0]:
+    elif not _relation_exists(conn, LIVE_ALIAS_VIEW):
         parts.append("dense=unaliased")
     else:
         rows, checksum = conn.execute(_DIGEST_DENSE_SQL, {"as_of": as_of}).fetchone()

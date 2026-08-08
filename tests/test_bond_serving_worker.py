@@ -26,6 +26,7 @@ from src.workers import bond_serving
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _bond_serving_fixtures import (  # noqa: E402
+    AS_OF,
     SEC1,
     SEC2,
     connect,
@@ -745,7 +746,15 @@ def test_the_digest_reads_the_latest_row_per_cusip_and_carries_no_clock() -> Non
     assert "ORDER BY o.day DESC" in bond_serving._DIGEST_DENSE_SQL
     assert "LIMIT 1" in bond_serving._DIGEST_DENSE_SQL
     # The alias window is the build's own: valid_to EXCLUSIVE, valid_from inclusive.
-    assert "valid_to IS NULL OR valid_to > %(as_of)s" in bond_serving._DIGEST_DENSE_SQL
+    assert "a.valid_from <= %(as_of)s" in bond_serving._DIGEST_DENSE_SQL
+    assert "a.valid_to IS NULL OR a.valid_to > %(as_of)s" in bond_serving._DIGEST_DENSE_SQL
+    # ... and it is the SAME template the anchor renders at the observation's own
+    # day (2026-08-08). Two hand-written copies of a half-open window is where a
+    # slipped ``>`` for ``>=`` hides: it would change which rows the digest sees and
+    # which day the anchor picks, and no replay test can see it, because a replay is
+    # self-consistent under either reading.
+    assert bond_serving._alias_pit_window("%(as_of)s") in bond_serving._DIGEST_DENSE_SQL
+    assert bond_serving._alias_pit_window("o.day") in bond_serving._LIVE_ANCHOR_SQL
     for sql in (bond_serving._DIGEST_DENSE_SQL, bond_serving._DIGEST_POINTERS_SQL):
         for clock in ("now()", "current_date", "clock_timestamp", "random("):
             assert clock not in sql.lower()
@@ -1146,6 +1155,214 @@ def test_reapplying_the_schema_is_a_no_op(monkeypatch: pytest.MonkeyPatch) -> No
             (published[0],),
         ).fetchone()[0] == 0
     finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+# --------------------------------------------------------------------------- #
+# The serving anchor is resolved through the BUILD's own read rule (2026-08-08)
+# --------------------------------------------------------------------------- #
+# ``as_of`` used to take the dense series' bare ``max(day)``, while the build's
+# dense lane (``_LATEST_OBSERVATION_LIVE``, src/bonds/serving_materializer.py)
+# only ever reads a PRICED row whose CUSIP9 a published alias holds AT ``as_of``.
+# A day contributed only by rows the lane refuses therefore let the publication
+# claim a date not one of its dense inputs carries -- and here that is worse than
+# in bond_metrics: ``as_of`` is half of the publication IDENTITY
+# (``uuid5(product | as_of | code_revision)``) and it is what
+# ``sec_derived_publication_as_of`` feeds the current-pointer regression guard.
+#
+# The circularity (the lane's alias filter is evaluated AT ``as_of``, and
+# ``as_of`` is what the anchor computes) is closed by asking the alias question at
+# the observation's OWN day, which yields the GREATEST fixed point of the lane's
+# reading rule -- the argument is written out at ``_LIVE_ANCHOR_SQL``.
+#
+# The value predicate is the SERVING's and not the metric worker's, which is the
+# one place the two anchors legitimately differ: bond_metrics reads two cohorts
+# (``price > 0`` and ``ytm IS NOT NULL``) and its anchor carries an OR arm; this
+# build starts from ``price IS NOT NULL AND price > 0`` and lets ``ytm`` ride
+# along on a row that already cleared it. ``ytm_only`` below is the shape that
+# tells the two rules apart -- copying the twin's OR would pass every other test
+# here.
+#
+# Measured in production 2026-08-08: the series holds 149,762 distinct CUSIP9s
+# against 194,521 published cusip9 aliases, and 41 of the 7,716 rows on the
+# freshest day (2026-08-06) carry a CUSIP9 with no alias valid that day. Both
+# anchors answer 2026-08-06 today, so this is a structural guarantee rather than a
+# live correction.
+READABLE_DAY = DENSE_DAY                         # a day the build can actually read
+UNREADABLE_DAY = DENSE_DAY + timedelta(days=10)  # later, and refused by the lane
+
+
+def _install_anchor_series(admin, schema: str, row_shape: str) -> None:
+    """One readable day, plus ONE later row whose readability is the parameter.
+
+    The readable day is always present so the anchor has a truthful place to land
+    and the shape is the only thing deciding the outcome.
+    """
+    admin.execute(f"""
+        CREATE TABLE "{schema}".bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    admin.execute(
+        f'INSERT INTO "{schema}".bond_observation_daily VALUES '
+        "(%s,%s,104.50,0.0491,NULL,'evaluated','clean','live',9,'reported'),"
+        "(%s,%s,100.75,0.0325,NULL,'evaluated','clean','live',9,'reported')",
+        ("037833100", READABLE_DAY, "459200101", READABLE_DAY),
+    )
+    if row_shape == "retired_alias":
+        # A CUSIP9 SEC1 wore and no longer holds: the window CLOSES on the later
+        # day (valid_to is EXCLUSIVE), so the lane skips its row there.
+        admin.execute(
+            f'INSERT INTO "{schema}".sec_current_bond_security_alias_v1 VALUES '
+            "(%s,'cusip9','037833199',%s,%s)",
+            (SEC1, date(2020, 1, 1), UNREADABLE_DAY),
+        )
+    fresh = {
+        # held by SEC1 on that day, and priced -> the lane reads it
+        "held_alias": ("037833100", "95.10", "0.0512"),
+        # the retired identifier: joinable nowhere on that day
+        "retired_alias": ("037833199", "95.10", "0.0512"),
+        # a CUSIP9 the published universe has never heard of
+        "unknown_cusip": ("ZZZZZZZZZ", "95.10", "0.0512"),
+        # held and joinable, but carrying no price: this build has no yield-only
+        # cohort, so there is nothing here it can read
+        "ytm_only": ("037833100", None, "0.0512"),
+    }[row_shape]
+    admin.execute(
+        f'INSERT INTO "{schema}".bond_observation_daily VALUES '
+        "(%s,%s,%s,%s,NULL,'evaluated','clean','live',9,'reported')",
+        (fresh[0], UNREADABLE_DAY, fresh[1], fresh[2]),
+    )
+
+
+@pytest.mark.parametrize(
+    ("row_shape", "anchor_follows_the_later_row"),
+    [
+        ("held_alias", True),      # the build reads it, so it may speak for it
+        ("retired_alias", False),  # closed window: the lane skips the row
+        ("unknown_cusip", False),  # no alias at all: unjoinable
+        ("ytm_only", False),       # joinable, but this build reads no unpriced row
+    ],
+)
+def test_the_serving_anchor_follows_only_dense_rows_the_build_can_read(
+    row_shape, anchor_follows_the_later_row,
+) -> None:
+    """A later dense day only dates the publication when the build can read it."""
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_anchor_series(admin, schema, row_shape)
+        admin.commit()
+
+        result = bond_serving.run(_search_path_dsn(schema))
+
+        assert result["state"] == "current"
+        expected_day = UNREADABLE_DAY if anchor_follows_the_later_row else READABLE_DAY
+        # The date the publication CLAIMS -- read from the very row
+        # ``sec_derived_publication_as_of`` feeds the pointer regression guard from ...
+        assert _build_as_of(admin, schema, result["publication_id"]) == expected_day
+        # ... agrees with the row the build actually served: the day it claims is a
+        # day its own dense inputs carry, not one it merely borrowed a date from.
+        assert _served_latest_price(admin, schema, result["publication_id"]) == (
+            "95.10" if anchor_follows_the_later_row else "104.50"
+        )
+        # The bare max(day) -- the anchor this replaces -- is the later day in
+        # EVERY shape, which is exactly why it could not be trusted.
+        assert admin.execute(
+            f'SELECT max(day) FROM "{schema}".bond_observation_daily'
+        ).fetchone()[0] == UNREADABLE_DAY
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def test_an_unreadable_dense_row_moves_neither_the_anchor_nor_the_identity() -> None:
+    """Anchor and digest have to agree, or the fix breaks replay on its way past.
+
+    The digest is bounded by ``as_of`` and asks the same alias/price question, so a
+    row no lane reads must leave BOTH untouched: same date, same publication_id,
+    still one publication. If the anchor moved and the digest did not (or the
+    reverse) the product would either claim a date it cannot serve or mint a 1.2 GB
+    publication for a row that changes nothing.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        first = bond_serving.run(dsn)
+        assert _build_as_of(admin, schema, first["publication_id"]) == DENSE_DAY
+
+        # A later row on a CUSIP9 no published alias holds: nothing reads it.
+        admin.execute(
+            f'INSERT INTO "{schema}".bond_observation_daily VALUES '
+            "('ZZZZZZZZZ',%s,95.10,0.0512,NULL,'evaluated','clean','live',9,'reported')",
+            (UNREADABLE_DAY,),
+        )
+        admin.commit()
+
+        second = bond_serving.run(dsn)
+        assert _build_as_of(admin, schema, second["publication_id"]) == DENSE_DAY
+        assert second["publication_id"] == first["publication_id"]
+        assert second["code_revision"] == first["code_revision"]
+        assert admin.execute(
+            f'SELECT count(*) FROM "{schema}".sec_derived_publications '
+            "WHERE product='bond_serving_v1'"
+        ).fetchone()[0] == 1
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+@pytest.mark.parametrize("alias_state", ["dropped", "empty"])
+def test_the_dense_anchor_is_silent_without_a_published_alias(alias_state) -> None:
+    """No way to key the series -> no dense anchor, whatever ``max(day)`` says.
+
+    The build gates its dense merge on BOTH relations, so with the alias view
+    absent the dense lane contributes nothing at all -- yet the old anchor read the
+    SERIES alone and dated the publication from a lane the build never opened.
+    That second hole is what this pins; the EMPTY view is the same question in its
+    degenerate form, and answering it first is also what keeps the newest-first
+    anchor scan from walking the whole series for a match that cannot exist.
+
+    Asserted on ``_resolve_as_of`` rather than through ``run()`` on purpose: with
+    no alias the fund_exposure surface projects zero rows and the coverage gate
+    fails the build first, so a full run would never reach the question.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        if alias_state == "dropped":
+            admin.execute(f'DROP TABLE "{schema}".sec_current_bond_security_alias_v1')
+        else:
+            admin.execute(f'DELETE FROM "{schema}".sec_current_bond_security_alias_v1')
+        admin.execute(f'SET search_path TO "{schema}"')
+        admin.commit()
+
+        # The series is there and its max(day) is the later one ...
+        assert admin.execute(
+            "SELECT max(day) FROM bond_observation_daily"
+        ).fetchone()[0] == DENSE_DAY
+        # ... and the anchor still falls back to the security master's own day.
+        assert bond_serving._live_anchor(admin) is None
+        assert bond_serving._resolve_as_of(admin, None) == AS_OF
+    finally:
+        admin.execute('SET search_path TO public')
         if schema:
             admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         admin.close()

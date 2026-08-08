@@ -16,7 +16,7 @@ cron **`30 7 * * *` UTC**.
 |---|-------|--------|-------|
 | 1 | `candles` | `bond_observation_daily`, `bond_live_daily_sweep` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
 | 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Backfills itself on a cold table. |
-| 3 | `ticks` | `bond_tick_daily` | Previous session, top `BOND_TICK_TOP_N` (500) by recent activity. |
+| 3 | `ticks` | `bond_tick_daily` | Previous session, top `BOND_TICK_TOP_N` (500) by activity **inside the requested window** (`[calc_date − 90d, calc_date]`, both ends). Same consecutive-failure breaker as stage 1 — see §4b. |
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
 | 5 | `republish` | `bond_metric_v1`, `bond_serving_v1` | Invokes `bond_metrics.run()` then `bond_serving.run()`. |
 
@@ -47,7 +47,7 @@ mean paying for the same publication twice.
 | `DATABASE_URL` | yes | The datalake (project-private network). |
 | `FINNHUB_API_KEY` | yes | Absent ⇒ the run reports `no_api_key`, writes nothing **and exits non-zero**. |
 | `WORKER_LIMIT` | no | Caps the universe swept in one run (budget-bounded catch-up). **Every capped run is red** — see §3b. |
-| `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). |
+| `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). **A date past the execution date is refused, never clamped** (`calc_date_in_future`) — see §3c. |
 | `BOND_TICK_TOP_N` | no | Tick cohort size (default 500). |
 
 ## 3b. `WORKER_LIMIT`: the sweep is a ring, and a capped run is red on purpose
@@ -92,6 +92,40 @@ the run that finally covers the universe is the one that goes green. `coverage`
 in the run's JSON (`universe`, `swept`, `remaining`, `complete`) is where the
 progress is read.
 
+## 3c. `WORKER_CALC_DATE`: a replay is bounded on BOTH sides, and the future is refused
+
+Every window this worker opens takes its ceiling from the requested date, not
+from what the table happens to hold: the candle window (`fetch_window` →
+`not_after`), the tick session (`previous_business_day(calc_date)`) and — since
+2026-08-08 — the **activity ranking that chooses the tick cohort**
+(`[calc_date − 90d, calc_date]`, inclusive at both ends).
+
+That last one is the replay defect worth stating plainly. The cohort is the
+top-N most active bonds, and against a database that already contains sessions
+*after* the replay date an open-ended window ranked them on activity that had
+not happened yet: the run would ask the provider for the replay day's tape of
+bonds that only became liquid later, and skip the bonds that were actually
+trading then. Every call succeeds, so nothing in the run's JSON says the cohort
+was wrong. In normal operation the bound binds nothing (`calc_date` *is* the
+execution date, and future-dated candles are already refused at the loader);
+it exists for replay.
+
+**A `calc_date` past the execution date is refused before a connection is
+opened** — state `calc_date_in_future`, exit non-zero — rather than clamped to
+today. Two reasons, and the first is a data defect:
+
+* `fetch_window`'s `to` is always `calc_date`, and that same value is the
+  `not_after` bound `candle_rows` enforces. With a future `calc_date`, any
+  provider stamp in `(execution_date, calc_date]` is accepted as a real session.
+  `max(day)` of `bond_observation_daily` anchors the as-of of *both*
+  publications, so one such row dates the product into the future and turns
+  every legitimate publication after it into an as-of regression — a jam only a
+  manual delete in production clears.
+* Clamping would silently rewrite an operator's explicit parameter: the run
+  would replay a date nobody asked for while the logs named the one they did.
+
+Fix the variable and re-run (`railway service restart`, not `redeploy`).
+
 ## 3a. One-time privilege prerequisite (already applied 2026-08-07)
 
 Postgres requires **ownership** to refresh a materialized view — a `GRANT` is not
@@ -120,6 +154,7 @@ stays invisible for a week.
 | `state` | green? | what it means |
 |---------|--------|---------------|
 | `ok` | **yes** | all five stages ran; both publications reported that they published |
+| `calc_date_in_future` | no | `WORKER_CALC_DATE` is past the execution date: refused before anything opens, never clamped (§3c) |
 | `locked` | no | another holder had this worker's advisory lock; **this run did nothing** (§4a) |
 | `no_observation_table` | no | `bond_observation_daily` is absent (the serving repo owns its DDL); nothing loaded |
 | `no_universe` | no | the curated universe is empty or its tables are absent |
@@ -127,7 +162,7 @@ stays invisible for a week.
 | `provider_rejected` | no | the key was rejected mid-sweep (401/403 is non-transient by design) |
 | `aborted` | no | the provider cut the candle sweep short (`MAX_CONSECUTIVE_FAILURES`) |
 | `curve_failed` | no | **all 13** tenors failed — stage 2 did no work. A handful failing stays green: that is the case the per-tenor watermarks heal by themselves |
-| `ticks_failed` | no | every tick call failed — stage 3 did no work |
+| `ticks_failed` | no | stage 3 did not cover its cohort: every tick call failed, **or** the consecutive-failure breaker cut the lane short mid-cohort (§4b). `ticks.aborted` in the JSON says which |
 | `matview_failed` | no | `REFRESH` failed (ownership — see §3a); the cohort the publications read is stale |
 | `republish_locked` | no | a publication worker's own lock was held: stage 5 did not recompute |
 | `republish_no_op` | no | a publication worker reported a dark state (`no_source`/`no_securities`/`no_observations`): nothing was published |
@@ -178,6 +213,39 @@ tape has not necessarily landed at the provider. A `max(day)` of D-2 on the
 first run is plausibly the provider's timing rather than a bug — the window
 re-reads its own watermark day, so the next run picks it up. Judge it on the
 second day, not the first.
+
+### 4b. Why a provider outage stops the tick sweep too
+
+Decided 2026-08-08. Stage 1 has always had a consecutive-failure breaker; stage 3
+did not, and it is the more expensive lane to leave unbraked. By the time
+`client.ticks()` raises, the client has already spent its whole retry ladder —
+**126 s of backoff per exhausted logical request** (measured 2026-08-07, after
+the trailing-sleep fix; it was 246 s before), plus up to 7 × 45 s of
+connect/read timeout on top. Across the default 500-bond cohort that is
+**~17.5 h of backoff** spent proving something the first 25 calls already
+established — hours no outcome of stage 3 can change, taken out of a morning
+that has to reach the 11:00 publication window.
+
+Stage 3 now uses the **same** constant and the same shape as stage 1:
+`MAX_CONSECUTIVE_FAILURES` (25) consecutive exhaustions abort the lane, the
+counter resets on any successful call, and what was loaded before the outage
+stays committed. Worst case drops to **25 × 126 s ≈ 52 min**, the same bound the
+candle sweep carries.
+
+The abort is **red**, and it reuses `ticks_failed` rather than adding a state:
+
+* one event (the provider stopped answering), one operator hand — there is
+  nothing to fix here but the provider;
+* a full outage trips `swept == transient_failures` anyway, so the state an
+  operator already knows keeps its meaning; only the mid-cohort case is new;
+* and it must not fold into `aborted`, which names the *candle* sweep. A run
+  whose prices landed cleanly and whose tape was cut short would otherwise send
+  the operator to the wrong stage.
+
+Unlike stage 1 there is no watermark to resume from: tomorrow's run asks for
+tomorrow's session, so the tape of every bond the outage cut off is gone for
+good. That is why a partially covered cost lane is a failed run and not a
+progress report — the day's `bond_tick_daily` coverage is what it is.
 
 ### Retention reports quietly — read it every run
 

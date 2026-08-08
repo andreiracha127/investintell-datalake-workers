@@ -44,8 +44,11 @@ security universe, or NO observation day to anchor ``as_of``, the worker is a
 REPORTED no-op (``no_source`` / ``no_securities`` / ``no_observations``) and
 publishes NOTHING.
 
-Determinism: ``as_of`` is the chain's calc-date (or the latest observation
-landing day when unpinned); no wall-clock value enters the payload. The
+Determinism: ``as_of`` is the chain's calc-date (or, when unpinned, the freshest
+day an input lane can actually be READ on — see ``_resolve_as_of``, which
+resolves the dense side of that anchor through the lane's own alias join rather
+than through the series' bare ``max(day)``); no wall-clock value enters the
+payload. The
 publication identity is ``uuid5(product | as_of | code_revision |
 input_fingerprint)`` where the fingerprint digests every projected input row —
 identical inputs replay the SAME publication byte-for-byte; changed inputs (or
@@ -87,8 +90,15 @@ PRODUCT = "bond_metric_v1"
 # identifier the security no longer holds. Bumped to v5 when the maturity-
 # dependent family stopped being published for a security that had already
 # redeemed at the anchor: the build this must not replay is the one that served a
-# NEGATIVE ``wal`` as an 'available' metric.
-METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v5"
+# NEGATIVE ``wal`` as an 'available' metric. Bumped to v6 when the dense ANCHOR
+# stopped being the whole series' ``max(day)`` and began coming through the same
+# PIT alias join the lane reads. That one is the compound of the two before it:
+# v4 made the lane IGNORE rows whose CUSIP9 the security does not hold at
+# ``as_of``, and v5 made ``as_of`` DECIDE who is refused — so an anchor lifted by
+# a row no lane reads refuses the maturity-dependent family for securities that
+# were still alive on the freshest day the build can actually see. The build this
+# must not replay is the one that dated itself from an input it never read.
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v6"
 
 SERVED_METRICS = (
     "security_ytm", "security_ytw", "current_yield", "wal",
@@ -171,8 +181,98 @@ def _live_available(conn: psycopg.Connection) -> bool:
             and _relation_exists(conn, "sec_current_bond_security_alias_v1"))
 
 
+def _alias_pit_window(at: str) -> str:
+    """The CUSIP9 alias-validity predicate for ``sec_current_bond_security_alias_v1 a``.
+
+    ONE predicate rendered at two different instants: the dense lane asks it AT
+    ``as_of`` (``_LIVE_LANE_CTE``), the anchor asks it at the observation's OWN
+    day (``_LIVE_ANCHOR_SQL``). Written once because the two must agree on the
+    convention — HALF-OPEN [valid_from, valid_to), ``valid_from`` INCLUSIVE and
+    ``valid_to`` EXCLUSIVE and open when NULL, as bond_security_v1.sql states and
+    its CHECK enforces — and a second copy is somewhere for them to drift apart.
+    """
+    return (f"a.alias_kind = 'cusip9'\n"
+            f"      AND a.valid_from <= {at}\n"
+            f"      AND (a.valid_to IS NULL OR a.valid_to > {at})")
+
+
+# The dense anchor, resolved through the SAME alias window the lane applies.
+#
+# The series' bare ``max(day)`` was wrong, and what makes it wrong is the rest of
+# this PR. The lane IGNORES a row whose CUSIP9 the security does not hold, and the
+# anchor now DECIDES who is refused (``matured = maturity_date <= as_of``). A day
+# contributed by a row no lane reads therefore does not merely age the header: it
+# retires securities that were still alive on the freshest day the build can
+# actually see, and the publication claims a fresh anchor while none of its dense
+# inputs carries that date. Measured in production 2026-08-08: 41 of the 7,716
+# rows on the series' freshest day (2026-08-06) carry a CUSIP9 with no alias valid
+# that day, and 127,827 of the series' 149,762 distinct CUSIP9s hold no published
+# alias at all — the two key spaces are simply not the same set.
+#
+# THE CIRCULARITY, and how it is closed. The lane filters aliases by validity at
+# ``as_of``; ``as_of`` is what this query computes. "Which rows are joinable at
+# as_of" asked before ``as_of`` exists is not a definition, and iterating to a
+# fixed point would make the anchor depend on how many times one iterated. The way
+# out is to ask the alias question at the observation's OWN day. Write the lane's
+# reading rule as
+#
+#     f(t) = max{ o.day : o.day <= t AND o.cusip9 IN alias(t) }
+#
+# and this query returns t* = max{ o.day : o.cusip9 IN alias(o.day) }. Then
+# f(t*) = t*: the witness row sits ON t* and its alias is valid AT t*, so the lane
+# does read it at ``as_of`` = t*, and nothing later can be read because f(t) <= t
+# always. And t* is the GREATEST such fixed point — any t > t* with f(t) = t would
+# need a row on day t whose alias is valid at t, which is exactly a candidate for
+# t*, so t <= t*. One pass, no iteration, no wall-clock tie-break: the anchor is
+# the freshest day the lane can serve from, and it is a day the lane serves.
+#
+# The value predicate belongs to the same claim rather than being decoration: the
+# two cohorts read ``price > 0`` and ``ytm IS NOT NULL``, so a JOINABLE row that
+# carries neither is still a row the build cannot use, and anchoring on it would
+# be a fixed point of the JOIN rule instead of the READ rule — the same defect
+# through a different door. (Measured 2026-08-08: 0 such rows on the freshest day.
+# The guard is structural, not a production fix.)
+#
+# Cost, because this runs on every chain execution: newest-day-first, stopping at
+# the first readable row. EXPLAIN ANALYZE in production 2026-08-08 — 32.3 ms
+# execution, 4,658 shared buffers, an ordered ChunkAppend that touches ONE chunk
+# and never executes the other 25. The table-wide ``max(day)`` it replaces
+# measured 206 ms; the same anchor written as an aggregate over the join (which
+# cannot stop early) measured 23.0 s. The correct answer here is also the cheap
+# one, so nothing was traded.
+_LIVE_ANCHOR_SQL = f"""
+SELECT o.day
+FROM {LIVE_OBSERVATION_TABLE} o
+WHERE ((o.price IS NOT NULL AND o.price > 0) OR o.ytm IS NOT NULL)
+  AND EXISTS (
+    SELECT 1 FROM sec_current_bond_security_alias_v1 a
+    WHERE {_alias_pit_window("o.day")}
+      AND a.alias_value = o.cusip9)
+ORDER BY o.day DESC
+LIMIT 1
+"""
+
+
+def _live_anchor(conn: psycopg.Connection) -> date | None:
+    """The freshest dense day the live lane can actually READ (see above)."""
+    if not _live_available(conn):
+        # No alias view is the same answer as no joinable row, and it has to be
+        # this one: with the view absent the lane is stubbed empty, so a dense
+        # anchor would date the build off an input the build never opened.
+        return None
+    # An EMPTY alias view is the degenerate case of the same question, and it has
+    # to be answered BEFORE the scan: with nothing to match, the newest-first walk
+    # has no early exit and reads the whole series to return NULL.
+    if conn.execute(
+        "SELECT 1 FROM sec_current_bond_security_alias_v1 WHERE alias_kind = 'cusip9' LIMIT 1"
+    ).fetchone() is None:
+        return None
+    row = conn.execute(_LIVE_ANCHOR_SQL).fetchone()
+    return row[0] if row else None
+
+
 def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | None:
-    """The day this build speaks for: the freshest observation ANY input holds.
+    """The day this build speaks for: the freshest day an input can be READ on.
 
     Measured 2026-08-07 and the reason this function is not one line: the
     governed landing table's ``max(as_of)`` is 2025-03-31 while the dense daily
@@ -182,6 +282,12 @@ def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | No
     by sixteen months. Taking the greatest of the two anchors keeps the guard
     doing its job (nothing after the anchor enters the build) while letting the
     anchor follow the data.
+
+    The dense side of that ``greatest`` is NOT the series' own ``max(day)``: it is
+    ``_live_anchor``, which asks the lane's own alias question, so the anchor can
+    only ever be a day the dense inputs actually carry. The governed side needs no
+    such treatment — its lane is keyed by ``security_id`` through
+    ``bond_price_eligibility_v1`` and never resolves an identifier at all.
     """
     if calc_date:
         return date.fromisoformat(calc_date)
@@ -190,10 +296,9 @@ def _resolve_as_of(conn: psycopg.Connection, calc_date: str | None) -> date | No
         row = conn.execute("SELECT max(as_of) FROM bond_price_observation").fetchone()
         if row and row[0]:
             anchors.append(row[0])
-    if _relation_exists(conn, LIVE_OBSERVATION_TABLE):
-        row = conn.execute(f"SELECT max(day) FROM {LIVE_OBSERVATION_TABLE}").fetchone()
-        if row and row[0]:
-            anchors.append(row[0])
+    live = _live_anchor(conn)
+    if live is not None:
+        anchors.append(live)
     return max(anchors) if anchors else None
 
 
@@ -285,14 +390,14 @@ latest_price AS (
 # the convention bond_security_v1.sql states and its CHECK enforces. The same
 # filter is applied to the serving materializer's latest lane
 # (``_LATEST_OBSERVATION_LIVE``); the two surfaces resolve the same cohort or
-# they serve numbers each other refuses.
+# they serve numbers each other refuses. The predicate itself comes from
+# ``_alias_pit_window`` — the same one the anchor renders at the observation's own
+# day, so the day the build claims and the rows the build reads cannot part ways.
 _LIVE_LANE_CTE = f"""
 live_alias AS (
     SELECT DISTINCT a.security_id, a.alias_value AS cusip9
     FROM sec_current_bond_security_alias_v1 a
-    WHERE a.alias_kind = 'cusip9'
-      AND a.valid_from <= %(as_of)s
-      AND (a.valid_to IS NULL OR a.valid_to > %(as_of)s)
+    WHERE {_alias_pit_window("%(as_of)s")}
 ),
 live_price_cohort AS (
     SELECT l.security_id, l.cusip9, o.day, o.price, o.source_rank,

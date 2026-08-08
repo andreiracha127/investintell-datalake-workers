@@ -117,8 +117,10 @@ class _FakeConnect:
 
     def __init__(self, conn: FakeConn) -> None:
         self._conn = conn
+        self.opened = 0
 
     def __call__(self, dsn, **kwargs):
+        self.opened += 1
         return self
 
     def __enter__(self):
@@ -139,6 +141,8 @@ def _drive_run(
     matview: dict | None = None,
     republish: dict | None = None,
     limit: int | None = None,
+    calc_date: _dt.date = TODAY,
+    connector: "_FakeConnect | None" = None,
 ):
     """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
 
@@ -155,7 +159,9 @@ def _drive_run(
         yield acquired
 
     monkeypatch.setattr(bond_live_daily, "resolve_dsn", lambda dsn=None: "postgresql://x")
-    monkeypatch.setattr(bond_live_daily, "connect", _FakeConnect(conn))
+    monkeypatch.setattr(
+        bond_live_daily, "connect", connector if connector is not None else _FakeConnect(conn)
+    )
     monkeypatch.setattr(bond_live_daily, "advisory_lock", _lock)
     monkeypatch.setattr(bond_live_daily, "install_schema", lambda _c: None)
     monkeypatch.setattr(bond_live_daily, "_relation_exists", lambda _c, _n: relations)
@@ -173,7 +179,7 @@ def _drive_run(
         return client if client is not None else FakeClient()
 
     monkeypatch.setattr(bond_live_daily, "client_from_env", _client)
-    return bond_live_daily.run(calc_date=TODAY.isoformat(), limit=limit)
+    return bond_live_daily.run(calc_date=calc_date.isoformat(), limit=limit)
 
 
 def _candle_payload(day: _dt.date, price: float, yield_pct: float | None = 4.5):
@@ -372,6 +378,183 @@ def test_the_tick_lane_asks_for_the_previous_session_only() -> None:
     stats = bond_live_daily._load_ticks(conn, client, UNIVERSE, TODAY)
     assert client.tick_calls == [("US912828XX10", DAY.isoformat())]
     assert stats["traded"] == 1 and stats["day"] == DAY.isoformat()
+    assert stats["aborted"] is False
+
+
+class _NoTape(FakeClient):
+    """Every tick call exhausts its retry ladder and raises."""
+
+    def ticks(self, isin, day, **kwargs):
+        self.tick_calls.append((isin, day))
+        raise _finnhub.FinnhubTransientError("down")
+
+
+def _tick_cohort(size: int) -> tuple[list[tuple], list[tuple]]:
+    """``(universe rows, activity rows)`` for ``size`` equally active bonds."""
+    cusips = [f"9128280{i:02d}" for i in range(size)]
+    return ([_bond(c) for c in cusips], [(c, 1_000) for c in cusips])
+
+
+def test_a_sustained_outage_stops_the_tick_sweep_instead_of_burning_the_day() -> None:
+    """The cost lane gets stage 1's breaker, on stage 1's constant.
+
+    By the time ``client.ticks()`` raises, the client has already spent its whole
+    retry ladder -- 126s of backoff per exhausted logical request (measured
+    2026-08-07, after the trailing-sleep fix). Unbraked, an outage walks the
+    entire default 500-bond cohort proving the provider is down: ~17.5h of
+    backoff alone, hours past the 11:00 publication window, on a run that is
+    already red. Braked, the worst case is the candle sweep's: 25 x 126s ~= 52min.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+
+    stats = bond_live_daily._load_ticks(conn, _NoTape(), universe, TODAY)
+
+    assert stats["aborted"] is True
+    assert stats["swept"] == _finnhub.MAX_CONSECUTIVE_FAILURES
+    assert stats["swept"] < stats["cohort"], "the sweep must stop, not finish"
+
+
+def test_one_bad_tick_call_among_good_ones_is_not_an_outage() -> None:
+    """CONSECUTIVE, like stage 1: any success resets the counter.
+
+    A breaker that counted total failures would abort a healthy day on the 25th
+    scattered timeout and report a cost lane the provider never refused.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_ACTIVITY: activity})
+
+    class _Flaky(FakeClient):
+        def ticks(self, isin, day, **kwargs):
+            self.tick_calls.append((isin, day))
+            if len(self.tick_calls) % 2:
+                raise _finnhub.FinnhubTransientError("down")
+            return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
+
+    stats = bond_live_daily._load_ticks(conn, _Flaky(), universe, TODAY)
+
+    assert stats["aborted"] is False
+    assert stats["swept"] == 60 and stats["transient_failures"] == 30
+    assert stats["traded"] == 30
+
+
+def test_an_outage_that_cut_the_tape_short_fails_a_run_whose_calls_mostly_worked(
+    monkeypatch,
+) -> None:
+    """The run-level half, and the case that used to exit green.
+
+    Ten bonds' tape landed and then the provider went away, so ``swept`` and
+    ``transient_failures`` disagree and the "every call failed" clause never
+    fires -- while the cohort stops at bond 35 of 60. Unlike stage 1 there is no
+    tick watermark to resume from: tomorrow's run asks for tomorrow's session, so
+    the tape of every bond the outage cut off is gone for good. That is why a
+    truncated cost lane is a failed run rather than a progress report.
+    """
+    universe, activity = _tick_cohort(60)
+    conn = FakeConn({Q_UNIVERSE: universe, Q_ACTIVITY: activity})
+
+    class _OutageAfter(FakeClient):
+        def ticks(self, isin, day, **kwargs):
+            self.tick_calls.append((isin, day))
+            if len(self.tick_calls) > 10:
+                raise _finnhub.FinnhubTransientError("down")
+            return {"t": [1], "p": [99.0], "si": [1], "v": [10]}
+
+    out = _drive_run(monkeypatch, conn=conn, client=_OutageAfter())
+
+    ticks = out["ticks"]
+    assert ticks["aborted"] is True
+    assert ticks["traded"] == 10, "what landed before the outage stays landed"
+    assert ticks["transient_failures"] == _finnhub.MAX_CONSECUTIVE_FAILURES
+    assert ticks["swept"] == 10 + _finnhub.MAX_CONSECUTIVE_FAILURES < ticks["cohort"]
+    # One state for one event -- the provider stopped answering. Not folded into
+    # ``aborted``, which names the CANDLE sweep: a run whose prices landed
+    # cleanly must not send an operator to stage 1.
+    assert out["state"] == "ticks_failed"
+    assert out["aborted"] is True
+    assert out["candles"]["aborted"] is False
+
+
+class ActivityConn(FakeConn):
+    """A connection whose activity query applies the bounds the SQL DECLARES.
+
+    Fidelity is not the point; discrimination is. It aggregates the observation
+    rows it was handed under exactly the day predicates that appear in
+    ``_ACTIVITY_SQL``, so a query with no upper bound really does rank the cohort
+    on rows the requested date has not reached -- which is the defect. A
+    parameter the SQL binds but the caller never supplied raises here, the way
+    psycopg would, so a half-applied fix cannot pass by accident either.
+    """
+
+    def __init__(self, observations: list[tuple], **answers) -> None:
+        super().__init__(dict(answers))
+        self._observations = observations
+
+    def execute(self, sql, params=None):
+        if Q_ACTIVITY not in sql:
+            return super().execute(sql, params)
+        bound = params or {}
+        for name in ("since", "until"):
+            if f"%({name})s" in sql and name not in bound:
+                raise KeyError(name)
+        totals: dict[str, float] = {}
+        for cusip9, day, volume in self._observations:
+            if "o.day >= %(since)s" in sql and day < bound["since"]:
+                continue
+            if "o.day <= %(until)s" in sql and day > bound["until"]:
+                continue
+            totals[cusip9] = totals.get(cusip9, 0.0) + volume
+        return _Result(sorted(totals.items()))
+
+
+def test_a_replay_ranks_the_tick_cohort_on_the_day_it_asked_for(monkeypatch) -> None:
+    """Rows the replay date has not reached must not choose its cohort.
+
+    ``WORKER_CALC_DATE`` replays an earlier session against a database that
+    already holds later ones. Ranked through an open-ended window the top-N is
+    dominated by bonds that became liquid AFTERWARDS, so the worker asks the
+    provider for the replay day's tape of bonds that were not trading then -- and
+    skips the ones that were. Every call succeeds, so nothing in the run's JSON
+    says the cohort was wrong.
+    """
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
+    replay = _dt.date(2026, 5, 15)
+    universe = [_bond("ACTIVETHEN"), _bond("ACTIVELATER"), _bond("ACTIVEAGES")]
+    conn = ActivityConn([
+        ("ACTIVETHEN", replay - _dt.timedelta(days=5), 1_000.0),
+        # Nine thousand times as active -- but not until a month after the day
+        # being replayed.
+        ("ACTIVELATER", replay + _dt.timedelta(days=30), 9_000_000.0),
+        # ...and the floor still holds: liquid last year is not liquid now.
+        ("ACTIVEAGES", replay - _dt.timedelta(days=200), 5_000_000.0),
+    ])
+    client = FakeClient()
+
+    stats = bond_live_daily._load_ticks(conn, client, universe, replay)
+
+    assert client.tick_calls == [
+        ("USACTIVETHEN0", live_daily.previous_business_day(replay).isoformat())
+    ]
+    assert stats["cohort"] == 1
+
+
+def test_the_requested_day_s_own_session_counts_toward_the_cohort(monkeypatch) -> None:
+    """The ceiling is INCLUSIVE: ``day == calc_date`` is the freshest evidence.
+
+    It is also the day the cohort is being chosen for, so an exclusive bound
+    would rank a daily run on everything except the session that just printed.
+    """
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
+    universe = [_bond("ONTHEDAYX"), _bond("EARLIERXX")]
+    conn = ActivityConn([
+        ("ONTHEDAYX", TODAY, 1_000.0),
+        ("EARLIERXX", TODAY - _dt.timedelta(days=10), 500.0),
+    ])
+    client = FakeClient()
+
+    bond_live_daily._load_ticks(conn, client, universe, TODAY)
+
+    assert [isin for isin, _ in client.tick_calls] == ["USONTHEDAYX0"]
 
 
 # --------------------------------------------------------------------------- #
@@ -545,6 +728,39 @@ def test_a_run_that_did_no_work_never_exits_green(monkeypatch, kwargs, state) ->
     assert out["aborted"] is True
     # Same key on every result, so one log query reads them all.
     assert out["halted_by"] == [state]
+
+
+def test_a_calc_date_past_the_execution_date_is_refused_never_clamped(monkeypatch) -> None:
+    """The one input that can put a future day inside the requested window.
+
+    ``fetch_window``'s ``to`` is always ``calc_date``, and that same value is the
+    ``not_after`` bound ``candle_rows`` enforces -- so with a future
+    ``WORKER_CALC_DATE`` every provider stamp in ``(today, calc_date]`` is
+    accepted as a real session. ``max(day)`` of the observation table anchors the
+    as_of of BOTH publications, so one such row dates the product into the future
+    and turns every legitimate publication after it into an as-of regression that
+    only a manual delete in production clears.
+
+    Clamping it to today would hide that AND silently rewrite an operator's
+    explicit parameter -- replaying a date nobody asked for while the logs named
+    the one they did. It is refused instead, before a connection is opened.
+    """
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    connector = _FakeConnect(conn)
+    tomorrow = _dt.date.today() + _dt.timedelta(days=1)
+
+    out = _drive_run(monkeypatch, conn=conn, connector=connector, calc_date=tomorrow)
+
+    assert out["state"] == "calc_date_in_future"
+    assert out["aborted"] is True
+    assert out["halted_by"] == ["calc_date_in_future"]
+    assert out["calc_date"] == tomorrow.isoformat()
+    # Refused before anything opens: no connection, no lock, no DDL, no writes.
+    assert connector.opened == 0
+    assert conn.writes == [] and conn.commits == 0
+
+    # The boundary is the execution date itself, which is not the future.
+    assert _drive_run(monkeypatch, calc_date=_dt.date.today())["state"] == "ok"
 
 
 def test_a_key_revoked_mid_sweep_is_typed_rather_than_a_traceback(monkeypatch) -> None:
@@ -980,14 +1196,32 @@ def test_the_serving_latest_lane_reads_the_resolved_observation() -> None:
 
 
 def test_the_serving_as_of_follows_the_freshest_input() -> None:
-    """Without this the publication identity replays and the payload never moves."""
+    """Without this the publication identity replays and the payload never moves.
+
+    The dense arm moved into ``_live_anchor`` when the anchor learned to ask the
+    PIT alias question, so this probe follows it there: asserting on
+    ``_resolve_as_of``'s own source would now pass on a docstring mention and
+    prove nothing.
+    """
     import inspect
 
     from src.workers import bond_serving
 
-    source = inspect.getsource(bond_serving._resolve_as_of)
-    assert "bond_observation_daily" in source
-    assert "max(anchors)" in source
+    resolve = inspect.getsource(bond_serving._resolve_as_of)
+    assert "_live_anchor" in resolve, "the dense arm must still feed the anchor"
+    assert "max(anchors)" in resolve
+
+    anchor = inspect.getsource(bond_serving._live_anchor)
+    assert bond_serving.LIVE_OBSERVATION_TABLE == "bond_observation_daily"
+    assert bond_serving.LIVE_OBSERVATION_TABLE in bond_serving._LIVE_ANCHOR_SQL
+    # The anchor may only claim a day the build can actually READ: the same PIT
+    # alias window the live lane joins through, and the same price predicate the
+    # serving cohort filters on (price-only here -- bond_metrics carries the OR
+    # because it runs a second, ytm-keyed cohort this build has no equivalent of).
+    assert "valid_from" in bond_serving._LIVE_ANCHOR_SQL
+    assert "valid_to" in bond_serving._LIVE_ANCHOR_SQL
+    assert "price" in bond_serving._LIVE_ANCHOR_SQL
+    assert "_relation_exists" in anchor, "an absent alias view must not be read past"
 
 
 def test_retention_keeps_the_app_pinned_publication() -> None:
