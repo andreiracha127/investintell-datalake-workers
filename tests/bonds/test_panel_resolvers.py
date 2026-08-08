@@ -33,22 +33,25 @@ def test_spread_is_ytm_minus_interpolated_treasury_never_oas() -> None:
 def test_eligibility_has_a_typed_reason_and_excludes_missing_sector() -> None:
     rows = pd.DataFrame([
         {"cusip_id": "OK", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
         {"cusip_id": "SECTOR", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": np.nan, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": np.nan, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
+        {"cusip_id": "DBTYPE", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": np.nan, "currency": "USD", "asset_class": "corporate"},
     ])
-    assert eligibility(rows).tolist() == ["eligible", "missing_sector"]
+    assert eligibility(rows).tolist() == ["eligible", "missing_sector", "missing_db_type"]
     snapshot = build_universe_snapshot(rows)
     assert snapshot[["cusip_id", "eligibility_state", "eligibility_reason"]].to_dict("records") == [
         {"cusip_id": "OK", "eligibility_state": "included", "eligibility_reason": "eligible"},
         {"cusip_id": "SECTOR", "eligibility_state": "excluded", "eligibility_reason": "missing_sector"},
+        {"cusip_id": "DBTYPE", "eligibility_state": "excluded", "eligibility_reason": "missing_db_type"},
     ]
 
 
 def test_eligibility_distinguishes_absent_currency_and_asset_class() -> None:
     base = {
         "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-        "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10,
+        "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 1,
     }
     rows = pd.DataFrame([
         {**base, "currency": None, "asset_class": "corporate"},
@@ -171,9 +174,9 @@ def test_monthly_returns_persists_typed_terminal_exit_rows() -> None:
 
 def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spread() -> None:
     daily = pd.DataFrame({"cusip9": ["AAA", "AAA"], "day": pd.to_datetime(["2024-01-05", "2024-01-20"]), "price": [100., 100.], "ytm": [np.nan, np.nan], "volume": [1., 2.]})
-    terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500], "db_type": [1]})
+    terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500]})
     curve = pd.DataFrame({"day": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02"]), "tenor": ["1y", "5y", "10y"], "yield_pct": [4., 4., 4.]})
-    sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10]})
+    sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10], "db_type": [1], "db_type_reason": ["pit_present"]})
     liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": [date(2024, 1, 1)], "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [3.], "quote_state": ["quoted"], "reason_code": [None]})
     rows = build_db_monthly_panel(daily, terms, curve, sector, liquidity, pd.DataFrame(), months=[pd.Timestamp("2024-01-01")])
     row = rows.iloc[0]
@@ -206,6 +209,8 @@ def test_db_month_builder_keeps_unobserved_candidates_for_typed_exclusion() -> N
         "cusip9": ["OBSERVED", "MISSING"],
         "issuer_id": ["issuer-1", "issuer-2"],
         "ff17num": [10, 10],
+        "db_type": [1, 1],
+        "db_type_reason": ["pit_present", "pit_present"],
         "currency": ["USD", "USD"],
         "asset_class": ["corporate", "corporate"],
     })

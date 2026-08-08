@@ -27,6 +27,7 @@ from src.db import connect, resolve_dsn
 PANEL_CONFIG_HASH = "0c0d78a866bc1090"
 REQUIRED_RELATIONS = (
     "bond_observation_daily",
+    "bond_price_latest_v1",
     "bond_reference_terms",
     "bond_yield_curve_daily",
     "bond_issuer_sector",
@@ -43,6 +44,7 @@ REQUIRED_RELATIONS = (
 )
 REQUIRED_COLUMNS = {
     "bond_observation_daily": {"cusip9", "day", "price", "ytm", "volume"},
+    "bond_price_latest_v1": {"security_id", "observation_date", "db_type", "db_type_state"},
     "bond_reference_terms": {"cusip9", "coupon_rate", "maturity_date", "amount_outstanding_mm", "asset", "asset_type", "bond_type", "debt_type"},
     "bond_yield_curve_daily": {"day", "tenor", "yield_pct"},
     "bond_issuer_sector": {"cusip9", "ff17num"},
@@ -131,6 +133,7 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
     """Load all production inputs for the closed/open delta, directly from DB."""
     start = closed_month.date()
     end = as_of
+    closed_as_of = (closed_month + pd.offsets.MonthEnd(1)).date()
     inputs = {
         "daily_observations": _frame(
             conn,
@@ -153,7 +156,8 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
             "SELECT upper(btrim(u.cusip9)) AS cusip9, map.issuer_cik AS issuer_id, "
             "COALESCE(map.issuer_identity_state, 'unresolved') AS issuer_identity_state, s.currency, "
             "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ILIKE '%%corporate%%' THEN 'corporate' "
-            "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num "
+            "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num, "
+            "price.db_type, COALESCE(price.db_type_reason, CASE WHEN a.security_id IS NULL THEN 'security_alias_missing' ELSE 'db_type_pit_absent' END) AS db_type_reason "
             "FROM bond_curated_universe u "
             "LEFT JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
             "AND upper(btrim(a.alias_value)) = upper(btrim(u.cusip9)) AND a.valid_from <= %s "
@@ -161,9 +165,15 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
             "LEFT JOIN sec_current_bond_security_v1 s ON s.security_id = a.security_id "
             "LEFT JOIN bond_reference_terms r ON r.cusip9 = u.cusip9 "
             "LEFT JOIN bond_issuer_sector i ON i.cusip9 = u.cusip9 "
+            "LEFT JOIN (SELECT security_id, "
+            "CASE WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 1 "
+            "THEN max(db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) END AS db_type, "
+            "CASE WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 1 THEN 'pit_present' "
+            "WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 0 THEN 'pit_missing_or_invalid' ELSE 'pit_conflicting' END AS db_type_reason "
+            "FROM bond_price_latest_v1 WHERE observation_date <= %s GROUP BY security_id) price ON price.security_id = a.security_id "
             "LEFT JOIN (SELECT upper(btrim(cusip)) AS cusip9, CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN max(issuer_cik::text) FILTER (WHERE issuer_cik IS NOT NULL) END AS issuer_cik, "
             "CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN 'resolved' WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 0 THEN 'missing_cik' ELSE 'conflicting_cik' END AS issuer_identity_state FROM sec_cusip_ticker_map GROUP BY upper(btrim(cusip))) map ON map.cusip9 = upper(btrim(u.cusip9))",
-            (open_month.date(), open_month.date()),
+            (open_month.date(), open_month.date(), closed_as_of),
         ),
         "monthly_liquidity": _frame(
             conn,

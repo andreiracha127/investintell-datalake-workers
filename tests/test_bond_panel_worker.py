@@ -50,6 +50,8 @@ def test_db_loader_uses_curated_candidates_and_pins_the_static_rating_sha(monkey
     issuer_sql = next(sql for sql in sql_seen if "resolved" in sql and "sec_cusip_ticker_map" in sql)
     assert "FROM bond_curated_universe u" in issuer_sql
     assert "ILIKE '%%corporate%%'" in issuer_sql
+    assert "FROM bond_price_latest_v1" in issuer_sql
+    assert "db_type_reason" in issuer_sql
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
 
 

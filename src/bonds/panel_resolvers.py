@@ -114,6 +114,7 @@ def eligibility(panel: pd.DataFrame) -> pd.Series:
             (not pd.isna(value["asset_class"]) and str(value["asset_class"]).strip().lower() not in {"", "missing", "corporate"}, "noncorporate"),
             (pd.isna(value["issuer_id"]) or not str(value["issuer_id"]).strip(), "unresolved_issuer"),
             (pd.isna(value["ff17num"]), "missing_sector"),
+            (pd.isna(value.get("db_type")), "missing_db_type"),
             (pd.isna(value["amt_outstanding_k"]), "missing_amount"),
             (value["amt_outstanding_k"] < 250_000, "too_small"),
             (pd.isna(value["bond_maturity"]), "missing_maturity"),
