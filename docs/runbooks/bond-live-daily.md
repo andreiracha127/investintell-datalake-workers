@@ -86,6 +86,43 @@ SELECT max(observation_date) FROM bond_serving_facts_v
  WHERE surface = 'observations' AND lane = 'latest';             -- the header's date
 ```
 
+One caveat when reading the FIRST morning: at 07:30 UTC the previous session's
+tape has not necessarily landed at the provider. A `max(day)` of D-2 on the
+first run is plausibly the provider's timing rather than a bug — the window
+re-reads its own watermark day, so the next run picks it up. Judge it on the
+second day, not the first.
+
+### Retention reports quietly — read it every run
+
+`_prune_superseded_facts` is wrapped in try/except (a retention failure must
+never roll back a promotion), so a problem shows up as a field, not an alarm.
+The mechanism itself is covered by executing tests in
+`tests/test_bond_serving_worker.py` (the purge, the token, the batching, the
+kept build row, the refusals, a schema replay); what the runbook checks is the
+production effect:
+
+```sql
+-- 1. the run's own report. Healthy: retention.state='purged' with pruned_rows,
+--    or the bare {pruned_publications:0, pruned_rows:0, kept:N} of a steady
+--    state. NOT state='failed', and NOT state='blocked_by_write_guard' (that
+--    one means the database is running DDL older than the purge routine --
+--    re-apply schemas/bond_serving_v1.sql; see §6).
+
+-- 2. the WORST failure available: the app still points at facts that exist
+SELECT count(*) FROM bond_serving_facts f
+  JOIN bond_serving_publications s ON s.worker_publication_id = f.publication_id
+  JOIN bond_serving_app_current_pointer p ON p.app_publication_id = s.app_publication_id;
+-- must be > 0 (2,021,178 per complete publication)
+
+-- 3. steady state is about three publications, not seven and not one
+SELECT count(DISTINCT publication_id) FROM bond_serving_facts;
+
+-- 4. every publication keeps its build row, purged or not (the as_of guard reads it)
+SELECT count(*) FROM sec_derived_publications p
+  LEFT JOIN bond_serving_builds b USING (publication_id)
+WHERE p.product='bond_serving_v1' AND b.publication_id IS NULL;  -- must be 0
+```
+
 ## 5. The header-freshness mechanism (decided 2026-08-07)
 
 **Problem.** `bond_price_latest_v1` projects the governed price publication,
@@ -159,8 +196,162 @@ facts of every publication outside a three-part keep-set:
 * the immediately-prior worker publication — `daily_chain` compensation restores
   the *pre-run* pointer on a failed run.
 
-Disk is re-used, not returned (`bond_serving_facts` is a plain table): steady
-state is ~3 publications instead of unbounded growth.
+### How the rows can go at all: the purge token
+
+`bond_serving_facts` is immutable by construction — the write guard rejects every
+non-INSERT, the `publication_id` FK is `ON DELETE RESTRICT`, and
+`sec_derived_publication_delete_guard` refuses to delete a validated publication,
+so deleting the parent is not a way around it either. Retention does **not**
+relax that. It uses ONE sanctioned exception, in the protocol's own idiom
+(`sec_derived_publication_tokens` / `sec_derived_pointer_tokens`):
+
+| piece | where |
+| --- | --- |
+| `bond_serving_purge_tokens(publication_id, backend_pid)`, revoked from PUBLIC | `schemas/bond_serving_v1.sql` |
+| write-guard DELETE branch: returns OLD only for `bond_serving_facts`, only when THIS backend holds the token | `bond_serving_write_guard()` |
+| `bond_purge_serving_publication(uuid, batch int)`: takes the token, deletes one bounded batch, drops the token | `schemas/bond_serving_v1.sql` |
+| the call site: `_prune_superseded_facts` loops it, **committing per batch** | `src/workers/bond_serving.py` |
+
+Consequences worth knowing before touching any of it:
+
+* **The `bond_serving_builds` row is kept on purpose.**
+  `sec_derived_publication_as_of` reads it and that feeds the current-pointer
+  as_of regression guard. A purged publication stays in the ledger, with its
+  build metadata, holding no facts. Deleting the build row would break the guard.
+  Verified after the first production purge: all 9 publications still resolve an
+  `as_of` (v1 → 2026-07-23, v4–v7 → 2025-03-31, …) while 7 of them hold 0 facts.
+* **One transaction per batch, never one big DELETE.** A long transaction holds
+  back VACUUM for the WHOLE database — see the trap measured below.
+* **An UPDATE stays forbidden**, token or no token, and a token minted by another
+  backend authorises nothing.
+* `bond_purge_serving_publication` refuses the worker-current and the app-pinned
+  publication itself, so a hand-run purge cannot empty the served surface either.
+  The wider margin (the immediately-prior publication) is worker policy.
+* The worker probes for the **capability** (`bond_serving_purge_tokens` +
+  `to_regprocedure('bond_purge_serving_publication(uuid,integer)')`), never for
+  the guard's absence — the guard survives the purge, that is the design. A
+  database that predates the routine still gets the typed
+  `retention.state=blocked_by_write_guard` report, now naming the DDL that fixes it.
+
+### Disk: re-used, NOT returned (measured, production, 2026-08-07)
+
+`bond_serving_facts` is a **plain table, not a hypertable** — there are no chunks
+to drop. A DELETE only marks tuples dead; VACUUM then makes that space reusable
+by this table and does not give it back to the OS (only `VACUUM FULL` would, and
+it takes an ACCESS EXCLUSIVE lock on a table the app reads — do not).
+
+First production purge, run by hand through the recipe below:
+
+| | before | after purge | after VACUUM |
+| --- | --- | --- | --- |
+| rows in `bond_serving_facts` | 5,988,124 | 4,042,356 | 4,042,356 |
+| publications holding facts | 7 | 2 (v8 + v9, the keep-set) | 2 |
+| `n_dead_tup` | 0 | 1,945,768 | **0** |
+| `pg_total_relation_size` | 3446 MB | 3446 MB | 3446 MB |
+| volume (`/var/lib/postgresql`, 458 GB) | 220.8 GB free | 212.1 GB free | 208.1 GB free |
+
+1,945,768 rows across 5 unreachable publications went in 50k-row batches — 40
+batches carrying rows, 0.6–15.0 s each, 107.6 s of database time in total, and
+not one transaction longer than a batch. `n_dead_tup` then went from 1,945,768 to
+**0** once the horizon cleared (final pass 1.6 s, 1,363,958 dead item identifiers
+removed from the indexes, 21,110 + 6,487 index pages now reusable; an autovacuum
+pass took the rest) — and the table is still
+3446 MB, to the megabyte. That is the whole shape of the result: ~1.1 GB inside
+the table became free space the next publication is written INTO instead of
+extending the file. The number that says retention is working is
+`count(DISTINCT publication_id)`, not `pg_total_relation_size`.
+
+Read the volume row correctly: it kept FALLING (220.8 → 212.1 → 208.1 GB free)
+right through the purge, and none of that is the purge's to give back — a DELETE
+only writes WAL, and VACUUM wrote 11 MB more. The window was shared with a
+TimescaleDB compression policy and other writers, so the movement is theirs.
+**There is no measurement in which purging returns disk to the OS.**
+
+**Trap paid on this very run — budget for it.** The first
+`VACUUM (ANALYZE, VERBOSE)` right after the purge reported
+`1945768 are dead but not yet removable` and freed nothing. Nothing was wrong
+with the purge: an unrelated hour-old transaction (`CREATE TEMP TABLE
+stock_fundamentals_statements_scope ...`, pid 113314) was pinning the global xmin
+horizon, and a dead tuple cannot be reclaimed while any snapshot older than its
+deletion exists. It stayed pinned for ~20 further minutes; the moment it cleared,
+one `VACUUM` took the whole 1,945,768 to zero in 1.6 s. Diagnose before
+re-vacuuming rather than re-running the purge:
+
+```sql
+SELECT pid, usename, state, age(backend_xmin) AS xmin_age, now()-xact_start AS xact_age,
+       left(regexp_replace(query,'\s+',' ','g'), 80) AS q
+FROM pg_stat_activity WHERE backend_xmin IS NOT NULL ORDER BY 4 DESC LIMIT 5;
+SELECT slot_name, active, age(xmin) FROM pg_replication_slots;  -- the other classic holder
+```
+
+Evidence it was the horizon and not the purge: `n_dead_tup` sat at exactly
+1,945,768 — the purged row count, to the row — across one manual `VACUUM` and
+several autovacuum passes while the blocking transaction stayed open, then went
+to 0 in a single pass afterwards. Autovacuum retries on its own, so doing nothing
+also works; the only requirement is not mistaking it for a failed purge. Watch:
+
+```sql
+SELECT n_dead_tup, last_autovacuum FROM pg_stat_user_tables
+WHERE relname='bond_serving_facts';   -- drops to 0 once the pin clears
+```
+
+### Manual purge recipe
+
+Only needed to catch up a database that accumulated publications before the
+routine existed — the daily run does this by itself. Two things are load-bearing:
+
+* **`SET ROLE worker_writer`**. Every bond object in production is owned by
+  `worker_writer`, and the worker re-applies this DDL on EVERY run with
+  `CREATE OR REPLACE`. Applying it as `postgres` leaves postgres-owned functions
+  and bricks every future run.
+* **Apply the schema and purge in the SAME session/script run.** A deployed image
+  that still carries the old DDL will `CREATE OR REPLACE` the guard back to its
+  no-DELETE body on its next run; re-apply the schema first if you resume later.
+
+Build ONE script locally and pipe it in. The DDL has to be **inlined** — `\i`
+resolves inside the container, which has no repo checkout:
+
+```sh
+{
+  printf '\\set ON_ERROR_STOP on\nSET ROLE worker_writer;\n'
+  # BEGIN/COMMIT around the DDL is not decoration: the file DROPs the write
+  # guard before re-creating it, so a half-applied run leaves the table UNGUARDED.
+  printf "SET lock_timeout = '15s';\nBEGIN;\n"
+  tr -d '\r' < schemas/bond_serving_v1.sql
+  printf 'COMMIT;\n'
+  # One statement per batch -- psql autocommit gives one transaction per batch.
+  # Repeat per stale publication until it returns 0. NEVER wrap the loop in a DO
+  # block or a generate_series: that collapses every batch into ONE transaction,
+  # which is the VACUUM trap this batching exists to avoid.
+  for i in $(seq 1 40); do
+    printf "SELECT bond_purge_serving_publication('%s'::uuid, 50000);\n" "$PUB"
+  done
+} > apply_and_purge.sql
+
+railway ssh --project 35fa36a3-2641-42b2-b48b-540eac0597c6 --environment production \
+  --service market-clean-serial -- psql -U postgres -d market -f - < apply_and_purge.sql
+```
+
+(Extra calls past exhaustion are harmless: they return 0.)
+
+The stale set is the same arithmetic the worker uses — note it asks the 9-row
+publications table which ids are stale and only THEN counts those through the
+index. A bare `GROUP BY publication_id` over the facts table reads the whole
+3.4 GB relation (4m28s measured) for the same answer:
+
+```sql
+WITH keep AS (
+  SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_serving_v1'
+  UNION SELECT s.worker_publication_id FROM bond_serving_app_current_pointer p
+        JOIN bond_serving_publications s ON s.app_publication_id=p.app_publication_id
+  UNION SELECT publication_id FROM (SELECT publication_id FROM sec_derived_publications
+        WHERE product='bond_serving_v1' ORDER BY publication_version DESC LIMIT 2) r),
+stale AS (
+  SELECT publication_id FROM sec_derived_publications
+  WHERE product='bond_serving_v1' AND publication_id NOT IN (SELECT publication_id FROM keep))
+SELECT f.publication_id, count(*) FROM bond_serving_facts f
+WHERE f.publication_id = ANY(ARRAY(SELECT publication_id FROM stale)) GROUP BY 1;
+```
 
 The sibling question — `bond_metric_v1` now mints one publication a day —
 is a **known follow-up**, deliberately not bundled here. Measured 2026-08-07:

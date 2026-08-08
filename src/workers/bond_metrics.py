@@ -21,9 +21,13 @@ source's own yield lane sat unread. The standing rule applies: before
 rebuilding a metric from terms, check whether the source already delivers it.
 
 Null honesty is unchanged: a metric with no basis serves a typed status and a
-NULL value, never a fabricated number. The Phase-10 qualification registry is
-no longer consulted on the write path — the activation ceremony it encoded is
-retired; provenance and the publication protocol carry the honesty.
+NULL value, never a fabricated number. That extends to CONFLICTING bases: when
+two CUSIP9 aliases of one security report different values on the security's
+latest day, the field is refused (``no_eligible_price``) rather than resolved by
+tie-break — the same rule the serving lane and the governed eligibility
+predicate already apply. The Phase-10 qualification registry is no longer
+consulted on the write path — the activation ceremony it encoded is retired;
+provenance and the publication protocol carry the honesty.
 
 Dark-mode semantics (unchanged): with NO validated source, NO published
 security universe, or NO observation day to anchor ``as_of``, the worker is a
@@ -60,11 +64,14 @@ ELIGIBILITY_SCHEMA_PATH = ROOT / "schemas" / "bond_price_eligibility_v1.sql"
 DERIVED_PROTOCOL_PATH = ROOT / "schemas" / "sec_derived_publications.sql"
 
 PRODUCT = "bond_metric_v1"
-# Bumped 2026-08-07: the projection now also publishes latest_price_pct and the
-# analytic security_effective_duration. The fingerprint is salted with this
-# string precisely so a semantics change alone mints a NEW build rather than
-# replaying the old one.
-METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v2"
+# Bumped 2026-08-07 (v2): the projection also publishes latest_price_pct and the
+# analytic security_effective_duration. Bumped again (v3) when the dense lane
+# stopped picking a winner between DISAGREEING aliases of one security and began
+# refusing the field instead. The fingerprint is salted with this string
+# precisely so a semantics change alone mints a NEW build rather than replaying
+# the old one — here that matters twice over, because the build it must not
+# replay is the one that published an arbitrary alias's number.
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v3"
 
 SERVED_METRICS = (
     "security_ytm", "security_ytw", "current_yield", "wal",
@@ -215,39 +222,93 @@ latest_price AS (
 # is the same per-field discipline the monthly continuous aggregate already
 # encodes with its paired ``price_day`` / ``ytm_day`` columns.
 #
-# A security legitimately holds MORE than one CUSIP9 alias, so the dedupe rule
-# is spelled out in full — day, then source precedence, then the CUSIP itself.
-# Without the complete ORDER BY the pick would be arbitrary among ties, the
-# input fingerprint would stop replaying byte-identical, and every run would
-# mint a spurious new publication.
+# A security legitimately holds MORE than one CUSIP9 alias, which forces two
+# separate decisions — the same two the serving materializer's latest lane
+# already makes (src/bonds/serving_materializer.py, ``_LATEST_OBSERVATION_LIVE``):
+#
+#   * WHICH row wins is spelled out in full — day, then source precedence, then
+#     the CUSIP itself. Without the complete ORDER BY the pick would be arbitrary
+#     among ties, the input fingerprint would stop replaying byte-identical, and
+#     every run would mint a spurious new publication.
+#   * WHETHER the aliases AGREE is a real ambiguity. Two identities of one
+#     security reporting DIFFERENT values on the same latest day is a
+#     disagreement, and a deterministic tie-break would only make the arbitrary
+#     pick reproducible — it would still publish one of two conflicting numbers
+#     as if it were the security's price. The cohort is flagged instead and the
+#     field is NOT published.
+#
+# The disagreement test is the serving's, field for field: a spread over the
+# security's cohort ON ITS LATEST DAY (``min(v) IS DISTINCT FROM max(v)``), EXACT
+# equality with no tolerance — window aggregates do not accept DISTINCT in
+# Postgres and min <> max answers the same question. Per field, because the two
+# lanes resolve their own latest day: the freshest PRICED day and the freshest
+# YIELDED day can differ, and an ambiguous price must not erase a yield the
+# aliases agree on (or the reverse).
+#
+# The refusal is typed as ``no_eligible_price`` downstream — not a new status but
+# the CANONICAL one: the governed lane's own predicate
+# (``bond_price_is_eligible``, schemas/bond_price_eligibility_v1.sql) already
+# requires ``daily_key_state='unique_in_matching_cohort'`` to call a price
+# eligible, and the serving's latest-price subquery repeats that condition. A
+# cohort whose members disagree HAS no eligible price; the row-level "why"
+# (``identity_ambiguous`` / ``observation_ambiguous``) is carried by those two
+# surfaces, and the build reports the counts (see ``_AMBIGUITY_COUNTS_SQL``).
 _LIVE_LANE_CTE = f"""
 live_alias AS (
     SELECT DISTINCT a.security_id, a.alias_value AS cusip9
     FROM sec_current_bond_security_alias_v1 a
     WHERE a.alias_kind = 'cusip9'
 ),
-live_price AS (
-    SELECT DISTINCT ON (l.security_id) l.security_id, o.day, o.price
+live_price_cohort AS (
+    SELECT l.security_id, l.cusip9, o.day, o.price, o.source_rank,
+           max(o.day) OVER (PARTITION BY l.security_id) AS latest_day
     FROM live_alias l
     JOIN {LIVE_OBSERVATION_TABLE} o ON o.cusip9 = l.cusip9
     WHERE o.price IS NOT NULL AND o.price > 0 AND o.day <= %(as_of)s
-    ORDER BY l.security_id, o.day DESC, o.source_rank DESC, l.cusip9
 ),
-live_yield AS (
-    SELECT DISTINCT ON (l.security_id) l.security_id, o.day, o.ytm
+live_price_latest AS (
+    SELECT c.*,
+           min(c.price) OVER (PARTITION BY c.security_id) AS price_lo,
+           max(c.price) OVER (PARTITION BY c.security_id) AS price_hi
+    FROM live_price_cohort c WHERE c.day = c.latest_day
+),
+live_price AS (
+    -- ``day`` is constant inside the partition (the cohort IS the latest day),
+    -- so the tie-break is source precedence then the CUSIP — the serving's rule.
+    SELECT DISTINCT ON (security_id) security_id, day, price,
+           (price_lo IS DISTINCT FROM price_hi) AS ambiguous
+    FROM live_price_latest
+    ORDER BY security_id, source_rank DESC, cusip9
+),
+live_yield_cohort AS (
+    SELECT l.security_id, l.cusip9, o.day, o.ytm, o.source_rank,
+           max(o.day) OVER (PARTITION BY l.security_id) AS latest_day
     FROM live_alias l
     JOIN {LIVE_OBSERVATION_TABLE} o ON o.cusip9 = l.cusip9
     WHERE o.ytm IS NOT NULL AND o.day <= %(as_of)s
-    ORDER BY l.security_id, o.day DESC, o.source_rank DESC, l.cusip9
+),
+live_yield_latest AS (
+    SELECT c.*,
+           min(c.ytm) OVER (PARTITION BY c.security_id) AS ytm_lo,
+           max(c.ytm) OVER (PARTITION BY c.security_id) AS ytm_hi
+    FROM live_yield_cohort c WHERE c.day = c.latest_day
+),
+live_yield AS (
+    SELECT DISTINCT ON (security_id) security_id, day, ytm,
+           (ytm_lo IS DISTINCT FROM ytm_hi) AS ambiguous
+    FROM live_yield_latest
+    ORDER BY security_id, source_rank DESC, cusip9
 )"""
 
 _LIVE_LANE_EMPTY_CTE = """
 live_price AS (
-    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS price
+    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS price,
+           false AS ambiguous
     WHERE false
 ),
 live_yield AS (
-    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS ytm
+    SELECT NULL::uuid AS security_id, %(as_of)s::date AS day, NULL::numeric AS ytm,
+           false AS ambiguous
     WHERE false
 )"""
 
@@ -256,32 +317,47 @@ live_yield AS (
 # the dense one does not reach. ``observation_date`` stays the single "as at"
 # stamp the fingerprint and the reports use; the per-field dates are what the
 # arithmetic settles on.
+#
+# When the dense lane wins a field AND its aliases disagree on that day, the
+# VALUE is dropped and the DATE is kept. Dropped rather than resolved: the
+# serving prunes the superseded governed row before it suppresses the ambiguous
+# price, so falling back to the older governed value here would publish, as this
+# security's latest, a number the serving surface refuses to show. A date with no
+# value is an established shape in this build (a priced day the source delivered
+# no yield for reads exactly the same way).
 _INPUTS_TAIL = """
 SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
-       CASE WHEN lp.day IS NOT NULL
-                 AND (p.observation_date IS NULL OR lp.day > p.observation_date)
-            THEN lp.price ELSE p.price END AS price,
-       CASE WHEN lp.day IS NOT NULL
-                 AND (p.observation_date IS NULL OR lp.day > p.observation_date)
-            THEN lp.day ELSE p.observation_date END AS price_date,
-       CASE WHEN ly.day IS NOT NULL
-                 AND (p.observation_date IS NULL OR ly.day > p.observation_date)
-            THEN ly.ytm ELSE p.ytm END AS ytm,
-       CASE WHEN ly.day IS NOT NULL
-                 AND (p.observation_date IS NULL OR ly.day > p.observation_date)
-            THEN ly.day ELSE p.observation_date END AS ytm_date,
+       CASE WHEN w.price_ambiguous THEN NULL
+            WHEN w.price_from_live THEN lp.price ELSE p.price END AS price,
+       CASE WHEN w.price_from_live THEN lp.day ELSE p.observation_date END AS price_date,
+       w.price_ambiguous,
+       CASE WHEN w.ytm_ambiguous THEN NULL
+            WHEN w.ytm_from_live THEN ly.ytm ELSE p.ytm END AS ytm,
+       CASE WHEN w.ytm_from_live THEN ly.day ELSE p.observation_date END AS ytm_date,
+       w.ytm_ambiguous,
        greatest(
-           CASE WHEN lp.day IS NOT NULL
-                     AND (p.observation_date IS NULL OR lp.day > p.observation_date)
-                THEN lp.day ELSE p.observation_date END,
-           CASE WHEN ly.day IS NOT NULL
-                     AND (p.observation_date IS NULL OR ly.day > p.observation_date)
-                THEN ly.day ELSE p.observation_date END
+           CASE WHEN w.price_from_live THEN lp.day ELSE p.observation_date END,
+           CASE WHEN w.ytm_from_live THEN ly.day ELSE p.observation_date END
        ) AS observation_date
 FROM sec_current_bond_security_v1 s
 LEFT JOIN latest_price p ON p.security_id = s.security_id
 LEFT JOIN live_price lp ON lp.security_id = s.security_id
 LEFT JOIN live_yield ly ON ly.security_id = s.security_id
+CROSS JOIN LATERAL (
+    -- Which lane wins each field, decided ONCE (the dense row must be STRICTLY
+    -- newer, so a same-day tie keeps the governed lane).
+    SELECT (lp.day IS NOT NULL
+            AND (p.observation_date IS NULL OR lp.day > p.observation_date)) AS price_from_live,
+           (ly.day IS NOT NULL
+            AND (p.observation_date IS NULL OR ly.day > p.observation_date)) AS ytm_from_live
+) lane
+CROSS JOIN LATERAL (
+    -- An ambiguous cohort only matters for the lane that WON: an alias
+    -- disagreement on a day the build does not read cannot poison a field.
+    SELECT lane.price_from_live, lane.ytm_from_live,
+           lane.price_from_live AND coalesce(lp.ambiguous, false) AS price_ambiguous,
+           lane.ytm_from_live AND coalesce(ly.ambiguous, false) AS ytm_ambiguous
+) w
 """
 
 
@@ -309,6 +385,17 @@ SELECT coalesce(
         '' ORDER BY security_id)),
     'empty') AS digest,
     count(*) AS securities
+FROM _bond_metric_inputs
+"""
+
+# The refusal is invisible in the status histogram — an ambiguous cohort lands on
+# the SAME ``no_eligible_price`` as a security with no price at all, which is the
+# honest product vocabulary but not enough for operations. These two counts are
+# what tells a run report "N securities had a price and it was refused", and they
+# are reported, never published: the ambiguity is a property of the inputs.
+_AMBIGUITY_COUNTS_SQL = """
+SELECT count(*) FILTER (WHERE price_ambiguous) AS price_ambiguous,
+       count(*) FILTER (WHERE ytm_ambiguous) AS ytm_ambiguous
 FROM _bond_metric_inputs
 """
 
@@ -583,6 +670,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         live = _live_available(conn)
         conn.execute(_inputs_sql(governed=governed, live=live), {"as_of": as_of})
         digest, security_count = conn.execute(_FINGERPRINT_SQL).fetchone()
+        price_ambiguous, ytm_ambiguous = conn.execute(_AMBIGUITY_COUNTS_SQL).fetchone()
         # The protocol pins sha256 fingerprints (64 hex); salt the row digest
         # with the product identity and methodology so a semantics change alone
         # also mints a new build.
@@ -595,5 +683,9 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
             source_package_id=source_package_id, code_revision=_code_revision(),
             fingerprint=fingerprint, security_count=security_count,
         )
+        # REPORTED (not published): how many securities had their freshest field
+        # refused because their own aliases disagreed on it that day.
+        result["alias_ambiguous_price"] = price_ambiguous
+        result["alias_ambiguous_ytm"] = ytm_ambiguous
         conn.commit()
     return {"state": "ok", **result}

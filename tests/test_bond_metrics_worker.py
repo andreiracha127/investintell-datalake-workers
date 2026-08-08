@@ -733,3 +733,154 @@ def test_an_older_dense_observation_never_rolls_a_metric_backwards(env):
     metrics = rows_by_metric(current_rows(conn, SEC_FIX))
     assert metrics["latest_price_pct"][2] == Decimal("96.23")
     assert metrics["security_ytm"][2] == Decimal("0.076")
+
+
+# --------------------------------------------------------------------------- #
+# Disagreeing aliases: a conflict is declared, never resolved by tie-break
+# --------------------------------------------------------------------------- #
+# The dense series is keyed by CUSIP9 and this product by security_id, so a
+# security holding TWO CUSIP9 aliases can meet two rows on one day. The serving
+# materializer's latest lane already refuses that cohort
+# (``duplicate_in_matching_cohort`` -> no served price); these tests hold the
+# metric lane to the SAME rule, so the two surfaces cannot disagree about
+# whether a number exists.
+#
+# The single-alias path is unchanged and is covered by the three freshness tests
+# directly above (they run the same code with one alias per security).
+CUSIP_ALT = "BNDALT009"  # a SECOND cusip9 alias of the SAME security
+
+
+def add_cusip9_alias(conn, security_id: UUID, cusip9: str, *, valid_from: date = AS_OF) -> None:
+    """Give one PUBLISHED security a second cusip9 alias.
+
+    Seeded directly rather than through ``security_master``: a group's qualified
+    CUSIP9 IS its identity key, so the resolver's alias timeline collapses to
+    exactly one cusip9 value and cannot mint this shape today (measured
+    2026-08-07 in production: 0 of 211,406 published securities hold more than
+    one cusip9 alias, and 0 security-days carry two alias rows). The guard is
+    therefore STRUCTURAL — it is the rule that keeps the metric lane honest if
+    the identity layer ever publishes what the serving lane already handles —
+    and the fixture has to step past the publication write guard to exercise it.
+    """
+    publication_id = conn.execute(
+        "SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_security_v1'"
+    ).fetchone()[0]
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 DISABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.execute(
+        "INSERT INTO bond_security_alias_v1 "
+        "(publication_id, security_id, alias_kind, alias_value, valid_from, valid_to, source_lineage) "
+        "VALUES (%s,%s,'cusip9',%s,%s,NULL,%s::jsonb)",
+        (publication_id, security_id, cusip9, valid_from,
+         json.dumps({"engine": "fixture", "reason": "second_cusip9_alias"})),
+    )
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 ENABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.commit()
+
+
+def test_aliases_agreeing_on_the_latest_day_publish_the_metric(env):
+    """Two aliases, one day, the SAME numbers: nothing is ambiguous."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_aliases_disagreeing_on_the_latest_day_publish_no_metric(env):
+    """Two aliases, one day, DIFFERENT numbers: typed absence, never a winner.
+
+    The ambiguous day is also newer than the governed print, which is the second
+    half of the rule: the refusal must not silently fall back to the older
+    governed 96.23 either — the serving lane prunes that row before it suppresses
+    the price, so a fallback would publish a number the surface refuses to show.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["alias_ambiguous_price"] == 1 and result["alias_ambiguous_ytm"] == 1
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    for metric in ("latest_price_pct", "current_yield", "security_ytm",
+                   "security_effective_duration"):
+        assert metrics[metric][3] == "no_eligible_price", metric
+        assert metrics[metric][2] is None, metric
+    # Neither conflicting value, and NOT the stale governed print behind them.
+    assert Decimal("96.23") not in {row[2] for row in current_rows(conn, SEC_FIX)}
+    # wal needs no observation at all and is untouched by the conflict.
+    assert metrics["wal"][3] == "available"
+
+
+def test_an_ambiguous_price_never_erases_a_yield_the_aliases_agree_on(env):
+    """The refusal is PER FIELD, exactly as the two latest reads are.
+
+    The aliases disagree about the price and agree about the yield, so the price
+    is refused and the yield (and the duration solved from it) still publish.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("95.10"), Decimal("0.0410")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 1 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][3] == "no_eligible_price"
+    assert metrics["current_yield"][3] == "no_eligible_price"  # priced off nothing
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_an_ambiguous_day_the_build_does_not_read_changes_nothing(env):
+    """A conflict on an OLDER day cannot poison the value the build serves."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    stale_day = AS_OF - timedelta(days=5)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, stale_day, Decimal("50.00"), Decimal("0.4000")),
+        (CUSIP_ALT, stale_day, Decimal("70.00"), Decimal("0.2000")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("96.23")
+    assert metrics["security_ytm"][2] == Decimal("0.076")

@@ -125,6 +125,49 @@ def test_the_window_starts_at_each_bond_s_own_watermark() -> None:
     assert conn.commits >= 1
 
 
+def test_a_higher_ranked_bulk_day_cannot_move_the_live_lane_s_watermark() -> None:
+    """The window follows what THIS lane loaded, not what the table holds.
+
+    The upsert only refreshes same-or-lower-ranked rows, so a bulk day that
+    outranks this feed and lands later is a day the worker can neither write nor
+    step past: opening the next window there would skip every live day in
+    between, and a delta never looks back. The source qualification is what
+    makes the fake's answer -- and production's -- the LIVE max rather than the
+    table's.
+    """
+    # Drift lock on the qualification itself. The source is INLINED, not bound,
+    # because Postgres only uses the partial index when it can prove the query's
+    # predicate implies the index's (see schemas/bond_live_daily.sql).
+    assert f"WHERE o.source = '{live_daily.SOURCE_LIVE}'" in bond_live_daily._WATERMARK_SQL
+
+    # A bond the bulk lanes cover but this feed never wrote answers NOTHING to a
+    # source-qualified watermark, so it must get the cold-start window -- not one
+    # opening at a bulk row's day, which is the bypass the qualification closes.
+    conn = FakeConn({"max(o.day)": []})
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    bond_live_daily._load_candles(conn, client, UNIVERSE, TODAY)
+
+    cold_start, _ = live_daily.fetch_window(None, TODAY)
+    (_, from_ts, _) = client.candle_calls[0]
+    assert from_ts == live_daily.to_epoch(cold_start)
+
+
+def test_the_watermark_predicate_matches_the_partial_index_it_needs() -> None:
+    """Two halves of one plan: if they drift, the daily read silently reverts.
+
+    Measured on production 2026-08-07 (34.6M rows, 26 chunks): the qualified
+    watermark costs 0.10s on this index and 45.5s without it -- a sequential
+    scan of every chunk, which no test can see and no log line reports.
+    """
+    ddl = bond_live_daily.SCHEMA_PATH.read_text(encoding="utf-8")
+    assert "bond_observation_daily_live_watermark_idx" in ddl
+    assert f"WHERE source = '{live_daily.SOURCE_LIVE}'" in ddl
+    # Guarded: install_schema runs BEFORE run() gets to report an absent
+    # hypertable, so an unguarded reference would crash that reported no-op.
+    assert "to_regclass('bond_observation_daily')" in ddl
+
+
 def test_a_bond_the_provider_has_nothing_for_is_reported_not_failed() -> None:
     conn = FakeConn({"max(o.day)": []})
     stats = bond_live_daily._load_candles(conn, FakeClient(), UNIVERSE, TODAY)
@@ -175,8 +218,20 @@ def test_the_upsert_carries_the_full_declared_column_protocol() -> None:
 # --------------------------------------------------------------------------- #
 # Stage 2: curve
 # --------------------------------------------------------------------------- #
+CURVE_WATERMARKS = "GROUP BY tenor"
+
+
+def _curve_writes(conn: FakeConn, tenor: str) -> list[str]:
+    """The days written for one tenor, in order. as_tuple() is (day, tenor, ...)."""
+    return sorted(
+        params[0].isoformat()
+        for sql, params in conn.writes
+        if "INSERT INTO bond_yield_curve_daily" in sql and params[1] == tenor
+    )
+
+
 def test_one_dead_tenor_does_not_cost_the_others() -> None:
-    conn = FakeConn({"max(day) FROM bond_yield_curve_daily": [(None,)]})
+    conn = FakeConn({CURVE_WATERMARKS: []})  # nothing loaded yet: cold start
     client = FakeClient(
         curve={"10y": {"data": [{"d": "2026-08-06", "v": 4.69}]}},
         fail={"30y"},
@@ -185,6 +240,50 @@ def test_one_dead_tenor_does_not_cost_the_others() -> None:
     assert stats["failed_tenors"] == ["30y"]
     assert stats["tenors"] == 1
     assert stats["latest_day"] == "2026-08-06"
+    # An empty table has no bound for anyone, so nothing is reported behind.
+    assert stats["lagging_tenors"] == []
+
+
+def test_a_lagging_tenor_recovers_the_days_the_others_advanced_past() -> None:
+    """One tenor's outage must not become a permanent hole.
+
+    While 30y was down the other tenors advanced the table's max day. Trimming
+    the recovered 30y response -- which carries the provider's FULL history --
+    at that table-wide max would discard exactly the days that were missed, and
+    nothing ever asks for them again. Per tenor, the gap closes itself.
+    """
+    gap = ["2026-08-04", "2026-08-05", "2026-08-06"]
+    conn = FakeConn({CURVE_WATERMARKS: [
+        ("10y", _dt.date(2026, 8, 6)),   # kept advancing
+        ("30y", _dt.date(2026, 8, 3)),   # three sessions behind
+    ]})
+    client = FakeClient(curve={
+        "30y": {"data": [{"d": d, "v": 5.0} for d in ["2026-08-03", *gap]]},
+        "10y": {"data": [{"d": "2026-08-06", "v": 4.69}]},
+    })
+
+    stats = bond_live_daily._load_curve(conn, client)
+
+    # Its own watermark day (re-read) plus every day it missed.
+    assert _curve_writes(conn, "30y") == ["2026-08-03", *gap]
+    # The tenor that never lagged is untouched by the other's recovery.
+    assert _curve_writes(conn, "10y") == ["2026-08-06"]
+    assert stats["lagging_tenors"] == ["30y"]
+
+
+def test_a_tenor_never_loaded_is_not_filtered_by_its_neighbours_bound() -> None:
+    """A new tenor cold-starts on the whole history, or lands empty forever."""
+    conn = FakeConn({CURVE_WATERMARKS: [("10y", _dt.date(2026, 8, 6))]})
+    client = FakeClient(curve={"30y": {"data": [
+        {"d": "2019-01-02", "v": 3.0}, {"d": "2026-08-06", "v": 5.0},
+    ]}})
+
+    stats = bond_live_daily._load_curve(conn, client)
+
+    assert _curve_writes(conn, "30y") == ["2019-01-02", "2026-08-06"]
+    assert stats["tenors"] == 1
+    # Never loaded is a cold start, not a lag: it is about to load everything.
+    assert stats["lagging_tenors"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -421,15 +520,30 @@ def test_the_metric_inputs_read_the_dense_series_per_field() -> None:
     """price and ytm resolve on their OWN latest day, and duration settles on ytm's.
 
     Folding them into one latest-row rule would let a fresh price erase an older
-    bond's yield -- and the duration solved from it.
+    bond's yield -- and the duration solved from it. The same per-field scope is
+    what the alias-disagreement refusal is measured over, so both halves of the
+    contract are pinned here.
     """
     from src.workers import bond_metrics
 
     sql = bond_metrics._inputs_sql(governed=True, live=True)
     assert "live_price" in sql and "live_yield" in sql
     assert "price_date" in sql and "ytm_date" in sql
-    # Deterministic pick across a security's multiple CUSIP9 aliases.
-    assert "ORDER BY l.security_id, o.day DESC, o.source_rank DESC, l.cusip9" in sql
+    # Across a security's multiple CUSIP9 aliases, on the field's latest day:
+    #   * the pick is deterministic (source precedence, then the CUSIP), so a
+    #     replay is byte-identical -- day is already fixed by the cohort;
+    #   * and a DISAGREEMENT is refused rather than tie-broken, per field.
+    assert sql.count("ORDER BY security_id, source_rank DESC, cusip9") == 2
+    assert "price_lo IS DISTINCT FROM price_hi" in sql
+    assert "ytm_lo IS DISTINCT FROM ytm_hi" in sql
+    assert "CASE WHEN w.price_ambiguous THEN NULL" in sql
+    assert "CASE WHEN w.ytm_ambiguous THEN NULL" in sql
+    # ...which is the serving latest lane's rule, not a second semantics: same
+    # spread test, same day scope. Drift between the two surfaces would mean one
+    # of them serving a number the other refuses.
+    from src.bonds import serving_materializer as materializer
+
+    assert "price_lo IS DISTINCT FROM price_hi" in materializer._LATEST_OBSERVATION_LIVE
     # The duration settles on the YIELD's date, never on the price's.
     assert "i.maturity_date <= i.ytm_date" in bond_metrics._DURATION_LATERALS
     assert "i.observation_date" not in bond_metrics._DURATION_LATERALS

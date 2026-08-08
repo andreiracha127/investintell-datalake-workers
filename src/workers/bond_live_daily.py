@@ -9,11 +9,15 @@ Five stages, each REPORTED separately so a partial day is visible rather than
 laundered into a green run:
 
   1. ``candles``  -- delta of daily price/YTM candles for the curated universe
-                     into the ``bond_observation_daily`` hypertable, from the
-                     table's own watermark. Typically one or two days per bond.
+                     into the ``bond_observation_daily`` hypertable, from THIS
+                     LANE's own watermark (never the table's: a higher-ranked
+                     bulk row this worker cannot overwrite must not move the
+                     window past days it never loaded). One or two days per bond.
   2. ``curve``    -- the treasury yield curve into ``bond_yield_curve_daily``:
                      the rate a bond's yield is measured against, and the input
-                     a duration-targeted portfolio needs.
+                     a duration-targeted portfolio needs. Watermarked PER TENOR,
+                     so a tenor the provider drops for a week recovers its own
+                     gap instead of being trimmed at the front the others set.
   3. ``ticks``    -- the previous session's two-sided trade tape for the most
                      active bonds into ``bond_tick_daily``: what it COSTS to
                      trade, which no price series can say.
@@ -122,14 +126,51 @@ WHERE r.isin IS NOT NULL AND btrim(r.isin) <> ''
 ORDER BY r.cusip9
 """
 
-# Per-CUSIP watermark: the last day already loaded. Restricted to this worker's
-# own source so a bond whose bulk history reaches further does not freeze the
-# live lane behind it -- and read in ONE pass rather than per bond.
+# Per-CUSIP watermark: the last day THIS LANE already loaded, read in ONE pass
+# rather than per bond.
+#
+# The source filter is the whole correctness of the delta. The upsert only ever
+# refreshes same-or-lower-ranked rows, so a table-wide max(day) is the watermark
+# of a lane this worker cannot write: when a higher-ranked bulk row lands later
+# than the live feed's own last day, the next window opens at that unrelated day
+# and every live day in between is skipped PERMANENTLY -- a delta never looks
+# back. (Measured 2026-08-07: 0 curated bonds are frozen that way today, because
+# the live feed happens to hold the global max; one reload of TRACE tars into a
+# month the live feed already covers is all it takes. The rule has to hold by
+# construction, not by the accident of which backfill ran last.)
+#
+# It is also what preserves the cold start: on a table preloaded with bulk
+# history only, an ABSENT live watermark is what puts the bond in
+# ``fetch_window``'s intended 30-day window instead of a 500-day one (430 of the
+# 10,206 curated bonds, measured 2026-08-07).
+#
+# The source is INLINED, not bound: a bind parameter cannot be proved to imply
+# the partial index's predicate at plan time, and without that index this
+# degrades to a sequential scan of every chunk. Measured on production
+# (2026-08-07, 34.6M rows / 26 chunks): 45.5s filtered-without-index, 0.10s with
+# it -- and 20.8s for the unfiltered query this replaces. The index is versioned
+# in schemas/bond_live_daily.sql and its predicate must match this literal.
 _WATERMARK_SQL = f"""
 SELECT o.cusip9, max(o.day)
 FROM {OBSERVATION_TABLE} o
 JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
+WHERE o.source = '{live_daily.SOURCE_LIVE}'
 GROUP BY o.cusip9
+"""
+
+# Per-TENOR curve watermark, for the same reason and with a sharper failure
+# mode. A table-wide max(day) turns one tenor's outage into a permanent hole:
+# while 30y is down the other twelve advance the table max, and the recovered
+# 30y response -- which carries the provider's FULL history -- gets trimmed to
+# days after that max, discarding exactly the days that were missed. Per tenor,
+# the recovered tenor backfills its own gap on the next successful call, and a
+# tenor never loaded still has no bound at all, so it cold-starts on its whole
+# history instead of being filtered to empty by a bound its neighbours set.
+# Served by bond_yield_curve_daily_tenor_day_idx (tenor, day).
+_CURVE_WATERMARK_SQL = """
+SELECT tenor, max(day)
+FROM bond_yield_curve_daily
+GROUP BY tenor
 """
 
 # Idempotent upsert. A conflicting row is replaced only by one of rank >= the
@@ -187,9 +228,19 @@ def _universe(conn: psycopg.Connection, limit: int | None) -> list[tuple[Any, ..
 
 
 def _watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
+    """Last day THIS LANE loaded, per bond. A bond absent here cold-starts."""
     return {
         str(cusip): day
         for cusip, day in conn.execute(_WATERMARK_SQL).fetchall()
+        if day is not None
+    }
+
+
+def _curve_watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
+    """Last day loaded per curve tenor. A tenor absent here cold-starts."""
+    return {
+        str(tenor): day
+        for tenor, day in conn.execute(_CURVE_WATERMARK_SQL).fetchall()
         if day is not None
     }
 
@@ -266,8 +317,16 @@ def _as_float(value: Any) -> float | None:
 # Stage 2: yield curve
 # --------------------------------------------------------------------------- #
 def _load_curve(conn: psycopg.Connection, client: Any) -> dict[str, Any]:
-    row = conn.execute("SELECT max(day) FROM bond_yield_curve_daily").fetchone()
-    watermark: _dt.date | None = row[0] if row else None
+    watermarks = _curve_watermarks(conn)
+    # A tenor behind the front of the curve is a hole this run may close. It is
+    # REPORTED rather than inferred from row counts, because that is the only
+    # signal that distinguishes "the provider dropped 30y for a week" from "30y
+    # is fine" once the failure itself has scrolled out of the logs.
+    front = max(watermarks.values(), default=None)
+    lagging = sorted(
+        tenor for tenor in CURVE_TENORS
+        if front is not None and watermarks.get(tenor, front) < front
+    )
     tenors_loaded = 0
     upserted = 0
     failed: list[str] = []
@@ -279,7 +338,12 @@ def _load_curve(conn: psycopg.Connection, client: Any) -> dict[str, Any]:
             # One tenor the provider dropped must not cost the other twelve.
             failed.append(tenor)
             continue
-        points = live_daily.curve_points(tenor, payload, not_before=watermark)
+        # Each tenor is trimmed by ITS OWN last loaded day, so a tenor that
+        # missed runs recovers the missed days from the full history the
+        # endpoint returns, and a tenor never seen has no bound at all.
+        points = live_daily.curve_points(
+            tenor, payload, not_before=watermarks.get(tenor)
+        )
         if not points:
             continue
         tenors_loaded += 1
@@ -293,6 +357,7 @@ def _load_curve(conn: psycopg.Connection, client: Any) -> dict[str, Any]:
     return {
         "tenors": tenors_loaded, "rows_upserted": upserted,
         "failed_tenors": failed,
+        "lagging_tenors": lagging,
         "latest_day": latest.isoformat() if latest else None,
     }
 

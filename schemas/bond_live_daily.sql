@@ -93,3 +93,44 @@ COMMENT ON COLUMN bond_tick_daily.bid_ask_bps IS
     'Relative bid-ask in basis points; NULL when only one side traded. Negative values are kept (crossing medians on a thin day are real).';
 
 CREATE INDEX IF NOT EXISTS bond_tick_daily_day_idx ON bond_tick_daily (day);
+
+-- ---------------------------------------------------------------------------
+-- The live lane's own watermark index on the SHARED observation hypertable.
+-- ---------------------------------------------------------------------------
+-- This worker does not own bond_observation_daily's shape and does not create
+-- it (see the header). It does own this ACCESS PATH: the delta window is driven
+-- by ``max(day) ... WHERE source = 'finnhub'`` per bond, and the table's own
+-- indexes -- the (cusip9, day) primary key and a (day DESC) index -- cannot
+-- serve a source-qualified aggregate. Measured on production 2026-08-07 over
+-- 34.6M rows in 26 chunks:
+--
+--   unfiltered max(day)  (the query this replaced)   20.8 s, whole table
+--   filtered, no index                               45.5 s, seq scan/chunk
+--   filtered, this index                              0.10 s, index-only scan
+--
+-- The index is PARTIAL on the live source: 208k rows today of 34.6M, 6.6 MB
+-- across chunk indexes, and it grows only with this feed. Its predicate must
+-- stay identical to the literal in bond_live_daily._WATERMARK_SQL -- Postgres
+-- only uses a partial index when it can prove the query's predicate implies the
+-- index's, which is also why that worker inlines the source instead of binding
+-- it.
+--
+-- Guarded by to_regclass because install_schema runs BEFORE the worker reports
+-- an absent hypertable, and an unguarded reference would turn that reported
+-- no-op into a crash. IF NOT EXISTS makes this a no-op wherever the index is
+-- already present: on production it was built out of band with
+-- ``WITH (timescaledb.transaction_per_chunk)`` -- TimescaleDB rejects CREATE
+-- INDEX CONCURRENTLY on a hypertable outright ("hypertables do not support
+-- concurrent index creation"), and transaction_per_chunk is its substitute,
+-- taking one short lock per chunk instead of one long one over all 26. Build
+-- it that way on any other populated environment; here it exists so a fresh
+-- (empty) database gets it without a manual step.
+DO $$
+BEGIN
+    IF to_regclass('bond_observation_daily') IS NOT NULL THEN
+        CREATE INDEX IF NOT EXISTS bond_observation_daily_live_watermark_idx
+            ON bond_observation_daily (cusip9, day DESC)
+            WHERE source = 'finnhub';
+    END IF;
+END
+$$;
