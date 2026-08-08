@@ -166,7 +166,9 @@ def test_run_uses_exact_month_clock_and_issues_no_writes(monkeypatch) -> None:
     }, {"x": "x"}))
     monkeypatch.setattr(parity, "build_db_monthly_panel", lambda **_kwargs: _snapshot(_kwargs["months"][0]).assign(coupon_pct=5.0, maturity_date=pd.Timestamp("2030-01-01"), reason_code="quoted", rating_bucket="A", rating_as_of_month=pd.Timestamp("2025-01-01"), rating_state="static_current", rating_reason="static_rating_current", rating_staleness_months=0))
     monkeypatch.setattr(parity, "build_snapshots", lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)))
-    monkeypatch.setattr(parity, "fit_all_months", lambda frame, *, as_of: fit_calls.append(as_of) or (_rv(as_of), pd.DataFrame()))
+    monkeypatch.setattr(parity, "fit_all_months", lambda frame, *, as_of: fit_calls.append(as_of) or (
+        _rv(as_of)[["cusip_id", "month", "rv_signal"]], pd.DataFrame(),
+    ))
 
     outcome = parity.run("postgresql://example")
 

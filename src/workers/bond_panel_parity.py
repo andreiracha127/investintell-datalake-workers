@@ -169,6 +169,13 @@ def _rebuild_month(
     rebuilt_snapshot = snapshot[snapshot["month"].eq(month)].reset_index(drop=True)
     included = snapshots[snapshots["month"].eq(month)]
     signals, _diagnostics = fit_all_months(included, as_of=month)
+    if not signals.empty:
+        signals = signals.merge(
+            included,
+            on=["cusip_id", "month"],
+            how="left",
+            suffixes=("", "_snapshot"),
+        )
     rebuilt_rv = signals[signals["month"].eq(month)].reset_index(drop=True) if not signals.empty else signals
     if not rebuilt_rv.empty:
         rebuilt_rv["month"] = pd.to_datetime(rebuilt_rv["month"])
