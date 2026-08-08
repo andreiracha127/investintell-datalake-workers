@@ -217,6 +217,15 @@ def build_plan(artifacts: ArtifactSet, *, cutoff: str = DEFAULT_CUTOFF) -> Backf
         _gate_unique_and_valid_keys(conn, label="rv_signal", path=rv, cutoff=cutoff)
         _gate_unique_and_valid_keys(conn, label="returns", path=returns, cutoff=HISTORICAL_RATING_CUTOFF)
         _gate_unique_and_valid_keys(conn, label="rating_pit", path=ratings, cutoff=HISTORICAL_RATING_CUTOFF)
+        for label, path, source_cutoff in (
+            ("panel", panel, cutoff),
+            ("universe", universe, cutoff),
+            ("rv_signal", rv, cutoff),
+            ("returns", returns, HISTORICAL_RATING_CUTOFF),
+            ("rating_pit", ratings, HISTORICAL_RATING_CUTOFF),
+        ):
+            if int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)", [path, source_cutoff])) == 0:
+                raise PlanError(f"source_empty:{label}")
         _require_zero(
             conn,
             reason="included_universe_missing_panel",

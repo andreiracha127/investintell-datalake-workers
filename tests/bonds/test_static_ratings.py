@@ -63,6 +63,23 @@ def test_resolver_is_generic_and_marks_missing_static_rating() -> None:
     }
 
 
+def test_resolver_never_backcasts_a_future_static_rating() -> None:
+    from src.bonds.static_ratings import StaticRating, attach_static_ratings
+
+    mapping = {
+        "037833100": StaticRating("037833100", "A", date(2025, 2, 1), "rated", "a" * 64, 1),
+    }
+
+    row = attach_static_ratings(
+        [{"cusip9": "037833100", "month": date(2025, 1, 1)}], mapping
+    )[0]
+
+    assert row["rating_bucket"] == "NR"
+    assert row["rating_as_of_month"] is None
+    assert row["rating_state"] == "missing"
+    assert row["reason_code"] == "static_rating_future"
+
+
 def test_equivalence_and_copy_cursor_are_deterministic_and_stdout_pure(tmp_path: Path) -> None:
     from src.bonds.static_ratings import build_static_mapping, equivalence_report
     from src.workers.bond_rating_static_backfill import render_copy_slice
@@ -80,6 +97,8 @@ def test_equivalence_and_copy_cursor_are_deterministic_and_stdout_pure(tmp_path:
     assert "'inserted'" in copy and "'existing'" in copy and "'conflicted'" in copy
     assert "mixed static-rating source_sha256" in copy
     assert "non-contiguous static-rating cursor" in copy
+    assert "sha256(convert_to" in copy
+    assert "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" in copy
     assert "037833100" in copy
     assert "594918104" not in copy
 

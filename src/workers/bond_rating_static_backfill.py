@@ -1,6 +1,7 @@
 """One-time generic static-rating artifact loader; never a runtime input."""
 from __future__ import annotations
 
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -66,6 +67,9 @@ def render_copy_slice(rows: Sequence[StaticRating], *, cursor: int, limit: int) 
         raise StaticRatingRefusal("mixed_source_sha256")
     selected = ordered[cursor:cursor + limit]
     committed_through = cursor + len(selected)
+    prefix_fingerprint = _cusip_fingerprint(ordered[:cursor])
+    committed_fingerprint = _cusip_fingerprint(ordered[:committed_through])
+    full_fingerprint = _cusip_fingerprint(ordered)
     source_sha256 = source_hashes.pop()
     rows_for_copy = tuple(
         (row.cusip9, row.rating_bucket, row.rating_as_of_month, row.rating_state,
@@ -90,21 +94,34 @@ def render_copy_slice(rows: Sequence[StaticRating], *, cursor: int, limit: int) 
     guard = f"""DO $static_mapping_cursor$
 DECLARE
     target_count bigint;
+    target_fingerprint text;
 BEGIN
     IF EXISTS (SELECT 1 FROM bond_rating_static WHERE source_sha256 <> '{source_sha256}') THEN
         RAISE EXCEPTION 'mixed static-rating source_sha256';
     END IF;
     SELECT count(*) INTO target_count FROM bond_rating_static;
+    SELECT encode(sha256(convert_to(COALESCE(string_agg(rtrim(cusip9), E'\\n' ORDER BY cusip9), ''), 'UTF8')), 'hex')
+      INTO target_fingerprint FROM bond_rating_static;
     IF target_count > {len(ordered)} THEN
         RAISE EXCEPTION 'static-rating target exceeds pinned mapping';
     END IF;
-    IF target_count < {cursor} THEN
-        RAISE EXCEPTION 'non-contiguous static-rating cursor';
-    END IF;
-    IF target_count > {cursor} AND (
-        target_count < {committed_through}
-        OR EXISTS (SELECT 1 FROM _backfill_stage s LEFT JOIN bond_rating_static t USING (cusip9) WHERE t.cusip9 IS NULL)
-    ) THEN
+    IF target_count = {cursor} THEN
+        IF target_fingerprint <> '{prefix_fingerprint}' THEN
+            RAISE EXCEPTION 'non-contiguous static-rating cursor';
+        END IF;
+    ELSIF target_count = {committed_through} THEN
+        IF target_fingerprint <> '{committed_fingerprint}' OR EXISTS (
+            SELECT 1 FROM _backfill_stage s LEFT JOIN bond_rating_static t USING (cusip9) WHERE t.cusip9 IS NULL
+        ) THEN
+            RAISE EXCEPTION 'non-contiguous static-rating cursor';
+        END IF;
+    ELSIF target_count = {len(ordered)} THEN
+        IF target_fingerprint <> '{full_fingerprint}' OR EXISTS (
+            SELECT 1 FROM _backfill_stage s LEFT JOIN bond_rating_static t USING (cusip9) WHERE t.cusip9 IS NULL
+        ) THEN
+            RAISE EXCEPTION 'non-contiguous static-rating cursor';
+        END IF;
+    ELSE
         RAISE EXCEPTION 'non-contiguous static-rating cursor';
     END IF;
 END
@@ -121,3 +138,7 @@ def render_schema_install() -> str:
 
     schema_path = Path(__file__).resolve().parents[2] / "schemas" / "bond_rating_static.sql"
     return render_schema(schema_path.read_text(encoding="utf-8"))
+
+
+def _cusip_fingerprint(rows: Sequence[StaticRating]) -> str:
+    return sha256("\n".join(row.cusip9 for row in rows).encode("utf-8")).hexdigest()

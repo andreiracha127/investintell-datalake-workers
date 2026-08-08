@@ -153,6 +153,26 @@ def test_present_but_null_rating_is_typed_missing_not_historical_pit(tmp_path: P
     assert ratings.rows[0]["rating_as_of_month"] is None
 
 
+def test_plan_refuses_an_empty_historical_rating_source(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    ratings_path = directory / "bond_ratings_pit.parquet"
+    # Preserve a typed, schema-valid empty source rather than failing at column discovery.
+    import pyarrow as pa
+
+    pq.write_table(
+        pa.table({
+            "cusip_id": pa.array([], type=pa.string()),
+            "month": pa.array([], type=pa.string()),
+            "rating_bucket": pa.array([], type=pa.string()),
+        }),
+        ratings_path,
+    )
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+
+    with pytest.raises(backfill.PlanError, match="source_empty:rating_pit"):
+        backfill.build_plan(artifacts)
+
+
 def test_emit_schema_installs_then_transfers_worker_ownership(capsys: pytest.CaptureFixture[str]) -> None:
     assert backfill.main(["--emit-schema"]) == 0
     emitted = capsys.readouterr().out
