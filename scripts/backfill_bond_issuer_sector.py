@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any, Iterable, Sequence
 
 import pyarrow.parquet as pq
@@ -27,6 +28,7 @@ from src.bonds.panel_sources import (
     resolve_sic_to_ff17,
 )
 from src.db import resolve_dsn
+from scripts.backfill_psql_transport import render_immutable_batch, render_schema
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "bond_panel_sources.sql"
@@ -224,6 +226,48 @@ def require_no_conflicts(summary: dict[str, Any]) -> None:
         raise BackfillConflictError(summary)
 
 
+def _require_expected_sha256(actual: str, expected: str | None) -> None:
+    if expected is not None and actual != expected:
+        raise PanelArtifactError("artifact_sha256_mismatch")
+
+
+def emit_psql_batch(
+    panel: Path, *, start_after: int, max_rows: int, expected_sha256: str | None = None,
+) -> str:
+    """Emit one canonical-sector cursor slice for the private ``psql`` route."""
+    if start_after < 0 or max_rows <= 0:
+        raise ValueError("start_after must be non-negative and max_rows must be positive")
+    loaded = load_osbap_panel(panel)
+    _require_expected_sha256(loaded.artifact_sha256, expected_sha256)
+    if start_after > len(loaded.rows):
+        raise PanelArtifactError("start_after_exceeds_artifact_cursor")
+    rows = loaded.rows[start_after:start_after + max_rows]
+    committed_through = start_after + len(rows)
+    evidence = """jsonb_build_object(
+        'target_row_count', (SELECT count(*) FROM bond_issuer_sector),
+        'source_coverage', jsonb_build_object(
+            'osbap', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
+                ON c.cusip9 = s.cusip9 WHERE s.source = 'osbap'),
+            'sic_map', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
+                ON c.cusip9 = s.cusip9 WHERE s.source = 'sic_map'),
+            'no_sector', (SELECT count(*) FROM bond_curated_universe c WHERE NOT EXISTS
+                (SELECT 1 FROM bond_issuer_sector s WHERE s.cusip9 = c.cusip9))
+        )
+    )"""
+    return render_immutable_batch(
+        target="bond_issuer_sector",
+        columns=("cusip9", "ff17num", "source", "disagreement_count", "source_provenance"),
+        column_types=("text", "smallint", "text", "integer", "jsonb"),
+        key_columns=("cusip9",),
+        rows=[(row.cusip9, row.ff17num, row.source, row.disagreement_count, row.source_provenance) for row in rows],
+        artifact_sha256=loaded.artifact_sha256,
+        start_after=start_after,
+        committed_through=committed_through,
+        skipped=sum(loaded.reason_counts.values()),
+        target_evidence_sql=evidence,
+    )
+
+
 def run(dsn: str, panel: Path) -> dict[str, Any]:
     panel_load = load_osbap_panel(panel)
     reason_counts: Counter[str] = Counter(panel_load.reason_counts)
@@ -250,12 +294,41 @@ def run(dsn: str, panel: Path) -> dict[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__ + "\n\nPrivate production route: emit then pipe only stdout to "
+        "`railway ssh --service market-clean-serial -- psql -v ON_ERROR_STOP=1 -f -`. "
+        "Run --emit-schema once, then bounded --emit-batch-psql slices.",
+    )
     parser.add_argument(
         "--dsn", default=None, help="target datalake DSN; defaults to DATABASE_URL"
     )
-    parser.add_argument("--panel", required=True, type=Path, help="explicit OSBAP parquet artifact")
+    parser.add_argument("--panel", type=Path, help="explicit OSBAP parquet artifact")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--emit-schema", action="store_true", help="emit schema SQL for the private psql route")
+    mode.add_argument("--emit-batch-psql", action="store_true", help="emit one bounded psql/COPY transaction to stdout")
+    parser.add_argument("--start-after", type=int, default=0, help="canonical emitted-row cursor already committed (emit mode)")
+    parser.add_argument("--max-rows", type=int, help="maximum canonical rows in one emitted transaction")
+    parser.add_argument("--expected-sha256", help="fail before emit unless this exact artifact SHA-256 matches")
     args = parser.parse_args(argv)
+    if args.emit_schema:
+        print(render_schema(SCHEMA_PATH.read_text(encoding="utf-8")), end="")
+        return 0
+    if args.panel is None:
+        parser.error("--panel is required unless --emit-schema is selected")
+    if args.emit_batch_psql:
+        if args.max_rows is None:
+            parser.error("--max-rows is required with --emit-batch-psql")
+        if args.expected_sha256 is None:
+            parser.error("--expected-sha256 is required with --emit-batch-psql")
+        try:
+            print(emit_psql_batch(
+                args.panel, start_after=args.start_after, max_rows=args.max_rows,
+                expected_sha256=args.expected_sha256,
+            ), end="")
+        except (PanelArtifactError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
     try:
         summary = run(resolve_dsn(args.dsn), args.panel)
     except BackfillConflictError as exc:

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pyarrow.parquet as pq
@@ -22,6 +23,7 @@ from psycopg.types.json import Jsonb
 from src.bonds.errors import BondError
 from src.bonds.panel_sources import resolve_monthly_liquidity
 from src.db import resolve_dsn
+from scripts.backfill_psql_transport import render_immutable_batch, render_schema
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "schemas" / "bond_panel_sources.sql"
@@ -68,12 +70,13 @@ def _sha256(path: Path) -> str:
 class PanelRowStream:
     """A single-use bounded parquet stream with post-consumption accounting."""
 
-    def __init__(self, path: Path, *, batch_size: int, resume_after: int) -> None:
+    def __init__(self, path: Path, *, batch_size: int, resume_after: int, max_rows: int | None = None) -> None:
         if not path.is_file():
             raise PanelArtifactError("artifact_unavailable")
         self.path = path
         self.batch_size = batch_size
         self.resume_after = resume_after
+        self.max_rows = max_rows
         self.artifact_sha256 = _sha256(path)
         self.source_rows = 0
         self.attempted_rows = 0
@@ -89,16 +92,19 @@ class PanelRowStream:
         missing = [column for column in REQUIRED_PANEL_COLUMNS if column not in parquet.schema_arrow.names]
         if missing:
             raise PanelArtifactError(f"missing_required_columns:{','.join(missing)}")
-        cursor = 0
+        cursor = slice_rows = 0
         for batch in parquet.iter_batches(columns=list(REQUIRED_PANEL_COLUMNS), batch_size=self.batch_size):
             values = batch.to_pydict()
             for raw in zip(*(values[column] for column in REQUIRED_PANEL_COLUMNS), strict=True):
                 cursor += 1
+                if cursor > self.resume_after and self.max_rows is not None and slice_rows >= self.max_rows:
+                    return
                 self.source_rows += 1
                 self.last_cursor = cursor
                 if cursor <= self.resume_after:
                     self.resume_skipped_rows += 1
                     continue
+                slice_rows += 1
                 self.attempted_rows += 1
                 try:
                     resolved = resolve_monthly_liquidity(*raw)
@@ -118,10 +124,11 @@ class PanelRowStream:
                 )
 
 
-def panel_row_stream(path: Path, *, batch_size: int = 10_000, resume_after: int = 0) -> PanelRowStream:
-    if batch_size <= 0 or resume_after < 0:
-        raise ValueError("batch_size must be positive and resume_after must be non-negative")
-    return PanelRowStream(path, batch_size=batch_size, resume_after=resume_after)
+def panel_row_stream(path: Path, *, batch_size: int = 10_000, resume_after: int = 0,
+                     max_rows: int | None = None) -> PanelRowStream:
+    if batch_size <= 0 or resume_after < 0 or max_rows is not None and max_rows <= 0:
+        raise ValueError("batch_size must be positive, resume_after non-negative, and max_rows positive")
+    return PanelRowStream(path, batch_size=batch_size, resume_after=resume_after, max_rows=max_rows)
 
 
 def classify_immutable_row(existing: LiquidityRow, incoming: LiquidityRow) -> str:
@@ -218,6 +225,46 @@ def conflict_summary(detail: Mapping[str, Any], *, artifact_sha256: str,
         "last_safely_committed_cursor": last_safely_committed_cursor,
         "inserted": inserted, "existing": existing, "skipped": skipped,
     }
+
+
+def _require_expected_sha256(actual: str, expected: str | None) -> None:
+    if expected is not None and actual != expected:
+        raise PanelArtifactError("artifact_sha256_mismatch")
+
+
+def emit_psql_batch(
+    panel: Path, *, start_after: int, max_rows: int, expected_sha256: str | None = None,
+) -> str:
+    """Stream one bounded artifact-row slice into a private-network psql transaction."""
+    stream = panel_row_stream(panel, resume_after=start_after, max_rows=max_rows)
+    _require_expected_sha256(stream.artifact_sha256, expected_sha256)
+    rows = list(stream)
+    if start_after > stream.last_cursor:
+        raise PanelArtifactError("start_after_exceeds_artifact_cursor")
+    committed_through = stream.last_cursor
+    evidence = """jsonb_build_object(
+        'target_row_count', (SELECT count(*) FROM bond_liquidity_monthly),
+        'target_quote_coverage_by_year', COALESCE((SELECT jsonb_object_agg(year, coverage)
+            FROM (SELECT EXTRACT(YEAR FROM month)::integer::text AS year,
+                jsonb_build_object('rows', count(*), 'quoted_rows', count(*) FILTER (WHERE quote_state = 'quoted')) AS coverage
+                FROM bond_liquidity_monthly GROUP BY 1 ORDER BY 1) coverage_by_year), '{}'::jsonb)
+    )"""
+    return render_immutable_batch(
+        target="bond_liquidity_monthly",
+        columns=("cusip9", "month", "rel_bid_ask_bps", "quoted_days", "dollar_volume", "quote_state", "reason_code", "source", "source_provenance"),
+        column_types=("text", "date", "numeric", "integer", "numeric", "text", "text", "text", "jsonb"),
+        nullable_columns=("rel_bid_ask_bps", "dollar_volume"),
+        key_columns=("cusip9", "month", "source"),
+        rows=[(
+            row.cusip9, row.month, row.rel_bid_ask_bps, row.quoted_days, row.dollar_volume,
+            row.quote_state, row.reason_code, row.source, row.source_provenance,
+        ) for row in rows],
+        artifact_sha256=stream.artifact_sha256,
+        start_after=start_after,
+        committed_through=committed_through,
+        skipped=sum(stream.reason_counts.values()),
+        target_evidence_sql=evidence,
+    )
 
 
 def target_metrics(conn: Any) -> tuple[int, dict[str, dict[str, int]]]:
@@ -318,12 +365,41 @@ def run(dsn: str, panel: Path, *, batch_size: int = 10_000, resume_after: int = 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__ + "\n\nPrivate production route: emit then pipe only stdout to "
+        "`railway ssh --service market-clean-serial -- psql -v ON_ERROR_STOP=1 -f -`. "
+        "Run --emit-schema once, then bounded --emit-batch-psql slices.",
+    )
     parser.add_argument("--dsn", default=None, help="target datalake DSN; defaults to DATABASE_URL")
-    parser.add_argument("--panel", required=True, type=Path, help="explicit OSBAP/TRACE parquet artifact")
+    parser.add_argument("--panel", type=Path, help="explicit OSBAP/TRACE parquet artifact")
     parser.add_argument("--batch-size", type=int, default=10_000)
     parser.add_argument("--resume-after", type=int, default=0, help="last completed artifact-row cursor")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--emit-schema", action="store_true", help="emit schema SQL for the private psql route")
+    mode.add_argument("--emit-batch-psql", action="store_true", help="emit one bounded psql/COPY transaction to stdout")
+    parser.add_argument("--start-after", type=int, default=0, help="artifact-row cursor already committed (emit mode)")
+    parser.add_argument("--max-rows", type=int, help="maximum artifact rows in one emitted transaction")
+    parser.add_argument("--expected-sha256", help="fail before emit unless this exact artifact SHA-256 matches")
     args = parser.parse_args(argv)
+    if args.emit_schema:
+        print(render_schema(SCHEMA_PATH.read_text(encoding="utf-8")), end="")
+        return 0
+    if args.panel is None:
+        parser.error("--panel is required unless --emit-schema is selected")
+    if args.emit_batch_psql:
+        if args.max_rows is None:
+            parser.error("--max-rows is required with --emit-batch-psql")
+        if args.expected_sha256 is None:
+            parser.error("--expected-sha256 is required with --emit-batch-psql")
+        try:
+            print(emit_psql_batch(
+                args.panel, start_after=args.start_after, max_rows=args.max_rows,
+                expected_sha256=args.expected_sha256,
+            ), end="")
+        except (PanelArtifactError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        return 0
     try:
         summary = run(
             resolve_dsn(args.dsn), args.panel, batch_size=args.batch_size, resume_after=args.resume_after,

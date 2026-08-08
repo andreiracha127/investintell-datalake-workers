@@ -268,3 +268,27 @@ def test_summary_distinguishes_resume_slice_from_total_target_coverage() -> None
         "2024": {"rows": 40, "quoted_rows": 20, "quote_coverage": 0.5},
         "2025": {"rows": 60, "quoted_rows": 30, "quote_coverage": 0.5},
     }
+
+
+def test_psql_emit_is_bounded_by_artifact_cursor_and_rejects_a_different_expected_hash(tmp_path: Path) -> None:
+    panel = tmp_path / "panel.parquet"
+    _write_panel(panel)
+
+    emitted = backfill.emit_psql_batch(panel, start_after=1, max_rows=2)
+
+    assert "'committed_through', 3" in emitted
+    assert '""artifact_row"":2' in emitted
+    assert '""artifact_row"":3' in emitted
+    assert '""artifact_row"":1' not in emitted
+    assert "ON CONFLICT" in emitted
+    assert "IS DISTINCT FROM" in emitted
+    with pytest.raises(backfill.PanelArtifactError, match="artifact_sha256_mismatch"):
+        backfill.emit_psql_batch(panel, start_after=0, max_rows=1, expected_sha256="0" * 64)
+
+
+def test_psql_liquidity_emit_rejects_a_cursor_past_the_artifact(tmp_path: Path) -> None:
+    panel = tmp_path / "panel.parquet"
+    _write_panel(panel)
+
+    with pytest.raises(backfill.PanelArtifactError, match="start_after_exceeds_artifact_cursor"):
+        backfill.emit_psql_batch(panel, start_after=99, max_rows=1)

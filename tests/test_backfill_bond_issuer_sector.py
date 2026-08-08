@@ -101,3 +101,32 @@ def test_missing_required_panel_column_is_a_typed_failure(tmp_path: Path) -> Non
     pq.write_table(pa.table({"cusip_id": ["037833100"]}), panel)
     with pytest.raises(backfill.PanelArtifactError, match="missing_required_columns"):
         backfill.load_osbap_panel(panel)
+
+
+def test_psql_emit_uses_a_canonical_bounded_sector_cursor_and_never_writes_progress_to_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    panel = tmp_path / "panel.parquet"
+    _write_panel(panel)
+
+    assert backfill.main([
+        "--panel", str(panel), "--emit-batch-psql", "--start-after", "1", "--max-rows", "1",
+        "--expected-sha256", backfill._sha256(panel),
+    ]) == 0
+
+    emitted = capsys.readouterr()
+    assert emitted.err == ""
+    assert emitted.out.startswith("\\set ON_ERROR_STOP on\nBEGIN;\nSET LOCAL ROLE worker_writer;")
+    assert "'committed_through', 2" in emitted.out
+    assert "037833100" not in emitted.out
+    assert "459200101" in emitted.out
+    assert "ON CONFLICT" in emitted.out
+    assert "IS DISTINCT FROM" in emitted.out
+
+
+def test_psql_sector_emit_rejects_a_cursor_past_the_canonical_artifact(tmp_path: Path) -> None:
+    panel = tmp_path / "panel.parquet"
+    _write_panel(panel)
+
+    with pytest.raises(backfill.PanelArtifactError, match="start_after_exceeds_artifact_cursor"):
+        backfill.emit_psql_batch(panel, start_after=99, max_rows=1)
