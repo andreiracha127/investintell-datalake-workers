@@ -643,6 +643,128 @@ def test_aliases_disagreeing_on_the_latest_day_are_marked_ambiguous() -> None:
         conn.close()
 
 
+def test_aliases_agreeing_on_price_but_not_on_ytm_lose_only_the_ytm() -> None:
+    """Per-field refusal: the price is a fact, the yield is a conflict.
+
+    Two CUSIP9s of one security report the SAME price on the same day and two
+    DIFFERENT yields. Judging the cohort on price alone marks it unique, and the
+    ``DISTINCT ON`` tie-break then publishes whichever alias wins source rank --
+    serving one of two conflicting yields as if it were the security's. The
+    disagreement is per FIELD, exactly as the metric worker's dense lane already
+    treats it: the yield is suppressed, the agreed price is still served, and the
+    cohort stays unique so the price-eligibility predicate keeps it.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        assert observation_date == fresh_day
+        # The price all aliases agree on survives, ...
+        assert float(payload["price"]) == 101.75
+        # ... the conflicting yield does NOT: absent, never an arbitrary winner.
+        assert payload["ytm"] is None
+        # The cohort is NOT globally ambiguous: only the yield disagreed.
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        # ...so catalog and detail still serve the agreed price.
+        for surface in ("catalog", "detail"):
+            served = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert float(served["latest_price_pct"]) == 101.75, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_aliases_agreeing_on_both_fields_serve_both() -> None:
+    """The suppression is a REFUSAL, not a blanket drop of multi-alias yields."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == fresh_day
+        assert float(payload["price"]) == 101.75
+        assert float(payload["ytm"]) == 0.0475
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_price_disagreement_still_carries_a_yield_the_aliases_agree_on() -> None:
+    """The mirror case, and the reason the refusal is per field on BOTH sides.
+
+    The price cohort is ambiguous (so no price is served) while every alias
+    reports the same yield -- which stays. The metric worker refuses exactly the
+    price here and publishes the yield; a cohort-wide refusal on either surface
+    would make one of them serve a number the other denies.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        payload = _observation(cur, SEC1, "latest")[0][1]
+        assert payload["daily_key_state"] == "duplicate_in_matching_cohort"
+        assert float(payload["ytm"]) == 0.0475, "the agreed yield is not collateral damage"
+        served = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert served["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
 # --------------------------------------------------------------------------- #
 # Retired aliases: the latest lane reads the identity valid AT as_of
 # --------------------------------------------------------------------------- #

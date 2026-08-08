@@ -12,10 +12,12 @@ DSN-agnostic (Global Constraint): reads ``SEC_TEST_DATABASE_URL``.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -372,6 +374,199 @@ def test_an_unchanged_rerun_replays_onto_the_same_publication() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# The digest's REACH (review round 3, two P2s on the same identity)
+# --------------------------------------------------------------------------- #
+# Round 2's digest was right in kind and too narrow in two directions, and both
+# narrownesses end the same way: a green run that serves stale data.
+#   * it checksummed the table-wide watermark slice, while the candle loader
+#     watermarks and re-reads EACH CUSIP independently -- so a revision to a
+#     less-liquid bond, whose latest row sits BEFORE the table-wide max, left the
+#     digest unmoved;
+#   * it derived its product set from ``contract.SURFACES``, which never names
+#     ``bond_metric_v1`` -- yet catalog/detail read the promoted current metric
+#     view for ytm/ytw/current_yield/wal, so a metric republication on the same
+#     as_of was invisible too.
+QUIET_DAY = DENSE_DAY - timedelta(days=3)  # SEC2's last dense day: BEFORE the max
+
+
+def _install_staggered_dense_series(
+    admin, schema: str, *, sec2_price: str = "99.25",
+) -> None:
+    """A LIQUID and a LESS-LIQUID bond, exactly as the live feed leaves them.
+
+    SEC1's CUSIP trades on ``DENSE_DAY`` (the table-wide max, and therefore the
+    resolved as_of); SEC2's stops three days earlier. Both are still strictly
+    newer than the governed lane's AS_OF, so both are SERVED from the dense
+    series -- which is the whole point: staleness of a row has nothing to do with
+    whether the product is showing it.
+    """
+    admin.execute(f"""
+        CREATE TABLE "{schema}".bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    admin.execute(
+        f'INSERT INTO "{schema}".bond_observation_daily VALUES '
+        "(%s,%s,101.5,0.0491,NULL,'evaluated','clean','live',9,'reported'),"
+        "(%s,%s,%s,0.0325,NULL,'evaluated','clean','live',9,'reported')",
+        ("037833100", DENSE_DAY, "459200101", QUIET_DAY, sec2_price),
+    )
+
+
+def test_a_revision_to_a_less_liquid_bond_mints_a_new_serving_publication() -> None:
+    """The digest must cover the latest SERVED row per CUSIP, not the max slice.
+
+    The candle loader re-reads every CUSIP from its OWN watermark, so a revised
+    close lands on whatever day that bond last traded. Checksumming only the
+    table-wide max day leaves that revision invisible: the identity replays,
+    ``materialize`` treats the publication as already built and only re-points,
+    and catalog/detail/latest keep serving the superseded price until the bond
+    reaches the global max day or a deploy moves ``CODE_REVISION``.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_staggered_dense_series(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        first = bond_serving.run(dsn)
+        assert first["state"] == "current"
+        # as_of follows the TABLE-WIDE max -- SEC2 is served from an older day.
+        assert _build_as_of(admin, schema, first["publication_id"]) == DENSE_DAY
+        assert _served_latest_price(admin, schema, first["publication_id"], SEC2) == "99.25"
+        admin.commit()  # never hold a read snapshot across a run(): install_schema takes DDL locks
+
+        # Replay with nothing changed: still ONE publication (no clock, no salt).
+        assert bond_serving.run(dsn)["publication_id"] == first["publication_id"]
+
+        # Revise the less-liquid bond's close ON ITS OWN latest day, which is
+        # STRICTLY BEFORE the table-wide max the old digest checksummed.
+        admin.execute(
+            f'UPDATE "{schema}".bond_observation_daily SET price=97.5 '
+            "WHERE cusip9='459200101' AND day=%s",
+            (QUIET_DAY,),
+        )
+        admin.commit()
+
+        second = bond_serving.run(dsn)
+        assert second["publication_id"] != first["publication_id"]
+        # ... for the SAME data date: the revision moved identity, never as_of.
+        assert _build_as_of(admin, schema, second["publication_id"]) == DENSE_DAY
+        # ... and the new publication actually carries the revised price.
+        assert _served_latest_price(admin, schema, second["publication_id"], SEC2) == "97.5"
+        # ... and it is the one being served.
+        current = admin.execute(
+            f'SELECT publication_id::text FROM "{schema}".sec_derived_current_pointers '
+            "WHERE product='bond_serving_v1'"
+        ).fetchone()[0]
+        assert current == second["publication_id"]
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+def _promote_metric_publication(admin, schema: str) -> str:
+    """Prepare, validate and promote one more ``bond_metric_v1`` publication.
+
+    The real ``sec_current_bond_metric_v1`` is a view gated on this pointer, so
+    advancing it is exactly how a same-day metric rebuild reaches the serving
+    build -- without touching as_of and without a deploy.
+    """
+    run_id, package_id = admin.execute(
+        f'SELECT r.run_id, p.package_id FROM "{schema}".sec_ingestion_runs r '
+        f'JOIN "{schema}".sec_source_packages p ON p.run_id = r.run_id LIMIT 1'
+    ).fetchone()
+    publication = uuid4()
+    version = admin.execute(
+        f'SELECT COALESCE(max(publication_version),0)+1 FROM "{schema}".sec_derived_publications '
+        "WHERE product='bond_metric_v1'"
+    ).fetchone()[0]
+    admin.execute(
+        f'INSERT INTO "{schema}".sec_derived_publications'
+        "(publication_id,product,publication_version,source_run_id,source_package_id,"
+        " build_fingerprint) VALUES(%s,'bond_metric_v1',%s,%s,%s,%s)",
+        (publication, version, run_id, package_id,
+         hashlib.sha256(publication.bytes).hexdigest()),
+    )
+    admin.execute(f'SELECT "{schema}".sec_validate_derived_publication(%s)', (publication,))
+    admin.execute(
+        f"SELECT \"{schema}\".sec_set_current_derived_publication('bond_metric_v1', %s)",
+        (publication,),
+    )
+    admin.commit()
+    return str(publication)
+
+
+def _served_catalog_ytm(admin, schema: str, publication_id: str, security_id=SEC1):
+    row = admin.execute(
+        f"SELECT payload->>'security_ytm' FROM \"{schema}\".bond_serving_facts "
+        "WHERE publication_id=%s AND surface='catalog' AND security_id=%s",
+        (publication_id, security_id),
+    ).fetchone()
+    return None if row is None else row[0]
+
+
+def test_advancing_the_metric_publication_mints_a_new_serving_publication() -> None:
+    """The metric product is a serving INPUT, so its pointer belongs in the digest.
+
+    ``contract.SURFACES`` names the security, price-observation and N-PORT
+    products; it does not name ``bond_metric_v1``. But the materializer REQUIRES
+    ``sec_current_bond_metric_v1`` for catalog and detail (ytm / ytw /
+    current_yield / wal), so a metric rebuild promoted on the same as_of changes
+    what the product should say while leaving as_of and CODE_REVISION alone. With
+    the metric pointer outside the digest the serving identity replayed and the
+    app kept serving the previous metric values.
+    """
+    admin = connect()
+    schema = None
+    try:
+        cur = admin.cursor()
+        schema = setup(cur)
+        _install_dense_series(admin, schema)
+        _promote_metric_publication(admin, schema)
+        admin.commit()
+        dsn = _search_path_dsn(schema)
+
+        first = bond_serving.run(dsn)
+        assert first["state"] == "current"
+        assert _served_catalog_ytm(admin, schema, first["publication_id"]) == "0.0525"
+
+        # A metric rebuild for the SAME as_of: new values, promoted by advancing
+        # the current pointer. Nothing else about the day moves.
+        admin.execute(
+            f'UPDATE "{schema}".sec_current_bond_metric_v1 SET value=0.0611 '
+            "WHERE security_id=%s AND metric_id='security_ytm' AND status='available'",
+            (SEC1,),
+        )
+        _promote_metric_publication(admin, schema)
+
+        second = bond_serving.run(dsn)
+        assert second["publication_id"] != first["publication_id"]
+        assert _build_as_of(admin, schema, second["publication_id"]) == DENSE_DAY
+        assert _served_catalog_ytm(admin, schema, second["publication_id"]) == "0.0611"
+        current = admin.execute(
+            f'SELECT publication_id::text FROM "{schema}".sec_derived_current_pointers '
+            "WHERE product='bond_serving_v1'"
+        ).fetchone()[0]
+        assert current == second["publication_id"]
+        admin.commit()  # never hold a read snapshot across a run(): install_schema takes DDL locks
+
+        # ... and the enlarged digest is still pure content: a third run over
+        # unchanged inputs replays onto the SAME publication.
+        assert bond_serving.run(dsn)["publication_id"] == second["publication_id"]
+    finally:
+        if schema:
+            admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        admin.close()
+
+
+# --------------------------------------------------------------------------- #
 # Retention (review P2: the prune used a delete path the guard rejects)
 # --------------------------------------------------------------------------- #
 def _three_publications(admin, schema: str) -> list[str]:
@@ -530,19 +725,52 @@ def test_retention_reports_no_alarm_when_nothing_is_stale() -> None:
         admin.close()
 
 
-def test_the_digest_binds_the_watermark_day_instead_of_resolving_it_inline() -> None:
-    """A measured plan property, pinned so it cannot regress silently.
+def test_the_digest_reads_the_latest_row_per_cusip_and_carries_no_clock() -> None:
+    """Two measured properties of the checksum query, pinned against regression.
 
-    Resolving the watermark inside the checksum query (a CTE) makes the day a
-    runtime value, TimescaleDB cannot exclude chunks while planning, and the plan
-    opens an index scan on EVERY chunk of the series: 6.5 s planning + 7.8 s
-    execution warm, 36 s cold, growing with every year of history (measured
-    against production 2026-08-07). Bound as a constant the same result costs
-    0.6 ms planning + 7.6 ms execution over one chunk.
+    SHAPE: the digest resolves the latest priced row PER CUSIP through the PIT
+    alias set (a LATERAL ordered by ``day DESC LIMIT 1``, one chunk-walk per
+    CUSIP that stops at the first hit). Collapsing it back to a table-wide
+    ``max(day)`` slice is the round-2 blind spot -- a less-liquid bond's revision
+    goes undetected -- and a ``DISTINCT ON (cusip9)`` over the whole series was
+    measured at 16.60 s against 6.15 s for this form (production, 2026-08-08).
+
+    PURITY: no clock anywhere in the digest SQL. ``now()``/``CURRENT_DATE`` would
+    mint a full ~1.2 GB publication on every run and destroy replay.
     """
-    assert "max(day)" in bond_serving._DIGEST_WATERMARK_SQL
+    assert not hasattr(bond_serving, "_DIGEST_WATERMARK_SQL")
     assert "max(day)" not in bond_serving._DIGEST_DENSE_SQL
-    assert "o.day = %s" in bond_serving._DIGEST_DENSE_SQL
+    assert "DISTINCT ON" not in bond_serving._DIGEST_DENSE_SQL
+    assert "CROSS JOIN LATERAL" in bond_serving._DIGEST_DENSE_SQL
+    assert "ORDER BY o.day DESC" in bond_serving._DIGEST_DENSE_SQL
+    assert "LIMIT 1" in bond_serving._DIGEST_DENSE_SQL
+    # The alias window is the build's own: valid_to EXCLUSIVE, valid_from inclusive.
+    assert "valid_to IS NULL OR valid_to > %(as_of)s" in bond_serving._DIGEST_DENSE_SQL
+    for sql in (bond_serving._DIGEST_DENSE_SQL, bond_serving._DIGEST_POINTERS_SQL):
+        for clock in ("now()", "current_date", "clock_timestamp", "random("):
+            assert clock not in sql.lower()
+
+
+def test_the_digest_covers_every_publication_product_the_build_reads() -> None:
+    """The audit, pinned: the metric product is a serving INPUT that no surface names.
+
+    ``contract.SURFACES`` declares the security, price-observation and N-PORT
+    products; the materializer additionally REQUIRES ``sec_current_bond_metric_v1``
+    (catalog: security_ytm/security_ytw; detail: + current_yield/wal), whose view
+    is gated on the ``bond_metric_v1`` current pointer. Leaving it out let a
+    same-as_of metric republication replay onto the stale serving publication.
+    """
+    from src.bonds import serving_contract as contract
+
+    declared = {surface["source_product"] for surface in contract.SURFACES}
+    assert set(bond_serving._DIGEST_PRODUCTS) == declared | {"bond_metric_v1"}
+    # The claim this rests on, read from the materializer rather than believed.
+    required = {
+        rel
+        for rels in materializer._SURFACE_REQUIRED_RELATIONS.values()
+        for rel in rels
+    }
+    assert "sec_current_bond_metric_v1" in required
 
 
 def test_retention_finds_stale_publications_without_scanning_the_facts_table() -> None:

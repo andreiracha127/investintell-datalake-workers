@@ -182,10 +182,19 @@ def _metric_value_sql(metric_id: str) -> str:
 #   * WHICH row wins is spelled out in full -- day, then source precedence, then
 #     the CUSIP -- the same rule the request-path series read uses. An arbitrary
 #     tie-break would make the served price flip between builds.
-#   * WHETHER the aliases AGREE is a real ambiguity, so a day on which two
-#     aliases of one security report different prices is marked
-#     ``duplicate_in_matching_cohort`` -- the existing state the projections
-#     already degrade on -- rather than silently served as if unique.
+#   * WHETHER the aliases AGREE is a real ambiguity, judged PER FIELD -- the
+#     rule the metric worker's dense lane already applies (``price_lo IS
+#     DISTINCT FROM price_hi`` for the price, the same spread on ``ytm`` for the
+#     yield, each field refused by its OWN disagreement):
+#       - a price disagreement marks the row ``duplicate_in_matching_cohort``,
+#         the existing state the projections already degrade on, rather than
+#         silently serving one of two prices as if unique;
+#       - a yield disagreement suppresses the YIELD ALONE. Folding it into the
+#         cohort state would NULL ``latest_price_pct`` on catalog/detail over a
+#         price every alias agrees on, while bond_metrics -- whose price lane
+#         sees no disagreement -- would keep publishing its price-derived
+#         metrics. The two surfaces would then serve numbers each other refuses,
+#         which is precisely the drift the cross-surface lock exists to prevent.
 #
 # The governed lane retains EVERY same-date duplicate (that is how an ambiguous
 # cohort stays visible), so this table is deliberately NOT unique per security:
@@ -229,10 +238,17 @@ WITH alias AS (
 ), on_latest AS (
     -- Disagreement between a security's aliases on its latest day, expressed as
     -- a spread rather than a DISTINCT count: window aggregates do not accept
-    -- DISTINCT in Postgres, and min <> max answers the same question.
+    -- DISTINCT in Postgres, and min <> max answers the same question. EXACT
+    -- equality, no tolerance -- the program's canonical disagreement semantics.
+    --
+    -- One spread PER FIELD. min/max skip NULLs, so an alias that simply reports
+    -- no yield is not a disagreement -- which reproduces the metric worker's
+    -- ``ytm IS NOT NULL`` yield cohort restricted to this day.
     SELECT *,
            min(price) OVER (PARTITION BY security_id) AS price_lo,
-           max(price) OVER (PARTITION BY security_id) AS price_hi
+           max(price) OVER (PARTITION BY security_id) AS price_hi,
+           min(ytm) OVER (PARTITION BY security_id) AS ytm_lo,
+           max(ytm) OVER (PARTITION BY security_id) AS ytm_hi
     FROM priced WHERE day = latest_day
 )
 SELECT DISTINCT ON (security_id)
@@ -240,7 +256,11 @@ SELECT DISTINCT ON (security_id)
        coalesce(price_type, 'not_reported') AS price_type,
        coalesce(accrued, 'not_reported') AS accrued_treatment,
        'present'::text AS price_state,
-       ytm,
+       -- The aliases disagree about the yield -> serve NO yield. The winning
+       -- row's own value is kept when they agree (never ``ytm_lo``): a sibling
+       -- alias's yield must not appear on a row whose winning source reported
+       -- none.
+       CASE WHEN ytm_lo IS DISTINCT FROM ytm_hi THEN NULL ELSE ytm END AS ytm,
        -- The dense series carries no 144A flag; an honest NULL, never a guess.
        NULL::boolean AS is_144a,
        CASE WHEN price_lo IS DISTINCT FROM price_hi THEN 'duplicate_in_matching_cohort'

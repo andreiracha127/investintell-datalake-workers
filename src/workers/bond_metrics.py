@@ -10,9 +10,19 @@ deliver — never recomputed from insufficient terms:
   * ``current_yield`` — coupon rate over the latest eligible clean price, as a
     decimal fraction (the app registry declares this metric a ``fraction``);
   * ``wal``           — years from ``as_of`` to maturity (bullet convention; the
-    published terms carry no amortization schedule to weight);
+    published terms carry no amortization schedule to weight), and ONLY while the
+    security still has remaining life at ``as_of``;
   * ``security_ytw``  — honestly ``terms_insufficient``: no call schedule is
     published and the source does not deliver a worst-case yield.
+
+The build anchor may sit AFTER a published maturity (it follows the freshest
+input day, and the published universe keeps a security's row after it redeems).
+Every metric that makes a claim about REMAINING life — ``wal``, the yield to a
+maturity, the coupon income ``current_yield`` projects, the sensitivity
+``security_effective_duration`` measures — has no referent there and is refused
+with the engine vocabulary's own ``settlement_after_maturity``. The OBSERVED
+price is not in that family: a trade printed on a day is a fact stamped by its
+own date, and ``latest_price_pct`` keeps serving it.
 
 This replaces the terms-driven engine path: the published universe carries no
 day-count and no coupon schedule (0% coverage), so recomputing yields from
@@ -74,8 +84,11 @@ PRODUCT = "bond_metric_v1"
 # the dense lane stopped reading a security's RETIRED CUSIP9 aliases and began
 # joining only the aliases valid at ``as_of`` — the same reason again: the build
 # this must not replay is the one that could publish a number filed against an
-# identifier the security no longer holds.
-METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v4"
+# identifier the security no longer holds. Bumped to v5 when the maturity-
+# dependent family stopped being published for a security that had already
+# redeemed at the anchor: the build this must not replay is the one that served a
+# NEGATIVE ``wal`` as an 'available' metric.
+METHODOLOGY_VERSION = "bond_metric_v1_source_projection_v5"
 
 SERVED_METRICS = (
     "security_ytm", "security_ytw", "current_yield", "wal",
@@ -347,8 +360,16 @@ live_yield AS (
 # security's latest, a number the serving surface refuses to show. A date with no
 # value is an established shape in this build (a priced day the source delivered
 # no yield for reads exactly the same way).
+#
+# ``matured`` is carried as its own input column, exactly as the two ambiguity
+# flags are, rather than by nulling ``maturity_date``: the maturity IS published
+# here, so erasing it would land the metric CASEs on ``terms_insufficient`` /
+# ``maturity_unpublished`` — a typed refusal that names the wrong missing thing.
+# The flag is NULL-safe by construction: an UNPUBLISHED maturity is not a matured
+# one and keeps its own refusal.
 _INPUTS_TAIL = """
 SELECT s.security_id, s.coupon_rate, s.coupon_type, s.maturity_date,
+       (s.maturity_date IS NOT NULL AND s.maturity_date <= %(as_of)s::date) AS matured,
        CASE WHEN w.price_ambiguous THEN NULL
             WHEN w.price_from_live THEN lp.price ELSE p.price END AS price,
        CASE WHEN w.price_from_live THEN lp.day ELSE p.observation_date END AS price_date,
@@ -421,6 +442,14 @@ SELECT count(*) FILTER (WHERE price_ambiguous) AS price_ambiguous,
 FROM _bond_metric_inputs
 """
 
+# Same reasoning for the maturity refusal, and the same treatment: reported, not
+# published. The status histogram cannot separate "already redeemed" from the
+# other typed engine refusals, and the number is what tells a run report how far
+# past its own universe the anchor has travelled (measured in production
+# 2026-08-08: 10,283 of 211,406 published securities had redeemed by the dense
+# series' freshest day, against 365 by the governed landing table's).
+_MATURED_COUNT_SQL = "SELECT count(*) FROM _bond_metric_inputs WHERE matured"
+
 # --------------------------------------------------------------------------- #
 # Analytic modified duration (security_effective_duration)
 # --------------------------------------------------------------------------- #
@@ -451,12 +480,20 @@ FROM _bond_metric_inputs
 # priced from its own coupon/yield/maturity — so a security whose yield is newer
 # than its price (or vice versa) still gets a duration measured at one coherent
 # instant instead of one straddling two dates.
+#
+# The domain guard answers to BOTH dates. ``maturity_date <= ytm_date`` catches a
+# yield the source filed at/after the redemption; ``i.matured`` catches the wider
+# case the anchor opened — a yield filed honestly INSIDE the bond's life, on a
+# bond that has since redeemed. A sensitivity over a life that has ended is not a
+# smaller number, it is a meaningless one, so the second condition is not implied
+# by the first and both are spelled out.
 _DURATION_LATERALS = """
 CROSS JOIN LATERAL (
     SELECT CASE
              WHEN i.ytm IS NULL OR i.ytm_date IS NULL
                OR i.coupon_rate IS NULL OR i.maturity_date IS NULL
                OR lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed'
+               OR i.matured
                OR i.maturity_date <= i.ytm_date
                OR i.ytm <= -0.02 OR i.ytm >= 0.60
              THEN NULL
@@ -513,30 +550,58 @@ FROM _bond_metric_inputs i
 {_DURATION_LATERALS}
 CROSS JOIN LATERAL (
     VALUES
+        -- The source's own yield lane, PROJECTED — but a yield TO MATURITY whose
+        -- maturity has already passed at the anchor points at nothing, however
+        -- honest it was on the day it was filed. The refusal is last in the
+        -- precedence (no price beats it), so a matured security with no yield
+        -- still reports the more proximate absence. The reason is a constant
+        -- because 'engine_typed_error' is the ONLY reason-bearing status this
+        -- metric can take (the outer INSERT drops it on every other one).
         ('security_ytm',
-         CASE WHEN i.ytm IS NOT NULL THEN i.ytm END,
-         CASE WHEN i.ytm IS NOT NULL THEN 'available' ELSE 'no_eligible_price' END,
-         NULL,
+         CASE WHEN i.ytm IS NOT NULL AND NOT i.matured THEN i.ytm END,
+         CASE WHEN i.ytm IS NULL THEN 'no_eligible_price'
+              WHEN i.matured THEN 'engine_typed_error'
+              ELSE 'available' END,
+         'settlement_after_maturity',
          'qualified_price_source'),
         ('security_ytw',
          NULL::numeric,
          'terms_insufficient',
          'call_schedule_unpublished',
          'derived_terms'),
+        -- Coupon income over the price: a claim about income the security still
+        -- pays. A redeemed bond pays none, so the ratio is arithmetic without a
+        -- subject. Both reason-bearing statuses are reachable here now, so the
+        -- reason CASE is keyed to the SAME test the status CASE branches on —
+        -- a constant would stamp 'coupon_rate_unpublished' on a maturity refusal
+        -- and satisfy every CHECK while naming the wrong cause.
         ('current_yield',
          CASE WHEN i.coupon_rate IS NOT NULL AND i.price IS NOT NULL AND i.price > 0
+                   AND NOT i.matured
               THEN i.coupon_rate / i.price END,
          CASE WHEN i.price IS NULL OR i.price <= 0 THEN 'no_eligible_price'
               WHEN i.coupon_rate IS NULL THEN 'terms_insufficient'
+              WHEN i.matured THEN 'engine_typed_error'
               ELSE 'available' END,
-         'coupon_rate_unpublished',
+         CASE WHEN i.coupon_rate IS NULL THEN 'coupon_rate_unpublished'
+              ELSE 'settlement_after_maturity' END,
          'derived_terms'),
+        -- Remaining life. The retired terms engine refused this exact case
+        -- (``metrics_engine_runner.wal_years``: settlement >= maturity_date is a
+        -- typed 'settlement_after_maturity' BondError, never a zero and never a
+        -- negative); the source projection dropped the guard and the anchor
+        -- advance made the omission visible. Same status, same code, same
+        -- boundary: a bond redeeming ON the anchor has zero remaining life, and
+        -- zero here is a number with no meaning rather than a measurement.
+        -- WAL consumes no price, so the maturity refusal is unconditional.
         ('wal',
-         CASE WHEN i.maturity_date IS NOT NULL
+         CASE WHEN i.maturity_date IS NOT NULL AND NOT i.matured
               THEN (i.maturity_date - %(as_of)s::date) / 365.0 END,
-         CASE WHEN i.maturity_date IS NOT NULL THEN 'available'
-              ELSE 'terms_insufficient' END,
-         'maturity_unpublished',
+         CASE WHEN i.maturity_date IS NULL THEN 'terms_insufficient'
+              WHEN i.matured THEN 'engine_typed_error'
+              ELSE 'available' END,
+         CASE WHEN i.maturity_date IS NULL THEN 'maturity_unpublished'
+              ELSE 'settlement_after_maturity' END,
          'derived_terms'),
         -- Analytic modified duration (years). OAS/z-spread and a callable YTW
         -- stay absent: no validated model publishes them here.
@@ -551,7 +616,7 @@ CROSS JOIN LATERAL (
          CASE WHEN i.coupon_rate IS NULL THEN 'coupon_rate_unpublished'
               WHEN lower(btrim(coalesce(i.coupon_type, ''))) <> 'fixed' THEN 'coupon_type_unsupported'
               WHEN i.maturity_date IS NULL THEN 'maturity_unpublished'
-              WHEN i.maturity_date <= i.ytm_date THEN 'settlement_after_maturity'
+              WHEN i.matured OR i.maturity_date <= i.ytm_date THEN 'settlement_after_maturity'
               WHEN i.ytm <= -0.02 OR i.ytm >= 0.60 OR i.ytm = 0 THEN 'yield_out_of_domain'
               ELSE 'non_finite_result' END,
          'analytic_modified_duration'),
@@ -693,6 +758,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         conn.execute(_inputs_sql(governed=governed, live=live), {"as_of": as_of})
         digest, security_count = conn.execute(_FINGERPRINT_SQL).fetchone()
         price_ambiguous, ytm_ambiguous = conn.execute(_AMBIGUITY_COUNTS_SQL).fetchone()
+        matured_count = conn.execute(_MATURED_COUNT_SQL).fetchone()[0]
         # The protocol pins sha256 fingerprints (64 hex); salt the row digest
         # with the product identity and methodology so a semantics change alone
         # also mints a new build.
@@ -709,5 +775,7 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         # refused because their own aliases disagreed on it that day.
         result["alias_ambiguous_price"] = price_ambiguous
         result["alias_ambiguous_ytm"] = ytm_ambiguous
+        # REPORTED (not published): how many securities the anchor has outlived.
+        result["matured_securities"] = matured_count
         conn.commit()
     return {"state": "ok", **result}

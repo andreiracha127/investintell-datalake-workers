@@ -95,9 +95,10 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
 # The publication identity is ``uuid5(product | as_of | code_revision)`` and
 # ``materialize`` treats an existing id as already built -- it only re-points. So
 # an as_of that follows the data is necessary but NOT sufficient: the daily candle
-# loader deliberately re-reads the watermark day to pick up revised closes, and a
-# governed source (metrics, prices, the security master) can republish for the
-# same day. Both change what the serving surface should say WITHOUT moving as_of,
+# loader deliberately re-reads each CUSIP from its OWN watermark to pick up revised
+# closes, and a governed source (metrics, prices, the security master) can
+# republish for the same day. Both change what the serving surface should say
+# WITHOUT moving as_of,
 # and both would replay onto the same publication_id -- a green run that serves
 # yesterday's price and yesterday's metric rows. That is the exact trap this
 # program has already paid for once (2026-07-30, Wave 1b: no discriminant -> the
@@ -108,51 +109,133 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
 # over unchanged inputs has to produce the same id, or replay and idempotence are
 # gone (a clock or a random salt would mint a 1.2 GB publication per run). So the
 # digest is a pure function of the inputs:
-#   * the current publication of every source product the serving contract
-#     consumes -- this is what catches a same-day metric/price/master
-#     republication;
-#   * the dense daily series' watermark slice AT or BEFORE as_of: its day, its row
-#     count and a checksum of exactly the columns the build reads -- this is what
-#     catches a revised close.
+#   * the current publication of every source product the build READS -- this is
+#     what catches a same-day metric/price/master republication;
+#   * the LATEST SERVED ROW PER CUSIP of the dense daily series -- this is what
+#     catches a revised close, on whichever day that bond last traded.
 #
 # Bounded by ``as_of`` on purpose: a ``calc_date`` replay of an older day must
-# digest THAT day's slice, never today's, or two identical replays would mint two
-# publications.
+# digest what THAT day would serve, never today's, or two identical replays would
+# mint two publications.
 #
 # Numeric values are rounded to a fixed scale before hashing: numeric carries its
 # scale into ``::text``, so 98.6 reloaded as 98.600 would otherwise read as a
 # revision and rebuild 2M rows for nothing.
 #
-# HONEST RESIDUAL: only the watermark day is checksummed. A revision to an OLDER
-# day inside the dense series does not move the digest. That is scoped to what the
-# loader actually does (it re-reads the watermark day); a deliberate history
-# reload is a deploy-shaped event and moves ``CODE_REVISION``.
+# WHY PER CUSIP AND NOT THE WATERMARK SLICE (review round 3). The first version of
+# this digest checksummed the table-wide ``max(day)`` slice. But the candle loader
+# watermarks and re-reads EACH CUSIP independently, so a revised close lands on
+# whatever day that bond last traded -- and a less-liquid bond's latest row sits
+# BEFORE the table-wide max, often by weeks. Its revision left the checksum
+# unmoved: the identity replayed, ``materialize`` treated the publication as
+# already built and only re-pointed, and catalog/detail/latest kept serving the
+# superseded price and YTM until that bond reached the global max day or a deploy
+# changed ``CODE_REVISION``. Measured on production 2026-08-08: of the 194,521
+# CUSIP9 aliases current at as_of, 21,935 carry a priced dense row, and only a
+# fraction of those trade on the max day -- so the old slice was blind to most of
+# the served cohort.
 #
-# The watermark day is resolved in its OWN statement and then bound as a constant,
-# which is not a style choice: measured against production 2026-08-07, folding it
-# into the checksum query as a CTE makes the day a runtime value, TimescaleDB
-# cannot exclude chunks while planning, and the plan opens an index scan on every
-# chunk of the series -- 6.5 s planning + 7.8 s execution warm (36 s cold), growing
-# with every year of history. With the day bound as a constant the plan touches
-# exactly ONE chunk: 0.6 ms planning, 7.6 ms execution, for the identical result.
+# The per-CUSIP form is EXACTLY the dense lane's contribution to serving, no more
+# and no less. ``bond_observation_daily`` is keyed (cusip9, day), so a CUSIP's
+# latest priced day holds exactly ONE row; the build (``_LATEST_OBSERVATION_LIVE``,
+# serving_materializer) serves, per security, a row drawn from that per-CUSIP
+# latest set. Digesting all of them is therefore a strict superset of what is
+# served: it can only ever be over-sensitive (a revision to an alias whose row
+# LOSES the per-security ordering still mints a publication), never blind. It
+# REPLACES the watermark slice rather than joining it -- the slice also covered
+# CUSIPs no alias maps, i.e. rows nothing serves, whose revision would have bought
+# a needless 1.2 GB rebuild. A CUSIP becoming served requires an ALIAS change,
+# which moves the ``bond_security_v1`` pointer this digest already reads.
+#
+# The alias set is the build's own PIT window ([valid_from, valid_to), valid_to
+# exclusive) and the price filter is the build's own (``price > 0``), so the
+# digest and the build never disagree about which row is in play.
+#
+# COST, measured against production 2026-08-08 (34.6M rows, 26 chunks):
+#   * this query, literal day, first touch:  18 ms planning + 6.08 s execution
+#   * same query as a bound PARAMETER (what the worker actually sends):
+#       custom plan  17 ms planning + 6.15 s execution
+#       forced GENERIC plan  1.7 ms planning + 5.97 s execution
+#     -- the parameter form is measured deliberately: round 2's trap was that a
+#     RUNTIME day (a CTE) cost 6.5 s planning + 7.8 s execution because
+#     TimescaleDB could not exclude chunks. A bound parameter does NOT reproduce
+#     it: both plans are the same Nested Loop over a ChunkAppend ordered by
+#     ``day DESC``, which walks chunks newest-first and stops at the first hit.
+#   * plain (non-EXPLAIN) warm repeat: 5.94 s for 21,935 digested CUSIPs.
+#   * rejected alternative -- ``DISTINCT ON (cusip9)`` over the whole series --
+#     16.60 s, 2.8x slower, for a SUPERSET of rows nothing serves.
+# There is no honest COLD number: ``bond_observation_daily`` is on the app's
+# request path and is permanently resident (the first touch already reported
+# ``read=1`` against ~13.4M buffer hits), so a cold measurement would require
+# evicting the cache the product runs on. The working-set figure is stated instead
+# so the ceiling is bounded rather than invented.
+#
+# Six seconds, once per chain execution, is the price of the correct answer, and
+# it is paid knowingly: the alternative is a green run serving a stale price.
+#
+# HONEST RESIDUALS, both narrower than what they replace:
+#   * a revision to a day that is NOT a CUSIP's latest does not move the digest --
+#     but it does not move the SERVED payload either, because the dense lane only
+#     ever projects each security's latest day. This is now a true no-op rather
+#     than the blind spot it was.
+#   * ``bond_price_fund_asof_v1`` (the observations surface's PIT lane) reads the
+#     ``bond_price_observation`` LANDING table directly, below any current
+#     pointer. That table is append-only and trigger-immutable
+#     (``bond_price_observation_immutable`` rejects UPDATE and DELETE), so a value
+#     cannot be revised in place; only an append could move the lane, and an
+#     append comes with a price publication whose pointer IS digested. Hashing it
+#     is not on the table: it is multi-million-row with a uuid primary key and no
+#     monotone anchor -- ``count(*)`` alone did not finish inside 120 s.
 _DIGEST_POINTERS_SQL = """
 SELECT product, publication_id FROM sec_derived_current_pointers
 WHERE product = ANY(%s) ORDER BY product
 """
 
-_DIGEST_WATERMARK_SQL = "SELECT max(day) FROM bond_observation_daily WHERE day <= %s"
+# Every product whose CURRENT POINTER the serving build reads -- audited against
+# serving_materializer, not inferred (review round 3). ``contract.SURFACES`` names
+# the three products a SURFACE is declared over (security / price observation /
+# N-PORT holdings), and the build reads one more that no surface names:
+# ``bond_metric_v1``, through the promoted ``sec_current_bond_metric_v1`` view,
+# for catalog's security_ytm/security_ytw and detail's current_yield/wal as well.
+# A metric rebuild promoted on the same as_of therefore changed what the product
+# should say while as_of and CODE_REVISION stood still, and the serving identity
+# replayed onto the stale payload.
+#
+# The rest of the audit came back covered: the alias view
+# (``sec_current_bond_security_alias_v1``) hangs off the SAME ``bond_security_v1``
+# pointer as the security view; the N-PORT instrument/class bridge shares the
+# holdings publication_id; and the validated run/package anchor
+# (``sec_validated_raw_runs`` / ``sec_ingestion_runs`` / ``sec_source_packages``)
+# decides which lineage the publication ROW cites, never what the payload says.
+# The dense series and the price landing table are not publications at all and are
+# handled above.
+_DIGEST_PRODUCTS = sorted(
+    {surface["source_product"] for surface in contract.SURFACES} | {"bond_metric_v1"}
+)
 
 _DIGEST_DENSE_SQL = """
 SELECT count(*),
        md5(coalesce(string_agg(
-           o.cusip9 || '|' || round(o.price, 10)::text
-                    || '|' || coalesce(round(o.ytm, 10)::text, '')
-                    || '|' || coalesce(o.price_type, '')
-                    || '|' || coalesce(o.accrued, '')
-                    || '|' || o.source_rank::text,
-           E'\\n' ORDER BY o.cusip9, o.source_rank), ''))
-FROM bond_observation_daily o
-WHERE o.day = %s AND o.price IS NOT NULL AND o.price > 0
+           a.cusip9 || '|' || l.day::text
+                    || '|' || round(l.price, 10)::text
+                    || '|' || coalesce(round(l.ytm, 10)::text, '')
+                    || '|' || coalesce(l.price_type, '')
+                    || '|' || coalesce(l.accrued, '')
+                    || '|' || l.source_rank::text,
+           E'\\n' ORDER BY a.cusip9), ''))
+FROM (SELECT DISTINCT alias_value AS cusip9
+      FROM sec_current_bond_security_alias_v1
+      WHERE alias_kind = 'cusip9'
+        AND valid_from <= %(as_of)s
+        AND (valid_to IS NULL OR valid_to > %(as_of)s)) a
+CROSS JOIN LATERAL (
+    SELECT o.day, o.price, o.ytm, o.price_type, o.accrued, o.source_rank
+    FROM bond_observation_daily o
+    WHERE o.cusip9 = a.cusip9 AND o.day <= %(as_of)s
+      AND o.price IS NOT NULL AND o.price > 0
+    ORDER BY o.day DESC
+    LIMIT 1
+) l
 """
 
 
@@ -161,22 +244,28 @@ def _input_digest(conn: Any, as_of: date) -> str:
 
     Same inputs -> same digest -> same publication_id -> cheap re-point. Changed
     inputs on the SAME as_of -> new digest -> a new publication that actually gets
-    built. An environment without the dense series (every unit database) digests a
-    fixed marker, so its identities stay exactly as reproducible as before.
+    built.
+
+    The dense arm is gated on BOTH relations the build gates its own dense merge
+    on (``_prepare_latest_observation``): without the series, or without the alias
+    view to key it through, the dense lane contributes NOTHING to serving, and the
+    digest says so with a fixed marker instead of a checksum. Those environments
+    (every unit database) keep identities exactly as reproducible as before.
     """
     parts: list[str] = [as_of.isoformat()]
-    products = sorted({surface["source_product"] for surface in contract.SURFACES})
-    for product, publication_id in conn.execute(_DIGEST_POINTERS_SQL, (products,)).fetchall():
+    for product, publication_id in conn.execute(
+        _DIGEST_POINTERS_SQL, (_DIGEST_PRODUCTS,)
+    ).fetchall():
         parts.append(f"{product}={publication_id}")
-    if conn.execute("SELECT to_regclass('bond_observation_daily')").fetchone()[0]:
-        watermark = conn.execute(_DIGEST_WATERMARK_SQL, (as_of,)).fetchone()[0]
-        if watermark is None:
-            parts.append("dense=none")
-        else:
-            rows, checksum = conn.execute(_DIGEST_DENSE_SQL, (watermark,)).fetchone()
-            parts.append(f"dense={watermark.isoformat()}:{rows}:{checksum}")
-    else:
+    if not conn.execute("SELECT to_regclass('bond_observation_daily')").fetchone()[0]:
         parts.append("dense=absent")
+    elif not conn.execute(
+        "SELECT to_regclass('sec_current_bond_security_alias_v1')"
+    ).fetchone()[0]:
+        parts.append("dense=unaliased")
+    else:
+        rows, checksum = conn.execute(_DIGEST_DENSE_SQL, {"as_of": as_of}).fetchone()
+        parts.append(f"dense={rows}:{checksum}")
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
 

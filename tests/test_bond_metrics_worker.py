@@ -987,6 +987,193 @@ def test_a_retired_alias_cannot_manufacture_a_disagreement(env):
     assert metrics["security_effective_duration"][3] == "available"
 
 
+# --------------------------------------------------------------------------- #
+# Matured securities: the build anchor may sit AFTER a published maturity
+# --------------------------------------------------------------------------- #
+# The anchor follows the freshest input day, so a published security whose
+# maturity fell inside that window is measured from a date at/after its own
+# maturity. The forward-looking family has no referent there: WAL goes NEGATIVE,
+# the yield-to-a-maturity points at a maturity that already passed, current yield
+# claims coupon income the bond no longer pays, and duration measures sensitivity
+# over a life that ended. The retired terms engine already refused exactly this
+# (``metrics_engine_runner.wal_years``: settlement >= maturity_date raises
+# ``BondError('settlement_after_maturity')``, pinned by
+# tests/bonds/test_metrics_engine_runner.py); the source projection dropped the
+# guard, and these tests put it back with the SAME status and the SAME code.
+#
+# The OBSERVED price is not in that family: a trade printed on a day is a fact
+# stamped by its own date, and it keeps serving.
+
+CUSIP_MAT = "BNDMAT011"  # a security whose maturity precedes the build anchor
+SEC_MAT = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_MAT}")
+
+
+def seed_matured_bond(conn, run_id: UUID, package_id: UUID, *, maturity: date,
+                      price: object = Decimal("99.80"), ytm: object = 0.055,
+                      priced_on: date | None = None) -> None:
+    """One fixed 6% bond maturing at ``maturity``, priced INSIDE its own life."""
+    observe_security(conn, run_id, cusip9=CUSIP_MAT, coupon_type="fixed",
+                     coupon_rate=Decimal("6.0"), maturity=maturity,
+                     day_count="30/360 US")
+    publish_security_master(conn, run_id, package_id)
+    if price is not None:
+        land_price(conn, run_id, cusip9=CUSIP_MAT, price=price, ytm=ytm,
+                   observation_date=priced_on or (maturity - timedelta(days=30)))
+
+
+def test_a_matured_security_never_publishes_a_negative_wal(env):
+    """The whole maturity-dependent family is typed-absent; the price survives."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    matured_on = AS_OF - timedelta(days=30)
+    seed_matured_bond(conn, run_id, package_id, maturity=matured_on)
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    # WAL is the thread's own case: (maturity - as_of)/365 is NEGATIVE here, and
+    # publishing it as 'available' is what this guard exists to stop.
+    assert rows["wal"][2] is None, "a matured bond has no remaining life to publish"
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+    # The rest of the forward-looking family goes with it, for the same reason.
+    for metric in ("security_ytm", "current_yield", "security_effective_duration"):
+        assert rows[metric][2] is None, metric
+        assert rows[metric][3] == "engine_typed_error", metric
+        assert rows[metric][4] == "settlement_after_maturity", metric
+    # An observed trade price is a dated FACT, not a claim about a future: it
+    # keeps serving, and it is the only thing that should.
+    assert rows["latest_price_pct"][3] == "available"
+    assert float(rows["latest_price_pct"][2]) == pytest.approx(99.80, rel=1e-9)
+    # ytw is untouched: its published reason (no call schedule) is still the true
+    # one, and restating it as a maturity refusal would add churn, not honesty.
+    assert rows["security_ytw"][3] == "terms_insufficient"
+    assert rows["security_ytw"][4] == "call_schedule_unpublished"
+    # Reported (never published), the ops counterpart of alias_ambiguous_*.
+    assert result["matured_securities"] == 1
+
+
+@pytest.mark.parametrize(
+    ("maturity_offset", "wal_is_published"),
+    [
+        (-1, False),  # matured the day before the anchor
+        (0, False),   # matures ON the anchor: settlement >= maturity, refused
+        (1, True),    # still alive at the anchor: unchanged
+    ],
+)
+def test_wal_requires_a_maturity_strictly_after_the_build_anchor(
+    env, maturity_offset, wal_is_published
+):
+    """The boundary is the retired engine's: ``settlement >= maturity`` refuses.
+
+    A bond redeeming ON the anchor has zero remaining life, and zero is a number
+    with no meaning here — the honesty rule of this product is that a value
+    exists only when it means something.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    maturity = AS_OF + timedelta(days=maturity_offset)
+    seed_matured_bond(conn, run_id, package_id, maturity=maturity,
+                      priced_on=AS_OF - timedelta(days=60))
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    if wal_is_published:
+        assert rows["wal"][3] == "available"
+        assert float(rows["wal"][2]) == pytest.approx(1 / 365.0, rel=1e-9)
+        assert result["matured_securities"] == 0
+    else:
+        assert rows["wal"][3] == "engine_typed_error"
+        assert rows["wal"][4] == "settlement_after_maturity"
+        assert rows["wal"][2] is None
+        assert result["matured_securities"] == 1
+
+
+def test_a_matured_security_with_no_price_keeps_the_price_refusal(env):
+    """Status precedence is the engine runner's documented order.
+
+    ``no_eligible_price`` -> ``terms_insufficient`` -> ``engine_typed_error``:
+    the maturity refusal is the LAST one before available, so it never overwrites
+    a more proximate absence. WAL consumes no price and lands on it regardless.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_matured_bond(conn, run_id, package_id, maturity=AS_OF - timedelta(days=30),
+                      price=None)
+
+    assert bond_metrics.run(search_path_dsn(schema),
+                            calc_date=AS_OF.isoformat())["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    for metric in ("security_ytm", "current_yield", "security_effective_duration",
+                   "latest_price_pct"):
+        assert rows[metric][3] == "no_eligible_price", metric
+        assert rows[metric][4] is None, metric
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+
+
+def test_an_unpublished_maturity_is_still_a_terms_refusal(env):
+    """A NULL maturity is not a matured one: the flag must be NULL-safe.
+
+    The two refusals answer different questions — 'the terms do not say when this
+    redeems' versus 'it already redeemed' — and collapsing them would lose the
+    distinction the 113 maturity-less securities in the published universe carry.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    observe_security(conn, run_id, cusip9=CUSIP_MAT, coupon_type="fixed",
+                     coupon_rate=Decimal("6.0"), maturity=None, day_count=None)
+    publish_security_master(conn, run_id, package_id)
+    land_price(conn, run_id, cusip9=CUSIP_MAT, price=Decimal("99.80"), ytm=0.055)
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+    assert result["matured_securities"] == 0
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    assert rows["wal"][3] == "terms_insufficient"
+    assert rows["wal"][4] == "maturity_unpublished"
+    assert rows["wal"][2] is None
+    # The yield the source delivered is untouched: nothing here says it matured.
+    assert rows["security_ytm"][3] == "available"
+    assert float(rows["security_ytm"][2]) == pytest.approx(0.055, rel=1e-9)
+
+
+def test_a_dense_series_anchor_past_a_maturity_does_not_publish_a_negative_wal(env):
+    """The production shape: the anchor is advanced BY the dense series itself.
+
+    The bond is alive at the governed landing day and dead by the time the dense
+    lane's freshest day anchors the build — which is exactly how this PR's
+    sixteen-month anchor advance reaches an already-published security.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    matured_on = AS_OF + timedelta(days=10)
+    seed_matured_bond(conn, run_id, package_id, maturity=matured_on,
+                      priced_on=AS_OF)
+    _seed_dense_series(conn, [
+        (CUSIP_MAT, AS_OF + timedelta(days=40), Decimal("100.00"), Decimal("0.0500")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["as_of"] == (AS_OF + timedelta(days=40)).isoformat()
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    assert rows["wal"][2] is None
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+    assert rows["latest_price_pct"][2] == Decimal("100.00")
+
+
 @pytest.mark.parametrize(
     ("valid_from_offset", "alias_prices_the_build"),
     [(0, True), (1, False)],  # valid_from is INCLUSIVE on as_of, and only then
