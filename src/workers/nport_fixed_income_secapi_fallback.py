@@ -211,7 +211,10 @@ class PostgresFallbackDb:
             "(m.source_holdings_publication_id,m.source_run_id,m.accession_number)) "
             "AND (m.parser_version<>%s OR m.resolver_version<>%s "
             "OR m.form_nport_query<>'accessionNo:\"' || m.accession_number || '\"' "
-            "OR m.form_nport_result_count<>0) ORDER BY m.accession_number",
+            "OR m.form_nport_result_count<>0 "
+            "OR m.document_url !~ ('^https://www[.]sec[.]gov/Archives/edgar/data/[0-9]+' "
+            "|| '/' || replace(m.accession_number,'-','') || '/primary_doc[.]xml$')) "
+            "ORDER BY m.accession_number",
             (publication_id, source_run_id, PARSER_VERSION, RESOLVER_VERSION),
         ).fetchall()
         return [row[0] for row in rows]

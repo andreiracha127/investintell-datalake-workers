@@ -111,7 +111,7 @@ def test_no_terminal_accessions_makes_no_provider_calls():
     assert db.writes == []
 
 
-def test_complete_but_incompatible_overlay_fails_before_provider_calls():
+def test_complete_but_incompatible_overlay_evidence_fails_before_provider_calls():
     class IncompatibleDb(_Db):
         def incompatible_accessions(self, *_args: str) -> list[str]:
             return [ACCESSION]
