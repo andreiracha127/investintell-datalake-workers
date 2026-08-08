@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date, datetime
+import math
 import re
 from typing import Iterable
 
@@ -17,6 +19,19 @@ FF17_SOURCE_URL = "https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/ftp/S
 FF17_SOURCE_VERSION = "Siccodes17.txt downloaded 2026-08-08"
 
 _CUSIP9_RE = re.compile(r"^[0-9A-Z]{9}$")
+
+_VOLUME_REASON_CODES = (
+    "valid_dollar_volume", "missing_dollar_volume", "invalid_dollar_volume",
+)
+_UNQUOTED_REASON_PREFIXES = (
+    "missing_rel_bid_ask_bps", "crossed_rel_bid_ask_bps", "invalid_rel_bid_ask_bps",
+)
+LIQUIDITY_REASON_CODES = frozenset(
+    [f"valid_quote_{volume}" for volume in _VOLUME_REASON_CODES]
+    + [f"valid_quote_invalid_quoted_days_{volume}" for volume in _VOLUME_REASON_CODES]
+    + [prefix for prefix in _UNQUOTED_REASON_PREFIXES]
+    + [f"{prefix}_{volume}" for prefix in _UNQUOTED_REASON_PREFIXES for volume in _VOLUME_REASON_CODES[1:]]
+)
 
 # Official Siccodes17.txt ranges, compacted only where adjacent official ranges
 # have the same FF17 bucket.  Tuple order preserves the official bucket order.
@@ -60,11 +75,129 @@ class SectorResolution:
     disagreement_count: int = 0
 
 
+@dataclass(frozen=True)
+class MonthlyLiquidityResolution:
+    """One validated OSBAP/TRACE monthly observation before it reaches storage.
+
+    ``unquoted`` is intentionally represented by NULL, never an invented zero.
+    Missing or invalid volume is retained as unavailable so the historical row's
+    identity and quoted-spread evidence are not silently discarded.
+    """
+
+    cusip9: str
+    month: date
+    rel_bid_ask_bps: float | None
+    quoted_days: int
+    dollar_volume: float | None
+    quote_state: str
+    reason_code: str
+
+
 def normalize_cusip9(value: object) -> str:
     text = str(value).strip().upper() if value is not None else ""
     if not _CUSIP9_RE.fullmatch(text):
         raise BondError("invalid_cusip9", {"cusip9": text or None})
     return text
+
+
+def normalize_closed_month(value: object, *, today: date | None = None) -> date:
+    """Normalize a source month to its first day and reject open/future months."""
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = datetime.strptime(text, "%Y-%m").date()
+        except ValueError:
+            try:
+                parsed = date.fromisoformat(text)
+            except ValueError as exc:
+                raise BondError("invalid_month", {"month": text or None}) from exc
+    else:
+        raise BondError("invalid_month", {"month": None if value is None else str(value)})
+    month = date(parsed.year, parsed.month, 1)
+    current_month = date.today() if today is None else today
+    if month >= date(current_month.year, current_month.month, 1):
+        raise BondError("open_or_future_month", {"month": month.isoformat()})
+    return month
+
+
+def _finite_nonnegative(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _quoted_days(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value if value >= 0 else None
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text.isdecimal():
+        return None
+    return int(text)
+
+
+def _is_finite_negative(value: object) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return False
+    return math.isfinite(number) and number < 0
+
+
+def resolve_monthly_liquidity(
+    cusip9: object,
+    month: object,
+    rel_bid_ask_bps: object,
+    quoted_days: object,
+    dollar_volume: object,
+) -> MonthlyLiquidityResolution:
+    """Resolve one OSBAP/TRACE row without repairing source values.
+
+    A negative spread is a crossed quote and becomes explicit ``unquoted``;
+    invalid volume stays NULL with a reason code rather than becoming zero.
+    """
+    normalized_cusip = normalize_cusip9(cusip9)
+    normalized_month = normalize_closed_month(month)
+    quote = _finite_nonnegative(rel_bid_ask_bps)
+    raw_quote_missing = rel_bid_ask_bps is None
+    valid_days = _quoted_days(quoted_days)
+    volume = _finite_nonnegative(dollar_volume)
+    volume_reason = (
+        "valid_dollar_volume" if volume is not None
+        else "missing_dollar_volume" if dollar_volume is None
+        else "invalid_dollar_volume"
+    )
+    if quote is None:
+        if raw_quote_missing:
+            quote_reason = "missing_rel_bid_ask_bps"
+        elif _is_finite_negative(rel_bid_ask_bps):
+            quote_reason = "crossed_rel_bid_ask_bps"
+        else:
+            quote_reason = "invalid_rel_bid_ask_bps"
+        reason = quote_reason if volume is not None else f"{quote_reason}_{volume_reason}"
+        return MonthlyLiquidityResolution(
+            normalized_cusip, normalized_month, None, 0, volume, "unquoted", reason
+        )
+    if valid_days is None:
+        reason = f"valid_quote_invalid_quoted_days_{volume_reason}"
+        days = 0
+    else:
+        days = valid_days
+        reason = f"valid_quote_{volume_reason}"
+    return MonthlyLiquidityResolution(
+        normalized_cusip, normalized_month, quote, days, volume, "quoted", reason
+    )
 
 
 def _valid_ff17(value: object) -> int | None:
