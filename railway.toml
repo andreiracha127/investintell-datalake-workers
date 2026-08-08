@@ -96,6 +96,46 @@
 #                           build sobre raw podada publicou quatro das oito
 #                           relações VAZIAS e passou por bem-sucedido. Recusar
 #                           não é falha, é repouso.
+#   bond_live_daily      -> DIÁRIO 07:30 UTC, serviço `bond-live-daily`
+#                           (e673db8e-…). Carrega o dia (candles por CUSIP na
+#                           bond_observation_daily, curva em
+#                           bond_yield_curve_daily, tape do pregão anterior em
+#                           bond_tick_daily), refresca a matview curada e
+#                           REPUBLICA (bond_metrics + bond_serving).
+#                           ORDEM OBRIGATÓRIA: ANTES da bond-chain (11:00). A
+#                           varredura + republicação leva ~80 min, então 07:30
+#                           deixa ~2h de folga; as duas não se corrompem (locks
+#                           distintos), mas sobrepor paga a mesma publicação
+#                           duas vezes.
+#                           A republicação NÃO é redundante com a chain: a
+#                           daily_chain indexa um run por (chain, source_day,
+#                           code_revision, config_version) e devolve o resumo de
+#                           um run COMPLETO sem re-executar, e o source_day sai
+#                           de watermarks que não se movem quando candles
+#                           chegam — num dia sem deploy e sem filing a chain não
+#                           executaria nada. Ver docs/runbooks/bond-live-daily.md.
+#                           Env: WORKER=bond_live_daily, DATABASE_URL,
+#                           FINNHUB_API_KEY (sem ela o run reporta no_api_key e
+#                           não escreve nada). Opcionais: WORKER_LIMIT (teto do
+#                           universo por run), WORKER_CALC_DATE (replay),
+#                           BOND_TICK_TOP_N (default 500).
+#                           FONTE: o serviço PRECISA deployar a partir do source
+#                           do GitHub. A republicação deriva a identidade da
+#                           publicação de uuid5(product | as_of | revision), e a
+#                           revisão vem de RAILWAY_GIT_COMMIT_SHA — que o Railway
+#                           injeta por DEPLOY, e só em deploy originado do
+#                           GitHub. Medido em produção 2026-08-08: a bond-chain
+#                           não seta nenhuma var explícita e mesmo assim gravou o
+#                           sha de 40 hex do commit implantado em
+#                           bond_daily_chain_runs (2026-08-06 e 08-07). Sem essa
+#                           injeção o worker agora FALHA alto em vez de publicar
+#                           sob "unknown" (BondServingRevisionUnresolved).
+#                           NÃO setar CODE_REVISION como variável permanente do
+#                           serviço: valor fixo SOMBREIA o sha por-deploy e uma
+#                           mudança só de código volta a colidir no mesmo
+#                           publication_id — run verde re-servindo payload velho.
+#                           É pino de UMA republicação deliberada e sai depois
+#                           (foi o que produção pagou em 2026-08-07).
 #   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
 #                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
 #                           âncora + INSERT. Cron sugerido:

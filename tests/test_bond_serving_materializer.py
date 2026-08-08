@@ -28,6 +28,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from datetime import timedelta
 from uuid import UUID
 
 import pytest
@@ -479,6 +480,540 @@ def test_materialize_is_idempotent() -> None:
             "SELECT count(*) FROM sec_derived_publications WHERE product='bond_serving_v1'"
         ).fetchone()[0]
         assert count == 1
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Freshness: the dense daily series advances the latest lane (2026-08-07)
+# --------------------------------------------------------------------------- #
+def _seed_dense_series(cur, rows) -> None:
+    """A plain-table stand-in for the bond_observation_daily hypertable.
+
+    The real relation is a TimescaleDB hypertable owned by the serving
+    repository; the columns and the (cusip9, day) key are what this build reads,
+    and neither needs time partitioning to be exercised.
+    """
+    cur.execute("""
+        CREATE TABLE bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    cur.executemany(
+        "INSERT INTO bond_observation_daily VALUES(%s,%s,%s,%s,NULL,%s,%s,%s,%s,'reported')",
+        rows,
+    )
+
+
+def _observation(cur, security_id, lane):
+    return cur.execute(
+        "SELECT observation_date, payload FROM bond_serving_facts "
+        "WHERE surface='observations' AND security_id=%s AND lane=%s",
+        (security_id, lane),
+    ).fetchall()
+
+
+def test_a_newer_dense_observation_advances_the_latest_lane_and_the_price() -> None:
+    """The 2e mechanism: header date and catalog price follow the dense series.
+
+    SEC1's governed latest sits on AS_OF; the dense series carries a strictly
+    newer day for its CUSIP9. Every surface that speaks about "latest" must move
+    to that day -- carrying the REAL observation date, never a re-stamped one.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        result = materializer.materialize(
+            cur.connection, as_of=fresh_day, code_revision="test"
+        )
+        assert result["latest_observation"]["advanced_securities"] == 1
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        assert observation_date == fresh_day, "the header must carry the REAL day"
+        assert float(payload["price"]) == 101.75
+        assert float(payload["ytm"]) == 0.0475
+
+        for surface in ("catalog", "detail"):
+            payload = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert float(payload["latest_price_pct"]) == 101.75, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_older_dense_observation_never_rolls_the_latest_lane_backwards() -> None:
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF - timedelta(days=10), 90.0, 0.09,
+             "trade", "clean", "finnhub", 1),
+        ])
+        result = _materialize(cur)
+        assert result["latest_observation"]["advanced_securities"] == 0
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == AS_OF
+        assert float(payload["price"]) == 99.5
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_securities_the_dense_series_does_not_reach_keep_their_governed_lane() -> None:
+    """SEC2 has no dense row: its (ambiguous, duplicate) governed rows survive."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+        rows = _observation(cur, SEC2, "latest")
+        assert len(rows) == 2, "both duplicate-cohort rows are retained"
+        assert {row[0] for row in rows} == {AS_OF}
+        # An ambiguous cohort still has NO unambiguous price to serve.
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC2,),
+        ).fetchone()[0]
+        assert payload["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_aliases_disagreeing_on_the_latest_day_are_marked_ambiguous() -> None:
+    """Two CUSIP9s of one security, same day, different prices -> no served price.
+
+    An arbitrary winner here would be a silently fabricated price; the build
+    reuses the existing duplicate-cohort state instead, which the surfaces
+    already degrade on.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+        marks = cur.execute(
+            "SELECT state, reason_code, ambiguity_state FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchall()
+        # BOTH conflicting aliases keep their row -- reading only the first one
+        # would pass even if the loser had been dropped.
+        assert len(marks) == 2
+        assert all(m == ("degraded", "observation_ambiguous", "ambiguous") for m in marks)
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert payload["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_aliases_agreeing_on_price_but_not_on_ytm_lose_only_the_ytm() -> None:
+    """Per-field refusal: the price is a fact, the yield is a conflict.
+
+    Two CUSIP9s of one security report the SAME price on the same day and two
+    DIFFERENT yields. Judging the cohort on price alone marks it unique, and the
+    ``DISTINCT ON`` tie-break then publishes whichever alias wins source rank --
+    serving one of two conflicting yields as if it were the security's. The
+    disagreement is per FIELD, exactly as the metric worker's dense lane already
+    treats it: the yield is suppressed, the agreed price is still served, and the
+    cohort stays unique so the price-eligibility predicate keeps it.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        assert observation_date == fresh_day
+        # The price all aliases agree on survives, ...
+        assert float(payload["price"]) == 101.75
+        # ... the conflicting yield does NOT: absent, never an arbitrary winner.
+        assert payload["ytm"] is None
+        # The cohort is NOT globally ambiguous: only the yield disagreed.
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        # ...so catalog and detail still serve the agreed price.
+        for surface in ("catalog", "detail"):
+            served = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert float(served["latest_price_pct"]) == 101.75, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_aliases_agreeing_on_both_fields_serve_both() -> None:
+    """The suppression is a REFUSAL, not a blanket drop of multi-alias yields."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == fresh_day
+        assert float(payload["price"]) == 101.75
+        assert float(payload["ytm"]) == 0.0475
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_price_disagreement_still_carries_a_yield_the_aliases_agree_on() -> None:
+    """The mirror case, and the reason the refusal is per field on BOTH sides.
+
+    The price cohort is ambiguous (so no price is served) while every alias
+    reports the same yield -- which stays. The metric worker refuses exactly the
+    price here and publishes the yield; a cohort-wide refusal on either surface
+    would make one of them serve a number the other denies.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL)", (SEC1,),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0475, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 2, "a conflicting cohort is retained, never collapsed"
+        for _, payload in rows:
+            assert payload["daily_key_state"] == "duplicate_in_matching_cohort"
+            assert float(payload["ytm"]) == 0.0475, "the agreed yield is not collateral damage"
+        served = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert served["latest_price_pct"] is None
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_price_conflict_retains_one_row_per_conflicting_alias() -> None:
+    """The conflicting cohort stays VISIBLE: every alias keeps its own row.
+
+    This is the governed lane's contract, not a new one for the dense series:
+    ``bond_price_observation_v1`` retains every same-(security, date) row from a
+    distinct source row -- "no arbitrary winner is chosen" -- and
+    ``serving_contract`` restates it for this very reason code ("both rows are
+    retained, never an arbitrary winner"). SEC2's governed cohort already ships
+    that way (two rows, 100.2 and 100.4, both degraded).
+
+    Collapsing the dense cohort to one row does NOT hide the tie-break: the
+    surviving row keeps carrying the winner's price in its payload, so the
+    product would show an arbitrary number where the conflict is. Three aliases
+    disagree here on BOTH fields, so a collapse is visible three ways -- the row
+    count, the set of prices, and the set of yields.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL),"
+            "(%s,'cusip9','037833888','2020-01-01',NULL)", (SEC1, SEC1),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+            ("037833888", fresh_day, 99.00, 0.0550, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = cur.execute(
+            "SELECT fact_key, state, reason_code, ambiguity_state, observation_date, payload "
+            "FROM bond_serving_facts WHERE surface='observations' AND security_id=%s "
+            "AND lane='latest' ORDER BY fact_key", (SEC1,),
+        ).fetchall()
+        assert len(rows) == 3, "every conflicting alias keeps its observation"
+        # Each retained row carries what ITS OWN source reported -- no field is
+        # blanked (that refusal belongs to the collapsed row, which cannot carry
+        # two values) and no sibling's value is copied onto it.
+        assert {float(r[5]["price"]) for r in rows} == {101.75, 95.10, 99.00}
+        assert {float(r[5]["ytm"]) for r in rows} == {0.0475, 0.0620, 0.0550}
+        # Distinct serving keys, or the projection would collide them away.
+        assert len({r[0] for r in rows}) == 3
+        for r in rows:
+            assert (r[1], r[2], r[3]) == ("degraded", "observation_ambiguous", "ambiguous")
+            assert r[4] == fresh_day
+            assert r[5]["daily_key_state"] == "duplicate_in_matching_cohort"
+        # ...and the ambiguity still costs the security its served price on BOTH
+        # security-grain surfaces: an ambiguous cohort has no unambiguous latest.
+        for surface in ("catalog", "detail"):
+            served = cur.execute(
+                "SELECT payload FROM bond_serving_facts "
+                "WHERE surface=%s AND security_id=%s", (surface, SEC1),
+            ).fetchone()[0]
+            assert served["latest_price_pct"] is None, surface
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_agreed_price_cohort_still_collapses_to_the_tie_break_winner() -> None:
+    """Retention is scoped to the CONFLICT; agreement is not a duplicate cohort.
+
+    Three aliases report the SAME price on the same day. There is nothing to
+    retain -- the observation is one fact reported three times -- so the lane
+    still serves a single row, and the security keeps its price. Retaining here
+    would degrade every multi-alias security to ``observation_ambiguous`` and
+    NULL a price nobody disputes.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9','037833999','2020-01-01',NULL),"
+            "(%s,'cusip9','037833888','2020-01-01',NULL)", (SEC1, SEC1),
+        )
+        fresh_day = AS_OF + timedelta(days=5)
+        _seed_dense_series(cur, [
+            ("037833100", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            ("037833999", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 3),
+            ("037833888", fresh_day, 101.75, 0.0475, "trade", "clean", "finnhub", 2),
+        ])
+        materializer.materialize(cur.connection, as_of=fresh_day, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        payload = rows[0][1]
+        assert float(payload["price"]) == 101.75
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        served = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert float(served["latest_price_pct"]) == 101.75
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Retired aliases: the latest lane reads the identity valid AT as_of
+# --------------------------------------------------------------------------- #
+# The alias snapshot is temporal — a superseded CUSIP9 keeps its row with a
+# CLOSED window — while the dense series is keyed by CUSIP9 alone. Joining every
+# historical alias lets a row filed against a retired identifier win the
+# latest-day ordering and be SERVED as this security's latest price, or mark the
+# cohort ambiguous against the identity that actually holds it. The filter is the
+# PIT fund-exposure join's: half-open [valid_from, valid_to), valid_from
+# inclusive, valid_to exclusive and open when NULL. The metric worker's dense
+# lane applies the identical predicate; the two surfaces must agree about which
+# numbers exist.
+CUSIP_RETIRED = "037833777"
+
+
+@pytest.mark.parametrize(
+    ("valid_to_offset", "retired_alias_serves_the_price"),
+    [
+        (None, True),  # open window: the alias is current
+        (1, True),     # closes the day AFTER as_of: still held on as_of
+        (0, False),    # closes ON as_of: valid_to is EXCLUSIVE
+        (-3, False),   # closed before as_of
+    ],
+)
+def test_the_latest_lane_reads_only_the_aliases_held_at_as_of(
+    valid_to_offset, retired_alias_serves_the_price
+) -> None:
+    """The freshest dense row must not be served when its CUSIP9 is retired.
+
+    The retired identifier carries the NEWER row, so the alias window is the only
+    thing that can decide the outcome: unfiltered, it always wins and the header
+    renders a day and a price belonging to an identifier the security no longer
+    holds.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,'2020-01-01',%s)",
+            (SEC1, CUSIP_RETIRED,
+             None if valid_to_offset is None else as_of + timedelta(days=valid_to_offset)),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF + timedelta(days=2), 101.75, 0.0475,
+             "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        rows = _observation(cur, SEC1, "latest")
+        assert len(rows) == 1
+        observation_date, payload = rows[0]
+        if retired_alias_serves_the_price:
+            assert observation_date == as_of
+            assert float(payload["price"]) == 95.10
+        else:
+            # The HELD identity's own latest day, never the retired alias's.
+            assert observation_date == AS_OF + timedelta(days=2)
+            assert float(payload["price"]) == 101.75
+        assert payload["daily_key_state"] == "unique_in_matching_cohort"
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_a_retired_alias_cannot_manufacture_an_ambiguous_cohort() -> None:
+    """A closed window must not cost the security a price it unambiguously has.
+
+    Same day, two values, and the ambiguity rule is blunt by design: unfiltered,
+    the surface degrades and serves NO price at all while the held identity
+    reports a perfectly good one.
+    """
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,'2020-01-01',%s)", (SEC1, CUSIP_RETIRED, AS_OF),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", as_of, 101.75, 0.0475, "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        state, reason = cur.execute(
+            "SELECT state, reason_code FROM bond_serving_facts "
+            "WHERE surface='observations' AND security_id=%s AND lane='latest'", (SEC1,),
+        ).fetchone()
+        assert (state, reason) == ("available", None)
+        payload = cur.execute(
+            "SELECT payload FROM bond_serving_facts "
+            "WHERE surface='catalog' AND security_id=%s", (SEC1,),
+        ).fetchone()[0]
+        assert float(payload["latest_price_pct"]) == 101.75
+    finally:
+        if schema:
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        conn.close()
+
+
+def test_an_alias_not_yet_in_effect_never_serves_the_latest_price() -> None:
+    """valid_from is INCLUSIVE, so a window opening AFTER as_of is out."""
+    conn = connect()
+    schema = None
+    try:
+        cur = conn.cursor()
+        schema = setup(cur)
+        as_of = AS_OF + timedelta(days=5)
+        cur.execute(
+            "INSERT INTO sec_current_bond_security_alias_v1 VALUES "
+            "(%s,'cusip9',%s,%s,NULL)", (SEC1, CUSIP_RETIRED, as_of + timedelta(days=1)),
+        )
+        _seed_dense_series(cur, [
+            ("037833100", AS_OF + timedelta(days=2), 101.75, 0.0475,
+             "trade", "clean", "finnhub", 1),
+            (CUSIP_RETIRED, as_of, 95.10, 0.0620, "trade", "clean", "finnhub", 1),
+        ])
+        materializer.materialize(cur.connection, as_of=as_of, code_revision="test")
+
+        observation_date, payload = _observation(cur, SEC1, "latest")[0]
+        assert observation_date == AS_OF + timedelta(days=2)
+        assert float(payload["price"]) == 101.75
     finally:
         if schema:
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

@@ -156,6 +156,179 @@ def _metric_value_sql(metric_id: str) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# The latest observation per security, resolved ONCE per build.
+# ---------------------------------------------------------------------------
+#
+# WHY this is a prepared table and not the lane view it used to be (2026-08-07):
+# ``bond_price_latest_v1`` projects the governed price publication, whose landing
+# table stops at 2025-03-31, while the dense daily serving series
+# (``bond_observation_daily``) reaches the current session. The detail header and
+# the catalog's price/yield columns are built from this, so reading the lane
+# alone made the product state a sixteen-month-old price as its latest -- next to
+# a chart drawn through yesterday.
+#
+# The fix keeps BOTH lanes and takes the LATER one per security. The dense series
+# is an OPTIONAL, non-publication input -- the shape ``bond_reference_terms``
+# established -- so an environment without it (every unit database) resolves to
+# exactly the previous behaviour, and the surface-coverage gate is untouched.
+#
+# NOTHING here fabricates a date: each row carries the observation_date it was
+# actually observed on, which is what the header renders.
+#
+# The dense series is keyed by CUSIP9 and this product by security_id, so the
+# join runs through the published alias view. A security legitimately holds more
+# than one CUSIP9 alias, which forces two decisions:
+#   * WHETHER the aliases AGREE is a real ambiguity, judged PER FIELD -- the
+#     rule the metric worker's dense lane already applies (``price_lo IS
+#     DISTINCT FROM price_hi`` for the price, the same spread on ``ytm`` for the
+#     yield, each field refused by its OWN disagreement).
+#   * WHICH rows survive follows from that answer, and it is NOT always one row.
+#
+# A PRICE disagreement is a duplicate cohort, and the governed lane's contract
+# for a duplicate cohort is RETENTION: ``bond_price_observation_v1`` keeps every
+# same-(security, date) row from a distinct source row and marks them all
+# ``duplicate_in_matching_cohort`` -- "no arbitrary winner is chosen"
+# (schemas/bond_price_observations_v1.sql), which ``serving_contract`` restates
+# as "both rows are retained, never an arbitrary winner". So the dense lane emits
+# ONE ROW PER CONFLICTING ALIAS, each carrying the price its own source reported.
+# Collapsing them would leave a single degraded row whose payload still showed
+# the tie-break winner's price -- an arbitrary number dressed as the security's,
+# and a semantics neither lane has.
+#
+# When the aliases AGREE on the price there is no cohort to retain, so the row is
+# collapsed to one -- ``source_rank`` then the CUSIP, the same rule the
+# request-path series read uses, so the served row never flips between builds --
+# and only THERE does the per-field yield refusal apply: a collapsed row is a
+# synthesis that cannot carry two yields, so a disputed yield is suppressed while
+# the agreed price is still served (folding the yield into the cohort state would
+# NULL ``latest_price_pct`` on catalog/detail over a price every alias agrees on,
+# while bond_metrics -- whose price lane sees no disagreement -- would keep
+# publishing its price-derived metrics; the two surfaces would then serve numbers
+# each other refuses, which is precisely the drift the cross-surface lock exists
+# to prevent). A RETAINED row needs no such refusal: it speaks for one alias, so
+# its own yield is exactly what that source reported and no sibling's value can
+# contaminate it -- which is how the governed lane already serves a duplicate
+# cohort, each retained row carrying its own distinct yield.
+#
+# This table is therefore deliberately NOT unique per security: ``source_row_number``
+# rides along (0-based, in the tie-break order, so the retained rows get stable
+# distinct serving fact keys) and the ambiguity filter -- not a unique index -- is
+# what keeps the inline price subquery scalar, since every retained row is marked
+# ``duplicate_in_matching_cohort`` and the eligibility predicate takes only unique
+# ones.
+_LATEST_OBSERVATION_GOVERNED = """
+CREATE TEMP TABLE _bond_latest_observation ON COMMIT DROP AS
+SELECT l.security_id, l.observation_date, l.source_row_number, l.price,
+       l.price_type, l.accrued_treatment, l.price_state, l.ytm, l.is_144a,
+       l.daily_key_state
+FROM bond_price_latest_v1 l
+"""
+
+#
+# The alias set is POINT-IN-TIME. ``bond_security_alias_v1`` keeps a superseded
+# CUSIP9 as a row with a CLOSED window, and the dense series is keyed by CUSIP9
+# alone; joining every historical alias would let a row filed against a retired
+# identifier win the latest-day ordering and be served as this security's price,
+# or manufacture a disagreement against the identity that actually holds it. The
+# window predicate is the PIT fund-exposure join's (``_FUND_EXPOSURE_MATCHES``
+# below): HALF-OPEN [valid_from, valid_to), valid_from inclusive, valid_to
+# exclusive and open when NULL. The metric worker's dense lane
+# (``_LIVE_LANE_CTE``, src/workers/bond_metrics.py) applies the identical filter
+# — the two surfaces must resolve the same cohort or each serves numbers the
+# other refuses.
+_LATEST_OBSERVATION_LIVE = """
+CREATE TEMP TABLE _bond_live_latest ON COMMIT DROP AS
+WITH alias AS (
+    SELECT DISTINCT a.security_id, a.alias_value AS cusip9
+    FROM sec_current_bond_security_alias_v1 a
+    WHERE a.alias_kind = 'cusip9'
+      AND a.valid_from <= %(as_of)s
+      AND (a.valid_to IS NULL OR a.valid_to > %(as_of)s)
+), priced AS (
+    SELECT al.security_id, o.cusip9, o.day, o.price, o.ytm, o.price_type,
+           o.accrued, o.source_rank,
+           max(o.day) OVER (PARTITION BY al.security_id) AS latest_day
+    FROM alias al
+    JOIN bond_observation_daily o ON o.cusip9 = al.cusip9
+    WHERE o.price IS NOT NULL AND o.price > 0 AND o.day <= %(as_of)s
+), on_latest AS (
+    -- Disagreement between a security's aliases on its latest day, expressed as
+    -- a spread rather than a DISTINCT count: window aggregates do not accept
+    -- DISTINCT in Postgres, and min <> max answers the same question. EXACT
+    -- equality, no tolerance -- the program's canonical disagreement semantics.
+    --
+    -- One spread PER FIELD. min/max skip NULLs, so an alias that simply reports
+    -- no yield is not a disagreement -- which reproduces the metric worker's
+    -- ``ytm IS NOT NULL`` yield cohort restricted to this day.
+    SELECT *,
+           min(price) OVER (PARTITION BY security_id) AS price_lo,
+           max(price) OVER (PARTITION BY security_id) AS price_hi,
+           min(ytm) OVER (PARTITION BY security_id) AS ytm_lo,
+           max(ytm) OVER (PARTITION BY security_id) AS ytm_hi
+    FROM priced WHERE day = latest_day
+), ranked AS (
+    -- The tie-break, expressed once and reused for both outcomes: it PICKS the
+    -- row when the cohort agrees (srn = 0) and merely NUMBERS the rows when it
+    -- does not. ``bond_observation_daily`` is keyed (cusip9, day) and the alias
+    -- CTE is DISTINCT, so the CUSIP is unique inside a security's latest-day
+    -- cohort and the numbering is total -- the same row wins, and the same row
+    -- carries source_row_number 0, on every rebuild.
+    SELECT *,
+           (row_number() OVER (PARTITION BY security_id
+                               ORDER BY source_rank DESC, cusip9) - 1)::integer AS srn
+    FROM on_latest
+)
+SELECT security_id, day AS observation_date, srn AS source_row_number, price,
+       coalesce(price_type, 'not_reported') AS price_type,
+       coalesce(accrued, 'not_reported') AS accrued_treatment,
+       'present'::text AS price_state,
+       -- A RETAINED row speaks for one alias, so it carries that alias's own
+       -- yield -- the governed lane's behaviour for a duplicate cohort. Only the
+       -- COLLAPSED row refuses a disputed yield: it is a synthesis that cannot
+       -- carry two, and a sibling alias's yield must not appear on a row whose
+       -- winning source reported none (which is also why the kept value is the
+       -- winner's own ``ytm``, never ``ytm_lo``).
+       CASE WHEN price_lo IS DISTINCT FROM price_hi THEN ytm
+            WHEN ytm_lo IS DISTINCT FROM ytm_hi THEN NULL
+            ELSE ytm END AS ytm,
+       -- The dense series carries no 144A flag; an honest NULL, never a guess.
+       NULL::boolean AS is_144a,
+       CASE WHEN price_lo IS DISTINCT FROM price_hi THEN 'duplicate_in_matching_cohort'
+            ELSE 'unique_in_matching_cohort' END AS daily_key_state
+FROM ranked
+-- Retain the WHOLE conflicting cohort; collapse to the tie-break winner only
+-- when there is nothing to conflict about.
+WHERE price_lo IS DISTINCT FROM price_hi OR srn = 0
+"""
+
+# Merge, in two ordered statements. PRUNE first, then INSERT: the reverse order
+# would leave the superseded governed row alongside the freshly inserted one and
+# the inline price subquery -- which relies on at most one eligible row per
+# security -- would raise "more than one row returned by a subquery".
+#
+# The dense row wins only when it is STRICTLY newer, so the governed lane keeps
+# every security the dense series does not reach and a same-day tie never swaps a
+# governed row for a thinner one.
+_LATEST_OBSERVATION_PRUNE = """
+DELETE FROM _bond_latest_observation g
+USING _bond_live_latest v
+WHERE g.security_id = v.security_id AND v.observation_date > g.observation_date
+"""
+
+_LATEST_OBSERVATION_MERGE = """
+INSERT INTO _bond_latest_observation
+    (security_id, observation_date, source_row_number, price, price_type,
+     accrued_treatment, price_state, ytm, is_144a, daily_key_state)
+SELECT v.security_id, v.observation_date, v.source_row_number, v.price,
+       v.price_type, v.accrued_treatment, v.price_state, v.ytm, v.is_144a,
+       v.daily_key_state
+FROM _bond_live_latest v
+WHERE NOT EXISTS (
+    SELECT 1 FROM _bond_latest_observation g WHERE g.security_id = v.security_id
+)
+"""
+
 # The sole ELIGIBLE latest observation's price (% of par) or an honest NULL.
 # Mirrors bond_price_is_eligible (bond_price_eligibility_v1.sql) column-wise;
 # identity is resolved by lane construction (only resolved observations publish).
@@ -164,7 +337,7 @@ def _metric_value_sql(metric_id: str) -> str:
 # A duplicate cohort has NO unambiguous latest price -> NULL, never an arbitrary
 # winner; at most one row can match (unique cohort), so the subquery is scalar.
 _LATEST_PRICE_PCT_SQL = """(
-    SELECT p.price FROM bond_price_latest_v1 p
+    SELECT p.price FROM _bond_latest_observation p
     WHERE p.security_id = s.security_id
       AND p.price_type IN ('trade', 'evaluated')
       AND p.accrued_treatment IN ('clean', 'dirty')
@@ -380,7 +553,18 @@ FROM (
                 THEN 'observation_ambiguous' ELSE NULL END AS reason_code,
            CASE WHEN daily_key_state = 'duplicate_in_matching_cohort'
                 THEN 'ambiguous' ELSE 'resolved' END AS ambiguity_state
-    FROM bond_price_latest_v1
+    -- The latest lane reads the RESOLVED latest observation (governed lane
+    -- merged with the dense daily series, see _bond_latest_observation), which
+    -- is what makes the detail header show the day the chart ends on rather
+    -- than the day the governed landing table stopped.
+    -- The lane literal is still HARDCODED here (Task 4 structural isolation:
+    -- this branch can only ever emit 'latest'), but typed as text rather than
+    -- as the bond_price_lane domain: the domain is created by the price
+    -- observation DDL, which a build that seeds only the serving surfaces need
+    -- not have installed. The UNION below resolves the two branches to the
+    -- domain's base type either way.
+    FROM (SELECT 'latest'::text AS lane, o.*
+          FROM _bond_latest_observation o) resolved_latest
     UNION ALL
     SELECT lane, security_id, observation_date, source_row_number, price, price_type,
            accrued_treatment, price_state, ytm, is_144a, daily_key_state,
@@ -577,6 +761,40 @@ def _prepare_issuer_classification_source(
     conn.execute("ANALYZE _bond_issuer_classification")
 
 
+def _prepare_latest_observation(
+    conn: psycopg.Connection, params: dict[str, Any],
+) -> dict[str, Any]:
+    """Resolve each security's latest observation once per build.
+
+    Governed lane first, then -- when the dense daily series and the alias view
+    are both present -- every security whose dense observation is STRICTLY newer
+    is replaced by it. An environment without the dense series (every unit
+    database) gets the governed lane verbatim, which is exactly the behaviour
+    that preceded this function.
+    """
+    conn.execute("DROP TABLE IF EXISTS _bond_latest_observation")
+    conn.execute(_LATEST_OBSERVATION_GOVERNED)
+    governed = conn.execute(
+        "SELECT count(*) FROM _bond_latest_observation"
+    ).fetchone()[0]
+    advanced = 0
+    if (_relation_exists(conn, "bond_observation_daily")
+            and _relation_exists(conn, "sec_current_bond_security_alias_v1")):
+        conn.execute("DROP TABLE IF EXISTS _bond_live_latest")
+        conn.execute(_LATEST_OBSERVATION_LIVE, params)
+        conn.execute("CREATE INDEX _bond_live_latest_idx ON _bond_live_latest(security_id)")
+        conn.execute("ANALYZE _bond_live_latest")
+        advanced = conn.execute(_LATEST_OBSERVATION_PRUNE).rowcount
+        conn.execute(_LATEST_OBSERVATION_MERGE)
+    conn.execute(
+        "CREATE INDEX _bond_latest_observation_idx "
+        "ON _bond_latest_observation(security_id)"
+    )
+    conn.execute("ANALYZE _bond_latest_observation")
+    total = conn.execute("SELECT count(*) FROM _bond_latest_observation").fetchone()[0]
+    return {"governed_rows": governed, "advanced_securities": advanced, "rows": total}
+
+
 def _prepare_fund_exposure_source(
     conn: psycopg.Connection, params: dict[str, Any],
 ) -> None:
@@ -630,6 +848,7 @@ def materialize(
 
     surfaces_written: list[str] = []
     empty: list[str] = []
+    latest_stats: dict[str, Any] = {}
     if existing is None:
         anchor_run, anchor_package = _resolve_anchor(conn, source_run_id, source_package_id)
         version = conn.execute(
@@ -648,6 +867,11 @@ def materialize(
         )
         params = {"pub": publication_id, "as_of": as_of}
         consumed: dict[str, str] = {}
+        # Three of the four surfaces read the latest observation, so it is
+        # resolved ONCE here rather than per surface -- and before the loop, so
+        # catalog/detail/observations cannot disagree about a security's price.
+        if _relation_exists(conn, "bond_price_latest_v1"):
+            latest_stats = _prepare_latest_observation(conn, params)
         for surface in contract.SURFACES:
             name = surface["surface"]
             if not _surface_present(conn, name):
@@ -702,5 +926,9 @@ def materialize(
         "publication_id": str(publication_id),
         "surfaces_written": surfaces_written,
         "rows": row_count,
+        # How many securities the dense daily series moved ahead of the governed
+        # lane. Reported so an operator can tell "the header is fresh" from "the
+        # header happens to look fresh" without opening the payload.
+        "latest_observation": latest_stats,
         "state": "current",
     }

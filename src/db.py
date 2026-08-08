@@ -302,3 +302,9 @@ LOCK_NPORT_FIXED_INCOME_SERVING = 900_351
 # selection twice at once. 900_352 is the next free id after
 # LOCK_NPORT_FIXED_INCOME_SERVING.
 LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352
+# Bond live daily feed (candles/curve/ticks + republication). Its own id, NOT
+# shared with LOCK_BOND_METRICS or LOCK_BOND_SERVING: the worker invokes both of
+# those publication workers as its last stage, and they take their own locks on
+# their own connections — reusing an id here would deadlock the worker against
+# itself. 900_353 is the next free id after LOCK_SEC_EFFECTIVE_MATVIEWS.
+LOCK_BOND_LIVE_DAILY = 900_353

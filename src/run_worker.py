@@ -56,7 +56,8 @@ def main() -> None:
             "|open_macro_v03_chain"
             "|open_macro_v04"
             "|open_macro_v03_monitor|gamma_drift|ipca_production_gate"
-            "|tiingo_fund_meta|mixed_quant_publication|mixed_quant_retention)"
+            "|tiingo_fund_meta|mixed_quant_publication|mixed_quant_retention"
+            "|bond_live_daily)"
         )
     mod = importlib.import_module(f"src.workers.{worker}")
 

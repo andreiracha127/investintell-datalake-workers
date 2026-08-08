@@ -55,7 +55,9 @@ jobs:
           src/run_worker.py
           src/sec_regulatory
           src/sec_serving
+          src/workers/_finnhub.py
           src/workers/bond_curves.py
+          src/workers/bond_live_daily.py
           src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
           src/workers/bond_price_ingest.py
@@ -104,6 +106,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_issuer_consensus.py
+            tests/bonds/test_live_daily.py
             tests/bonds/test_matching.py
             tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
@@ -120,6 +123,7 @@ jobs:
             tests/test_bond_curve_materializer.py
             tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
+            tests/test_bond_live_daily_worker.py
             tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py
             tests/test_bond_rating_history_materializer.py
@@ -128,6 +132,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_finnhub_client.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py
@@ -223,7 +228,9 @@ jobs:
           src/run_worker.py
           src/sec_regulatory
           src/sec_serving
+          src/workers/_finnhub.py
           src/workers/bond_curves.py
+          src/workers/bond_live_daily.py
           src/workers/bond_metrics.py
           src/workers/bond_price_eligibility.py
           src/workers/bond_price_ingest.py
@@ -282,6 +289,7 @@ jobs:
             tests/bonds/test_debt_mapping.py
             tests/bonds/test_identifiers.py
             tests/bonds/test_issuer_consensus.py
+            tests/bonds/test_live_daily.py
             tests/bonds/test_matching.py
             tests/bonds/test_metrics_engine_runner.py
             tests/bonds/test_oas.py
@@ -298,6 +306,7 @@ jobs:
             tests/test_bond_curve_materializer.py
             tests/test_bond_metrics_worker.py
             tests/test_bond_price_eligibility_view.py
+            tests/test_bond_live_daily_worker.py
             tests/test_bond_price_ingest.py
             tests/test_bond_price_observations_materializer.py
             tests/test_bond_rating_history_materializer.py
@@ -306,6 +315,7 @@ jobs:
             tests/test_bond_serving_materializer.py
             tests/test_bond_serving_worker.py
             tests/test_bond_source_qualify.py
+            tests/test_finnhub_client.py
             tests/test_load_bond_reference_terms.py
             tests/test_daily_publication_chain.py
             tests/test_daily_publication_chain_wiring.py

@@ -26,7 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import UUID, uuid4, uuid5
@@ -638,3 +638,720 @@ def test_new_surfaces_carry_no_vendor_identity():
         text = path.read_text(encoding="utf-8").lower()
         for token in ("osbap", "openbondassetpricing", "trace", "wrds", "n-port", "nport"):
             assert token not in text, f"{path.name} leaks vendor token {token!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Freshness: the dense daily series carries the build forward (2026-08-07)
+# --------------------------------------------------------------------------- #
+def _seed_dense_series(conn, rows) -> None:
+    """Plain-table stand-in for the bond_observation_daily hypertable.
+
+    The CUSIP9 -> security_id join runs through the alias view the security
+    master already publishes (``publish_security_master`` seeds it), so nothing
+    identity-shaped is invented here.
+    """
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS bond_observation_daily(
+            cusip9 text NOT NULL, day date NOT NULL, price numeric, ytm numeric,
+            volume numeric, price_type text, accrued text, source text NOT NULL,
+            source_rank smallint NOT NULL, ytm_basis text,
+            PRIMARY KEY (cusip9, day))
+    """)
+    for row in rows:
+        conn.execute(
+            "INSERT INTO bond_observation_daily "
+            "VALUES(%s,%s,%s,%s,NULL,'trade','clean','finnhub',1,'reported') "
+            "ON CONFLICT (cusip9, day) DO NOTHING", row,
+        )
+    conn.commit()
+
+
+def test_a_newer_dense_observation_prices_the_metrics(env):
+    """latest_price_pct / current_yield / security_ytm all move to the newer day.
+
+    This is the whole 2e mechanism on the metric side: the governed landing
+    table stops, the dense series continues, and the published numbers follow it
+    instead of freezing at the landing table's last day.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [(CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410"))])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    # The build's own anchor followed the data (it was AS_OF before).
+    assert result["as_of"] == fresh_day.isoformat()
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    # coupon 10.0 over the NEW price, not the old 96.23.
+    assert round(metrics["current_yield"][2], 8) == round(
+        Decimal("10.0") / Decimal("104.50"), 8
+    )
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_price_and_yield_resolve_on_their_own_latest_days(env):
+    """A fresh price with no yield must not erase the yield -- nor the duration.
+
+    The dense series carries a newer PRICED day whose yield is absent. Folding
+    both fields onto one latest row would publish a yield of NULL (and, since
+    duration is solved from the yield, no duration either).
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("100.00"), Decimal("0.0500")),
+        (CUSIP_FIX, AS_OF + timedelta(days=20), Decimal("101.00"), None),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema))
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("101.00"), "freshest PRICED day"
+    assert metrics["security_ytm"][2] == Decimal("0.0500"), "freshest YIELDED day"
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_an_older_dense_observation_never_rolls_a_metric_backwards(env):
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF - timedelta(days=5), Decimal("50.00"), Decimal("0.4000")),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema))
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("96.23")
+    assert metrics["security_ytm"][2] == Decimal("0.076")
+
+
+# --------------------------------------------------------------------------- #
+# Disagreeing aliases: a conflict is declared, never resolved by tie-break
+# --------------------------------------------------------------------------- #
+# The dense series is keyed by CUSIP9 and this product by security_id, so a
+# security holding TWO CUSIP9 aliases can meet two rows on one day. The serving
+# materializer's latest lane already refuses that cohort
+# (``duplicate_in_matching_cohort`` -> no served price); these tests hold the
+# metric lane to the SAME rule, so the two surfaces cannot disagree about
+# whether a number exists.
+#
+# The single-alias path is unchanged and is covered by the three freshness tests
+# directly above (they run the same code with one alias per security).
+CUSIP_ALT = "BNDALT009"  # a SECOND cusip9 alias of the SAME security
+
+
+def add_cusip9_alias(conn, security_id: UUID, cusip9: str, *, valid_from: date = AS_OF,
+                     valid_to: date | None = None) -> None:
+    """Give one PUBLISHED security a second cusip9 alias.
+
+    ``valid_to`` closes the alias's PIT window — the shape a SUPERSEDED CUSIP9
+    takes: the row stays in the published snapshot forever, it just stops being
+    the identity the security wears. The window is HALF-OPEN [valid_from,
+    valid_to) (bond_security_v1.sql), so ``valid_to`` is the FIRST day the alias
+    no longer holds.
+
+    Seeded directly rather than through ``security_master``: a group's qualified
+    CUSIP9 IS its identity key, so the resolver's alias timeline collapses to
+    exactly one cusip9 value and cannot mint this shape today (measured
+    2026-08-07 in production: 0 of 211,406 published securities hold more than
+    one cusip9 alias, and 0 security-days carry two alias rows). The guard is
+    therefore STRUCTURAL — it is the rule that keeps the metric lane honest if
+    the identity layer ever publishes what the serving lane already handles —
+    and the fixture has to step past the publication write guard to exercise it.
+    """
+    publication_id = conn.execute(
+        "SELECT publication_id FROM sec_derived_current_pointers WHERE product='bond_security_v1'"
+    ).fetchone()[0]
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 DISABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.execute(
+        "INSERT INTO bond_security_alias_v1 "
+        "(publication_id, security_id, alias_kind, alias_value, valid_from, valid_to, source_lineage) "
+        "VALUES (%s,%s,'cusip9',%s,%s,%s,%s::jsonb)",
+        (publication_id, security_id, cusip9, valid_from, valid_to,
+         json.dumps({"engine": "fixture", "reason": "second_cusip9_alias"})),
+    )
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 ENABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.commit()
+
+
+def test_aliases_agreeing_on_the_latest_day_publish_the_metric(env):
+    """Two aliases, one day, the SAME numbers: nothing is ambiguous."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_aliases_disagreeing_on_the_latest_day_publish_no_metric(env):
+    """Two aliases, one day, DIFFERENT numbers: typed absence, never a winner.
+
+    The ambiguous day is also newer than the governed print, which is the second
+    half of the rule: the refusal must not silently fall back to the older
+    governed 96.23 either — the serving lane prunes that row before it suppresses
+    the price, so a fallback would publish a number the surface refuses to show.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["alias_ambiguous_price"] == 1 and result["alias_ambiguous_ytm"] == 1
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    for metric in ("latest_price_pct", "current_yield", "security_ytm",
+                   "security_effective_duration"):
+        assert metrics[metric][3] == "no_eligible_price", metric
+        assert metrics[metric][2] is None, metric
+    # Neither conflicting value, and NOT the stale governed print behind them.
+    assert Decimal("96.23") not in {row[2] for row in current_rows(conn, SEC_FIX)}
+    # wal needs no observation at all and is untouched by the conflict.
+    assert metrics["wal"][3] == "available"
+
+
+def test_an_ambiguous_price_never_erases_a_yield_the_aliases_agree_on(env):
+    """The refusal is PER FIELD, exactly as the two latest reads are.
+
+    The aliases disagree about the price and agree about the yield, so the price
+    is refused and the yield (and the duration solved from it) still publish.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    fresh_day = AS_OF + timedelta(days=30)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, fresh_day, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_ALT, fresh_day, Decimal("95.10"), Decimal("0.0410")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 1 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][3] == "no_eligible_price"
+    assert metrics["current_yield"][3] == "no_eligible_price"  # priced off nothing
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+def test_an_ambiguous_day_the_build_does_not_read_changes_nothing(env):
+    """A conflict on an OLDER day cannot poison the value the build serves."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_ALT)
+    stale_day = AS_OF - timedelta(days=5)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, stale_day, Decimal("50.00"), Decimal("0.4000")),
+        (CUSIP_ALT, stale_day, Decimal("70.00"), Decimal("0.2000")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("96.23")
+    assert metrics["security_ytm"][2] == Decimal("0.076")
+
+
+# --------------------------------------------------------------------------- #
+# Retired aliases: the dense lane reads the identity valid AT as_of
+# --------------------------------------------------------------------------- #
+# ``bond_security_alias_v1`` is versioned and temporal: a superseded CUSIP9 keeps
+# its row with a CLOSED window. The dense series is keyed by CUSIP9 with no
+# notion of which identity was current, so an unfiltered alias join lets a row
+# filed against a RETIRED identifier win the latest-day ordering — publishing, as
+# this security's price or yield, a number that belongs to an identifier the
+# security no longer holds (or manufacturing a disagreement against the identity
+# that does). The filter is the PIT fund-exposure join's, HALF-OPEN
+# [valid_from, valid_to): valid_from INCLUSIVE, valid_to EXCLUSIVE and open when
+# NULL. The scope is the alias's validity at ``as_of``, not per observation day —
+# the same question ``_FUND_EXPOSURE_MATCHES`` asks.
+
+CUSIP_OLD = "BNDOLD010"  # a cusip9 the security USED to wear
+
+
+@pytest.mark.parametrize(
+    ("valid_to_offset", "retired_alias_prices_the_build"),
+    [
+        (None, True),  # open window: the alias is current, its row is the security's
+        (1, True),     # closes the day AFTER as_of: still held on as_of
+        (0, False),    # closes ON as_of: valid_to is EXCLUSIVE, so it is already gone
+        (-10, False),  # closed long before as_of: plainly gone
+    ],
+)
+def test_the_dense_lane_reads_only_the_aliases_held_at_as_of(
+    env, valid_to_offset, retired_alias_prices_the_build
+):
+    """The freshest dense row does NOT win when its CUSIP9 is no longer held.
+
+    Both aliases carry a dense row and the second alias's is the NEWER one, so
+    the alias filter is the only thing that can decide the outcome. With no
+    filter the retired identifier always wins (that is the defect); with the
+    half-open window it wins only while the security still wears it.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(
+        conn, SEC_FIX, CUSIP_OLD,
+        valid_to=None if valid_to_offset is None else as_of + timedelta(days=valid_to_offset),
+    )
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, as_of, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    # The ANCHOR answers to the same filter (2026-08-08). When the retired
+    # identifier's row is the only thing on the later day, that day is one the
+    # lane refuses to read, and a build must not date itself from a day none of
+    # its inputs carries — so the anchor falls back to the held identity's own
+    # freshest row. (This assertion previously read ``as_of`` unconditionally:
+    # that WAS the defect, written down.)
+    expected_as_of = as_of if retired_alias_prices_the_build else AS_OF + timedelta(days=10)
+    assert result["as_of"] == expected_as_of.isoformat()
+    # One alias per winning day either way: nothing here is ambiguous.
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    if retired_alias_prices_the_build:
+        assert metrics["latest_price_pct"][2] == Decimal("95.10")
+        assert metrics["security_ytm"][2] == Decimal("0.0620")
+    else:
+        # The held identity's OWN latest day, never the retired one's fresher row.
+        assert metrics["latest_price_pct"][2] == Decimal("104.50")
+        assert metrics["security_ytm"][2] == Decimal("0.0410")
+
+
+def test_a_retired_alias_cannot_manufacture_a_disagreement(env):
+    """A closed window must not cost the security a metric it unambiguously has.
+
+    The refusal rule is deliberately blunt — two values on one day and the field
+    is dropped — so an unfiltered alias set does not merely publish the wrong
+    number here, it publishes NOTHING while the held identity reports a perfectly
+    good one.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_OLD, valid_to=AS_OF + timedelta(days=20))
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, as_of, Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, as_of, Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["alias_ambiguous_price"] == 0 and result["alias_ambiguous_ytm"] == 0
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("104.50")
+    assert metrics["latest_price_pct"][3] == "available"
+    assert metrics["security_ytm"][2] == Decimal("0.0410")
+    assert metrics["security_effective_duration"][3] == "available"
+
+
+# --------------------------------------------------------------------------- #
+# Matured securities: the build anchor may sit AFTER a published maturity
+# --------------------------------------------------------------------------- #
+# The anchor follows the freshest input day, so a published security whose
+# maturity fell inside that window is measured from a date at/after its own
+# maturity. The forward-looking family has no referent there: WAL goes NEGATIVE,
+# the yield-to-a-maturity points at a maturity that already passed, current yield
+# claims coupon income the bond no longer pays, and duration measures sensitivity
+# over a life that ended. The retired terms engine already refused exactly this
+# (``metrics_engine_runner.wal_years``: settlement >= maturity_date raises
+# ``BondError('settlement_after_maturity')``, pinned by
+# tests/bonds/test_metrics_engine_runner.py); the source projection dropped the
+# guard, and these tests put it back with the SAME status and the SAME code.
+#
+# The OBSERVED price is not in that family: a trade printed on a day is a fact
+# stamped by its own date, and it keeps serving.
+
+CUSIP_MAT = "BNDMAT011"  # a security whose maturity precedes the build anchor
+SEC_MAT = uuid5(NAMESPACE_BOND_SECURITY, f"cusip9:{CUSIP_MAT}")
+
+
+def seed_matured_bond(conn, run_id: UUID, package_id: UUID, *, maturity: date,
+                      price: object = Decimal("99.80"), ytm: object = 0.055,
+                      priced_on: date | None = None) -> None:
+    """One fixed 6% bond maturing at ``maturity``, priced INSIDE its own life."""
+    observe_security(conn, run_id, cusip9=CUSIP_MAT, coupon_type="fixed",
+                     coupon_rate=Decimal("6.0"), maturity=maturity,
+                     day_count="30/360 US")
+    publish_security_master(conn, run_id, package_id)
+    if price is not None:
+        land_price(conn, run_id, cusip9=CUSIP_MAT, price=price, ytm=ytm,
+                   observation_date=priced_on or (maturity - timedelta(days=30)))
+
+
+def test_a_matured_security_never_publishes_a_negative_wal(env):
+    """The whole maturity-dependent family is typed-absent; the price survives."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    matured_on = AS_OF - timedelta(days=30)
+    seed_matured_bond(conn, run_id, package_id, maturity=matured_on)
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    # WAL is the thread's own case: (maturity - as_of)/365 is NEGATIVE here, and
+    # publishing it as 'available' is what this guard exists to stop.
+    assert rows["wal"][2] is None, "a matured bond has no remaining life to publish"
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+    # The rest of the forward-looking family goes with it, for the same reason.
+    for metric in ("security_ytm", "current_yield", "security_effective_duration"):
+        assert rows[metric][2] is None, metric
+        assert rows[metric][3] == "engine_typed_error", metric
+        assert rows[metric][4] == "settlement_after_maturity", metric
+    # An observed trade price is a dated FACT, not a claim about a future: it
+    # keeps serving, and it is the only thing that should.
+    assert rows["latest_price_pct"][3] == "available"
+    assert float(rows["latest_price_pct"][2]) == pytest.approx(99.80, rel=1e-9)
+    # ytw is untouched: its published reason (no call schedule) is still the true
+    # one, and restating it as a maturity refusal would add churn, not honesty.
+    assert rows["security_ytw"][3] == "terms_insufficient"
+    assert rows["security_ytw"][4] == "call_schedule_unpublished"
+    # Reported (never published), the ops counterpart of alias_ambiguous_*.
+    assert result["matured_securities"] == 1
+
+
+@pytest.mark.parametrize(
+    ("maturity_offset", "wal_is_published"),
+    [
+        (-1, False),  # matured the day before the anchor
+        (0, False),   # matures ON the anchor: settlement >= maturity, refused
+        (1, True),    # still alive at the anchor: unchanged
+    ],
+)
+def test_wal_requires_a_maturity_strictly_after_the_build_anchor(
+    env, maturity_offset, wal_is_published
+):
+    """The boundary is the retired engine's: ``settlement >= maturity`` refuses.
+
+    A bond redeeming ON the anchor has zero remaining life, and zero is a number
+    with no meaning here — the honesty rule of this product is that a value
+    exists only when it means something.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    maturity = AS_OF + timedelta(days=maturity_offset)
+    seed_matured_bond(conn, run_id, package_id, maturity=maturity,
+                      priced_on=AS_OF - timedelta(days=60))
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    if wal_is_published:
+        assert rows["wal"][3] == "available"
+        assert float(rows["wal"][2]) == pytest.approx(1 / 365.0, rel=1e-9)
+        assert result["matured_securities"] == 0
+    else:
+        assert rows["wal"][3] == "engine_typed_error"
+        assert rows["wal"][4] == "settlement_after_maturity"
+        assert rows["wal"][2] is None
+        assert result["matured_securities"] == 1
+
+
+def test_a_matured_security_with_no_price_keeps_the_price_refusal(env):
+    """Status precedence is the engine runner's documented order.
+
+    ``no_eligible_price`` -> ``terms_insufficient`` -> ``engine_typed_error``:
+    the maturity refusal is the LAST one before available, so it never overwrites
+    a more proximate absence. WAL consumes no price and lands on it regardless.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_matured_bond(conn, run_id, package_id, maturity=AS_OF - timedelta(days=30),
+                      price=None)
+
+    assert bond_metrics.run(search_path_dsn(schema),
+                            calc_date=AS_OF.isoformat())["state"] == "ok"
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    for metric in ("security_ytm", "current_yield", "security_effective_duration",
+                   "latest_price_pct"):
+        assert rows[metric][3] == "no_eligible_price", metric
+        assert rows[metric][4] is None, metric
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+
+
+def test_an_unpublished_maturity_is_still_a_terms_refusal(env):
+    """A NULL maturity is not a matured one: the flag must be NULL-safe.
+
+    The two refusals answer different questions — 'the terms do not say when this
+    redeems' versus 'it already redeemed' — and collapsing them would lose the
+    distinction the 113 maturity-less securities in the published universe carry.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    observe_security(conn, run_id, cusip9=CUSIP_MAT, coupon_type="fixed",
+                     coupon_rate=Decimal("6.0"), maturity=None, day_count=None)
+    publish_security_master(conn, run_id, package_id)
+    land_price(conn, run_id, cusip9=CUSIP_MAT, price=Decimal("99.80"), ytm=0.055)
+
+    result = bond_metrics.run(search_path_dsn(schema), calc_date=AS_OF.isoformat())
+    assert result["state"] == "ok"
+    assert result["matured_securities"] == 0
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    assert rows["wal"][3] == "terms_insufficient"
+    assert rows["wal"][4] == "maturity_unpublished"
+    assert rows["wal"][2] is None
+    # The yield the source delivered is untouched: nothing here says it matured.
+    assert rows["security_ytm"][3] == "available"
+    assert float(rows["security_ytm"][2]) == pytest.approx(0.055, rel=1e-9)
+
+
+def test_a_dense_series_anchor_past_a_maturity_does_not_publish_a_negative_wal(env):
+    """The production shape: the anchor is advanced BY the dense series itself.
+
+    The bond is alive at the governed landing day and dead by the time the dense
+    lane's freshest day anchors the build — which is exactly how this PR's
+    sixteen-month anchor advance reaches an already-published security.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    matured_on = AS_OF + timedelta(days=10)
+    seed_matured_bond(conn, run_id, package_id, maturity=matured_on,
+                      priced_on=AS_OF)
+    _seed_dense_series(conn, [
+        (CUSIP_MAT, AS_OF + timedelta(days=40), Decimal("100.00"), Decimal("0.0500")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["as_of"] == (AS_OF + timedelta(days=40)).isoformat()
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    assert rows["wal"][2] is None
+    assert rows["wal"][3] == "engine_typed_error"
+    assert rows["wal"][4] == "settlement_after_maturity"
+    assert rows["latest_price_pct"][2] == Decimal("100.00")
+
+
+@pytest.mark.parametrize(
+    ("valid_from_offset", "alias_prices_the_build"),
+    [(0, True), (1, False)],  # valid_from is INCLUSIVE on as_of, and only then
+)
+def test_an_alias_not_yet_in_effect_never_prices_the_build(
+    env, valid_from_offset, alias_prices_the_build
+):
+    """``as_of`` is pinned so a window can legitimately open AFTER it."""
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    as_of = AS_OF + timedelta(days=30)
+    add_cusip9_alias(conn, SEC_FIX, CUSIP_OLD,
+                     valid_from=as_of + timedelta(days=valid_from_offset))
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=10), Decimal("104.50"), Decimal("0.0410")),
+        (CUSIP_OLD, AS_OF + timedelta(days=20), Decimal("95.10"), Decimal("0.0620")),
+    ])
+
+    bond_metrics.run(search_path_dsn(schema), calc_date=as_of.isoformat())
+
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    expected = Decimal("95.10") if alias_prices_the_build else Decimal("104.50")
+    assert metrics["latest_price_pct"][2] == expected
+
+
+# --------------------------------------------------------------------------- #
+# The anchor is resolved through the lane's own join (2026-08-08)
+# --------------------------------------------------------------------------- #
+# ``as_of`` used to be the dense series' bare ``max(day)``, and the two changes
+# above turned that into a correctness defect rather than a cosmetic one: the
+# lane IGNORES a row whose CUSIP9 the security does not hold at ``as_of``, and the
+# anchor DECIDES who is refused (``matured = maturity_date <= as_of``). A day
+# lifted by a row no lane reads therefore publishes a fresh anchor that none of
+# the dense inputs carries, and applies maturity refusals from it.
+#
+# The circularity is real — the lane's alias filter is evaluated AT ``as_of``, and
+# ``as_of`` is what the anchor computes — and it is closed by asking the alias
+# question at the observation's OWN day. That yields the GREATEST fixed point of
+# the lane's reading rule (the argument is written out at ``_LIVE_ANCHOR_SQL``),
+# so the anchor is both the freshest day the lane can serve from and a day it
+# does serve. These tests pin the four shapes that decides between.
+#
+# Measured in production 2026-08-08: 41 of the 7,716 rows on the series' freshest
+# day carry a CUSIP9 with no alias valid that day, and 127,827 of its 149,762
+# distinct CUSIP9s hold no published alias at all.
+
+CUSIP_ORPHAN = "BNDORP012"  # a cusip9 the published universe has never heard of
+
+
+@pytest.mark.parametrize(
+    ("row_shape", "anchor_follows_the_fresh_row"),
+    [
+        ("held_alias", True),     # the lane reads it, so the build may speak for it
+        ("retired_alias", False),  # closed window: the lane skips the row
+        ("no_alias", False),       # never published: the lane cannot even join it
+        ("no_value", False),       # joinable, but neither cohort reads a NULL/NULL row
+    ],
+)
+def test_the_anchor_follows_only_dense_rows_the_lane_can_read(
+    env, row_shape, anchor_follows_the_fresh_row
+):
+    """A later dense day only anchors the build when the build can read it.
+
+    One readable row on an earlier day is always present, so the anchor has a
+    truthful place to land and the parameter is the only thing deciding the
+    outcome. ``no_value`` is here because the two cohorts filter on ``price > 0``
+    and ``ytm IS NOT NULL``: anchoring on a joinable row that carries neither
+    would be a fixed point of the JOIN rule instead of the READ rule.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    readable_day = AS_OF + timedelta(days=10)
+    fresh_day = AS_OF + timedelta(days=30)
+
+    cusip9, price, ytm = CUSIP_FIX, Decimal("95.10"), Decimal("0.0620")
+    if row_shape == "retired_alias":
+        cusip9 = CUSIP_OLD
+        add_cusip9_alias(conn, SEC_FIX, CUSIP_OLD, valid_to=AS_OF + timedelta(days=20))
+    elif row_shape == "no_alias":
+        cusip9 = CUSIP_ORPHAN
+    elif row_shape == "no_value":
+        price, ytm = None, None
+
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, readable_day, Decimal("104.50"), Decimal("0.0410")),
+        (cusip9, fresh_day, price, ytm),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    expected_day = fresh_day if anchor_follows_the_fresh_row else readable_day
+    assert result["as_of"] == expected_day.isoformat()
+    # The published numbers agree with the anchor: the day the build claims is the
+    # day its own inputs were read on, not one it merely borrowed a date from.
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == (
+        Decimal("95.10") if anchor_follows_the_fresh_row else Decimal("104.50")
+    )
+    assert metrics["latest_price_pct"][5] == expected_day
+
+
+def test_an_unreadable_dense_row_never_retires_a_living_security(env):
+    """The thread's own case: an inflated anchor refusing a bond that is alive.
+
+    The security matures 20 days after every day the build can actually read, and
+    the only later dense row is filed against a CUSIP9 the published universe has
+    never heard of. With the anchor taken from the series' bare ``max(day)`` the
+    build dates itself 40 days out, declares the bond redeemed, and serves
+    ``settlement_after_maturity`` for its whole maturity-dependent family — from a
+    date that not one of its dense metric inputs carries.
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    matures_on = AS_OF + timedelta(days=20)
+    seed_matured_bond(conn, run_id, package_id, maturity=matures_on, priced_on=AS_OF)
+    _seed_dense_series(conn, [
+        (CUSIP_ORPHAN, AS_OF + timedelta(days=40), Decimal("100.00"), Decimal("0.0500")),
+    ])
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["as_of"] == AS_OF.isoformat()
+    assert result["matured_securities"] == 0
+
+    rows = rows_by_metric(current_rows(conn, SEC_MAT))
+    assert rows["wal"][3] == "available"
+    assert float(rows["wal"][2]) == pytest.approx(20 / 365.0, rel=1e-9)
+    assert rows["security_ytm"][3] == "available"
+    assert float(rows["security_ytm"][2]) == pytest.approx(0.055, rel=1e-9)
+    assert rows["current_yield"][3] == "available"
+    assert rows["security_effective_duration"][3] == "available"
+    # The orphan row is not merely un-anchored, it is unread: nothing it carries
+    # reaches the publication.
+    assert float(rows["latest_price_pct"][2]) == pytest.approx(99.80, rel=1e-9)
+
+
+def test_an_empty_alias_view_leaves_the_dense_series_unanchored(env):
+    """No published alias at all: the dense lane is stubbed empty, so is the anchor.
+
+    The build falls back to the governed landing day rather than dating itself
+    from a series it has no honest way to key. (This is also the guard that keeps
+    the newest-first anchor scan from walking the whole series looking for a match
+    that cannot exist.)
+    """
+    from src.workers import bond_metrics
+
+    conn, schema, run_id, package_id, _ = env
+    seed_fix_bond(conn, run_id, package_id, source_ytm=0.076)
+    _seed_dense_series(conn, [
+        (CUSIP_FIX, AS_OF + timedelta(days=30), Decimal("104.50"), Decimal("0.0410")),
+    ])
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 DISABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.execute("DELETE FROM bond_security_alias_v1")
+    conn.execute(
+        "ALTER TABLE bond_security_alias_v1 ENABLE TRIGGER bond_security_alias_v1_write_guard"
+    )
+    conn.commit()
+
+    result = bond_metrics.run(search_path_dsn(schema))
+
+    assert result["state"] == "ok"
+    assert result["as_of"] == AS_OF.isoformat()
+    metrics = rows_by_metric(current_rows(conn, SEC_FIX))
+    assert metrics["latest_price_pct"][2] == Decimal("96.23"), "the governed print"

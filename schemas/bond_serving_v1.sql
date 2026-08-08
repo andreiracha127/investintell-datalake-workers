@@ -127,12 +127,56 @@ CREATE TABLE IF NOT EXISTS bond_serving_builds (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- ---------------------------------------------------------------------------
+-- Purge tokens: the ONE sanctioned path that frees a superseded publication.
+-- ---------------------------------------------------------------------------
+-- A row here says "backend N is inside bond_purge_serving_publication for this
+-- publication right now". Deliberately the SAME idiom as the protocol's own
+-- `sec_derived_publication_tokens` / `sec_derived_pointer_tokens`
+-- (schemas/sec_derived_publications.sql): the token is taken and dropped INSIDE
+-- the routine, so it never outlives one batch transaction and cannot leak (a
+-- failed batch rolls the INSERT back with everything else), and REVOKE ALL FROM
+-- PUBLIC keeps it off the public grant path (see the acl note below) -- a
+-- hand-written DELETE cannot authorise itself.
+CREATE TABLE IF NOT EXISTS bond_serving_purge_tokens (
+    publication_id uuid PRIMARY KEY REFERENCES sec_derived_publications(publication_id) ON DELETE CASCADE,
+    backend_pid integer NOT NULL
+);
+REVOKE ALL ON bond_serving_purge_tokens FROM PUBLIC;
+-- Measured in production 2026-08-07: the database's ALTER DEFAULT PRIVILEGES also
+-- grant app_runtime arwd / app_analytics_ro r on every new public table, so this
+-- table ends up with the SAME acl as sec_derived_publication_tokens, verbatim.
+-- Left that way deliberately: narrowing it here would make bond serving the one
+-- product with a different trust model than the protocol it rides on, and that is
+-- an owner decision, not a side effect of shipping retention.
+
 -- Write guard: serving rows/builds are insert-only while their publication is
--- prepared, immutable afterwards (mirrors the snapshot guards).
+-- prepared, immutable afterwards (mirrors the snapshot guards) -- with ONE
+-- sanctioned exception, below.
 CREATE OR REPLACE FUNCTION bond_serving_write_guard()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE parent_state text;
 BEGIN
+    -- The single exception to immutability: a serving FACT may be deleted while
+    -- this backend holds a purge token for its publication. Scoped three ways on
+    -- purpose --
+    --   * DELETE only: an UPDATE stays forbidden with or without a token, so a
+    --     served row can never be rewritten in place;
+    --   * bond_serving_facts only: `bond_serving_builds` keeps its row through a
+    --     purge because `sec_derived_publication_as_of` reads it and that feeds
+    --     the current-pointer as_of regression guard -- purging it would break
+    --     the guard, not just lose metadata;
+    --   * this backend's token only: a token minted by another session does not
+    --     authorise this one.
+    -- Everything else raises the same message it always raised, byte for byte.
+    IF TG_OP = 'DELETE' AND TG_TABLE_NAME = 'bond_serving_facts'
+       AND EXISTS (
+           SELECT 1 FROM bond_serving_purge_tokens t
+           WHERE t.publication_id = OLD.publication_id
+             AND t.backend_pid = pg_backend_pid()
+       ) THEN
+        RETURN OLD;
+    END IF;
     IF TG_OP <> 'INSERT' THEN
         RAISE EXCEPTION 'bond serving row is immutable';
     END IF;
@@ -155,6 +199,80 @@ DROP TRIGGER IF EXISTS bond_serving_builds_write_guard ON bond_serving_builds;
 CREATE TRIGGER bond_serving_builds_write_guard
 BEFORE INSERT OR UPDATE OR DELETE ON bond_serving_builds
 FOR EACH ROW EXECUTE FUNCTION bond_serving_write_guard();
+
+-- ---------------------------------------------------------------------------
+-- Retention: purge ONE bounded batch of a superseded publication's facts.
+-- ---------------------------------------------------------------------------
+-- A complete serving publication is ~2.0M facts / ~1.2 GB, and `as_of` now
+-- follows the daily series, so a rebuild happens on any content change. Without
+-- a purge path the surface grows by a full publication per changed day.
+--
+-- BOUNDED on purpose. The caller commits between calls, so a 2M-row purge is N
+-- short transactions instead of one long one: a long transaction holds back
+-- VACUUM for the WHOLE database, a trap this project has already paid for. The
+-- return value is the batch's row count, and 0 is the caller's loop terminator.
+--
+-- FACTS ONLY. The `bond_serving_builds` row survives (see the write guard), and
+-- so does the `sec_derived_publications` row -- deleting the parent is closed by
+-- the ON DELETE RESTRICT FK and by `sec_derived_publication_delete_guard`, and
+-- this routine does not try: a purged publication stays in the ledger, visibly,
+-- with its build metadata, holding no facts.
+--
+-- The two refusals are INVARIANTS, not policy: whatever the caller computed as
+-- its keep-set, the publication the worker is serving and the one the app pins
+-- can never be purged from under a live reader. The wider keep margin (the
+-- immediately-prior publication, which daily_chain compensation may restore the
+-- pointer onto) is the caller's policy and lives in the worker.
+CREATE OR REPLACE FUNCTION bond_purge_serving_publication(
+    target_publication_id uuid,
+    batch integer DEFAULT 50000
+) RETURNS integer LANGUAGE plpgsql AS $$
+DECLARE
+    deleted integer;
+    app_pinned boolean := false;
+BEGIN
+    IF batch IS NULL OR batch < 1 THEN
+        RAISE EXCEPTION 'purge batch must be at least 1, got %', batch;
+    END IF;
+    -- A wrong-product (or unknown) uuid must never read as a successful purge of
+    -- zero rows.
+    IF NOT EXISTS (
+        SELECT 1 FROM sec_derived_publications p
+        WHERE p.publication_id = target_publication_id AND p.product = 'bond_serving_v1'
+    ) THEN
+        RAISE EXCEPTION 'not a bond_serving_v1 publication: %', target_publication_id;
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM sec_derived_current_pointers c
+        WHERE c.product = 'bond_serving_v1' AND c.publication_id = target_publication_id
+    ) THEN
+        RAISE EXCEPTION 'the current bond serving publication cannot be purged';
+    END IF;
+    -- The app-side pin protocol lives in the app repo and is absent from unit
+    -- schemas; probed dynamically so this file stays installable without it.
+    IF to_regclass('bond_serving_app_current_pointer') IS NOT NULL
+       AND to_regclass('bond_serving_publications') IS NOT NULL THEN
+        EXECUTE 'SELECT EXISTS (SELECT 1 FROM bond_serving_app_current_pointer p '
+                'JOIN bond_serving_publications s ON s.app_publication_id = p.app_publication_id '
+                'WHERE s.worker_publication_id = $1)'
+            INTO app_pinned USING target_publication_id;
+        IF app_pinned THEN
+            RAISE EXCEPTION 'the app-pinned bond serving publication cannot be purged';
+        END IF;
+    END IF;
+    INSERT INTO bond_serving_purge_tokens(publication_id, backend_pid)
+        VALUES (target_publication_id, pg_backend_pid());
+    DELETE FROM bond_serving_facts
+    WHERE ctid = ANY (ARRAY(
+        SELECT ctid FROM bond_serving_facts
+        WHERE publication_id = target_publication_id
+        LIMIT batch
+    ));
+    GET DIAGNOSTICS deleted = ROW_COUNT;
+    DELETE FROM bond_serving_purge_tokens
+    WHERE publication_id = target_publication_id AND backend_pid = pg_backend_pid();
+    RETURN deleted;
+END $$;
 
 -- Current-pointer view for workers verification (the APP pins by exact
 -- publication_id via its own pin row, and MUST NOT read this view).
