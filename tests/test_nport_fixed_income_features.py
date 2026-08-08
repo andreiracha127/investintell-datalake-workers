@@ -504,3 +504,23 @@ def test_fixed_income_v2_preserves_physical_raw_identity_and_full_coverage_state
         assert ('key_rate_sensitivity', 'field_missing_or_invalid') in states
         assert ('balance_sheet', 'field_missing_or_invalid') in states
         cur.execute(f'DROP SCHEMA "{schema}" CASCADE')
+
+
+def test_dera_builder_rejects_a_supplemental_evidence_run():
+    import psycopg
+
+    with psycopg.connect(DSN, autocommit=True) as conn, conn.cursor() as cur:
+        schema, run_id, package_id, holdings_id, features_id = _seed_fixture(cur)
+        try:
+            _publish_holdings(cur, holdings_id)
+            _prepare_features_publication(cur, features_id, run_id, package_id)
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="supplemental source run is only valid for sec_api evidence",
+            ):
+                cur.execute(
+                    "SELECT build_nport_fixed_income_features(%s,%s,%s,%s)",
+                    (features_id, "2026-07-24", "dera_raw", uuid4()),
+                )
+        finally:
+            cur.execute(f'DROP SCHEMA "{schema}" CASCADE')

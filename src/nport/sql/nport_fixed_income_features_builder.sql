@@ -97,7 +97,14 @@ BEGIN
     IF source_run_id IS NULL THEN
         RAISE EXCEPTION 'N-PORT fixed-income feature build requires a source run pinned by holdings publication';
     END IF;
-    supplemental_source_run_id := COALESCE(p_supplemental_source_run_id, source_run_id);
+    IF supplemental_source_kind = 'dera_raw' AND p_supplemental_source_run_id IS NOT NULL THEN
+        RAISE EXCEPTION 'a supplemental source run is only valid for sec_api evidence';
+    END IF;
+    supplemental_source_run_id := CASE
+        WHEN supplemental_source_kind = 'sec_api'
+            THEN COALESCE(p_supplemental_source_run_id, source_run_id)
+        ELSE source_run_id
+    END;
 
     -- Fail closed if this DDL is applied over a still-prepared publication
     -- containing rows created before the build-identity table existed.

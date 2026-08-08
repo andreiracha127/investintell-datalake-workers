@@ -569,6 +569,19 @@ def test_run_publishes_from_complete_secapi_sidecar_when_raw_was_pruned(
             assert result["supplemental_source_kind"] == "sec_api"
             assert result["counts"]["nport_fixed_income_key_rate_sensitivities_v2"] > 0
             cur.execute(
+                "SELECT source_run_id::text FROM sec_derived_publications "
+                "WHERE publication_id=%s",
+                (result["publication_id"],),
+            )
+            assert cur.fetchone() == (run_id,)
+            cur.execute(
+                "SELECT DISTINCT source_run_id::text "
+                "FROM nport_fixed_income_key_rate_sensitivities_v2 "
+                "WHERE publication_id=%s",
+                (result["publication_id"],),
+            )
+            assert cur.fetchall() == [(run_id,)]
+            cur.execute(
                 "SELECT manifest->'identity'->>'supplemental_source_kind' "
                 "FROM nport_fixed_income_publication_manifests WHERE publication_id=%s",
                 (result["publication_id"],),
