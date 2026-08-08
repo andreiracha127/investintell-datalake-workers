@@ -45,6 +45,21 @@ class BondServingRevisionUnresolved(Exception):
     """
 
 
+class BondServingRebuildExhausted(Exception):
+    """Every candidate identity for this ``as_of`` has lost its facts.
+
+    Raised by :func:`_servable_revision` after :data:`REBUILD_ATTEMPT_LIMIT`
+    deterministic candidates in a row resolved to publications that exist and
+    cannot serve. Serving any of them is the empty product the walk exists to
+    avoid, so the run FAILS instead.
+
+    Deliberately NOT a ``RuntimeError``, for the same reason as
+    :class:`BondServingRevisionUnresolved`: ``run`` launders ``RuntimeError``
+    into the ``no_source`` dark state -- "nothing to serve yet" -- which is the
+    one verdict this must never become.
+    """
+
+
 def _code_revision() -> str:
     """The revision the publication identity is derived from.
 
@@ -462,6 +477,143 @@ def _input_digest(conn: Any, as_of: date) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()[:12]
 
 
+# --------------------------------------------------------------------------- #
+# Resolving PAST an identity that can no longer serve
+# --------------------------------------------------------------------------- #
+# Two properties this product deliberately has, and the hole they open together.
+#
+#   * RETENTION KEEPS THE LEDGER ROW. The purge below frees a superseded
+#     publication's FACTS and leaves its ``sec_derived_publications`` and
+#     ``bond_serving_builds`` rows in place on purpose --
+#     ``sec_derived_publication_as_of`` reads the build row and that is what feeds
+#     the current-pointer as_of regression guard.
+#   * IDENTITY IS DETERMINISTIC. ``uuid5(product | as_of | revision)`` with the
+#     content digest inside the revision, so the same inputs resolve to the same
+#     publication_id forever. That is the replay invariant, and it is WANTED: an
+#     unchanged weekend rerun must be a cheap re-point, not a 1.2 GB rewrite.
+#
+# So when an input REVERTS -- the candle loader re-reading a corrected close back
+# to its earlier value, a metric publication restored, a supported ``calc_date``
+# replay -- the digest reproduces a purged publication's identity exactly.
+# ``materialize`` reads that existing id as ALREADY BUILT: it skips the
+# projection entirely and merely re-points, ``_advance_app_pin`` then pins it, and
+# catalog / detail / observations serve NOTHING while the run reports success.
+#
+# NOT HYPOTHETICAL (production, 2026-08-08): eight of the ten bond_serving_v1
+# publications are validated and hold ZERO facts -- five freed by the first purge,
+# three born empty before the coverage gate existed -- and every one of them still
+# carries its build row. The state the defect needs is already sitting there.
+#
+# THE as_of GUARD IS ONLY A PARTIAL NET, which is why this is not left to it. All
+# eight carry an as_of at or before 2026-07-23 while the pointer sits at
+# 2026-08-07, so a replay of an OLDER day dies loudly inside
+# ``sec_set_current_derived_publication`` ("current pointer ... would regress").
+# What the guard cannot see is the SAME-as_of case -- and same-day content
+# revisions are exactly what puts several publications on one as_of in the first
+# place (production carries four on 2025-03-31, three on 2026-07-23).
+#
+# THE REMEDY IS THE OBSERVABLE CONDITION, NOT A MEMORY. "Mark the purged ids as
+# non-reusable" was the other option on the table and it is strictly worse: it
+# cannot make the marked id servable either (its publication row is validated and
+# undeletable, and the write guard only admits an INSERT under a ``prepared``
+# parent), so it still needs the walk below to reach a buildable identity -- state
+# to keep in sync, for nothing. And it would be RETRO-BLIND: a ledger installed
+# today knows nothing about the eight publications production already emptied,
+# whereas "this publication holds no facts" answers for all of them with no
+# backfill. The walk is deterministic in the DATABASE STATE, so idempotence
+# survives: a replay over unchanged inputs steps past exactly the same unservable
+# candidates and lands on exactly the same built one.
+#
+# The chain terminates on its own -- a purged publication can never regain facts,
+# because the write guard admits an INSERT only under a ``prepared`` parent -- so
+# the cap is a guard against a pathology, not the terminator.
+REBUILD_ATTEMPT_LIMIT = 32
+
+# The existence question, asked VERBATIM as ``materialize`` asks it (no product
+# filter, no lifecycle filter). If the two ever ask different questions they
+# disagree about which candidate the build will skip, and the disagreement is
+# silent -- so the test pins this string against the materializer's own source.
+_EXISTING_PUBLICATION_SQL = (
+    "SELECT lifecycle_state FROM sec_derived_publications WHERE publication_id=%s"
+)
+
+# COUNT, not EXISTS, and the difference is 40 seconds. ``publication_id`` holds a
+# handful of distinct values, so an equality estimate is ~2M of the 4.05M rows and
+# the planner takes a Seq Scan for ``EXISTS (SELECT 1 ... LIMIT 1)`` -- which stops
+# early only if a row MATCHES. For the empty publication (the case this whole path
+# is about) that is the entire table: measured on production 2026-08-08, 8.4 s warm
+# under a generic plan and 40.2 s cold (342,480 buffer reads). An aggregate cannot
+# stop early by construction, so the index-only scan wins on cost under BOTH plan
+# modes: 0.5 ms (custom) / 11.0 ms (generic) on an empty publication, 91.7 ms /
+# 126.2 ms on the 2,031,147-row live one. It is only ever asked when the resolved
+# id already EXISTS -- i.e. on a replay -- next to the ~6 s the same run's input
+# digest already pays.
+_PUBLICATION_FACT_COUNT_SQL = (
+    "SELECT count(*) FROM bond_serving_facts WHERE publication_id=%s"
+)
+
+# The other half of "cannot serve": a HALF-purged publication. The purge commits
+# one batch per transaction on purpose (one 2M-row DELETE would hold back VACUUM
+# for the whole database), so a crash, a lock timeout or a redeploy between batches
+# leaves rows behind -- and a partial payload would read as "already built" through
+# the count alone. ``bond_purge_serving_publication`` records the publication here
+# in the same transaction as the batch it precedes, so the row exists iff facts
+# were actually lost (schemas/bond_serving_v1.sql).
+_PURGED_PUBLICATION_SQL = (
+    "SELECT 1 FROM bond_serving_purged_publications WHERE publication_id=%s"
+)
+
+
+def _cannot_serve(conn: Any, publication_id: Any) -> bool:
+    """Has this existing publication lost the facts it was built with?
+
+    Emptiness first: it needs no bookkeeping, and it is what answers for the eight
+    publications production emptied before the ledger existed. The ledger is only
+    consulted when rows survived, i.e. for the half-purged case, and is probed for
+    rather than assumed so a database whose installed schema predates it degrades
+    to the emptiness arm instead of failing the run.
+    """
+    if conn.execute(_PUBLICATION_FACT_COUNT_SQL, (publication_id,)).fetchone()[0] == 0:
+        return True
+    if not _relation_exists(conn, "bond_serving_purged_publications"):
+        return False
+    return conn.execute(
+        _PURGED_PUBLICATION_SQL, (publication_id,)
+    ).fetchone() is not None
+
+
+def _servable_revision(conn: Any, as_of: date, base: str) -> tuple[str, list[str]]:
+    """The first candidate identity ``materialize`` will either build or re-point.
+
+    Walks ``base``, ``base+rebuild1``, ``base+rebuild2`` ... and stops at the first
+    publication that either does not exist yet (the build writes it) or exists WITH
+    its facts (the build re-points to it, unchanged from before this walk existed).
+    A candidate that exists and cannot serve is stepped over and reported.
+
+    Returns the revision plus the ids stepped over, so an operator can see WHY a
+    run rebuilt without re-deriving identities by hand.
+    """
+    unservable: list[str] = []
+    for attempt in range(REBUILD_ATTEMPT_LIMIT):
+        revision = base if attempt == 0 else f"{base}+rebuild{attempt}"
+        publication_id = materializer.publication_id_for(as_of, revision)
+        if conn.execute(
+            _EXISTING_PUBLICATION_SQL, (publication_id,)
+        ).fetchone() is None:
+            return revision, unservable
+        if not _cannot_serve(conn, publication_id):
+            return revision, unservable
+        unservable.append(str(publication_id))
+    raise BondServingRebuildExhausted(
+        f"every bond serving identity for as_of {as_of.isoformat()} under revision "
+        f"{base!r} resolves to a publication that has lost its facts "
+        f"({REBUILD_ATTEMPT_LIMIT} candidates: {', '.join(unservable)}). Serving any "
+        "of them would publish an EMPTY product under a green run, so this run "
+        "fails instead. A chain this deep is pathological -- retention purging the "
+        "publication a rebuild has just created is the shape to look for."
+    )
+
+
 def _advance_app_pin(conn: Any, worker_publication_id: str) -> dict[str, Any]:
     """Advance the app-side serving pin to the just-validated worker publication.
 
@@ -745,6 +897,18 @@ def _prune_superseded_facts(dsn: str, *, batch: int = PRUNE_BATCH_ROWS) -> dict[
                 "kept": len(keep),
                 "action": RETENTION_BLOCKED_ACTION,
             }
+        # The unguarded path frees rows with no routine mediating, so it records
+        # the purge itself -- otherwise a half-finished batched DELETE here would
+        # leave a partial publication that ``_cannot_serve`` reads as built. Marked
+        # BEFORE the first batch: over-marking costs at worst one needless rebuild,
+        # under-marking serves a partial product.
+        if _relation_exists(conn, "bond_serving_purged_publications"):
+            conn.execute(
+                "INSERT INTO bond_serving_purged_publications(publication_id) "
+                "SELECT unnest(%s::uuid[]) ON CONFLICT (publication_id) DO NOTHING",
+                (stale,),
+            )
+            conn.commit()
         removed = 0
         while True:
             deleted = conn.execute(_PRUNE_BATCH_SQL, (stale, batch)).rowcount
@@ -773,8 +937,12 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
         # Identity = code revision + a content digest of the inputs. The digest is
         # what makes a same-day revision a NEW publication instead of a re-point of
         # the stale one; it is deterministic, so an unchanged replay still lands on
-        # the same publication_id.
-        revision = f"{_code_revision()}+{_input_digest(conn, as_of)}"
+        # the same publication_id -- and ``_servable_revision`` then steps past any
+        # candidate whose facts retention has already freed, because ``materialize``
+        # would read that one as already built and re-point onto an EMPTY product.
+        revision, rebuilt_over = _servable_revision(
+            conn, as_of, f"{_code_revision()}+{_input_digest(conn, as_of)}"
+        )
         try:
             result = materializer.materialize(conn, as_of=as_of, code_revision=revision)
         except (
@@ -805,6 +973,10 @@ def run(dsn: str | None = None, *, calc_date: str | None = None, limit: int | No
     except Exception as exc:  # reported, never fatal: the publication is current
         retention = {"state": "failed", "error": f"{type(exc).__name__}: {exc}"}
     # ``code_revision`` rides along so an operator can tell WHY a run rebuilt (a
-    # deploy moved the revision, or the digest moved because the inputs did)
+    # deploy moved the revision, the digest moved because the inputs did, or
+    # ``rebuilt_over`` names the purged identities this run had to step past)
     # without re-deriving the identity by hand.
-    return {"state": "ok", **result, "code_revision": revision, **pin, "retention": retention}
+    return {
+        "state": "ok", **result, "code_revision": revision,
+        "rebuilt_over": rebuilt_over, **pin, "retention": retention,
+    }

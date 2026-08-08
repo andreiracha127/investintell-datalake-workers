@@ -168,6 +168,14 @@ candle path's counted `dropped_after_window`: a curve point past a replay date
 is a real session this run is simply not the one to load, not a provider
 anomaly.
 
+That bound has a second consequence, and §4d depends on it: on a replay of a day
+a tenor is already past, `not_before > not_after` and the fold is empty **by
+construction**. That is the one empty curve response this worker treats as
+benign — reported as `skipped_tenors`, apart from the empties that mean the
+provider stopped answering with anything usable. Stage 1 gets the same treatment
+for the same reason, since `fetch_window` clamps a replay's window to the single
+requested day.
+
 The tick cohort is the other replay defect worth stating plainly. The cohort is the
 top-N most active bonds, and against a database that already contains sessions
 *after* the replay date an open-ended window ranked them on activity that had
@@ -229,7 +237,8 @@ stays invisible for a week.
 | `no_api_key` | no | `FINNHUB_API_KEY` unset: no candles, no curve, no ticks, no republication |
 | `provider_rejected` | no | the key was rejected mid-sweep (401/403 is non-transient by design) |
 | `aborted` | no | the provider cut the candle sweep short (`MAX_CONSECUTIVE_FAILURES`) |
-| `curve_failed` | no | **all 13** tenors failed — stage 2 did no work. A handful failing stays green: that is the case the per-tenor watermarks heal by themselves |
+| `candles_failed` | no | stage 1 loaded **nothing**: not one bond whose window re-opened on a day this lane had *already* loaded came back with a candle — empty payloads, failures, or both (§4d). A cold table and a replay of a day every bond is already past are excluded, so this is silent on both |
+| `curve_failed` | no | stage 2 loaded **no tenor**: all 13 failed, *or* their payloads folded to nothing — a 200 with empty/renamed `data` used to read exactly like a healthy run (§4d). Green needs one loaded tenor; a handful of failures on a run that still loaded something stays green, which is the case the per-tenor watermarks heal by themselves. `failed_tenors` / `empty_tenors` / `skipped_tenors` in the JSON say which shape |
 | `ticks_failed` | no | stage 3 did not cover its cohort: every tick call failed, **or** the consecutive-failure breaker cut the lane short mid-cohort (§4b). `ticks.aborted` in the JSON says which |
 | `matview_failed` | no | stage 4 did not refresh, so the cohort the publications read is stale. Two shapes, one state — `matview.state` in the JSON says which: `failed` = the `REFRESH` was rejected (ownership — see *One-time privilege prerequisite*); `absent` = `bond_curated_securities` does not exist at all (schema/deploy). Only `refreshed` is green |
 | `republish_locked` | no | a publication worker's own lock was held: stage 5 did not recompute |
@@ -355,6 +364,100 @@ tomorrow's session, so the tape of every bond the outage cut off is gone for
 good. That is why a partially covered cost lane is a failed run and not a
 progress report — the day's `bond_tick_daily` coverage is what it is.
 
+### 4d. An empty lane is a lane that did no work — and how to tell it from a quiet day
+
+Decided 2026-08-08, for stages 1 and 2 together, because it is one event in two
+places: **a provider that keeps answering `200` with nothing in it.** Entitlement
+lost and surfaced as JSON, a shape change under `s`/`t`/`c` or under
+`data`/`d`/`v`, an ISIN mapping that stopped resolving — none of them raise, none
+of them fail, and none of them used to be visible. The candle sweep counted
+`no_data` and left `aborted` false; the curve loop `continue`d, so `failed_tenors`
+stayed empty and the "all 13 failed" check could never fire. Both lanes could
+load **zero rows for the entire universe** and the run still refreshed,
+republished and exited `ok` — serving yesterday's data as today's work.
+Reproduced against the pre-fix worker: both scenarios return `state=ok`,
+`halted_by=[]`.
+
+Both clauses now assert the **success** state, the shape the round-6 review
+settled on for `matview_failed`: stage 1 did its work iff at least one bond
+returned a candle, stage 2 iff at least one tenor loaded.
+
+**The hard part is not the check — it is the false positive.** A day on which
+nothing trades is implausible across 10k bonds, but it is not impossible on a
+*replay*, and neither lane may cry wolf at an operator running one. The
+distinction each stage uses is a day the provider can be **proved** to owe:
+
+* **Stage 1 — `resumed`, not `swept`.** A bond whose window re-opens on a day
+  *this lane already loaded* must come back with that day: this feed loaded it
+  out of this same endpoint, so an empty answer for it is a fault. Bonds without
+  that promise are excluded, and both exclusions are systematic rather than
+  hypothetical:
+  * a **cold-start** bond gets `fetch_window`'s 30-day window and no evidence.
+    409 of the 10,073 curated bonds have been attempted and have never once
+    returned data (measured 2026-08-08; 9,779 do carry a live watermark), and the
+    sweep ring sorts never-loaded bonds *first inside a round* — so a thin
+    `WORKER_LIMIT` slice is *expected* to be all-dataless. Judged on `swept`,
+    this clause would fire on every capped run and mean nothing.
+  * a **replay** clamps every loaded bond's window to `[calc_date, calc_date]`
+    (`fetch_window` refuses to look past `today`), and a Saturday legitimately
+    has no candle for any bond. This repo owns no trading calendar on purpose
+    (`previous_business_day`), so such a run proves nothing and is left alone.
+
+  In production neither exclusion costs coverage: on a healthy table `resumed ≈
+  9,779 ≈ swept`. `candles.resumed` in the JSON is the denominator; it is counted
+  at the window, before the answer, so a bond that failed transiently still
+  counts — which is how stage 1 finally gets the "every call failed" half stage 3
+  always had (below `MAX_CONSECUTIVE_FAILURES` bonds an outage never trips the
+  breaker).
+
+* **Stage 2 — the response is a history, not a session.** One call returns the
+  tenor's *whole* history, so it is never empty for a market reason: a weekend
+  cannot empty it. The only bound that can is an **inverted fold** —
+  `not_before > not_after`, i.e. a replay of a day this tenor is already past
+  (§3c), which is the normal state of a replay against a healthy table. Those
+  land in `skipped_tenors` and are benign; everything else empty lands in
+  `empty_tenors` and counts against the stage.
+
+  Consequence, stated so it is not reopened as a bug: the benign exemption must
+  be **unanimous**. A replay in which twelve tenors were skipped and one *failed*
+  is red, because nothing loaded and something broke. "A handful of failed tenors
+  stays green" remains true of a run that loaded something — which is the case
+  the per-tenor watermarks heal by themselves.
+
+Reading it: `candles.resumed` / `candles.with_data` for stage 1;
+`curve.failed_tenors` / `curve.empty_tenors` / `curve.skipped_tenors` for stage 2
+— one state per stage, the JSON says which shape, exactly as `matview.state` and
+`ticks.aborted` already do. An all-empty lane is the provider, not the database:
+check the key's entitlements and one raw response before touching this worker.
+
+### 4e. A refused write surfaces its own error
+
+Decided 2026-08-08. The candle sweep stamped its progress into
+`bond_live_daily_sweep` from a `finally`, which ran on *every* exit from a bond —
+including the one where it could not possibly work. An insert PostgreSQL refuses
+(a constraint, a column the served DDL never grew) leaves the transaction
+**aborted**, so the stamp raised `InFailedSqlTransaction`; and an exception raised
+in a `finally` *replaces* the one already unwinding. The operator got "current
+transaction is aborted" and the actionable error was gone. This is the same
+incident `src/db.py::_release_advisory_lock` documents one frame up (2026-07-24:
+`must be owner of view …` lost behind `pg_advisory_unlock`) — the release was
+made non-masking then; the loader below it was not.
+
+The stamp is now called **explicitly on the three handled paths** (data, no data,
+transient failure) rather than from a `finally`, so a refused write simply
+propagates as itself. Verified against a real transaction
+(`tests/test_bond_live_daily_worker.py`, `SEC_TEST_DATABASE_URL`): the pre-fix
+worker raises `InFailedSqlTransaction` from the stamp; the current one raises the
+`CheckViolation`.
+
+The resumability the `finally` existed for is intact, because the two properties
+never actually collided: **the only path that loses its stamp is the one where
+the stamp could not have been written at all.** Every path that still has a usable
+transaction stamps, on the same commit cadence, so a capped or provider-cut run
+keeps the progress of the prefix it swept. The bond that broke is deliberately
+*not* stamped — the ring must not advance past a bond whose rows never landed —
+and everything committed before it survives the rollback.
+
 ### Retention reports quietly — read it every run
 
 `_prune_superseded_facts` is wrapped in try/except (a retention failure must
@@ -384,6 +487,15 @@ SELECT count(DISTINCT publication_id) FROM bond_serving_facts;
 SELECT count(*) FROM sec_derived_publications p
   LEFT JOIN bond_serving_builds b USING (publication_id)
 WHERE p.product='bond_serving_v1' AND b.publication_id IS NULL;  -- must be 0
+
+-- 5. the run's `rebuilt_over` field. Normally []. A non-empty list means an input
+--    reverted onto an identity retention had already emptied and the worker built
+--    past it — expected, not an incident. In the CHAIN's stage detail the list is
+--    dropped (`_result_detail` keeps scalars only, as it does for `retention`);
+--    what survives there is `code_revision`, which then ends `+rebuild1`,
+--    `+rebuild2`, … — that suffix is the same evidence. A chain that keeps GROWING
+--    on consecutive runs IS the incident: retention purging what a rebuild has
+--    just created. See §6.
 ```
 
 ## 5. The header-freshness mechanism (decided 2026-08-07)
@@ -473,6 +585,7 @@ relax that. It uses ONE sanctioned exception, in the protocol's own idiom
 | `bond_serving_purge_tokens(publication_id, backend_pid)`, revoked from PUBLIC | `schemas/bond_serving_v1.sql` |
 | write-guard DELETE branch: returns OLD only for `bond_serving_facts`, only when THIS backend holds the token | `bond_serving_write_guard()` |
 | `bond_purge_serving_publication(uuid, batch int)`: takes the token, deletes one bounded batch, drops the token | `schemas/bond_serving_v1.sql` |
+| `bond_serving_purged_publications`: written by that routine, in the same transaction as the batch — "this id lost facts" (see the purged-identity section below) | `schemas/bond_serving_v1.sql` |
 | the call site: `_prune_superseded_facts` loops it, **committing per batch** | `src/workers/bond_serving.py` |
 
 Consequences worth knowing before touching any of it:
@@ -495,6 +608,77 @@ Consequences worth knowing before touching any of it:
   the guard's absence — the guard survives the purge, that is the design. A
   database that predates the routine still gets the typed
   `retention.state=blocked_by_write_guard` report, now naming the DDL that fixes it.
+
+### The hole retention opens: a purged identity that resolves again
+
+Keeping the publication row (above) and deterministic identity (§5) are each
+right on their own and together they let the product serve **nothing** under a
+green run:
+
+1. retention frees a superseded publication's facts and leaves its publication +
+   build rows in the ledger;
+2. identity is `uuid5(product | as_of | revision)` with the content digest in the
+   revision, so the same inputs resolve to the same `publication_id` **forever** —
+   the replay invariant, and it is wanted;
+3. an input REVERSION (a corrected close re-read back to its earlier value, a
+   metric publication restored, a `calc_date` replay) therefore reproduces a
+   purged publication's id, and `materialize` reads an existing id as **already
+   built**: it skips the projection, re-points, and `_advance_app_pin` pins it.
+
+Measured 2026-08-08: **eight of ten** `bond_serving_v1` publications are
+validated and hold zero facts (five freed by the first purge, three born empty
+before the coverage gate existed), all eight still carrying their build row. The
+as_of regression guard is only a partial net — all eight sit at as_of ≤
+2026-07-23 against a pointer at 2026-08-07, so an OLDER-day replay dies loudly
+inside `sec_set_current_derived_publication`; what it cannot see is the
+**same-as_of** case, which is exactly what same-day content revisions manufacture
+(production carries four publications on 2025-03-31 and three on 2026-07-23).
+
+`_servable_revision` (`src/workers/bond_serving.py`) closes it by walking
+`base`, `base+rebuild1`, `base+rebuild2` … and stopping at the first identity
+that either does not exist (built) or exists **with its facts** (re-pointed,
+exactly as before). Two things follow, and both are deliberate:
+
+* the condition is **observable**, not remembered — "this publication holds no
+  facts" answers for the eight production already emptied, with no backfill, and
+  no state to keep in sync. Marking purged ids non-reusable was the alternative
+  and is strictly worse: it cannot make the marked id servable either (validated
+  rows are undeletable and the write guard only admits an INSERT under a
+  `prepared` parent), so it needs this same walk anyway;
+* the walk is deterministic in the DATABASE STATE, so **idempotence survives**: a
+  replay over unchanged inputs steps past the same unservable candidates and
+  re-points onto the same built one, no rebuild.
+
+`bond_serving_purged_publications` covers the other half. The purge commits one
+batch per transaction (a 2M-row DELETE would hold back VACUUM database-wide), so
+a crash between batches leaves a **partial** publication — facts > 0, payload
+incomplete — which emptiness alone would read as built. The routine records the
+publication there in the same transaction as the batch it precedes, so the row
+exists iff rows were actually lost.
+
+Cost of the probe, measured on production 2026-08-08, and the reason it is a
+`count(*)` and not the obvious `EXISTS`: `publication_id` has a handful of
+distinct values, so the planner estimates ~2M rows for an equality and takes a
+Seq Scan for `EXISTS (… LIMIT 1)` — which stops early only if a row matches, i.e.
+never for the empty publication this path is about (**8.4 s** warm under a
+generic plan, **40.2 s** cold). An aggregate cannot stop early, so the index-only
+scan wins under both plan modes: 0.5 ms / 11.0 ms empty, 91.7 ms / 126.2 ms on
+the 2,031,147-row live publication — and it is only asked when the identity
+already exists, i.e. on a replay.
+
+Exhaustion (`REBUILD_ATTEMPT_LIMIT`, 32) raises `BondServingRebuildExhausted` and
+FAILS the run — never a dark state. It is a pathology guard, not the terminator:
+a purged publication can never regain facts.
+
+**Named residual.** A `WORKER_CALC_DATE` replay of an *older* day that resolves
+onto a purged identity now BUILDS (~2M rows) and is then refused by the as_of
+regression guard, which rolls the whole transaction back — where before the walk
+it failed immediately on the same guard. The run is red either way and nothing is
+promoted either way; the replay just costs a wasted build. That path is
+deliberately closed by the guard (an old day must not become current), so it is
+documented, not worked around: to replay an old day on purpose, use the guard's
+own `allow_as_of_regression` escape hatch rather than expecting this worker to
+short-circuit it.
 
 ### Disk: re-used, NOT returned (measured, production, 2026-08-07)
 
