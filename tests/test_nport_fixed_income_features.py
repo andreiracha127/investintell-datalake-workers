@@ -29,7 +29,8 @@ def _seed_fixture(cur):
     cur.execute("""CREATE TABLE nport_raw_rows(
         raw_row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         ingestion_run_id uuid NOT NULL, source_file_id uuid NOT NULL, source_row_number bigint NOT NULL,
-        source_table text NOT NULL, accession_number text, holding_id text, typed_projection jsonb NOT NULL,
+        source_sha256 char(64) NOT NULL, source_table text NOT NULL, accession_number text,
+        holding_id text, typed_projection jsonb NOT NULL,
         UNIQUE(source_file_id,source_row_number))""")
     for relation, source_table in (
         ("nport_interest_rate_risk_raw", "INTEREST_RATE_RISK.tsv"),
@@ -82,8 +83,10 @@ def _prepare_features_publication(cur, publication_id, run_id, package_id):
 
 def _raw(cur, run_id, source_table, accession, projection, *, holding_id=None):
     cur.execute("""INSERT INTO nport_raw_rows
-        (ingestion_run_id,source_file_id,source_row_number,source_table,accession_number,holding_id,typed_projection)
-        VALUES(%s,%s,2,%s,%s,%s,%s::jsonb)""", (run_id, uuid4(), source_table, accession, holding_id, projection))
+        (ingestion_run_id,source_file_id,source_row_number,source_sha256,source_table,
+         accession_number,holding_id,typed_projection)
+        VALUES(%s,%s,2,%s,%s,%s,%s,%s::jsonb)""",
+        (run_id, uuid4(), "a" * 64, source_table, accession, holding_id, projection))
 
 
 def test_reapplying_production_ddl_never_replaces_the_builder_with_a_stub():

@@ -61,7 +61,7 @@ LOCAL_ORACLE_PATH = BUILDER_SQL_PATH
 # it PostgreSQL inlines snapshot_holdings into each UNION ALL branch, re-running
 # the 4.1M-row holdings/bridge join nine times in a single statement. MATERIALIZED
 # is a planner directive only — the rows the oracle produces are unchanged.
-APPROVED_LOCAL_ORACLE_SHA256 = "70703b7ae07c6affb829b354456f4995597cbb58c22798ff9c7590cffb976207"
+APPROVED_LOCAL_ORACLE_SHA256 = "be406828cd327fb12d3db1682c572c29f9f6c63d180eb1deb775158f06048553"
 CONTRACT_DIGEST = (
     "sha256:5072aa4260f52196890288371651a6aa9280686b7325022908d2e892068f4bd0"
 )

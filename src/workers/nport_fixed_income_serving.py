@@ -51,10 +51,12 @@ import os
 import subprocess
 import uuid
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 from src.db import LOCK_NPORT_FIXED_INCOME_SERVING, advisory_lock, connect, resolve_dsn
 from src.nport import fixed_income_local_materializer as materializer
+from src.nport import secapi_fixed_income as secapi_parser
 
 LOGGER = logging.getLogger(__name__)
 
@@ -66,6 +68,7 @@ MANIFEST_FORMAT = "nport-fixed-income-in-database/v1"
 _PUBLICATION_NAMESPACE = uuid.UUID("6f2f1f2c-0f5a-5d3b-9c47-3f2b1c8a54d1")
 
 _REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+_SECAPI_SIDECAR_SCHEMA = Path(__file__).resolve().parents[2] / "schemas" / "nport_fixed_income_secapi_sidecars_v1.sql"
 
 
 def _code_revision() -> str:
@@ -100,6 +103,7 @@ def install_schema(conn: Any) -> str:
     """
     with conn.cursor() as cur:
         materializer.install_product_schema(cur)
+        cur.execute(_SECAPI_SIDECAR_SCHEMA.read_text(encoding="utf-8"))
         return materializer.install_builder(cur)
 
 
@@ -113,6 +117,35 @@ def _current_source(conn: Any) -> tuple[str, str] | None:
         (SOURCE_PRODUCT, SOURCE_PRODUCT),
     ).fetchone()
     return (row[0], row[1]) if row else None
+
+
+def _current_product_pointer(conn: Any) -> str | None:
+    row = conn.execute(
+        "SELECT publication_id::text FROM sec_derived_current_pointers WHERE product=%s",
+        (PRODUCT,),
+    ).fetchone()
+    return row[0] if row else None
+
+
+def _already_validated_result(
+    conn: Any, publication_id: str, as_of: date, source: dict[str, str]
+) -> dict[str, Any] | None:
+    existing = _state_of(conn, publication_id)
+    if existing is None or existing[0] != "validated":
+        return None
+    with conn.cursor() as cur:
+        rollup_state = materializer.ensure_coverage_rollup(cur, publication_id)
+    counts = _relation_counts(conn, publication_id)
+    return {
+        "state": "already_published" if existing[1] else "already_validated",
+        "publication_id": publication_id,
+        "as_of": as_of.isoformat(),
+        "supplemental_source_kind": source["kind"],
+        "supplemental_source_hash": source["source_hash"],
+        "coverage_rollup": rollup_state,
+        "rows": sum(counts.values()),
+        "counts": counts,
+    }
 
 
 # The raw evidence four of the six contract relations exist ONLY through.
@@ -149,6 +182,76 @@ def _pinned_raw_evidence(conn: Any, source_run_id: str) -> dict[str, bool]:
     }
 
 
+def _choose_supplemental_source(
+    raw_evidence: dict[str, bool], secapi_state: dict[str, Any]
+) -> dict[str, str]:
+    """Choose one complete supplemental source without mixing provenance."""
+    raw_states = tuple(bool(raw_evidence[name]) for name in _REQUIRED_RAW_EVIDENCE)
+    if all(raw_states):
+        return {"kind": "dera_raw", "source_hash": "sha256:legacy-raw"}
+    if any(raw_states):
+        raise RuntimeError("partial legacy raw evidence cannot be mixed with sec-api")
+    if bool(secapi_state.get("ready")) and secapi_state.get("source_hash"):
+        return {"kind": "sec_api", "source_hash": str(secapi_state["source_hash"])}
+    raise RuntimeError("no complete supplemental source exists for the pinned publication")
+
+
+def _secapi_scope_state(
+    conn: Any, source_publication_id: str, source_run_id: str
+) -> dict[str, Any]:
+    """Return bounded readiness plus a deterministic hash of compact evidence."""
+    row = conn.execute(
+        "WITH rate_hashes AS ("
+        " SELECT accession_number, string_agg(provider_ordinal::text || ':' || projection_sha256, ',' "
+        " ORDER BY provider_ordinal) AS rate_projection_hashes "
+        " FROM nport_fixed_income_secapi_rate_risk_v1 "
+        " WHERE source_holdings_publication_id=%s AND source_run_id=%s "
+        " GROUP BY accession_number) "
+        "SELECT nport_fixed_income_secapi_scope_ready(%s,%s,%s), "
+        "COALESCE(string_agg(concat_ws(':', m.accession_number, m.extractor_version, "
+        "m.provider_response_sha256, m.payload_sha256, f.projection_sha256, "
+        "COALESCE(q.rate_projection_hashes,'')), ',' ORDER BY m.accession_number), '') "
+        "FROM nport_fixed_income_secapi_recovery_v1 m "
+        "LEFT JOIN nport_fixed_income_secapi_fund_info_v1 f USING "
+        "(source_holdings_publication_id,source_run_id,accession_number) "
+        "LEFT JOIN rate_hashes q USING (accession_number) "
+        "WHERE m.source_holdings_publication_id=%s AND m.source_run_id=%s AND m.status='success'",
+        (
+            source_publication_id,
+            source_run_id,
+            source_publication_id,
+            source_run_id,
+            secapi_parser.EXTRACTOR_VERSION,
+            source_publication_id,
+            source_run_id,
+        ),
+    ).fetchone()
+    readiness = dict(row[0]) if row and row[0] else {"ready": False}
+    evidence = row[1] if row else ""
+    readiness["source_hash"] = (
+        _secapi_source_hash(source_publication_id, source_run_id, evidence)
+        if readiness.get("ready")
+        else None
+    )
+    return readiness
+
+
+def _secapi_source_hash(
+    source_publication_id: str, source_run_id: str, ordered_evidence: str
+) -> str:
+    scoped = json.dumps(
+        {
+            "source_publication_id": source_publication_id,
+            "source_run_id": source_run_id,
+            "extractor_version": secapi_parser.EXTRACTOR_VERSION,
+            "ordered_projection_evidence": ordered_evidence,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(scoped.encode("utf-8")).hexdigest()
+
+
 def _resolve_as_of(conn: Any, calc_date: str | None, source_publication_id: str) -> date | None:
     if calc_date:
         return date.fromisoformat(calc_date)
@@ -167,6 +270,8 @@ def _publication_id(
     *,
     contract_digest: str,
     builder_sha256: str,
+    supplemental_source_kind: str,
+    supplemental_source_hash: str,
 ) -> str:
     """Identity of the publication these inputs produce.
 
@@ -187,6 +292,8 @@ def _publication_id(
                     code_revision,
                     contract_digest,
                     builder_sha256,
+                    supplemental_source_kind,
+                    supplemental_source_hash,
                     source_publication_id,
                     as_of.isoformat(),
                 )
@@ -219,6 +326,8 @@ def _build_fingerprint(
     as_of: date,
     code_revision: str,
     builder_sha256: str,
+    supplemental_source_kind: str,
+    supplemental_source_hash: str,
 ) -> str:
     """Fingerprint of the build INPUTS, fixed at INSERT time.
 
@@ -238,6 +347,8 @@ def _build_fingerprint(
             "code_revision": code_revision,
             "builder_sha256": builder_sha256,
             "contract_digest": materializer.CONTRACT_DIGEST,
+            "supplemental_source_kind": supplemental_source_kind,
+            "supplemental_source_hash": supplemental_source_hash,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -254,6 +365,8 @@ def _build_manifest(
     as_of: date,
     code_revision: str,
     builder_sha256: str,
+    supplemental_source_kind: str,
+    supplemental_source_hash: str,
     counts: dict[str, int],
 ) -> tuple[str, str]:
     """Canonical in-database build manifest + its sha256 (the build fingerprint).
@@ -272,12 +385,16 @@ def _build_manifest(
             "source_run_id": source_run_id,
             "as_of_date": as_of.isoformat(),
             "contract_digest": materializer.CONTRACT_DIGEST,
+            "supplemental_source_kind": supplemental_source_kind,
+            "supplemental_source_hash": supplemental_source_hash,
         },
         "contract_digest": materializer.CONTRACT_DIGEST,
         "engine": {
             "kind": "postgresql-target",
             "builder_sha256": builder_sha256,
             "code_revision": code_revision,
+            "supplemental_source_kind": supplemental_source_kind,
+            "supplemental_source_hash": supplemental_source_hash,
         },
         "outputs": {name: {"count": counts[name]} for name in sorted(counts)},
     }
@@ -331,36 +448,24 @@ def run(
             if as_of is None:
                 return {"state": "no_source", "reason": "source_publication_has_no_report_date", "rows": 0}
 
-            publication_id = _publication_id(
+            # Preserve the repair path for a legacy publication whose raw input
+            # was pruned after it had already been validated. The raw probe gates
+            # a new build, never maintenance of an immutable existing build.
+            legacy_source = {"kind": "dera_raw", "source_hash": "sha256:legacy-raw"}
+            legacy_publication_id = _publication_id(
                 code_revision,
                 source_publication_id,
                 as_of,
                 contract_digest=materializer.CONTRACT_DIGEST,
                 builder_sha256=builder_sha256,
+                supplemental_source_kind=legacy_source["kind"],
+                supplemental_source_hash=legacy_source["source_hash"],
             )
-            existing = _state_of(conn, publication_id)
-            if existing is not None and existing[0] == "validated":
-                # The identity is a function of (revision, source, as_of), so a
-                # publication built by the PREVIOUS builder collapses onto this
-                # same id whenever the revision did not change -- the documented
-                # "unknown" fallback makes that the normal case for a deployment
-                # that carries no .git and no CODE_REVISION. That publication has
-                # no rollup rows, and the dossier reads the rollup, so it would
-                # keep serving no coverage while this branch reports success.
-                # Repair before short-circuiting; the derivation is sound there
-                # because those coverage rows are one per position INCLUDING the
-                # absent ones.
-                with conn.cursor() as cur:
-                    rollup_state = materializer.ensure_coverage_rollup(cur, publication_id)
-                counts = _relation_counts(conn, publication_id)
-                return {
-                    "state": "already_published" if existing[1] else "already_validated",
-                    "publication_id": publication_id,
-                    "as_of": as_of.isoformat(),
-                    "coverage_rollup": rollup_state,
-                    "rows": sum(counts.values()),
-                    "counts": counts,
-                }
+            repaired = _already_validated_result(
+                conn, legacy_publication_id, as_of, legacy_source
+            )
+            if repaired is not None:
+                return repaired
 
             # Fail closed on pruned evidence BEFORE anything is built, inserted,
             # validated or pinned. On 2026-08-01 this job ran against a database
@@ -377,7 +482,14 @@ def run(
             # repair of something already built.
             evidence = _pinned_raw_evidence(conn, source_run_id)
             pruned = sorted(name for name, present in evidence.items() if not present)
-            if pruned:
+            secapi_state = (
+                _secapi_scope_state(conn, source_publication_id, source_run_id)
+                if pruned
+                else {"ready": False, "source_hash": None}
+            )
+            try:
+                supplemental_source = _choose_supplemental_source(evidence, secapi_state)
+            except RuntimeError as exc:
                 # Production prunes raw by policy, so this state is expected to
                 # PERSIST: the job stays green (exit 0 keeps the cron's retry
                 # semantics intact) and would otherwise be silent forever. WARNING
@@ -387,10 +499,11 @@ def run(
                     "nport_fixed_income_serving: refusing to build over pruned raw evidence "
                     "(product=%s source_publication_id=%s source_run_id=%s as_of=%s "
                     "pruned_raw_relations=%s); the pinned N-PORT raw rows are gone, so the "
-                    "raw-derived relations would publish empty. Republish through the offline "
-                    "artifact route -- see docs/runbooks/fixed-income-publication-closure.md",
+                    "raw-derived relations would publish empty and the SEC-API sidecar is not "
+                    "complete (%s). Recover the bounded accession set -- see "
+                    "docs/runbooks/fixed-income-publication-closure.md",
                     PRODUCT, source_publication_id, source_run_id, as_of.isoformat(),
-                    ",".join(pruned),
+                    ",".join(pruned), str(exc),
                 )
                 return {
                     "state": "no_source",
@@ -399,14 +512,75 @@ def run(
                     "source_run_id": source_run_id,
                     "as_of": as_of.isoformat(),
                     "pruned_raw_relations": pruned,
+                    "secapi_readiness": secapi_state,
                     "rows": 0,
                 }
 
+            if supplemental_source["kind"] == "sec_api":
+                approved_hash = os.getenv("NPORT_FI_SECAPI_APPROVED_SOURCE_HASH", "").strip()
+                if approved_hash != supplemental_source["source_hash"]:
+                    LOGGER.warning(
+                        "nport_fixed_income_serving: SEC-API evidence is complete but its "
+                        "source hash is not explicitly approved (product=%s "
+                        "source_publication_id=%s source_hash=%s)",
+                        PRODUCT,
+                        source_publication_id,
+                        supplemental_source["source_hash"],
+                    )
+                    return {
+                        "state": "no_source",
+                        "reason": "secapi_activation_not_approved",
+                        "source_publication_id": source_publication_id,
+                        "source_run_id": source_run_id,
+                        "supplemental_source_hash": supplemental_source["source_hash"],
+                        "rows": 0,
+                    }
+
+            publication_id = _publication_id(
+                code_revision,
+                source_publication_id,
+                as_of,
+                contract_digest=materializer.CONTRACT_DIGEST,
+                builder_sha256=builder_sha256,
+                supplemental_source_kind=supplemental_source["kind"],
+                supplemental_source_hash=supplemental_source["source_hash"],
+            )
+            existing = _state_of(conn, publication_id)
+            repaired = _already_validated_result(
+                conn, publication_id, as_of, supplemental_source
+            )
+            if repaired is not None:
+                return repaired
+
+            previous_product_pointer = _current_product_pointer(conn)
+
             with conn.transaction():
                 with conn.cursor() as cur:
+                    # Lock the upstream product first and hold it through our
+                    # promotion. sec_set_current_derived_publication uses the
+                    # same product-keyed xact lock, closing the source-pointer
+                    # TOCTOU window while preserving a canonical lock order.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))",
+                        (SOURCE_PRODUCT,),
+                    )
                     cur.execute(
                         "SELECT pg_advisory_xact_lock(hashtextextended(%s,0))", (PRODUCT,)
                     )
+                    if _current_source(conn) != (source_publication_id, source_run_id):
+                        raise RuntimeError("current N-PORT holdings publication changed during build")
+                    if _current_product_pointer(conn) != previous_product_pointer:
+                        raise RuntimeError("current fixed-income publication changed during build")
+                    if supplemental_source["kind"] == "sec_api":
+                        current_secapi_state = _secapi_scope_state(
+                            conn, source_publication_id, source_run_id
+                        )
+                        if (
+                            not current_secapi_state.get("ready")
+                            or current_secapi_state.get("source_hash")
+                            != supplemental_source["source_hash"]
+                        ):
+                            raise RuntimeError("SEC-API sidecar evidence changed during build")
                     if existing is None:
                         cur.execute(
                             "INSERT INTO sec_derived_publications "
@@ -427,13 +601,15 @@ def run(
                                     as_of=as_of,
                                     code_revision=code_revision,
                                     builder_sha256=builder_sha256,
+                                    supplemental_source_kind=supplemental_source["kind"],
+                                    supplemental_source_hash=supplemental_source["source_hash"],
                                 ),
                                 PRODUCT,
                             ),
                         )
                     cur.execute(
-                        "SELECT build_nport_fixed_income_features(%s,%s)",
-                        (publication_id, as_of),
+                        "SELECT build_nport_fixed_income_features(%s,%s,%s)",
+                        (publication_id, as_of, supplemental_source["kind"]),
                     )
                     counts = _relation_counts(conn, publication_id)
                     manifest, manifest_sha256 = _build_manifest(
@@ -443,6 +619,8 @@ def run(
                         as_of=as_of,
                         code_revision=code_revision,
                         builder_sha256=builder_sha256,
+                        supplemental_source_kind=supplemental_source["kind"],
+                        supplemental_source_hash=supplemental_source["source_hash"],
                         counts=counts,
                     )
                     # A resumed run must not silently inherit a manifest that
@@ -484,6 +662,8 @@ def run(
         "source_publication_id": source_publication_id,
         "as_of": as_of.isoformat(),
         "code_revision": code_revision,
+        "supplemental_source_kind": supplemental_source["kind"],
+        "supplemental_source_hash": supplemental_source["source_hash"],
         "rows": sum(counts.values()),
         "counts": counts,
     }

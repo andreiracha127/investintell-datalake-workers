@@ -158,6 +158,88 @@ applies it (idempotently) before publishing, mirroring what the in-database
 worker does; a restore that bypasses the CLI must apply the DDL first or it will
 fail with `42883 undefined_function`.
 
+## SEC API fund-level recovery — recover without publishing
+
+When the validated holdings publication is intact but its historical DERA raw
+evidence has been pruned, `nport_fixed_income_secapi_recovery` can recover only
+the fund-level reported facts and interest-rate-risk rows from SEC API. It is a
+sidecar recovery: it does **not** write `nport_raw_rows`, does **not** mutate a
+derived publication, and does **not** move a current pointer. A successful
+recovery is evidence for a later, separately authorized source-selection and
+publication step; it is never publication by implication.
+
+The worker's expected accession set comes exclusively from
+`nport_holdings_snapshot_identity_v1` for the explicit holdings publication.
+It makes exactly one accession-scoped `FormNportApi` call per pending accession,
+stores only compact fund/risk projections, and rejects any `invstOrSecs`
+position payload from those projections.
+
+### Operator canary
+
+Apply the idempotent sidecar DDL as an explicit release migration. The recurring
+worker only verifies these objects and fails if they are absent; it never takes
+schema-changing locks during a recovery run:
+
+```bash
+psql "$DATALAKE_DSN" -v ON_ERROR_STOP=1 -f schemas/nport_fixed_income_secapi_sidecars_v1.sql
+```
+
+Create or update a dedicated Railway service to use
+`railway.nport-fixed-income-secapi-recovery.toml`. It is a one-shot service:
+`restartPolicyType = "never"`, no schedule, and no web endpoint. Set these
+service-only variables, with a narrowly bounded canary:
+
+```text
+WORKER=nport_fixed_income_secapi_recovery
+SEC_API_IO_KEY=<Railway secret; never print it>
+NPORT_SECAPI_SOURCE_HOLDINGS_PUBLICATION_ID=<validated holdings publication UUID>
+NPORT_SECAPI_SOURCE_RUN_ID=<its source run UUID>
+NPORT_SECAPI_MAX_ACCESSIONS=1
+NPORT_SECAPI_MAX_API_CALLS=1
+NPORT_SECAPI_REQUEST_INTERVAL_SECONDS=0.1
+```
+
+`0.1` seconds caps this worker at 10 requests/second, below the currently
+published 20 requests/second floor for paid Query API plans. Use a slower value
+if the account contract is more restrictive; never omit the explicit pacing
+value on Railway.
+
+Deploying the service runs that one bounded batch. A green deployment only means
+the job exited; inspect the returned JSON and the database. Never set an empty
+or continuous cron for this worker.
+
+### Completeness gate before any activation
+
+After enough bounded runs have completed, the following must return
+`"ready": true`, zero missing/non-success/unexpected counts, and matching
+declared metric/rate-row counts. Do not run the fixed-income publisher or move
+any pointer while it is false.
+
+```sql
+SELECT nport_fixed_income_secapi_scope_ready(
+  '<holdings-publication-uuid>'::uuid,
+  '<source-run-uuid>'::uuid,
+  'nport-secapi-fixed-income/v1'
+);
+```
+
+Treat `conflict`, accession mismatch, malformed payload, authentication failure,
+or an unexpected readiness count as terminal until investigated. Retrying a
+network/429/5xx failure is bounded inside an accession call; it never broadens
+the query to a date, CIK, form, or pagination sweep.
+
+### Controlled activation
+
+Recovery alone changes no served data. Once the scope-readiness gate is true,
+obtain explicit owner approval for the source-selection/build path. Compute the
+exact `source_hash` reported by the serving worker's readiness probe and set it
+as `NPORT_FI_SECAPI_APPROVED_SOURCE_HASH` only for the controlled serving run.
+The worker compares the full hash, not a boolean; a new or changed recovery
+scope is denied by default. Run the publisher's completeness checks and
+publication procedure, verify the resulting manifest and pointer, then remove
+that variable. Preserve the previous `nport_fixed_income_features_v1` pointer
+until validation finishes. Recovery itself has no automatic hand-off to serving.
+
 ## Forcing the old behaviour
 
 - `publish_artifact(..., verify_storage=True)`
