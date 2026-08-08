@@ -119,6 +119,23 @@
 #                           não escreve nada). Opcionais: WORKER_LIMIT (teto do
 #                           universo por run), WORKER_CALC_DATE (replay),
 #                           BOND_TICK_TOP_N (default 500).
+#                           FONTE: o serviço PRECISA deployar a partir do source
+#                           do GitHub. A republicação deriva a identidade da
+#                           publicação de uuid5(product | as_of | revision), e a
+#                           revisão vem de RAILWAY_GIT_COMMIT_SHA — que o Railway
+#                           injeta por DEPLOY, e só em deploy originado do
+#                           GitHub. Medido em produção 2026-08-08: a bond-chain
+#                           não seta nenhuma var explícita e mesmo assim gravou o
+#                           sha de 40 hex do commit implantado em
+#                           bond_daily_chain_runs (2026-08-06 e 08-07). Sem essa
+#                           injeção o worker agora FALHA alto em vez de publicar
+#                           sob "unknown" (BondServingRevisionUnresolved).
+#                           NÃO setar CODE_REVISION como variável permanente do
+#                           serviço: valor fixo SOMBREIA o sha por-deploy e uma
+#                           mudança só de código volta a colidir no mesmo
+#                           publication_id — run verde re-servindo payload velho.
+#                           É pino de UMA republicação deliberada e sai depois
+#                           (foi o que produção pagou em 2026-08-07).
 #   fund_peer_groups     -> TRIMESTRAL. Publica UMA âncora (o último trimestre
 #                           FECHADO) em fund_peer_groups_v1, atômico: DELETE da
 #                           âncora + INSERT. Cron sugerido:

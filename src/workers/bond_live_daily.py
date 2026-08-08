@@ -41,13 +41,17 @@ re-points to the same publication instead of rebuilding it.
 Contract: ``run(dsn, *, calc_date=None, limit=None) -> dict`` (see src/run.py).
 ``calc_date`` pins "today" for the window arithmetic (replay/backfill); a date
 PAST the execution date is refused rather than clamped (see
-``calc_date_in_future`` below), and every window this worker REQUESTS -- the
-candle window, the tick session, the activity ranking behind the tick cohort --
-is bounded above by it, so a replay sees the day it asked for and not the days
-the table has since accumulated. (The curve is the deliberate exception: it is
-not a windowed request at all but one full-history response trimmed by each
-tenor's own watermark, and days past a replay date are real sessions no later
-than the execution date, which nothing anchors an as_of on.)
+``calc_date_in_future`` below), and EVERY lane is bounded above by it -- the
+candle window, the tick session, the activity ranking behind the tick cohort,
+and the curve fold -- so a replay loads the day it asked for and not the days
+the table has since accumulated. The curve took that ceiling last (2026-08-08)
+and was briefly argued to be exempt, on the grounds that it is not a windowed
+request but one full-history response trimmed by each tenor's own watermark.
+That argument holds for a NORMAL run and fails for the case ``calc_date``
+exists to serve: the response is the whole history either way, so a replay of an
+old session would upsert every point after it as well and walk
+``bond_yield_curve_daily`` forward with rates from sessions the replay is not
+loading. The fold is bounded instead; on a normal run the bound binds nothing.
 ``limit`` caps the universe swept in one run, for a budget-bounded catch-up;
 the sweep is ordered as a ring (see ``sweep_priority_order``) so successive
 capped runs advance instead of re-refreshing the same prefix.
@@ -73,7 +77,11 @@ state                        green  why
 ``ticks_failed``             no     stage 3 did not cover its cohort: every tick
                                     call failed, OR the same consecutive-failure
                                     breaker cut the lane short mid-cohort
-``matview_failed``           no     REFRESH failed (ownership); the cohort is stale
+``matview_failed``           no     stage 4 did not refresh: the REFRESH failed
+                                    (ownership), or the matview is ABSENT
+                                    entirely. Only ``refreshed`` is green;
+                                    ``matview.state`` says which, and they take
+                                    different hands
 ``republish_locked``         no     a publication worker's lock was held: nothing recomputed
 ``republish_no_op``          no     a publication worker reported a dark state: nothing published
 ``republish_failed``         no     a publication worker failed, raised, or returned an
@@ -82,14 +90,27 @@ state                        green  why
                                     its budget, NOT the day
 ===========================  =====  ====================================
 
+THE DAILY LOCK COVERS ALL FIVE STAGES, including the two that run on other
+connections. Released after stage 3, it would let an overlapping manual restart
+start a second sweep while this one is still refreshing and republishing: the
+second run commits a PREFIX of its revised candles into the very table this
+run's publication build is reading, then aborts on the publication locks -- and
+this run exits green having served a mix of two sweeps. Holding it is free,
+because a session advisory lock is not a transaction: the connection is
+committed and left IDLE for the minutes stage 5 takes, so it pins no snapshot
+and holds back no VACUUM. (Same two-level shape as ``daily_chain``, which holds
+its own lock across these same workers while each takes its own underneath.)
+
 A ``locked`` exit is a typed abort rather than an in-process retry, deliberately.
 This service is a daily cron with ``restartPolicy=NEVER`` (deploy IS execution)
 at 07:30 UTC and the publication chain runs at 11:00, so an overlap is anomalous
 rather than routine; both publication builds take MINUTES, so a seconds-scale
-backoff would only sleep and fail anyway, while waiting them out would hold this
-worker's own advisory lock and its connection open for an unbounded time -- the
-long-transaction trap this repo has already paid for. Failing loudly hands the
-decision to an operator, who can restart the service once the holder is gone.
+backoff would only sleep and fail anyway. Note which of the two the objection
+was to: HOLDING the lock while this run works is bounded by the work and costs
+an idle connection; WAITING on someone else's holds it for a time nothing
+bounds, on a run that has done nothing and may still do nothing. Failing loudly
+hands the decision to an operator, who can restart the service once the holder
+is gone.
 """
 
 from __future__ import annotations
@@ -502,7 +523,7 @@ def _as_float(value: Any) -> float | None:
 # --------------------------------------------------------------------------- #
 # Stage 2: yield curve
 # --------------------------------------------------------------------------- #
-def _load_curve(conn: psycopg.Connection, client: Any) -> dict[str, Any]:
+def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[str, Any]:
     watermarks = _curve_watermarks(conn)
     # A tenor behind the front of the curve is a hole this run may close. It is
     # REPORTED rather than inferred from row counts, because that is the only
@@ -527,8 +548,19 @@ def _load_curve(conn: psycopg.Connection, client: Any) -> dict[str, Any]:
         # Each tenor is trimmed by ITS OWN last loaded day, so a tenor that
         # missed runs recovers the missed days from the full history the
         # endpoint returns, and a tenor never seen has no bound at all.
+        #
+        # And by the run's REQUESTED date above, which is the ceiling this lane
+        # used to be the one exception to. The argument for the exception was
+        # that the curve is not a windowed request -- true, and irrelevant: the
+        # response is the provider's WHOLE history either way, so a replay of an
+        # old session ("WORKER_CALC_DATE") would upsert every later point too and
+        # walk bond_yield_curve_daily forward with rates from sessions this run
+        # is not loading. Bounding the fold is what makes a replay load the
+        # replay session and nothing else. In normal operation it binds nothing:
+        # ``today`` is the execution date (a later one is refused in ``run``) and
+        # the provider has no rates past it.
         points = live_daily.curve_points(
-            tenor, payload, not_before=watermarks.get(tenor)
+            tenor, payload, not_before=watermarks.get(tenor), not_after=today
         )
         if not points:
             continue
@@ -628,6 +660,15 @@ def _refresh_curated(dsn: str) -> dict[str, Any]:
     silently costs the product the day's prices, which is the larger harm by
     far. The caller still folds the failure into the run's exit code, so it
     lands as a failed deploy instead of a line in a JSON blob nobody reads.
+
+    THREE states, and only ``refreshed`` is a stage that ran. ``absent`` is
+    reported rather than raised for the same reason and is red for the same one:
+    the sweep does not read this matview (the universe comes from the
+    ``bond_curated_universe`` TABLE), so a missing relation must not cost the
+    day's load -- but a run in which stage 4 did nothing at all is not a
+    complete run, and a schema/deploy fault that reads green is exactly how one
+    survives a week. The caller asserts ``refreshed``, so a state added here
+    later is red until someone decides otherwise.
     """
     with connect(dsn, autocommit=True) as conn:
         if not _relation_exists(conn, CURATED_MATVIEW):
@@ -799,7 +840,7 @@ def run(
 
         try:
             candles = _load_candles(conn, client, universe, today)
-            curve = _load_curve(conn, client)
+            curve = _load_curve(conn, client, today)
             ticks = _load_ticks(conn, client, universe, today)
         except FinnhubConfigError as exc:
             # A key REVOKED mid-sweep (401/403 is non-transient by design, so it
@@ -808,8 +849,34 @@ def run(
             conn.commit()
             return _halted("provider_rejected", detail=str(exc), provider=client.stats())
 
-    matview = _refresh_curated(resolved)
-    republish = _republish(resolved)
+        # Stages 4 and 5 run INSIDE the daily lock, and that placement is the
+        # whole of what makes the lock mean anything. Held only through stage 3,
+        # a manual restart could take it while this run was still refreshing and
+        # republishing: the second run would commit a PREFIX of its own revised
+        # candles into the table the first run's ``bond_metrics``/``bond_serving``
+        # build is reading mid-flight, then abort on the publication locks --
+        # leaving the first, green, run serving a mix of two sweeps. The lock has
+        # to cover the read, not just the write.
+        #
+        # ...and it costs nothing, because a session advisory lock is not a
+        # transaction. ``advisory_lock`` uses ``pg_try_advisory_lock`` (see
+        # src/db.py), which pins no snapshot; this ``commit`` is what leaves the
+        # connection IDLE rather than IDLE IN TRANSACTION for the minutes the two
+        # publication builds take, so nothing here holds back the global xmin
+        # horizon -- the VACUUM trap this repo has already paid for (runbook §6).
+        # KEEP IT: an added read on ``conn`` between here and stage 5 would
+        # silently re-open a minutes-long transaction. Both stages below open
+        # their OWN connections (``_refresh_curated`` autocommit; each
+        # publication worker its own), so this one only carries the lock.
+        #
+        # This is ``daily_publication_chain``'s idiom, not a new one: it holds
+        # LOCK_DAILY_PUBLICATION_CHAIN across these same two workers while each
+        # takes its own lock underneath. Deadlock-free by construction -- nothing
+        # else in the fleet ever takes LOCK_BOND_LIVE_DAILY, so there is no cycle
+        # to close.
+        conn.commit()
+        matview = _refresh_curated(resolved)
+        republish = _republish(resolved)
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
@@ -822,8 +889,18 @@ def run(
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),
-        # The curated cohort the publications read is stale.
-        (matview.get("state") == "failed", "matview_failed"),
+        # The curated cohort the publications read is stale. Asserted on the
+        # SUCCESS state, never on a list of known failures: ``refreshed`` is the
+        # only outcome in which stage 4 did its work, and ``absent`` -- the
+        # matview missing entirely -- is a schema/deploy fault that did no
+        # refresh at all. Enumerating ``failed`` let that one exit green, which
+        # is the same drift rule ``republish_verdict`` already applies to the
+        # publication workers: an unrecognised state is never read as a success.
+        # ``matview.state`` in the JSON says WHICH shape it was, and they take
+        # different hands -- ``failed`` is the ownership prerequisite (runbook
+        # "One-time privilege prerequisite"), ``absent`` is a relation the
+        # database never got.
+        (matview.get("state") != "refreshed", "matview_failed"),
         # The provider cut the candle sweep short.
         (bool(candles.get("aborted")), "aborted"),
         # A stage that did NO work is not a stage that had nothing to do. All 13

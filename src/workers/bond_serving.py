@@ -26,29 +26,84 @@ from src.bonds import serving_materializer as materializer
 from src.db import LOCK_BOND_SERVING, advisory_lock, connect, resolve_dsn
 
 
+#: The revision ladder, highest precedence first. Shared VERBATIM with the sibling
+#: publication workers (``bond_metrics``, ``bond_price_observations``,
+#: ``daily_publication_chain``, ``nport_fixed_income_serving``) so one deploy
+#: cannot hand two products two different ideas of which code built them.
+_REVISION_ENV_VARS = ("CODE_REVISION", "GIT_SHA", "SOURCE_COMMIT", "RAILWAY_GIT_COMMIT_SHA")
+
+
+class BondServingRevisionUnresolved(Exception):
+    """No rung of the revision ladder resolved: identity cannot distinguish code.
+
+    Deliberately NOT a ``RuntimeError``. ``run`` catches ``RuntimeError`` around
+    ``materialize`` and launders it into the ``no_source`` dark state -- the
+    "nothing to serve yet" verdict. An unresolvable revision is the opposite of
+    that: the source is fine, the WORKLOAD is misconfigured, and a publication
+    whose identity cannot see the code is the very defect this ladder exists to
+    prevent. It must surface as a failed run, never as a quiet dark state.
+    """
+
+
 def _code_revision() -> str:
     """The revision the publication identity is derived from.
 
-    ``CODE_REVISION`` first, exactly like ``bond_security_master`` and
-    ``mixed_quant_publication``: the deployed image carries no ``.git``, so the
-    git fallback returns "unknown" there and every build of a given ``as_of``
-    collapses onto ONE ``publication_id``. ``materialize`` treats an existing id
-    as already built and only re-points, so a code change would silently re-serve
-    the previous payload instead of rebuilding -- which is exactly what a Wave 1b
-    republication hit on 2026-07-30. The dl-bond-chain job already sets the env
-    var; this makes the worker honour it.
+    Identity is ``uuid5(product | as_of | revision)`` and ``materialize`` treats an
+    existing id as already built -- it only re-points. So a revision that does not
+    move when the code moves makes a code-only change silently re-serve the
+    previous payload while the run reports success. That is exactly what a Wave 1b
+    republication hit on 2026-07-30.
+
+    The ladder, highest precedence first (:data:`_REVISION_ENV_VARS`, then git):
+
+    1. ``CODE_REVISION`` -- a DELIBERATE pin, for a replay that must land on a
+       known publication. It outranks the injected sha precisely because it is a
+       human decision. **It is a one-off, never a permanent service variable:** a
+       fixed value SHADOWS the per-deploy sha below and recreates the very
+       collision this ladder removes. Production paid that on 2026-08-07 -- the
+       variable was set for one republication and then removed on purpose.
+    2. ``GIT_SHA`` / ``SOURCE_COMMIT`` -- the same escape hatch under other CI/CD
+       names.
+    3. ``RAILWAY_GIT_COMMIT_SHA`` -- the commit of the deploy, injected by Railway
+       into every deployment that originates from the GitHub source. This is the
+       rung that makes a code-only change rebuild with NO operator action.
+       Measured on production 2026-08-08: ``bond-chain`` sets none of the three
+       vars above, yet its unattended cron runs on 2026-08-06 and 2026-08-07
+       recorded the full 40-hex shas ``e36213c3…`` and ``cfa628e5…`` in
+       ``bond_daily_chain_runs`` -- both real ``main`` merge commits, each the one
+       deployed at that moment. (The variables API does not list ``RAILWAY_GIT_*``
+       because it is per-deployment metadata, so its absence there proves nothing.)
+    4. ``git rev-parse --short HEAD`` -- a developer's checkout. The deployed image
+       carries no ``.git``, so this rung is silent in production by construction.
+
+    Raises when every rung is silent. The old behaviour returned "unknown", which
+    collapsed every build of one ``as_of`` onto a single publication and reported
+    success while re-serving stale payload -- the failure is invisible for weeks.
+    It can only fire on a workload that is BOTH detached from the GitHub source
+    and unpinned, which is a misconfiguration worth failing the first run over.
     """
-    configured = os.getenv("CODE_REVISION")
-    if configured:
-        return configured
+    for name in _REVISION_ENV_VARS:
+        configured = (os.getenv(name) or "").strip()
+        if configured:
+            return configured
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
             capture_output=True, text=True, timeout=5, check=False,
         )
-        return out.stdout.strip() or "unknown"
+        resolved = out.stdout.strip()
     except Exception:
-        return "unknown"
+        resolved = ""
+    if resolved:
+        return resolved
+    raise BondServingRevisionUnresolved(
+        "bond serving publication identity cannot see the code: none of "
+        f"{', '.join(_REVISION_ENV_VARS)} is set and git is unavailable here "
+        "(a deployed image has no .git). Deploy the service from the GitHub "
+        "source so Railway injects RAILWAY_GIT_COMMIT_SHA, or set CODE_REVISION "
+        "for a deliberate one-off pin and REMOVE it afterwards -- a permanent "
+        "CODE_REVISION shadows the per-deploy sha and re-creates the collision."
+    )
 
 
 #: The dense daily serving series. Read here as an OPTIONAL input; the build
@@ -186,7 +241,7 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
     It used to be the security master's ``max(measured_at)`` alone, and that is
     what made a DAILY refresh structurally impossible (measured 2026-08-07): the
     publication identity is ``uuid5(product | as_of | code_revision)``, the
-    master's measured_at sat at 2026-07-23, and ``CODE_REVISION`` only moves on a
+    master's measured_at sat at 2026-07-23, and the revision only moves on a
     deploy -- so every run of an undeployed day resolved to the SAME
     publication_id, which ``materialize`` treats as already built and merely
     re-points. Fresh prices could land forever and the served payload would never
@@ -265,7 +320,7 @@ def _resolve_as_of(conn: Any, calc_date: str | None) -> date | None:
 # unmoved: the identity replayed, ``materialize`` treated the publication as
 # already built and only re-pointed, and catalog/detail/latest kept serving the
 # superseded price and YTM until that bond reached the global max day or a deploy
-# changed ``CODE_REVISION``. Measured on production 2026-08-08: of the 194,521
+# changed the revision. Measured on production 2026-08-08: of the 194,521
 # CUSIP9 aliases current at as_of, 21,935 carry a priced dense row, and only a
 # fraction of those trade on the max day -- so the old slice was blind to most of
 # the served cohort.
@@ -333,7 +388,7 @@ WHERE product = ANY(%s) ORDER BY product
 # ``bond_metric_v1``, through the promoted ``sec_current_bond_metric_v1`` view,
 # for catalog's security_ytm/security_ytw and detail's current_yield/wal as well.
 # A metric rebuild promoted on the same as_of therefore changed what the product
-# should say while as_of and CODE_REVISION stood still, and the serving identity
+# should say while as_of and the revision stood still, and the serving identity
 # replayed onto the stale payload.
 #
 # The rest of the audit came back covered: the alias view

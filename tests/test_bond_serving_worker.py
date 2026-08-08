@@ -192,19 +192,25 @@ def test_run_advances_the_app_pin_after_a_validated_publication() -> None:
         admin.close()
 
 
+def _clear_revision_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every rung starts absent: the host's own CI env must not leak into a rung."""
+    for name in bond_serving._REVISION_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 def test_code_revision_prefers_the_configured_env_var(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The deployed image has no ``.git``, so the git fallback returns "unknown".
+    """The deployed image has no ``.git``, so the git rung is silent in production.
 
     Every build of one ``as_of`` would then collapse onto a single
     ``publication_id``, and ``materialize`` treats an existing id as already
     built -- it only re-points. A code change would silently re-serve the previous
     payload instead of rebuilding, which is what a Wave 1b republication hit on
-    2026-07-30. Honouring ``CODE_REVISION`` (which the dl-bond-chain job already
-    sets, and which ``bond_security_master`` already reads) keeps publication
-    identity tracking the code that produced it.
+    2026-07-30. Honouring an explicit revision keeps publication identity tracking
+    the code that produced it.
     """
+    _clear_revision_env(monkeypatch)
     monkeypatch.setenv("CODE_REVISION", "deadbee")
     assert bond_serving._code_revision() == "deadbee"
 
@@ -216,14 +222,94 @@ def test_code_revision_prefers_the_configured_env_var(
     ) != materializer.publication_id_for(as_of, "unknown")
 
 
-def test_code_revision_falls_back_when_the_env_var_is_absent_or_blank(
+def test_code_revision_ladder_prefers_explicit_pins_over_the_deploy_sha(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A blank env var is absence, not a revision named "" (it would hash)."""
-    monkeypatch.setenv("CODE_REVISION", "")
+    """Precedence, weakest rung first: an explicit pin outranks the injected sha.
+
+    ``CODE_REVISION`` wins because it is a DELIBERATE choice (a replay that must
+    land on a known publication). Railway's per-deploy sha is what moves the
+    identity with no operator action -- which is why a permanently-set
+    ``CODE_REVISION`` is the trap: it shadows the sha and freezes the identity.
+    Same ladder, same order, as the sibling publication workers.
+    """
+    _clear_revision_env(monkeypatch)
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "railway-sha")
+    assert bond_serving._code_revision() == "railway-sha"
+    monkeypatch.setenv("SOURCE_COMMIT", "source-sha")
+    assert bond_serving._code_revision() == "source-sha"
+    monkeypatch.setenv("GIT_SHA", "git-sha")
+    assert bond_serving._code_revision() == "git-sha"
+    monkeypatch.setenv("CODE_REVISION", "code-revision")
+    assert bond_serving._code_revision() == "code-revision"
+
+
+def test_code_revision_uses_the_railway_deploy_sha_when_nothing_is_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production case: no pin, no ``.git``, and the identity still moves.
+
+    Measured on production 2026-08-08 -- ``bond-chain`` sets none of the explicit
+    vars, yet its unattended cron runs recorded the full 40-hex sha of the commit
+    deployed at that moment. A code-only change therefore rebuilds on its own.
+    """
+    _clear_revision_env(monkeypatch)
+    sha = "cfa628e552a96eedc142e4e24e19410e56317f8a"
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", sha)
+    # git must not be consulted at all once a rung resolved.
+    monkeypatch.setattr(
+        bond_serving.subprocess, "run",
+        lambda *a, **k: pytest.fail("git consulted while an env rung was set"),
+    )
+    assert bond_serving._code_revision() == sha
+
+    as_of = date(2025, 3, 31)
+    assert materializer.publication_id_for(
+        as_of, sha
+    ) != materializer.publication_id_for(as_of, "e36213c335db0472268cbd9df0d7e3b977562602")
+
+
+def test_code_revision_falls_back_when_the_env_vars_are_absent_or_blank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blank env var is absence, not a revision named "" (it would hash).
+
+    With every rung blank the git fallback answers -- this suite runs from a
+    checkout, so that rung is live here even though it is silent in a deployed
+    image.
+    """
+    for name in bond_serving._REVISION_ENV_VARS:
+        monkeypatch.setenv(name, "")
     assert bond_serving._code_revision() != ""
-    monkeypatch.delenv("CODE_REVISION", raising=False)
+    _clear_revision_env(monkeypatch)
     assert bond_serving._code_revision() != ""
+
+
+def test_code_revision_refuses_to_publish_under_an_unresolvable_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No rung answered ⇒ raise, because "unknown" is a SILENT defect.
+
+    A revision that cannot see the code collapses every build of one ``as_of``
+    onto one publication id, which ``materialize`` re-points instead of
+    rebuilding -- a green run serving stale payload, invisible for weeks. It can
+    only happen on a workload detached from the GitHub source AND unpinned, so
+    failing the first run is the cheap outcome.
+
+    The error must NOT be a ``RuntimeError``: ``run`` launders those into the
+    ``no_source`` dark state, which is the one verdict this must never become.
+    """
+    _clear_revision_env(monkeypatch)
+    monkeypatch.setattr(
+        bond_serving.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("git not on PATH")),
+    )
+    with pytest.raises(bond_serving.BondServingRevisionUnresolved) as excinfo:
+        bond_serving._code_revision()
+    # The message has to carry the fix, not just the complaint.
+    assert "RAILWAY_GIT_COMMIT_SHA" in str(excinfo.value)
+    assert "CODE_REVISION" in str(excinfo.value)
+    assert not isinstance(excinfo.value, RuntimeError)
 
 
 # --------------------------------------------------------------------------- #

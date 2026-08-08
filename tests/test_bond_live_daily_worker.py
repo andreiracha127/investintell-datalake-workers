@@ -143,6 +143,7 @@ def _drive_run(
     limit: int | None = None,
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
+    events: list[tuple[str, int]] | None = None,
 ):
     """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
 
@@ -151,12 +152,25 @@ def _drive_run(
     functions, the coverage arithmetic and the state/abort decision are the
     shipping ones -- which is the whole point: what these tests pin is which
     outcomes are allowed to exit green.
+
+    ``events`` opts into an ORDER trace: every replaced seam appends
+    ``(name, conn.commits)`` as it is entered, so a test can assert both where
+    the lock is released relative to stages 4 and 5 and whether the load
+    connection was quiesced before them.
     """
     conn = conn if conn is not None else FakeConn({Q_UNIVERSE: list(UNIVERSE)})
 
+    def _note(name: str) -> None:
+        if events is not None:
+            events.append((name, conn.commits))
+
     @contextlib.contextmanager
     def _lock(_conn, _lock_id):
-        yield acquired
+        _note("lock_acquired")
+        try:
+            yield acquired
+        finally:
+            _note("lock_released")
 
     monkeypatch.setattr(bond_live_daily, "resolve_dsn", lambda dsn=None: "postgresql://x")
     monkeypatch.setattr(
@@ -165,13 +179,17 @@ def _drive_run(
     monkeypatch.setattr(bond_live_daily, "advisory_lock", _lock)
     monkeypatch.setattr(bond_live_daily, "install_schema", lambda _c: None)
     monkeypatch.setattr(bond_live_daily, "_relation_exists", lambda _c, _n: relations)
-    monkeypatch.setattr(
-        bond_live_daily, "_refresh_curated",
-        lambda _dsn: matview or {"state": "refreshed", "matview": "bond_curated_securities"},
-    )
-    monkeypatch.setattr(
-        bond_live_daily, "_republish", lambda _dsn: republish or {"verdict": "recomputed"}
-    )
+
+    def _matview(_dsn):
+        _note("matview")
+        return matview or {"state": "refreshed", "matview": "bond_curated_securities"}
+
+    def _republish_stub(_dsn):
+        _note("republish")
+        return republish or {"verdict": "recomputed"}
+
+    monkeypatch.setattr(bond_live_daily, "_refresh_curated", _matview)
+    monkeypatch.setattr(bond_live_daily, "_republish", _republish_stub)
 
     def _client():
         if client_error is not None:
@@ -315,7 +333,7 @@ def test_one_dead_tenor_does_not_cost_the_others() -> None:
         curve={"10y": {"data": [{"d": "2026-08-06", "v": 4.69}]}},
         fail={"30y"},
     )
-    stats = bond_live_daily._load_curve(conn, client)
+    stats = bond_live_daily._load_curve(conn, client, TODAY)
     assert stats["failed_tenors"] == ["30y"]
     assert stats["tenors"] == 1
     assert stats["latest_day"] == "2026-08-06"
@@ -341,7 +359,7 @@ def test_a_lagging_tenor_recovers_the_days_the_others_advanced_past() -> None:
         "10y": {"data": [{"d": "2026-08-06", "v": 4.69}]},
     })
 
-    stats = bond_live_daily._load_curve(conn, client)
+    stats = bond_live_daily._load_curve(conn, client, TODAY)
 
     # Its own watermark day (re-read) plus every day it missed.
     assert _curve_writes(conn, "30y") == ["2026-08-03", *gap]
@@ -357,12 +375,63 @@ def test_a_tenor_never_loaded_is_not_filtered_by_its_neighbours_bound() -> None:
         {"d": "2019-01-02", "v": 3.0}, {"d": "2026-08-06", "v": 5.0},
     ]}})
 
-    stats = bond_live_daily._load_curve(conn, client)
+    stats = bond_live_daily._load_curve(conn, client, TODAY)
 
     assert _curve_writes(conn, "30y") == ["2019-01-02", "2026-08-06"]
     assert stats["tenors"] == 1
     # Never loaded is a cold start, not a lag: it is about to load everything.
     assert stats["lagging_tenors"] == []
+
+
+def test_a_replay_never_advances_the_curve_past_the_day_it_asked_for() -> None:
+    """The curve was the last lane without a ceiling, and it needed one.
+
+    The other lanes bound the REQUEST (``fetch_window``'s ``to``, the tick
+    session, the activity ranking); the curve asks for no window at all -- one
+    call returns the tenor's entire history, and the fold is the only place a
+    ceiling can be applied. So on a replay (``WORKER_CALC_DATE``) against a
+    partially loaded or cold curve table, this used to upsert every point AFTER
+    the requested day as well: ``bond_yield_curve_daily`` walked forward with
+    rates from sessions the replay is not loading, and stage 2 reported
+    ``latest_day`` as today on a run whose prices stopped in May.
+
+    Every call still succeeds, so nothing in the run's JSON said it was wrong --
+    the same shape as the tick-cohort defect, on the lane that was argued to be
+    the deliberate exception.
+    """
+    replay = _dt.date(2026, 5, 15)
+    conn = FakeConn({CURVE_WATERMARKS: []})   # cold: no watermark trims anything
+    client = FakeClient(curve={"10y": {"data": [
+        {"d": "2026-05-14", "v": 4.40},
+        {"d": "2026-05-15", "v": 4.42},
+        # Real sessions, both of them -- just not the ones this run is loading.
+        {"d": "2026-06-15", "v": 4.71},
+        {"d": "2026-08-06", "v": 4.69},
+    ]}})
+
+    stats = bond_live_daily._load_curve(conn, client, replay)
+
+    assert _curve_writes(conn, "10y") == ["2026-05-14", "2026-05-15"]
+    assert stats["latest_day"] == replay.isoformat()
+    assert stats["rows_upserted"] == 2
+
+
+def test_a_tenor_already_past_the_replay_date_writes_nothing_rather_than_crashing() -> None:
+    """The inverted window a replay creates: watermark AFTER the requested day.
+
+    It is the normal state of a replay on a healthy table -- every tenor is
+    loaded up to yesterday and the operator asks for a day in May. The fold has
+    to land on empty, not raise, and the tenor must not be reported as loaded.
+    """
+    conn = FakeConn({CURVE_WATERMARKS: [("10y", _dt.date(2026, 8, 6))]})
+    client = FakeClient(curve={"10y": {"data": [{"d": "2026-08-06", "v": 4.69}]}})
+
+    stats = bond_live_daily._load_curve(conn, client, _dt.date(2026, 5, 15))
+
+    assert _curve_writes(conn, "10y") == []
+    assert stats["tenors"] == 0 and stats["rows_upserted"] == 0
+    # Nothing to load is not a failure: the tenor answered, it had no new day.
+    assert stats["failed_tenors"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -673,6 +742,76 @@ def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication(
     # then the verdict. Read off the shipping code path's own output -- a flag
     # set while building the fixture would be set whether stage 5 ran or not.
     assert out["republish"]["verdict"] == "recomputed"
+
+
+def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> None:
+    """The hole the state table had: ``absent`` is not ``failed``, and used to pass.
+
+    ``_refresh_curated`` reports three outcomes and only one of them refreshed
+    anything. A verdict that enumerated ``failed`` let the third -- the matview
+    missing from the database entirely -- exit GREEN with stage 4 having done
+    nothing at all, which is a schema/deploy fault hidden behind a successful
+    daily deploy, exactly the tier the exit contract removed everywhere else.
+
+    So the clause asserts the SUCCESS state instead, which is the drift rule
+    ``republish_verdict`` already applies to the publication workers: a state
+    this contract does not know is never read as a success. One state,
+    ``matview.state`` in the JSON says which shape and therefore which hand --
+    ``failed`` is the ownership prerequisite, ``absent`` is a missing relation.
+    """
+    import inspect
+
+    # The state this test is about has to still be a thing stage 4 can return.
+    assert '"state": "absent"' in inspect.getsource(bond_live_daily._refresh_curated)
+
+    out = _drive_run(
+        monkeypatch, matview={"state": "absent", "matview": "bond_curated_securities"}
+    )
+    assert out["state"] == "matview_failed"
+    assert out["aborted"] is True
+    assert out["matview"]["state"] == "absent", "the JSON still says which shape"
+    # And the load is not thrown away with it: stage 5 still ran.
+    assert out["republish"]["verdict"] == "recomputed"
+
+    # A state nobody has written yet is red too, rather than green by omission.
+    assert _drive_run(monkeypatch, matview={"state": "skipped"})["state"] == "matview_failed"
+
+    # The one green shape is the one that actually refreshed.
+    assert _drive_run(monkeypatch, matview={"state": "refreshed"})["state"] == "ok"
+
+
+def test_the_daily_lock_is_held_through_the_matview_and_the_republication(
+    monkeypatch,
+) -> None:
+    """Stages 4 and 5 run INSIDE the lock, or the lock protects only the writes.
+
+    Released after stage 3, an overlapping manual restart takes this worker's
+    lock while the first run is still refreshing and republishing. The second run
+    commits a PREFIX of its own revised candles into ``bond_observation_daily``
+    while the first run's ``bond_metrics``/``bond_serving`` build is reading it,
+    then aborts on the publication locks -- and the first run exits green having
+    served a mix of two sweeps. Nothing downstream can see it: every row is
+    individually valid. The lock has to cover the READ, not just the write.
+
+    The trace also pins the half that makes holding it free. A session advisory
+    lock is not a transaction, but an uncommitted connection IS one, and stage 5
+    takes MINUTES: the load connection is committed before stage 4 and never
+    touched again, so it sits idle rather than idle-in-transaction and holds back
+    no VACUUM horizon (the trap this repo has already paid for).
+    """
+    events: list[tuple[str, int]] = []
+    out = _drive_run(monkeypatch, events=events)
+
+    assert out["state"] == "ok"
+    assert [name for name, _ in events] == [
+        "lock_acquired", "matview", "republish", "lock_released"
+    ]
+
+    commits = dict(events)
+    assert commits["matview"] > 0, "the load connection must be committed before stage 4"
+    assert commits["republish"] == commits["matview"] == commits["lock_released"], (
+        "nothing may run on the held connection while the publications build"
+    )
 
 
 def test_run_worker_reads_the_top_level_aborted_key(monkeypatch) -> None:

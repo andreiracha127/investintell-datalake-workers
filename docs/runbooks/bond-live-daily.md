@@ -15,7 +15,7 @@ cron **`30 7 * * *` UTC**.
 | # | Stage | Writes | Notes |
 |---|-------|--------|-------|
 | 1 | `candles` | `bond_observation_daily`, `bond_live_daily_sweep` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
-| 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Backfills itself on a cold table. |
+| 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Each response is the tenor's whole history, folded between its own watermark and `calc_date` — backfills itself on a cold table, never past the requested day (§3c). |
 | 3 | `ticks` | `bond_tick_daily` | Previous session, top `BOND_TICK_TOP_N` (500) by activity **inside the requested window** (`[calc_date − 90d, calc_date]`, both ends). Same consecutive-failure breaker as stage 1 — see §4b. |
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
 | 5 | `republish` | `bond_metric_v1`, `bond_serving_v1` | Invokes `bond_metrics.run()` then `bond_serving.run()`. |
@@ -49,6 +49,58 @@ mean paying for the same publication twice.
 | `WORKER_LIMIT` | no | Caps the universe swept in one run (budget-bounded catch-up). **Every capped run is red** — see §3b. |
 | `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). **A date past the execution date is refused, never clamped** (`calc_date_in_future`) — see §3c. |
 | `BOND_TICK_TOP_N` | no | Tick cohort size (default 500). |
+| `CODE_REVISION` | no | **One-off pin only — never a permanent service variable.** See §3a. |
+
+### 3a. The deploy sha is a requirement, not a nicety
+
+**The service MUST deploy from the GitHub source.** The run republishes
+`bond_metrics` and `bond_serving`, and a serving publication's identity is
+`uuid5(product | as_of | revision)`. `materialize` treats an existing id as
+already built and merely **re-points** it — so if the revision does not move when
+the code moves, a code-only serving/materializer change re-serves the *previous*
+payload while the daily run reports success. That defect is invisible for weeks.
+
+The revision comes from this ladder (highest precedence first):
+
+| Rung | Source | When it answers |
+|------|--------|-----------------|
+| 1 | `CODE_REVISION` | A deliberate pin — see below. |
+| 2 | `GIT_SHA` / `SOURCE_COMMIT` | Other CI/CD injections; unset here. |
+| 3 | `RAILWAY_GIT_COMMIT_SHA` | **The production rung.** Railway injects the deploy's commit into every deployment that originates from the GitHub source. |
+| 4 | `git rev-parse --short HEAD` | A developer's checkout. A deployed image has no `.git`, so this is silent in production by construction. |
+| — | *nothing resolved* | The worker **raises** `BondServingRevisionUnresolved`. |
+
+Rung 3 is measured, not assumed. On 2026-08-08 the sibling `bond-chain` service
+had none of `CODE_REVISION` / `GIT_SHA` / `SOURCE_COMMIT` set, yet its unattended
+cron runs on 2026-08-06 and 2026-08-07 recorded the full 40-hex shas
+`e36213c3…` and `cfa628e5…` in `bond_daily_chain_runs` — both real `main` merge
+commits, each the one deployed at that moment. Note that the Railway variables
+API does **not** list `RAILWAY_GIT_*` (it is per-deployment metadata), so its
+absence from `railway variables` proves nothing either way.
+
+Raising is deliberate. The old behaviour fell back to the string `"unknown"`,
+which collapsed every build of one `as_of` onto a single publication id — a green
+run serving stale payload. The raise can only fire on a service that is *both*
+detached from the GitHub source *and* unpinned, so failing the first run is the
+cheap outcome.
+
+**Verify on the first deploy.** The run result carries `code_revision` as
+`<revision>+<input digest>`. Confirm the left side is the 40-hex sha of the
+deployed commit — not `unknown`, and not a stale pin.
+
+#### `CODE_REVISION` is a one-off pin, and leaving it set is the trap
+
+Set it only to force a replay onto a known publication, and **remove it as soon
+as the republication is done**. A permanently-set `CODE_REVISION` shadows rung 3,
+so the identity stops moving on deploy and a code-only change collides on the
+same `publication_id` again — exactly the defect the ladder removes, reintroduced
+by the fix for it. Production paid this on 2026-08-07: the variable was set for
+one republication and then deliberately removed.
+
+Consequence of a moving revision, so it is not mistaken for a bug: **the first
+run after any deploy rebuilds once**, because the revision changed. Replays
+between deploys with unchanged inputs still land on the same id and re-point
+idempotently.
 
 ## 3b. `WORKER_LIMIT`: the sweep is a ring, and a capped run is red on purpose
 
@@ -94,13 +146,29 @@ progress is read.
 
 ## 3c. `WORKER_CALC_DATE`: a replay is bounded on BOTH sides, and the future is refused
 
-Every window this worker opens takes its ceiling from the requested date, not
+Every lane this worker loads takes its ceiling from the requested date, not
 from what the table happens to hold: the candle window (`fetch_window` →
 `not_after`), the tick session (`previous_business_day(calc_date)`) and — since
 2026-08-08 — the **activity ranking that chooses the tick cohort**
-(`[calc_date − 90d, calc_date]`, inclusive at both ends).
+(`[calc_date − 90d, calc_date]`, inclusive at both ends) and the **yield-curve
+fold** (`curve_points(..., not_after=calc_date)`).
 
-That last one is the replay defect worth stating plainly. The cohort is the
+The curve was, briefly, argued to be exempt: it is not a windowed *request* at
+all — the worker asks once per tenor and the provider returns that tenor's whole
+history, which the fold trims at each tenor's own watermark. The argument holds
+for a normal run and fails for exactly the case `WORKER_CALC_DATE` exists to
+serve. The response is the full history either way, so a replay of an old
+session upserted every point *after* it as well: `bond_yield_curve_daily` would
+advance past the day being replayed, carrying rates from sessions the replay is
+not loading — and stage 2 would report `latest_day` as today on a run whose
+prices stopped at the replay date. The fold is now bounded above like everything
+else; on a normal run the bound binds nothing (`calc_date` *is* the execution
+date and the provider has no rates past it). The trim is silent, unlike the
+candle path's counted `dropped_after_window`: a curve point past a replay date
+is a real session this run is simply not the one to load, not a provider
+anomaly.
+
+The tick cohort is the other replay defect worth stating plainly. The cohort is the
 top-N most active bonds, and against a database that already contains sessions
 *after* the replay date an open-ended window ranked them on activity that had
 not happened yet: the run would ask the provider for the replay day's tape of
@@ -126,7 +194,7 @@ today. Two reasons, and the first is a data defect:
 
 Fix the variable and re-run (`railway service restart`, not `redeploy`).
 
-## 3a. One-time privilege prerequisite (already applied 2026-08-07)
+## 3d. One-time privilege prerequisite (already applied 2026-08-07)
 
 Postgres requires **ownership** to refresh a materialized view — a `GRANT` is not
 enough — and `bond_curated_securities` was owned by `postgres` while the worker
@@ -163,7 +231,7 @@ stays invisible for a week.
 | `aborted` | no | the provider cut the candle sweep short (`MAX_CONSECUTIVE_FAILURES`) |
 | `curve_failed` | no | **all 13** tenors failed — stage 2 did no work. A handful failing stays green: that is the case the per-tenor watermarks heal by themselves |
 | `ticks_failed` | no | stage 3 did not cover its cohort: every tick call failed, **or** the consecutive-failure breaker cut the lane short mid-cohort (§4b). `ticks.aborted` in the JSON says which |
-| `matview_failed` | no | `REFRESH` failed (ownership — see §3a); the cohort the publications read is stale |
+| `matview_failed` | no | stage 4 did not refresh, so the cohort the publications read is stale. Two shapes, one state — `matview.state` in the JSON says which: `failed` = the `REFRESH` was rejected (ownership — see *One-time privilege prerequisite*); `absent` = `bond_curated_securities` does not exist at all (schema/deploy). Only `refreshed` is green |
 | `republish_locked` | no | a publication worker's own lock was held: stage 5 did not recompute |
 | `republish_no_op` | no | a publication worker reported a dark state (`no_source`/`no_securities`/`no_observations`): nothing was published |
 | `republish_failed` | no | a publication worker failed, raised, or returned a state this contract does not know (drift is never read as success) |
@@ -188,13 +256,53 @@ alternative was an in-process retry with backoff. It loses on three counts:
   serving build carries ~2M facts. A retry loop short enough to be safe would
   sleep and fail anyway.
 * **Waiting is the expensive kind of wrong.** An unbounded wait holds *this*
-  worker's advisory lock and its database connection open for an unknown time —
-  the long-transaction trap that already cost this repo a VACUUM window (§6).
+  worker's advisory lock open for a time nothing bounds, on a run that has done
+  no work and may still do none. (Note which half of that is the objection —
+  see §4c: *holding* the lock while this run works is bounded by the work and
+  costs an idle connection; *waiting* on somebody else's is not bounded at all.)
 
 So it fails loudly and hands the decision to an operator: check who holds the
 lock, then re-run the service (`railway service restart`, not `redeploy`). The
 state name stays `locked` on purpose — `daily_chain.classify_worker_result`
 reads that exact string and classifies it as transient/retryable.
+
+### 4c. The daily lock is held through stage 5 — and costs nothing
+
+Decided 2026-08-08. The lock wraps **all five stages**, not just the three that
+write on its own connection.
+
+Released after stage 3, an overlapping manual restart could take it while this
+run was still refreshing the matview and republishing. That second run would
+commit a *prefix* of its own revised candles into `bond_observation_daily` while
+this run's `bond_metrics` / `bond_serving` build was reading it, then abort on
+the publication locks — and this run would exit **green** having served a mix of
+two sweeps. Nothing downstream can detect that: the rows are individually valid
+and every security carries its own observation date. The lock has to cover the
+read, not just the write.
+
+Holding it does **not** re-open the VACUUM trap of §6, and the distinction is
+worth keeping straight because they look alike:
+
+* `advisory_lock` takes a **session** advisory lock (`pg_try_advisory_lock`,
+  `src/db.py`). A session lock pins no snapshot and holds back no xmin horizon.
+* The run **commits** before stage 4, so the connection sits `idle`, not
+  `idle in transaction`, for the minutes the two publication builds take. That
+  commit is load-bearing: adding a read on that connection between stage 3 and
+  stage 5 would silently turn it into a minutes-long transaction, which is the
+  trap. The code says so at the call site.
+* Stages 4 and 5 open their **own** connections (`_refresh_curated` in
+  autocommit; each publication worker its own), so the held connection only
+  carries the lock.
+
+This is `daily_publication_chain`'s idiom, not a new one: it holds
+`LOCK_DAILY_PUBLICATION_CHAIN` across these same two workers while each takes
+its own lock underneath. Deadlock-free by construction — nothing else in the
+fleet takes `LOCK_BOND_LIVE_DAILY` (900_353), so there is no cycle to close.
+
+One consequence to expect: if that idle connection dies during stage 5, the
+release raises and the run exits red *after* the work landed. That is the safe
+direction (verify in the tables, per §4a) and it is the same exposure the chain
+already carries.
 
 **Verify in the tables, never on the dashboard** — and note that on this project
 `railway redeploy` reports SUCCESS *without executing*; only
@@ -305,7 +413,7 @@ Part 3 is what makes the other two do anything. Measured before the change:
 `max(as_of)` on the governed landing table is 2025-03-31, so the
 `observation_date <= as_of` no-look-ahead guard excluded every fresh row; and
 the serving publication id is `uuid5(product | as_of | code_revision)` with
-`as_of` frozen at the security master's 2026-07-23 and `CODE_REVISION` moving
+`as_of` frozen at the security master's 2026-07-23 and the revision moving
 only on a deploy — so every run resolved to the same publication, which
 `materialize` treats as already built and merely re-points.
 

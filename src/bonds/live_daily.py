@@ -351,15 +351,37 @@ CURVE_COLUMNS = ("day", "tenor", "yield_pct", "source")
 
 
 def curve_points(
-    tenor: str, payload: Mapping[str, Any] | None, *, not_before: _dt.date | None = None
+    tenor: str,
+    payload: Mapping[str, Any] | None,
+    *,
+    not_before: _dt.date | None = None,
+    not_after: _dt.date | None = None,
 ) -> list[CurvePoint]:
-    """Fold one tenor's provider series into curve points.
+    """Fold one tenor's provider series into curve points, ``[from, to]``.
 
     ``not_before`` is an INCLUSIVE lower bound. The provider returns the whole
     history in one response, so the worker asks once and lets this trim it: a
     table that was never loaded backfills itself on the first run (the curve is
     ~9k points per tenor, not a bulk load), and a loaded one costs one
     comparison per point.
+
+    ``not_after`` is the INCLUSIVE upper bound, and it is the run's requested
+    date -- the same ceiling the candle window and the tick cohort take. The
+    curve is the one lane the provider is never ASKED a window for, so without
+    this the ceiling simply did not exist: a replay of an old session against a
+    full-history response would upsert every later point too, advancing
+    ``bond_yield_curve_daily`` past the day being replayed with rates that
+    belong to sessions the replay is not loading. The requested day itself is
+    kept, because that is the day the run exists to load.
+
+    The trim is deliberately SILENT, unlike :class:`CandleFold`'s counted upper
+    bound, and the asymmetry is the point: a candle past the requested window
+    cannot be a real session (the request could not have covered it), so it is a
+    provider anomaly worth counting. A curve point past a REPLAY date is a
+    perfectly real session that this run simply is not the one to load -- the
+    same shape as ``not_before``'s over-return, and nothing to report. The
+    execution-date ceiling behind it is ``run``'s refusal of a future
+    ``calc_date``, not a counter here.
     """
     if not payload:
         return []
@@ -375,6 +397,8 @@ def curve_points(
         if day is None or value is None:
             continue
         if not_before is not None and day < not_before:
+            continue
+        if not_after is not None and day > not_after:
             continue
         points[day] = CurvePoint(day=day, tenor=tenor, yield_pct=value)
     return sorted(points.values(), key=lambda p: p.day)

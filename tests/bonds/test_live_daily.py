@@ -11,10 +11,13 @@ What is actually being pinned:
   * the empirical bid/ask side semantics and the refusal to invent a spread on a
     one-sided day;
   * determinism of the tick cohort and of same-day supersession;
-  * the WINDOW -- both ends of it. The upper bound is the one that carries
-    blast radius: ``max(day)`` of the observation table anchors the as-of of
-    both downstream publications, so a candle dated past the request would date
-    the product into the future and jam every later publication as a regression.
+  * the WINDOW -- both ends of it, on both the candle and the curve fold. The
+    upper bound is the one that carries blast radius: ``max(day)`` of the
+    observation table anchors the as-of of both downstream publications, so a
+    candle dated past the request would date the product into the future and jam
+    every later publication as a regression; and on the curve, whose response is
+    the provider's whole history rather than a windowed request, it is what
+    keeps a replay from advancing the table past the day it asked for.
 """
 from __future__ import annotations
 
@@ -284,6 +287,56 @@ def test_curve_points_keep_percent_and_trim_to_the_watermark() -> None:
     # A curve tenor stays in PERCENT -- deliberately not the ytm convention.
     assert points[-1].yield_pct == 4.69
     assert len(points[0].as_tuple()) == len(live_daily.CURVE_COLUMNS)
+
+
+def test_curve_points_are_bounded_above_by_the_requested_day() -> None:
+    """A replay must load its session, not every session the provider has since.
+
+    The curve is the one lane the provider is never asked a WINDOW for: one call
+    returns the tenor's whole history, and the fold is the only place a ceiling
+    can be applied. Without it a replay of an old day upserts every later point
+    too, so ``bond_yield_curve_daily`` advances past the day being replayed with
+    rates from sessions the replay is not loading.
+
+    Before the bound existed this returned all four points and the worker
+    reported ``latest_day`` as 2026-08-06 on a run whose prices stopped in May.
+    """
+    replay = _dt.date(2026, 5, 15)
+    payload = {"data": [
+        {"d": "2026-05-14", "v": 4.40},
+        {"d": "2026-05-15", "v": 4.42},
+        {"d": "2026-06-15", "v": 4.71},   # real sessions -- just not this run's
+        {"d": "2026-08-06", "v": 4.69},
+    ]}
+    points = live_daily.curve_points("10y", payload, not_after=replay)
+    assert [p.day.isoformat() for p in points] == ["2026-05-14", "2026-05-15"]
+    # The requested day itself is KEPT: it is the day the run exists to load.
+    assert points[-1].day == replay
+
+
+def test_the_curve_bound_is_optional_and_composes_with_the_watermark() -> None:
+    """``not_after=None`` is unbounded, symmetric with ``not_before``.
+
+    And the two bounds are applied together rather than either/or: the watermark
+    opens the window from below (so a lagging tenor recovers its gap) while the
+    requested date closes it from above.
+    """
+    payload = {"data": [
+        {"d": "2026-08-03", "v": 4.60}, {"d": "2026-08-05", "v": 4.66},
+        {"d": "2026-08-07", "v": 4.70},
+    ]}
+    assert len(live_daily.curve_points("10y", payload)) == 3
+    both = live_daily.curve_points(
+        "10y", payload,
+        not_before=_dt.date(2026, 8, 5), not_after=_dt.date(2026, 8, 5),
+    )
+    assert [p.day.isoformat() for p in both] == ["2026-08-05"]
+    # An INVERTED window (a tenor whose watermark is already past the replay
+    # date) yields nothing rather than raising -- a real state on a replay.
+    assert live_daily.curve_points(
+        "10y", payload,
+        not_before=_dt.date(2026, 8, 7), not_after=_dt.date(2026, 8, 5),
+    ) == []
 
 
 def test_malformed_curve_items_are_skipped_not_fatal() -> None:
