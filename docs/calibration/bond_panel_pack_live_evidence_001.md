@@ -4,6 +4,15 @@ _Gate declaration and measured evidence · 2026-08-08 · production target `inve
 
 ---
 
+## ⛔ Final disposition: NO-GO
+
+The required production parity run failed conjunctive T3 gates. Publication
+therefore stopped before Stage 6 exactly as declared: no incremental panel
+publication was prepared, validated, or pointed. The historical backfill
+remains the sole current publication. This report does **not** contain a Stage
+6 production run JSON because executing Stage 6 after the failed parity gate
+would violate the binding stop contract.
+
 ## 📋 Binding research contract
 
 The frozen research identity is `0c0d78a866bc1090`. This report does not
@@ -19,7 +28,8 @@ The operational implementation preserves these definitions:
   last price
 - typed reasons for every exclusion, absent input, and degraded fallback
 
-The implementation must not label the yield-spread residual as OAS.
+The implementation uses only the yield-minus-curve definition above and no
+alternative spread label.
 
 ## 🎯 Predeclared parity gates
 
@@ -79,13 +89,13 @@ a declared reason. It is never imputed from a cross-sectional average.
 | T3 publication identity | Production base publication `92740098-1571-559d-9fb3-119de8321754` | Fingerprint `5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb`; exact frozen config hash `0c0d78a866bc1090`; status `validated` at `2026-08-08T22:20:43Z`; pointer changed atomically at the same timestamp | Pass |
 | T3 production surfaces | Current production views | `3,417,683` snapshots, `1,687,524` RV rows, `2,600,253` returns, and `3,417,683` rating rows; every surface has an equal distinct-key count; panel range `2002-07` to `2026-06`; returns `2002-08` to `2025-03`; all six relations owned by `worker_writer` | Pass |
 | T3 typed rating absence | Frozen base publication | `1,347,344` panel rows without a source PIT rating are retained as `historical_missing` / `historical_rating_absent`, rather than dropped or backcast. | Pass |
-| T3 parity `2025-01` | Frozen versus rebuilt | Thresholds declared above; comparison not yet run | Pending |
-| T3 parity `2026-06` | Frozen versus rebuilt | Thresholds declared above; comparison not yet run | Pending |
+| T3 parity `2025-01` | Frozen versus rebuilt | Frozen universe `10,143`; rebuilt universe `0`; matched bonds `0`; coverage `0%`; both exclusion surfaces `100%` typed. All numeric parity metrics were unavailable with reason `zero_overlap`; the worker aborted. | **Fail / stop** |
+| T3 parity `2026-06` | Frozen versus rebuilt | Universe and RV each `8,603` frozen versus `1,132` rebuilt, an absolute delta of `7,471` against a `43.015` limit. Matched coverage was `100%`, yield/duration/spread numerical parity passed at machine precision, but RV absolute delta failed: median `0.100413`, p90 `0.306255`, p99 `1.054983`. | **Fail / stop** |
 | T3 duration overlap | Full pinned artifact versus analytical solver | `811,725` overlap rows; `100%` finite and `100%` labeled `analytical`; absolute error median `0.092777y`, p90 `0.235200y`, p99 `0.334403y`; relative error median `0.999008%`, p90 `2.671663%`; source SHA `3e4d451f…e210` | Pass |
 | T4 static Rating mapping | Full live-extension snapshot | SHA-256 `ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a`; `31,375` final mappings; `0` rejects and `0` deterministic-final-row differences | Pass |
 | T4 production target | Production `bond_rating_static`, written by `worker_writer` | `31,375` rows/CUSIPs; one exact source SHA; as-of range `2002-07` to `2026-07`; loaded at `2026-08-08T19:59:23Z`; bucket counts equal the pinned mapping | Pass |
 | Railway terms execution | Railway production deployment `00611b34` | The deployment built, but Terms processing ran only after the service restart. Railway container status is therefore not Terms execution evidence; the database tables are the source of truth. | Measured operational evidence |
-| Stage 6 production run | Target tables and worker JSON | No Stage 6 target-table, pointer, or final run-JSON evidence is recorded here. | Pending |
+| Stage 6 production run | Target tables and worker JSON | **Not executed after the T3 stop.** Production still has exactly `1` publication and `0` publications built after the base. The pointer remains `92740098-1571-559d-9fb3-119de8321754`; target-table `max(computed_at)` remains `2026-08-08T20:16:59.32818Z`. | **Blocked by parity** |
 
 ## ⚠️ Declared blockers and degradations
 
@@ -98,12 +108,51 @@ a declared reason. It is never imputed from a cross-sectional average.
   target. In the physical T2 artifact, quote states are accounted for as
   quoted, crossed, missing spread, or missing spread and volume; absent spreads
   remain typed rather than receiving a synthetic quote.
-- A successful container status is not execution evidence. Final acceptance
-  requires target-table timestamps, months, row counts, pointer state, and the
-  emitted run JSON.
-- T3 production load is complete and pointed. The two declared monthly parity
-  comparisons remain independent gates and are not inferred from successful
-  loading.
+- A successful container status is not execution evidence. The parity worker
+  emitted `parity_failed` and exited non-zero; Railway consequently reports the
+  one-off deployment as `CRASHED` and stopped. The worker JSON and unchanged
+  target tables are the execution evidence.
+- The `2025-01` rebuilt universe was empty. The parity worker preserved the
+  frozen and rebuilt sizes, zero matched coverage, typed-exclusion evidence,
+  and `metrics_unavailable_reason = zero_overlap`; it did not manufacture
+  numeric parity values.
+- The `2026-06` rebuild was materially incomplete and its RV-signal deltas also
+  exceeded every declared percentile threshold. These are conjunctive stop
+  failures even though matched-row yield, duration, and spread arithmetic was
+  equal at machine precision.
+- Stage 6 was intentionally not executed. The requested Stage 6 production run
+  and its run JSON remain blocked rather than being fabricated or obtained by
+  violating the parity stop condition.
+
+## Production parity execution JSON
+
+Railway production deployment `e0f4b5b5-37a7-4718-a421-6beafb8fb6cf` ran only
+after `railway service restart`. Its final worker line is quoted verbatim:
+
+```json
+{"worker":"bond_panel_parity","state":"parity_failed","reason":"zero_overlap","aborted":true,"months":[{"month":"2025-01-01","state":"parity_failed","reason":"zero_overlap","aborted":true,"frozen_universe_size":10143,"rebuilt_universe_size":0,"matched_bonds":0,"matched_coverage":0,"typed_exclusions":{"frozen":1,"rebuilt":1},"walk_forward":{"max_input_day":"2025-01-31","calendar_month_end":"2025-01-31","fit_as_of":"2025-01-01","input_exclusions":{"static_rating_after_month":10960}},"metrics_unavailable_reason":"zero_overlap","failed_gates":["zero_overlap","matched_coverage","ytm_abs_bps","duration_abs_years","duration_relative","spread_abs_bps","rv_abs"]},{"month":"2026-06-01","state":"parity_failed","reason":"gate_failed","aborted":true,"frozen_universe_size":8603,"rebuilt_universe_size":1132,"universe_delta_limit":43.015,"frozen_rv_size":8603,"rebuilt_rv_size":1132,"rv_universe_delta_limit":43.015,"rv_matched_coverage":1,"matched_coverage":1,"typed_exclusions":{"frozen":1,"rebuilt":1},"spread_definition":"ytm_minus_interpolated_dgs","spread_semantics":{"frozen":{"rows":8603,"max_abs_error":0,"max_bps_conversion_error":0},"rebuilt":{"rows":1132,"max_abs_error":0,"max_bps_conversion_error":0}},"metrics":{"ytm_abs_bps":{"median":0,"p90":6.938893903907228e-14,"p99":1.3877787807814457e-13},"duration_abs_years":{"median":0,"p90":1.7763568394002505e-15,"p99":7.105427357601002e-15},"spread_abs_bps":{"median":0,"p90":7.105427357601002e-14,"p99":1.4210854715202004e-13},"duration_relative":{"median":0,"p90":3.058082620751514e-16,"p99":1.480950169972437e-15},"rv_abs":{"median":0.10041279015056534,"p90":0.30625531826740865,"p99":1.0549825010100566}},"walk_forward":{"max_input_day":"2026-06-30","calendar_month_end":"2026-06-30","fit_as_of":"2026-06-01","input_exclusions":{"static_rating_after_month":1128}},"failed_gates":["universe_delta","rv_universe_delta","rv_abs"]}]}
+```
+
+## Post-stop production-table verification
+
+The final read-only SQL verification was run after the parity worker stopped.
+It proves that the failed gate did not mutate publication state:
+
+| Evidence | Measured value |
+| --- | --- |
+| Current publication | `92740098-1571-559d-9fb3-119de8321754` |
+| Publication status / config | `validated` / `0c0d78a866bc1090` |
+| Pointer `changed_at` | `2026-08-08T22:20:43.545955Z` |
+| Publication `max(computed_at)` | `2026-08-08T20:16:59.32818Z` |
+| Publications total / built after base | `1 / 0` |
+| Snapshot | `3,417,683` rows; `2002-07` to `2026-06` |
+| RV signal | `1,687,524` rows; `2002-07` to `2026-06` |
+| Returns | `2,600,253` rows; `2002-08` to `2025-03` |
+| Rating PIT | `3,417,683` rows; `2002-07` to `2026-06` |
+
+The service variable was restored to `WORKER=bond_live_daily` with
+`--skip-deploys`. The parity deployment remains stopped; no daily worker or
+Stage 6 restart was triggered during restoration.
 
 ## 🔗 References
 
