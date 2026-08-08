@@ -67,6 +67,7 @@ def _wire_run(monkeypatch, source, watermarks, *, acquired=True, recompute=None)
     monkeypatch.setattr(statements, "install_schema", lambda _conn: None)
     monkeypatch.setattr(statements, "load_source_facts", lambda _conn: source)
     monkeypatch.setattr(statements, "load_watermarks", lambda _conn: watermarks)
+    monkeypatch.setattr(statements, "target_is_empty", lambda _conn: False)
     monkeypatch.setattr(statements, "load_universe_constituents", lambda _conn: [])
     monkeypatch.setattr(statements, "load_universe_watermarks", lambda _conn: {})
     monkeypatch.setattr(
@@ -86,6 +87,24 @@ def _wire_run(monkeypatch, source, watermarks, *, acquired=True, recompute=None)
         recompute or (lambda _conn, ciks: (len(ciks), len(ciks) * 2)),
     )
     return conn, applied, quarantined
+
+
+def test_empty_first_install_bootstraps_from_semantic_source_mv(monkeypatch) -> None:
+    conn, applied, _ = _wire_run(monkeypatch, [_fact("fact-a", "v1")], {})
+    monkeypatch.setattr(statements, "target_is_empty", lambda _conn: True)
+    monkeypatch.setattr(
+        statements,
+        "recompute_scoped",
+        lambda *_args: pytest.fail("first install must not recompute the 24 GB source"),
+    )
+    monkeypatch.setattr(statements, "bootstrap_from_source_mv", lambda _conn: 7)
+
+    result = statements.run("postgres://test")
+
+    assert result["rows_deleted"] == 0
+    assert result["rows_upserted"] == 7
+    assert applied
+    assert conn.events == ["commit", "watermarks", "commit"]
 
 
 def test_first_run_materializes_new_fact_and_advances_its_watermark(monkeypatch) -> None:

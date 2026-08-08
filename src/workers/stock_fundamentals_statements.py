@@ -272,6 +272,32 @@ def scope_definition_to_changed_universe(definition: str) -> str:
     )
 
 
+def target_is_empty(conn: Any) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT NOT EXISTS (SELECT 1 FROM {TARGET} LIMIT 1)")
+        row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def bootstrap_from_source_mv(conn: Any) -> int:
+    """Seed an empty target from the already validated semantic source MV."""
+    columns = ", ".join(COLUMNS)
+    updates = ", ".join(
+        f"{column} = EXCLUDED.{column}"
+        for column in COLUMNS
+        if column not in {"ticker", "freq", "period_end"}
+    )
+    with conn.cursor() as cur:
+        cur.execute(
+            f"INSERT INTO {TARGET} ({columns}) "
+            f"SELECT {columns} FROM {SOURCE_MV} "
+            "WHERE period_end >= DATE '1900-01-01' "
+            "AND period_end <= CURRENT_DATE + INTERVAL '1 year' "
+            "ON CONFLICT (ticker, freq, period_end) DO UPDATE SET " + updates
+        )
+        return max(cur.rowcount, 0)
+
+
 def recompute_scoped(conn: Any, ciks: tuple[int, ...]) -> tuple[int, int]:
     """Replace only affected CIK output inside the additive compatible table."""
     if not ciks:
@@ -368,11 +394,15 @@ def run(dsn: str, *, rebuild: bool = False) -> dict[str, int | str | bool]:
                 source = load_source_facts(conn)
                 invalid = [fact for fact in source if not is_valid_fact_date(fact)]
                 valid = [fact for fact in source if is_valid_fact_date(fact)]
+                watermarks = load_watermarks(conn)
+                universe = load_universe_constituents(conn)
+                universe_watermarks = load_universe_watermarks(conn)
+                empty_target = target_is_empty(conn)
                 plan = plan_changes(
                     valid,
-                    load_watermarks(conn),
-                    universe=load_universe_constituents(conn),
-                    universe_watermarks=load_universe_watermarks(conn),
+                    watermarks,
+                    universe=universe,
+                    universe_watermarks=universe_watermarks,
                     rebuild=rebuild,
                 )
                 changed_facts = len(plan.upserts) + len(plan.deletes)
@@ -391,7 +421,10 @@ def run(dsn: str, *, rebuild: bool = False) -> dict[str, int | str | bool]:
                         "rows_upserted": 0, "quarantined_facts": len(invalid),
                         "changed_universe_constituents": 0, "skipped": "no_changes",
                     }
-                rows_deleted, rows_upserted = recompute_scoped(conn, plan.affected_ciks)
+                if empty_target and not watermarks and not universe_watermarks and not rebuild:
+                    rows_deleted, rows_upserted = 0, bootstrap_from_source_mv(conn)
+                else:
+                    rows_deleted, rows_upserted = recompute_scoped(conn, plan.affected_ciks)
                 # Hold the session advisory lock through both commits.  First make
                 # the target relation durable; only then advance the replay-safe
                 # input state.  A second-step failure therefore repeats work but
