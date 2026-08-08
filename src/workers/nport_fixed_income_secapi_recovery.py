@@ -475,7 +475,7 @@ def _run_with_db(
             }
         sleep = sleeper or __import__("time").sleep
         now = clock or __import__("time").monotonic
-        api_calls = processed = 0
+        api_calls = processed = successful_processed = 0
         previous_request_at: float | None = None
         for accession in pending:
             if processed >= max_accessions or api_calls >= max_api_calls:
@@ -533,6 +533,10 @@ def _run_with_db(
                             attempt_increment=max(1, api_calls - calls_before),
                             provider_http_status=_status_code(exc),
                         )
+                    if failure_status == "terminal_error":
+                        terminal[accession] = failure_status
+                        processed += 1
+                        continue
                 return {
                     "state": "failed",
                     "accession_number": accession,
@@ -545,6 +549,7 @@ def _run_with_db(
             if existing is not None:
                 if existing == fingerprint:
                     processed += 1
+                    successful_processed += 1
                     continue
                 return {
                     "state": "conflict",
@@ -556,6 +561,7 @@ def _run_with_db(
             with db.transaction():
                 db.write(projection)
             processed += 1
+            successful_processed += 1
         remaining = max(0, len(pending) - processed)
         return {
             "state": (
@@ -564,7 +570,7 @@ def _run_with_db(
                 else ("complete" if not remaining else "partial")
             ),
             "expected": len(expected),
-            "success": len(success) + processed,
+            "success": len(success) + successful_processed,
             "pending": len(pending),
             "remaining": remaining,
             "max_accessions": max_accessions,

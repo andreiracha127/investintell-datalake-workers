@@ -560,7 +560,9 @@ def test_terminal_payload_failure_is_persisted_and_not_retried() -> None:
         client_factory=Client,
         sleeper=lambda _x: None,
     )
-    assert first["state"] == "failed"
+    assert first["state"] == "blocked"
+    assert first["processed"] == 1
+    assert first["success"] == 0
     second = worker.run(
         "ignored",
         publication_id="pub",
@@ -630,6 +632,76 @@ def test_existing_terminal_does_not_prevent_recovering_other_accessions() -> Non
     assert result["terminal"] == 1
     assert result["processed"] == 1
     assert db.projection.accession_number == "0000123456-26-000001"
+
+
+def test_new_terminal_gap_is_recorded_and_later_accessions_continue() -> None:
+    missing = "0000123456-26-000000"
+    available = "0000123456-26-000001"
+
+    class Db:
+        terminal = {}
+
+        def expected_accessions(self, _p):
+            return [missing, available]
+
+        def successful_accessions(self, *_args):
+            return set()
+
+        def terminal_accessions(self, *_args):
+            return self.terminal
+
+        def advisory_lock(self, *_args):
+            class Lock:
+                def __enter__(self):
+                    return True
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Lock()
+
+        def transaction(self):
+            class Tx:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+            return Tx()
+
+        def existing_hash(self, *_args):
+            return None
+
+        def record_failure(self, _p, _r, accession, **values):
+            self.terminal[accession] = values["status"]
+
+        def write(self, projection):
+            self.projection = projection
+
+    class Client:
+        def get_data(self, payload):
+            if missing in payload["query"]:
+                return {"filings": []}
+            return {"filings": [{**_payload(), "accessionNo": available}]}
+
+    db = Db()
+    result = worker.run(
+        "ignored",
+        publication_id="pub",
+        source_run_id="run",
+        db=db,
+        client_factory=Client,
+        max_accessions=2,
+        max_api_calls=2,
+        sleeper=lambda _x: None,
+    )
+    assert result["state"] == "blocked"
+    assert result["processed"] == 2
+    assert result["success"] == 1
+    assert result["remaining"] == 0
+    assert db.terminal == {missing: "terminal_error"}
+    assert db.projection.accession_number == available
 
 
 def test_worker_initializes_every_expected_manifest_before_constructing_client():
