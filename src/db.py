@@ -308,3 +308,8 @@ LOCK_SEC_EFFECTIVE_MATVIEWS = 900_352
 # their own connections — reusing an id here would deadlock the worker against
 # itself. 900_353 is the next free id after LOCK_SEC_EFFECTIVE_MATVIEWS.
 LOCK_BOND_LIVE_DAILY = 900_353
+# Immutable Regulation S / Rule 144A registry loader.  It is intentionally
+# distinct from every bond materializer because drafts and approvals are an
+# operator-gated evidence lane, not a publication stage.  900_354 is the next
+# free documented ingestion lock after the daily bond worker.
+LOCK_BOND_DISTRIBUTION_REGISTRY_BACKFILL = 900_354

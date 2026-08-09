@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+import gzip
 import hashlib
 from html import unescape
 from html.parser import HTMLParser
@@ -55,7 +56,12 @@ class _UrlResponse:
     status: int
 
     def json(self) -> object:
-        return json.loads(self.content.decode("utf-8"))
+        content_encoding = next(
+            (value for key, value in self.headers.items() if key.lower() == "content-encoding"), ""
+        )
+        encoded_gzip = any(value.strip().lower() == "gzip" for value in content_encoding.split(","))
+        payload = gzip.decompress(self.content) if encoded_gzip or self.content.startswith(b"\x1f\x8b") else self.content
+        return json.loads(payload.decode("utf-8"))
 
 
 class UrllibClient:
@@ -703,12 +709,10 @@ def _draft_snapshot_preview(
     )
 
 
-def publish(
-    output_root: Path, *, dry_run: bool, draft_snapshot_id: str | None = None
-) -> dict[str, int | bool]:
-    """Print only explicitly approved, schema-compatible prospective facts; never write a DB."""
-    if not dry_run:
-        raise PublishRefused("live publication is unavailable; use --dry-run")
+def build_registry_bundle(
+    output_root: Path, draft_snapshot_id: str | None = None
+) -> dict[str, object]:
+    """Build the deterministic, sealed registry payload without any database effect."""
     manifest = _read_json(output_root / "adjudication" / "manifest.json", {})
     records = manifest.get("records", [])
     expected = hashlib.sha256(canonical_json(records).encode("utf-8")).hexdigest()
@@ -757,7 +761,7 @@ def publish(
         )
         mapping_snapshot_rows.append(mapping_snapshot)
         snapshot_approval_rows.append(snapshot_approval)
-    print(canonical_json({
+    return {
         "database_writes": 0, "mapping_snapshot_rows": mapping_snapshot_rows,
         "pair_decision_rows": [decision_rows[key] for key in sorted(decision_rows)],
         "pair_identifier_rows": [identifier_rows[key] for key in sorted(identifier_rows)],
@@ -769,10 +773,20 @@ def publish(
         "skipped_records": skipped,
         "snapshot_approval_rows": snapshot_approval_rows,
         "source_evidence_rows": [source_rows[key] for key in sorted(source_rows)],
-    }))
+    }
+
+
+def publish(
+    output_root: Path, *, dry_run: bool, draft_snapshot_id: str | None = None
+) -> dict[str, int | bool]:
+    """Print only explicitly approved, schema-compatible prospective facts; never write a DB."""
+    if not dry_run:
+        raise PublishRefused("live publication is unavailable; use --dry-run")
+    bundle = build_registry_bundle(output_root, draft_snapshot_id)
+    print(canonical_json(bundle))
     return {
-        "approved_records": len(decision_rows), "database_writes": 0, "dry_run": True,
-        "skipped_records": len(skipped),
+        "approved_records": len(bundle["pair_decision_rows"]), "database_writes": 0, "dry_run": True,
+        "skipped_records": len(bundle["skipped_records"]),
     }
 
 

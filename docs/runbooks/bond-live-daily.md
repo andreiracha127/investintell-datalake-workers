@@ -310,6 +310,17 @@ RV/return subset keys, and exact snapshot/rating keys. An ordinary parentless
 materialization cannot overwrite an existing pointer. Missing or inconsistent
 transition evidence is a hard stop and leaves the Rule 144A pointer readable.
 
+The mapping snapshot referenced by that transition is loaded separately by the
+one-off `bond_distribution_registry_backfill` worker. Its collector is always
+zero-write; production requires distinct `draft` and `approve` executions bound
+to an exact `CODE_REVISION` and equal load authorization. Approval first replays
+the complete sealed bundle and requires zero inserts, then writes the immutable
+approval in the same transaction. Operators must reconcile the worker JSON,
+registry counts, and content hash in PostgreSQL and restore
+`WORKER=bond_live_daily` before Stage 6. This loader never promotes the panel
+pointer; the guarded Regulation S base transition remains the only promotion
+path.
+
 The first Stage 6 delta has a second, runtime authorization boundary. After the
 authorized transition, while the current pointer targets the new Regulation S
 base (`parent_publication_id IS NULL`),

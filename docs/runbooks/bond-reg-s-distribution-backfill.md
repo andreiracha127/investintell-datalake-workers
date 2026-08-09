@@ -127,6 +127,38 @@ Regulation-S-without-CUSIP records must not become executable mappings.
 
 Database publication is a later, separately authorized operation:
 
+The collector remains permanently zero-write. The productive path is the
+registered one-off worker `bond_distribution_registry_backfill`, and the
+additive registry schema must already be installed before that worker starts.
+Deploy is execution on Railway, so every invocation must be pinned to one exact
+merged revision and must set all of the following variables:
+
+```text
+WORKER=bond_distribution_registry_backfill
+BOND_DISTRIBUTION_OUTPUT_ROOT=<sealed artifact path>
+BOND_DISTRIBUTION_SNAPSHOT_ID=<draft snapshot id>
+BOND_DISTRIBUTION_LOAD_MODE=draft|approve
+CODE_REVISION=<exact merged revision>
+BOND_DISTRIBUTION_LOAD_AUTHORIZATION=<same exact revision>
+```
+
+`WORKER_LIMIT` and `WORKER_CALC_DATE` must be absent. The worker rejects inherited
+scope controls, a missing schema, an authorization/revision mismatch, a bundle
+whose snapshot or content hash differs from the sealed artifact, and lock
+contention. The `draft` run loads immutable evidence, observations, decisions,
+identifiers, and the unapproved snapshot through the public registry loader.
+Read the runtime JSON and reconcile every row count and content hash directly
+from PostgreSQL before proceeding.
+
+The `approve` run first replays that complete bundle inside the same outer
+transaction. Every replay insert count must be zero, proving that production
+already contains the exact immutable composition; only then may the worker add
+the approval row. A mismatch, a missing row, or an attempted repair aborts and
+rolls back the approval. After database read-back, restore
+`WORKER=bond_live_daily`, remove all distribution-loader variables, and verify
+the one-off deployment is terminal before any panel activation. Neither mode
+updates the panel pointer.
+
 1. install the additive registry schema;
 2. load evidence and parser observations;
 3. load the complete draft snapshot and decisions atomically;

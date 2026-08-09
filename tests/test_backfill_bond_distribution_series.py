@@ -1,6 +1,7 @@
 """Contracts for the non-production SEC 144A-to-Reg-S evidence backfill."""
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -90,6 +91,16 @@ def test_discover_paginates_versioned_queries_and_resumes_from_checkpoint(tmp_pa
     assert json.loads((tmp_path / "metadata.json").read_text())[0]["accession"] == "a-1"
     assert all(call[2]["Authorization"] == "top-secret" for call in client.calls)
 
+
+def test_url_response_decodes_gzip_json_and_keeps_plain_json_unchanged() -> None:
+    payload = {"filings": [{"accessionNo": "gzip-ok"}]}
+
+    assert backfill._UrlResponse(
+        gzip.compress(json.dumps(payload).encode("utf-8")), {"Content-Encoding": "gzip"}, 200
+    ).json() == payload
+    assert backfill._UrlResponse(
+        json.dumps(payload).encode("utf-8"), {"content-type": "application/json"}, 200
+    ).json() == payload
 
 def test_discover_records_failure_without_advancing_checkpoint_or_leaking_secret(tmp_path: Path) -> None:
     key = "do-not-leak-this"
@@ -494,6 +505,21 @@ def test_publish_dry_run_emits_only_explicitly_approved_schema_compatible_rows(t
     ) == snapshot_row["content_hash"]
     with pytest.raises(backfill.PublishRefused):
         backfill.publish(tmp_path, dry_run=False)
+
+
+def test_build_registry_bundle_matches_dry_run_payload(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "adjudication").mkdir()
+    record = _approved_preview_record()
+    records = [record]
+    (tmp_path / "adjudication" / "manifest.json").write_text(json.dumps({
+        "records": records, "sha256": hashlib.sha256(backfill.canonical_json(records).encode()).hexdigest(),
+    }), encoding="utf-8")
+
+    bundle = backfill.build_registry_bundle(tmp_path, "snapshot-draft")
+    backfill.publish(tmp_path, dry_run=True, draft_snapshot_id="snapshot-draft")
+
+    assert bundle["database_writes"] == 0
+    assert bundle == json.loads(capsys.readouterr().out)
 
 
 def test_publish_dry_run_never_turns_pending_candidate_into_registry_facts(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
