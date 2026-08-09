@@ -103,6 +103,19 @@ def _partition(
         first, last = first_month or inferred_first, last_closed_month or inferred_last
         if open_month is not None or first != inferred_first or last != inferred_last:
             raise MaterializationError("month partition invalid for base publication", reason_code="panel_gate_failed")
+        expected_closed_months: set[date] = set()
+        month = inferred_first
+        while month <= inferred_last:
+            expected_closed_months.add(month)
+            month = _next_month(month)
+        if any(
+            {_month(row["month"]) for row in facts[surface]} != expected_closed_months
+            for surface in ("snapshot", "returns", "rv_signal")
+        ):
+            raise MaterializationError(
+                "base closed surface month coverage must be contiguous through inferred last closed month",
+                reason_code="panel_gate_failed",
+            )
         return first, last, None
     if first_month is None or last_closed_month is None or open_month is None:
         raise MaterializationError("delta month partition must be explicit", reason_code="panel_gate_failed")

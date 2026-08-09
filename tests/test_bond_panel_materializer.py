@@ -25,6 +25,21 @@ def _facts(month: str = "2024-01-01") -> dict[str, list[dict[str, object]]]:
     }
 
 
+def test_base_rejects_later_snapshot_month_without_returns_or_rv_coverage() -> None:
+    facts = _facts("2024-01-01")
+    facts["snapshot"] += _facts("2024-02-01")["snapshot"]
+    facts["rating_pit"] += _facts("2024-02-01")["rating_pit"]
+
+    with pytest.raises(MaterializationError, match="closed surface month coverage"):
+        materialize_panel(
+            InMemoryPublicationStore(),
+            as_of=date(2024, 2, 29),
+            code_revision="abc",
+            facts=facts,
+            source_lineage={"panel": "base"},
+        )
+
+
 def test_materializer_is_deterministic_idempotent_and_promotes_only_after_validation() -> None:
     store = InMemoryPublicationStore()
     first = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="abc", facts=_facts(), source_lineage={"panel": "run-1"})
@@ -45,7 +60,13 @@ def test_gate_failure_leaves_old_pointer_untouched() -> None:
 
 def test_delta_logical_pack_inherits_immutable_months_and_newest_month_wins() -> None:
     store = InMemoryPublicationStore()
-    base_facts = {**_facts("2024-01-01"), "snapshot": _facts("2024-01-01")["snapshot"] + _facts("2024-02-01")["snapshot"], "rating_pit": _facts("2024-01-01")["rating_pit"] + _facts("2024-02-01")["rating_pit"]}
+    base_facts = {
+        **_facts("2024-01-01"),
+        "snapshot": _facts("2024-01-01")["snapshot"] + _facts("2024-02-01")["snapshot"],
+        "returns": _facts("2024-01-01")["returns"] + _facts("2024-02-01")["returns"],
+        "rv_signal": _facts("2024-01-01")["rv_signal"] + _facts("2024-02-01")["rv_signal"],
+        "rating_pit": _facts("2024-01-01")["rating_pit"] + _facts("2024-02-01")["rating_pit"],
+    }
     base = materialize_panel(store, as_of=date(2024, 2, 29), code_revision="abc", facts=base_facts, source_lineage={"panel": "base"})
     delta_facts = _facts("2024-03-01")
     delta_facts["snapshot"] = _facts("2024-03-01")["snapshot"] + _facts("2024-04-01")["snapshot"]

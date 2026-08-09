@@ -814,6 +814,9 @@ def _tick_payload_outcome(ticks: Any) -> str:
     prices = ticks.get("p")
     if not isinstance(prices, list) or len(prices) != len(stamps):
         return "malformed_payload"
+    sides = ticks.get("si")
+    if not isinstance(sides, list) or len(sides) != len(stamps):
+        return "malformed_payload"
     return "ok"
 
 

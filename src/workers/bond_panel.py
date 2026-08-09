@@ -306,7 +306,7 @@ def _load_inputs(
             + " SELECT DISTINCT m.execution_cusip9 AS cusip9, r.rating_bucket, r.rating_as_of_month, "
             "CASE WHEN r.rating_state = 'rated' THEN 'static_current' ELSE 'static_carry_forward' END AS rating_state, "
             "r.reason_code AS rating_reason, r.source_sha256 FROM bond_rating_static r JOIN mapping m "
-            "ON upper(btrim(r.cusip9)) = m.execution_cusip9",
+            "ON upper(btrim(r.cusip9)) = m.reference_cusip9",
             (mapping_json,),
         )
     if inputs["static_rating_mapping"].empty:

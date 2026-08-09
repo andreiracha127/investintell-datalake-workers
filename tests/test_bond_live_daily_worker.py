@@ -651,6 +651,17 @@ def test_ok_tick_payload_state_does_not_bypass_structural_validation(payload) ->
     assert bond_live_daily._tick_payload_outcome(payload) == "malformed_payload"
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"t": [1_722_470_400], "p": [100.0]},
+        {"t": [1_722_470_400, 1_722_470_401], "p": [100.0, 100.1], "si": [1]},
+    ],
+)
+def test_nonempty_tick_payload_requires_a_side_for_each_trade(payload) -> None:
+    assert bond_live_daily._tick_payload_outcome(payload) == "malformed_payload"
+
+
 class _NoTape(FakeClient):
     """Every tick call exhausts its retry ladder and raises."""
 

@@ -167,7 +167,9 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert any("date_trunc('month', o.day)::date = m.month" in sql for sql in mapped_queries)
     assert any("FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9" in sql for sql in mapped_queries)
     assert any("FROM mapping m JOIN panel_months pm ON pm.month = m.month" in sql for sql in mapped_queries)
-    assert any("FROM bond_rating_static r JOIN mapping m" in sql for sql in mapped_queries)
+    rating_sql = next(sql for sql in mapped_queries if "FROM bond_rating_static r JOIN mapping m" in sql)
+    assert "SELECT DISTINCT m.execution_cusip9 AS cusip9" in rating_sql
+    assert "ON upper(btrim(r.cusip9)) = m.reference_cusip9" in rating_sql
     issuer_sql = next(sql for sql in mapped_queries if "sec_cusip_ticker_map" in sql)
     assert "non[-[:space:]]*corporate" in issuer_sql
     assert "~* '(^|[^[:alnum:]])corporate([^[:alnum:]]|$)'" in issuer_sql
