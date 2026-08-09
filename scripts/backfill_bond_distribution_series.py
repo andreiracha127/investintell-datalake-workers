@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any, Protocol
 from urllib.request import Request, urlopen
 
@@ -24,6 +25,7 @@ from urllib.request import Request, urlopen
 SEC_API_FULL_TEXT_SEARCH = "https://api.sec-api.io/full-text-search"
 PARSER_VERSION = "explicit-label-v1"
 TARGETED_QUERY_VERSION = "targeted-exact-v1"
+_DOWNLOAD_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 SEARCH_QUERY_VERSIONS = (
     {"version": "v1", "query": '"Rule 144A CUSIP" "Regulation S ISIN"'},
     {"version": "v2", "query": '"144A CUSIP" "Reg S ISIN"'},
@@ -104,6 +106,18 @@ def _write_text(path: Path, value: str, *, encoding: str = "utf-8") -> None:
 def _safe_error(_: BaseException) -> str:
     """Keep credentials and server diagnostics out of checkpoints and stdout."""
     return "request_failed"
+
+
+def _download_error(error: BaseException) -> str:
+    """Retain an actionable class/status without persisting server text or credentials."""
+    status = getattr(error, "code", None)
+    return f"http_{status}" if isinstance(status, int) else type(error).__name__
+
+
+def _download_retryable(error: BaseException) -> bool:
+    """Retry transport failures and throttling/server responses, never permanent HTTP 4xx."""
+    status = getattr(error, "code", None)
+    return not isinstance(status, int) or status in {408, 429} or status >= 500
 
 
 def _document_key(accession: str, document_url: str | None, document_type: str | None) -> str:
@@ -323,30 +337,52 @@ def targeted_discover(
     }
 
 
-def download(client: HttpClient, output_root: Path, *, edgar_identity: str) -> dict[str, int]:
+def download(
+    client: HttpClient, output_root: Path, *, edgar_identity: str,
+) -> dict[str, int | str | None]:
     """Fetch filing HTML only after discovery, retaining byte-exact immutable evidence."""
     if not edgar_identity.strip():
         raise ValueError("SEC_USER_AGENT or EDGAR_IDENTITY is required")
     metadata = sorted(_read_json(output_root / "metadata.json", []), key=lambda item: item.get("document_key", ""))
     downloads_path = output_root / "downloads.json"
     existing = {item["document_key"]: item for item in _read_json(downloads_path, []) if item.get("document_key")}
-    downloaded = reused = failures = 0
+    downloaded = reused = failures = retries = 0
+    failed_document_key: str | None = None
+    last_error: str | None = None
+    failed_attempts = 0
     for document in metadata:
         accession = document.get("accession") or document.get("accessionNo")
         url = document.get("filing_url") or document.get("linkToFilingDetails")
-        if not accession or not url:
-            continue
         document_type = document.get("document_type") or document.get("documentType")
+        if not accession or not url:
+            failures += 1
+            failed_document_key = document.get("document_key") or _document_key(
+                str(accession or ""), str(url or ""), document_type,
+            )
+            last_error = "missing_accession" if not accession else "missing_filing_url"
+            break
         document_key = document.get("document_key") or _document_key(accession, url, document_type)
         old = existing.get(document_key)
         if old and (output_root / old["raw_path"]).exists():
             reused += 1
             continue
-        try:
-            response = client.get_bytes(url, {"User-Agent": edgar_identity, "Accept-Encoding": "identity"})
-            raw = bytes(response.content)
-        except Exception:
-            failures += 1
+        for attempt in range(len(_DOWNLOAD_RETRY_DELAYS) + 1):
+            try:
+                response = client.get_bytes(
+                    url, {"User-Agent": edgar_identity, "Accept-Encoding": "identity"},
+                )
+                raw = bytes(response.content)
+                break
+            except Exception as error:
+                last_error = _download_error(error)
+                if not _download_retryable(error) or attempt == len(_DOWNLOAD_RETRY_DELAYS):
+                    failures += 1
+                    failed_document_key = document_key
+                    failed_attempts = attempt + 1
+                    break
+                retries += 1
+                time.sleep(_DOWNLOAD_RETRY_DELAYS[attempt])
+        if failed_document_key is not None:
             break
         digest = hashlib.sha256(raw).hexdigest()
         raw_path = output_root / "raw" / f"{digest}.bin"
@@ -363,7 +399,15 @@ def download(client: HttpClient, output_root: Path, *, edgar_identity: str) -> d
         }
         _write_json(downloads_path, [existing[key] for key in sorted(existing)])
         downloaded += 1
-    return {"downloaded": downloaded, "reused": reused, "failures": failures}
+    _write_json(output_root / "state" / "download.json", {
+        "attempts": failed_attempts, "completed": failures == 0,
+        "failed_document_key": failed_document_key, "last_error": last_error if failures else None,
+    })
+    return {
+        "downloaded": downloaded, "reused": reused, "failures": failures,
+        "retries": retries, "last_error": last_error if failures else None,
+        "failed_document_key": failed_document_key,
+    }
 
 
 class _TableRows(HTMLParser):

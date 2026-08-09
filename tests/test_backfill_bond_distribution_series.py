@@ -297,6 +297,100 @@ def test_download_reuses_immutable_hash_and_requires_identity_header(tmp_path: P
     assert client.calls[0][2]["User-Agent"] == "Analyst analyst@example.test"
 
 
+def test_download_retries_one_transient_document_failure_then_checkpoints_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    raw = b"<table>retry evidence</table>"
+    client = _Client([TimeoutError("temporary SEC timeout"), _Response({}, content=raw)])
+    monkeypatch.setattr(backfill, "_DOWNLOAD_RETRY_DELAYS", (0.0, 0.0))
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    state = json.loads((tmp_path / "state" / "download.json").read_text())
+    assert summary["downloaded"] == 1 and summary["failures"] == 0
+    assert summary["retries"] == 1 and len(client.calls) == 2
+    assert state == {
+        "attempts": 0, "completed": True, "failed_document_key": None,
+        "last_error": None,
+    }
+
+
+def test_download_exhaustion_records_only_sanitized_failure_and_preserves_resume_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "do-not-leak-this"
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    client = _Client([TimeoutError(secret), TimeoutError(secret), TimeoutError(secret)])
+    monkeypatch.setattr(backfill, "_DOWNLOAD_RETRY_DELAYS", (0.0, 0.0))
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    expected_key = backfill._document_key(
+        metadata[0]["accessionNo"], metadata[0]["linkToFilingDetails"], metadata[0]["documentType"],
+    )
+    state = json.loads((tmp_path / "state" / "download.json").read_text())
+    assert summary == {
+        "downloaded": 0, "reused": 0, "failures": 1, "retries": 2,
+        "last_error": "TimeoutError", "failed_document_key": expected_key,
+    }
+    assert state == {
+        "attempts": 3, "completed": False, "failed_document_key": expected_key,
+        "last_error": "TimeoutError",
+    }
+    assert secret not in json.dumps(summary) and secret not in json.dumps(state)
+
+
+def test_download_refuses_missing_url_instead_of_claiming_completion(tmp_path: Path) -> None:
+    metadata = [_document("a-1")]
+    metadata[0].pop("linkToFilingDetails")
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    summary = backfill.download(_Client([]), tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    state = json.loads((tmp_path / "state" / "download.json").read_text())
+    assert summary["failures"] == 1 and summary["last_error"] == "missing_filing_url"
+    assert summary["failed_document_key"] and state == {
+        "attempts": 0, "completed": False,
+        "failed_document_key": summary["failed_document_key"],
+        "last_error": "missing_filing_url",
+    }
+
+
+def test_download_does_not_retry_a_permanent_http_4xx(tmp_path: Path) -> None:
+    class PermanentHttpError(RuntimeError):
+        code = 404
+
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    client = _Client([PermanentHttpError("URL and server detail must not persist")])
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    assert summary["failures"] == 1 and summary["retries"] == 0
+    assert summary["last_error"] == "http_404" and len(client.calls) == 1
+    assert "server detail" not in json.dumps(summary)
+
+
+def test_download_retries_http_request_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RequestTimeout(RuntimeError):
+        code = 408
+
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    client = _Client([RequestTimeout("temporary"), _Response({}, content=b"evidence")])
+    monkeypatch.setattr(backfill, "_DOWNLOAD_RETRY_DELAYS", (0.0,))
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    assert summary["downloaded"] == 1 and summary["failures"] == 0
+    assert summary["retries"] == 1 and len(client.calls) == 2
+
+
 def test_parse_official_minimal_table_groups_separate_identification_rows_per_currency_section() -> None:
     records = backfill.parse_document(
         FIXTURES.joinpath("official_minimal_table.html").read_bytes(), document_hash="abc", accession="000119312525175440"
