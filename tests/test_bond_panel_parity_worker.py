@@ -88,6 +88,37 @@ def _fit_diagnostics(
     })
 
 
+def _compare_fixture(
+    month: pd.Timestamp,
+    *,
+    frozen_snapshot: pd.DataFrame | None = None,
+    frozen_rv: pd.DataFrame | None = None,
+    rebuilt_snapshot: pd.DataFrame | None = None,
+    rebuilt_rv: pd.DataFrame | None = None,
+    reference_keys: pd.Series | None = None,
+    fit_diagnostics: pd.DataFrame | None = None,
+) -> dict[str, object]:
+    rebuilt = _snapshot(month) if rebuilt_snapshot is None else rebuilt_snapshot
+    return parity._compare_month(
+        month,
+        _snapshot(month) if frozen_snapshot is None else frozen_snapshot,
+        _rv(month) if frozen_rv is None else frozen_rv,
+        rebuilt,
+        _rv(month) if rebuilt_rv is None else rebuilt_rv,
+        input_max_day=parity._month_end(month),
+        fit_as_of=month,
+        monthly_curve=_curve(month),
+        reference_keys=(
+            rebuilt["cusip_id"] if reference_keys is None else reference_keys
+        ),
+        fit_diagnostics=(
+            _fit_diagnostics(month)
+            if fit_diagnostics is None
+            else fit_diagnostics
+        ),
+    )
+
+
 def test_rv_structure_accepts_finite_standardized_fit() -> None:
     month = pd.Timestamp("2025-01-01")
 
@@ -411,35 +442,26 @@ def test_reference_accounting_rejects_invalid_included_issuer_identity(issuer_id
 def test_compare_month_passes_exact_rebuild_and_records_all_gates() -> None:
     month = pd.Timestamp("2025-01-01")
 
-    result = parity._compare_month(
-        month, _snapshot(month), _rv(month), _snapshot(month), _rv(month),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
+    result = _compare_fixture(month)
 
     assert result["state"] == "parity_passed"
     assert result["aborted"] is False
-    assert result["matched_coverage"] == 1.0
+    assert result["matched_bonds"] == parity.MIN_MONTH_ROWS
+    assert result["reference_accounting"]["passed"] is True
+    assert result["formula_parity"]["passed"] is True
+    assert result["rv_structure"]["passed"] is True
     assert result["spread_definition"] == "ytm_minus_interpolated_dgs"
     assert result["walk_forward"]["fit_as_of"] == "2025-01-01"
 
 
 def test_compare_month_fails_ytm_threshold_and_empty_frozen_month() -> None:
     month = pd.Timestamp("2025-01-01")
-    failed = parity._compare_month(
-        month, _snapshot(month), _rv(month), _snapshot(month, ytm=0.051), _rv(month),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
-    empty = parity._compare_month(
-        month, pd.DataFrame(), _rv(month), _snapshot(month), _rv(month),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
+    failed = _compare_fixture(month, rebuilt_snapshot=_snapshot(month, ytm=0.051))
+    empty = _compare_fixture(month, frozen_snapshot=pd.DataFrame())
 
     assert failed["state"] == "parity_failed"
     assert "ytm_abs_bps" in failed["failed_gates"]
-    assert empty["reason"] == "frozen_snapshot_empty"
+    assert empty["reason"] == "gate_failed"
     assert empty["aborted"] is True
 
 
@@ -450,77 +472,219 @@ def test_compare_month_checks_spread_against_interpolated_curve_not_only_bps() -
         month, _snapshot(month), _rv(month), _snapshot(month), _rv(month),
         input_max_day=date(2025, 1, 31), fit_as_of=month,
         monthly_curve=_curve(month, rate=0.03),
+        reference_keys=_snapshot(month)["cusip_id"],
+        fit_diagnostics=_fit_diagnostics(month),
     )
 
     assert result["state"] == "parity_failed"
     assert "spread_numeric_semantics" in result["failed_gates"]
 
 
-def test_compare_month_refuses_materially_incomplete_rv_surface() -> None:
+def test_compare_month_records_historical_rv_surface_only_as_diagnostic() -> None:
     month = pd.Timestamp("2025-01-01")
     frozen_rv = _rv(month, n=30)
 
-    result = parity._compare_month(
-        month, _snapshot(month), frozen_rv, _snapshot(month), _rv(month),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
+    result = _compare_fixture(month, frozen_rv=frozen_rv)
 
-    assert result["state"] == "parity_failed"
-    assert "rv_universe_delta" in result["failed_gates"]
+    assert result["state"] == "parity_passed"
+    assert result["diagnostics"]["rv_abs"]["frozen_size"] == 30
+    assert result["diagnostics"]["rv_abs"]["rebuilt_size"] == parity.MIN_MONTH_ROWS
 
 
-def test_compare_month_requires_99_percent_rv_key_overlap_at_equal_size() -> None:
+def test_compare_month_records_historical_rv_key_overlap_only_as_diagnostic() -> None:
     month = pd.Timestamp("2025-01-01")
-    frozen_ids = [f"CUSIP{index:03d}" for index in range(100)]
-    rebuilt_ids = [*frozen_ids[:98], "OTHER001", "OTHER002"]
+    rebuilt_ids = _cusips(parity.MIN_MONTH_ROWS)
+    frozen_ids = [*rebuilt_ids[:98], "OTHER001", "OTHER002"]
     frozen_rv = _rv(month, n=100)
     frozen_rv["cusip_id"] = frozen_ids
-    rebuilt_rv = _rv(month, n=100)
-    rebuilt_rv["cusip_id"] = rebuilt_ids
 
-    result = parity._compare_month(
-        month, _snapshot(month), frozen_rv, _snapshot(month), rebuilt_rv,
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
+    result = _compare_fixture(month, frozen_rv=frozen_rv)
 
-    assert result["state"] == "parity_failed"
-    assert result["rv_matched_coverage"] == 0.98
-    assert "rv_matched_coverage" in result["failed_gates"]
+    assert result["state"] == "parity_passed"
+    assert result["diagnostics"]["rv_abs"]["matched_coverage"] == 0.98
 
 
 def test_compare_month_measures_snapshot_gates_when_rebuilt_rv_is_empty() -> None:
     month = pd.Timestamp("2025-01-01")
 
-    result = parity._compare_month(
-        month, _snapshot(month), _rv(month), _snapshot(month), pd.DataFrame(),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
-    )
+    result = _compare_fixture(month, rebuilt_rv=pd.DataFrame())
 
     assert result["state"] == "parity_failed"
-    assert result["rebuilt_rv_size"] == 0
-    assert result["metrics"]["ytm_abs_bps"]["median"] == 0
-    assert result["metrics"]["rv_abs"] == {"median": None, "p90": None, "p99": None}
+    assert result["diagnostics"]["rv_abs"]["rebuilt_size"] == 0
+    assert result["formula_parity"]["metrics"]["ytm_abs_bps"]["median"] == 0
     assert "rebuilt_rv_nonempty" in result["failed_gates"]
 
 
-def test_compare_month_records_universe_sizes_when_overlap_is_zero() -> None:
+def test_compare_month_reports_noncomparable_when_common_cohort_is_below_minimum() -> None:
     month = pd.Timestamp("2025-01-01")
-    rebuilt = _snapshot(month, n=10).assign(cusip_id="OTHER")
+    rebuilt = _snapshot(month, n=10, offset=200)
 
-    result = parity._compare_month(
-        month, _snapshot(month, n=10), _rv(month, n=10), rebuilt, pd.DataFrame(),
-        input_max_day=date(2025, 1, 31), fit_as_of=month,
-        monthly_curve=_curve(month),
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=10, offset=100),
+        frozen_rv=_rv(month, n=10, offset=100),
+        rebuilt_snapshot=rebuilt,
+        rebuilt_rv=pd.DataFrame(),
     )
 
-    assert result["reason"] == "zero_overlap"
-    assert result["frozen_universe_size"] == 10
-    assert result["rebuilt_universe_size"] == 10
+    assert result["state"] == "parity_not_comparable"
+    assert result["aborted"] is False
     assert result["matched_bonds"] == 0
-    assert result["metrics_unavailable_reason"] == "zero_overlap"
+    assert result["formula_parity"]["evaluated"] is False
+
+
+def test_compare_month_passes_with_historical_membership_drift_as_diagnostic() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=350),
+        frozen_rv=_rv(month, n=350),
+    )
+
+    assert result["state"] == "parity_passed"
+    assert result["diagnostics"]["membership"]["frozen_included_size"] == 350
+    assert result["diagnostics"]["membership"]["rebuilt_included_size"] == 300
+    assert result["diagnostics"]["membership"]["symmetric_difference_size"] == 50
+
+
+def test_compare_month_fails_reference_accounting_even_when_noncomparable() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt = _snapshot(month, n=10)
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=10, offset=100),
+        rebuilt_snapshot=rebuilt,
+        reference_keys=rebuilt["cusip_id"].iloc[1:],
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["aborted"] is True
+    assert "exact_reference_key_set" in result["failed_gates"]
+    assert result["formula_parity"]["evaluated"] is False
+
+
+def test_compare_month_fails_hard_gate_even_when_noncomparable() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt = _snapshot(month, n=10)
+    rebuilt["spread_definition"] = "wrong"
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=10, offset=100),
+        rebuilt_snapshot=rebuilt,
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["aborted"] is True
+    assert "spread_definition" in result["failed_gates"]
+
+
+def test_compare_month_empty_frozen_rv_is_nonblocking_diagnostic() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = _compare_fixture(month, frozen_rv=pd.DataFrame())
+
+    assert result["state"] == "parity_passed"
+    assert result["diagnostics"]["rv_abs"]["unavailable_reason"] == "frozen_rv_empty"
+    assert result["diagnostics"]["rv_abs"]["metrics"] == {
+        "median": None, "p90": None, "p99": None,
+    }
+
+
+def test_compare_month_reports_frozen_rv_shift_only_as_diagnostic() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = _compare_fixture(month, frozen_rv=_rv(month, signal_shift=2.0))
+
+    assert result["state"] == "parity_passed"
+    assert result["diagnostics"]["rv_abs"]["metrics"] == {
+        "median": 2.0, "p90": 2.0, "p99": 2.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("gate", "frozen_snapshot", "rebuilt_snapshot"),
+    [
+        ("ytm_abs_bps", None, _snapshot(pd.Timestamp("2025-01-01"), ytm=0.051)),
+        ("duration_abs_years", None, _snapshot(pd.Timestamp("2025-01-01"), mod_dur=5.5)),
+        ("duration_relative", None, _snapshot(pd.Timestamp("2025-01-01"), mod_dur=8.0)),
+        (
+            "spread_abs_bps",
+            _snapshot(pd.Timestamp("2025-01-01"), ytm=0.06).assign(
+                spread_final=0.02, spread_final_bps=200.0
+            ),
+            None,
+        ),
+    ],
+)
+def test_compare_month_formula_gate_blocks_comparable_month(
+    gate: str,
+    frozen_snapshot: pd.DataFrame | None,
+    rebuilt_snapshot: pd.DataFrame | None,
+) -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=frozen_snapshot,
+        rebuilt_snapshot=rebuilt_snapshot,
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["formula_parity"]["evaluated"] is True
+    assert gate in result["failed_gates"]
+
+
+def test_compare_month_walk_forward_gate_blocks_comparable_month() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._compare_month(
+        month, _snapshot(month), _rv(month), _snapshot(month), _rv(month),
+        input_max_day=date(2025, 2, 1), fit_as_of=month,
+        monthly_curve=_curve(month), reference_keys=_snapshot(month)["cusip_id"],
+        fit_diagnostics=_fit_diagnostics(month),
+    )
+
+    assert result["state"] == "parity_failed"
+    assert "walk_forward" in result["failed_gates"]
+
+
+@pytest.mark.parametrize(
+    ("rebuilt_rv", "fit_diagnostics", "gate"),
+    [
+        (pd.DataFrame(), None, "rebuilt_rv_nonempty"),
+        (_rv(pd.Timestamp("2025-01-01")).drop(columns="residual_bps"), None, "required_columns_present"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(rv_signal=np.nan), None, "rv_values_finite"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(cusip_id=""), None, "rv_keys_valid"),
+        (pd.concat([_rv(pd.Timestamp("2025-01-01")).iloc[:1], _rv(pd.Timestamp("2025-01-01"))], ignore_index=True), _fit_diagnostics(pd.Timestamp("2025-01-01"), n=301), "rv_keys_unique"),
+        (_rv(pd.Timestamp("2025-01-01"), offset=500), None, "rv_keys_subset_of_included"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(month=pd.Timestamp("2025-02-01")), None, "rv_month_exact"),
+        (_rv(pd.Timestamp("2025-01-01")), _fit_diagnostics(pd.Timestamp("2025-01-01"), skipped=True), "fit_diagnostics_valid"),
+        (_rv(pd.Timestamp("2025-01-01")), _fit_diagnostics(pd.Timestamp("2025-01-01"), n=299), "row_count_matches_fit"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(rv_signal=0.1), None, "rv_mean_centered"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(rv_signal=np.arange(parity.MIN_MONTH_ROWS, dtype=float) - (parity.MIN_MONTH_ROWS - 1) / 2), None, "rv_population_std_unit"),
+    ],
+)
+def test_compare_month_rebuilt_rv_structure_failure_blocks_comparable_month(
+    rebuilt_rv: pd.DataFrame,
+    fit_diagnostics: pd.DataFrame | None,
+    gate: str,
+) -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = _compare_fixture(
+        month,
+        rebuilt_rv=rebuilt_rv,
+        fit_diagnostics=(
+            _fit_diagnostics(month) if fit_diagnostics is None else fit_diagnostics
+        ),
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["rv_structure"]["passed"] is False
+    assert gate in result["failed_gates"]
 
 
 def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
@@ -630,7 +794,8 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     monkeypatch.setattr(parity, "build_db_monthly_panel", lambda **_kwargs: _snapshot(_kwargs["months"][0]).assign(coupon_pct=5.0, maturity_date=pd.Timestamp("2030-01-01"), reason_code="quoted", rating_bucket="A", rating_as_of_month=pd.Timestamp("2025-01-01"), rating_state="static_current", rating_reason="static_rating_current", rating_staleness_months=0))
     monkeypatch.setattr(parity, "build_snapshots", lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)))
     monkeypatch.setattr(parity, "fit_all_months", lambda frame, *, as_of: fit_calls.append(as_of) or (
-        _rv(as_of)[["cusip_id", "month", "rv_signal"]], pd.DataFrame(),
+        _rv(as_of)[["cusip_id", "month", "rv_signal", "residual_bps"]],
+        _fit_diagnostics(as_of),
     ))
 
     outcome = parity.run("postgresql://example")
