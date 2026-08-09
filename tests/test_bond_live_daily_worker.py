@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -131,6 +132,8 @@ Q_ATTEMPTS = "FROM bond_live_daily_sweep"
 Q_CURVE_WATERMARK = "GROUP BY tenor"
 Q_ACTIVITY = "coalesce(sum(o.volume)"
 
+REG_S_SNAPSHOT_ID = "7d2b63ce-63a0-534b-9741-d10242d399ad"
+
 
 class _FakeConnect:
     """Stands in for src.db.connect: hands the same FakeConn to every caller."""
@@ -165,6 +168,8 @@ def _drive_run(
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
     events: list[tuple[str, int]] | None = None,
+    mapping_snapshot_id: str | None = REG_S_SNAPSHOT_ID,
+    resolver=None,
 ):
     """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
 
@@ -217,6 +222,30 @@ def _drive_run(
     monkeypatch.setattr(bond_live_daily, "_republish", _republish_stub)
     monkeypatch.setattr(bond_live_daily, "_publish_panel", _panel_stub)
 
+    def _identity_reg_s_map(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        references = list(reference_cusip9s)
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=reference,
+                    reg_s_isin=f"US{reference}0",
+                )
+                for reference in references
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(
+        bond_live_daily,
+        "resolve_reg_s_cusip_map_from_db",
+        resolver if resolver is not None else _identity_reg_s_map,
+    )
+    if mapping_snapshot_id is None:
+        monkeypatch.delenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", mapping_snapshot_id)
+
     def _client():
         if client_error is not None:
             raise client_error
@@ -229,6 +258,92 @@ def _drive_run(
 def _candle_payload(day: _dt.date, price: float, yield_pct: float | None = 4.5):
     return {"s": "ok", "t": [live_daily.to_epoch(day)], "c": [price],
             "y": [yield_pct] if yield_pct is not None else [None]}
+
+
+# --------------------------------------------------------------------------- #
+# Governed Reg S execution universe
+# --------------------------------------------------------------------------- #
+def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkeypatch) -> None:
+    """A Rule 144A identifier is never a provider fallback for Reg S execution."""
+    resolver_calls: list[dict[str, object]] = []
+
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        references = list(reference_cusip9s)
+        resolver_calls.append({
+            "snapshot_id": snapshot_id,
+            "as_of": as_of,
+            "reference_cusip9s": references,
+        })
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                    reg_s_isin="XS1234567890",
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={"XS1234567890": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert resolver_calls == [{
+        "snapshot_id": REG_S_SNAPSHOT_ID,
+        "as_of": TODAY,
+        "reference_cusip9s": ["912828XX1"],
+    }]
+    assert [call[0] for call in client.candle_calls] == ["XS1234567890"]
+    observation_writes = [
+        params for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
+    ]
+    assert observation_writes and observation_writes[0][0] == "G12345678"
+    assert out["coverage"]["universe"] == 1
+    assert out["mapping_coverage"] == {
+        "snapshot_id": REG_S_SNAPSHOT_ID,
+        "reference_total": 1,
+        "resolved": 1,
+        "executable": 1,
+        "omissions": {},
+    }
+
+
+def test_missing_reg_s_isin_is_a_coverage_omission_with_no_provider_or_write(monkeypatch) -> None:
+    """Dropping execution ISIN must not silently reuse the Rule 144A ISIN."""
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert out["state"] == "no_executable_reg_s_universe"
+    assert out["aborted"] is True
+    assert out["mapping_coverage"]["omissions"] == {"missing_reg_s_isin": 1}
+    assert client.candle_calls == [] and client.tick_calls == []
+    assert conn.writes == []
+
+
+def test_missing_mapping_snapshot_aborts_before_provider_calls(monkeypatch) -> None:
+    """The immutable mapping pointer is a precondition, never an optional label."""
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, client=client, mapping_snapshot_id=None)
+
+    assert out["state"] == "no_reg_s_mapping_snapshot"
+    assert out["aborted"] is True
+    assert client.candle_calls == [] and client.tick_calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -1580,10 +1695,28 @@ def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch
         Q_ATTEMPTS: [("AAAAAAAA1", _stamp(0))],
     })
 
-    rows, total = bond_live_daily._universe(conn, 2)
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=reference,
+                    reg_s_isin=f"US{reference}0",
+                )
+                for reference in reference_cusip9s
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+
+    rows, total, coverage = bond_live_daily._universe(
+        conn, 2, snapshot_id=REG_S_SNAPSHOT_ID, as_of=TODAY,
+    )
 
     assert [row[0] for row in rows] == ["BBBBBBBB2", "CCCCCCCC3"]
     assert total == 3, "the cap must not hide how big the universe is"
+    assert coverage["executable"] == 3
 
 
 def test_an_explicit_tick_cap_is_reported_as_a_degraded_scope(monkeypatch) -> None:

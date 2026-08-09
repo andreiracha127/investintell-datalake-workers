@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
     publication_status text NOT NULL CHECK (publication_status IN ('prepared', 'validated', 'failed')),
     failure_reason text,
     config_hash char(16) NOT NULL CONSTRAINT bond_panel_publications_config_hash_check
-        CHECK (config_hash = '180a82b3f1413d43'),
+        CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')),
     input_fingerprint char(64) NOT NULL,
     code_revision text NOT NULL,
     first_month date NOT NULL,
@@ -36,13 +36,15 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
     )
 );
 
--- Re-applying the DDL must admit the active Reg S configuration even when a
--- prior publication remains as immutable historical evidence.  NOT VALID
--- preserves that history while enforcing the active hash for every new row.
+-- Re-applying the DDL must admit both the controlled legacy history seeder and
+-- the active Reg S configuration. The worker itself still mints only the active
+-- hash; the legacy value is required by backfill_bond_panel_history.py on a fresh
+-- database and remains governed by the publication/pointer transition triggers.
+-- NOT VALID preserves pre-constraint immutable history on upgrades.
 ALTER TABLE bond_panel_publications
     DROP CONSTRAINT IF EXISTS bond_panel_publications_config_hash_check;
 ALTER TABLE bond_panel_publications
-    ADD CONSTRAINT bond_panel_publications_config_hash_check CHECK (config_hash = '180a82b3f1413d43') NOT VALID;
+    ADD CONSTRAINT bond_panel_publications_config_hash_check CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS bond_panel_app_pointer (
     product text PRIMARY KEY DEFAULT 'bond_panel_v1' CHECK (product = 'bond_panel_v1'),

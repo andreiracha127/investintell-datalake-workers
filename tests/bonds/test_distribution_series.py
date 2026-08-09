@@ -97,6 +97,93 @@ def test_resolver_returns_only_exact_approved_same_pair_reg_s_cusip() -> None:
     assert result.decision_id == "decision-1"
     assert result.reference_cusip9 == "123456789"
     assert result.reg_s_cusip9 == "987654321"
+    assert result.reg_s_isin is None
+
+
+def test_resolver_returns_same_block_validated_reg_s_isin() -> None:
+    from src.bonds.distribution_series import DistributionPairIdentifier, resolve_reg_s_cusip
+
+    snapshot, approval, decision, identifiers, observations = _approved_mapping()
+    isin_observation = observations[1].__class__(
+        "parser-observation-isin", "source-evidence-1", "parser-v1", "page=1;block=1",
+        "Regulation S ISIN", "XS1234567890", "XS1234567890", "validated",
+    )
+    isin_identifier = DistributionPairIdentifier(
+        "regs-isin", decision.decision_id, isin_observation.parser_observation_id,
+        "reg_s", "isin", "XS1234567890", "permanent", date(2024, 1, 1),
+    )
+    identifiers += (isin_identifier,)
+    snapshot, approval = _approval_for_composition(snapshot, (decision,), identifiers)
+
+    result = resolve_reg_s_cusip(
+        snapshot_id=snapshot.snapshot_id, as_of=date(2024, 6, 1), reference_cusip9="123456789",
+        snapshots=(snapshot,), approvals=(approval,), decisions=(decision,), identifiers=identifiers,
+        parser_observations=observations + (isin_observation,),
+    )
+
+    assert result.reg_s_cusip9 == "987654321"
+    assert result.reg_s_isin == "XS1234567890"
+
+
+def test_resolver_ignores_cross_block_reg_s_isin() -> None:
+    from src.bonds.distribution_series import DistributionPairIdentifier, resolve_reg_s_cusip
+
+    snapshot, approval, decision, identifiers, observations = _approved_mapping()
+    isin_observation = observations[1].__class__(
+        "parser-observation-isin", "source-evidence-1", "parser-v1", "page=1;block=2",
+        "Regulation S ISIN", "XS1234567890", "XS1234567890", "validated",
+    )
+    isin_identifier = DistributionPairIdentifier(
+        "regs-isin", decision.decision_id, isin_observation.parser_observation_id,
+        "reg_s", "isin", "XS1234567890", "permanent", date(2024, 1, 1),
+    )
+    identifiers += (isin_identifier,)
+    snapshot, approval = _approval_for_composition(snapshot, (decision,), identifiers)
+
+    result = resolve_reg_s_cusip(
+        snapshot_id=snapshot.snapshot_id, as_of=date(2024, 6, 1), reference_cusip9="123456789",
+        snapshots=(snapshot,), approvals=(approval,), decisions=(decision,), identifiers=identifiers,
+        parser_observations=observations + (isin_observation,),
+    )
+
+    assert result.reg_s_cusip9 == "987654321"
+    assert result.reg_s_isin is None
+
+
+def test_resolver_refuses_conflicting_same_block_reg_s_isins() -> None:
+    from src.bonds.distribution_series import (
+        AmbiguousDistributionMappingError,
+        DistributionPairIdentifier,
+        resolve_reg_s_cusip,
+    )
+
+    snapshot, approval, decision, identifiers, observations = _approved_mapping()
+    isin_observations = (
+        observations[1].__class__(
+            "parser-observation-isin-1", "source-evidence-1", "parser-v1", "page=1;block=1",
+            "Regulation S ISIN", "XS1234567890", "XS1234567890", "validated",
+        ),
+        observations[1].__class__(
+            "parser-observation-isin-2", "source-evidence-1", "parser-v1", "page=1;block=1",
+            "Regulation S ISIN", "XS0987654321", "XS0987654321", "validated",
+        ),
+    )
+    isin_identifiers = tuple(
+        DistributionPairIdentifier(
+            f"regs-isin-{index}", decision.decision_id, observation.parser_observation_id,
+            "reg_s", "isin", observation.normalized_value, "permanent", date(2024, 1, 1),
+        )
+        for index, observation in enumerate(isin_observations, start=1)
+    )
+    identifiers += isin_identifiers
+    snapshot, approval = _approval_for_composition(snapshot, (decision,), identifiers)
+
+    with pytest.raises(AmbiguousDistributionMappingError, match="ambiguous_mapping"):
+        resolve_reg_s_cusip(
+            snapshot_id=snapshot.snapshot_id, as_of=date(2024, 6, 1), reference_cusip9="123456789",
+            snapshots=(snapshot,), approvals=(approval,), decisions=(decision,), identifiers=identifiers,
+            parser_observations=observations + isin_observations,
+        )
 
 
 @pytest.mark.parametrize(

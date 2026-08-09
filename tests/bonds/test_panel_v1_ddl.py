@@ -37,11 +37,11 @@ def test_panel_ddl_matches_the_active_reg_s_configuration_in_publication_and_vie
     legacy_hash = "0c0d78a866bc1090"
 
     assert active_hash == "180a82b3f1413d43"
-    assert f"CHECK (config_hash = '{active_hash}')" in sql
+    assert f"CHECK (config_hash IN ('{legacy_hash}', '{active_hash}'))" in sql
     assert "DROP CONSTRAINT IF EXISTS bond_panel_publications_config_hash_check" in sql
     assert (
         "ADD CONSTRAINT bond_panel_publications_config_hash_check "
-        f"CHECK (config_hash = '{active_hash}') NOT VALID"
+        f"CHECK (config_hash IN ('{legacy_hash}', '{active_hash}')) NOT VALID"
     ) in sql
     assert sql.count(f"p.config_hash IN ('{legacy_hash}', '{active_hash}')") == 4
     assert sql.count("p.config_hash = a.config_hash") == 4

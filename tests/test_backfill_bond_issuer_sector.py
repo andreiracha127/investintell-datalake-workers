@@ -118,10 +118,28 @@ def test_psql_emit_uses_a_canonical_bounded_sector_cursor_and_never_writes_progr
     assert emitted.err == ""
     assert emitted.out.startswith("\\set ON_ERROR_STOP on\nBEGIN;\nSET LOCAL ROLE worker_writer;")
     assert "'committed_through', 2" in emitted.out
-    assert "037833100" not in emitted.out
+    primary_copy = emitted.out.split("\\.\n", 1)[0]
+    assert "037833100" not in primary_copy
     assert "459200101" in emitted.out
     assert "ON CONFLICT" in emitted.out
     assert "IS DISTINCT FROM" in emitted.out
+    assert "sec_cusip_ticker_map" in emitted.out
+    assert "sic_fallback_evidence" in emitted.out
+    assert "upper(btrim(c.cusip9))" in emitted.out
+    assert "existing.source = 'sic_map'" in emitted.out
+    assert "_osbap_expected" in emitted.out
+    assert "OSBAP artifact is not fully committed" in emitted.out
+    assert emitted.out.count("upper(btrim(c.cusip9)) = s.cusip9") >= 3
+
+    nonfinal = backfill.emit_psql_batch(
+        panel, start_after=0, max_rows=1, expected_sha256=backfill._sha256(panel),
+    )
+    assert "sec_cusip_ticker_map" not in nonfinal
+
+    exhausted = backfill.emit_psql_batch(
+        panel, start_after=2, max_rows=1, expected_sha256=backfill._sha256(panel),
+    )
+    assert "sec_cusip_ticker_map" not in exhausted
 
 
 def test_psql_sector_emit_rejects_a_cursor_past_the_canonical_artifact(tmp_path: Path) -> None:

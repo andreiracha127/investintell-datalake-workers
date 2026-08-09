@@ -21,6 +21,7 @@ from psycopg.types.json import Jsonb
 
 from src.bonds.errors import BondError
 from src.bonds.panel_sources import (
+    FF17_RANGES,
     FF17_SOURCE_URL,
     FF17_SOURCE_VERSION,
     normalize_cusip9,
@@ -231,6 +232,151 @@ def _require_expected_sha256(actual: str, expected: str | None) -> None:
         raise PanelArtifactError("artifact_sha256_mismatch")
 
 
+def _render_sic_fallback_psql(
+    expected_osbap_rows: Sequence[SectorRow], *, artifact_sha256: str,
+) -> str:
+    """Run the direct loader's exact-CUSIP SIC fallback after the final OSBAP slice."""
+    ranges = ",\n        ".join(
+        f"({start}, {end}, {ff17num})" for start, end, ff17num in FF17_RANGES
+    )
+    source_url = FF17_SOURCE_URL.replace("'", "''")
+    source_version = FF17_SOURCE_VERSION.replace("'", "''")
+    expected_values = ",\n        ".join(
+        f"('{row.cusip9}', {row.ff17num}, {row.disagreement_count})"
+        for row in expected_osbap_rows
+    )
+    return f"""\\set ON_ERROR_STOP on
+BEGIN;
+SET LOCAL ROLE worker_writer;
+LOCK TABLE bond_issuer_sector IN SHARE ROW EXCLUSIVE MODE;
+CREATE TEMP TABLE _osbap_expected (
+    cusip9 text PRIMARY KEY,
+    ff17num smallint NOT NULL,
+    disagreement_count integer NOT NULL
+) ON COMMIT DROP;
+INSERT INTO _osbap_expected (cusip9, ff17num, disagreement_count)
+VALUES
+        {expected_values};
+DO $osbap_completion_guard$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM _osbap_expected expected
+        LEFT JOIN bond_issuer_sector actual USING (cusip9)
+        WHERE actual.cusip9 IS NULL
+           OR ROW(
+               actual.ff17num,
+               actual.source,
+               actual.disagreement_count,
+               actual.source_provenance
+           ) IS DISTINCT FROM ROW(
+               expected.ff17num,
+               'osbap'::text,
+               expected.disagreement_count,
+               jsonb_build_object(
+                   'artifact_sha256', '{artifact_sha256}',
+                   'columns', jsonb_build_array('cusip_id', 'ff17num'),
+                   'modal_tie_break', 'lowest_ff17num'
+               )
+           )
+    ) THEN
+        RAISE EXCEPTION 'OSBAP artifact is not fully committed with identical evidence';
+    END IF;
+END
+$osbap_completion_guard$;
+CREATE TEMP TABLE _sic_fallback_stage (
+    cusip9 text NOT NULL,
+    ff17num smallint NOT NULL,
+    sic_code integer NOT NULL
+) ON COMMIT DROP;
+WITH sic_ranges(start_sic, end_sic, ff17num) AS (
+    VALUES
+        {ranges}
+), canonical_candidates AS (
+    SELECT DISTINCT
+           upper(btrim(c.cusip9)) AS cusip9,
+           ranges.ff17num,
+           btrim(m.sic_code::text)::integer AS sic_code
+    FROM bond_curated_universe c
+    JOIN sec_cusip_ticker_map m
+      ON upper(btrim(m.cusip::text)) = upper(btrim(c.cusip9))
+    JOIN sic_ranges ranges
+      ON btrim(m.sic_code::text) ~ '^[0-9]{{1,4}}$'
+     AND btrim(m.sic_code::text)::integer BETWEEN ranges.start_sic AND ranges.end_sic
+    WHERE upper(btrim(c.cusip9)) ~ '^[0-9A-Z]{{9}}$'
+)
+INSERT INTO _sic_fallback_stage (cusip9, ff17num, sic_code)
+SELECT cusip9, ff17num, sic_code FROM canonical_candidates;
+DO $sic_fallback_guard$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM _sic_fallback_stage GROUP BY cusip9 HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'conflicting exact CUSIP9/SIC fallback evidence';
+    END IF;
+    IF EXISTS (
+        SELECT 1
+        FROM _sic_fallback_stage staged
+        JOIN bond_issuer_sector existing USING (cusip9)
+        WHERE existing.source = 'sic_map'
+          AND ROW(
+              existing.ff17num,
+              existing.source,
+              existing.disagreement_count,
+              existing.source_provenance
+          ) IS DISTINCT FROM ROW(
+              staged.ff17num,
+              'sic_map'::text,
+              0,
+              jsonb_build_object(
+                  'sic_code', staged.sic_code,
+                  'sic_source_surface', 'sec_cusip_ticker_map.sic_code',
+                  'ff17_source_url', '{source_url}',
+                  'ff17_source_version', '{source_version}'
+              )
+          )
+    ) THEN
+        RAISE EXCEPTION 'immutable SIC fallback evidence conflicts with existing sic_map row';
+    END IF;
+END
+$sic_fallback_guard$;
+CREATE TEMP TABLE _sic_fallback_result (
+    staged integer NOT NULL,
+    inserted integer NOT NULL
+) ON COMMIT PRESERVE ROWS;
+WITH inserted AS (
+    INSERT INTO bond_issuer_sector
+        (cusip9, ff17num, source, disagreement_count, source_provenance)
+    SELECT cusip9, ff17num, 'sic_map', 0,
+           jsonb_build_object(
+               'sic_code', sic_code,
+               'sic_source_surface', 'sec_cusip_ticker_map.sic_code',
+               'ff17_source_url', '{source_url}',
+               'ff17_source_version', '{source_version}'
+           )
+    FROM _sic_fallback_stage
+    ON CONFLICT (cusip9) DO NOTHING
+    RETURNING 1
+)
+INSERT INTO _sic_fallback_result (staged, inserted)
+SELECT (SELECT count(*) FROM _sic_fallback_stage), count(*) FROM inserted;
+COMMIT;
+SELECT jsonb_build_object(
+    'sic_fallback_evidence', jsonb_build_object(
+        'staged', (SELECT staged FROM _sic_fallback_result),
+        'inserted', (SELECT inserted FROM _sic_fallback_result),
+        'osbap', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
+            ON upper(btrim(c.cusip9)) = s.cusip9 WHERE s.source = 'osbap'),
+        'sic_map', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
+            ON upper(btrim(c.cusip9)) = s.cusip9 WHERE s.source = 'sic_map'),
+        'no_sector', (SELECT count(*) FROM bond_curated_universe c WHERE NOT EXISTS
+            (SELECT 1 FROM bond_issuer_sector s
+             WHERE upper(btrim(c.cusip9)) = s.cusip9))
+    )
+) AS sic_fallback_evidence;
+"""
+
+
 def emit_psql_batch(
     panel: Path, *, start_after: int, max_rows: int, expected_sha256: str | None = None,
 ) -> str:
@@ -247,14 +393,15 @@ def emit_psql_batch(
         'target_row_count', (SELECT count(*) FROM bond_issuer_sector),
         'source_coverage', jsonb_build_object(
             'osbap', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
-                ON c.cusip9 = s.cusip9 WHERE s.source = 'osbap'),
+                ON upper(btrim(c.cusip9)) = s.cusip9 WHERE s.source = 'osbap'),
             'sic_map', (SELECT count(*) FROM bond_issuer_sector s JOIN bond_curated_universe c
-                ON c.cusip9 = s.cusip9 WHERE s.source = 'sic_map'),
+                ON upper(btrim(c.cusip9)) = s.cusip9 WHERE s.source = 'sic_map'),
             'no_sector', (SELECT count(*) FROM bond_curated_universe c WHERE NOT EXISTS
-                (SELECT 1 FROM bond_issuer_sector s WHERE s.cusip9 = c.cusip9))
+                (SELECT 1 FROM bond_issuer_sector s
+                 WHERE upper(btrim(c.cusip9)) = s.cusip9))
         )
     )"""
-    return render_immutable_batch(
+    batch = render_immutable_batch(
         target="bond_issuer_sector",
         columns=("cusip9", "ff17num", "source", "disagreement_count", "source_provenance"),
         column_types=("text", "smallint", "text", "integer", "jsonb"),
@@ -266,6 +413,15 @@ def emit_psql_batch(
         skipped=sum(loaded.reason_counts.values()),
         target_evidence_sql=evidence,
     )
+    # A cursor already at EOF proves no preceding slice was supplied in this
+    # invocation.  Only a non-empty slice that actually reaches EOF may release
+    # the lower-precedence SIC fill; otherwise an operator could run the fallback
+    # before ever committing the OSBAP rows.
+    if rows and committed_through == len(loaded.rows):
+        batch += _render_sic_fallback_psql(
+            loaded.rows, artifact_sha256=loaded.artifact_sha256,
+        )
+    return batch
 
 
 def run(dsn: str, panel: Path) -> dict[str, Any]:

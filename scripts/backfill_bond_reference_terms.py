@@ -272,9 +272,14 @@ def run_batch(conn: Any, client: Any, *, batch_label: str, limit: int,
         try:
             profile = client.profile_by_cusip(cusip9)
             terms, identity_basis = profile_to_terms(cusip9, profile)
-        except _finnhub.FinnhubProfileError:
-            state, reason = "empty", "empty_profile"
-            counters["empty"] += 1
+        except _finnhub.FinnhubProfileError as exc:
+            reason = str(exc)
+            if reason == "empty_profile":
+                state = "empty"
+                counters["empty"] += 1
+            else:
+                state = "transient"
+                counters["transient"] += 1
         except ValueError as exc:
             state, reason = "refused", str(exc)
             counters["mismatch"] += 1

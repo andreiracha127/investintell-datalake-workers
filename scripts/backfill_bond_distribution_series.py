@@ -103,6 +103,14 @@ def _write_text(path: Path, value: str, *, encoding: str = "utf-8") -> None:
     temporary.replace(path)
 
 
+def _write_bytes(path: Path, value: bytes) -> None:
+    """Atomically replace content-addressed evidence, including a corrupt namesake."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_bytes(value)
+    temporary.replace(path)
+
+
 def _safe_error(_: BaseException) -> str:
     """Keep credentials and server diagnostics out of checkpoints and stdout."""
     return "request_failed"
@@ -363,9 +371,16 @@ def download(
             break
         document_key = document.get("document_key") or _document_key(accession, url, document_type)
         old = existing.get(document_key)
-        if old and (output_root / old["raw_path"]).exists():
-            reused += 1
-            continue
+        if old:
+            raw_path = output_root / str(old.get("raw_path", ""))
+            stored_hash = old.get("document_hash")
+            if raw_path.is_file() and isinstance(stored_hash, str):
+                try:
+                    if hashlib.sha256(raw_path.read_bytes()).hexdigest() == stored_hash:
+                        reused += 1
+                        continue
+                except OSError:
+                    pass
         for attempt in range(len(_DOWNLOAD_RETRY_DELAYS) + 1):
             try:
                 response = client.get_bytes(
@@ -386,9 +401,11 @@ def download(
             break
         digest = hashlib.sha256(raw).hexdigest()
         raw_path = output_root / "raw" / f"{digest}.bin"
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        if not raw_path.exists():
-            raw_path.write_bytes(raw)
+        # The cache check above proves the prior file, not merely its pathname.
+        # Always replace after a network fetch: when a corrupt file retained the
+        # correct content-addressed name and the immutable source returns the same
+        # bytes, an ``exists()`` shortcut would preserve the corruption forever.
+        _write_bytes(raw_path, raw)
         existing[document_key] = {
             "accession": accession, "document_key": document_key, "document_type": document_type,
             "description": document.get("description"), "parent_form": document.get("parent_form") or document.get("formType"),

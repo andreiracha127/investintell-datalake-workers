@@ -137,6 +137,7 @@ class DistributionResolution:
     decision_id: str
     reference_cusip9: str
     reg_s_cusip9: str
+    reg_s_isin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -394,7 +395,7 @@ def _resolve_reference_from_index(
     if not relevant or not selected:
         raise NoValidatedDistributionSourceError("no_validated_source")
 
-    candidate_pairs: list[tuple[str, str]] = []
+    candidate_pairs: list[tuple[str, str, str | None]] = []
     governed_without_cusip = False
     for decision, reference in selected:
         reference_observation = index.observations_by_id[reference.source_observation_id]
@@ -410,10 +411,14 @@ def _resolve_reference_from_index(
             == reference_observation.block_locator
         ]
         cusips = [identifier.identifier_value for identifier in compatible if identifier.identifier_kind == "cusip9"]
+        isins = {identifier.identifier_value for identifier in compatible if identifier.identifier_kind == "isin"}
+        if len(isins) > 1:
+            raise AmbiguousDistributionMappingError("ambiguous_mapping")
+        reg_s_isin = next(iter(isins), None)
         if not cusips:
             governed_without_cusip = governed_without_cusip or bool(compatible)
             continue
-        candidate_pairs.extend((decision.decision_id, cusip) for cusip in cusips)
+        candidate_pairs.extend((decision.decision_id, cusip, reg_s_isin) for cusip in cusips)
     if not candidate_pairs:
         if governed_without_cusip:
             raise NoSupportedRegSCusipError("no_supported_reg_s_cusip")
@@ -421,8 +426,8 @@ def _resolve_reference_from_index(
     unique = set(candidate_pairs)
     if len(unique) != 1:
         raise AmbiguousDistributionMappingError("ambiguous_mapping")
-    decision_id, reg_s_cusip9 = next(iter(unique))
-    return DistributionResolution(snapshot_id, decision_id, reference_cusip9, reg_s_cusip9)
+    decision_id, reg_s_cusip9, reg_s_isin = next(iter(unique))
+    return DistributionResolution(snapshot_id, decision_id, reference_cusip9, reg_s_cusip9, reg_s_isin)
 
 
 def resolve_reg_s_cusip(

@@ -143,6 +143,11 @@ from typing import Any, Mapping, Sequence
 import psycopg
 
 from src.bonds import live_daily
+from src.bonds.distribution_series import (
+    DistributionSeriesError,
+    NoValidatedDistributionSourceError,
+    resolve_reg_s_cusip_map_from_db,
+)
 from src.db import LOCK_BOND_LIVE_DAILY, advisory_lock, connect, resolve_dsn
 from src.workers._finnhub import (
     MAX_CONSECUTIVE_FAILURES,
@@ -199,16 +204,16 @@ def _int_env(name: str, default: int) -> int:
 # --------------------------------------------------------------------------- #
 # Universe
 # --------------------------------------------------------------------------- #
-# The sweep universe is the curated cohort INTERSECTED with the reference terms,
-# because candles are addressed by ISIN and ``bond_reference_terms`` is where the
-# CUSIP -> ISIN mapping lives (measured 2026-08-07: all 10,073 curated rows carry
-# an ISIN, a coupon and a maturity). The coupon/maturity ride along so a day
-# whose yield the provider does not report can still be SOLVED rather than lost.
+# The curated reference cohort carries coupon/maturity terms, but it is NOT the
+# provider execution universe.  The provider sees only the approved Reg S pair
+# resolved from ``BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID`` at this run's as-of.
+# In particular, a reference (Rule 144A) ISIN is deliberately not selected: it
+# cannot become an accidental fallback when a governed Reg S ISIN is absent.
 _UNIVERSE_SQL = """
-SELECT r.cusip9, r.isin, r.coupon_rate, r.maturity_date
+SELECT r.cusip9, r.coupon_rate, r.maturity_date
 FROM bond_reference_terms r
 JOIN bond_curated_universe u ON u.cusip9 = r.cusip9
-WHERE r.isin IS NOT NULL AND btrim(r.isin) <> ''
+WHERE r.cusip9 IS NOT NULL AND btrim(r.cusip9) <> ''
 ORDER BY r.cusip9
 """
 
@@ -239,8 +244,8 @@ ORDER BY r.cusip9
 _WATERMARK_SQL = f"""
 SELECT o.cusip9, max(o.day)
 FROM {OBSERVATION_TABLE} o
-JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
 WHERE o.source = '{live_daily.SOURCE_LIVE}'
+  AND o.cusip9 = ANY(%(cusips)s)
 GROUP BY o.cusip9
 """
 
@@ -326,8 +331,8 @@ ON CONFLICT (cusip9, day) DO UPDATE SET
 _ACTIVITY_SQL = f"""
 SELECT o.cusip9, coalesce(sum(o.volume), count(*))
 FROM {OBSERVATION_TABLE} o
-JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
 WHERE o.day >= %(since)s AND o.day <= %(until)s
+  AND o.cusip9 = ANY(%(cusips)s)
 GROUP BY o.cusip9
 """
 
@@ -386,14 +391,26 @@ def sweep_priority_order(
     return sorted((tuple(row) for row in rows), key=key)
 
 
-def _universe(
-    conn: psycopg.Connection, limit: int | None
-) -> tuple[list[tuple[Any, ...]], int]:
-    """``(rows to sweep, size of the whole curated universe)``.
+def _valid_execution_cusip(value: Any) -> str | None:
+    """Return an exact CUSIP9, never a normalised guess."""
+    candidate = str(value or "").strip().upper()
+    return candidate if len(candidate) == 9 and candidate.isalnum() else None
 
-    The total is returned separately because it is the only thing that can say
-    whether a capped run covered the day or a slice of it, and a sliced list
-    cannot say it about itself.
+
+def _valid_execution_isin(value: Any) -> str | None:
+    """Return a provider-safe Reg S ISIN without manufacturing one."""
+    candidate = str(value or "").strip().upper()
+    return candidate if len(candidate) == 12 and candidate.isalnum() else None
+
+
+def _universe(
+    conn: psycopg.Connection, limit: int | None, *, snapshot_id: str, as_of: _dt.date,
+) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
+    """Resolve reference terms into a governed Reg S execution universe.
+
+    The returned total is the *executable Reg S* cohort, not the number of
+    Rule 144A references.  Mapping gaps are explicit coverage omissions: they
+    are not provider no-data and cannot cause the reference ISIN to be used.
 
     The watermarks are read here for the ORDER and again in ``_load_candles``
     for each bond's WINDOW. That is deliberate rather than plumbed through: both
@@ -404,18 +421,87 @@ def _universe(
     """
     if not (_relation_exists(conn, "bond_reference_terms")
             and _relation_exists(conn, "bond_curated_universe")):
-        return [], 0
+        return [], 0, {
+            "snapshot_id": snapshot_id, "reference_total": 0, "resolved": 0,
+            "executable": 0, "omissions": {},
+        }
+    reference_rows = conn.execute(_UNIVERSE_SQL).fetchall()
+    terms_by_reference = {
+        str(row[0]).strip().upper(): (row[-2], row[-1])
+        for row in reference_rows
+    }
+    reference_cusip9s = list(terms_by_reference)
+    try:
+        resolution_map = resolve_reg_s_cusip_map_from_db(
+            conn, snapshot_id=snapshot_id, as_of=as_of,
+            reference_cusip9s=reference_cusip9s,
+        )
+    except NoValidatedDistributionSourceError:
+        # The bulk resolver uses this exception for the all-missing shape.
+        # Preserve it as coverage, not a provider/data failure.
+        return [], 0, {
+            "snapshot_id": snapshot_id,
+            "reference_total": len(reference_cusip9s),
+            "resolved": 0,
+            "executable": 0,
+            "omissions": {"no_validated_source": len(reference_cusip9s)},
+        }
+    omissions: dict[str, int] = {}
+
+    def omit(reason: str) -> None:
+        omissions[reason] = omissions.get(reason, 0) + 1
+
+    executable: list[tuple[Any, ...]] = []
+    used_execution_cusips: set[str] = set()
+    resolutions = resolution_map.resolutions
+    reasons = resolution_map.reason_by_reference
+    for reference_cusip9 in reference_cusip9s:
+        resolution = resolutions.get(reference_cusip9)
+        if resolution is None:
+            omit(str(reasons.get(reference_cusip9, "unmapped")))
+            continue
+        execution_cusip9 = _valid_execution_cusip(
+            getattr(resolution, "reg_s_cusip9", None)
+        )
+        if execution_cusip9 is None:
+            omit("missing_reg_s_cusip")
+            continue
+        execution_isin = _valid_execution_isin(
+            getattr(resolution, "reg_s_isin", None)
+        )
+        if execution_isin is None:
+            omit("missing_reg_s_isin")
+            continue
+        if execution_cusip9 in used_execution_cusips:
+            omit("ambiguous_execution_cusip")
+            continue
+        used_execution_cusips.add(execution_cusip9)
+        coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+        executable.append((execution_cusip9, execution_isin, coupon_rate, maturity_date))
+
     rows = sweep_priority_order(
-        conn.execute(_UNIVERSE_SQL).fetchall(), _attempts(conn), _watermarks(conn)
+        executable, _attempts(conn), _watermarks(conn, [row[0] for row in executable])
     )
-    return (list(rows[:limit]) if limit else list(rows)), len(rows)
+    mapping_coverage = {
+        "snapshot_id": snapshot_id,
+        "reference_total": len(reference_cusip9s),
+        "resolved": sum(reference in resolutions for reference in reference_cusip9s),
+        "executable": len(rows),
+        "omissions": dict(sorted(omissions.items())),
+    }
+    return (list(rows[:limit]) if limit else list(rows)), len(rows), mapping_coverage
 
 
-def _watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
+def _watermarks(
+    conn: psycopg.Connection, cusips: Sequence[Any] | None = None,
+) -> dict[str, _dt.date]:
     """Last day THIS LANE loaded, per bond. A bond absent here cold-starts."""
+    execution_cusips = [str(cusip) for cusip in cusips or ()]
+    if not execution_cusips:
+        return {}
     return {
         str(cusip): day
-        for cusip, day in conn.execute(_WATERMARK_SQL).fetchall()
+        for cusip, day in conn.execute(_WATERMARK_SQL, {"cusips": execution_cusips}).fetchall()
         if day is not None
     }
 
@@ -444,7 +530,7 @@ def _curve_watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
 def _load_candles(
     conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
 ) -> dict[str, Any]:
-    watermarks = _watermarks(conn)
+    watermarks = _watermarks(conn, [row[0] for row in universe])
     swept = fetched = upserted = no_data = failed = resumed = 0
     consecutive = 0
     aborted = False
@@ -695,7 +781,11 @@ def _tick_scope(
         }
     activity = conn.execute(
         _ACTIVITY_SQL,
-        {"since": today - _dt.timedelta(days=90), "until": today},
+        {
+            "since": today - _dt.timedelta(days=90),
+            "until": today,
+            "cusips": eligible,
+        },
     ).fetchall()
     return live_daily.rank_by_activity(activity, top_n), {
         "scope": "bounded_top_n", "configured_top_n": top_n,
@@ -993,6 +1083,9 @@ def run(
             calc_date=today.isoformat(),
             execution_date=execution_date.isoformat(),
         )
+    mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
+    if not mapping_snapshot_id:
+        return _halted("no_reg_s_mapping_snapshot")
     resolved = resolve_dsn(dsn)
 
     with connect(resolved) as conn, advisory_lock(conn, LOCK_BOND_LIVE_DAILY) as acquired:
@@ -1010,10 +1103,26 @@ def run(
             # is not the same as tolerated: nothing was loaded, so it is red.
             conn.commit()
             return _halted("no_observation_table", table=OBSERVATION_TABLE)
-        universe, universe_total = _universe(conn, limit)
-        if not universe:
+        try:
+            universe, universe_total, mapping_coverage = _universe(
+                conn, limit, snapshot_id=mapping_snapshot_id, as_of=today,
+            )
+        except DistributionSeriesError as exc:
+            conn.commit()
+            return _halted(
+                "reg_s_mapping_resolution_failed",
+                mapping_snapshot_id=mapping_snapshot_id,
+                detail=str(exc),
+            )
+        if universe_total == 0 and mapping_coverage["reference_total"] == 0:
             conn.commit()
             return _halted("no_universe")
+        if universe_total == 0:
+            conn.commit()
+            return _halted(
+                "no_executable_reg_s_universe",
+                mapping_coverage=mapping_coverage,
+            )
         # An upstream fault is still a stage outcome, never a reason to skip the
         # downstream refresh/republication/panel sequence.  The input stages are
         # typed individually below; stages 4-6 always get their chance under the
@@ -1201,6 +1310,7 @@ def run(
             "complete": swept == universe_total,
             "limit": limit,
         },
+        "mapping_coverage": mapping_coverage,
         "candles": candles,
         "curve": curve,
         "ticks": ticks,

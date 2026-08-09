@@ -297,6 +297,58 @@ def test_download_reuses_immutable_hash_and_requires_identity_header(tmp_path: P
     assert client.calls[0][2]["User-Agent"] == "Analyst analyst@example.test"
 
 
+def test_download_redownloads_cached_document_when_raw_bytes_no_longer_match_recorded_hash(tmp_path: Path) -> None:
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    expected_raw = b"<table>original immutable evidence</table>"
+    expected_digest = hashlib.sha256(expected_raw).hexdigest()
+    cached_path = tmp_path / "raw" / f"{expected_digest}.bin"
+    cached_path.parent.mkdir()
+    cached_path.write_bytes(b"tampered cached evidence")
+    (tmp_path / "downloads.json").write_text(json.dumps([{
+        "document_key": backfill._document_key("a-1", metadata[0]["linkToFilingDetails"], "EX-4.1"),
+        "document_hash": expected_digest,
+        "raw_path": f"raw/{expected_digest}.bin",
+    }]), encoding="utf-8")
+    refreshed_raw = b"<table>fresh immutable evidence</table>"
+    client = _Client([_Response({}, content=refreshed_raw)])
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    refreshed_digest = hashlib.sha256(refreshed_raw).hexdigest()
+    saved = json.loads((tmp_path / "downloads.json").read_text(encoding="utf-8"))
+    assert summary["downloaded"] == 1 and summary["reused"] == 0
+    assert len(client.calls) == 1
+    assert saved[0]["document_hash"] == refreshed_digest
+    assert (tmp_path / saved[0]["raw_path"]).read_bytes() == refreshed_raw
+
+
+def test_download_repairs_a_tampered_content_addressed_file_when_redownload_hash_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    expected_raw = b"<table>original immutable evidence</table>"
+    expected_digest = hashlib.sha256(expected_raw).hexdigest()
+    cached_path = tmp_path / "raw" / f"{expected_digest}.bin"
+    cached_path.parent.mkdir()
+    cached_path.write_bytes(b"tampered cached evidence")
+    (tmp_path / "downloads.json").write_text(json.dumps([{
+        "document_key": backfill._document_key("a-1", metadata[0]["linkToFilingDetails"], "EX-4.1"),
+        "document_hash": expected_digest,
+        "raw_path": f"raw/{expected_digest}.bin",
+    }]), encoding="utf-8")
+
+    summary = backfill.download(
+        _Client([_Response({}, content=expected_raw)]),
+        tmp_path,
+        edgar_identity="Analyst analyst@example.test",
+    )
+
+    assert summary["downloaded"] == 1 and summary["reused"] == 0
+    assert cached_path.read_bytes() == expected_raw
+
+
 def test_download_retries_one_transient_document_failure_then_checkpoints_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -52,6 +52,10 @@ def test_registry_loader_is_idempotent_and_db_resolver_is_governed() -> None:
                 "observation-regs", source.source_evidence_id, "parser-v1", "page=3;block=2",
                 "Regulation S CUSIP", "987654321", "987654321", "validated",
             )
+            reg_s_isin_observation = DistributionParserObservation(
+                "observation-regs-isin", source.source_evidence_id, "parser-v1", "page=3;block=2",
+                "Regulation S ISIN", "XS1234567890", "XS1234567890", "validated",
+            )
             decision = DistributionPairDecision(
                 "decision-1", "snapshot-1", "approved", rule_144a_observation.parser_observation_id,
                 date(2024, 1, 1), pair_key="issue-pair-1",
@@ -59,6 +63,7 @@ def test_registry_loader_is_idempotent_and_db_resolver_is_governed() -> None:
             identifiers = (
                 DistributionPairIdentifier("id-144a", decision.decision_id, rule_144a_observation.parser_observation_id, "rule_144a", "cusip9", "123456789", "permanent", date(2024, 1, 1)),
                 DistributionPairIdentifier("id-regs", decision.decision_id, reg_s_observation.parser_observation_id, "reg_s", "cusip9", "987654321", "permanent", date(2024, 1, 1)),
+                DistributionPairIdentifier("id-regs-isin", decision.decision_id, reg_s_isin_observation.parser_observation_id, "reg_s", "isin", "XS1234567890", "permanent", date(2024, 1, 1)),
             )
             snapshot = DistributionMappingSnapshot(
                 "snapshot-1", "draft",
@@ -66,16 +71,16 @@ def test_registry_loader_is_idempotent_and_db_resolver_is_governed() -> None:
             )
             approval = DistributionSnapshotApproval(snapshot.snapshot_id, snapshot.content_hash)
             first_load = load_distribution_registry(
-                conn, source_evidence=(source,), parser_observations=(rule_144a_observation, reg_s_observation), snapshots=(snapshot,),
+                conn, source_evidence=(source,), parser_observations=(rule_144a_observation, reg_s_observation, reg_s_isin_observation), snapshots=(snapshot,),
                 decisions=(decision,), identifiers=identifiers, approvals=(approval,),
             )
             second_load = load_distribution_registry(
-                conn, source_evidence=(source,), parser_observations=(rule_144a_observation, reg_s_observation), snapshots=(snapshot,),
+                conn, source_evidence=(source,), parser_observations=(rule_144a_observation, reg_s_observation, reg_s_isin_observation), snapshots=(snapshot,),
                 decisions=(decision,), identifiers=identifiers, approvals=(approval,),
             )
             assert first_load == {
-                "source_evidence": 1, "parser_observations": 2, "snapshots": 1,
-                "decisions": 1, "identifiers": 2, "approvals": 1,
+                "source_evidence": 1, "parser_observations": 3, "snapshots": 1,
+                "decisions": 1, "identifiers": 3, "approvals": 1,
             }
             assert second_load == {
                 "source_evidence": 0, "parser_observations": 0, "snapshots": 0,
@@ -85,11 +90,13 @@ def test_registry_loader_is_idempotent_and_db_resolver_is_governed() -> None:
                 conn, snapshot_id=snapshot.snapshot_id, as_of=date(2024, 6, 1), reference_cusip9="123456789",
             )
             assert resolved.reg_s_cusip9 == "987654321"
+            assert resolved.reg_s_isin == "XS1234567890"
             bulk = resolve_reg_s_cusip_map_from_db(
                 conn, snapshot_id=snapshot.snapshot_id, as_of=date(2024, 6, 1),
                 reference_cusip9s=("123456789", "unmapped"),
             )
             assert bulk.resolutions["123456789"] == resolved
+            assert bulk.resolutions["123456789"].reg_s_isin == "XS1234567890"
             assert bulk.reason_by_reference == {"UNMAPPED": "no_validated_source"}
             forged_decision = DistributionPairDecision(
                 "decision-forged", "snapshot-forged", "approved",

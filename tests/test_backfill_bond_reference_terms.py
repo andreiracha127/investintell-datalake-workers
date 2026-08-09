@@ -152,6 +152,22 @@ def test_empty_200_is_counted_as_empty_failure_not_loaded() -> None:
     assert summary["reason_counts"] == {"empty_profile": 1}
 
 
+def test_provider_profile_error_is_retryable_and_does_not_advance_cursor() -> None:
+    conn = _Connection([("00033GAA3",)], cursor="000000000")
+
+    summary = backfill.run_batch(
+        conn,
+        _Client({"00033GAA3": _finnhub.FinnhubProfileError("provider_error")}),
+        batch_label="2026-08-08", limit=1,
+    )
+
+    assert summary["transient"] == 1
+    assert summary["empty"] == 0
+    assert summary["reason_counts"] == {"provider_error": 1}
+    assert summary["cursor_after"] == "000000000"
+    assert not any("UPDATE bond_reference_terms_finnhub_run" in sql for sql, _ in conn.queries)
+
+
 def test_unexpected_client_failure_is_typed_without_skipping_its_retry_cursor() -> None:
     """An unclassified client exception must be recorded yet remain retryable."""
     conn = _Connection([("00033GAA3",)])
