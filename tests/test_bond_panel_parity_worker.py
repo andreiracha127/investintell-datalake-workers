@@ -4,32 +4,213 @@ from __future__ import annotations
 import contextlib
 from datetime import date
 
+import numpy as np
 import pandas as pd
+import pytest
 
 from src.workers import bond_panel_parity as parity
 
 
-def _snapshot(month: pd.Timestamp, *, ytm: float = 0.05) -> pd.DataFrame:
+def _cusips(n: int, *, offset: int = 0) -> list[str]:
+    return [f"{offset + index:09d}" for index in range(n)]
+
+
+def _snapshot(
+    month: pd.Timestamp,
+    *,
+    n: int | None = None,
+    offset: int = 0,
+    ytm: float = 0.05,
+    mod_dur: float = 4.0,
+    eligibility_state: str = "included",
+    eligibility_reason: object = "eligible",
+) -> pd.DataFrame:
+    size = parity.MIN_MONTH_ROWS if n is None else n
+    cusips = _cusips(size, offset=offset)
     return pd.DataFrame({
-        "cusip_id": ["AAA"], "month": [month], "eligibility_state": ["included"],
-        "eligibility_reason": ["eligible"], "ytm": [ytm], "mod_dur": [4.0],
-        "maturity_years": [4.0], "bond_maturity": [4.0],
-        "spread_final": [0.01], "spread_final_bps": [100.0],
-        "spread_definition": ["ytm_minus_interpolated_dgs"],
-        "source_lineage": [{"daily_observations": "bond_observation_daily"}],
+        "cusip_id": cusips,
+        "month": month,
+        "issuer_id": [f"ISSUER-{cusip}" for cusip in cusips],
+        "eligibility_state": eligibility_state,
+        "eligibility_reason": eligibility_reason,
+        "ytm": ytm,
+        "mod_dur": mod_dur,
+        "maturity_years": 4.0,
+        "bond_maturity": 4.0,
+        "spread_final": 0.01,
+        "spread_final_bps": 100.0,
+        "spread_definition": parity.SPREAD_DEFINITION,
+        "source_lineage": [
+            {"daily_observations": "bond_observation_daily"}
+            for _ in cusips
+        ],
     })
 
 
-def _rv(month: pd.Timestamp, *, signal: float = 0.1) -> pd.DataFrame:
+def _rv(
+    month: pd.Timestamp,
+    *,
+    n: int | None = None,
+    offset: int = 0,
+    signal_shift: float = 0.0,
+) -> pd.DataFrame:
+    size = parity.MIN_MONTH_ROWS if n is None else n
+    raw = np.arange(size, dtype=float)
+    signal = (raw - raw.mean()) / raw.std(ddof=0)
     return pd.DataFrame({
-        "cusip_id": ["AAA"], "month": [month], "rv_signal": [signal],
-        "spread_definition": ["ytm_minus_interpolated_dgs"],
-        "source_lineage": [{"daily_observations": "bond_observation_daily"}],
+        "cusip_id": _cusips(size, offset=offset),
+        "month": month,
+        "spread_bps": 100.0,
+        "fitted_bps": 100.0 - signal,
+        "residual_bps": signal,
+        "rv_signal": signal + signal_shift,
+        "spread_definition": parity.SPREAD_DEFINITION,
+        "source_lineage": [
+            {"daily_observations": "bond_observation_daily"}
+            for _ in range(size)
+        ],
+    })
+
+
+def _fit_diagnostics(
+    month: pd.Timestamp,
+    *,
+    n: int | None = None,
+    skipped: bool = False,
+) -> pd.DataFrame:
+    size = parity.MIN_MONTH_ROWS if n is None else n
+    return pd.DataFrame({
+        "month": [month],
+        "n": [size],
+        "r2": [0.5],
+        "max_vif_continuous": [1.0],
+        "skipped": [skipped],
     })
 
 
 def _curve(month: pd.Timestamp, *, rate: float = 0.04) -> pd.DataFrame:
     return pd.DataFrame({"DGS3": [rate], "DGS5": [rate]}, index=[month])
+
+
+def test_reference_accounting_accepts_exact_snapshot_with_typed_exclusion() -> None:
+    month = pd.Timestamp("2025-01-01")
+    included = _snapshot(month, n=2)
+    excluded = _snapshot(
+        month,
+        n=1,
+        offset=2,
+        eligibility_state="excluded",
+        eligibility_reason="illiquid",
+    )
+    rebuilt = pd.concat([included, excluded], ignore_index=True)
+
+    result = parity._reference_accounting(
+        pd.Series([" 000000000 ", "000000001", "000000002"]),
+        rebuilt,
+    )
+
+    assert result["passed"] is True
+    assert result["reference_size"] == 3
+    assert result["included_size"] == 2
+    assert result["excluded_size"] == 1
+    assert result["exclusion_counts"] == {"illiquid": 1}
+
+
+@pytest.mark.parametrize(
+    ("keys", "gate"),
+    [
+        (pd.Series(["000000000", pd.NA]), "reference_keys_valid"),
+        (pd.Series(["000000000", "   "]), "reference_keys_valid"),
+        (pd.Series(["000000000", " 000000000 "]), "reference_keys_unique"),
+    ],
+)
+def test_reference_accounting_rejects_invalid_source(
+    keys: pd.Series,
+    gate: str,
+) -> None:
+    result = parity._reference_accounting(
+        keys,
+        _snapshot(pd.Timestamp("2025-01-01"), n=1),
+    )
+    assert result["passed"] is False
+    assert result["gates"][gate] is False
+
+
+def test_reference_accounting_reports_missing_and_unexpected_rebuilt_keys() -> None:
+    result = parity._reference_accounting(
+        pd.Series(["000000000", "000000001"]),
+        _snapshot(pd.Timestamp("2025-01-01"), n=1, offset=2),
+    )
+
+    assert result["gates"]["exact_reference_key_set"] is False
+    assert result["missing_reference_key_count"] == 2
+    assert result["unexpected_rebuilt_key_count"] == 1
+    assert result["missing_reference_keys"] == ["000000000", "000000001"]
+    assert result["unexpected_rebuilt_keys"] == ["000000002"]
+
+
+@pytest.mark.parametrize(
+    ("cusip_id", "gate"),
+    [
+        (["000000000", "000000000"], "rebuilt_keys_unique"),
+        (["000000000", pd.NA], "rebuilt_keys_valid"),
+        (["000000000", "   "], "rebuilt_keys_valid"),
+    ],
+)
+def test_reference_accounting_rejects_duplicate_or_invalid_rebuilt_keys(
+    cusip_id: list[object],
+    gate: str,
+) -> None:
+    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=2)
+    rebuilt["cusip_id"] = cusip_id
+
+    result = parity._reference_accounting(pd.Series(cusip_id), rebuilt)
+
+    assert result["passed"] is False
+    assert result["gates"][gate] is False
+
+
+def test_reference_accounting_rejects_unrecognized_eligibility_state() -> None:
+    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1, eligibility_state="pending")
+
+    result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
+
+    assert result["passed"] is False
+    assert result["gates"]["eligibility_states_recognized"] is False
+
+
+def test_reference_accounting_rejects_excluded_blank_reason() -> None:
+    rebuilt = _snapshot(
+        pd.Timestamp("2025-01-01"),
+        n=1,
+        eligibility_state="excluded",
+        eligibility_reason="   ",
+    )
+
+    result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
+
+    assert result["passed"] is False
+    assert result["gates"]["excluded_reasons_typed"] is False
+
+
+def test_reference_accounting_rejects_missing_issuer_id_column() -> None:
+    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1).drop(columns="issuer_id")
+
+    result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
+
+    assert result["passed"] is False
+    assert result["gates"]["included_identity_present"] is False
+
+
+@pytest.mark.parametrize("issuer_id", [pd.NA, "   "])
+def test_reference_accounting_rejects_invalid_included_issuer_identity(issuer_id: object) -> None:
+    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1)
+    rebuilt["issuer_id"] = issuer_id
+
+    result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
+
+    assert result["passed"] is False
+    assert result["gates"]["included_identity_present"] is False
 
 
 def test_compare_month_passes_exact_rebuild_and_records_all_gates() -> None:
@@ -82,10 +263,7 @@ def test_compare_month_checks_spread_against_interpolated_curve_not_only_bps() -
 
 def test_compare_month_refuses_materially_incomplete_rv_surface() -> None:
     month = pd.Timestamp("2025-01-01")
-    frozen_rv = pd.concat(
-        [_rv(month).assign(cusip_id="AAA" if index == 0 else f"CUSIP{index:03d}") for index in range(30)],
-        ignore_index=True,
-    )
+    frozen_rv = _rv(month, n=30)
 
     result = parity._compare_month(
         month, _snapshot(month), frozen_rv, _snapshot(month), _rv(month),
@@ -101,12 +279,10 @@ def test_compare_month_requires_99_percent_rv_key_overlap_at_equal_size() -> Non
     month = pd.Timestamp("2025-01-01")
     frozen_ids = [f"CUSIP{index:03d}" for index in range(100)]
     rebuilt_ids = [*frozen_ids[:98], "OTHER001", "OTHER002"]
-    frozen_rv = pd.concat(
-        [_rv(month).assign(cusip_id=cusip) for cusip in frozen_ids], ignore_index=True,
-    )
-    rebuilt_rv = pd.concat(
-        [_rv(month).assign(cusip_id=cusip) for cusip in rebuilt_ids], ignore_index=True,
-    )
+    frozen_rv = _rv(month, n=100)
+    frozen_rv["cusip_id"] = frozen_ids
+    rebuilt_rv = _rv(month, n=100)
+    rebuilt_rv["cusip_id"] = rebuilt_ids
 
     result = parity._compare_month(
         month, _snapshot(month), frozen_rv, _snapshot(month), rebuilt_rv,
@@ -137,17 +313,17 @@ def test_compare_month_measures_snapshot_gates_when_rebuilt_rv_is_empty() -> Non
 
 def test_compare_month_records_universe_sizes_when_overlap_is_zero() -> None:
     month = pd.Timestamp("2025-01-01")
-    rebuilt = _snapshot(month).assign(cusip_id="OTHER")
+    rebuilt = _snapshot(month, n=10).assign(cusip_id="OTHER")
 
     result = parity._compare_month(
-        month, _snapshot(month), _rv(month), rebuilt, pd.DataFrame(),
+        month, _snapshot(month, n=10), _rv(month, n=10), rebuilt, pd.DataFrame(),
         input_max_day=date(2025, 1, 31), fit_as_of=month,
         monthly_curve=_curve(month),
     )
 
     assert result["reason"] == "zero_overlap"
-    assert result["frozen_universe_size"] == 1
-    assert result["rebuilt_universe_size"] == 1
+    assert result["frozen_universe_size"] == 10
+    assert result["rebuilt_universe_size"] == 10
     assert result["matched_bonds"] == 0
     assert result["metrics_unavailable_reason"] == "zero_overlap"
 

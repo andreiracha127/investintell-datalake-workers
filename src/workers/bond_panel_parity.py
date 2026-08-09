@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from src.bonds.panel_config import config_hash
-from src.bonds.panel_resolvers import compute_spread, monthly_treasury_curve
+from src.bonds.panel_resolvers import MIN_MONTH_ROWS, compute_spread, monthly_treasury_curve
 from src.db import connect, resolve_dsn
 from src.workers import bond_panel
 
@@ -23,6 +23,7 @@ BASE_PUBLICATION_ID = "92740098-1571-559d-9fb3-119de8321754"
 BASE_INPUT_FINGERPRINT = "5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb"
 PARITY_MONTHS = (pd.Timestamp("2025-01-01"), pd.Timestamp("2026-06-01"))
 SPREAD_DEFINITION = "ytm_minus_interpolated_dgs"
+RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
 
 # Aliases make the runtime seams explicit and let focused tests exercise the
 # orchestration without replacing the Stage 6 module itself.
@@ -193,6 +194,83 @@ def _typed_exclusions(frame: pd.DataFrame) -> float:
     if excluded.empty:
         return 1.0
     return float(excluded["eligibility_reason"].map(lambda value: isinstance(value, str) and bool(value.strip())).mean())
+
+
+def _normalized_keys(values: pd.Series) -> pd.Series:
+    normalized = values.astype("string").str.strip().str.upper()
+    return normalized.mask(normalized.eq(""))
+
+
+def _reference_accounting(
+    reference_keys: pd.Series,
+    rebuilt_snapshot: pd.DataFrame,
+) -> dict[str, Any]:
+    reference = _normalized_keys(reference_keys)
+    rebuilt = (
+        _normalized_keys(rebuilt_snapshot["cusip_id"])
+        if "cusip_id" in rebuilt_snapshot
+        else pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string")
+    )
+    states = rebuilt_snapshot.get(
+        "eligibility_state",
+        pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string"),
+    ).astype("string")
+    reasons = rebuilt_snapshot.get(
+        "eligibility_reason",
+        pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string"),
+    ).astype("string").str.strip()
+    identities = rebuilt_snapshot.get(
+        "issuer_id",
+        pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string"),
+    ).astype("string").str.strip()
+
+    valid_reference = reference.dropna()
+    valid_rebuilt = rebuilt.dropna()
+    reference_set = set(valid_reference.tolist())
+    rebuilt_set = set(valid_rebuilt.tolist())
+    included = states.eq("included")
+    excluded = states.eq("excluded")
+    typed_exclusions = (~excluded) | (reasons.notna() & reasons.ne(""))
+    identified_included = (~included) | (identities.notna() & identities.ne(""))
+    gates = {
+        "reference_nonempty": bool(len(valid_reference)),
+        "reference_keys_valid": bool(reference.notna().all()),
+        "reference_keys_unique": bool(not valid_reference.duplicated().any()),
+        "rebuilt_keys_valid": bool(rebuilt.notna().all()),
+        "rebuilt_keys_unique": bool(not valid_rebuilt.duplicated().any()),
+        "exact_reference_key_set": reference_set == rebuilt_set,
+        "eligibility_states_recognized": bool(
+            states.notna().all()
+            and states.isin(RECOGNIZED_ELIGIBILITY_STATES).all()
+        ),
+        "excluded_reasons_typed": bool(typed_exclusions.all()),
+        "included_identity_present": bool(identified_included.all()),
+    }
+    exclusion_counts = {
+        str(reason): int(count)
+        for reason, count in reasons.loc[excluded & reasons.notna() & reasons.ne("")]
+        .value_counts()
+        .sort_index()
+        .items()
+    }
+    return {
+        "passed": bool(all(gates.values())),
+        "gates": gates,
+        "reference_source_rows": int(len(reference)),
+        "reference_size": int(len(reference_set)),
+        "rebuilt_size": int(len(rebuilt)),
+        "included_size": int(included.sum()),
+        "excluded_size": int(excluded.sum()),
+        "exclusion_counts": exclusion_counts,
+        "invalid_reference_key_rows": int(reference.isna().sum()),
+        "invalid_rebuilt_key_rows": int(rebuilt.isna().sum()),
+        "duplicate_reference_key_rows": int(valid_reference.duplicated(keep=False).sum()),
+        "duplicate_rebuilt_key_rows": int(valid_rebuilt.duplicated(keep=False).sum()),
+        "missing_reference_key_count": int(len(reference_set - rebuilt_set)),
+        "unexpected_rebuilt_key_count": int(len(rebuilt_set - reference_set)),
+        "missing_reference_keys": sorted(reference_set - rebuilt_set)[:50],
+        "unexpected_rebuilt_keys": sorted(rebuilt_set - reference_set)[:50],
+    }
 
 
 def _quantile_gate(
