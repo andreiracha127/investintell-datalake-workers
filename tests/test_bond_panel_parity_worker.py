@@ -88,6 +88,190 @@ def _fit_diagnostics(
     })
 
 
+def test_rv_structure_accepts_finite_standardized_fit() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month),
+        _snapshot(month),
+        _fit_diagnostics(month),
+        month,
+    )
+
+    assert result["passed"] is True
+    assert result["fit_row_count"] == parity.MIN_MONTH_ROWS
+    assert abs(result["rv_mean"]) <= parity.RV_MEAN_TOLERANCE
+    assert abs(result["rv_population_std"] - 1) <= parity.RV_STD_TOLERANCE
+
+
+def test_rv_structure_rejects_empty_output() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month).iloc[0:0], _snapshot(month), _fit_diagnostics(month, n=0), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rebuilt_rv_nonempty"] is False
+
+
+def test_rv_structure_rejects_absent_required_column() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month).drop(columns="rv_signal"),
+        _snapshot(month),
+        _fit_diagnostics(month),
+        month,
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["required_columns_present"] is False
+
+
+@pytest.mark.parametrize("column", ["rv_signal", "residual_bps"])
+def test_rv_structure_rejects_nonfinite_values(column: str) -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv.loc[0, column] = np.inf
+
+    result = parity._rv_structure(
+        rebuilt_rv, _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_values_finite"] is False
+
+
+@pytest.mark.parametrize("key", [None, "   "])
+def test_rv_structure_rejects_null_or_blank_key(key: object) -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv.loc[0, "cusip_id"] = key
+
+    result = parity._rv_structure(
+        rebuilt_rv, _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_keys_valid"] is False
+
+
+def test_rv_structure_rejects_duplicate_key() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv.loc[1, "cusip_id"] = rebuilt_rv.loc[0, "cusip_id"]
+
+    result = parity._rv_structure(
+        rebuilt_rv, _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_keys_unique"] is False
+
+
+def test_rv_structure_rejects_key_outside_rebuilt_included_cohort() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month, offset=1), _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_keys_subset_of_included"] is False
+
+
+@pytest.mark.parametrize("value", [pd.Timestamp("2025-02-01"), pd.NaT])
+def test_rv_structure_rejects_wrong_or_null_rv_month(value: pd.Timestamp) -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv.loc[0, "month"] = value
+
+    result = parity._rv_structure(
+        rebuilt_rv, _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_month_exact"] is False
+
+
+@pytest.mark.parametrize("diagnostics", [
+    pd.DataFrame(),
+    pd.concat([
+        _fit_diagnostics(pd.Timestamp("2025-01-01")),
+        _fit_diagnostics(pd.Timestamp("2025-01-01")),
+    ], ignore_index=True),
+    _fit_diagnostics(pd.Timestamp("2025-02-01")),
+])
+def test_rv_structure_rejects_absent_multiple_or_wrong_month_diagnostics(
+    diagnostics: pd.DataFrame,
+) -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(_rv(month), _snapshot(month), diagnostics, month)
+
+    assert result["passed"] is False
+    assert result["gates"]["fit_diagnostics_valid"] is False
+
+
+def test_rv_structure_rejects_skipped_fit() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month), _snapshot(month), _fit_diagnostics(month, skipped=True), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["fit_diagnostics_valid"] is False
+
+
+@pytest.mark.parametrize("n", [None, 300.5])
+def test_rv_structure_rejects_missing_or_nonintegral_fit_count(n: float | None) -> None:
+    month = pd.Timestamp("2025-01-01")
+    diagnostics = _fit_diagnostics(month)
+    diagnostics["n"] = pd.Series([n], dtype="object")
+
+    result = parity._rv_structure(_rv(month), _snapshot(month), diagnostics, month)
+
+    assert result["passed"] is False
+    assert result["gates"]["fit_diagnostics_valid"] is False
+
+
+def test_rv_structure_rejects_fit_count_mismatch() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month), _snapshot(month), _fit_diagnostics(month, n=299), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["row_count_matches_fit"] is False
+
+
+def test_rv_structure_rejects_off_center_signal() -> None:
+    month = pd.Timestamp("2025-01-01")
+
+    result = parity._rv_structure(
+        _rv(month, signal_shift=0.01), _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_mean_centered"] is False
+
+
+def test_rv_structure_rejects_nonunit_population_standard_deviation() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv["rv_signal"] *= 2
+
+    result = parity._rv_structure(
+        rebuilt_rv, _snapshot(month), _fit_diagnostics(month), month
+    )
+
+    assert result["passed"] is False
+    assert result["gates"]["rv_population_std_unit"] is False
+
+
 def _curve(month: pd.Timestamp, *, rate: float = 0.04) -> pd.DataFrame:
     return pd.DataFrame({"DGS3": [rate], "DGS5": [rate]}, index=[month])
 

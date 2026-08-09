@@ -24,6 +24,8 @@ BASE_INPUT_FINGERPRINT = "5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e75
 PARITY_MONTHS = (pd.Timestamp("2025-01-01"), pd.Timestamp("2026-06-01"))
 SPREAD_DEFINITION = "ytm_minus_interpolated_dgs"
 RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
+RV_MEAN_TOLERANCE = 1e-10
+RV_STD_TOLERANCE = 1e-10
 
 # Aliases make the runtime seams explicit and let focused tests exercise the
 # orchestration without replacing the Stage 6 module itself.
@@ -219,6 +221,92 @@ def _typed_exclusions(frame: pd.DataFrame) -> float:
 def _normalized_keys(values: pd.Series) -> pd.Series:
     normalized = values.astype("string").str.strip().str.upper()
     return normalized.mask(normalized.eq(""))
+
+
+def _rv_structure(
+    rebuilt_rv: pd.DataFrame,
+    rebuilt_included: pd.DataFrame,
+    fit_diagnostics: pd.DataFrame,
+    month: pd.Timestamp,
+) -> dict[str, Any]:
+    required = {"cusip_id", "month", "rv_signal", "residual_bps"}
+    required_present = required.issubset(rebuilt_rv.columns)
+    rv_keys = (
+        _normalized_keys(rebuilt_rv["cusip_id"])
+        if "cusip_id" in rebuilt_rv
+        else pd.Series(pd.NA, index=rebuilt_rv.index, dtype="string")
+    )
+    included_keys = set(
+        _normalized_keys(rebuilt_included["cusip_id"]).dropna().tolist()
+    )
+    diagnostic_rows = (
+        fit_diagnostics.loc[pd.to_datetime(fit_diagnostics["month"]).eq(month)]
+        if "month" in fit_diagnostics
+        else fit_diagnostics.iloc[0:0]
+    )
+    raw_fit_count = (
+        pd.to_numeric(
+            pd.Series([diagnostic_rows.iloc[0]["n"]]),
+            errors="coerce",
+        ).iloc[0]
+        if len(diagnostic_rows) == 1 and "n" in diagnostic_rows
+        else np.nan
+    )
+    fit_count_valid = bool(
+        pd.notna(raw_fit_count)
+        and np.isfinite(float(raw_fit_count))
+        and float(raw_fit_count).is_integer()
+        and float(raw_fit_count) >= 0
+    )
+    skipped_value = (
+        diagnostic_rows.iloc[0]["skipped"]
+        if len(diagnostic_rows) == 1 and "skipped" in diagnostic_rows
+        else None
+    )
+    diagnostic_valid = (
+        len(diagnostic_rows) == 1
+        and fit_count_valid
+        and isinstance(skipped_value, (bool, np.bool_))
+        and not bool(skipped_value)
+    )
+    fit_count = int(raw_fit_count) if diagnostic_valid else None
+    numeric = (
+        rebuilt_rv[["rv_signal", "residual_bps"]].apply(pd.to_numeric, errors="coerce")
+        if required_present
+        else pd.DataFrame()
+    )
+    finite = bool(
+        required_present
+        and len(numeric) == len(rebuilt_rv)
+        and np.isfinite(numeric.to_numpy(dtype=float)).all()
+    )
+    rv_mean = float(numeric["rv_signal"].mean()) if finite and len(numeric) else None
+    rv_std = float(numeric["rv_signal"].std(ddof=0)) if finite and len(numeric) else None
+    gates = {
+        "rebuilt_rv_nonempty": bool(len(rebuilt_rv)),
+        "required_columns_present": required_present,
+        "rv_keys_valid": bool(rv_keys.notna().all()),
+        "rv_keys_unique": bool(not rv_keys.dropna().duplicated().any()),
+        "rv_keys_subset_of_included": set(rv_keys.dropna()).issubset(included_keys),
+        "rv_month_exact": bool(
+            required_present
+            and pd.to_datetime(rebuilt_rv["month"], errors="coerce").eq(month).all()
+        ),
+        "fit_diagnostics_valid": diagnostic_valid,
+        "row_count_matches_fit": fit_count == len(rebuilt_rv),
+        "rv_values_finite": finite,
+        "rv_mean_centered": rv_mean is not None and abs(rv_mean) <= RV_MEAN_TOLERANCE,
+        "rv_population_std_unit": rv_std is not None and abs(rv_std - 1) <= RV_STD_TOLERANCE,
+    }
+    return {
+        "passed": bool(all(gates.values())),
+        "gates": gates,
+        "row_count": int(len(rebuilt_rv)),
+        "fit_row_count": fit_count,
+        "included_row_count": int(len(rebuilt_included)),
+        "rv_mean": rv_mean,
+        "rv_population_std": rv_std,
+    }
 
 
 def _reference_accounting(
