@@ -340,7 +340,65 @@ def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
     }
 
 
-def test_run_uses_exact_month_clock_and_issues_no_writes(monkeypatch) -> None:
+def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
+    month = pd.Timestamp("2025-01-01")
+    as_of = date(2025, 1, 31)
+    reference_frame = pd.DataFrame({"cusip9": _cusips(parity.MIN_MONTH_ROWS)})
+    construction_frames: list[pd.DataFrame] = []
+
+    monkeypatch.setattr(parity.bond_panel, "_load_inputs", lambda *_args: ({
+        "daily_observations": pd.DataFrame({"day": [as_of]}),
+        "monthly_curve": pd.DataFrame({
+            "day": [as_of, as_of], "tenor": ["3y", "5y"], "yield_pct": [4.0, 4.0],
+        }),
+        "resolved_issuer_sector": reference_frame,
+    }, {"source": "verified"}))
+
+    def build_panel(**inputs):
+        construction_frames.append(inputs["resolved_issuer_sector"])
+        return _snapshot(month).assign(
+            coupon_pct=5.0,
+            maturity_date=pd.Timestamp("2030-01-01"),
+            amt_outstanding_k=100.0,
+            reason_code="quoted",
+            rating_bucket="A",
+            rating_as_of_month=month,
+            rating_state="static_current",
+            rating_reason="static_rating_current",
+            rating_staleness_months=0,
+        )
+
+    monkeypatch.setattr(parity, "build_db_monthly_panel", build_panel)
+    monkeypatch.setattr(
+        parity,
+        "build_snapshots",
+        lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)),
+    )
+    monkeypatch.setattr(
+        parity,
+        "fit_all_months",
+        lambda frame, *, as_of: (_rv(as_of), _fit_diagnostics(as_of, n=len(frame))),
+    )
+
+    (
+        _rebuilt_snapshot,
+        rebuilt_rv,
+        _max_day,
+        _fit_as_of,
+        _monthly_curve,
+        _input_exclusions,
+        reference_keys,
+        fit_diagnostics,
+    ) = parity._rebuild_month(object(), month)
+
+    assert len(construction_frames) == 1
+    assert construction_frames[0] is reference_frame
+    pd.testing.assert_series_equal(reference_keys, reference_frame["cusip9"])
+    assert rebuilt_rv["residual_bps"].equals(_rv(month)["residual_bps"])
+    assert fit_diagnostics.loc[0, "n"] == len(rebuilt_rv)
+
+
+def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     calls: list[tuple[pd.Timestamp, pd.Timestamp, date]] = []
     fit_calls: list[pd.Timestamp] = []
     sql: list[str] = []
@@ -372,6 +430,7 @@ def test_run_uses_exact_month_clock_and_issues_no_writes(monkeypatch) -> None:
             "cusip9": ["AAA"],
             "rating_as_of_month": [pd.Timestamp("2026-07-01")],
         }),
+        "resolved_issuer_sector": pd.DataFrame({"cusip9": _cusips(parity.MIN_MONTH_ROWS)}),
     }, {"x": "x"}))
     monkeypatch.setattr(parity, "build_db_monthly_panel", lambda **_kwargs: _snapshot(_kwargs["months"][0]).assign(coupon_pct=5.0, maturity_date=pd.Timestamp("2030-01-01"), reason_code="quoted", rating_bucket="A", rating_as_of_month=pd.Timestamp("2025-01-01"), rating_state="static_current", rating_reason="static_rating_current", rating_staleness_months=0))
     monkeypatch.setattr(parity, "build_snapshots", lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)))

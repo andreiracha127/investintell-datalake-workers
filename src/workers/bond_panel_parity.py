@@ -134,6 +134,8 @@ def _rebuild_month(
     pd.Timestamp,
     pd.DataFrame,
     dict[str, int],
+    pd.Series,
+    pd.DataFrame,
 ]:
     """Use precisely the Stage 6 input loader and resolver seams for one month."""
     as_of = _month_end(month)
@@ -141,6 +143,14 @@ def _rebuild_month(
     # daily loader would admit its historical monthly-liquidity row even though
     # Stage 6 later fits only t; pin both loader month arguments to t instead.
     inputs, lineage = bond_panel._load_inputs(conn, month, month, as_of)
+    reference_frame = inputs["resolved_issuer_sector"].copy()
+    reference_column = next(
+        (name for name in ("cusip9", "cusip_id") if name in reference_frame),
+        None,
+    )
+    if reference_column is None:
+        raise ValueError("reference_cusip_column_missing")
+    reference_keys = reference_frame[reference_column].copy()
     inputs, input_exclusions = _filter_future_static_ratings(inputs, as_of)
     if not lineage or any(not value for value in lineage.values()):
         raise ValueError("input_lineage_missing")
@@ -169,18 +179,28 @@ def _rebuild_month(
     snapshot["month"] = pd.to_datetime(snapshot["month"])
     rebuilt_snapshot = snapshot[snapshot["month"].eq(month)].reset_index(drop=True)
     included = snapshots[snapshots["month"].eq(month)]
-    signals, _diagnostics = fit_all_months(included, as_of=month)
+    signals, fit_diagnostics = fit_all_months(included, as_of=month)
     if not signals.empty:
         signals = signals.merge(
             included,
             on=["cusip_id", "month"],
-            how="left",
+            how="inner",
+            validate="one_to_one",
             suffixes=("", "_snapshot"),
         )
     rebuilt_rv = signals[signals["month"].eq(month)].reset_index(drop=True) if not signals.empty else signals
     if not rebuilt_rv.empty:
         rebuilt_rv["month"] = pd.to_datetime(rebuilt_rv["month"])
-    return rebuilt_snapshot, rebuilt_rv, max_day, month, normalized_curve, input_exclusions
+    return (
+        rebuilt_snapshot,
+        rebuilt_rv,
+        max_day,
+        month,
+        normalized_curve,
+        input_exclusions,
+        reference_keys,
+        fit_diagnostics,
+    )
 
 
 def _valid_lineage(frame: pd.DataFrame) -> bool:
@@ -488,6 +508,8 @@ def run(dsn: str | None = None) -> dict[str, object]:
                     fit_as_of,
                     monthly_curve,
                     input_exclusions,
+                    _reference_keys,
+                    _fit_diagnostics,
                 ) = _rebuild_month(conn, month)
             except (KeyError, TypeError, ValueError) as exc:
                 results.append({"month": month.date().isoformat(), "state": "parity_failed", "reason": f"rebuild_error:{exc}", "aborted": True, "failed_gates": ["rebuild"]})
