@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 from datetime import date
+from decimal import Decimal
 
 import pandas as pd
 
@@ -53,6 +54,69 @@ def test_db_loader_uses_curated_candidates_and_pins_the_static_rating_sha(monkey
     assert "FROM bond_price_latest_v1" in issuer_sql
     assert "db_type_reason" in issuer_sql
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
+
+
+def test_parent_return_anchor_normalizes_postgres_month_for_returns(monkeypatch) -> None:
+    closed = pd.Timestamp("2026-07-01")
+    postgres_anchor = pd.DataFrame(
+        {
+            "cusip_id": ["AAA"],
+            "month": [date(2026, 6, 1)],
+            "pr": [100.0],
+            "ytm": [0.05],
+            "bond_maturity": [5.0],
+            "rating_bucket": ["BBB"],
+            "eligibility_state": ["included"],
+        }
+    )
+    monkeypatch.setattr(bond_panel, "_frame", lambda *_args, **_kwargs: postgres_anchor.copy())
+
+    anchor = bond_panel._parent_return_anchor(object(), closed)
+    current = pd.DataFrame(
+        {
+            "cusip_id": ["AAA"],
+            "month": [closed],
+            "pr": [101.0],
+            "ytm": [0.05],
+            "bond_maturity": [5.0],
+        }
+    )
+
+    returns = bond_panel.monthly_returns(pd.concat([anchor, current], ignore_index=True))
+
+    assert anchor.loc[0, "month"] == pd.Timestamp("2026-06-01")
+    assert returns["month"].tolist() == [closed]
+
+
+def test_parent_return_anchor_normalizes_postgres_numerics_for_returns(monkeypatch) -> None:
+    closed = pd.Timestamp("2026-07-01")
+    postgres_anchor = pd.DataFrame(
+        {
+            "cusip_id": ["AAA"],
+            "month": [date(2026, 6, 1)],
+            "pr": [Decimal("100.0")],
+            "ytm": [Decimal("0.05")],
+            "bond_maturity": [Decimal("5.0")],
+            "rating_bucket": ["BBB"],
+            "eligibility_state": ["included"],
+        }
+    )
+    monkeypatch.setattr(bond_panel, "_frame", lambda *_args, **_kwargs: postgres_anchor.copy())
+
+    anchor = bond_panel._parent_return_anchor(object(), closed)
+    current = pd.DataFrame(
+        {
+            "cusip_id": ["AAA"],
+            "month": [closed],
+            "pr": [101.0],
+            "ytm": [0.05],
+            "bond_maturity": [5.0],
+        }
+    )
+
+    returns = bond_panel.monthly_returns(pd.concat([anchor, current], ignore_index=True))
+
+    assert returns["month"].tolist() == [closed]
 
 
 def test_panel_publishes_only_closed_month_signals_and_returns(monkeypatch) -> None:

@@ -120,13 +120,17 @@ def _current_parent(conn: Any) -> dict[str, Any] | None:
 
 def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame:
     """The parent supplies only the predecessor needed to realize closed returns."""
-    return _frame(
+    anchor = _frame(
         conn,
         "SELECT cusip_id, month, price AS pr, ytm, maturity_years AS bond_maturity, rating_bucket, eligibility_state "
         "FROM bond_panel_current_snapshot_v1 "
         "WHERE eligibility_state = 'included' AND month = (SELECT max(month) FROM bond_panel_current_snapshot_v1 WHERE month < %s)",
         (closed_month.date(),),
     )
+    anchor["month"] = pd.to_datetime(anchor["month"])
+    for column in ("pr", "ytm", "bond_maturity"):
+        anchor[column] = pd.to_numeric(anchor[column], errors="coerce")
+    return anchor
 
 
 def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp, as_of: date) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
