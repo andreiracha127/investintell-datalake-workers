@@ -243,7 +243,8 @@ def _load_inputs(
         "resolved_issuer_sector": _frame(
             conn,
             mapping_cte
-            + ", panel_months(month, price_as_of) AS (VALUES (%s::date, %s::date), (%s::date, %s::date)), "
+            + ", panel_months(month, price_as_of) AS (SELECT DISTINCT month, price_as_of FROM "
+            "(VALUES (%s::date, %s::date), (%s::date, %s::date)) AS requested(month, price_as_of)), "
             "aliases AS (SELECT pm.month, upper(btrim(a.alias_value)) AS cusip9, a.security_id "
             "FROM panel_months pm JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
             "AND a.valid_from <= pm.price_as_of AND (a.valid_to IS NULL OR a.valid_to > pm.price_as_of)), "
@@ -516,6 +517,20 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 elapsed=time.monotonic() - started,
                 input_reasons=distribution_reasons,
             )
+        if (
+            parent.get("last_closed_month") == closed_month.date()
+            and parent.get("open_month") == open_month.date()
+        ):
+            return {
+                "state": "current",
+                "aborted": False,
+                "reason": "panel_month_already_current",
+                "publication_id": str(parent["publication_id"]),
+                "config_hash": PANEL_CONFIG_HASH,
+                "closed_month": closed_month.date().isoformat(),
+                "open_month": open_month.date().isoformat(),
+                "distribution_mapping_snapshot_id": mapping_snapshot_id,
+            }
         try:
             inputs, lineage = _load_inputs(
                 conn,

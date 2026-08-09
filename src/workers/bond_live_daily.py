@@ -1095,7 +1095,7 @@ def run(
         # Stage 6 is successful only when its own immutable pointer protocol
         # says it published.  Every empty/degraded/refused shape remains typed
         # in ``panel`` and cannot be laundered into an otherwise green day.
-        (panel_state != "published" or bool(panel.get("aborted")), panel_reason),
+        (panel_state not in {"published", "current"} or bool(panel.get("aborted")), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),

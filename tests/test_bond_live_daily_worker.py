@@ -959,6 +959,17 @@ def test_panel_failures_are_end_only_verdict_reasons(monkeypatch, panel_state) -
     assert f"panel_{panel_state}" in out["halted_by"]
 
 
+def test_panel_already_current_is_a_healthy_daily_outcome(monkeypatch) -> None:
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": "current", "aborted": False, "reason": "panel_month_already_current"},
+    )
+
+    assert out["aborted"] is False
+    assert out["state"] == "ok"
+    assert out["panel"]["state"] == "current"
+
+
 @pytest.mark.parametrize(
     "kwargs, state",
     [

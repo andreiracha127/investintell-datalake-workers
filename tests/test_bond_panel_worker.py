@@ -132,6 +132,7 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert "ILIKE '%%corporate%%'" not in issuer_sql
     assert "bond_price_fund_asof_v1(pm.price_as_of)" in issuer_sql
     assert "panel_months(month, price_as_of)" in issuer_sql
+    assert "panel_months(month, price_as_of) AS (SELECT DISTINCT" in issuer_sql
     assert "a.valid_from <= pm.price_as_of" in issuer_sql
     assert "FROM bond_price_latest_v1" not in issuer_sql
     assert "db_type_reason" in issuer_sql
@@ -217,6 +218,43 @@ def test_panel_refuses_legacy_144a_parent_before_loading_inputs(monkeypatch) -> 
 
     assert outcome["state"] == "gate_failed"
     assert outcome["input_relation_reasons"] == ["parent_distribution_rule_not_reg_s"]
+
+
+def test_panel_same_month_rerun_is_current_without_reloading_inputs(monkeypatch) -> None:
+    parent = {
+        "publication_id": "current-reg-s",
+        "parent_publication_id": "base-reg-s",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 7, 1),
+        "open_month": date(2026, 8, 1),
+        "snapshot_max_month": date(2026, 8, 1),
+        "returns_max_month": date(2026, 7, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    monkeypatch.setattr(
+        bond_panel,
+        "_load_inputs",
+        lambda *_args, **_kwargs: pytest.fail("same-month rerun must not reload inputs"),
+    )
+    monkeypatch.setenv("CODE_REVISION", "revision-123")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 9))
+
+    assert outcome == {
+        "state": "current",
+        "aborted": False,
+        "reason": "panel_month_already_current",
+        "publication_id": "current-reg-s",
+        "config_hash": bond_panel.PANEL_CONFIG_HASH,
+        "closed_month": "2026-07-01",
+        "open_month": "2026-08-01",
+        "distribution_mapping_snapshot_id": REG_S_SNAPSHOT_ID,
+    }
 
 
 def test_panel_classifies_registry_resolution_failures_as_mapping_gates(monkeypatch) -> None:
