@@ -716,6 +716,55 @@ def _compare_month(
     }
 
 
+def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate monthly parity states without changing their contracts."""
+    failed = [
+        result for result in month_results
+        if result.get("state") == "parity_failed"
+    ]
+    comparable_passed = [
+        result for result in month_results
+        if result.get("state") == "parity_passed" and result.get("comparable") is True
+    ]
+    noncomparable = [
+        result for result in month_results
+        if result.get("state") == "parity_not_comparable"
+    ]
+    failure_reasons: dict[str, int] = {}
+    for result in failed:
+        reason = result.get("reason")
+        key = reason if isinstance(reason, str) and reason else "unspecified_monthly_failure"
+        failure_reasons[key] = failure_reasons.get(key, 0) + 1
+
+    gates = {
+        "all_months_nonblocking": not failed,
+        "at_least_one_comparable_month": bool(comparable_passed),
+        "all_comparable_months_passed": all(
+            result.get("state") == "parity_passed"
+            for result in month_results
+            if result.get("comparable") is True
+        ),
+    }
+    if failed:
+        state, reason, aborted = "parity_failed", "monthly_parity_failure", True
+    elif not comparable_passed:
+        state, reason, aborted = "parity_failed", "no_comparable_month", True
+    else:
+        state, reason, aborted = "parity_passed", None, False
+    return {
+        "state": state,
+        "reason": reason,
+        "aborted": aborted,
+        "counts": {
+            "failed_months": len(failed),
+            "comparable_passed_months": len(comparable_passed),
+            "noncomparable_months": len(noncomparable),
+        },
+        "gates": gates,
+        "failure_reasons": failure_reasons,
+    }
+
+
 def run(dsn: str | None = None) -> dict[str, object]:
     """Run the two-month, DB-only parity gate without modifying any relation."""
     if config_hash() != PANEL_CONFIG_HASH:
@@ -748,8 +797,7 @@ def run(dsn: str | None = None) -> dict[str, object]:
                     _fit_diagnostics,
                 ) = _rebuild_month(conn, month)
             except (KeyError, TypeError, ValueError) as exc:
-                results.append({"month": month.date().isoformat(), "state": "parity_failed", "reason": f"rebuild_error:{exc}", "aborted": True, "failed_gates": ["rebuild"]})
-                continue
+                return _failure(f"rebuild_error:{exc}", results)
             results.append(_compare_month(
                 month,
                 frozen_snapshot,
@@ -763,7 +811,5 @@ def run(dsn: str | None = None) -> dict[str, object]:
                 fit_diagnostics=_fit_diagnostics,
                 input_exclusions=input_exclusions,
             ))
-    failed = [result for result in results if result["state"] != "parity_passed"]
-    if failed:
-        return _failure(str(failed[0]["reason"]), results)
-    return {"state": "parity_passed", "reason": None, "aborted": False, "months": results}
+    overall = _overall_verdict(results)
+    return {**overall, "months": results}

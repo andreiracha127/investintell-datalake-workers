@@ -691,6 +691,124 @@ def test_compare_month_rebuilt_rv_structure_failure_blocks_comparable_month(
     assert gate in result["failed_gates"]
 
 
+def test_overall_passes_one_noncomparable_and_one_comparable() -> None:
+    result = parity._overall_verdict([
+        {"state": "parity_not_comparable", "comparable": False},
+        {"state": "parity_passed", "comparable": True},
+    ])
+
+    assert result["state"] == "parity_passed"
+    assert result["aborted"] is False
+    assert result["reason"] is None
+    assert result["counts"] == {
+        "failed_months": 0,
+        "comparable_passed_months": 1,
+        "noncomparable_months": 1,
+    }
+    assert result["gates"] == {
+        "all_months_nonblocking": True,
+        "at_least_one_comparable_month": True,
+        "all_comparable_months_passed": True,
+    }
+    assert result["failure_reasons"] == {}
+
+
+def test_overall_fails_without_comparable_month() -> None:
+    result = parity._overall_verdict([
+        {"state": "parity_not_comparable", "comparable": False},
+        {"state": "parity_not_comparable", "comparable": False},
+    ])
+
+    assert result["state"] == "parity_failed"
+    assert result["reason"] == "no_comparable_month"
+    assert result["aborted"] is True
+    assert result["counts"] == {
+        "failed_months": 0,
+        "comparable_passed_months": 0,
+        "noncomparable_months": 2,
+    }
+    assert result["gates"] == {
+        "all_months_nonblocking": True,
+        "at_least_one_comparable_month": False,
+        "all_comparable_months_passed": True,
+    }
+    assert result["failure_reasons"] == {}
+
+
+def test_overall_monthly_failure_blocks_a_comparable_pass() -> None:
+    result = parity._overall_verdict([
+        {"state": "parity_passed", "comparable": True},
+        {
+            "state": "parity_failed",
+            "comparable": False,
+            "reason": "gate_failed",
+        },
+    ])
+
+    assert result["state"] == "parity_failed"
+    assert result["reason"] == "monthly_parity_failure"
+    assert result["aborted"] is True
+    assert result["counts"] == {
+        "failed_months": 1,
+        "comparable_passed_months": 1,
+        "noncomparable_months": 0,
+    }
+    assert result["gates"] == {
+        "all_months_nonblocking": False,
+        "at_least_one_comparable_month": True,
+        "all_comparable_months_passed": True,
+    }
+    assert result["failure_reasons"] == {"gate_failed": 1}
+
+
+def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -> None:
+    reference_keys = pd.Series(_cusips(parity.MIN_MONTH_ROWS))
+    fit_diagnostics = _fit_diagnostics(parity.PARITY_MONTHS[0])
+    comparisons = iter([
+        {"state": "parity_not_comparable", "comparable": False},
+        {"state": "parity_passed", "comparable": True},
+    ])
+
+    class Connection:
+        def execute(self, _statement, _params=()):
+            return type("Result", (), {"fetchone": lambda self: (
+                parity.BASE_PUBLICATION_ID,
+                parity.PANEL_CONFIG_HASH,
+                parity.BASE_INPUT_FINGERPRINT,
+                "validated",
+            )})()
+
+    monkeypatch.setattr(parity, "connect", lambda _dsn: contextlib.nullcontext(Connection()))
+    monkeypatch.setattr(parity, "resolve_dsn", lambda dsn: dsn)
+    monkeypatch.setattr(parity, "_frozen_snapshot", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(parity, "_frozen_rv", lambda *_args: pd.DataFrame())
+    monkeypatch.setattr(
+        parity,
+        "_rebuild_month",
+        lambda _conn, month: (
+            pd.DataFrame(), pd.DataFrame(), None, month, pd.DataFrame(), {},
+            reference_keys, fit_diagnostics,
+        ),
+    )
+
+    def compare_month(*_args, reference_keys, fit_diagnostics, **_kwargs):
+        pd.testing.assert_series_equal(reference_keys, pd.Series(_cusips(parity.MIN_MONTH_ROWS)))
+        assert fit_diagnostics is not None
+        return next(comparisons)
+
+    monkeypatch.setattr(parity, "_compare_month", compare_month)
+
+    outcome = parity.run("postgresql://example")
+
+    assert outcome["state"] == "parity_passed"
+    assert outcome["aborted"] is False
+    assert outcome["counts"] == {
+        "failed_months": 0,
+        "comparable_passed_months": 1,
+        "noncomparable_months": 1,
+    }
+
+
 def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: "wrong")
     monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))
@@ -805,6 +923,12 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     outcome = parity.run("postgresql://example")
 
     assert outcome["state"] == "parity_passed", outcome
+    assert outcome["aborted"] is False
+    assert outcome["counts"] == {
+        "failed_months": 0,
+        "comparable_passed_months": 2,
+        "noncomparable_months": 0,
+    }
     assert calls == [
         (pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-01"), date(2025, 1, 31)),
         (pd.Timestamp("2026-06-01"), pd.Timestamp("2026-06-01"), date(2026, 6, 30)),
@@ -818,6 +942,15 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     assert all("bond_panel_current_" not in statement for statement in sql)
     assert any("FROM bond_panel_snapshot WHERE publication_id" in statement for statement in sql)
     assert any("FROM bond_panel_rv_signal WHERE publication_id" in statement for statement in sql)
+    assert (
+        "SELECT cusip_id, month, eligibility_state, eligibility_reason, ytm, mod_dur, "
+        "maturity_years, spread_final, spread_final_bps, spread_definition, source_lineage "
+        "FROM bond_panel_snapshot WHERE publication_id = %s AND month = %s"
+    ) in sql
+    assert (
+        "SELECT cusip_id, month, rv_signal, spread_definition, source_lineage "
+        "FROM bond_panel_rv_signal WHERE publication_id = %s AND month = %s"
+    ) in sql
     assert all(not statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "ALTER", "CREATE")) for statement in sql)
 
 
