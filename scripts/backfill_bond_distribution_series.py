@@ -128,6 +128,74 @@ def _download_retryable(error: BaseException) -> bool:
     return not isinstance(status, int) or status in {408, 429} or status >= 500
 
 
+def _permanent_download_error(error: BaseException) -> bool:
+    """Only an absent/gone document is durable negative evidence."""
+    status = getattr(error, "code", None)
+    return status in {404, 410}
+
+
+def _terminal_unavailable_entry(
+    document: dict[str, Any], *, accession: str, document_key: str, document_type: str | None,
+    url: str, reason: str,
+) -> dict[str, Any]:
+    """Keep immutable metadata for a permanently unavailable document, never fake raw evidence."""
+    return {
+        "accession": accession,
+        "availability": {"reason": reason, "state": "permanently_unavailable"},
+        "description": document.get("description"), "document_key": document_key,
+        "document_type": document_type, "filed_at": document.get("filed_at") or document.get("filedAt"),
+        "filing_url": url, "parent_form": document.get("parent_form") or document.get("formType"),
+    }
+
+
+def _is_terminal_unavailable(entry: dict[str, Any]) -> bool:
+    availability = entry.get("availability")
+    return (
+        isinstance(availability, dict)
+        and availability.get("state") == "permanently_unavailable"
+        and availability.get("reason") in {"http_404", "http_410"}
+    )
+
+
+def _terminal_unavailable_entries(output_root: Path) -> list[dict[str, Any]]:
+    entries = _read_json(output_root / "downloads.json", [])
+    return [
+        entry for entry in sorted(entries, key=lambda value: value.get("document_key", ""))
+        if isinstance(entry, dict) and _is_terminal_unavailable(entry)
+    ]
+
+
+def _adjudication_digest(records: list[dict[str, Any]], terminal: object = None) -> str:
+    """Preserve the legacy records digest unless terminal evidence must also be bound."""
+    value: object = records if terminal is None else {"records": records, "permanently_unavailable": terminal}
+    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _validate_terminal_unavailable_evidence(
+    output_root: Path, manifest: dict[str, Any]
+) -> dict[str, int | str]:
+    """Require the manifest to match the terminal evidence in the download index exactly."""
+    expected_records = _terminal_unavailable_entries(output_root)
+    terminal = manifest.get("permanently_unavailable")
+    if not expected_records and terminal is None:
+        return {}
+    if not isinstance(terminal, dict):
+        raise ValueError("invalid permanently unavailable evidence")
+    terminal_records = terminal.get("records")
+    expected_hash = hashlib.sha256(canonical_json(expected_records).encode("utf-8")).hexdigest()
+    if (
+        terminal_records != expected_records
+        or terminal.get("count") != len(expected_records)
+        or terminal.get("sha256") != expected_hash
+        or not all(_is_terminal_unavailable(record) for record in expected_records)
+    ):
+        raise ValueError("invalid permanently unavailable evidence")
+    return {
+        "permanently_unavailable": len(expected_records),
+        "permanently_unavailable_sha256": expected_hash,
+    }
+
+
 def _document_key(accession: str, document_url: str | None, document_type: str | None) -> str:
     """A filing accession can contain several independently relevant exhibits."""
     source = canonical_json([accession, document_url or "", document_type or ""])
@@ -354,7 +422,7 @@ def download(
     metadata = sorted(_read_json(output_root / "metadata.json", []), key=lambda item: item.get("document_key", ""))
     downloads_path = output_root / "downloads.json"
     existing = {item["document_key"]: item for item in _read_json(downloads_path, []) if item.get("document_key")}
-    downloaded = reused = failures = retries = 0
+    downloaded = reused = failures = retries = permanently_unavailable = terminal_reused = 0
     failed_document_key: str | None = None
     last_error: str | None = None
     failed_attempts = 0
@@ -372,6 +440,10 @@ def download(
         document_key = document.get("document_key") or _document_key(accession, url, document_type)
         old = existing.get(document_key)
         if old:
+            if _is_terminal_unavailable(old):
+                permanently_unavailable += 1
+                terminal_reused += 1
+                continue
             raw_path = output_root / str(old.get("raw_path", ""))
             stored_hash = old.get("document_hash")
             if raw_path.is_file() and isinstance(stored_hash, str):
@@ -381,6 +453,7 @@ def download(
                         continue
                 except OSError:
                     pass
+        terminal = False
         for attempt in range(len(_DOWNLOAD_RETRY_DELAYS) + 1):
             try:
                 response = client.get_bytes(
@@ -390,6 +463,15 @@ def download(
                 break
             except Exception as error:
                 last_error = _download_error(error)
+                if _permanent_download_error(error):
+                    existing[document_key] = _terminal_unavailable_entry(
+                        document, accession=accession, document_key=document_key,
+                        document_type=document_type, url=url, reason=last_error,
+                    )
+                    _write_json(downloads_path, [existing[key] for key in sorted(existing)])
+                    permanently_unavailable += 1
+                    terminal = True
+                    break
                 if not _download_retryable(error) or attempt == len(_DOWNLOAD_RETRY_DELAYS):
                     failures += 1
                     failed_document_key = document_key
@@ -399,6 +481,8 @@ def download(
                 time.sleep(_DOWNLOAD_RETRY_DELAYS[attempt])
         if failed_document_key is not None:
             break
+        if terminal:
+            continue
         digest = hashlib.sha256(raw).hexdigest()
         raw_path = output_root / "raw" / f"{digest}.bin"
         # The cache check above proves the prior file, not merely its pathname.
@@ -416,15 +500,23 @@ def download(
         }
         _write_json(downloads_path, [existing[key] for key in sorted(existing)])
         downloaded += 1
-    _write_json(output_root / "state" / "download.json", {
+    state: dict[str, Any] = {
         "attempts": failed_attempts, "completed": failures == 0,
         "failed_document_key": failed_document_key, "last_error": last_error if failures else None,
-    })
-    return {
+    }
+    if permanently_unavailable:
+        state["permanently_unavailable"] = permanently_unavailable
+        state["terminal_reused"] = terminal_reused
+    _write_json(output_root / "state" / "download.json", state)
+    result: dict[str, int | str | None] = {
         "downloaded": downloaded, "reused": reused, "failures": failures,
         "retries": retries, "last_error": last_error if failures else None,
         "failed_document_key": failed_document_key,
     }
+    if permanently_unavailable:
+        result["permanently_unavailable"] = permanently_unavailable
+        result["terminal_reused"] = terminal_reused
+    return result
 
 
 class _TableRows(HTMLParser):
@@ -581,7 +673,11 @@ def parse_document(raw: bytes, *, document_hash: str, accession: str) -> list[di
 
 def parse(output_root: Path) -> dict[str, int]:
     records: list[dict[str, Any]] = []
+    permanently_unavailable = 0
     for item in sorted(_read_json(output_root / "downloads.json", []), key=lambda value: value["document_key"]):
+        if _is_terminal_unavailable(item):
+            permanently_unavailable += 1
+            continue
         raw_path = output_root / item["raw_path"]
         for record in parse_document(raw_path.read_bytes(), document_hash=item["document_hash"], accession=item["accession"]):
             record["parent_form"] = item.get("parent_form")
@@ -594,17 +690,31 @@ def parse(output_root: Path) -> dict[str, int]:
             record["document_key"] = item["document_key"]
             records.append(record)
     _write_json(output_root / "parse" / "records.json", records)
-    return {"records": len(records), "candidates": sum(record["status"] == "candidate" for record in records)}
+    result = {"records": len(records), "candidates": sum(record["status"] == "candidate" for record in records)}
+    if permanently_unavailable:
+        result["permanently_unavailable"] = permanently_unavailable
+    return result
 
 
 def adjudication_export(output_root: Path) -> dict[str, int | str]:
     records = _read_json(output_root / "parse" / "records.json", [])
     pending = [{**record, "adjudication": "pending"} for record in records]
-    digest = hashlib.sha256(canonical_json(pending).encode("utf-8")).hexdigest()
-    payload = {"manifest_version": 1, "parser_version": PARSER_VERSION, "records": pending, "sha256": digest}
+    payload = {"manifest_version": 1, "parser_version": PARSER_VERSION, "records": pending}
+    terminal_entries = _terminal_unavailable_entries(output_root)
+    if terminal_entries:
+        payload["permanently_unavailable"] = {
+            "count": len(terminal_entries), "records": terminal_entries,
+            "sha256": hashlib.sha256(canonical_json(terminal_entries).encode("utf-8")).hexdigest(),
+        }
+    digest = _adjudication_digest(pending, payload.get("permanently_unavailable"))
+    payload["sha256"] = digest
     _write_json(output_root / "adjudication" / "manifest.json", payload)
     _write_text(output_root / "adjudication" / "manifest.sha256", digest + "\n", encoding="ascii")
-    return {"records": len(pending), "sha256": digest}
+    result: dict[str, int | str] = {"records": len(pending), "sha256": digest}
+    if terminal_entries:
+        result["permanently_unavailable"] = len(terminal_entries)
+        result["permanently_unavailable_sha256"] = payload["permanently_unavailable"]["sha256"]
+    return result
 
 
 _ADJUDICATION_STATES = frozenset({"pending", "approved", "rejected"})
@@ -624,10 +734,11 @@ def seal_adjudication(output_root: Path) -> dict[str, int | str]:
             snapshot_id = record.get("draft_snapshot_id")
             if not isinstance(snapshot_id, str) or not snapshot_id.strip():
                 raise ValueError("approved record missing draft_snapshot_id")
-    digest = hashlib.sha256(canonical_json(records).encode("utf-8")).hexdigest()
+    terminal_result = _validate_terminal_unavailable_evidence(output_root, manifest)
+    digest = _adjudication_digest(records, manifest.get("permanently_unavailable"))
     _write_json(manifest_path, {**manifest, "sha256": digest})
     _write_text(output_root / "adjudication" / "manifest.sha256", digest + "\n", encoding="ascii")
-    return {"records": len(records), "sha256": digest}
+    return {"records": len(records), "sha256": digest, **terminal_result}
 
 
 def _stable_id(prefix: str, value: object) -> str:
@@ -776,7 +887,8 @@ def build_registry_bundle(
     """Build the deterministic, sealed registry payload without any database effect."""
     manifest = _read_json(output_root / "adjudication" / "manifest.json", {})
     records = manifest.get("records", [])
-    expected = hashlib.sha256(canonical_json(records).encode("utf-8")).hexdigest()
+    _validate_terminal_unavailable_evidence(output_root, manifest)
+    expected = _adjudication_digest(records, manifest.get("permanently_unavailable"))
     if manifest.get("sha256") != expected:
         raise ValueError("manifest checksum mismatch")
     for record in records:

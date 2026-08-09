@@ -411,19 +411,156 @@ def test_download_refuses_missing_url_instead_of_claiming_completion(tmp_path: P
     }
 
 
-def test_download_does_not_retry_a_permanent_http_4xx(tmp_path: Path) -> None:
+def test_download_records_permanent_http_404_as_terminal_evidence_and_continues(tmp_path: Path) -> None:
+    class PermanentHttpError(RuntimeError):
+        code = 404
+
+    metadata = [_document("a-1"), _document("a-2")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    client = _Client([
+        PermanentHttpError("URL and server detail must not persist"),
+        _Response({}, content=b"remaining immutable evidence"),
+    ])
+
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    document_key = backfill._document_key(
+        metadata[0]["accessionNo"], metadata[0]["linkToFilingDetails"], metadata[0]["documentType"],
+    )
+    terminal = json.loads((tmp_path / "downloads.json").read_text(encoding="utf-8"))[0]
+    state = json.loads((tmp_path / "state" / "download.json").read_text(encoding="utf-8"))
+    assert summary["downloaded"] == 1 and summary["failures"] == 0 and summary["retries"] == 0
+    assert summary["permanently_unavailable"] == 1 and len(client.calls) == 2
+    assert terminal == {
+        "accession": "a-1", "availability": {"reason": "http_404", "state": "permanently_unavailable"},
+        "description": None, "document_key": document_key, "document_type": "EX-4.1",
+        "filed_at": "2025-07-22T12:00:00-04:00", "filing_url": metadata[0]["linkToFilingDetails"],
+        "parent_form": "424B2",
+    }
+    assert "raw_path" not in terminal and "document_hash" not in terminal
+    assert state["completed"] and state["permanently_unavailable"] == 1
+    assert "server detail" not in json.dumps(summary) and "server detail" not in json.dumps(terminal)
+
+
+def test_download_reuses_terminal_permanent_evidence_without_another_request(tmp_path: Path) -> None:
     class PermanentHttpError(RuntimeError):
         code = 404
 
     metadata = [_document("a-1")]
     (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
-    client = _Client([PermanentHttpError("URL and server detail must not persist")])
+    first = backfill.download(
+        _Client([PermanentHttpError("missing")]), tmp_path, edgar_identity="Analyst analyst@example.test",
+    )
+    retry_client = _Client([])
+    second = backfill.download(retry_client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    assert first["permanently_unavailable"] == 1
+    assert second["terminal_reused"] == 1 and second["permanently_unavailable"] == 1
+    assert retry_client.calls == []
+
+
+def test_download_does_not_reuse_cached_auth_error_as_terminal_evidence(tmp_path: Path) -> None:
+    metadata = [_document("a-1")]
+    document_key = backfill._document_key(
+        metadata[0]["accessionNo"], metadata[0]["linkToFilingDetails"], metadata[0]["documentType"],
+    )
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (tmp_path / "downloads.json").write_text(json.dumps([{
+        "accession": "a-1", "availability": {
+            "reason": "http_401", "state": "permanently_unavailable",
+        },
+        "document_key": document_key, "document_type": "EX-4.1",
+        "filing_url": metadata[0]["linkToFilingDetails"],
+    }]), encoding="utf-8")
+
+    client = _Client([_Response({}, content=b"authenticated immutable evidence")])
+    summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
+
+    assert summary["downloaded"] == 1 and summary.get("terminal_reused", 0) == 0
+    assert len(client.calls) == 1
+    persisted = json.loads((tmp_path / "downloads.json").read_text(encoding="utf-8"))[0]
+    assert "availability" not in persisted and persisted["document_hash"]
+
+
+@pytest.mark.parametrize("status", [401, 403, 407])
+def test_download_authentication_http_errors_remain_fail_closed(tmp_path: Path, status: int) -> None:
+    error_type = type("AuthenticationHttpError", (RuntimeError,), {"code": status})
+    metadata = [_document("a-1"), _document("a-2")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    client = _Client([error_type("credential detail must not persist")])
 
     summary = backfill.download(client, tmp_path, edgar_identity="Analyst analyst@example.test")
 
-    assert summary["failures"] == 1 and summary["retries"] == 0
-    assert summary["last_error"] == "http_404" and len(client.calls) == 1
-    assert "server detail" not in json.dumps(summary)
+    assert summary["failures"] == 1 and summary["last_error"] == f"http_{status}"
+    assert len(client.calls) == 1
+    assert not (tmp_path / "downloads.json").exists()
+    assert not json.loads((tmp_path / "state" / "download.json").read_text(encoding="utf-8"))["completed"]
+    assert "credential detail" not in json.dumps(summary)
+
+
+def test_parse_and_manifest_seal_report_terminal_unavailable_evidence_without_approval(tmp_path: Path) -> None:
+    class PermanentHttpError(RuntimeError):
+        code = 404
+
+    metadata = [_document("a-1")]
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    backfill.download(
+        _Client([PermanentHttpError("missing")]), tmp_path, edgar_identity="Analyst analyst@example.test",
+    )
+
+    parsed = backfill.parse(tmp_path)
+    exported = backfill.adjudication_export(tmp_path)
+    payload = json.loads((tmp_path / "adjudication" / "manifest.json").read_text(encoding="utf-8"))
+    sealed = backfill.seal_adjudication(tmp_path)
+    bundle = backfill.build_registry_bundle(tmp_path)
+
+    assert parsed == {"records": 0, "candidates": 0, "permanently_unavailable": 1}
+    assert exported["permanently_unavailable"] == 1
+    assert payload["records"] == []
+    assert payload["permanently_unavailable"]["count"] == 1
+    assert payload["permanently_unavailable"]["records"][0]["availability"]["reason"] == "http_404"
+    assert payload["permanently_unavailable"]["sha256"] == hashlib.sha256(
+        backfill.canonical_json(payload["permanently_unavailable"]["records"]).encode("utf-8")
+    ).hexdigest()
+    assert payload["sha256"] != hashlib.sha256(backfill.canonical_json([]).encode("utf-8")).hexdigest()
+    assert sealed["permanently_unavailable"] == 1
+    assert sealed["permanently_unavailable_sha256"] == payload["permanently_unavailable"]["sha256"]
+    assert bundle["source_evidence_rows"] == bundle["pair_decision_rows"] == []
+
+
+def test_terminal_unavailable_evidence_cannot_be_removed_or_rewritten_before_publish(tmp_path: Path) -> None:
+    class PermanentHttpError(RuntimeError):
+        code = 404
+
+    (tmp_path / "metadata.json").write_text(json.dumps([_document("a-1")]), encoding="utf-8")
+    backfill.download(
+        _Client([PermanentHttpError("missing")]), tmp_path, edgar_identity="Analyst analyst@example.test",
+    )
+    backfill.parse(tmp_path)
+    backfill.adjudication_export(tmp_path)
+    manifest_path = tmp_path / "adjudication" / "manifest.json"
+    original = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    removed = {key: value for key, value in original.items() if key != "permanently_unavailable"}
+    manifest_path.write_text(json.dumps(removed), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid permanently unavailable evidence"):
+        backfill.seal_adjudication(tmp_path)
+    with pytest.raises(ValueError, match="invalid permanently unavailable evidence"):
+        backfill.build_registry_bundle(tmp_path)
+
+    rewritten = json.loads(json.dumps(original))
+    rewritten["permanently_unavailable"]["records"][0]["filing_url"] = "https://example.invalid/forged"
+    rewritten["permanently_unavailable"]["sha256"] = hashlib.sha256(
+        backfill.canonical_json(rewritten["permanently_unavailable"]["records"]).encode("utf-8")
+    ).hexdigest()
+    rewritten["sha256"] = backfill._adjudication_digest(
+        rewritten["records"], rewritten["permanently_unavailable"],
+    )
+    manifest_path.write_text(json.dumps(rewritten), encoding="utf-8")
+    with pytest.raises(ValueError, match="invalid permanently unavailable evidence"):
+        backfill.seal_adjudication(tmp_path)
+    with pytest.raises(ValueError, match="invalid permanently unavailable evidence"):
+        backfill.build_registry_bundle(tmp_path)
 
 
 def test_download_retries_http_request_timeout(
