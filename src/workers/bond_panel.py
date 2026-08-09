@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+import json
 from datetime import date
 from typing import Any
 
@@ -22,9 +23,13 @@ from src.bonds.panel_resolvers import (
     fit_all_months,
     monthly_returns,
 )
+from src.bonds.distribution_series import (
+    DistributionSeriesError,
+    resolve_reg_s_cusip_map_from_db,
+)
 from src.db import connect, resolve_dsn
 
-PANEL_CONFIG_HASH = "0c0d78a866bc1090"
+PANEL_CONFIG_HASH = "180a82b3f1413d43"
 REQUIRED_RELATIONS = (
     "bond_observation_daily",
     "bond_price_observation",
@@ -43,6 +48,11 @@ REQUIRED_RELATIONS = (
     "bond_panel_snapshot",
     "bond_panel_returns",
     "bond_panel_current_snapshot_v1",
+    "bond_distribution_mapping_snapshot",
+    "bond_distribution_snapshot_approval",
+    "bond_distribution_pair_decision",
+    "bond_distribution_pair_identifier",
+    "bond_distribution_parser_observation",
 )
 REQUIRED_COLUMNS = {
     "bond_observation_daily": {"cusip9", "day", "price", "ytm", "volume"},
@@ -57,11 +67,16 @@ REQUIRED_COLUMNS = {
     "sec_cusip_ticker_map": {"cusip", "issuer_cik"},
     "sec_current_bond_security_v1": {"security_id", "issuer_name", "identity_state", "currency"},
     "sec_current_bond_security_alias_v1": {"security_id", "alias_kind", "alias_value", "valid_from", "valid_to"},
-    "bond_panel_publications": {"publication_id", "parent_publication_id", "publication_status", "config_hash", "first_month", "last_closed_month", "open_month"},
+    "bond_panel_publications": {"publication_id", "parent_publication_id", "publication_status", "config_hash", "first_month", "last_closed_month", "open_month", "source_lineage"},
     "bond_panel_app_pointer": {"product", "publication_id"},
     "bond_panel_snapshot": {"publication_id", "month", "cusip_id", "amount_outstanding_k"},
     "bond_panel_returns": {"publication_id", "month", "cusip_id", "total_return"},
     "bond_panel_current_snapshot_v1": {"cusip_id", "month", "price", "ytm", "maturity_years"},
+    "bond_distribution_mapping_snapshot": {"snapshot_id", "snapshot_status", "content_hash"},
+    "bond_distribution_snapshot_approval": {"snapshot_id", "content_hash"},
+    "bond_distribution_pair_decision": {"decision_id", "snapshot_id", "decision_state", "source_observation_id", "valid_from", "valid_to", "pair_key"},
+    "bond_distribution_pair_identifier": {"identifier_id", "decision_id", "source_observation_id", "distribution_rule", "identifier_kind", "identifier_value", "identifier_tenure", "valid_from", "valid_to"},
+    "bond_distribution_parser_observation": {"parser_observation_id", "source_evidence_id", "parser_version", "block_locator", "exact_source_label", "source_value", "normalized_value", "observation_state"},
 }
 
 
@@ -113,7 +128,8 @@ def _current_parent(conn: Any) -> dict[str, Any] | None:
         "SELECT p.publication_id::text, p.parent_publication_id::text, p.first_month, "
         "p.last_closed_month, p.open_month, "
         "(SELECT max(s.month) FROM bond_panel_snapshot s WHERE s.publication_id = p.publication_id), "
-        "(SELECT max(r.month) FROM bond_panel_returns r WHERE r.publication_id = p.publication_id) "
+        "(SELECT max(r.month) FROM bond_panel_returns r WHERE r.publication_id = p.publication_id), "
+        "p.source_lineage "
         "FROM bond_panel_app_pointer pointer "
         "JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id "
         "WHERE pointer.product = 'bond_panel_v1' "
@@ -130,6 +146,7 @@ def _current_parent(conn: Any) -> dict[str, Any] | None:
         "open_month": row[4],
         "snapshot_max_month": row[5],
         "returns_max_month": row[6],
+        "source_lineage": row[7] if isinstance(row[7], dict) else {},
     }
 
 
@@ -160,28 +177,63 @@ def _load_inputs(
     open_month: pd.Timestamp,
     as_of: date,
     *,
+    mapping_snapshot_id: str,
     structural_publication_id: str | None = None,
     structural_month: date | None = None,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
-    """Load all production inputs for the closed/open delta, directly from DB."""
+    """Load a strict Reg S execution panel from one approved mapping snapshot."""
     start = closed_month.date()
     end = as_of
     closed_as_of = (closed_month + pd.offsets.MonthEnd(1)).date()
+    references = _frame(
+        conn,
+        "SELECT upper(btrim(cusip9)) AS reference_cusip9 FROM bond_curated_universe "
+        "WHERE nullif(btrim(cusip9), '') IS NOT NULL ORDER BY upper(btrim(cusip9))",
+    )
+    reference_cusip9s = references["reference_cusip9"].astype(str).tolist()
+    resolution_map = resolve_reg_s_cusip_map_from_db(
+        conn,
+        snapshot_id=mapping_snapshot_id,
+        as_of=as_of,
+        reference_cusip9s=reference_cusip9s,
+    )
+    mapping_rows = [
+        {
+            "reference_cusip9": resolution.reference_cusip9,
+            "execution_cusip9": resolution.reg_s_cusip9,
+            "decision_id": resolution.decision_id,
+        }
+        for _reference, resolution in sorted(resolution_map.resolutions.items())
+    ]
+    if not mapping_rows:
+        raise ValueError("reg_s_mapping_zero_approved")
+    mapping_json = json.dumps(mapping_rows, sort_keys=True, separators=(",", ":"))
+    mapping_cte = (
+        "WITH mapping AS (SELECT reference_cusip9, execution_cusip9, decision_id "
+        "FROM jsonb_to_recordset(%s::jsonb) AS mapped("
+        "reference_cusip9 text, execution_cusip9 text, decision_id text))"
+    )
+
     inputs = {
         "daily_observations": _frame(
             conn,
-            "SELECT cusip9, day, price, ytm, volume FROM bond_observation_daily "
-            "WHERE day >= %s AND day <= %s AND (price IS NOT NULL OR ytm IS NOT NULL)",
-            (start, end),
+            mapping_cte
+            + " SELECT m.execution_cusip9 AS cusip9, o.day, o.price, o.ytm, o.volume "
+            "FROM bond_observation_daily o JOIN mapping m "
+            "ON upper(btrim(o.cusip9)) = m.execution_cusip9 "
+            "WHERE o.day >= %s AND o.day <= %s AND (o.price IS NOT NULL OR o.ytm IS NOT NULL)",
+            (mapping_json, start, end),
         ),
         "reference_terms": _frame(
             conn,
-            "SELECT r.cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
+            mapping_cte
+            + " SELECT m.execution_cusip9 AS cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
             "r.amount_outstanding_vendor, prior.amount_outstanding_k, r.asset, r.asset_type, r.bond_type, r.debt_type "
-            "FROM bond_reference_terms r LEFT JOIN bond_panel_snapshot prior "
+            "FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
+            "LEFT JOIN bond_panel_snapshot prior "
             "ON prior.publication_id = %s::uuid AND prior.month = %s "
-            "AND upper(btrim(prior.cusip_id)) = upper(btrim(r.cusip9))",
-            (structural_publication_id, structural_month),
+            "AND upper(btrim(prior.cusip_id)) = m.execution_cusip9",
+            (mapping_json, structural_publication_id, structural_month),
         ),
         "monthly_curve": _frame(
             conn,
@@ -190,7 +242,8 @@ def _load_inputs(
         ),
         "resolved_issuer_sector": _frame(
             conn,
-            "WITH panel_months(month, price_as_of) AS (VALUES (%s::date, %s::date), (%s::date, %s::date)), "
+            mapping_cte
+            + ", panel_months(month, price_as_of) AS (VALUES (%s::date, %s::date), (%s::date, %s::date)), "
             "aliases AS (SELECT pm.month, upper(btrim(a.alias_value)) AS cusip9, a.security_id "
             "FROM panel_months pm JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
             "AND a.valid_from <= pm.price_as_of AND (a.valid_to IS NULL OR a.valid_to > pm.price_as_of)), "
@@ -200,44 +253,71 @@ def _load_inputs(
             "CASE WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 1 THEN 'pit_present' "
             "WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 0 THEN 'pit_missing_or_invalid' ELSE 'pit_conflicting' END AS db_type_reason "
             "FROM panel_months pm CROSS JOIN LATERAL bond_price_fund_asof_v1(pm.price_as_of) p GROUP BY pm.month, p.security_id) "
-            "SELECT upper(btrim(u.cusip9)) AS cusip9, pm.month, map.issuer_cik AS issuer_id, "
+            "SELECT m.execution_cusip9 AS cusip9, pm.month, map.issuer_cik AS issuer_id, "
             "COALESCE(map.issuer_identity_state, 'unresolved') AS issuer_identity_state, s.currency, "
-            "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ILIKE '%%corporate%%' THEN 'corporate' "
+            "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ~* '(^|[^[:alnum:]])non[-[:space:]]*corporate([^[:alnum:]]|$)' THEN 'noncorporate' "
+            "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ~* '(^|[^[:alnum:]])corporate([^[:alnum:]]|$)' THEN 'corporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num, "
             "price.db_type, COALESCE(price.db_type_reason, CASE WHEN a.security_id IS NULL THEN 'security_alias_missing' ELSE 'db_type_pit_absent' END) AS db_type_reason "
-            "FROM bond_curated_universe u CROSS JOIN panel_months pm "
-            "LEFT JOIN aliases a ON a.month = pm.month AND a.cusip9 = upper(btrim(u.cusip9)) "
+            "FROM mapping m CROSS JOIN panel_months pm "
+            "LEFT JOIN aliases a ON a.month = pm.month AND a.cusip9 = m.execution_cusip9 "
             "LEFT JOIN sec_current_bond_security_v1 s ON s.security_id = a.security_id "
-            "LEFT JOIN bond_reference_terms r ON r.cusip9 = u.cusip9 "
-            "LEFT JOIN bond_issuer_sector i ON i.cusip9 = u.cusip9 "
+            "LEFT JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
+            "LEFT JOIN bond_issuer_sector i ON upper(btrim(i.cusip9)) = m.reference_cusip9 "
             "LEFT JOIN price ON price.month = pm.month AND price.security_id = a.security_id "
             "LEFT JOIN (SELECT upper(btrim(cusip)) AS cusip9, CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN max(issuer_cik::text) FILTER (WHERE issuer_cik IS NOT NULL) END AS issuer_cik, "
-            "CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN 'resolved' WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 0 THEN 'missing_cik' ELSE 'conflicting_cik' END AS issuer_identity_state FROM sec_cusip_ticker_map GROUP BY upper(btrim(cusip))) map ON map.cusip9 = upper(btrim(u.cusip9))",
-            (closed_month.date(), closed_as_of, open_month.date(), as_of),
+            "CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN 'resolved' WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 0 THEN 'missing_cik' ELSE 'conflicting_cik' END AS issuer_identity_state FROM sec_cusip_ticker_map GROUP BY upper(btrim(cusip))) map ON map.cusip9 = m.reference_cusip9",
+            (mapping_json, closed_month.date(), closed_as_of, open_month.date(), as_of),
         ),
         "monthly_liquidity": _frame(
             conn,
-            "WITH historical AS (SELECT cusip9, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code, 1 AS priority FROM bond_liquidity_monthly WHERE month IN (%s, %s)), "
-            "live AS (SELECT cusip9, date_trunc('month', day)::date AS month, count(*) FILTER (WHERE bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY bid_ask_bps) FILTER (WHERE bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(par_volume * price_median / 100.0) FILTER (WHERE par_volume IS NOT NULL AND price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily WHERE day >= %s AND day <= %s GROUP BY cusip9, date_trunc('month', day)::date), "
+            mapping_cte
+            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.execution_cusip9 WHERE l.month IN (%s, %s)), "
+            "live AS (SELECT m.execution_cusip9 AS cusip9, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, date_trunc('month', t.day)::date), "
             "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical) SELECT DISTINCT ON (cusip9, month) cusip9, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code FROM all_rows ORDER BY cusip9, month, priority",
-            (closed_month.date(), open_month.date(), start, end),
+            (mapping_json, closed_month.date(), open_month.date(), start, end),
         ),
     }
-    inputs["static_rating_mapping"] = _frame(
-            conn,
-            "SELECT cusip9, rating_bucket, rating_as_of_month, "
-            "CASE WHEN rating_state = 'rated' THEN 'static_current' ELSE 'static_carry_forward' END AS rating_state, "
-            "reason_code AS rating_reason, source_sha256 FROM bond_rating_static",
-        )
-    rating_hashes = inputs["static_rating_mapping"]["source_sha256"].dropna().astype(str).unique().tolist()
+    rating_sources = _frame(
+        conn,
+        "SELECT DISTINCT source_sha256 FROM bond_rating_static WHERE source_sha256 IS NOT NULL",
+    )
+    rating_hashes = rating_sources["source_sha256"].dropna().astype(str).unique().tolist()
     if len(rating_hashes) != 1:
         raise ValueError("bond_rating_static must contain exactly one source_sha256")
+    inputs["static_rating_mapping"] = _frame(
+            conn,
+            mapping_cte
+            + " SELECT m.execution_cusip9 AS cusip9, r.rating_bucket, r.rating_as_of_month, "
+            "CASE WHEN r.rating_state = 'rated' THEN 'static_current' ELSE 'static_carry_forward' END AS rating_state, "
+            "r.reason_code AS rating_reason, r.source_sha256 FROM bond_rating_static r JOIN mapping m "
+            "ON upper(btrim(r.cusip9)) = m.execution_cusip9",
+            (mapping_json,),
+        )
+    if inputs["static_rating_mapping"].empty:
+        inputs["static_rating_mapping"] = pd.DataFrame(
+            columns=[
+                "cusip9", "rating_bucket", "rating_as_of_month", "rating_state",
+                "rating_reason", "source_sha256",
+            ]
+        )
     lineage = {name: name for name in inputs}
     if structural_publication_id and structural_month:
         lineage["reference_terms"] = (
             f"bond_reference_terms+bond_panel_snapshot:{structural_publication_id}:{structural_month.isoformat()}"
         )
     lineage["static_rating_mapping"] = f"bond_rating_static:{rating_hashes[0]}"
+    lineage["distribution_rule"] = "reg_s"
+    lineage["distribution_mapping_snapshot_id"] = mapping_snapshot_id
+    lineage["distribution_mapping_count"] = str(len(mapping_rows))
+    for reason, count in sorted(
+        (
+            reason,
+            sum(1 for value in resolution_map.reason_by_reference.values() if value == reason),
+        )
+        for reason in set(resolution_map.reason_by_reference.values())
+    ):
+        lineage[f"distribution_mapping_omission:{reason}"] = str(count)
     return inputs, lineage
 
 
@@ -254,6 +334,18 @@ def _initial_stage6_authorized(parent: dict[str, Any], revision: str) -> bool:
         return True
     authorization = (os.getenv("BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION") or "").strip()
     return bool(authorization) and authorization == revision
+
+
+def _parent_distribution_reasons(
+    parent: dict[str, Any], mapping_snapshot_id: str
+) -> list[str]:
+    """Require an exact approved Reg S mapping lineage before extending a pack."""
+    lineage = parent.get("source_lineage")
+    if not isinstance(lineage, dict) or lineage.get("distribution_rule") != "reg_s":
+        return ["parent_distribution_rule_not_reg_s"]
+    if lineage.get("distribution_mapping_snapshot_id") != mapping_snapshot_id:
+        return ["parent_distribution_mapping_snapshot_mismatch"]
+    return []
 
 
 def _parent_integrity_reasons(parent: dict[str, Any]) -> list[str]:
@@ -410,17 +502,32 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 elapsed=time.monotonic() - started,
                 input_reasons=parent_reasons,
             )
+        mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
+        if not mapping_snapshot_id:
+            return _failure(
+                "panel_gate_failed",
+                elapsed=time.monotonic() - started,
+                input_reasons=["distribution_mapping_snapshot_id_absent"],
+            )
+        distribution_reasons = _parent_distribution_reasons(parent, mapping_snapshot_id)
+        if distribution_reasons:
+            return _failure(
+                "panel_gate_failed",
+                elapsed=time.monotonic() - started,
+                input_reasons=distribution_reasons,
+            )
         try:
             inputs, lineage = _load_inputs(
                 conn,
                 closed_month,
                 open_month,
                 today,
+                mapping_snapshot_id=mapping_snapshot_id,
                 structural_publication_id=str(parent["publication_id"]),
                 structural_month=parent["last_closed_month"],
             )
             stage_input_reasons: list[str] = []
-            empty = [name for name, frame in inputs.items() if name not in {"monthly_liquidity"} and frame.empty]
+            empty = [name for name, frame in inputs.items() if name not in {"monthly_liquidity", "static_rating_mapping"} and frame.empty]
             if empty:
                 return _failure("panel_failed", elapsed=time.monotonic() - started, input_reasons=[f"relation_empty:{name}" for name in empty], closed_month=closed_month.date().isoformat(), open_month=open_month.date().isoformat())
             panel = build_db_monthly_panel(
@@ -474,6 +581,12 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 last_closed_month=closed_month.date(),
                 open_month=open_month.date(),
             )
+        except DistributionSeriesError as exc:
+            return _failure(
+                "panel_gate_failed",
+                elapsed=time.monotonic() - started,
+                input_reasons=[f"distribution_mapping:{exc}"],
+            )
         except MaterializationError as exc:
             return _failure("panel_gate_failed", elapsed=time.monotonic() - started, input_reasons=[str(exc)])
         except (ValueError, KeyError) as exc:
@@ -489,6 +602,15 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
         "config_hash": PANEL_CONFIG_HASH,
         "closed_month": closed_month.date().isoformat(),
         "open_month": open_month.date().isoformat(),
+        "distribution_mapping_snapshot_id": mapping_snapshot_id,
+        "distribution_mapping_coverage": {
+            "mapped": int(lineage["distribution_mapping_count"]),
+            "omissions": {
+                key.removeprefix("distribution_mapping_omission:"): int(value)
+                for key, value in lineage.items()
+                if key.startswith("distribution_mapping_omission:")
+            },
+        },
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "input_relation_reasons": stage_input_reasons,
     }

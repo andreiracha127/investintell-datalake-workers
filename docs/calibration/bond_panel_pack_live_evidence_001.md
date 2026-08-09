@@ -279,4 +279,56 @@ No redesigned production rerun or production JSON occurred. No deploy, database
 write, pointer move, restart, or Stage 6 execution occurred. This documentation
 change is not production authorization: only a separately authorized, fresh
 read-only production parity run that emits `parity_passed` can support a
-separately authorized Stage 6 execution.
+separately authorized Stage 6 execution under that legacy identity. The
+distribution-series correction below supersedes that activation path before it
+was used.
+
+## Distribution-series correction adopted on 2026-08-09
+
+The product owner clarified that the system is for non-US investors and the
+execution universe must therefore use the Regulation S series. The approved
+10,206-CUSIP identification universe is retained as the Rule 144A reference leg;
+it is not discarded and it is not itself the Regulation S execution universe.
+One issue can, and commonly does, have paired Rule 144A and Regulation S series.
+
+Read-only production inspection found:
+
+| Measure | Observed value |
+| --- | ---: |
+| `bond_curated_universe` rows | `10,206` |
+| Numeric-leading current CUSIP9s | `10,206` |
+| Alpha-leading current CUSIP9s / CINS | `0` |
+| Reference ISINs beginning `US` | `10,206 / 10,206` |
+| Reference ISINs embedding the current CUSIP9 | `10,206 / 10,206` |
+| June 2026 PIT `db_type=1` | `7,586` |
+| June 2026 PIT `db_type=3` | `2,487` |
+
+Those shapes are diagnostics, not classification rules. In particular,
+`db_type`, CUSIP/CINS prefix, ISIN prefix, and identifier presence cannot prove
+the distribution exemption. The previous `db_type=3 -> unsupported_144a` panel
+gate was therefore removed instead of being inverted.
+
+The source-discovery call was made against the
+[SEC-API Full-Text Search API](https://sec-api.io/docs/full-text-search-api).
+Queries containing explicit Rule 144A, Regulation S, CUSIP, ISIN, and Common
+Code labels returned EDGAR filings and exhibits, particularly `EX-4.x` documents
+attached to 8-K, 6-K, S-4/F-4, and 20-F filings. Search results are metadata;
+the linked document is the evidence that must be downloaded and parsed.
+
+An [official SEC exhibit](https://www.sec.gov/Archives/edgar/data/1635327/000119312525175440/d20396dex41.htm)
+also demonstrates why prefix heuristics are unsafe: its USD issue explicitly
+lists a Rule 144A CUSIP/ISIN and a distinct Regulation S “CUSIP” (a CINS) / ISIN,
+while other currency sections use ISIN and Common Code identifiers. The mapping
+contract consequently accepts a Regulation S CUSIP/CINS only from explicit
+same-document, same-issue-block labels. ISIN/Common-Code-only pairs remain
+governed but cannot enter the current CUSIP-keyed panel.
+
+The adopted implementation path is an additive immutable evidence registry, a
+bounded/resumable EDGAR backfill, explicit human adjudication, an approved
+mapping snapshot, a live Regulation S data-coverage measurement, and a new
+historical Regulation S base. The old Rule 144A T3 comparison is historical
+evidence and is not a valid activation gate for the new security identity.
+
+No production schema installation, registry load, backfill publication, deploy,
+worker restart, panel publication, or pointer movement was performed as part of
+this correction.

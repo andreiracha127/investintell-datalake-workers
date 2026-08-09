@@ -114,8 +114,6 @@ def eligibility(panel: pd.DataFrame) -> pd.Series:
             (not pd.isna(value["asset_class"]) and str(value["asset_class"]).strip().lower() not in {"", "missing", "corporate"}, "noncorporate"),
             (pd.isna(value["issuer_id"]) or not str(value["issuer_id"]).strip(), "unresolved_issuer"),
             (pd.isna(value["ff17num"]), "missing_sector"),
-            (pd.isna(value.get("db_type")), "missing_db_type"),
-            (not pd.isna(value.get("db_type")) and float(value["db_type"]) == 3, "unsupported_144a"),
             (pd.isna(value["amt_outstanding_k"]), "missing_amount"),
             (value["amt_outstanding_k"] < 250_000, "too_small"),
             (pd.isna(value["bond_maturity"]), "missing_maturity"),
@@ -235,8 +233,15 @@ def bond_coupons(panel: pd.DataFrame) -> pd.Series:
 def monthly_returns(
     panel: pd.DataFrame, terminal_exits: pd.DataFrame | None = None
 ) -> pd.DataFrame:
-    df = panel[["cusip_id", "month", "pr", "ytm", "bond_maturity"]].copy().sort_values(["cusip_id", "month"])
-    df["coupon"] = bond_coupons(panel.loc[df.index])
+    columns = ["cusip_id", "month", "pr", "ytm", "bond_maturity"]
+    if "coupon_pct" in panel:
+        columns.append("coupon_pct")
+    df = panel[columns].copy().sort_values(["cusip_id", "month"])
+    implied_coupon = bond_coupons(panel.loc[df.index])
+    contractual_coupon = pd.to_numeric(
+        df.get("coupon_pct", pd.Series(np.nan, index=df.index)), errors="coerce"
+    )
+    df["coupon"] = contractual_coupon.combine_first(implied_coupon)
     group = df.groupby("cusip_id", observed=True)
     previous_price, previous_month = group["pr"].shift(), group["month"].shift()
     consecutive = (df["month"] - previous_month).dt.days.between(28, 31)
@@ -278,11 +283,13 @@ def apply_typed_exits(r: np.ndarray, attrs: pd.DataFrame, active: np.ndarray, co
         row = attrs.iloc[i]
         if pd.notna(row.get("bond_maturity")) and float(row["bond_maturity"]) <= 1.25:
             price = float(row["pr"])
-            coupon = coupon_from_price_ytm(
-                pd.Series([price]),
-                pd.Series([row.get("ytm")]),
-                pd.Series([row["bond_maturity"]]),
-            ).iloc[0]
+            coupon = row.get("coupon_pct")
+            if pd.isna(coupon):
+                coupon = coupon_from_price_ytm(
+                    pd.Series([price]),
+                    pd.Series([row.get("ytm")]),
+                    pd.Series([row["bond_maturity"]]),
+                ).iloc[0]
             carry = float(coupon) / 12 if pd.notna(coupon) else 0.0
             out[i], key = (100.0 + carry - price) / price, "matured"
         elif pd.notna(row.get("pr")) and (float(row["pr"]) < 70 or row.get("rating_bucket") in ("CCC", "D")):

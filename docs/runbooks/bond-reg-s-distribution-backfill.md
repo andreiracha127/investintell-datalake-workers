@@ -1,0 +1,141 @@
+# Runbook — Rule 144A to Regulation S distribution-series backfill
+
+## Purpose and non-negotiable identity rule
+
+`bond_curated_universe` is the approved identification universe, but its current
+CUSIP9 is the Rule 144A **reference** leg. The panel for non-US investors must
+execute on the paired Regulation S leg. A pair is admissible only when an SEC
+filing or exhibit explicitly labels both sides in the same issue block.
+
+Never infer a pair from `db_type`, identifier shape or prefix, a US ISIN, matching
+issuer/coupon/maturity, or the absence of a Rule 144A label. A Regulation S CINS
+is stored as `cusip9`; a pair with only an ISIN or Common Code on the Regulation S
+side is retained in the registry but is not executable by the CUSIP-keyed panel.
+
+This workflow is additive and non-activating. The script downloads immutable
+evidence and emits a dry-run registry preview. It cannot write the database,
+approve a mapping snapshot, move the panel pointer, deploy, or restart Stage 6.
+
+## Source
+
+Discovery uses the SEC-API Full-Text Search API over EDGAR filings and exhibits.
+The API result is document metadata, not the mapping itself. Download and parse
+the referenced exhibit before adjudication. High-yield document families include
+`EX-4.x` exhibits attached to 8-K, 6-K, S-4/F-4, and 20-F filings.
+
+Set credentials outside the command line when possible:
+
+```powershell
+$env:SEC_API_IO_KEY = '<secret>'
+$env:SEC_USER_AGENT = 'InvestIntell Operations <operations@example.com>'
+```
+
+Do not commit either value or any raw artifact that is outside the repository's
+artifact policy.
+
+## 1. Prepare the reference list
+
+Export one normalized CUSIP9 per line from the approved reference universe. The
+file is an input to a bounded search; omission from search results never means
+that a mapping does not exist.
+
+```powershell
+$out = 'artifacts/bond-distribution-series'
+$references = Join-Path $out 'reference-cusips.txt'
+```
+
+Record the SQL/export command, row count, source timestamp, and SHA-256 of this
+file in the execution evidence.
+
+## 2. Bounded discovery
+
+Use broad discovery to seed likely exhibits. `--limit` is the maximum number of
+API requests in one invocation; repeat the identical command to resume from its
+checkpoint.
+
+```powershell
+uv run python scripts/backfill_bond_distribution_series.py `
+  --output-root $out discover `
+  --start-date 2000-01-01 --end-date 2026-08-09 --limit 100
+```
+
+Then run the completeness lane over the exact reference universe. It searches
+both compact and 6-2-1 formatted CUSIP variants and is independently bounded and
+resumable.
+
+```powershell
+uv run python scripts/backfill_bond_distribution_series.py `
+  --output-root $out targeted-discover `
+  --reference-cusips-file $references `
+  --start-date 2000-01-01 --end-date 2026-08-09 --limit 250
+```
+
+A checkpoint is valid only for the same normalized reference list, date window,
+and query/parser version. A changed scope must be refused rather than silently
+reusing indexes from the prior campaign.
+
+## 3. Download and parse immutable evidence
+
+```powershell
+uv run python scripts/backfill_bond_distribution_series.py --output-root $out download
+uv run python scripts/backfill_bond_distribution_series.py --output-root $out parse
+uv run python scripts/backfill_bond_distribution_series.py --output-root $out adjudication-export
+```
+
+For each downloaded document retain accession, document URL/type, retrieval time,
+raw SHA-256, parser version, exact source label/value, and a stable table/section
+locator. A parser candidate is not approval.
+
+## 4. Human adjudication
+
+Review `adjudication/manifest.json` against the raw document. An approval must
+select one same-issue Rule 144A reference and its explicitly labelled Regulation S
+identifiers. Multi-issue tables, conflicting identifiers, cross-block matches,
+and uncertain labels remain ambiguous or rejected. Do not approve a record only
+because its terms appear economically similar.
+
+Each approved record must name the new `draft_snapshot_id` that will own the
+complete prospective composition. It must not name an already approved snapshot,
+because approved compositions are closed. After editing the decisions, seal the
+unchanged records array and its human decisions:
+
+```powershell
+uv run python scripts/backfill_bond_distribution_series.py `
+  --output-root $out seal-adjudication
+```
+
+Sealing validates the adjudication vocabulary and snapshot IDs, then replaces
+only the manifest checksum artifacts. It does not rerun parsing, alter evidence,
+approve the database snapshot, or write the database. Never alter raw evidence
+to make the checksum pass.
+
+## 5. Dry-run registry preview
+
+```powershell
+uv run python scripts/backfill_bond_distribution_series.py `
+  --output-root $out publish --dry-run
+```
+
+Expected healthy signal: exit 0, `database_writes=0`, one prospective draft
+snapshot row, its computed composition hash, a matching prospective approval row,
+and decision/identifier rows only for explicitly approved records. The approval
+row is an ordered future action, not evidence that approval or any database write
+occurred. Pending, rejected, ambiguous, invalid-label, and
+Regulation-S-without-CUSIP records must not become executable mappings.
+
+## 6. Separately authorized database load and panel rebuild
+
+Database publication is a later, separately authorized operation:
+
+1. install the additive registry schema;
+2. load evidence and parser observations;
+3. load the complete draft snapshot and decisions atomically;
+4. verify content hash, collision checks, and coverage;
+5. approve/finalize the immutable snapshot atomically;
+6. measure Regulation S price, rating, and liquidity coverage;
+7. rebuild a new historical Regulation S base under the new config identity;
+8. validate row counts, lineage, `max(computed_at)`, and pointer candidate;
+9. activate Stage 6 only under a separate production authorization.
+
+The frozen Rule 144A base and its T3 parity result cannot be reused as the
+Regulation S base or as a like-for-like activation gate.

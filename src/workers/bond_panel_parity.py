@@ -24,6 +24,7 @@ from src.db import connect, resolve_dsn
 from src.workers import bond_panel
 
 PANEL_CONFIG_HASH = "0c0d78a866bc1090"
+REG_S_PANEL_CONFIG_HASH = bond_panel.PANEL_CONFIG_HASH
 BASE_PUBLICATION_ID = "92740098-1571-559d-9fb3-119de8321754"
 BASE_INPUT_FINGERPRINT = "5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb"
 PARITY_MONTHS = (pd.Timestamp("2025-01-01"), pd.Timestamp("2026-06-01"))
@@ -935,7 +936,10 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
 
 def run(dsn: str | None = None) -> dict[str, object]:
     """Run the two-month, DB-only parity gate without modifying any relation."""
-    if config_hash() != PANEL_CONFIG_HASH:
+    active_config_hash = config_hash()
+    if active_config_hash == REG_S_PANEL_CONFIG_HASH:
+        return _failure("legacy_rule_144a_parity_not_applicable_to_reg_s")
+    if active_config_hash != PANEL_CONFIG_HASH:
         return _failure("config_hash_mismatch")
     results: list[dict[str, object]] = []
     with connect(resolve_dsn(dsn)) as conn:

@@ -48,29 +48,29 @@ INSERT INTO bond_reference_terms (
     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
 )
 ON CONFLICT (cusip9) DO UPDATE SET
-    isin = COALESCE(bond_reference_terms.isin, EXCLUDED.isin),
-    coupon_rate = COALESCE(bond_reference_terms.coupon_rate, EXCLUDED.coupon_rate),
-    coupon_type = COALESCE(bond_reference_terms.coupon_type, EXCLUDED.coupon_type),
-    maturity_date = COALESCE(bond_reference_terms.maturity_date, EXCLUDED.maturity_date),
-    issue_date = COALESCE(bond_reference_terms.issue_date, EXCLUDED.issue_date),
-    seniority = COALESCE(bond_reference_terms.seniority, EXCLUDED.seniority),
-    secured = COALESCE(bond_reference_terms.secured, EXCLUDED.secured),
-    day_count = COALESCE(bond_reference_terms.day_count, EXCLUDED.day_count),
-    payment_frequency = COALESCE(bond_reference_terms.payment_frequency, EXCLUDED.payment_frequency),
-    callable = COALESCE(bond_reference_terms.callable, EXCLUDED.callable),
-    amount_outstanding_mm = COALESCE(bond_reference_terms.amount_outstanding_mm, EXCLUDED.amount_outstanding_mm),
-    amount_outstanding_vendor = COALESCE(bond_reference_terms.amount_outstanding_vendor, EXCLUDED.amount_outstanding_vendor),
-    asset = COALESCE(bond_reference_terms.asset, EXCLUDED.asset),
-    asset_type = COALESCE(bond_reference_terms.asset_type, EXCLUDED.asset_type),
-    bond_type = COALESCE(bond_reference_terms.bond_type, EXCLUDED.bond_type),
-    dated_date = COALESCE(bond_reference_terms.dated_date, EXCLUDED.dated_date),
-    debt_type = COALESCE(bond_reference_terms.debt_type, EXCLUDED.debt_type),
-    figi = COALESCE(bond_reference_terms.figi, EXCLUDED.figi),
-    first_coupon_date = COALESCE(bond_reference_terms.first_coupon_date, EXCLUDED.first_coupon_date),
-    industry_group = COALESCE(bond_reference_terms.industry_group, EXCLUDED.industry_group),
-    industry_sub_group = COALESCE(bond_reference_terms.industry_sub_group, EXCLUDED.industry_sub_group),
-    offering_price_vendor = COALESCE(bond_reference_terms.offering_price_vendor, EXCLUDED.offering_price_vendor),
-    original_offering_vendor = COALESCE(bond_reference_terms.original_offering_vendor, EXCLUDED.original_offering_vendor),
+    isin = EXCLUDED.isin,
+    coupon_rate = EXCLUDED.coupon_rate,
+    coupon_type = EXCLUDED.coupon_type,
+    maturity_date = EXCLUDED.maturity_date,
+    issue_date = EXCLUDED.issue_date,
+    seniority = EXCLUDED.seniority,
+    secured = EXCLUDED.secured,
+    day_count = EXCLUDED.day_count,
+    payment_frequency = EXCLUDED.payment_frequency,
+    callable = EXCLUDED.callable,
+    amount_outstanding_mm = EXCLUDED.amount_outstanding_mm,
+    amount_outstanding_vendor = EXCLUDED.amount_outstanding_vendor,
+    asset = EXCLUDED.asset,
+    asset_type = EXCLUDED.asset_type,
+    bond_type = EXCLUDED.bond_type,
+    dated_date = EXCLUDED.dated_date,
+    debt_type = EXCLUDED.debt_type,
+    figi = EXCLUDED.figi,
+    first_coupon_date = EXCLUDED.first_coupon_date,
+    industry_group = EXCLUDED.industry_group,
+    industry_sub_group = EXCLUDED.industry_sub_group,
+    offering_price_vendor = EXCLUDED.offering_price_vendor,
+    original_offering_vendor = EXCLUDED.original_offering_vendor,
     finnhub_run_id = EXCLUDED.finnhub_run_id,
     finnhub_profile_state = EXCLUDED.finnhub_profile_state,
     finnhub_reason_code = EXCLUDED.finnhub_reason_code,
@@ -203,18 +203,19 @@ def _window(conn: Any, cursor: str | None, limit: int,
             stale_after_days: int) -> list[tuple[str, bool]]:
     rows = conn.execute(
         """
-        WITH cursor_window AS (
-            SELECT c.cusip9 FROM bond_curated_universe c
-            WHERE c.cusip9 > %s ORDER BY c.cusip9 LIMIT %s
-        )
-        SELECT w.cusip9,
-               (r.cusip9 IS NOT NULL AND r.finnhub_profile_state = 'success'
-                AND r.finnhub_fetched_at >= now() - %s::interval) AS already_complete
-        FROM cursor_window w
-        LEFT JOIN bond_reference_terms r ON r.cusip9=w.cusip9
-        ORDER BY w.cusip9
+        SELECT c.cusip9, FALSE AS already_complete
+        FROM bond_curated_universe c
+        LEFT JOIN bond_reference_terms r ON r.cusip9=c.cusip9
+        WHERE c.cusip9 > %s
+          AND (
+              r.cusip9 IS NULL
+              OR r.finnhub_profile_state IS DISTINCT FROM 'success'
+              OR r.finnhub_fetched_at IS NULL
+              OR r.finnhub_fetched_at < now() - %s::interval
+          )
+        ORDER BY c.cusip9 LIMIT %s
         """,
-        (cursor or "", limit, f"{stale_after_days} days"),
+        (cursor or "", f"{stale_after_days} days", limit),
     ).fetchall()
     return [(row[0], bool(row[1]) if len(row) > 1 else False) for row in rows]
 

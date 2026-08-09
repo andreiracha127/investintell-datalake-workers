@@ -4,11 +4,21 @@ from __future__ import annotations
 import contextlib
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pandas as pd
+import pytest
 
 from src.bonds.panel_materializer import MaterializationResult
+from src.bonds.distribution_series import DistributionSeriesError
 from src.workers import bond_panel
+
+
+REG_S_SNAPSHOT_ID = "7d2b63ce-63a0-534b-9741-d10242d399ad"
+REG_S_LINEAGE = {
+    "distribution_rule": "reg_s",
+    "distribution_mapping_snapshot_id": REG_S_SNAPSHOT_ID,
+}
 
 
 def test_panel_refuses_to_bootstrap_a_two_month_history(monkeypatch) -> None:
@@ -35,6 +45,7 @@ def test_current_parent_reads_declared_and_direct_surface_months() -> None:
         None,
         date(2026, 6, 1),
         date(2025, 3, 1),
+        REG_S_LINEAGE,
     )
 
     class Connection:
@@ -51,15 +62,21 @@ def test_current_parent_reads_declared_and_direct_surface_months() -> None:
         "open_month": None,
         "snapshot_max_month": row[5],
         "returns_max_month": row[6],
+        "source_lineage": REG_S_LINEAGE,
     }
 
 
-def test_db_loader_uses_curated_candidates_and_pins_the_static_rating_sha(monkeypatch) -> None:
+def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch) -> None:
     sql_seen: list[tuple[str, tuple[object, ...]]] = []
+    resolver_call: dict[str, object] = {}
 
     def frame(_conn, sql, _params=()):
         sql_seen.append((sql, _params))
-        if "FROM bond_rating_static" in sql:
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1", "UNMAPPED1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "FROM bond_rating_static r JOIN mapping m" in sql:
             return pd.DataFrame({
                 "cusip9": ["037833100"],
                 "rating_bucket": ["A"],
@@ -70,44 +87,65 @@ def test_db_loader_uses_curated_candidates_and_pins_the_static_rating_sha(monkey
             })
         return pd.DataFrame()
 
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        resolver_call.update(
+            snapshot_id=snapshot_id, as_of=as_of, reference_cusip9s=list(reference_cusip9s)
+        )
+        return SimpleNamespace(
+            resolutions={
+                "REFERENCE1": SimpleNamespace(
+                    reference_cusip9="REFERENCE1", reg_s_cusip9="EXECUTION", decision_id="decision-1"
+                )
+            },
+            reason_by_reference={"UNMAPPED1": "no_supported_reg_s_cusip"},
+        )
+
     monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(bond_panel, "resolve_reg_s_cusip_map_from_db", resolve)
 
     _inputs, lineage = bond_panel._load_inputs(
         object(),
         pd.Timestamp("2026-07-01"),
         pd.Timestamp("2026-08-01"),
         date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
         structural_publication_id="92740098-1571-559d-9fb3-119de8321754",
         structural_month=date(2026, 6, 1),
     )
 
-    issuer_sql, issuer_params = next(
-        item for item in sql_seen if "resolved" in item[0] and "sec_cusip_ticker_map" in item[0]
-    )
-    assert "FROM bond_curated_universe u" in issuer_sql
-    assert "ILIKE '%%corporate%%'" in issuer_sql
+    assert resolver_call == {
+        "snapshot_id": REG_S_SNAPSHOT_ID,
+        "as_of": date(2026, 8, 8),
+        "reference_cusip9s": ["REFERENCE1", "UNMAPPED1"],
+    }
+    mapped_queries = [sql for sql, _params in sql_seen if "jsonb_to_recordset" in sql]
+    assert len(mapped_queries) == 5
+    assert all("reference_cusip9 text, execution_cusip9 text, decision_id text" in sql for sql in mapped_queries)
+    assert all("execution_cusip9" in sql for sql in mapped_queries)
+    assert any("FROM bond_observation_daily o JOIN mapping m" in sql for sql in mapped_queries)
+    assert any("FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9" in sql for sql in mapped_queries)
+    assert any("FROM mapping m CROSS JOIN panel_months pm" in sql for sql in mapped_queries)
+    assert any("FROM bond_rating_static r JOIN mapping m" in sql for sql in mapped_queries)
+    issuer_sql = next(sql for sql in mapped_queries if "sec_cusip_ticker_map" in sql)
+    assert "non[-[:space:]]*corporate" in issuer_sql
+    assert "~* '(^|[^[:alnum:]])corporate([^[:alnum:]]|$)'" in issuer_sql
+    assert "ILIKE '%%corporate%%'" not in issuer_sql
     assert "bond_price_fund_asof_v1(pm.price_as_of)" in issuer_sql
     assert "panel_months(month, price_as_of)" in issuer_sql
     assert "a.valid_from <= pm.price_as_of" in issuer_sql
     assert "FROM bond_price_latest_v1" not in issuer_sql
     assert "db_type_reason" in issuer_sql
-    assert issuer_params == (
-        date(2026, 7, 1),
-        date(2026, 7, 31),
-        date(2026, 8, 1),
-        date(2026, 8, 8),
-    )
-    reference_sql = next(sql for sql, _params in sql_seen if "FROM bond_reference_terms" in sql and "concat_ws" not in sql)
+    reference_sql = next(sql for sql in mapped_queries if "FROM mapping m JOIN bond_reference_terms" in sql)
     assert "amount_outstanding_vendor" in reference_sql
     assert "prior.amount_outstanding_k" in reference_sql
     assert "JOIN bond_panel_snapshot" in reference_sql
-    reference_params = next(
-        params for sql, params in sql_seen if "FROM bond_reference_terms" in sql and "concat_ws" not in sql
-    )
-    assert reference_params == (
-        "92740098-1571-559d-9fb3-119de8321754",
-        date(2026, 6, 1),
-    )
+    liquidity_sql = next(sql for sql in mapped_queries if "bond_liquidity_monthly" in sql)
+    assert ")), historical AS" in liquidity_sql
+    assert "), live AS" in liquidity_sql
+    assert lineage["distribution_rule"] == "reg_s"
+    assert lineage["distribution_mapping_snapshot_id"] == REG_S_SNAPSHOT_ID
+    assert lineage["distribution_mapping_count"] == "1"
+    assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
 
 
@@ -142,6 +180,72 @@ def test_initial_stage6_authorization_must_equal_the_exact_code_revision(monkeyp
     assert bond_panel._initial_stage6_authorized(
         {"parent_publication_id": "base"}, "revision-other"
     )
+
+
+def test_parent_distribution_requires_the_selected_reg_s_snapshot() -> None:
+    assert bond_panel._parent_distribution_reasons(
+        {"source_lineage": REG_S_LINEAGE}, REG_S_SNAPSHOT_ID
+    ) == []
+    assert bond_panel._parent_distribution_reasons(
+        {"source_lineage": {"distribution_rule": "rule_144a"}}, REG_S_SNAPSHOT_ID
+    ) == ["parent_distribution_rule_not_reg_s"]
+    assert bond_panel._parent_distribution_reasons(
+        {"source_lineage": REG_S_LINEAGE}, "other-snapshot"
+    ) == ["parent_distribution_mapping_snapshot_mismatch"]
+
+
+def test_panel_refuses_legacy_144a_parent_before_loading_inputs(monkeypatch) -> None:
+    parent = {
+        "publication_id": "legacy",
+        "parent_publication_id": "base",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 6, 1),
+        "open_month": date(2026, 7, 1),
+        "snapshot_max_month": date(2026, 7, 1),
+        "returns_max_month": date(2026, 6, 1),
+        "source_lineage": {"distribution_rule": "rule_144a"},
+    }
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    monkeypatch.setattr(bond_panel, "_load_inputs", lambda *_args, **_kwargs: pytest.fail("must not load"))
+    monkeypatch.setenv("CODE_REVISION", "revision-123")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 8))
+
+    assert outcome["state"] == "gate_failed"
+    assert outcome["input_relation_reasons"] == ["parent_distribution_rule_not_reg_s"]
+
+
+def test_panel_classifies_registry_resolution_failures_as_mapping_gates(monkeypatch) -> None:
+    parent = {
+        "publication_id": "reg-s-parent",
+        "parent_publication_id": "base",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 6, 1),
+        "open_month": date(2026, 7, 1),
+        "snapshot_max_month": date(2026, 7, 1),
+        "returns_max_month": date(2026, 6, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    monkeypatch.setattr(
+        bond_panel,
+        "_load_inputs",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(DistributionSeriesError("snapshot_not_approved")),
+    )
+    monkeypatch.setenv("CODE_REVISION", "revision-123")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 8))
+
+    assert outcome["state"] == "gate_failed"
+    assert outcome["input_relation_reasons"] == ["distribution_mapping:snapshot_not_approved"]
 
 
 def test_stage6_rejects_parent_whose_returns_do_not_reach_declared_close() -> None:
@@ -187,6 +291,7 @@ def test_stage6_accepts_a_structurally_complete_parent_partition() -> None:
         "open_month": date(2026, 7, 1),
         "snapshot_max_month": date(2026, 7, 1),
         "returns_max_month": date(2026, 6, 1),
+        "source_lineage": REG_S_LINEAGE,
     }
 
     assert bond_panel._parent_integrity_reasons(parent) == []
@@ -259,7 +364,7 @@ def test_closed_returns_use_observed_exclusions_and_tombstone_removed_parent_bon
     closed = pd.Timestamp("2026-07-01")
     anchor = pd.DataFrame(
         {
-            "cusip_id": ["NOW_144A", "REMOVED"],
+            "cusip_id": ["NOW_EXCLUDED", "REMOVED"],
             "month": [pd.Timestamp("2026-06-01")] * 2,
             "pr": [100.0, 80.0],
             "ytm": [0.05, 0.08],
@@ -274,20 +379,20 @@ def test_closed_returns_use_observed_exclusions_and_tombstone_removed_parent_bon
     )
     current = pd.DataFrame(
         {
-            "cusip_id": ["NOW_144A"],
+            "cusip_id": ["NOW_EXCLUDED"],
             "month": [closed],
             "pr": [101.0],
             "ytm": [0.05],
             "bond_maturity": [5.0],
             "rating_bucket": ["BBB"],
             "eligibility_state": ["excluded"],
-            "eligibility_reason": ["unsupported_144a"],
+            "eligibility_reason": ["illiquid"],
         }
     )
 
     returns, tombstones = bond_panel._closed_returns_and_tombstones(anchor, current, closed)
 
-    observed = returns.set_index("cusip_id").loc["NOW_144A"]
+    observed = returns.set_index("cusip_id").loc["NOW_EXCLUDED"]
     assert observed["exit_basis"] == "observed"
     assert observed["total_return"] > 0
     terminal = returns.set_index("cusip_id").loc["REMOVED"]
@@ -304,7 +409,7 @@ def test_closed_returns_use_observed_exclusions_and_tombstone_removed_parent_bon
     assert tombstones.loc[0, "flags"] == {"terminal_exit": True, "source": "parent_snapshot"}
 
 
-def test_panel_publishes_only_closed_month_signals_and_returns(monkeypatch) -> None:
+def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals(monkeypatch) -> None:
     closed = pd.Timestamp("2026-07-01")
     open_month = pd.Timestamp("2026-08-01")
     panel = pd.DataFrame(
@@ -345,6 +450,7 @@ def test_panel_publishes_only_closed_month_signals_and_returns(monkeypatch) -> N
         "open_month": date(2026, 7, 1),
         "snapshot_max_month": date(2026, 7, 1),
         "returns_max_month": date(2026, 6, 1),
+        "source_lineage": REG_S_LINEAGE,
     }
     captured: dict[str, object] = {}
 
@@ -353,10 +459,16 @@ def test_panel_publishes_only_closed_month_signals_and_returns(monkeypatch) -> N
     monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
     monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
     monkeypatch.setenv("CODE_REVISION", "test")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
     monkeypatch.setattr(
         bond_panel,
         "_load_inputs",
-        lambda _conn, _closed, _open, _as_of, **_kwargs: ({}, {}),
+        lambda _conn, _closed, _open, _as_of, **_kwargs: ({
+            "static_rating_mapping": pd.DataFrame(),
+        }, {
+            "distribution_mapping_count": "1",
+            "distribution_mapping_omission:no_supported_reg_s_cusip": "1",
+        }),
     )
     monkeypatch.setattr(bond_panel, "build_db_monthly_panel", lambda **_kwargs: panel.copy())
     def snapshots(frame, ratings_pit=None):

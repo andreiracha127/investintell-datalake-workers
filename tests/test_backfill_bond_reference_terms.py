@@ -165,8 +165,8 @@ def test_unexpected_client_failure_is_typed_without_skipping_its_retry_cursor() 
     assert summary["resume_cursor"] is None
 
 
-def test_resume_cursor_and_null_only_upsert_make_a_replay_idempotent() -> None:
-    """Wrong cursor or a replacement assignment would re-fetch or erase Aug-7 values."""
+def test_resume_cursor_and_refresh_upsert_replace_vendor_reference_terms() -> None:
+    """A successful stale refresh must replace values, including explicit vendor nulls."""
     conn = _Connection([("00033GAA3",), ("037833100",)], cursor="000000000")
     client = _Client({"00033GAA3": PROFILE, "037833100": {**PROFILE, "cusip": "037833100"}})
     summary = backfill.run_batch(conn, client, batch_label="2026-08-08", limit=2)
@@ -179,9 +179,13 @@ def test_resume_cursor_and_null_only_upsert_make_a_replay_idempotent() -> None:
     selection = next((sql, params) for sql, params in conn.queries if "FROM bond_curated_universe" in sql)
     assert selection[1][0] == "000000000"
     upsert_sql = next(sql for sql, _ in conn.queries if "INSERT INTO bond_reference_terms (" in sql)
-    assert "COALESCE(bond_reference_terms.coupon_rate, EXCLUDED.coupon_rate)" in upsert_sql
-    assert "COALESCE(bond_reference_terms.day_count, EXCLUDED.day_count)" in upsert_sql
-    assert "COALESCE(bond_reference_terms.industry_group, EXCLUDED.industry_group)" in upsert_sql
+    for column in backfill._TERM_COLUMNS[1:]:
+        assert f"{column} = EXCLUDED.{column}" in upsert_sql
+        assert f"COALESCE(bond_reference_terms.{column}, EXCLUDED.{column})" not in upsert_sql
+    # CUSIP identity and governed loader metadata stay outside the refresh surface.
+    assert "cusip9 = EXCLUDED.cusip9" not in upsert_sql
+    assert "batch_label = EXCLUDED.batch_label" not in upsert_sql
+    assert "loaded_at = EXCLUDED.loaded_at" not in upsert_sql
 
 
 def test_transient_failure_stops_before_cursor_advance_and_retries_same_cusip() -> None:
@@ -227,17 +231,21 @@ def test_requested_cusip_must_be_a_cusip9_before_any_profile_terms_are_accepted(
         backfill.profile_identity_basis("00033GAA", PROFILE)
 
 
-def test_already_complete_is_counted_inside_the_bounded_cursor_window() -> None:
-    """A hardcoded zero would hide completed rows that the batch deliberately skipped."""
-    conn = _Connection([("00033GAA3", True), ("037833100", False)], cursor="000000000")
+def test_window_excludes_fresh_successes_before_applying_the_limit() -> None:
+    """A completed prefix must not consume a bounded run ahead of stale/missing CUSIPs."""
+    conn = _Connection([("037833100", False)], cursor="000000000")
     summary = backfill.run_batch(
         conn, _Client({"037833100": {**PROFILE, "cusip": "037833100"}}),
-        batch_label="2026-08-08", limit=2,
+        batch_label="2026-08-08", limit=1,
     )
 
-    assert summary["already_complete"] == 1
+    assert summary["already_complete"] == 0
     assert summary["attempted"] == 1
     assert summary["cursor_after"] == "037833100"
+    selection_sql = next(sql for sql, _ in conn.queries if "FROM bond_curated_universe" in sql)
+    eligibility = "r.finnhub_profile_state IS DISTINCT FROM 'success'"
+    assert eligibility in selection_sql
+    assert selection_sql.index(eligibility) < selection_sql.index("ORDER BY c.cusip9 LIMIT %s")
 
 
 def test_schema_declares_worker_writer_ownership_and_legacy_constraints() -> None:

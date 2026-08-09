@@ -220,7 +220,15 @@ Verified by refreshing it `SET ROLE worker_writer` (10,073 rows). If the matview
 is ever rebuilt by an operator running as `postgres`, this has to be re-applied —
 the run reports `matview_failed` and exits non-zero if it is not.
 
-## 3e. One-shot T3 parity gate before the first Stage 6 run
+## 3e. Legacy T3 parity gate and the Regulation S replacement
+
+The T3 gate below is retained as the historical contract for the frozen
+`0c0d78a866bc1090` base. It is **not** an activation gate for the Regulation S
+panel: production evidence collected on 2026-08-09 showed that the 10,206
+`bond_curated_universe` CUSIP9s are the Rule 144A reference leg, while the
+product is intended for non-US investors and must execute on the paired
+Regulation S leg. Comparing a Regulation S rebuild with that frozen Rule 144A
+base would compare different securities and cannot authorize Stage 6.
 
 ### T3 parity gate contracts
 
@@ -237,12 +245,15 @@ once; exclusions require a nonblank typed reason; and included rows must satisfy
 their required identity. Frozen-versus-rebuilt membership size and overlap stay
 in the JSON for investigation but never block the verdict.
 
-The production research cohort excludes a price observation whose point-in-time
-`db_type` is the canonical integral value `3`, with typed reason
-`unsupported_144a`. The model has no 144A covariate. A non-144A `db_type` is not
-positive proof of a Reg S exemption, so the worker does not relabel registered
-or unknown bonds as Reg S; a future positive Reg S classifier needs its own
-point-in-time source contract.
+`db_type`, a numeric-versus-alphanumeric CUSIP, an ISIN prefix, and the absence
+of a Rule 144A label are not distribution-series classifiers. The current
+CUSIP9 is only a Rule 144A reference key. Stage 6 may use an execution CUSIP9
+only when one immutable approved mapping snapshot links that reference to an
+explicitly labelled Regulation S CUSIP/CINS in the same EDGAR document and
+issue block. Regulation S pairs documented only by ISIN or Common Code remain
+governed evidence but are ineligible for the CUSIP-keyed panel. Missing,
+conflicting, or ambiguous mappings fail closed; prices, ratings, and liquidity
+never fall back to the Rule 144A leg.
 
 Formula comparison is performed only for a like-for-like common included cohort
 of at least the existing `MIN_MONTH_ROWS` (`300`) bonds. All four existing

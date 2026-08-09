@@ -31,7 +31,7 @@ def test_spread_is_ytm_minus_interpolated_treasury_never_oas() -> None:
     assert result.iloc[0] == pytest.approx(0.010)
 
 
-def test_eligibility_has_a_typed_reason_and_excludes_missing_sector() -> None:
+def test_eligibility_has_a_typed_reason_without_inferring_distribution_rule() -> None:
     rows = pd.DataFrame([
         {"cusip_id": "OK", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
          "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
@@ -42,13 +42,13 @@ def test_eligibility_has_a_typed_reason_and_excludes_missing_sector() -> None:
         {"cusip_id": "144A", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
          "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 3, "currency": "USD", "asset_class": "corporate"},
     ])
-    assert eligibility(rows).tolist() == ["eligible", "missing_sector", "missing_db_type", "unsupported_144a"]
+    assert eligibility(rows).tolist() == ["eligible", "missing_sector", "eligible", "eligible"]
     snapshot = build_universe_snapshot(rows)
     assert snapshot[["cusip_id", "eligibility_state", "eligibility_reason"]].to_dict("records") == [
         {"cusip_id": "OK", "eligibility_state": "included", "eligibility_reason": "eligible"},
         {"cusip_id": "SECTOR", "eligibility_state": "excluded", "eligibility_reason": "missing_sector"},
-        {"cusip_id": "DBTYPE", "eligibility_state": "excluded", "eligibility_reason": "missing_db_type"},
-        {"cusip_id": "144A", "eligibility_state": "excluded", "eligibility_reason": "unsupported_144a"},
+        {"cusip_id": "DBTYPE", "eligibility_state": "included", "eligibility_reason": "eligible"},
+        {"cusip_id": "144A", "eligibility_state": "included", "eligibility_reason": "eligible"},
     ]
 
 
@@ -181,6 +181,38 @@ def test_monthly_returns_persists_typed_terminal_exit_rows() -> None:
     assert row["exit_basis"] == "distressed"
     assert row["exit_reason"] == "distressed"
     assert row["total_return"] == pytest.approx((40. - 60.) / 60.)
+
+
+def test_monthly_returns_prefers_contractual_coupon_over_implied_coupon() -> None:
+    panel = pd.DataFrame({
+        "cusip_id": ["AAA", "AAA"],
+        "month": pd.to_datetime(["2024-01-01", "2024-02-01"]),
+        "pr": [80., 80.],
+        "ytm": [.12, .12],
+        "bond_maturity": [5., 5.],
+        "coupon_pct": [6., 6.],
+    })
+
+    row = monthly_returns(panel).iloc[0]
+
+    assert row["price_return"] == 0
+    assert row["carry_return"] == pytest.approx((6. / 12) / 80.)
+    assert row["total_return"] == pytest.approx((6. / 12) / 80.)
+
+
+def test_matured_exit_prefers_contractual_coupon_when_present() -> None:
+    attrs = pd.DataFrame({
+        "cusip_id": ["AAA"],
+        "bond_maturity": [1.],
+        "pr": [80.],
+        "ytm": [.12],
+        "coupon_pct": [6.],
+        "rating_bucket": ["BBB"],
+    })
+
+    realized, _exited = apply_typed_exits(np.array([np.nan]), attrs, np.array([True]))
+
+    assert realized[0] == pytest.approx((100. + 6. / 12 - 80.) / 80.)
 
 
 def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spread() -> None:

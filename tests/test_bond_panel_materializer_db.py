@@ -191,6 +191,31 @@ def test_base_rerun_delta_and_failed_promotion_against_postgres() -> None:
                     last_closed_month=date(2024, 3, 1),
                     open_month=date(2024, 4, 1),
                 )
+
+            sibling = materialize(
+                conn,
+                as_of=date(2024, 3, 31),
+                code_revision="db-test-sibling",
+                facts=_facts(["2024-03-01"], ["2024-03-01"]),
+                source_lineage={"test": "db-sibling"},
+            )
+            with pytest.raises(MaterializationError, match="no longer current"):
+                materialize(
+                    conn,
+                    as_of=date(2024, 3, 15),
+                    code_revision="db-test-delta",
+                    facts=_facts(["2024-02-01", "2024-03-01"], ["2024-02-01"]),
+                    source_lineage={"test": "db"},
+                    parent_publication_id=base.publication_id,
+                    first_month=date(2024, 1, 1),
+                    last_closed_month=date(2024, 2, 1),
+                    open_month=date(2024, 3, 1),
+                )
+            pointer = conn.execute(
+                "SELECT publication_id FROM bond_panel_app_pointer "
+                "WHERE product='bond_panel_v1'"
+            ).fetchone()[0]
+            assert str(pointer) == sibling.publication_id
         finally:
             conn.execute("SET search_path TO public")
             conn.execute(

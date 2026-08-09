@@ -924,6 +924,7 @@ def test_overall_fails_closed_for_invalid_declared_month_coverage(
 
 
 def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
     reference_keys = pd.Series(_cusips(parity.MIN_MONTH_ROWS))
     fit_diagnostics = _fit_diagnostics(parity.PARITY_MONTHS[0])
     comparisons = iter([
@@ -971,7 +972,20 @@ def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -
     }
 
 
-def test_run_refuses_config_mismatch_without_connecting(monkeypatch) -> None:
+def test_run_retires_legacy_144a_parity_for_the_reg_s_config_without_connecting(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))
+
+    outcome = parity.run("postgresql://example")
+
+    assert outcome == {
+        "state": "parity_failed",
+        "reason": "legacy_rule_144a_parity_not_applicable_to_reg_s",
+        "aborted": True,
+        "months": [],
+    }
+
+
+def test_run_refuses_unknown_config_mismatch_without_connecting(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: "wrong")
     monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))
 
@@ -1042,6 +1056,7 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
 
 
 def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
     calls: list[tuple[pd.Timestamp, pd.Timestamp, date]] = []
     structural_calls: list[dict[str, object]] = []
     fit_calls: list[pd.Timestamp] = []
@@ -1133,6 +1148,7 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
 
 
 def test_run_refuses_a_different_current_publication_identity(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
     class Connection:
         def execute(self, statement, _params=()):
             row = (
@@ -1154,6 +1170,7 @@ def test_run_refuses_a_different_current_publication_identity(monkeypatch) -> No
 
 
 def test_run_refuses_a_different_base_fingerprint(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
     class Connection:
         def execute(self, statement, _params=()):
             row = (

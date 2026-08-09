@@ -20,6 +20,7 @@ FROZEN = {
     "recovery_rate": 0.40,
     "book_label": "small_notional_research_backtest",
     "vol_target_annual": 0.05,
+    "distribution_rule": "reg_s_explicit_mapping_v1",
 }
 
 

@@ -157,6 +157,23 @@ class InMemoryPublicationStore:
                 latest[key] = row
         return [latest[key] for key in sorted(latest, key=str)]
 
+    def promote(
+        self,
+        publication_id: str,
+        *,
+        expected_parent_id: str | None,
+        record_event: bool = True,
+    ) -> None:
+        """Advance a base pointer, or compare-and-set a delta pointer."""
+        if expected_parent_id is not None and self.pointer != expected_parent_id:
+            raise MaterializationError(
+                "delta parent is no longer current pointer",
+                reason_code="panel_gate_failed",
+            )
+        self.pointer = publication_id
+        if record_event:
+            self.events.append("pointer")
+
 
 def install_schema(conn: Any) -> None:
     """Install the idempotent DDL under the caller's transaction discipline."""
@@ -191,7 +208,11 @@ def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_re
         for surface in SURFACES:
             if not store.logical_rows(publication_id, surface):
                 raise MaterializationError("cannot reuse publication with empty logical surface")
-        store.pointer = publication_id
+        store.promote(
+            publication_id,
+            expected_parent_id=parent_publication_id,
+            record_event=False,
+        )
         return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
     store.publications[publication_id] = {
         "status": "prepared", "fingerprint": fingerprint, "row_counts": counts,
@@ -213,8 +234,12 @@ def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_re
             publication["status"] = "failed"
             publication["failure_reason"] = "empty_logical_surface"
             raise MaterializationError("empty logical surface")
-    store.pointer = publication_id
-    store.events.append("pointer")
+    try:
+        store.promote(publication_id, expected_parent_id=parent_publication_id)
+    except MaterializationError:
+        publication["status"] = "failed"
+        publication["failure_reason"] = "parent_no_longer_current"
+        raise
     return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
 
 
@@ -241,6 +266,28 @@ def _insert_rows(cur: Any, publication_id: str, facts: dict[str, list[dict[str, 
             cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, {state_column}, eligibility_reason, payload) VALUES (%s, %s, %s, COALESCE((%s::jsonb ->> 'eligibility_state'), 'included'), COALESCE((%s::jsonb ->> 'eligibility_reason'), 'eligible'), %s::jsonb)", [(pub, month, cusip, payload, payload, payload) for pub, month, cusip, payload in rows])
 
 
+def _promote_pointer(cur: Any, publication_id: str, parent_publication_id: str | None) -> None:
+    """Advance base publications, and compare-and-set delta publications."""
+    if parent_publication_id is None:
+        cur.execute(
+            "INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES "
+            "('bond_panel_v1', %s) ON CONFLICT (product) DO UPDATE SET "
+            "publication_id = excluded.publication_id, changed_at = now()",
+            (publication_id,),
+        )
+        return
+    cur.execute(
+        "UPDATE bond_panel_app_pointer SET publication_id = %s, changed_at = now() "
+        "WHERE product = 'bond_panel_v1' AND publication_id = %s",
+        (publication_id, parent_publication_id),
+    )
+    if cur.rowcount != 1:
+        raise MaterializationError(
+            "delta parent is no longer current pointer",
+            reason_code="panel_gate_failed",
+        )
+
+
 def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str], parent_publication_id: str | None, first_month: date | None, last_closed_month: date | None, open_month: date | None) -> MaterializationResult:
     counts, inferred_first, inferred_last = _validate_input(facts, source_lineage)
     fingerprint = _fingerprint(as_of, code_revision, facts, source_lineage, parent_publication_id)
@@ -256,7 +303,7 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
                     cur.execute(f"SELECT count(*) FROM {table} WHERE publication_id = %s", (publication_id,))
                     if cur.fetchone()[0] != counts[surface]:
                         raise MaterializationError("deterministic rerun row coverage mismatch")
-                cur.execute("INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES ('bond_panel_v1', %s) ON CONFLICT (product) DO UPDATE SET publication_id = excluded.publication_id, changed_at = now()", (publication_id,))
+                _promote_pointer(cur, publication_id, parent_publication_id)
                 return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
             parent: dict[str, Any] | None = None
             if parent_publication_id is not None:
@@ -280,7 +327,7 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
             cur.execute("UPDATE bond_panel_publications SET publication_status = 'validated', validated_at = now() WHERE publication_id = %s AND publication_status = 'prepared' AND config_hash = %s AND input_fingerprint = %s", (publication_id, config_hash(), fingerprint))
             if cur.rowcount != 1:
                 raise MaterializationError("config and fingerprint gate failed")
-            cur.execute("INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES ('bond_panel_v1', %s) ON CONFLICT (product) DO UPDATE SET publication_id = excluded.publication_id, changed_at = now()", (publication_id,))
+            _promote_pointer(cur, publication_id, parent_publication_id)
     return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
 
 

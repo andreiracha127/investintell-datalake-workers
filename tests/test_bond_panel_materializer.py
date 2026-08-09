@@ -55,6 +55,51 @@ def test_delta_logical_pack_inherits_immutable_months_and_newest_month_wins() ->
     assert [row["month"] for row in pack] == ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]
 
 
+def test_delta_does_not_overwrite_a_sibling_pointer_advanced_after_validation() -> None:
+    store = InMemoryPublicationStore()
+    parent = materialize_panel(
+        store,
+        as_of=date(2024, 1, 31),
+        code_revision="abc",
+        facts=_facts(),
+        source_lineage={"panel": "parent"},
+    )
+    sibling = materialize_panel(
+        store,
+        as_of=date(2024, 1, 31),
+        code_revision="abc",
+        facts=_facts(),
+        source_lineage={"panel": "sibling"},
+    )
+    store.pointer = parent.publication_id
+
+    class AdvancePointerAfterValidation(list[str]):
+        def append(self, event: str) -> None:
+            super().append(event)
+            if event == "validated":
+                store.pointer = sibling.publication_id
+
+    store.events = AdvancePointerAfterValidation()
+    delta_facts = _facts("2024-02-01")
+    delta_facts["snapshot"] += _facts("2024-03-01")["snapshot"]
+    delta_facts["rating_pit"] += _facts("2024-03-01")["rating_pit"]
+    with pytest.raises(MaterializationError, match="no longer current"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 2, 29),
+            code_revision="abc",
+            facts=delta_facts,
+            source_lineage={"panel": "delta"},
+            parent_publication_id=parent.publication_id,
+            first_month=date(2024, 1, 1),
+            last_closed_month=date(2024, 2, 1),
+            open_month=date(2024, 3, 1),
+        )
+
+    assert store.pointer == sibling.publication_id
+    assert [publication["status"] for publication in store.publications.values()].count("failed") == 1
+
+
 def test_empty_lineage_is_a_gate_failure_that_cannot_move_pointer() -> None:
     store = InMemoryPublicationStore()
     original = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="abc", facts=_facts(), source_lineage={"panel": "run-1"})
