@@ -168,6 +168,17 @@ def test_provider_profile_error_is_retryable_and_does_not_advance_cursor() -> No
     assert not any("UPDATE bond_reference_terms_finnhub_run" in sql for sql, _ in conn.queries)
 
 
+def test_attempt_ledger_ddl_allows_provider_error_only_for_transient_state() -> None:
+    """The persisted Python retry reason must satisfy the ledger CHECK on new and existing tables."""
+    ddl = backfill.SCHEMA_PATH.read_text(encoding="utf-8")
+
+    assert "bond_reference_terms_finnhub_attempt_reason_state_ck" in ddl
+    assert "(profile_state = 'transient' AND reason_code IN ('transient_error','unexpected_error','provider_error'))" in ddl
+    assert ddl.count("'provider_error'") == 2
+    assert "(profile_state = 'empty' AND reason_code = 'provider_error')" not in ddl
+    assert "(profile_state = 'refused' AND reason_code IN ('provider_error'))" not in ddl
+
+
 def test_unexpected_client_failure_is_typed_without_skipping_its_retry_cursor() -> None:
     """An unclassified client exception must be recorded yet remain retryable."""
     conn = _Connection([("00033GAA3",)])

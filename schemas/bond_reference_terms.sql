@@ -112,11 +112,11 @@ CREATE TABLE IF NOT EXISTS bond_reference_terms_finnhub_attempt (
     profile_state        text NOT NULL CHECK (profile_state IN ('success','empty','refused','transient','config_error')),
     reason_code          text NOT NULL,
     source_lineage       jsonb NOT NULL CHECK (jsonb_typeof(source_lineage) = 'object' AND source_lineage <> '{}'::jsonb),
-    CHECK (
+    CONSTRAINT bond_reference_terms_finnhub_attempt_reason_state_ck CHECK (
         (profile_state = 'success' AND reason_code IN ('returned_cusip','isin_embedded_cusip9')) OR
         (profile_state = 'empty' AND reason_code = 'empty_profile') OR
         (profile_state = 'refused' AND reason_code IN ('invalid_requested_cusip','cusip_mismatch','isin_cusip_mismatch','missing_identity_evidence')) OR
-        (profile_state = 'transient' AND reason_code IN ('transient_error','unexpected_error')) OR
+        (profile_state = 'transient' AND reason_code IN ('transient_error','unexpected_error','provider_error')) OR
         (profile_state = 'config_error' AND reason_code = 'config_error')
     ),
     PRIMARY KEY (run_id, cusip9, fetched_at)
@@ -124,6 +124,43 @@ CREATE TABLE IF NOT EXISTS bond_reference_terms_finnhub_attempt (
 
 CREATE INDEX IF NOT EXISTS bond_reference_terms_finnhub_attempt_cusip_idx
     ON bond_reference_terms_finnhub_attempt (cusip9, fetched_at DESC);
+
+-- Existing attempt ledgers predate the named reason/state constraint. Replace
+-- only that composite CHECK so the runtime's retryable provider_error reason
+-- remains valid without broadening any other profile_state taxonomy.
+DO $$
+DECLARE
+    legacy_constraint record;
+BEGIN
+    FOR legacy_constraint IN
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'bond_reference_terms_finnhub_attempt'::regclass
+          AND contype = 'c'
+          AND conname <> 'bond_reference_terms_finnhub_attempt_reason_state_ck'
+          AND pg_get_constraintdef(oid) LIKE '%profile_state%'
+          AND pg_get_constraintdef(oid) LIKE '%reason_code%'
+    LOOP
+        EXECUTE format(
+            'ALTER TABLE bond_reference_terms_finnhub_attempt DROP CONSTRAINT %I',
+            legacy_constraint.conname
+        );
+    END LOOP;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'bond_reference_terms_finnhub_attempt'::regclass
+          AND conname = 'bond_reference_terms_finnhub_attempt_reason_state_ck'
+    ) THEN
+        ALTER TABLE bond_reference_terms_finnhub_attempt
+            ADD CONSTRAINT bond_reference_terms_finnhub_attempt_reason_state_ck CHECK (
+                (profile_state = 'success' AND reason_code IN ('returned_cusip','isin_embedded_cusip9')) OR
+                (profile_state = 'empty' AND reason_code = 'empty_profile') OR
+                (profile_state = 'refused' AND reason_code IN ('invalid_requested_cusip','cusip_mismatch','isin_cusip_mismatch','missing_identity_evidence')) OR
+                (profile_state = 'transient' AND reason_code IN ('transient_error','unexpected_error','provider_error')) OR
+                (profile_state = 'config_error' AND reason_code = 'config_error')
+            );
+    END IF;
+END $$;
 
 -- Inline CHECKs above cover fresh relations; existing production tables need
 -- additive constraints too.  Named constraints make this re-applicable.

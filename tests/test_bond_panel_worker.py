@@ -187,6 +187,9 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     liquidity_sql = next(sql for sql in mapped_queries if "bond_liquidity_monthly" in sql)
     assert ")), historical AS" in liquidity_sql
     assert "), live AS" in liquidity_sql
+    assert "l.month IN (%s, %s)" in liquidity_sql
+    assert "AND m.month = %s WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
+    assert "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical)" in liquidity_sql
     assert lineage["distribution_rule"] == "reg_s"
     assert lineage["distribution_mapping_snapshot_id"] == REG_S_SNAPSHOT_ID
     assert lineage["distribution_mapping_count"] == "1"
