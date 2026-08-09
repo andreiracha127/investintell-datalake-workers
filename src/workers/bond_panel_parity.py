@@ -502,8 +502,10 @@ def _spread_semantics(
 ) -> tuple[dict[str, float | int | None], bool]:
     maturity = "bond_maturity" if "bond_maturity" in frame else "maturity_years"
     required = {"month", "ytm", "spread_final", "spread_final_bps", maturity}
-    if frame.empty or not required.issubset(frame):
+    if not required.issubset(frame):
         return {"rows": int(len(frame)), "max_abs_error": None, "max_bps_conversion_error": None}, False
+    if frame.empty:
+        return {"rows": 0, "max_abs_error": None, "max_bps_conversion_error": None}, True
     candidate = frame[["month", "ytm", "spread_final", "spread_final_bps", maturity]].copy()
     candidate = candidate.rename(columns={maturity: "bond_maturity"}).reset_index(drop=True)
     expected = pd.to_numeric(compute_spread(candidate, monthly_curve), errors="coerce")

@@ -598,6 +598,37 @@ def test_compare_month_reports_noncomparable_when_common_cohort_is_below_minimum
     assert result["formula_parity"]["evaluated"] is False
 
 
+def test_compare_month_reports_noncomparable_when_every_reference_key_is_excluded() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt = _snapshot(
+        month,
+        n=10,
+        offset=200,
+        eligibility_state="excluded",
+        eligibility_reason="missing_currency",
+    )
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=10, offset=100),
+        frozen_rv=_rv(month, n=10, offset=100),
+        rebuilt_snapshot=rebuilt,
+        rebuilt_rv=pd.DataFrame(),
+    )
+
+    assert result["state"] == "parity_not_comparable"
+    assert result["aborted"] is False
+    assert result["reference_accounting"]["passed"] is True
+    assert result["reference_accounting"]["included_size"] == 0
+    assert result["reference_accounting"]["excluded_size"] == 10
+    assert result["hard_gates"]["spread_numeric_semantics"] is True
+    assert result["spread_semantics"]["rebuilt"] == {
+        "rows": 0,
+        "max_abs_error": None,
+        "max_bps_conversion_error": None,
+    }
+
+
 def test_compare_month_passes_with_historical_membership_drift_as_diagnostic() -> None:
     month = pd.Timestamp("2025-01-01")
 
@@ -772,6 +803,37 @@ def test_overall_passes_one_noncomparable_and_one_comparable() -> None:
     }
     assert all(result["gates"].values())
     assert result["failure_reasons"] == {}
+
+
+def test_overall_passes_when_an_exact_fully_excluded_month_is_noncomparable() -> None:
+    month = parity.PARITY_MONTHS[0]
+    rebuilt = _snapshot(
+        month,
+        n=10,
+        offset=200,
+        eligibility_state="excluded",
+        eligibility_reason="missing_currency",
+    )
+    noncomparable = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=10, offset=100),
+        frozen_rv=_rv(month, n=10, offset=100),
+        rebuilt_snapshot=rebuilt,
+        rebuilt_rv=pd.DataFrame(),
+    )
+
+    result = parity._overall_verdict([
+        noncomparable,
+        _monthly_result(parity.PARITY_MONTHS[1], "parity_passed", True),
+    ])
+
+    assert result["state"] == "parity_passed"
+    assert result["aborted"] is False
+    assert result["counts"] == {
+        "failed_months": 0,
+        "comparable_passed_months": 1,
+        "noncomparable_months": 1,
+    }
 
 
 def test_overall_fails_without_comparable_month() -> None:
