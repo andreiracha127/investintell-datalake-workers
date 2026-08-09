@@ -240,7 +240,9 @@ def _rv_structure(
         _normalized_keys(rebuilt_included["cusip_id"]).dropna().tolist()
     )
     diagnostic_rows = (
-        fit_diagnostics.loc[pd.to_datetime(fit_diagnostics["month"]).eq(month)]
+        fit_diagnostics.loc[
+            pd.to_datetime(fit_diagnostics["month"], errors="coerce").eq(month)
+        ]
         if "month" in fit_diagnostics
         else fit_diagnostics.iloc[0:0]
     )

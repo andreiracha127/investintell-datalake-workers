@@ -214,6 +214,17 @@ def test_rv_structure_rejects_absent_multiple_or_wrong_month_diagnostics(
     assert result["gates"]["fit_diagnostics_valid"] is False
 
 
+def test_rv_structure_rejects_unparseable_diagnostic_month() -> None:
+    month = pd.Timestamp("2025-01-01")
+    diagnostics = _fit_diagnostics(month)
+    diagnostics["month"] = pd.Series(["not-a-date"], dtype="object")
+
+    result = parity._rv_structure(_rv(month), _snapshot(month), diagnostics, month)
+
+    assert result["passed"] is False
+    assert result["gates"]["fit_diagnostics_valid"] is False
+
+
 def test_rv_structure_rejects_skipped_fit() -> None:
     month = pd.Timestamp("2025-01-01")
 
