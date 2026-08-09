@@ -88,6 +88,23 @@ def _fit_diagnostics(
     })
 
 
+def _monthly_result(
+    month: pd.Timestamp,
+    state: str,
+    comparable: bool,
+    *,
+    aborted: bool = False,
+    reason: str | None = None,
+) -> dict[str, object]:
+    return {
+        "month": month.date().isoformat(),
+        "state": state,
+        "comparable": comparable,
+        "aborted": aborted,
+        "reason": reason,
+    }
+
+
 def _compare_fixture(
     month: pd.Timestamp,
     *,
@@ -133,6 +150,54 @@ def test_rv_structure_accepts_finite_standardized_fit() -> None:
     assert result["fit_row_count"] == parity.MIN_MONTH_ROWS
     assert abs(result["rv_mean"]) <= parity.RV_MEAN_TOLERANCE
     assert abs(result["rv_population_std"] - 1) <= parity.RV_STD_TOLERANCE
+
+
+def test_rv_structure_rejects_permuted_rv_signal_even_when_moments_survive() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv["rv_signal"] = rebuilt_rv["rv_signal"].iloc[::-1].to_numpy()
+
+    result = _compare_fixture(month, rebuilt_rv=rebuilt_rv)
+
+    assert result["state"] == "parity_failed"
+    assert result["rv_structure"]["gates"]["rv_signal_matches_residual_zscore"] is False
+    assert result["rv_structure"]["max_rv_signal_error"] > 0.0
+
+
+def test_rv_structure_rejects_residual_identity_corruption() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_rv = _rv(month)
+    rebuilt_rv.loc[0, "residual_bps"] += 1.0
+
+    result = _compare_fixture(month, rebuilt_rv=rebuilt_rv)
+
+    assert result["state"] == "parity_failed"
+    assert result["rv_structure"]["gates"]["residual_matches_spread_minus_fitted"] is False
+    assert result["rv_structure"]["max_residual_identity_error"] == pytest.approx(1.0)
+
+
+def test_rv_structure_rejects_rekeyed_rv_tuples_that_preserve_marginal_moments() -> None:
+    month = pd.Timestamp("2025-01-01")
+    rebuilt_snapshot = _snapshot(month)
+    spread_bps = np.arange(parity.MIN_MONTH_ROWS, dtype=float) + 100.0
+    rebuilt_snapshot["spread_final"] = spread_bps / 10_000.0
+    rebuilt_snapshot["spread_final_bps"] = spread_bps
+    rebuilt_rv = _rv(month)
+    rebuilt_rv["spread_bps"] = spread_bps
+    rebuilt_rv["fitted_bps"] = spread_bps - rebuilt_rv["residual_bps"]
+    rebuilt_rv[["spread_bps", "fitted_bps", "residual_bps", "rv_signal"]] = (
+        rebuilt_rv[["spread_bps", "fitted_bps", "residual_bps", "rv_signal"]]
+        .iloc[::-1]
+        .to_numpy()
+    )
+
+    result = _compare_fixture(
+        month, rebuilt_snapshot=rebuilt_snapshot, rebuilt_rv=rebuilt_rv
+    )
+
+    assert result["state"] == "parity_failed"
+    assert result["rv_structure"]["gates"]["spread_matches_included_snapshot"] is False
+    assert result["rv_structure"]["max_snapshot_spread_error"] > 0.0
 
 
 def test_rv_structure_rejects_empty_output() -> None:
@@ -693,8 +758,8 @@ def test_compare_month_rebuilt_rv_structure_failure_blocks_comparable_month(
 
 def test_overall_passes_one_noncomparable_and_one_comparable() -> None:
     result = parity._overall_verdict([
-        {"state": "parity_not_comparable", "comparable": False},
-        {"state": "parity_passed", "comparable": True},
+        _monthly_result(parity.PARITY_MONTHS[0], "parity_not_comparable", False),
+        _monthly_result(parity.PARITY_MONTHS[1], "parity_passed", True),
     ])
 
     assert result["state"] == "parity_passed"
@@ -705,18 +770,14 @@ def test_overall_passes_one_noncomparable_and_one_comparable() -> None:
         "comparable_passed_months": 1,
         "noncomparable_months": 1,
     }
-    assert result["gates"] == {
-        "all_months_nonblocking": True,
-        "at_least_one_comparable_month": True,
-        "all_comparable_months_passed": True,
-    }
+    assert all(result["gates"].values())
     assert result["failure_reasons"] == {}
 
 
 def test_overall_fails_without_comparable_month() -> None:
     result = parity._overall_verdict([
-        {"state": "parity_not_comparable", "comparable": False},
-        {"state": "parity_not_comparable", "comparable": False},
+        _monthly_result(parity.PARITY_MONTHS[0], "parity_not_comparable", False),
+        _monthly_result(parity.PARITY_MONTHS[1], "parity_not_comparable", False),
     ])
 
     assert result["state"] == "parity_failed"
@@ -727,22 +788,18 @@ def test_overall_fails_without_comparable_month() -> None:
         "comparable_passed_months": 0,
         "noncomparable_months": 2,
     }
-    assert result["gates"] == {
-        "all_months_nonblocking": True,
-        "at_least_one_comparable_month": False,
-        "all_comparable_months_passed": True,
-    }
+    assert result["gates"]["at_least_one_comparable_month"] is False
+    assert result["gates"]["monthly_contract_valid"] is True
     assert result["failure_reasons"] == {}
 
 
 def test_overall_monthly_failure_blocks_a_comparable_pass() -> None:
     result = parity._overall_verdict([
-        {"state": "parity_passed", "comparable": True},
-        {
-            "state": "parity_failed",
-            "comparable": False,
-            "reason": "gate_failed",
-        },
+        _monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True),
+        _monthly_result(
+            parity.PARITY_MONTHS[1], "parity_failed", False,
+            aborted=True, reason="gate_failed",
+        ),
     ])
 
     assert result["state"] == "parity_failed"
@@ -753,20 +810,63 @@ def test_overall_monthly_failure_blocks_a_comparable_pass() -> None:
         "comparable_passed_months": 1,
         "noncomparable_months": 0,
     }
-    assert result["gates"] == {
-        "all_months_nonblocking": False,
-        "at_least_one_comparable_month": True,
-        "all_comparable_months_passed": True,
-    }
+    assert result["gates"]["all_months_nonblocking"] is False
     assert result["failure_reasons"] == {"gate_failed": 1}
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        _monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True, aborted=True),
+        _monthly_result(parity.PARITY_MONTHS[0], "unknown_state", True),
+    ],
+)
+def test_overall_fails_closed_for_invalid_monthly_state_contract(
+    record: dict[str, object],
+) -> None:
+    result = parity._overall_verdict([
+        record,
+        _monthly_result(parity.PARITY_MONTHS[1], "parity_passed", True),
+    ])
+
+    assert result["state"] == "parity_failed"
+    assert result["reason"] == "monthly_contract_failure"
+    assert result["aborted"] is True
+    assert result["gates"]["monthly_contract_valid"] is False
+    assert result["invalid_month_results"]
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        [_monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True)],
+        [
+            _monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True),
+            _monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True),
+        ],
+        [
+            _monthly_result(parity.PARITY_MONTHS[0], "parity_passed", True),
+            _monthly_result(pd.Timestamp("2025-02-01"), "parity_passed", True),
+        ],
+    ],
+)
+def test_overall_fails_closed_for_invalid_declared_month_coverage(
+    records: list[dict[str, object]],
+) -> None:
+    result = parity._overall_verdict(records)
+
+    assert result["state"] == "parity_failed"
+    assert result["reason"] == "monthly_contract_failure"
+    assert result["gates"]["declared_months_exactly_once"] is False
+    assert result["month_declaration"]["missing"] or result["month_declaration"]["duplicates"] or result["month_declaration"]["unexpected"]
 
 
 def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -> None:
     reference_keys = pd.Series(_cusips(parity.MIN_MONTH_ROWS))
     fit_diagnostics = _fit_diagnostics(parity.PARITY_MONTHS[0])
     comparisons = iter([
-        {"state": "parity_not_comparable", "comparable": False},
-        {"state": "parity_passed", "comparable": True},
+        _monthly_result(parity.PARITY_MONTHS[0], "parity_not_comparable", False),
+        _monthly_result(parity.PARITY_MONTHS[1], "parity_passed", True),
     ])
 
     class Connection:
@@ -916,7 +1016,7 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     monkeypatch.setattr(parity, "build_db_monthly_panel", lambda **_kwargs: _snapshot(_kwargs["months"][0]).assign(coupon_pct=5.0, maturity_date=pd.Timestamp("2030-01-01"), reason_code="quoted", rating_bucket="A", rating_as_of_month=pd.Timestamp("2025-01-01"), rating_state="static_current", rating_reason="static_rating_current", rating_staleness_months=0))
     monkeypatch.setattr(parity, "build_snapshots", lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)))
     monkeypatch.setattr(parity, "fit_all_months", lambda frame, *, as_of: fit_calls.append(as_of) or (
-        _rv(as_of)[["cusip_id", "month", "rv_signal", "residual_bps"]],
+        _rv(as_of),
         _fit_diagnostics(as_of),
     ))
 

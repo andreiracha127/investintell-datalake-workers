@@ -14,7 +14,12 @@ import numpy as np
 import pandas as pd
 
 from src.bonds.panel_config import config_hash
-from src.bonds.panel_resolvers import MIN_MONTH_ROWS, compute_spread, monthly_treasury_curve
+from src.bonds.panel_resolvers import (
+    MIN_MONTH_ROWS,
+    SPREAD_WINSOR_BPS,
+    compute_spread,
+    monthly_treasury_curve,
+)
 from src.db import connect, resolve_dsn
 from src.workers import bond_panel
 
@@ -26,6 +31,7 @@ SPREAD_DEFINITION = "ytm_minus_interpolated_dgs"
 RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
 RV_MEAN_TOLERANCE = 1e-10
 RV_STD_TOLERANCE = 1e-10
+RV_STRUCTURE_TOLERANCE = 1e-10
 
 # Aliases make the runtime seams explicit and let focused tests exercise the
 # orchestration without replacing the Stage 6 module itself.
@@ -229,7 +235,10 @@ def _rv_structure(
     fit_diagnostics: pd.DataFrame,
     month: pd.Timestamp,
 ) -> dict[str, Any]:
-    required = {"cusip_id", "month", "rv_signal", "residual_bps"}
+    required = {
+        "cusip_id", "month", "spread_bps", "fitted_bps", "residual_bps",
+        "rv_signal",
+    }
     required_present = required.issubset(rebuilt_rv.columns)
     rebuilt_rv_spread_definition_ok = bool(
         "spread_definition" in rebuilt_rv
@@ -241,8 +250,18 @@ def _rv_structure(
         if "cusip_id" in rebuilt_rv
         else pd.Series(pd.NA, index=rebuilt_rv.index, dtype="string")
     )
-    included_keys = set(
-        _normalized_keys(rebuilt_included["cusip_id"]).dropna().tolist()
+    included_keys = (
+        _normalized_keys(rebuilt_included["cusip_id"])
+        if "cusip_id" in rebuilt_included
+        else pd.Series(pd.NA, index=rebuilt_included.index, dtype="string")
+    )
+    included_key_set = set(included_keys.dropna().tolist())
+    included_snapshot_typed = {"cusip_id", "spread_final"}.issubset(
+        rebuilt_included.columns
+    )
+    included_keys_unique = bool(
+        included_keys.notna().all()
+        and not included_keys.dropna().duplicated().any()
     )
     diagnostic_rows = (
         fit_diagnostics.loc[
@@ -278,7 +297,9 @@ def _rv_structure(
     )
     fit_count = int(raw_fit_count) if diagnostic_valid else None
     numeric = (
-        rebuilt_rv[["rv_signal", "residual_bps"]].apply(pd.to_numeric, errors="coerce")
+        rebuilt_rv[["spread_bps", "fitted_bps", "residual_bps", "rv_signal"]].apply(
+            pd.to_numeric, errors="coerce"
+        )
         if required_present
         else pd.DataFrame()
     )
@@ -289,13 +310,75 @@ def _rv_structure(
     )
     rv_mean = float(numeric["rv_signal"].mean()) if finite and len(numeric) else None
     rv_std = float(numeric["rv_signal"].std(ddof=0)) if finite and len(numeric) else None
+    residual_identity_error = (
+        (numeric["residual_bps"] - (numeric["spread_bps"] - numeric["fitted_bps"])).abs()
+        if finite
+        else pd.Series(dtype=float)
+    )
+    residual_std = (
+        float(numeric["residual_bps"].std(ddof=0)) if finite and len(numeric) else None
+    )
+    expected_signal = (
+        (numeric["residual_bps"] - numeric["residual_bps"].mean()) / residual_std
+        if residual_std is not None and np.isfinite(residual_std) and residual_std > 0.0
+        else pd.Series(np.nan, index=numeric.index, dtype=float)
+    )
+    rv_signal_error = (
+        (numeric["rv_signal"] - expected_signal).abs()
+        if finite
+        else pd.Series(dtype=float)
+    )
+    snapshot_spread_error = pd.Series(dtype=float)
+    snapshot_binding_complete = False
+    if (
+        required_present
+        and included_snapshot_typed
+        and included_keys_unique
+        and rv_keys.notna().all()
+        and not rv_keys.dropna().duplicated().any()
+    ):
+        rv_binding = pd.DataFrame({
+            "cusip_id": rv_keys,
+            "spread_bps": numeric["spread_bps"],
+        })
+        included_binding = pd.DataFrame({
+            "cusip_id": included_keys,
+            "spread_final": pd.to_numeric(
+                rebuilt_included["spread_final"], errors="coerce"
+            ),
+        })
+        bound = rv_binding.merge(
+            included_binding,
+            on="cusip_id",
+            how="left",
+            validate="one_to_one",
+        )
+        expected_spread = (bound["spread_final"] * 10_000.0).clip(
+            *SPREAD_WINSOR_BPS
+        )
+        snapshot_spread_error = (bound["spread_bps"] - expected_spread).abs()
+        snapshot_binding_complete = bool(
+            len(bound) == len(rebuilt_rv)
+            and np.isfinite(expected_spread.to_numpy(dtype=float)).all()
+        )
+
+    def max_error(error: pd.Series) -> float | None:
+        return (
+            float(error.max())
+            if len(error) and np.isfinite(error.to_numpy(dtype=float)).all()
+            else None
+        )
+
+    max_residual_identity_error = max_error(residual_identity_error)
+    max_rv_signal_error = max_error(rv_signal_error)
+    max_snapshot_spread_error = max_error(snapshot_spread_error)
     gates = {
         "rebuilt_rv_nonempty": bool(len(rebuilt_rv)),
         "required_columns_present": required_present,
         "rebuilt_rv_spread_definition": rebuilt_rv_spread_definition_ok,
         "rv_keys_valid": bool(rv_keys.notna().all()),
         "rv_keys_unique": bool(not rv_keys.dropna().duplicated().any()),
-        "rv_keys_subset_of_included": set(rv_keys.dropna()).issubset(included_keys),
+        "rv_keys_subset_of_included": set(rv_keys.dropna()).issubset(included_key_set),
         "rv_month_exact": bool(
             required_present
             and pd.to_datetime(rebuilt_rv["month"], errors="coerce").eq(month).all()
@@ -305,6 +388,19 @@ def _rv_structure(
         "rv_values_finite": finite,
         "rv_mean_centered": rv_mean is not None and abs(rv_mean) <= RV_MEAN_TOLERANCE,
         "rv_population_std_unit": rv_std is not None and abs(rv_std - 1) <= RV_STD_TOLERANCE,
+        "residual_matches_spread_minus_fitted": (
+            max_residual_identity_error is not None
+            and max_residual_identity_error <= RV_STRUCTURE_TOLERANCE
+        ),
+        "rv_signal_matches_residual_zscore": (
+            max_rv_signal_error is not None
+            and max_rv_signal_error <= RV_STRUCTURE_TOLERANCE
+        ),
+        "spread_matches_included_snapshot": (
+            snapshot_binding_complete
+            and max_snapshot_spread_error is not None
+            and max_snapshot_spread_error <= RV_STRUCTURE_TOLERANCE
+        ),
     }
     return {
         "passed": bool(all(gates.values())),
@@ -314,6 +410,9 @@ def _rv_structure(
         "included_row_count": int(len(rebuilt_included)),
         "rv_mean": rv_mean,
         "rv_population_std": rv_std,
+        "max_residual_identity_error": max_residual_identity_error,
+        "max_rv_signal_error": max_rv_signal_error,
+        "max_snapshot_spread_error": max_snapshot_spread_error,
     }
 
 
@@ -717,17 +816,63 @@ def _compare_month(
 
 
 def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate monthly parity states without changing their contracts."""
+    """Fail closed unless every declared month has one legal parity result."""
+    declared_months = [month.date().isoformat() for month in PARITY_MONTHS]
+    observed_months: list[str] = []
+    invalid_month_results: list[dict[str, object]] = []
+    legal_results: list[dict[str, Any]] = []
+    for index, result in enumerate(month_results):
+        month = result.get("month")
+        state = result.get("state")
+        comparable = result.get("comparable")
+        aborted = result.get("aborted")
+        legal_tuple = (
+            (state == "parity_passed" and comparable is True and aborted is False)
+            or (
+                state == "parity_not_comparable"
+                and comparable is False
+                and aborted is False
+            )
+            or (
+                state == "parity_failed"
+                and isinstance(comparable, bool)
+                and aborted is True
+            )
+        )
+        canonical_month = month if isinstance(month, str) else None
+        if canonical_month is not None:
+            observed_months.append(canonical_month)
+        violations: list[str] = []
+        if not legal_tuple:
+            violations.append("illegal_state_tuple")
+        if canonical_month is None:
+            violations.append("month_not_canonical_iso_date")
+        if violations:
+            invalid_month_results.append({
+                "index": index,
+                "month": canonical_month,
+                "state": state if isinstance(state, str) else None,
+                "violations": violations,
+            })
+        else:
+            legal_results.append(result)
+
+    duplicates = sorted({
+        month for month in observed_months if observed_months.count(month) > 1
+    })
+    unexpected = sorted(set(observed_months) - set(declared_months))
+    missing = sorted(set(declared_months) - set(observed_months))
+    declaration_exact = not missing and not duplicates and not unexpected
     failed = [
-        result for result in month_results
+        result for result in legal_results
         if result.get("state") == "parity_failed"
     ]
     comparable_passed = [
-        result for result in month_results
+        result for result in legal_results
         if result.get("state") == "parity_passed" and result.get("comparable") is True
     ]
     noncomparable = [
-        result for result in month_results
+        result for result in legal_results
         if result.get("state") == "parity_not_comparable"
     ]
     failure_reasons: dict[str, int] = {}
@@ -737,18 +882,24 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
         failure_reasons[key] = failure_reasons.get(key, 0) + 1
 
     gates = {
+        "monthly_contract_valid": not invalid_month_results,
+        "declared_months_exactly_once": declaration_exact,
         "all_months_nonblocking": not failed,
         "at_least_one_comparable_month": bool(comparable_passed),
         "all_comparable_months_passed": all(
-            result.get("state") == "parity_passed"
+            result.get("state") == "parity_passed" and result.get("aborted") is False
             for result in month_results
             if result.get("comparable") is True
         ),
     }
     if failed:
         state, reason, aborted = "parity_failed", "monthly_parity_failure", True
+    elif not gates["monthly_contract_valid"] or not gates["declared_months_exactly_once"]:
+        state, reason, aborted = "parity_failed", "monthly_contract_failure", True
     elif not comparable_passed:
         state, reason, aborted = "parity_failed", "no_comparable_month", True
+    elif not all(gates.values()):
+        state, reason, aborted = "parity_failed", "overall_gate_failure", True
     else:
         state, reason, aborted = "parity_passed", None, False
     return {
@@ -762,6 +913,14 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "gates": gates,
         "failure_reasons": failure_reasons,
+        "invalid_month_results": invalid_month_results,
+        "month_declaration": {
+            "declared": declared_months,
+            "observed": observed_months,
+            "missing": missing,
+            "duplicates": duplicates,
+            "unexpected": unexpected,
+        },
     }
 
 

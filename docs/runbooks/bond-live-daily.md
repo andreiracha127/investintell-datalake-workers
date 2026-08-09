@@ -246,10 +246,13 @@ diagnostic, not a coverage gate.
 
 Rebuilt RV is a structural contract, not a cross-cohort equality assertion. For
 each comparable month, its surface must be non-empty, unique, a subset of rebuilt
-included keys, sized to the fitted eligible cohort, finite, centered and
-unit-standardized within the declared numerical tolerances, and fit only from
-data available at or before the month. The report continues to emit absolute
-frozen-versus-rebuilt RV deltas as diagnostics.
+included keys, sized to the fitted eligible cohort, and finite. Rowwise, each
+`residual_bps` must equal `spread_bps - fitted_bps`; each `rv_signal` must equal
+the population z-score recomputed from that row's residual cohort; and
+`spread_bps` must equal the same-key included snapshot spread after the canonical
+Stage 6 winsor clip. The report emits fixed-tolerance maximum errors for those
+three bindings, as well as the existing centered/unit-standardized checks. It
+continues to emit absolute frozen-versus-rebuilt RV deltas as diagnostics.
 
 Monthly results have exactly these states:
 
@@ -263,7 +266,10 @@ The overall result is `parity_passed` only when every declared month passes
 reference accounting and the other hard gates, every comparable month passes the
 four formula metrics and RV structure, no month failed, and at least one declared
 month is comparable. A noncomparable month neither passes nor fails formula
-parity by itself; no comparable month is an overall failure.
+parity by itself; no comparable month is an overall failure. The result list must
+contain each declared parity month exactly once and every monthly state tuple must
+match the table above; unknown, inconsistent, missing, duplicate, or unexpected
+records are fail-closed monthly-contract failures.
 
 This revised contract does not authorize production work. After the PR revision
 is verified, a separately authorized future Railway production run must execute
