@@ -251,3 +251,32 @@ mapping differed from the live extension for `59 / 31,375` CUSIPs. The live
 extension includes generic updates through `2026-07`, so the replacement is a
 definition-preserving correction to the final-row carry-forward rule, not a
 change to the frozen configuration.
+
+## Gate redesign adopted on 2026-08-08; production rerun pending
+
+The earlier **NO-GO**, original command, literal production JSON, timestamps,
+verdict, and Stage 6 stop above remain immutable historical evidence from the
+original gate. This appended declaration does not reinterpret that evidence as a
+pass and does not replace or reformat any of it.
+
+The adopted T3 contract separates three checks: exact reference accounting for
+every normalized `bond_curated_universe` CUSIP9 as included or typed excluded;
+formula parity for YTM, duration, duration-relative, and spread only on at least
+300 common included bonds; and structural validation of rebuilt RV. Historical
+membership drift and absolute cross-cohort RV deltas remain recorded diagnostics,
+not blockers. The rebuilt RV contract is structural because separately fit and
+standardized monthly cohorts need not share absolute scores.
+
+For a future run, a hard-gate failure is `parity_failed` with `aborted=true`; a
+comparable hard-gate pass is `parity_passed` with `comparable=true` and
+`aborted=false`; and fewer than 300 common included bonds is
+`parity_not_comparable` with `comparable=false` and `aborted=false`. Overall
+parity can pass only with no failed month, every comparable month passing its
+formula and rebuilt-RV checks, exact accounting and other hard gates passing for
+all declared months, and at least one comparable month.
+
+No redesigned production rerun or production JSON occurred. No deploy, database
+write, pointer move, restart, or Stage 6 execution occurred. This documentation
+change is not production authorization: only a separately authorized, fresh
+read-only production parity run that emits `parity_passed` can support a
+separately authorized Stage 6 execution.

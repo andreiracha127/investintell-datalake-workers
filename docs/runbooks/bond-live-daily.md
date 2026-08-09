@@ -222,23 +222,61 @@ the run reports `matview_failed` and exits non-zero if it is not.
 
 ## 3e. One-shot T3 parity gate before the first Stage 6 run
 
-Run `WORKER=bond_panel_parity` once before allowing the first live panel
-publication. The worker opens a read-only transaction, pins base publication
-`92740098-1571-559d-9fb3-119de8321754` and fingerprint
-`5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb`, and
-rebuilds only `2025-01` and `2026-06` from database inputs. It never inserts
-facts or moves the panel pointer.
+### T3 parity gate contracts
 
-Set the temporary worker variable, deploy the exact revision, and execute with
-`railway service restart`. A successful build is not execution evidence. Read
-the emitted worker JSON and require `state=parity_passed`, `aborted=false`, and
-both monthly gate records. Then restore `WORKER=bond_live_daily` before the live
-run. Any `parity_failed` result is a stop: do not execute Stage 6 and do not
-change the predeclared thresholds to make the result pass.
+1. Reference accounting requires every normalized CUSIP9 from
+   `bond_curated_universe` exactly once as included or typed excluded.
+2. Formula parity compares YTM, duration, duration-relative, and spread only on
+   at least 300 common included bonds. Historical membership drift is diagnostic.
+3. Rebuilt RV is validated structurally. Absolute cross-cohort RV deltas are
+   diagnostic because each monthly cohort is fit and standardized separately.
 
-The parity transaction must still see the frozen publication as current. Run it
-before Stage 6, because a successful Stage 6 publication intentionally advances
-the pointer and makes a later replay fail `current_publication_id_mismatch`.
+Reference accounting is exact, not tolerance based: reference and rebuilt keys
+must be non-empty and unique; every reference key must be accounted for exactly
+once; exclusions require a nonblank typed reason; and included rows must satisfy
+their required identity. Frozen-versus-rebuilt membership size and overlap stay
+in the JSON for investigation but never block the verdict.
+
+Formula comparison is performed only for a like-for-like common included cohort
+of at least the existing `MIN_MONTH_ROWS` (`300`) bonds. All four existing
+formula metrics remain hard gates: YTM, duration, duration-relative, and spread.
+The existing identity, configuration, lineage, typing, spread-semantics, and
+walk-forward gates also remain fail-closed. A cohort's membership percentage is
+diagnostic, not a coverage gate.
+
+Rebuilt RV is a structural contract, not a cross-cohort equality assertion. For
+each comparable month, its surface must be non-empty, unique, a subset of rebuilt
+included keys, sized to the fitted eligible cohort, finite, centered and
+unit-standardized within the declared numerical tolerances, and fit only from
+data available at or before the month. The report continues to emit absolute
+frozen-versus-rebuilt RV deltas as diagnostics.
+
+Monthly results have exactly these states:
+
+| state | `comparable` | `aborted` | meaning |
+| --- | --- | --- | --- |
+| `parity_failed` | `true` or `false` | `true` | A reference, formula, RV-structural, or other hard gate failed. |
+| `parity_passed` | `true` | `false` | All hard gates passed and the common included cohort has at least 300 bonds. |
+| `parity_not_comparable` | `false` | `false` | Reference accounting and the other applicable hard gates passed, but fewer than 300 common included bonds are available; formula parity is not evaluated. |
+
+The overall result is `parity_passed` only when every declared month passes
+reference accounting and the other hard gates, every comparable month passes the
+four formula metrics and RV structure, no month failed, and at least one declared
+month is comparable. A noncomparable month neither passes nor fails formula
+parity by itself; no comparable month is an overall failure.
+
+This revised contract does not authorize production work. After the PR revision
+is verified, a separately authorized future Railway production run must execute
+the read-only `WORKER=bond_panel_parity` worker against the frozen current
+publication and preserve its emitted JSON. A successful build is not execution
+evidence. Only a fresh production `state=parity_passed`, `aborted=false` result
+under this contract can support a separately authorized Stage 6 restart, with
+`CODE_REVISION` explicitly set. Any `parity_failed` result remains a stop: do
+not execute Stage 6 and do not change predeclared thresholds to make it pass.
+
+The parity transaction must still run before Stage 6, because a successful Stage
+6 publication intentionally advances the pointer and makes a later replay fail
+`current_publication_id_mismatch`.
 
 ## 4. Reading the result
 
