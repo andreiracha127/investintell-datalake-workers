@@ -709,7 +709,7 @@ def _tick_payload_outcome(ticks: Any) -> str:
         return "malformed_payload"
     client_state = ticks.get("__finnhub_payload_state")
     if client_state in {
-        "api_empty", "api_error", "malformed_payload", "valid_zero_trades", "ok",
+        "api_empty", "api_error", "malformed_payload", "valid_zero_trades",
     }:
         return str(client_state)
     if not ticks:

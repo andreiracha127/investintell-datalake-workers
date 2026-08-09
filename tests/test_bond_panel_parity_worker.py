@@ -989,7 +989,7 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
     reference_frame = pd.DataFrame({"cusip9": _cusips(parity.MIN_MONTH_ROWS)})
     construction_frames: list[pd.DataFrame] = []
 
-    monkeypatch.setattr(parity.bond_panel, "_load_inputs", lambda *_args: ({
+    monkeypatch.setattr(parity.bond_panel, "_load_inputs", lambda *_args, **_kwargs: ({
         "daily_observations": pd.DataFrame({"day": [as_of]}),
         "monthly_curve": pd.DataFrame({
             "day": [as_of, as_of], "tenor": ["3y", "5y"], "yield_pct": [4.0, 4.0],
@@ -1043,6 +1043,7 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
 
 def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     calls: list[tuple[pd.Timestamp, pd.Timestamp, date]] = []
+    structural_calls: list[dict[str, object]] = []
     fit_calls: list[pd.Timestamp] = []
     sql: list[str] = []
     month_rows = {month: (_snapshot(month), _rv(month)) for month in parity.PARITY_MONTHS}
@@ -1064,7 +1065,10 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
         return month_rows[pd.Timestamp(params[-1])][0 if "snapshot" in statement else 1].copy()
 
     monkeypatch.setattr(parity, "_frame", frame)
-    monkeypatch.setattr(parity.bond_panel, "_load_inputs", lambda _conn, closed, opened, as_of: calls.append((closed, opened, as_of)) or ({
+    def load_inputs(_conn, closed, opened, as_of, **kwargs):
+        calls.append((closed, opened, as_of))
+        structural_calls.append(kwargs)
+        return ({
         "daily_observations": pd.DataFrame({"day": [as_of]}),
         "monthly_curve": pd.DataFrame({
             "day": [as_of, as_of], "tenor": ["3y", "5y"], "yield_pct": [4.0, 4.0],
@@ -1074,7 +1078,9 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
             "rating_as_of_month": [pd.Timestamp("2026-07-01")],
         }),
         "resolved_issuer_sector": pd.DataFrame({"cusip9": _cusips(parity.MIN_MONTH_ROWS)}),
-    }, {"x": "x"}))
+        }, {"x": "x"})
+
+    monkeypatch.setattr(parity.bond_panel, "_load_inputs", load_inputs)
     monkeypatch.setattr(parity, "build_db_monthly_panel", lambda **_kwargs: _snapshot(_kwargs["months"][0]).assign(coupon_pct=5.0, maturity_date=pd.Timestamp("2030-01-01"), reason_code="quoted", rating_bucket="A", rating_as_of_month=pd.Timestamp("2025-01-01"), rating_state="static_current", rating_reason="static_rating_current", rating_staleness_months=0))
     monkeypatch.setattr(parity, "build_snapshots", lambda frame, ratings_pit=None: (frame.copy(), pd.DataFrame(columns=frame.columns)))
     monkeypatch.setattr(parity, "fit_all_months", lambda frame, *, as_of: fit_calls.append(as_of) or (
@@ -1094,6 +1100,16 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     assert calls == [
         (pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-01"), date(2025, 1, 31)),
         (pd.Timestamp("2026-06-01"), pd.Timestamp("2026-06-01"), date(2026, 6, 30)),
+    ]
+    assert structural_calls == [
+        {
+            "structural_publication_id": parity.BASE_PUBLICATION_ID,
+            "structural_month": date(2025, 1, 1),
+        },
+        {
+            "structural_publication_id": parity.BASE_PUBLICATION_ID,
+            "structural_month": date(2026, 6, 1),
+        },
     ]
     assert fit_calls == list(parity.PARITY_MONTHS)
     assert all(

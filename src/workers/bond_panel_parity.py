@@ -150,7 +150,14 @@ def _rebuild_month(
     # Parity is a one-month walk-forward reconstruction. Passing t+1 to the
     # daily loader would admit its historical monthly-liquidity row even though
     # Stage 6 later fits only t; pin both loader month arguments to t instead.
-    inputs, lineage = bond_panel._load_inputs(conn, month, month, as_of)
+    inputs, lineage = bond_panel._load_inputs(
+        conn,
+        month,
+        month,
+        as_of,
+        structural_publication_id=BASE_PUBLICATION_ID,
+        structural_month=month.date(),
+    )
     reference_frame = inputs["resolved_issuer_sector"].copy()
     reference_column = next(
         (name for name in ("cusip9", "cusip_id") if name in reference_frame),

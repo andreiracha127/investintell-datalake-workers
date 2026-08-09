@@ -124,6 +124,8 @@ class FinnhubClient:
 
     def profile_by_cusip(self, cusip: str) -> dict[str, Any]:
         payload = self._get_json("/bond/profile", {"cusip": cusip})
+        if isinstance(payload, dict) and payload.get("error") is not None:
+            raise FinnhubProfileError("provider_error")
         profile = payload.get("profile", payload) if isinstance(payload, dict) else None
         if not isinstance(profile, dict) or not profile:
             raise FinnhubProfileError("empty_profile")

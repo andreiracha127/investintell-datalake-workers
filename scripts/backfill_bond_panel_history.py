@@ -215,13 +215,13 @@ def build_plan(artifacts: ArtifactSet, *, cutoff: str = DEFAULT_CUTOFF) -> Backf
         _gate_unique_and_valid_keys(conn, label="panel", path=panel, cutoff=cutoff)
         _gate_unique_and_valid_keys(conn, label="universe", path=universe, cutoff=cutoff)
         _gate_unique_and_valid_keys(conn, label="rv_signal", path=rv, cutoff=cutoff)
-        _gate_unique_and_valid_keys(conn, label="returns", path=returns, cutoff=HISTORICAL_RATING_CUTOFF)
+        _gate_unique_and_valid_keys(conn, label="returns", path=returns, cutoff=cutoff)
         _gate_unique_and_valid_keys(conn, label="rating_pit", path=ratings, cutoff=HISTORICAL_RATING_CUTOFF)
         for label, path, source_cutoff in (
             ("panel", panel, cutoff),
             ("universe", universe, cutoff),
             ("rv_signal", rv, cutoff),
-            ("returns", returns, HISTORICAL_RATING_CUTOFF),
+            ("returns", returns, cutoff),
             ("rating_pit", ratings, HISTORICAL_RATING_CUTOFF),
         ):
             if int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)", [path, source_cutoff])) == 0:
@@ -252,6 +252,12 @@ def build_plan(artifacts: ArtifactSet, *, cutoff: str = DEFAULT_CUTOFF) -> Backf
         )
         _require_zero(
             conn,
+            reason="returns_not_subset_of_panel",
+            sql="SELECT count(*) FROM (SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE) EXCEPT SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE))",
+            params=[returns, cutoff, panel, cutoff],
+        )
+        _require_zero(
+            conn,
             reason="rv_key_set_mismatch",
             sql="SELECT count(*) FROM ((SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE) EXCEPT SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)) UNION ALL (SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE) EXCEPT SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)))",
             params=[universe, cutoff, rv, cutoff, rv, cutoff, universe, cutoff],
@@ -275,8 +281,8 @@ def build_plan(artifacts: ArtifactSet, *, cutoff: str = DEFAULT_CUTOFF) -> Backf
         returns_last = _one(conn, "SELECT max(CAST(month AS DATE)) FROM read_parquet(?) WHERE CAST(month AS DATE) <= ?", [returns, cutoff])
         if returns_last is None:
             raise PlanError("returns_history_absent")
-        if _scalar_month(returns_last) != "2025-03-01":
-            raise PlanError("returns_artifact_cutoff_must_be_2025-03-01")
+        if _scalar_month(returns_last) != cutoff:
+            raise PlanError("returns_history_must_reach_cutoff")
         future_returns = _one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) > ?", [returns, cutoff])
         if future_returns:
             raise PlanError("returns_artifact_extends_past_base_cutoff")
@@ -379,7 +385,7 @@ def _surface_query(artifacts: ArtifactSet, surface: Surface, cutoff: str, limit:
             lineage = _lineage(artifacts, "bond_monthly_returns.parquet")
             rows = []
             for item in (_record(columns, row) for row in raw):
-                item.update({"exit_basis": "observed", "exit_reason": None, "payload": {"historical_return_coverage_through": "2025-03-01", "source_lineage": lineage}})
+                item.update({"exit_basis": "observed", "exit_reason": None, "payload": {"historical_return_coverage_through": cutoff, "source_lineage": lineage}})
                 rows.append(item)
             return rows, ("bond_monthly_returns.parquet",)
         if surface == "rating_pit":

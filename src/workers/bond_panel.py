@@ -27,7 +27,7 @@ from src.db import connect, resolve_dsn
 PANEL_CONFIG_HASH = "0c0d78a866bc1090"
 REQUIRED_RELATIONS = (
     "bond_observation_daily",
-    "bond_price_latest_v1",
+    "bond_price_observation",
     "bond_reference_terms",
     "bond_yield_curve_daily",
     "bond_issuer_sector",
@@ -40,12 +40,14 @@ REQUIRED_RELATIONS = (
     "sec_current_bond_security_alias_v1",
     "bond_panel_publications",
     "bond_panel_app_pointer",
+    "bond_panel_snapshot",
+    "bond_panel_returns",
     "bond_panel_current_snapshot_v1",
 )
 REQUIRED_COLUMNS = {
     "bond_observation_daily": {"cusip9", "day", "price", "ytm", "volume"},
-    "bond_price_latest_v1": {"security_id", "observation_date", "db_type", "db_type_state"},
-    "bond_reference_terms": {"cusip9", "coupon_rate", "maturity_date", "amount_outstanding_mm", "asset", "asset_type", "bond_type", "debt_type"},
+    "bond_price_observation": {"security_id", "observation_date", "db_type", "db_type_state"},
+    "bond_reference_terms": {"cusip9", "coupon_rate", "maturity_date", "amount_outstanding_mm", "amount_outstanding_vendor", "asset", "asset_type", "bond_type", "debt_type"},
     "bond_yield_curve_daily": {"day", "tenor", "yield_pct"},
     "bond_issuer_sector": {"cusip9", "ff17num"},
     "bond_liquidity_monthly": {"cusip9", "month", "quoted_days", "rel_bid_ask_bps", "dollar_volume", "quote_state", "reason_code"},
@@ -55,8 +57,10 @@ REQUIRED_COLUMNS = {
     "sec_cusip_ticker_map": {"cusip", "issuer_cik"},
     "sec_current_bond_security_v1": {"security_id", "issuer_name", "identity_state", "currency"},
     "sec_current_bond_security_alias_v1": {"security_id", "alias_kind", "alias_value", "valid_from", "valid_to"},
-    "bond_panel_publications": {"publication_id", "publication_status", "config_hash", "first_month"},
+    "bond_panel_publications": {"publication_id", "parent_publication_id", "publication_status", "config_hash", "first_month", "last_closed_month", "open_month"},
     "bond_panel_app_pointer": {"product", "publication_id"},
+    "bond_panel_snapshot": {"publication_id", "month", "cusip_id", "amount_outstanding_k"},
+    "bond_panel_returns": {"publication_id", "month", "cusip_id", "total_return"},
     "bond_panel_current_snapshot_v1": {"cusip_id", "month", "price", "ytm", "maturity_years"},
 }
 
@@ -106,7 +110,10 @@ def _missing_columns(conn: Any) -> list[str]:
 
 def _current_parent(conn: Any) -> dict[str, Any] | None:
     row = conn.execute(
-        "SELECT p.publication_id::text, p.first_month "
+        "SELECT p.publication_id::text, p.parent_publication_id::text, p.first_month, "
+        "p.last_closed_month, p.open_month, "
+        "(SELECT max(s.month) FROM bond_panel_snapshot s WHERE s.publication_id = p.publication_id), "
+        "(SELECT max(r.month) FROM bond_panel_returns r WHERE r.publication_id = p.publication_id) "
         "FROM bond_panel_app_pointer pointer "
         "JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id "
         "WHERE pointer.product = 'bond_panel_v1' "
@@ -115,25 +122,47 @@ def _current_parent(conn: Any) -> dict[str, Any] | None:
     ).fetchone()
     if row is None:
         return None
-    return {"publication_id": str(row[0]), "first_month": row[1]}
+    return {
+        "publication_id": str(row[0]),
+        "parent_publication_id": str(row[1]) if row[1] is not None else None,
+        "first_month": row[2],
+        "last_closed_month": row[3],
+        "open_month": row[4],
+        "snapshot_max_month": row[5],
+        "returns_max_month": row[6],
+    }
 
 
 def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame:
     """The parent supplies only the predecessor needed to realize closed returns."""
     anchor = _frame(
         conn,
-        "SELECT cusip_id, month, price AS pr, ytm, maturity_years AS bond_maturity, rating_bucket, eligibility_state "
+        "SELECT cusip_id, month, price AS pr, ytm, maturity_years AS bond_maturity, "
+        "rating_bucket, rating_state, NULLIF(payload ->> 'rating_as_of_month', '')::date AS rating_as_of_month, "
+        "payload ->> 'rating_reason' AS rating_reason, "
+        "NULLIF(payload ->> 'rating_staleness_months', '')::int AS rating_staleness_months, "
+        "eligibility_state, issuer_id, issuer_identity_state, ff17num, currency, asset_class, "
+        "amount_outstanding_k AS amt_outstanding_k, maturity_date, coupon_pct, db_type "
         "FROM bond_panel_current_snapshot_v1 "
         "WHERE eligibility_state = 'included' AND month = (SELECT max(month) FROM bond_panel_current_snapshot_v1 WHERE month < %s)",
         (closed_month.date(),),
     )
     anchor["month"] = pd.to_datetime(anchor["month"])
-    for column in ("pr", "ytm", "bond_maturity"):
-        anchor[column] = pd.to_numeric(anchor[column], errors="coerce")
+    for column in ("pr", "ytm", "bond_maturity", "amt_outstanding_k", "coupon_pct", "db_type"):
+        if column in anchor:
+            anchor[column] = pd.to_numeric(anchor[column], errors="coerce")
     return anchor
 
 
-def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp, as_of: date) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+def _load_inputs(
+    conn: Any,
+    closed_month: pd.Timestamp,
+    open_month: pd.Timestamp,
+    as_of: date,
+    *,
+    structural_publication_id: str | None = None,
+    structural_month: date | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     """Load all production inputs for the closed/open delta, directly from DB."""
     start = closed_month.date()
     end = as_of
@@ -147,8 +176,12 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
         ),
         "reference_terms": _frame(
             conn,
-            "SELECT cusip9, coupon_rate, maturity_date, amount_outstanding_mm, asset, asset_type, bond_type, debt_type "
-            "FROM bond_reference_terms",
+            "SELECT r.cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
+            "r.amount_outstanding_vendor, prior.amount_outstanding_k, r.asset, r.asset_type, r.bond_type, r.debt_type "
+            "FROM bond_reference_terms r LEFT JOIN bond_panel_snapshot prior "
+            "ON prior.publication_id = %s::uuid AND prior.month = %s "
+            "AND upper(btrim(prior.cusip_id)) = upper(btrim(r.cusip9))",
+            (structural_publication_id, structural_month),
         ),
         "monthly_curve": _frame(
             conn,
@@ -157,27 +190,30 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
         ),
         "resolved_issuer_sector": _frame(
             conn,
-            "SELECT upper(btrim(u.cusip9)) AS cusip9, map.issuer_cik AS issuer_id, "
+            "WITH panel_months(month, price_as_of) AS (VALUES (%s::date, %s::date), (%s::date, %s::date)), "
+            "aliases AS (SELECT pm.month, upper(btrim(a.alias_value)) AS cusip9, a.security_id "
+            "FROM panel_months pm JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
+            "AND a.valid_from <= pm.price_as_of AND (a.valid_to IS NULL OR a.valid_to > pm.price_as_of)), "
+            "price AS (SELECT pm.month, p.security_id, "
+            "CASE WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 1 "
+            "THEN max(p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) END AS db_type, "
+            "CASE WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 1 THEN 'pit_present' "
+            "WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 0 THEN 'pit_missing_or_invalid' ELSE 'pit_conflicting' END AS db_type_reason "
+            "FROM panel_months pm CROSS JOIN LATERAL bond_price_fund_asof_v1(pm.price_as_of) p GROUP BY pm.month, p.security_id) "
+            "SELECT upper(btrim(u.cusip9)) AS cusip9, pm.month, map.issuer_cik AS issuer_id, "
             "COALESCE(map.issuer_identity_state, 'unresolved') AS issuer_identity_state, s.currency, "
             "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ILIKE '%%corporate%%' THEN 'corporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num, "
             "price.db_type, COALESCE(price.db_type_reason, CASE WHEN a.security_id IS NULL THEN 'security_alias_missing' ELSE 'db_type_pit_absent' END) AS db_type_reason "
-            "FROM bond_curated_universe u "
-            "LEFT JOIN sec_current_bond_security_alias_v1 a ON a.alias_kind = 'cusip9' "
-            "AND upper(btrim(a.alias_value)) = upper(btrim(u.cusip9)) AND a.valid_from <= %s "
-            "AND (a.valid_to IS NULL OR a.valid_to > %s) "
+            "FROM bond_curated_universe u CROSS JOIN panel_months pm "
+            "LEFT JOIN aliases a ON a.month = pm.month AND a.cusip9 = upper(btrim(u.cusip9)) "
             "LEFT JOIN sec_current_bond_security_v1 s ON s.security_id = a.security_id "
             "LEFT JOIN bond_reference_terms r ON r.cusip9 = u.cusip9 "
             "LEFT JOIN bond_issuer_sector i ON i.cusip9 = u.cusip9 "
-            "LEFT JOIN (SELECT security_id, "
-            "CASE WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 1 "
-            "THEN max(db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) END AS db_type, "
-            "CASE WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 1 THEN 'pit_present' "
-            "WHEN count(DISTINCT db_type) FILTER (WHERE db_type_state = 'present' AND db_type IS NOT NULL AND db_type <> 'NaN'::numeric AND db_type = trunc(db_type)) = 0 THEN 'pit_missing_or_invalid' ELSE 'pit_conflicting' END AS db_type_reason "
-            "FROM bond_price_latest_v1 WHERE observation_date <= %s GROUP BY security_id) price ON price.security_id = a.security_id "
+            "LEFT JOIN price ON price.month = pm.month AND price.security_id = a.security_id "
             "LEFT JOIN (SELECT upper(btrim(cusip)) AS cusip9, CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN max(issuer_cik::text) FILTER (WHERE issuer_cik IS NOT NULL) END AS issuer_cik, "
             "CASE WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 1 THEN 'resolved' WHEN count(DISTINCT issuer_cik) FILTER (WHERE issuer_cik IS NOT NULL) = 0 THEN 'missing_cik' ELSE 'conflicting_cik' END AS issuer_identity_state FROM sec_cusip_ticker_map GROUP BY upper(btrim(cusip))) map ON map.cusip9 = upper(btrim(u.cusip9))",
-            (open_month.date(), open_month.date(), closed_as_of),
+            (closed_month.date(), closed_as_of, open_month.date(), as_of),
         ),
         "monthly_liquidity": _frame(
             conn,
@@ -197,6 +233,10 @@ def _load_inputs(conn: Any, closed_month: pd.Timestamp, open_month: pd.Timestamp
     if len(rating_hashes) != 1:
         raise ValueError("bond_rating_static must contain exactly one source_sha256")
     lineage = {name: name for name in inputs}
+    if structural_publication_id and structural_month:
+        lineage["reference_terms"] = (
+            f"bond_reference_terms+bond_panel_snapshot:{structural_publication_id}:{structural_month.isoformat()}"
+        )
     lineage["static_rating_mapping"] = f"bond_rating_static:{rating_hashes[0]}"
     return inputs, lineage
 
@@ -206,6 +246,101 @@ def _code_revision() -> str | None:
         if value := (os.getenv(name) or "").strip():
             return value
     return None
+
+
+def _initial_stage6_authorized(parent: dict[str, Any], revision: str) -> bool:
+    """Require a revision-bound token only while the pointer still targets the base."""
+    if parent.get("parent_publication_id") is not None:
+        return True
+    authorization = (os.getenv("BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION") or "").strip()
+    return bool(authorization) and authorization == revision
+
+
+def _parent_integrity_reasons(parent: dict[str, Any]) -> list[str]:
+    """Refuse to extend a publication whose declared partition is already false."""
+    last_closed = parent.get("last_closed_month")
+    if not isinstance(last_closed, date):
+        return ["parent_last_closed_month_absent"]
+    open_month = parent.get("open_month")
+    expected_snapshot = open_month if isinstance(open_month, date) else last_closed
+    snapshot_max = parent.get("snapshot_max_month")
+    returns_max = parent.get("returns_max_month")
+    reasons: list[str] = []
+    if snapshot_max != expected_snapshot:
+        actual = snapshot_max.isoformat() if isinstance(snapshot_max, date) else "absent"
+        reasons.append(
+            f"parent_snapshot_max_month_mismatch:{actual}:{expected_snapshot.isoformat()}"
+        )
+    if returns_max != last_closed:
+        actual = returns_max.isoformat() if isinstance(returns_max, date) else "absent"
+        reasons.append(
+            f"parent_returns_max_month_mismatch:{actual}:{last_closed.isoformat()}"
+        )
+    return reasons
+
+
+def _closed_returns_and_tombstones(
+    anchor: pd.DataFrame,
+    current_snapshot: pd.DataFrame,
+    closed_month: pd.Timestamp,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Realize observed exits and retain removed parent bonds as typed exclusions."""
+    required_anchor = ["cusip_id", "month", "pr", "ytm", "bond_maturity", "rating_bucket"]
+    if anchor.empty:
+        anchor = pd.DataFrame(columns=required_anchor)
+    current_ids = set(current_snapshot.get("cusip_id", pd.Series(dtype=object)).astype(str))
+    observed_ids = set(
+        current_snapshot.loc[
+            current_snapshot.get("pr", pd.Series(index=current_snapshot.index, dtype=float)).notna(),
+            "cusip_id",
+        ].astype(str)
+    ) if "cusip_id" in current_snapshot else set()
+    terminal_exits = anchor[~anchor["cusip_id"].astype(str).isin(observed_ids)].copy()
+    terminal_exits["month"] = closed_month
+    returns_input = pd.concat([anchor, current_snapshot], ignore_index=True, sort=False)
+    returns = monthly_returns(returns_input, terminal_exits=terminal_exits)
+    returns = returns[returns["month"].eq(closed_month)].reset_index(drop=True)
+
+    tombstones = terminal_exits[
+        ~terminal_exits["cusip_id"].astype(str).isin(current_ids)
+    ].copy().reset_index(drop=True)
+    if tombstones.empty:
+        return returns, tombstones
+    tombstones["month"] = closed_month
+    tombstones["eligibility_state"] = "excluded"
+    tombstones["eligibility_reason"] = "terminal_exit_removed"
+    tombstones["issuer_identity_state"] = tombstones.get(
+        "issuer_identity_state", pd.Series("unresolved", index=tombstones.index)
+    ).fillna("unresolved")
+    tombstones["rating_bucket"] = tombstones.get(
+        "rating_bucket", pd.Series("NR", index=tombstones.index)
+    ).fillna("NR")
+    tombstones["rating_state"] = tombstones.get(
+        "rating_state", pd.Series("missing", index=tombstones.index)
+    ).fillna("missing")
+    tombstones["price_source"] = "terminal_parent_tombstone"
+    tombstones["spread_definition"] = "ytm_minus_interpolated_dgs"
+    tombstones["flags"] = [
+        {"terminal_exit": True, "source": "parent_snapshot"}
+        for _ in range(len(tombstones))
+    ]
+    for column in (
+        "pr",
+        "ytm",
+        "ytm_basis",
+        "mod_dur",
+        "mod_dur_source",
+        "spread_final",
+        "spread_final_bps",
+        "spread_source",
+        "traded_days",
+        "trade_count",
+        "dollar_volume",
+        "rel_bid_ask_bps",
+        "quoted_days",
+    ):
+        tombstones[column] = None
+    return returns, tombstones
 
 
 def _records(frame: pd.DataFrame) -> list[dict[str, object]]:
@@ -262,8 +397,28 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             outcome = _failure("panel_gate_failed", elapsed=time.monotonic() - started, input_reasons=["panel_no_parent"])
             outcome["reason"] = "panel_no_parent"
             return outcome
+        if not _initial_stage6_authorized(parent, revision):
+            return _failure(
+                "panel_gate_failed",
+                elapsed=time.monotonic() - started,
+                input_reasons=["initial_stage6_authorization_absent_or_mismatch"],
+            )
+        parent_reasons = _parent_integrity_reasons(parent)
+        if parent_reasons:
+            return _failure(
+                "panel_gate_failed",
+                elapsed=time.monotonic() - started,
+                input_reasons=parent_reasons,
+            )
         try:
-            inputs, lineage = _load_inputs(conn, closed_month, open_month, today)
+            inputs, lineage = _load_inputs(
+                conn,
+                closed_month,
+                open_month,
+                today,
+                structural_publication_id=str(parent["publication_id"]),
+                structural_month=parent["last_closed_month"],
+            )
             stage_input_reasons: list[str] = []
             empty = [name for name, frame in inputs.items() if name not in {"monthly_liquidity"} and frame.empty]
             if empty:
@@ -291,14 +446,14 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             if not signals.empty:
                 signals = signals.merge(included_closed, on=["cusip_id", "month"], how="left", suffixes=("", "_snapshot"))
             anchor = _parent_return_anchor(conn, closed_month)
-            closed_snapshot = snapshots[snapshots["month"].eq(closed_month)]
-            if anchor.empty:
-                anchor = pd.DataFrame(columns=["cusip_id", "month", "pr", "ytm", "bond_maturity", "rating_bucket"])
-            terminal_exits = anchor[~anchor["cusip_id"].isin(closed_snapshot["cusip_id"])].copy()
-            terminal_exits["month"] = closed_month
-            returns_input = pd.concat([anchor, closed_snapshot], ignore_index=True)
-            returns = monthly_returns(returns_input, terminal_exits=terminal_exits)
-            returns = returns[returns["month"].eq(closed_month)]
+            closed_snapshot = snapshot[snapshot["month"].eq(closed_month)]
+            returns, tombstones = _closed_returns_and_tombstones(
+                anchor, closed_snapshot, closed_month
+            )
+            if not tombstones.empty:
+                snapshot = pd.concat([snapshot, tombstones], ignore_index=True, sort=False).sort_values(
+                    ["month", "cusip_id"]
+                )
             rating_pit = snapshot[["cusip_id", "month", "rating_bucket", "rating_as_of_month", "rating_state", "rating_reason", "rating_staleness_months"]].copy()
             facts = {
                 "snapshot": _records(snapshot),

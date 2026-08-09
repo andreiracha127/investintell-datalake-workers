@@ -524,6 +524,18 @@ def test_tick_payload_outcomes_distinguish_empty_error_malformed_and_zero_trades
     assert stats["aborted"] is False
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"__finnhub_payload_state": "ok", "t": [1_722_470_400]},
+        {"__finnhub_payload_state": "ok", "t": [1_722_470_400], "p": []},
+        {"__finnhub_payload_state": "ok", "t": "not-a-list", "p": [100.0]},
+    ],
+)
+def test_ok_tick_payload_state_does_not_bypass_structural_validation(payload) -> None:
+    assert bond_live_daily._tick_payload_outcome(payload) == "malformed_payload"
+
+
 class _NoTape(FakeClient):
     """Every tick call exhausts its retry ladder and raises."""
 

@@ -60,6 +60,10 @@ def _month(value: object) -> date:
     return date.fromisoformat(str(value)[:10])
 
 
+def _next_month(month: date) -> date:
+    return date(month.year + month.month // 12, month.month % 12 + 1, 1)
+
+
 def _validate_input(facts: dict[str, list[dict[str, object]]], source_lineage: dict[str, str]) -> tuple[dict[str, int], date, date]:
     if set(facts) != set(SURFACES):
         raise MaterializationError("exactly the four required fact surfaces must be supplied")
@@ -102,7 +106,17 @@ def _partition(
         return first, last, None
     if first_month is None or last_closed_month is None or open_month is None:
         raise MaterializationError("delta month partition must be explicit", reason_code="panel_gate_failed")
-    if first_month != parent["first_month"] or open_month <= last_closed_month:
+    parent_open_month = parent["open_month"]
+    next_parent_month = _next_month(parent["last_closed_month"])
+    if parent_open_month is not None and parent_open_month != next_parent_month:
+        raise MaterializationError("month partition violates parent/open ordering", reason_code="panel_gate_failed")
+    expected_closed_month = parent_open_month or next_parent_month
+    expected_open_month = _next_month(expected_closed_month)
+    if (
+        first_month != parent["first_month"]
+        or last_closed_month != expected_closed_month
+        or open_month != expected_open_month
+    ):
         raise MaterializationError("month partition violates parent/open ordering", reason_code="panel_gate_failed")
     allowed = {last_closed_month, open_month}
     if any(_month(row["month"]) not in allowed for surface in SURFACES for row in facts[surface]):

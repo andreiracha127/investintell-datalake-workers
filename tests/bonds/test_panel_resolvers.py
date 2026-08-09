@@ -9,6 +9,7 @@ from src.bonds.panel_resolvers import (
     analytical_mod_dur,
     analytical_ytm,
     apply_typed_exits,
+    bond_coupons,
     build_universe_snapshot,
     build_db_monthly_panel,
     compute_spread,
@@ -38,13 +39,16 @@ def test_eligibility_has_a_typed_reason_and_excludes_missing_sector() -> None:
          "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": np.nan, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
         {"cusip_id": "DBTYPE", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
          "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": np.nan, "currency": "USD", "asset_class": "corporate"},
+        {"cusip_id": "144A", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 3, "currency": "USD", "asset_class": "corporate"},
     ])
-    assert eligibility(rows).tolist() == ["eligible", "missing_sector", "missing_db_type"]
+    assert eligibility(rows).tolist() == ["eligible", "missing_sector", "missing_db_type", "unsupported_144a"]
     snapshot = build_universe_snapshot(rows)
     assert snapshot[["cusip_id", "eligibility_state", "eligibility_reason"]].to_dict("records") == [
         {"cusip_id": "OK", "eligibility_state": "included", "eligibility_reason": "eligible"},
         {"cusip_id": "SECTOR", "eligibility_state": "excluded", "eligibility_reason": "missing_sector"},
         {"cusip_id": "DBTYPE", "eligibility_state": "excluded", "eligibility_reason": "missing_db_type"},
+        {"cusip_id": "144A", "eligibility_state": "excluded", "eligibility_reason": "unsupported_144a"},
     ]
 
 
@@ -119,11 +123,13 @@ def test_live_fuse_declares_analytical_ytm_duration_and_structural_basis() -> No
 
 
 def test_typed_exits_are_matured_distressed_or_last_price_flat() -> None:
-    attrs = pd.DataFrame({"bond_maturity": [1., 5., 5.], "pr": [100., 60., 100.],
+    attrs = pd.DataFrame({"cusip_id": ["MATURED", "DISTRESSED", "UNKNOWN"],
+                          "bond_maturity": [1., 5., 5.], "pr": [80., 60., 100.],
                           "rating_bucket": ["A", "A", "A"], "ytm": [.06, .08, .05]})
     realized, exited, reasons = apply_typed_exits(np.array([np.nan, np.nan, np.nan]), attrs, np.array([True, True, True]), return_reasons=True)
+    matured_carry = bond_coupons(attrs.iloc[[0]]).iloc[0] / 12
     assert reasons.tolist() == ["matured", "distressed", "unexplained"]
-    assert realized.tolist() == pytest.approx([.005, (40. - 60.) / 60., 0.])
+    assert realized.tolist() == pytest.approx([(100. + matured_carry - 80.) / 80., (40. - 60.) / 60., 0.])
     assert exited.tolist() == [True, True, True]
 
 
@@ -147,9 +153,14 @@ def test_spread_model_clusters_by_resolved_issuer_not_cusip6(monkeypatch: pytest
             observed.update(kwargs)
             return FakeFit()
 
-    monkeypatch.setattr("src.bonds.panel_resolvers.sm.OLS", lambda *_args, **_kwargs: FakeModel())
+    def fake_ols(_endog, exog, **_kwargs):
+        observed["exog_columns"] = list(exog.columns)
+        return FakeModel()
+
+    monkeypatch.setattr("src.bonds.panel_resolvers.sm.OLS", fake_ols)
     fit_month(rows)
     assert list(observed["cov_kwds"]["groups"]) == rows["issuer_id"].tolist()
+    assert "is_144a" not in observed["exog_columns"]
 
 
 def test_spread_model_rejects_future_rows_when_an_asof_is_declared() -> None:
@@ -173,17 +184,92 @@ def test_monthly_returns_persists_typed_terminal_exit_rows() -> None:
 
 
 def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spread() -> None:
-    daily = pd.DataFrame({"cusip9": ["AAA", "AAA"], "day": pd.to_datetime(["2024-01-05", "2024-01-20"]), "price": [100., 100.], "ytm": [np.nan, np.nan], "volume": [1., 2.]})
-    terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500]})
+    daily = pd.DataFrame({"cusip9": ["AAA", "AAA"], "day": pd.to_datetime(["2024-01-05", "2024-01-20"]), "price": [100., 100.], "ytm": [np.nan, np.nan], "volume": [np.nan, np.nan]})
+    terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500], "amount_outstanding_vendor": [np.nan], "amount_outstanding_k": [500_000.]})
     curve = pd.DataFrame({"day": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02"]), "tenor": ["1y", "5y", "10y"], "yield_pct": [4., 4., 4.]})
     sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10], "db_type": [1], "db_type_reason": ["pit_present"]})
-    liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": [date(2024, 1, 1)], "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [3.], "quote_state": ["quoted"], "reason_code": [None]})
+    liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": [date(2024, 1, 1)], "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [300.], "quote_state": ["quoted"], "reason_code": [None]})
     rows = build_db_monthly_panel(daily, terms, curve, sector, liquidity, pd.DataFrame(), months=[pd.Timestamp("2024-01-01")])
     row = rows.iloc[0]
     assert row["ytm_basis"] == "analytical"
     assert row["mod_dur_source"] == "analytical"
     assert row["spread_definition"] == "ytm_minus_interpolated_dgs"
     assert row["rating_bucket"] == "NR"
+    assert row["dollar_volume"] == pytest.approx(300.)
+    assert row["amt_outstanding_k"] == pytest.approx(500_000.)
+
+
+def test_db_month_builder_does_not_treat_unproven_vendor_amount_as_millions() -> None:
+    terms = pd.DataFrame({
+        "cusip9": ["AAA"],
+        "coupon_rate": [5.],
+        "maturity_date": pd.to_datetime(["2029-01-20"]),
+        "amount_outstanding_mm": [525.],
+        "amount_outstanding_vendor": [525.],
+    })
+    sector = pd.DataFrame({
+        "cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10],
+        "db_type": [1], "currency": ["USD"], "asset_class": ["corporate"],
+    })
+
+    rows = build_db_monthly_panel(
+        pd.DataFrame(), terms, pd.DataFrame(), sector, pd.DataFrame(), pd.DataFrame(),
+        months=[pd.Timestamp("2024-01-01")],
+    )
+
+    assert pd.isna(rows.loc[0, "amt_outstanding_k"])
+
+
+def test_db_month_builder_requires_explicit_normalized_amount_even_without_vendor_copy() -> None:
+    terms = pd.DataFrame({
+        "cusip9": ["AAA"],
+        "coupon_rate": [5.],
+        "maturity_date": pd.to_datetime(["2029-01-20"]),
+        "amount_outstanding_mm": [525.],
+        "amount_outstanding_vendor": [np.nan],
+    })
+    sector = pd.DataFrame({
+        "cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10],
+        "db_type": [1], "currency": ["USD"], "asset_class": ["corporate"],
+    })
+
+    rows = build_db_monthly_panel(
+        pd.DataFrame(), terms, pd.DataFrame(), sector, pd.DataFrame(), pd.DataFrame(),
+        months=[pd.Timestamp("2024-01-01")],
+    )
+
+    assert pd.isna(rows.loc[0, "amt_outstanding_k"])
+
+
+def test_db_month_builder_uses_month_specific_identity_and_db_type_rows() -> None:
+    months = pd.to_datetime(["2024-01-01", "2024-02-01"])
+    sector = pd.DataFrame({
+        "cusip9": ["AAA", "AAA"],
+        "month": months,
+        "issuer_id": ["issuer-old", "issuer-new"],
+        "ff17num": [10, 20],
+        "db_type": [1, 3],
+        "currency": ["USD", "USD"],
+        "asset_class": ["corporate", "corporate"],
+    })
+    terms = pd.DataFrame({
+        "cusip9": ["AAA"],
+        "coupon_rate": [5.],
+        "maturity_date": pd.to_datetime(["2029-01-20"]),
+        "amount_outstanding_mm": [500.],
+        "amount_outstanding_vendor": [np.nan],
+        "amount_outstanding_k": [500_000.],
+    })
+
+    rows = build_db_monthly_panel(
+        pd.DataFrame(), terms, pd.DataFrame(),
+        sector, pd.DataFrame(), pd.DataFrame(), months=list(months),
+    )
+
+    assert rows[["month", "issuer_id", "db_type"]].to_dict("records") == [
+        {"month": months[0], "issuer_id": "issuer-old", "db_type": 1},
+        {"month": months[1], "issuer_id": "issuer-new", "db_type": 3},
+    ]
 
 
 def test_db_month_builder_keeps_unobserved_candidates_for_typed_exclusion() -> None:
@@ -199,6 +285,7 @@ def test_db_month_builder_keeps_unobserved_candidates_for_typed_exclusion() -> N
         "coupon_rate": [5., 5.],
         "maturity_date": pd.to_datetime(["2029-01-20", "2029-01-20"]),
         "amount_outstanding_mm": [500, 500],
+        "amount_outstanding_k": [500_000., 500_000.],
     })
     curve = pd.DataFrame({
         "day": pd.to_datetime(["2024-01-02", "2024-01-02"]),

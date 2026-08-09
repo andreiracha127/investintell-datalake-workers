@@ -237,6 +237,13 @@ once; exclusions require a nonblank typed reason; and included rows must satisfy
 their required identity. Frozen-versus-rebuilt membership size and overlap stay
 in the JSON for investigation but never block the verdict.
 
+The production research cohort excludes a price observation whose point-in-time
+`db_type` is the canonical integral value `3`, with typed reason
+`unsupported_144a`. The model has no 144A covariate. A non-144A `db_type` is not
+positive proof of a Reg S exemption, so the worker does not relabel registered
+or unknown bonds as Reg S; a future positive Reg S classifier needs its own
+point-in-time source contract.
+
 Formula comparison is performed only for a like-for-like common included cohort
 of at least the existing `MIN_MONTH_ROWS` (`300`) bonds. All four existing
 formula metrics remain hard gates: YTM, duration, duration-relative, and spread.
@@ -284,6 +291,19 @@ The parity transaction must still run before Stage 6, because a successful Stage
 6 publication intentionally advances the pointer and makes a later replay fail
 `current_publication_id_mismatch`.
 
+The first Stage 6 delta has a second, runtime authorization boundary. While the
+current pointer still targets the immutable base (`parent_publication_id IS
+NULL`), `BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION` must equal the exact
+`CODE_REVISION` byte-for-byte. Missing, blank, or mismatched values fail closed
+as `initial_stage6_authorization_absent_or_mismatch`. Once a validated child has
+advanced the pointer, ordinary contiguous monthly deltas do not require this
+one-shot variable; the parent/month and immutable-publication gates still apply.
+Before reading new market inputs, the worker also verifies the pointed
+publication itself: its direct snapshot maximum must equal its declared open
+month (or last closed month for a base), and its direct returns maximum must
+equal `last_closed_month`. A stale historical base is therefore repaired or
+replaced explicitly; a daily delta cannot jump over a missing return interval.
+
 ## 4. Reading the result
 
 **One rule: a run exits green only when it actually did the day's work.**
@@ -311,7 +331,7 @@ stays invisible for a week.
 | `republish_failed` | no | a publication worker failed, raised, or returned a state this contract does not know (drift is never read as success) |
 | `panel_failed` | no | stage 6 could not rebuild a non-empty DB-only delta or one of its required fact surfaces was empty; it never reads an operator-local artifact |
 | `panel_publish_failed` | no | stage 6 encountered a database/materializer operational failure; its pointer was not advanced |
-| `panel_gate_failed` | no | stage 6 refused a missing/incompatible current parent, required relation, or validation gate; it does not bootstrap a two-month history |
+| `panel_gate_failed` | no | stage 6 refused a missing/incompatible current parent, non-contiguous month partition, absent/mismatched initial revision authorization, required relation, or validation gate; it does not bootstrap a two-month history |
 | `partial_sweep` | no | `WORKER_LIMIT` truncated the universe — the budget was covered, the day was not (§3b) |
 
 `halted_by` lists every clause that fired, in severity order; `state` is the

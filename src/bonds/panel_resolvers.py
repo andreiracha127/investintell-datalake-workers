@@ -115,6 +115,7 @@ def eligibility(panel: pd.DataFrame) -> pd.Series:
             (pd.isna(value["issuer_id"]) or not str(value["issuer_id"]).strip(), "unresolved_issuer"),
             (pd.isna(value["ff17num"]), "missing_sector"),
             (pd.isna(value.get("db_type")), "missing_db_type"),
+            (not pd.isna(value.get("db_type")) and float(value["db_type"]) == 3, "unsupported_144a"),
             (pd.isna(value["amt_outstanding_k"]), "missing_amount"),
             (value["amt_outstanding_k"] < 250_000, "too_small"),
             (pd.isna(value["bond_maturity"]), "missing_maturity"),
@@ -276,7 +277,14 @@ def apply_typed_exits(r: np.ndarray, attrs: pd.DataFrame, active: np.ndarray, co
     for i in np.where(np.isnan(out) & active)[0]:
         row = attrs.iloc[i]
         if pd.notna(row.get("bond_maturity")) and float(row["bond_maturity"]) <= 1.25:
-            out[i], key = float(row["ytm"]) / 12, "matured"
+            price = float(row["pr"])
+            coupon = coupon_from_price_ytm(
+                pd.Series([price]),
+                pd.Series([row.get("ytm")]),
+                pd.Series([row["bond_maturity"]]),
+            ).iloc[0]
+            carry = float(coupon) / 12 if pd.notna(coupon) else 0.0
+            out[i], key = (100.0 + carry - price) / price, "matured"
         elif pd.notna(row.get("pr")) and (float(row["pr"]) < 70 or row.get("rating_bucket") in ("CCC", "D")):
             out[i], key = (FROZEN["recovery_rate"] * 100 - float(row["pr"])) / float(row["pr"]), "distressed"
         else:
@@ -350,11 +358,11 @@ def build_db_monthly_panel(
         obs = obs[obs["month"].isin(months)]
         values = obs.groupby(["cusip_id", "month"], observed=True).agg(
             price=("price", "median"), ytm=("ytm", "median"), trade_count=("trade_count", "sum"),
-            dollar_volume=("dollar_volume", "sum"), observed_days=("observation_date", "nunique"),
+            dollar_volume=("dollar_volume", lambda values: values.sum(min_count=1)), observed_days=("observation_date", "nunique"),
         ).reset_index()
     terms = reference_terms.rename(columns={"cusip9": "cusip_id", "amount_outstanding_k": "amt_outstanding_k", "coupon_rate": "coupon_pct"}).copy()
-    if "amt_outstanding_k" not in terms and "amount_outstanding_mm" in terms:
-        terms["amt_outstanding_k"] = terms["amount_outstanding_mm"] * 1_000
+    if "amt_outstanding_k" not in terms:
+        terms["amt_outstanding_k"] = np.nan
     if {"tenor", "day", "yield_pct"}.issubset(monthly_curve.columns):
         curve = monthly_curve.copy()
         tenor_map = {"1y": "DGS1", "2y": "DGS2", "3y": "DGS3", "5y": "DGS5", "7y": "DGS7", "10y": "DGS10", "20y": "DGS20", "30y": "DGS30"}
@@ -373,14 +381,22 @@ def build_db_monthly_panel(
     ratings_input = static_rating_mapping.rename(columns={"cusip9": "cusip_id"}).copy()
     if "issuer_id" not in sector.columns:
         raise ValueError("resolved issuer_id is required for the DB monthly panel")
-    if sector["cusip_id"].duplicated().any():
-        raise ValueError("resolved issuer/sector candidates contain duplicate CUSIPs")
-    month_frame = pd.DataFrame({"month": pd.to_datetime(months)})
-    sector["_join"] = 1
-    month_frame["_join"] = 1
-    candidates = sector.merge(month_frame, on="_join", how="inner").drop(columns="_join")
+    if "month" in sector:
+        sector["month"] = pd.to_datetime(sector["month"])
+        if sector.duplicated(["cusip_id", "month"]).any():
+            raise ValueError("resolved issuer/sector candidates contain duplicate CUSIP-months")
+        candidates = sector[sector["month"].isin(pd.to_datetime(months))].copy()
+    else:
+        if sector["cusip_id"].duplicated().any():
+            raise ValueError("resolved issuer/sector candidates contain duplicate CUSIPs")
+        month_frame = pd.DataFrame({"month": pd.to_datetime(months)})
+        sector["_join"] = 1
+        month_frame["_join"] = 1
+        candidates = sector.merge(month_frame, on="_join", how="inner").drop(columns="_join")
     out = candidates.merge(values, on=["cusip_id", "month"], how="left").merge(terms, on="cusip_id", how="left")
     out = out.merge(liquidity, on=["cusip_id", "month"], how="left", suffixes=("", "_liquidity"))
+    if "dollar_volume_liquidity" in out:
+        out["dollar_volume"] = out["dollar_volume"].combine_first(out["dollar_volume_liquidity"])
     out["traded_days"] = out.get("traded_days", out["observed_days"]).fillna(out["observed_days"])
     out["maturity_date"] = pd.to_datetime(out["maturity_date"], errors="coerce")
     out["bond_maturity"] = (out["maturity_date"] - out["month"]).dt.days / 365.25
@@ -473,7 +489,7 @@ def _design(frame: pd.DataFrame) -> pd.DataFrame:
     maturity = pd.to_numeric(frame["bond_maturity"], errors="coerce").astype(float)
     amount = pd.to_numeric(frame["amt_outstanding_k"], errors="coerce").astype(float)
     volume = pd.to_numeric(frame["dollar_volume"], errors="coerce").astype(float)
-    x = pd.DataFrame({"log_maturity": np.log(maturity.clip(lower=.25)), "log_amt": np.log(amount.clip(lower=1)), "log_volume": np.log1p(volume.clip(lower=0)), "is_144a": frame["db_type"].eq(2).astype(float)}, index=frame.index)
+    x = pd.DataFrame({"log_maturity": np.log(maturity.clip(lower=.25)), "log_amt": np.log(amount.clip(lower=1)), "log_volume": np.log1p(volume.clip(lower=0))}, index=frame.index)
     rating = pd.get_dummies(frame["rating_bucket"], prefix="q", dtype=float).drop(columns=["q_BBB"], errors="ignore")
     sector = pd.get_dummies(frame["ff17num"].astype(int), prefix="s", dtype=float)
     return pd.concat([x, rating, sector.iloc[:, 1:] if len(sector.columns) > 1 else sector], axis=1)

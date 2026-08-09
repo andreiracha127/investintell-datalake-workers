@@ -47,12 +47,12 @@ def test_delta_logical_pack_inherits_immutable_months_and_newest_month_wins() ->
     store = InMemoryPublicationStore()
     base_facts = {**_facts("2024-01-01"), "snapshot": _facts("2024-01-01")["snapshot"] + _facts("2024-02-01")["snapshot"], "rating_pit": _facts("2024-01-01")["rating_pit"] + _facts("2024-02-01")["rating_pit"]}
     base = materialize_panel(store, as_of=date(2024, 2, 29), code_revision="abc", facts=base_facts, source_lineage={"panel": "base"})
-    delta_facts = _facts("2024-01-01")
-    delta_facts["snapshot"] = _facts("2024-01-01")["snapshot"] + _facts("2024-02-01")["snapshot"]
-    delta_facts["rating_pit"] = _facts("2024-01-01")["rating_pit"] + _facts("2024-02-01")["rating_pit"]
-    delta = materialize_panel(store, as_of=date(2024, 3, 31), code_revision="abc", facts=delta_facts, source_lineage={"panel": "delta"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 1, 1), open_month=date(2024, 2, 1))
+    delta_facts = _facts("2024-03-01")
+    delta_facts["snapshot"] = _facts("2024-03-01")["snapshot"] + _facts("2024-04-01")["snapshot"]
+    delta_facts["rating_pit"] = _facts("2024-03-01")["rating_pit"] + _facts("2024-04-01")["rating_pit"]
+    delta = materialize_panel(store, as_of=date(2024, 4, 30), code_revision="abc", facts=delta_facts, source_lineage={"panel": "delta"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 3, 1), open_month=date(2024, 4, 1))
     pack = store.logical_rows(delta.publication_id, "snapshot")
-    assert [row["month"] for row in pack] == ["2024-01-01", "2024-02-01"]
+    assert [row["month"] for row in pack] == ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]
 
 
 def test_empty_lineage_is_a_gate_failure_that_cannot_move_pointer() -> None:
@@ -76,11 +76,26 @@ def test_same_day_revised_input_gets_new_immutable_identity_but_exact_rerun_repo
 def test_delta_requires_explicit_month_partition_and_retains_logical_first_month() -> None:
     store = InMemoryPublicationStore()
     base = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="base", facts=_facts(), source_lineage={"panel": "base"}, first_month=date(2024, 1, 1), last_closed_month=date(2024, 1, 1))
-    delta_facts = _facts("2024-01-01")
-    delta_facts["snapshot"] = _facts("2024-01-01")["snapshot"] + _facts("2024-02-01")["snapshot"]
-    delta_facts["rating_pit"] = _facts("2024-01-01")["rating_pit"] + _facts("2024-02-01")["rating_pit"]
-    delta = materialize_panel(store, as_of=date(2024, 2, 15), code_revision="delta", facts=delta_facts, source_lineage={"panel": "delta"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 1, 1), open_month=date(2024, 2, 1))
+    delta_facts = _facts("2024-02-01")
+    delta_facts["snapshot"] = _facts("2024-02-01")["snapshot"] + _facts("2024-03-01")["snapshot"]
+    delta_facts["rating_pit"] = _facts("2024-02-01")["rating_pit"] + _facts("2024-03-01")["rating_pit"]
+    delta = materialize_panel(store, as_of=date(2024, 3, 15), code_revision="delta", facts=delta_facts, source_lineage={"panel": "delta"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 2, 1), open_month=date(2024, 3, 1))
     assert store.publications[delta.publication_id]["first_month"] == date(2024, 1, 1)
-    assert store.publications[delta.publication_id]["open_month"] == date(2024, 2, 1)
+    assert store.publications[delta.publication_id]["open_month"] == date(2024, 3, 1)
+    skipped_facts = _facts("2024-04-01")
+    skipped_facts["snapshot"] = _facts("2024-04-01")["snapshot"] + _facts("2024-05-01")["snapshot"]
+    skipped_facts["rating_pit"] = _facts("2024-04-01")["rating_pit"] + _facts("2024-05-01")["rating_pit"]
     with pytest.raises(MaterializationError, match="month partition"):
-        materialize_panel(store, as_of=date(2024, 2, 15), code_revision="bad", facts=_facts("2024-02-01"), source_lineage={"panel": "bad"}, parent_publication_id=delta.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 2, 1), open_month=date(2024, 2, 1))
+        materialize_panel(store, as_of=date(2024, 5, 15), code_revision="bad", facts=skipped_facts, source_lineage={"panel": "bad"}, parent_publication_id=delta.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 4, 1), open_month=date(2024, 5, 1))
+
+
+def test_delta_rejects_a_parent_with_a_skipped_open_month() -> None:
+    store = InMemoryPublicationStore()
+    base = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="base", facts=_facts(), source_lineage={"panel": "base"})
+    store.publications[base.publication_id]["open_month"] = date(2024, 3, 1)
+    child_facts = _facts("2024-03-01")
+    child_facts["snapshot"] = _facts("2024-03-01")["snapshot"] + _facts("2024-04-01")["snapshot"]
+    child_facts["rating_pit"] = _facts("2024-03-01")["rating_pit"] + _facts("2024-04-01")["rating_pit"]
+
+    with pytest.raises(MaterializationError, match="month partition"):
+        materialize_panel(store, as_of=date(2024, 4, 15), code_revision="child", facts=child_facts, source_lineage={"panel": "child"}, parent_publication_id=base.publication_id, first_month=date(2024, 1, 1), last_closed_month=date(2024, 3, 1), open_month=date(2024, 4, 1))

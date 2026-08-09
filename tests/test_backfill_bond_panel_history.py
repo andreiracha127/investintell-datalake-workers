@@ -23,17 +23,23 @@ def _artifact_dir(tmp_path: Path) -> Path:
         {"cusip_id": "AAA000001", "month": "2025-03-01", "pr": 100.0, "ytm": .05, "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012, "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0, "db_type": 1.0, "price_source": "frozen"},
         {"cusip_id": "BBB000002", "month": "2025-04-01", "pr": 100.0, "ytm": .04, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 2.0, "dollar_volume": 2.0, "traded_days": 2, "prc_bid": None, "prc_ask": None, "rel_bid_ask_bps": None, "quoted_days": 0, "amt_outstanding_k": 200000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"},
         {"cusip_id": "DDD000004", "month": "2025-04-01", "pr": 101.0, "ytm": .04, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 100.0, "prc_ask": 102.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"},
+        {"cusip_id": "AAA000001", "month": "2026-06-01", "pr": 102.0, "ytm": .05, "mod_dur": 5.0, "bond_maturity": 3.0, "credit_spread": .012, "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5, "prc_bid": 101.0, "prc_ask": 103.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0, "db_type": 1.0, "price_source": "frozen"},
         {"cusip_id": "CCC000003", "month": "2026-07-01", "pr": 101.0, "ytm": .05, "mod_dur": 3.0, "bond_maturity": 3.0, "credit_spread": .010, "trade_count": 3.0, "dollar_volume": 3.0, "traded_days": 5, "prc_bid": 100.0, "prc_ask": 102.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 6.0, "db_type": 1.0, "price_source": "future"},
     ])
     _write(directory / "universe_snapshots_live.parquet", [
         {"cusip_id": "AAA000001", "month": "2025-03-01", "pr": 100.0, "ytm": .05, "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012, "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0, "db_type": 1.0, "price_source": "frozen", "spread_final": .013, "rating_bucket": "A", "ever_held_window": True},
         {"cusip_id": "DDD000004", "month": "2025-04-01", "pr": 101.0, "ytm": .04, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 100.0, "prc_ask": 102.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen", "spread_final": .014, "rating_bucket": "BBB", "ever_held_window": True},
+        {"cusip_id": "AAA000001", "month": "2026-06-01", "pr": 102.0, "ytm": .05, "mod_dur": 5.0, "bond_maturity": 3.0, "credit_spread": .012, "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5, "prc_bid": 101.0, "prc_ask": 103.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0, "db_type": 1.0, "price_source": "frozen", "spread_final": .013, "rating_bucket": "A", "ever_held_window": True},
     ])
     _write(directory / "rv_signal_live.parquet", [
         {"cusip_id": "AAA000001", "month": "2025-03-01", "spread_bps": 130.0, "fitted_bps": 120.0, "residual_bps": 10.0, "rv_signal": 1.0},
         {"cusip_id": "DDD000004", "month": "2025-04-01", "spread_bps": 140.0, "fitted_bps": 130.0, "residual_bps": 10.0, "rv_signal": 1.0},
+        {"cusip_id": "AAA000001", "month": "2026-06-01", "spread_bps": 130.0, "fitted_bps": 120.0, "residual_bps": 10.0, "rv_signal": 1.0},
     ])
-    _write(directory / "bond_monthly_returns.parquet", [{"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False}])
+    _write(directory / "bond_monthly_returns.parquet", [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+        {"cusip_id": "AAA000001", "month": "2026-06-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
     _write(directory / "bond_ratings_pit.parquet", [{"cusip_id": "AAA000001", "month": "2025-03-01", "rating_bucket": "A"}])
     return directory
 
@@ -57,11 +63,13 @@ def test_plan_is_deterministic_and_excludes_open_and_future_months(tmp_path: Pat
 
     plan = backfill.build_plan(artifacts, cutoff="2026-06-01")
 
-    assert plan.counts == {"snapshot": 3, "rv_signal": 2, "returns": 1, "rating_pit": 3}
+    assert plan.counts == {"snapshot": 4, "rv_signal": 3, "returns": 2, "rating_pit": 4}
     assert plan.first_month == "2025-03-01"
     assert plan.last_closed_month == "2026-06-01"
-    assert plan.returns_last_month == "2025-03-01"
+    assert plan.returns_last_month == "2026-06-01"
     assert plan.config_hash == "0c0d78a866bc1090"
+    returns = backfill.rows_for_surface(artifacts, plan, "returns", start_after=0, limit=10)
+    assert returns.rows[-1]["payload"]["historical_return_coverage_through"] == plan.cutoff
 
 
 def test_snapshot_retains_every_candidate_and_rating_uses_no_agency(tmp_path: Path) -> None:
@@ -72,7 +80,7 @@ def test_snapshot_retains_every_candidate_and_rating_uses_no_agency(tmp_path: Pa
     snapshots = backfill.rows_for_surface(artifacts, plan, "snapshot", start_after=0, limit=10)
     ratings = backfill.rows_for_surface(artifacts, plan, "rating_pit", start_after=0, limit=10)
 
-    assert [row["cusip_id"] for row in snapshots.rows] == ["AAA000001", "BBB000002", "DDD000004"]
+    assert [row["cusip_id"] for row in snapshots.rows] == ["AAA000001", "BBB000002", "DDD000004", "AAA000001"]
     assert snapshots.rows[0]["issuer_id"] is None
     assert snapshots.rows[0]["issuer_identity_state"] == "historical_identity_absent"
     assert snapshots.rows[1]["eligibility_state"] == "excluded"
@@ -86,12 +94,35 @@ def test_snapshot_retains_every_candidate_and_rating_uses_no_agency(tmp_path: Pa
     assert "agency" not in ratings.rows[0]
 
 
+def test_plan_refuses_returns_not_present_in_snapshot_panel(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    returns_path = directory / "bond_monthly_returns.parquet"
+    _write(returns_path, [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+        {"cusip_id": "ZZZ000009", "month": "2026-06-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+
+    with pytest.raises(backfill.PlanError, match="returns_not_subset_of_panel"):
+        backfill.build_plan(artifacts, cutoff="2026-06-01")
+
+
+def test_plan_refuses_returns_that_do_not_reach_the_requested_cutoff(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    returns_path = directory / "bond_monthly_returns.parquet"
+    _write(returns_path, [{"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False}])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+
+    with pytest.raises(backfill.PlanError, match="returns_history_must_reach_cutoff"):
+        backfill.build_plan(artifacts, cutoff="2026-06-01")
+
+
 def test_cursor_bounds_and_psql_protocol_keep_pointer_until_finalize(tmp_path: Path) -> None:
     directory = _artifact_dir(tmp_path)
     artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
     plan = backfill.build_plan(artifacts, cutoff="2026-06-01")
     with pytest.raises(backfill.CursorError, match="start_after_exceeds_surface"):
-        backfill.rows_for_surface(artifacts, plan, "snapshot", start_after=4, limit=1)
+        backfill.rows_for_surface(artifacts, plan, "snapshot", start_after=5, limit=1)
 
     prepare = backfill.render_prepare_sql(plan)
     batch = backfill.render_batch_sql(artifacts, plan, "snapshot", start_after=0, limit=1)
