@@ -655,6 +655,8 @@ def test_compare_month_walk_forward_gate_blocks_comparable_month() -> None:
     ("rebuilt_rv", "fit_diagnostics", "gate"),
     [
         (pd.DataFrame(), None, "rebuilt_rv_nonempty"),
+        (_rv(pd.Timestamp("2025-01-01")).drop(columns="spread_definition"), None, "rebuilt_rv_spread_definition"),
+        (_rv(pd.Timestamp("2025-01-01")).assign(spread_definition="wrong"), None, "rebuilt_rv_spread_definition"),
         (_rv(pd.Timestamp("2025-01-01")).drop(columns="residual_bps"), None, "required_columns_present"),
         (_rv(pd.Timestamp("2025-01-01")).assign(rv_signal=np.nan), None, "rv_values_finite"),
         (_rv(pd.Timestamp("2025-01-01")).assign(cusip_id=""), None, "rv_keys_valid"),
@@ -683,7 +685,9 @@ def test_compare_month_rebuilt_rv_structure_failure_blocks_comparable_month(
     )
 
     assert result["state"] == "parity_failed"
+    assert result["aborted"] is True
     assert result["rv_structure"]["passed"] is False
+    assert result["rv_structure"]["gates"][gate] is False
     assert gate in result["failed_gates"]
 
 

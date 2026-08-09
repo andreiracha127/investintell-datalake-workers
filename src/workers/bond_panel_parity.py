@@ -231,6 +231,11 @@ def _rv_structure(
 ) -> dict[str, Any]:
     required = {"cusip_id", "month", "rv_signal", "residual_bps"}
     required_present = required.issubset(rebuilt_rv.columns)
+    rebuilt_rv_spread_definition_ok = bool(
+        "spread_definition" in rebuilt_rv
+        and rebuilt_rv["spread_definition"].notna().all()
+        and rebuilt_rv["spread_definition"].eq(SPREAD_DEFINITION).all()
+    )
     rv_keys = (
         _normalized_keys(rebuilt_rv["cusip_id"])
         if "cusip_id" in rebuilt_rv
@@ -287,6 +292,7 @@ def _rv_structure(
     gates = {
         "rebuilt_rv_nonempty": bool(len(rebuilt_rv)),
         "required_columns_present": required_present,
+        "rebuilt_rv_spread_definition": rebuilt_rv_spread_definition_ok,
         "rv_keys_valid": bool(rv_keys.notna().all()),
         "rv_keys_unique": bool(not rv_keys.dropna().duplicated().any()),
         "rv_keys_subset_of_included": set(rv_keys.dropna()).issubset(included_keys),
