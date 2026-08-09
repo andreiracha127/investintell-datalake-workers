@@ -64,6 +64,31 @@ def test_ddl_serializes_composition_and_approval_on_the_snapshot_row() -> None:
     assert "WHERE snapshot_id = NEW.snapshot_id FOR UPDATE" in ddl
 
 
+def test_ddl_normalizes_registry_ownership_to_the_runtime_worker_role() -> None:
+    ddl = (ROOT / "schemas" / "bond_distribution_series_v1.sql").read_text(encoding="utf-8")
+
+    for relation in (
+        "bond_distribution_source_evidence",
+        "bond_distribution_parser_observation",
+        "bond_distribution_mapping_snapshot",
+        "bond_distribution_snapshot_approval",
+        "bond_distribution_pair_decision",
+        "bond_distribution_pair_identifier",
+    ):
+        assert f"ALTER TABLE {relation} OWNER TO worker_writer" in ddl
+        assert f"REVOKE ALL ON TABLE {relation} FROM PUBLIC" in ddl
+
+    for function in (
+        "bond_distribution_prevent_conflicting_approved_cusip_mapping",
+        "bond_distribution_pair_identifier_observation_guard",
+        "bond_distribution_snapshot_composition_guard",
+        "bond_distribution_snapshot_approval_guard",
+        "bond_distribution_prevent_mutation",
+    ):
+        assert f"ALTER FUNCTION {function}() OWNER TO worker_writer" in ddl
+        assert f"REVOKE ALL ON FUNCTION {function}() FROM PUBLIC" in ddl
+
+
 def test_resolver_derives_validation_from_parser_observations_not_decision_flags() -> None:
     resolver = (ROOT / "src" / "bonds" / "distribution_series.py").read_text(encoding="utf-8")
 

@@ -64,6 +64,7 @@ def test_delta_does_not_overwrite_a_sibling_pointer_advanced_after_validation() 
         facts=_facts(),
         source_lineage={"panel": "parent"},
     )
+    store.pointer = None
     sibling = materialize_panel(
         store,
         as_of=date(2024, 1, 31),
@@ -114,8 +115,15 @@ def test_same_day_revised_input_gets_new_immutable_identity_but_exact_rerun_repo
     store.pointer = None
     exact = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="abc", facts=_facts(), source_lineage={"panel": "one"})
     assert exact.publication_id == first.publication_id == store.pointer
-    revised = materialize_panel(store, as_of=date(2024, 1, 31), code_revision="abc", facts=_facts(), source_lineage={"panel": "two"})
-    assert revised.publication_id != first.publication_id
+    with pytest.raises(MaterializationError, match="cannot replace current pointer"):
+        materialize_panel(
+            store,
+            as_of=date(2024, 1, 31),
+            code_revision="abc",
+            facts=_facts(),
+            source_lineage={"panel": "two"},
+        )
+    assert store.pointer == first.publication_id
 
 
 def test_delta_requires_explicit_month_partition_and_retains_logical_first_month() -> None:

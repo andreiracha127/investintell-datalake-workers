@@ -32,7 +32,7 @@ _LABEL = re.compile(
     r"(?:(?P<tenure>Temporary|Permanent)\s+)?"
     r"(?P<side>Rule\s*144A|144A|Regulation\s*S|Reg\s*S)\s+"
     r"(?P<label>ISIN|CUSIP|CINS|Common\s+Code)\s*[:\-]?\s*"
-    r"(?P<value>[A-Za-z0-9]+(?:\s+(?!Rule\b|Reg\b|Regulation\b)[A-Za-z0-9]{3}\b)?)",
+    r"(?P<value>(?:[A-Za-z0-9]{6}\s+[A-Za-z0-9]{2}\s+[A-Za-z0-9]\b)|[A-Za-z0-9]+(?:\s+(?!Rule\b|Reg\b|Regulation\b)[A-Za-z0-9]{3}\b)?)",
     re.IGNORECASE,
 )
 _BARE_COMMON_CODE = re.compile(r"\b(Common\s+Code)\s*[:\-]?\s*([0-9]{9})\b", re.IGNORECASE)

@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
     parent_publication_id uuid REFERENCES bond_panel_publications(publication_id) ON DELETE RESTRICT,
     publication_status text NOT NULL CHECK (publication_status IN ('prepared', 'validated', 'failed')),
     failure_reason text,
-    config_hash char(16) NOT NULL CHECK (config_hash = '0c0d78a866bc1090'),
+    config_hash char(16) NOT NULL CONSTRAINT bond_panel_publications_config_hash_check
+        CHECK (config_hash = '180a82b3f1413d43'),
     input_fingerprint char(64) NOT NULL,
     code_revision text NOT NULL,
     first_month date NOT NULL,
@@ -34,6 +35,14 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
         OR (parent_publication_id IS NOT NULL AND open_month > last_closed_month)
     )
 );
+
+-- Re-applying the DDL must admit the active Reg S configuration even when a
+-- prior publication remains as immutable historical evidence.  NOT VALID
+-- preserves that history while enforcing the active hash for every new row.
+ALTER TABLE bond_panel_publications
+    DROP CONSTRAINT IF EXISTS bond_panel_publications_config_hash_check;
+ALTER TABLE bond_panel_publications
+    ADD CONSTRAINT bond_panel_publications_config_hash_check CHECK (config_hash = '180a82b3f1413d43') NOT VALID;
 
 CREATE TABLE IF NOT EXISTS bond_panel_app_pointer (
     product text PRIMARY KEY DEFAULT 'bond_panel_v1' CHECK (product = 'bond_panel_v1'),
@@ -225,10 +234,80 @@ BEGIN
         FROM bond_panel_publications prior, bond_panel_publications candidate
         WHERE prior.publication_id = OLD.publication_id
           AND candidate.publication_id = NEW.publication_id
-          AND (candidate.config_hash <> prior.config_hash
-               OR candidate.last_closed_month < prior.last_closed_month
+          AND (candidate.last_closed_month < prior.last_closed_month
                OR COALESCE(candidate.open_month, candidate.last_closed_month) < COALESCE(prior.open_month, prior.last_closed_month))
     ) THEN RAISE EXCEPTION 'pointer rejects config or month regression'; END IF;
+    IF TG_OP = 'UPDATE' AND EXISTS (
+        SELECT 1
+        FROM bond_panel_publications prior, bond_panel_publications candidate
+        WHERE prior.publication_id = OLD.publication_id
+          AND candidate.publication_id = NEW.publication_id
+          AND candidate.config_hash <> prior.config_hash
+    ) AND NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_publications prior, bond_panel_publications candidate
+        WHERE prior.publication_id = OLD.publication_id
+          AND candidate.publication_id = NEW.publication_id
+          AND btrim(prior.config_hash::text) = '0c0d78a866bc1090'
+          AND btrim(candidate.config_hash::text) = '180a82b3f1413d43'
+          AND candidate.parent_publication_id IS NULL
+          AND candidate.first_month <= prior.first_month
+          AND candidate.last_closed_month >= prior.last_closed_month
+          AND COALESCE(candidate.open_month, candidate.last_closed_month) >= COALESCE(prior.open_month, prior.last_closed_month)
+          AND candidate.source_lineage->>'distribution_rule' = 'reg_s'
+          AND nullif(candidate.source_lineage->>'distribution_mapping_snapshot_id', '') IS NOT NULL
+          AND candidate.gate_evidence @> jsonb_build_object(
+              'config_transition', jsonb_build_object(
+                  'contract', 'rule_144a_to_reg_s_base_v1',
+                  'from_publication_id', OLD.publication_id::text,
+                  'from_config_hash', btrim(prior.config_hash::text),
+                  'to_config_hash', btrim(candidate.config_hash::text),
+                  'authorized_code_revision', candidate.code_revision
+              )
+          )
+          AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.snapshot_rows
+          AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.rv_signal_rows
+          AND (SELECT count(*) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.returns_rows
+          AND (SELECT count(*) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.ratings_pit_rows
+          AND (SELECT min(f.month) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.first_month
+          AND (SELECT max(f.month) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = COALESCE(candidate.open_month, candidate.last_closed_month)
+          AND (SELECT min(f.month) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.first_month
+          AND (SELECT max(f.month) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+          AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.first_month
+          AND (SELECT max(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+          AND NOT EXISTS (
+              SELECT generated.month::date
+              FROM generate_series(candidate.first_month, COALESCE(candidate.open_month, candidate.last_closed_month), interval '1 month') AS generated(month)
+              EXCEPT SELECT DISTINCT f.month FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+          )
+          AND NOT EXISTS (
+              SELECT generated.month::date
+              FROM generate_series(candidate.first_month, candidate.last_closed_month, interval '1 month') AS generated(month)
+              EXCEPT SELECT DISTINCT f.month FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id
+          )
+          AND NOT EXISTS (
+              SELECT generated.month::date
+              FROM generate_series(candidate.first_month, candidate.last_closed_month, interval '1 month') AS generated(month)
+              EXCEPT SELECT DISTINCT f.month FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id
+          )
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f
+              WHERE f.publication_id = candidate.publication_id AND f.eligibility_state = 'included'
+          )
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+          )
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+          )
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+          )
+    ) THEN RAISE EXCEPTION 'pointer config transition requires an authorized complete Reg S replacement base'; END IF;
     RETURN NEW;
 END;
 $$;
@@ -258,38 +337,38 @@ FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_pointer_validated();
 -- Latest publication depth wins for a rebuilt month/CUSIP while all untouched
 -- parent months remain visible through the one-row current pointer.
 CREATE OR REPLACE VIEW bond_panel_current_snapshot_v1 AS
-WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0 AS depth, ARRAY[p.publication_id]
+WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
+    SELECT p.publication_id, p.parent_publication_id, 0 AS depth, ARRAY[p.publication_id], p.config_hash
     FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id
-    WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
+    WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')
     UNION ALL
-    SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id
+    SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, a.config_hash
     FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id
-    WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
+    WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = a.config_hash
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_snapshot f USING (publication_id)
 ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_rv_signal_v1 AS
-WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id] FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
-    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
+WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')
+    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, a.config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = a.config_hash
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_rv_signal f USING (publication_id)
 ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_returns_v1 AS
-WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id] FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
-    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
+WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')
+    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, a.config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = a.config_hash
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_returns f USING (publication_id)
 ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_rating_pit_v1 AS
-WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id] FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
-    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = '0c0d78a866bc1090'
+WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43')
+    UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, a.config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND p.config_hash = a.config_hash
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_rating_pit f USING (publication_id)
 ORDER BY f.month, f.cusip_id, a.depth;

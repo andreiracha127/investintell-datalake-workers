@@ -290,3 +290,30 @@ DROP TRIGGER IF EXISTS bond_distribution_pair_identifier_immutable ON bond_distr
 CREATE TRIGGER bond_distribution_pair_identifier_immutable
 BEFORE UPDATE OR DELETE ON bond_distribution_pair_identifier
 FOR EACH ROW EXECUTE FUNCTION bond_distribution_prevent_mutation();
+
+-- The loader creates and re-applies this registry as postgres or worker_writer.
+-- Runtime mutations and trigger maintenance require ownership, so normalize it
+-- to the runtime role rather than relying on the installing session's defaults.
+ALTER TABLE bond_distribution_source_evidence OWNER TO worker_writer;
+ALTER TABLE bond_distribution_parser_observation OWNER TO worker_writer;
+ALTER TABLE bond_distribution_mapping_snapshot OWNER TO worker_writer;
+ALTER TABLE bond_distribution_snapshot_approval OWNER TO worker_writer;
+ALTER TABLE bond_distribution_pair_decision OWNER TO worker_writer;
+ALTER TABLE bond_distribution_pair_identifier OWNER TO worker_writer;
+ALTER FUNCTION bond_distribution_prevent_conflicting_approved_cusip_mapping() OWNER TO worker_writer;
+ALTER FUNCTION bond_distribution_pair_identifier_observation_guard() OWNER TO worker_writer;
+ALTER FUNCTION bond_distribution_snapshot_composition_guard() OWNER TO worker_writer;
+ALTER FUNCTION bond_distribution_snapshot_approval_guard() OWNER TO worker_writer;
+ALTER FUNCTION bond_distribution_prevent_mutation() OWNER TO worker_writer;
+
+REVOKE ALL ON TABLE bond_distribution_source_evidence FROM PUBLIC;
+REVOKE ALL ON TABLE bond_distribution_parser_observation FROM PUBLIC;
+REVOKE ALL ON TABLE bond_distribution_mapping_snapshot FROM PUBLIC;
+REVOKE ALL ON TABLE bond_distribution_snapshot_approval FROM PUBLIC;
+REVOKE ALL ON TABLE bond_distribution_pair_decision FROM PUBLIC;
+REVOKE ALL ON TABLE bond_distribution_pair_identifier FROM PUBLIC;
+REVOKE ALL ON FUNCTION bond_distribution_prevent_conflicting_approved_cusip_mapping() FROM PUBLIC;
+REVOKE ALL ON FUNCTION bond_distribution_pair_identifier_observation_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION bond_distribution_snapshot_composition_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION bond_distribution_snapshot_approval_guard() FROM PUBLIC;
+REVOKE ALL ON FUNCTION bond_distribution_prevent_mutation() FROM PUBLIC;

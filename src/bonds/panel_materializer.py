@@ -165,6 +165,11 @@ class InMemoryPublicationStore:
         record_event: bool = True,
     ) -> None:
         """Advance a base pointer, or compare-and-set a delta pointer."""
+        if expected_parent_id is None and self.pointer not in (None, publication_id):
+            raise MaterializationError(
+                "base publication cannot replace current pointer without authorized migration",
+                reason_code="panel_gate_failed",
+            )
         if expected_parent_id is not None and self.pointer != expected_parent_id:
             raise MaterializationError(
                 "delta parent is no longer current pointer",
@@ -271,11 +276,21 @@ def _promote_pointer(cur: Any, publication_id: str, parent_publication_id: str |
     if parent_publication_id is None:
         cur.execute(
             "INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES "
-            "('bond_panel_v1', %s) ON CONFLICT (product) DO UPDATE SET "
-            "publication_id = excluded.publication_id, changed_at = now()",
+            "('bond_panel_v1', %s) ON CONFLICT (product) DO NOTHING",
             (publication_id,),
         )
-        return
+        if cur.rowcount == 1:
+            return
+        cur.execute(
+            "SELECT publication_id FROM bond_panel_app_pointer WHERE product = 'bond_panel_v1'",
+        )
+        current = cur.fetchone()
+        if current is not None and str(current[0]) == publication_id:
+            return
+        raise MaterializationError(
+            "base publication cannot replace current pointer without authorized migration",
+            reason_code="panel_gate_failed",
+        )
     cur.execute(
         "UPDATE bond_panel_app_pointer SET publication_id = %s, changed_at = now() "
         "WHERE product = 'bond_panel_v1' AND publication_id = %s",

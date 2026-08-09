@@ -289,22 +289,31 @@ contain each declared parity month exactly once and every monthly state tuple mu
 match the table above; unknown, inconsistent, missing, duplicate, or unexpected
 records are fail-closed monthly-contract failures.
 
-This revised contract does not authorize production work. After the PR revision
-is verified, a separately authorized future Railway production run must execute
-the read-only `WORKER=bond_panel_parity` worker against the frozen current
-publication and preserve its emitted JSON. A successful build is not execution
-evidence. Only a fresh production `state=parity_passed`, `aborted=false` result
-under this contract can support a separately authorized Stage 6 restart, with
-`CODE_REVISION` explicitly set. Any `parity_failed` result remains a stop: do
-not execute Stage 6 and do not change predeclared thresholds to make it pass.
+This revised contract does not authorize production work. The parity worker is
+retained only to reproduce the historical Rule 144A result and explicitly
+refuses activation use under the Regulation S config. It is not rerun as a gate
+for the Regulation S base: doing so would again compare different securities.
+A future activation instead requires a separately authorized mapping load,
+Regulation S market-data coverage measurement, historical Regulation S base
+build, and exact review of that base's evidence before any pointer change.
 
-The parity transaction must still run before Stage 6, because a successful Stage
-6 publication intentionally advances the pointer and makes a later replay fail
-`current_publication_id_mismatch`.
+Installing the updated DDL does not hide the current Rule 144A publication. The
+four current views anchor on the current pointer's permitted config hash and
+walk only ancestors with that same hash. The one allowed cross-config pointer
+transition is `0c0d78a866bc1090` to `180a82b3f1413d43`, and only to a validated
+parentless Regulation S replacement base. Its immutable `gate_evidence` must
+carry the `rule_144a_to_reg_s_base_v1` transition contract bound to the old
+publication, both hashes, and the authorized code revision; its lineage must
+bind the approved mapping snapshot. The trigger independently checks declared
+versus actual row counts, non-regressing dates, complete monthly partitions,
+RV/return subset keys, and exact snapshot/rating keys. An ordinary parentless
+materialization cannot overwrite an existing pointer. Missing or inconsistent
+transition evidence is a hard stop and leaves the Rule 144A pointer readable.
 
-The first Stage 6 delta has a second, runtime authorization boundary. While the
-current pointer still targets the immutable base (`parent_publication_id IS
-NULL`), `BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION` must equal the exact
+The first Stage 6 delta has a second, runtime authorization boundary. After the
+authorized transition, while the current pointer targets the new Regulation S
+base (`parent_publication_id IS NULL`),
+`BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION` must equal the exact
 `CODE_REVISION` byte-for-byte. Missing, blank, or mismatched values fail closed
 as `initial_stage6_authorization_absent_or_mismatch`. Once a validated child has
 advanced the pointer, ordinary contiguous monthly deltas do not require this

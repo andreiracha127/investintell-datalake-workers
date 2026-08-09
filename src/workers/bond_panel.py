@@ -191,27 +191,40 @@ def _load_inputs(
         "WHERE nullif(btrim(cusip9), '') IS NOT NULL ORDER BY upper(btrim(cusip9))",
     )
     reference_cusip9s = references["reference_cusip9"].astype(str).tolist()
-    resolution_map = resolve_reg_s_cusip_map_from_db(
+    closed_resolution_map = resolve_reg_s_cusip_map_from_db(
+        conn,
+        snapshot_id=mapping_snapshot_id,
+        as_of=closed_as_of,
+        reference_cusip9s=reference_cusip9s,
+    )
+    open_resolution_map = resolve_reg_s_cusip_map_from_db(
         conn,
         snapshot_id=mapping_snapshot_id,
         as_of=as_of,
         reference_cusip9s=reference_cusip9s,
+    )
+    resolution_windows = (
+        (closed_month.date(), closed_as_of, closed_resolution_map),
+        (open_month.date(), as_of, open_resolution_map),
     )
     mapping_rows = [
         {
             "reference_cusip9": resolution.reference_cusip9,
             "execution_cusip9": resolution.reg_s_cusip9,
             "decision_id": resolution.decision_id,
+            "month": month.isoformat(),
         }
+        for month, _mapping_as_of, resolution_map in resolution_windows
         for _reference, resolution in sorted(resolution_map.resolutions.items())
     ]
-    if not mapping_rows:
-        raise ValueError("reg_s_mapping_zero_approved")
+    for month, _mapping_as_of, resolution_map in resolution_windows:
+        if not resolution_map.resolutions:
+            raise ValueError(f"reg_s_mapping_zero_approved:{month.isoformat()}")
     mapping_json = json.dumps(mapping_rows, sort_keys=True, separators=(",", ":"))
     mapping_cte = (
-        "WITH mapping AS (SELECT reference_cusip9, execution_cusip9, decision_id "
+        "WITH mapping AS (SELECT reference_cusip9, execution_cusip9, decision_id, month "
         "FROM jsonb_to_recordset(%s::jsonb) AS mapped("
-        "reference_cusip9 text, execution_cusip9 text, decision_id text))"
+        "reference_cusip9 text, execution_cusip9 text, decision_id text, month date))"
     )
 
     inputs = {
@@ -221,13 +234,14 @@ def _load_inputs(
             + " SELECT m.execution_cusip9 AS cusip9, o.day, o.price, o.ytm, o.volume "
             "FROM bond_observation_daily o JOIN mapping m "
             "ON upper(btrim(o.cusip9)) = m.execution_cusip9 "
+            "AND date_trunc('month', o.day)::date = m.month "
             "WHERE o.day >= %s AND o.day <= %s AND (o.price IS NOT NULL OR o.ytm IS NOT NULL)",
             (mapping_json, start, end),
         ),
         "reference_terms": _frame(
             conn,
             mapping_cte
-            + " SELECT m.execution_cusip9 AS cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
+            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
             "r.amount_outstanding_vendor, prior.amount_outstanding_k, r.asset, r.asset_type, r.bond_type, r.debt_type "
             "FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
             "LEFT JOIN bond_panel_snapshot prior "
@@ -260,7 +274,7 @@ def _load_inputs(
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ~* '(^|[^[:alnum:]])corporate([^[:alnum:]]|$)' THEN 'corporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num, "
             "price.db_type, COALESCE(price.db_type_reason, CASE WHEN a.security_id IS NULL THEN 'security_alias_missing' ELSE 'db_type_pit_absent' END) AS db_type_reason "
-            "FROM mapping m CROSS JOIN panel_months pm "
+            "FROM mapping m JOIN panel_months pm ON pm.month = m.month "
             "LEFT JOIN aliases a ON a.month = pm.month AND a.cusip9 = m.execution_cusip9 "
             "LEFT JOIN sec_current_bond_security_v1 s ON s.security_id = a.security_id "
             "LEFT JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
@@ -273,8 +287,8 @@ def _load_inputs(
         "monthly_liquidity": _frame(
             conn,
             mapping_cte
-            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.execution_cusip9 WHERE l.month IN (%s, %s)), "
-            "live AS (SELECT m.execution_cusip9 AS cusip9, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, date_trunc('month', t.day)::date), "
+            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.execution_cusip9 AND l.month = m.month WHERE l.month IN (%s, %s)), "
+            "live AS (SELECT m.execution_cusip9 AS cusip9, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 AND date_trunc('month', t.day)::date = m.month WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, date_trunc('month', t.day)::date), "
             "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical) SELECT DISTINCT ON (cusip9, month) cusip9, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code FROM all_rows ORDER BY cusip9, month, priority",
             (mapping_json, closed_month.date(), open_month.date(), start, end),
         ),
@@ -289,7 +303,7 @@ def _load_inputs(
     inputs["static_rating_mapping"] = _frame(
             conn,
             mapping_cte
-            + " SELECT m.execution_cusip9 AS cusip9, r.rating_bucket, r.rating_as_of_month, "
+            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, r.rating_bucket, r.rating_as_of_month, "
             "CASE WHEN r.rating_state = 'rated' THEN 'static_current' ELSE 'static_carry_forward' END AS rating_state, "
             "r.reason_code AS rating_reason, r.source_sha256 FROM bond_rating_static r JOIN mapping m "
             "ON upper(btrim(r.cusip9)) = m.execution_cusip9",
@@ -310,15 +324,27 @@ def _load_inputs(
     lineage["static_rating_mapping"] = f"bond_rating_static:{rating_hashes[0]}"
     lineage["distribution_rule"] = "reg_s"
     lineage["distribution_mapping_snapshot_id"] = mapping_snapshot_id
-    lineage["distribution_mapping_count"] = str(len(mapping_rows))
+    lineage["distribution_mapping_count"] = str(len(open_resolution_map.resolutions))
+    lineage["distribution_mapping_closed_as_of"] = closed_as_of.isoformat()
+    lineage["distribution_mapping_open_as_of"] = as_of.isoformat()
+    lineage["distribution_mapping_closed_count"] = str(len(closed_resolution_map.resolutions))
+    lineage["distribution_mapping_open_count"] = str(len(open_resolution_map.resolutions))
     for reason, count in sorted(
         (
             reason,
-            sum(1 for value in resolution_map.reason_by_reference.values() if value == reason),
+            sum(1 for value in open_resolution_map.reason_by_reference.values() if value == reason),
         )
-        for reason in set(resolution_map.reason_by_reference.values())
+        for reason in set(open_resolution_map.reason_by_reference.values())
     ):
         lineage[f"distribution_mapping_omission:{reason}"] = str(count)
+    for reason, count in sorted(
+        (
+            reason,
+            sum(1 for value in closed_resolution_map.reason_by_reference.values() if value == reason),
+        )
+        for reason in set(closed_resolution_map.reason_by_reference.values())
+    ):
+        lineage[f"distribution_mapping_closed_omission:{reason}"] = str(count)
     return inputs, lineage
 
 

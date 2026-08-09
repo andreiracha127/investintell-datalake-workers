@@ -382,6 +382,24 @@ def test_parser_handles_cins_common_code_and_explicit_tenure_without_identifier_
     assert records[1]["reg_s"][0]["identifier_label"] == "Common Code"
 
 
+def test_parser_preserves_explicit_6_2_1_cusip_and_cins_display_groups_only() -> None:
+    source = b"""
+    <table><tr><td>Reg S CINS G35906 AC 3</td><td>Rule 144A CUSIP 344045 AB 5</td></tr></table>
+    <table><tr><td>Reg S CINS G35906 AC 33</td><td>Rule 144A CUSIP 344045 AB 55</td></tr></table>
+    """
+
+    records = backfill.parse_document(source, document_hash="hash", accession="accession")
+
+    assert records[0]["status"] == "candidate"
+    assert records[0]["reg_s"][0]["source_value"] == "G35906 AC 3"
+    assert records[0]["reg_s"][0]["normalized_value"] == "G35906AC3"
+    assert records[0]["rule_144a"][0]["source_value"] == "344045 AB 5"
+    assert records[0]["rule_144a"][0]["normalized_value"] == "344045AB5"
+    assert [item["source_value"] for item in records[1]["reg_s"] + records[1]["rule_144a"]] == [
+        "G35906", "344045",
+    ]
+
+
 def test_parser_refuses_cross_block_pairing_and_marks_duplicates_ambiguous() -> None:
     source = b"""
     <table><tr><td>Regulation S ISIN USG35906AC33</td></tr></table>

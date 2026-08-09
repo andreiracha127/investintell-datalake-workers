@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
@@ -68,7 +69,7 @@ def test_current_parent_reads_declared_and_direct_surface_months() -> None:
 
 def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch) -> None:
     sql_seen: list[tuple[str, tuple[object, ...]]] = []
-    resolver_call: dict[str, object] = {}
+    resolver_calls: list[dict[str, object]] = []
 
     def frame(_conn, sql, _params=()):
         sql_seen.append((sql, _params))
@@ -88,13 +89,20 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
         return pd.DataFrame()
 
     def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
-        resolver_call.update(
-            snapshot_id=snapshot_id, as_of=as_of, reference_cusip9s=list(reference_cusip9s)
+        resolver_calls.append(
+            {
+                "snapshot_id": snapshot_id,
+                "as_of": as_of,
+                "reference_cusip9s": list(reference_cusip9s),
+            }
         )
+        execution_cusip9 = "CLOSEDREG" if as_of == date(2026, 7, 31) else "OPENREGS1"
         return SimpleNamespace(
             resolutions={
                 "REFERENCE1": SimpleNamespace(
-                    reference_cusip9="REFERENCE1", reg_s_cusip9="EXECUTION", decision_id="decision-1"
+                    reference_cusip9="REFERENCE1",
+                    reg_s_cusip9=execution_cusip9,
+                    decision_id=f"decision-{as_of.isoformat()}",
                 )
             },
             reason_by_reference={"UNMAPPED1": "no_supported_reg_s_cusip"},
@@ -113,18 +121,52 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
         structural_month=date(2026, 6, 1),
     )
 
-    assert resolver_call == {
-        "snapshot_id": REG_S_SNAPSHOT_ID,
-        "as_of": date(2026, 8, 8),
-        "reference_cusip9s": ["REFERENCE1", "UNMAPPED1"],
-    }
+    assert resolver_calls == [
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": date(2026, 7, 31),
+            "reference_cusip9s": ["REFERENCE1", "UNMAPPED1"],
+        },
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": date(2026, 8, 8),
+            "reference_cusip9s": ["REFERENCE1", "UNMAPPED1"],
+        },
+    ]
     mapped_queries = [sql for sql, _params in sql_seen if "jsonb_to_recordset" in sql]
+    mapped_payloads = [
+        json.loads(_params[0])
+        for sql, _params in sql_seen
+        if "jsonb_to_recordset" in sql
+    ]
     assert len(mapped_queries) == 5
-    assert all("reference_cusip9 text, execution_cusip9 text, decision_id text" in sql for sql in mapped_queries)
+    assert all(
+        payload
+        == [
+            {
+                "decision_id": "decision-2026-07-31",
+                "execution_cusip9": "CLOSEDREG",
+                "month": "2026-07-01",
+                "reference_cusip9": "REFERENCE1",
+            },
+            {
+                "decision_id": "decision-2026-08-08",
+                "execution_cusip9": "OPENREGS1",
+                "month": "2026-08-01",
+                "reference_cusip9": "REFERENCE1",
+            },
+        ]
+        for payload in mapped_payloads
+    )
+    assert all(
+        "reference_cusip9 text, execution_cusip9 text, decision_id text, month date" in sql
+        for sql in mapped_queries
+    )
     assert all("execution_cusip9" in sql for sql in mapped_queries)
     assert any("FROM bond_observation_daily o JOIN mapping m" in sql for sql in mapped_queries)
+    assert any("date_trunc('month', o.day)::date = m.month" in sql for sql in mapped_queries)
     assert any("FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9" in sql for sql in mapped_queries)
-    assert any("FROM mapping m CROSS JOIN panel_months pm" in sql for sql in mapped_queries)
+    assert any("FROM mapping m JOIN panel_months pm ON pm.month = m.month" in sql for sql in mapped_queries)
     assert any("FROM bond_rating_static r JOIN mapping m" in sql for sql in mapped_queries)
     issuer_sql = next(sql for sql in mapped_queries if "sec_cusip_ticker_map" in sql)
     assert "non[-[:space:]]*corporate" in issuer_sql
@@ -146,7 +188,12 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert lineage["distribution_rule"] == "reg_s"
     assert lineage["distribution_mapping_snapshot_id"] == REG_S_SNAPSHOT_ID
     assert lineage["distribution_mapping_count"] == "1"
+    assert lineage["distribution_mapping_closed_as_of"] == "2026-07-31"
+    assert lineage["distribution_mapping_open_as_of"] == "2026-08-08"
+    assert lineage["distribution_mapping_closed_count"] == "1"
+    assert lineage["distribution_mapping_open_count"] == "1"
     assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
+    assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
 
 

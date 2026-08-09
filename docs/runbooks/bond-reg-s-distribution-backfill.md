@@ -134,8 +134,15 @@ Database publication is a later, separately authorized operation:
 5. approve/finalize the immutable snapshot atomically;
 6. measure Regulation S price, rating, and liquidity coverage;
 7. rebuild a new historical Regulation S base under the new config identity;
-8. validate row counts, lineage, `max(computed_at)`, and pointer candidate;
-9. activate Stage 6 only under a separate production authorization.
+8. validate actual row counts, complete month partitions, lineage,
+   `max(computed_at)`, and the pointer candidate without changing the pointer;
+9. bind immutable `gate_evidence.config_transition` to contract
+   `rule_144a_to_reg_s_base_v1`, the current Rule 144A publication, both config
+   hashes, and the authorized base code revision;
+10. promote the parentless base through the guarded cross-config transition;
+    an ordinary materializer base is not allowed to overwrite the pointer;
+11. activate the first Stage 6 delta only under a separate production
+    authorization.
 
 The frozen Rule 144A base and its T3 parity result cannot be reused as the
 Regulation S base or as a like-for-like activation gate.
