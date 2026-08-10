@@ -176,16 +176,25 @@ updates the panel pointer.
 4. verify content hash, collision checks, and coverage;
 5. approve/finalize the immutable snapshot atomically;
 6. measure Regulation S price, rating, and liquidity coverage;
-7. rebuild a new historical Regulation S base under the new config identity;
+7. keep the immutable historical Rule 144A publication as the parent; do not
+   rebuild historical rows. New dual-series facts use config hash
+   `1863d3d5fa3a0edf` and carry explicit distribution identity;
 8. validate actual row counts, complete month partitions, lineage,
    `max(computed_at)`, and the pointer candidate without changing the pointer;
 9. bind immutable `gate_evidence.config_transition` to contract
-   `rule_144a_to_reg_s_base_v1`, the current Rule 144A publication, both config
-   hashes, and the authorized base code revision;
-10. promote the parentless base through the guarded cross-config transition;
-    an ordinary materializer base is not allowed to overwrite the pointer;
-11. activate the first Stage 6 delta only under a separate production
-    authorization.
+   `rule_144a_to_dual_series_delta_v1`, the current Rule 144A publication,
+   legacy hash `0c0d78a866bc1090`, dual-series hash `1863d3d5fa3a0edf`, and the
+   authorized bootstrap-child code revision. Lineage must bind the exact approved mapping
+   snapshot as `rule_144a_and_reg_s`; every new fact row requires its structured
+   rule/reference identity, and every Regulation S row requires a decision id;
+10. run the revision-authorized bootstrap child through the guarded
+    cross-config transition; an ordinary parentless materialization cannot
+    overwrite the pointer;
+11. after that child is validated, continue with ordinary contiguous
+    dual-series deltas.
 
 The frozen Rule 144A base and its T3 parity result cannot be reused as the
-Regulation S base or as a like-for-like activation gate.
+dual-series child or as a like-for-like activation gate. The older
+Regulation-S-only hash `180a82b3f1413d43` remains stored for direct historical
+inspection but is never served by the current views or accepted as an
+activation target.

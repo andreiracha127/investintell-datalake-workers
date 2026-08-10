@@ -4,16 +4,15 @@ import pytest
 
 from src.bonds.panel_materializer import InMemoryPublicationStore, MaterializationError, materialize_panel
 import inspect
-import re
 import src.bonds.panel_materializer as materializer
 
 
-def test_surface_insert_placeholder_arities_are_deliberate() -> None:
+def test_surface_inserts_project_structured_distribution_identity_from_payload() -> None:
     source = inspect.getsource(materializer._insert_rows)
-    counts = [len(re.findall(r"%s", query)) for query in re.findall(r'cur\.executemany\(f"(INSERT INTO \{table\}[^\"]+)', source)]
-    assert sorted(counts) == [6, 10, 10, 27]
-    assert "[payload] * 24" in source
-    assert "[payload] * 32" in source
+    assert "distribution_rule, reference_cusip9, distribution_decision_id" in source
+    assert "->> 'distribution_rule'" in source
+    assert "->> 'reference_cusip9'" in source
+    assert "->> 'distribution_decision_id'" in source
 
 
 def _facts(month: str = "2024-01-01") -> dict[str, list[dict[str, object]]]:
@@ -23,6 +22,152 @@ def _facts(month: str = "2024-01-01") -> dict[str, list[dict[str, object]]]:
         "rv_signal": [{"month": month, "cusip_id": "AAA", "rv_signal": .1}],
         "rating_pit": [{"month": month, "cusip_id": "AAA", "rating_bucket": "A"}],
     }
+
+
+def _dual_facts(month: str = "2024-01-01") -> dict[str, list[dict[str, object]]]:
+    facts = _facts(month)
+    for surface, rows in facts.items():
+        row = rows[0]
+        row.update(
+            distribution_rule="rule_144a",
+            reference_cusip9="AAA",
+            distribution_decision_id=None,
+        )
+        reg_s = dict(row)
+        reg_s.update(
+            cusip_id="BBB",
+            distribution_rule="reg_s",
+            reference_cusip9="AAA",
+            distribution_decision_id="decision-1",
+        )
+        facts[surface] = [row, reg_s]
+    return facts
+
+
+def test_dual_lineage_rejects_missing_reference_identity() -> None:
+    facts = _dual_facts()
+    facts["snapshot"][0]["reference_cusip9"] = None
+
+    with pytest.raises(MaterializationError, match="distribution identity"):
+        materialize_panel(
+            InMemoryPublicationStore(), as_of=date(2024, 1, 31), code_revision="dual",
+            facts=facts, source_lineage={"distribution_rule": "rule_144a_and_reg_s", "distribution_mapping_snapshot_id": "snapshot-1"},
+        )
+
+
+def test_dual_lineage_rejects_surface_identity_mismatch() -> None:
+    facts = _dual_facts()
+    facts["returns"][1]["distribution_decision_id"] = "other-decision"
+
+    with pytest.raises(MaterializationError, match="surface identity"):
+        materialize_panel(
+            InMemoryPublicationStore(), as_of=date(2024, 1, 31), code_revision="dual",
+            facts=facts, source_lineage={"distribution_rule": "rule_144a_and_reg_s", "distribution_mapping_snapshot_id": "snapshot-1"},
+        )
+
+
+def test_dual_lineage_rejects_reg_s_execution_cusip_collision() -> None:
+    facts = _dual_facts()
+    for surface in facts:
+        facts[surface][1]["cusip_id"] = "AAA"
+
+    with pytest.raises(MaterializationError, match="duplicate fact keys|execution CUSIP collision"):
+        materialize_panel(
+            InMemoryPublicationStore(), as_of=date(2024, 1, 31), code_revision="dual",
+            facts=facts, source_lineage={"distribution_rule": "rule_144a_and_reg_s", "distribution_mapping_snapshot_id": "snapshot-1"},
+        )
+
+
+def test_dual_lineage_requires_a_nonblank_mapping_snapshot() -> None:
+    with pytest.raises(MaterializationError, match="mapping snapshot"):
+        materialize_panel(
+            InMemoryPublicationStore(), as_of=date(2024, 1, 31), code_revision="dual",
+            facts=_dual_facts(), source_lineage={"distribution_rule": "rule_144a_and_reg_s"},
+        )
+
+
+def test_legacy_pointer_accepts_only_an_explicit_dual_series_child() -> None:
+    store = InMemoryPublicationStore()
+    legacy = materialize_panel(
+        store, as_of=date(2024, 1, 31), code_revision="legacy", facts=_facts(),
+        source_lineage={"panel": "legacy"},
+    )
+    store.publications[legacy.publication_id]["config_hash"] = "0c0d78a866bc1090"
+    facts = _dual_facts("2024-02-01")
+    open_facts = _dual_facts("2024-03-01")
+    facts["snapshot"] += open_facts["snapshot"]
+    facts["rating_pit"] += open_facts["rating_pit"]
+
+    child = materialize_panel(
+        store, as_of=date(2024, 3, 31), code_revision="dual-child", facts=facts,
+        source_lineage={"distribution_rule": "rule_144a_and_reg_s", "distribution_mapping_snapshot_id": "snapshot-1"},
+        parent_publication_id=legacy.publication_id, first_month=date(2024, 1, 1),
+        last_closed_month=date(2024, 2, 1), open_month=date(2024, 3, 1),
+    )
+    assert store.pointer == child.publication_id
+    assert store.publications[child.publication_id]["gate_evidence"]["config_transition"]["contract"] == "rule_144a_to_dual_series_delta_v1"
+
+
+def test_legacy_pointer_rejects_a_nondual_config_child() -> None:
+    store = InMemoryPublicationStore()
+    legacy = materialize_panel(
+        store, as_of=date(2024, 1, 31), code_revision="legacy", facts=_facts(),
+        source_lineage={"panel": "legacy"},
+    )
+    store.publications[legacy.publication_id]["config_hash"] = "0c0d78a866bc1090"
+
+    with pytest.raises(MaterializationError, match="parent config"):
+        materialize_panel(
+            store, as_of=date(2024, 3, 31), code_revision="wrong", facts=_facts("2024-02-01"),
+            source_lineage={"panel": "wrong"}, parent_publication_id=legacy.publication_id,
+            first_month=date(2024, 1, 1), last_closed_month=date(2024, 2, 1), open_month=date(2024, 3, 1),
+        )
+
+
+def test_later_dual_delta_can_continue_rule_144a_when_reg_s_is_omitted() -> None:
+    store = InMemoryPublicationStore()
+    lineage = {
+        "distribution_rule": "rule_144a_and_reg_s",
+        "distribution_mapping_snapshot_id": "snapshot-1",
+    }
+    parent = materialize_panel(
+        store,
+        as_of=date(2024, 1, 31),
+        code_revision="dual-base",
+        facts=_dual_facts(),
+        source_lineage=lineage,
+    )
+    closed = _facts("2024-02-01")
+    opened = _facts("2024-03-01")
+    for rows in closed.values():
+        for row in rows:
+            row.update(
+                distribution_rule="rule_144a",
+                reference_cusip9="AAA",
+                distribution_decision_id=None,
+            )
+    for surface in ("snapshot", "rating_pit"):
+        row = opened[surface][0]
+        row.update(
+            distribution_rule="rule_144a",
+            reference_cusip9="AAA",
+            distribution_decision_id=None,
+        )
+        closed[surface].append(row)
+
+    child = materialize_panel(
+        store,
+        as_of=date(2024, 3, 31),
+        code_revision="dual-rule144a-only",
+        facts=closed,
+        source_lineage=lineage,
+        parent_publication_id=parent.publication_id,
+        first_month=date(2024, 1, 1),
+        last_closed_month=date(2024, 2, 1),
+        open_month=date(2024, 3, 1),
+    )
+
+    assert store.pointer == child.publication_id
 
 
 def test_base_rejects_later_snapshot_month_without_returns_or_rv_coverage() -> None:

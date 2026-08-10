@@ -72,6 +72,45 @@ def _validate_input(facts: dict[str, list[dict[str, object]]], source_lineage: d
         raise MaterializationError("zero rows on required surface")
     if not source_lineage:
         raise MaterializationError("source lineage is required")
+    if source_lineage.get("distribution_rule") == "rule_144a_and_reg_s":
+        mapping_snapshot_id = source_lineage.get("distribution_mapping_snapshot_id")
+        if not isinstance(mapping_snapshot_id, str) or not mapping_snapshot_id.strip():
+            raise MaterializationError("dual-series lineage requires mapping snapshot", reason_code="panel_gate_failed")
+        snapshot_identity: dict[tuple[str, str], tuple[object, object, object]] = {}
+        rule_144a_execution: set[tuple[str, str]] = set()
+        reg_s_execution: set[tuple[str, str]] = set()
+        for row in facts["snapshot"]:
+            key = (str(row.get("month")), str(row.get("cusip_id")))
+            rule = row.get("distribution_rule")
+            reference = row.get("reference_cusip9")
+            decision_id = row.get("distribution_decision_id")
+            if rule not in ("rule_144a", "reg_s") or not isinstance(reference, str) or not reference.strip():
+                raise MaterializationError("dual-series row requires distribution identity", reason_code="panel_gate_failed")
+            if rule == "rule_144a":
+                if key[1] != reference or decision_id is not None:
+                    raise MaterializationError("invalid Rule 144A distribution identity", reason_code="panel_gate_failed")
+                rule_144a_execution.add((key[0], reference))
+            else:
+                if not isinstance(decision_id, str) or not decision_id.strip():
+                    raise MaterializationError("Reg S row requires distribution decision identity", reason_code="panel_gate_failed")
+                reg_s_execution.add(key)
+            snapshot_identity[key] = (rule, reference, decision_id)
+        if rule_144a_execution & reg_s_execution:
+            raise MaterializationError("Reg S execution CUSIP collision", reason_code="panel_gate_failed")
+        for surface in SURFACES:
+            for row in facts[surface]:
+                key = (str(row.get("month")), str(row.get("cusip_id")))
+                rule = row.get("distribution_rule")
+                reference = row.get("reference_cusip9")
+                decision_id = row.get("distribution_decision_id")
+                if rule not in ("rule_144a", "reg_s") or not isinstance(reference, str) or not reference.strip():
+                    raise MaterializationError("dual-series row requires distribution identity", reason_code="panel_gate_failed")
+                if rule == "rule_144a" and (key[1] != reference or decision_id is not None):
+                    raise MaterializationError("invalid Rule 144A distribution identity", reason_code="panel_gate_failed")
+                if rule == "reg_s" and (not isinstance(decision_id, str) or not decision_id.strip()):
+                    raise MaterializationError("Reg S row requires distribution decision identity", reason_code="panel_gate_failed")
+                if snapshot_identity.get(key) != (rule, reference, decision_id):
+                    raise MaterializationError("dual-series surface identity differs from snapshot", reason_code="panel_gate_failed")
     keys = {surface: {(str(row.get("month")), str(row.get("cusip_id"))) for row in facts[surface]} for surface in SURFACES}
     if any(len(keys[surface]) != len(facts[surface]) for surface in SURFACES):
         raise MaterializationError("duplicate fact keys", reason_code="panel_gate_failed")
@@ -216,6 +255,13 @@ def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_re
     counts, inferred_first, inferred_last = _validate_input(facts, source_lineage)
     parent = store.publications.get(parent_publication_id) if parent_publication_id else None
     _assert_parent(store, parent_publication_id)
+    if parent is not None and parent.get("config_hash", config_hash()) != config_hash():
+        if not (
+            parent.get("config_hash") == "0c0d78a866bc1090"
+            and config_hash() == "1863d3d5fa3a0edf"
+            and source_lineage.get("distribution_rule") == "rule_144a_and_reg_s"
+        ):
+            raise MaterializationError("parent config or month regression", reason_code="panel_gate_failed")
     first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last)
     fingerprint = _fingerprint(as_of, code_revision, facts, source_lineage, parent_publication_id)
     publication_id = publication_id_for(as_of, code_revision, fingerprint)
@@ -232,10 +278,19 @@ def _materialize_memory(store: InMemoryPublicationStore, *, as_of: date, code_re
             record_event=False,
         )
         return MaterializationResult(publication_id, fingerprint, "validated", counts, parent_publication_id)
+    evidence = {"config_hash": config_hash(), "counts": counts}
+    if parent is not None and parent.get("config_hash", config_hash()) != config_hash():
+        evidence["config_transition"] = {
+            "contract": "rule_144a_to_dual_series_delta_v1",
+            "from_publication_id": parent_publication_id,
+            "from_config_hash": parent["config_hash"],
+            "to_config_hash": config_hash(),
+            "authorized_code_revision": code_revision,
+        }
     store.publications[publication_id] = {
         "status": "prepared", "fingerprint": fingerprint, "row_counts": counts,
         "facts": {surface: [dict(row) for row in facts[surface]] for surface in SURFACES},
-        "source_lineage": dict(source_lineage), "gate_evidence": {"config_hash": config_hash(), "counts": counts},
+        "source_lineage": dict(source_lineage), "gate_evidence": evidence, "config_hash": config_hash(),
         "parent_publication_id": parent_publication_id, "first_month": first_month,
         "last_closed_month": last_closed_month, "open_month": open_month,
     }
@@ -265,18 +320,18 @@ def _insert_rows(cur: Any, publication_id: str, facts: dict[str, list[dict[str, 
     for surface, table in _TABLES.items():
         if surface == "rating_pit":
             rows = [(publication_id, row["month"], row["cusip_id"], _canonical(row)) for row in facts[surface]]
-            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, rating_bucket, rating_as_of_month, rating_state, rating_reason, rating_staleness_months, source_lineage, payload) VALUES (%s, %s, %s, COALESCE(%s::jsonb ->> 'rating_bucket', 'NR'), (%s::jsonb ->> 'rating_as_of_month')::date, COALESCE(%s::jsonb ->> 'rating_state', 'static_missing'), COALESCE(%s::jsonb ->> 'rating_reason', 'static_rating_absent'), (%s::jsonb ->> 'rating_staleness_months')::int, COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)", [(pub, month, cusip, payload, payload, payload, payload, payload, payload, payload) for pub, month, cusip, payload in rows])
+            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, distribution_rule, reference_cusip9, distribution_decision_id, rating_bucket, rating_as_of_month, rating_state, rating_reason, rating_staleness_months, source_lineage, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'distribution_rule', %s::jsonb ->> 'reference_cusip9', %s::jsonb ->> 'distribution_decision_id', COALESCE(%s::jsonb ->> 'rating_bucket', 'NR'), (%s::jsonb ->> 'rating_as_of_month')::date, COALESCE(%s::jsonb ->> 'rating_state', 'static_missing'), COALESCE(%s::jsonb ->> 'rating_reason', 'static_rating_absent'), (%s::jsonb ->> 'rating_staleness_months')::int, COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)", [(pub, month, cusip, payload, payload, payload, payload, payload, payload, payload, payload, payload, payload) for pub, month, cusip, payload in rows])
         elif surface == "returns":
             rows = [(publication_id, row["month"], row["cusip_id"], _canonical(row)) for row in facts[surface]]
-            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, total_return, price_return, carry_return, exit_basis, exit_reason, suspect, payload) VALUES (%s, %s, %s, (%s::jsonb ->> 'total_return')::numeric, (%s::jsonb ->> 'price_return')::numeric, (%s::jsonb ->> 'carry_return')::numeric, COALESCE(%s::jsonb ->> 'exit_basis', 'observed'), %s::jsonb ->> 'exit_reason', COALESCE((%s::jsonb ->> 'suspect')::boolean, false), %s::jsonb)", [(pub, month, cusip, payload, payload, payload, payload, payload, payload, payload) for pub, month, cusip, payload in rows])
+            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, distribution_rule, reference_cusip9, distribution_decision_id, total_return, price_return, carry_return, exit_basis, exit_reason, suspect, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'distribution_rule', %s::jsonb ->> 'reference_cusip9', %s::jsonb ->> 'distribution_decision_id', (%s::jsonb ->> 'total_return')::numeric, (%s::jsonb ->> 'price_return')::numeric, (%s::jsonb ->> 'carry_return')::numeric, COALESCE(%s::jsonb ->> 'exit_basis', 'observed'), %s::jsonb ->> 'exit_reason', COALESCE((%s::jsonb ->> 'suspect')::boolean, false), %s::jsonb)", [(pub, month, cusip, payload, payload, payload, payload, payload, payload, payload, payload, payload, payload) for pub, month, cusip, payload in rows])
         elif surface == "rv_signal":
             rows = [(publication_id, row["month"], row["cusip_id"], _canonical(row)) for row in facts[surface]]
-            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, issuer_id, ff17num, eligibility_state, eligibility_reason, price, amount_outstanding_k, maturity_years, traded_days, trade_count, dollar_volume, rel_bid_ask_bps, quoted_days, ytm, ytm_basis, mod_dur, mod_dur_source, spread_final_bps, residual_bps, rv_signal, price_source, flags, source_lineage, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'issuer_id', (%s::jsonb ->> 'ff17num')::int, COALESCE(%s::jsonb ->> 'eligibility_state', 'included'), COALESCE(%s::jsonb ->> 'eligibility_reason', 'eligible'), (%s::jsonb ->> 'pr')::numeric, (%s::jsonb ->> 'amt_outstanding_k')::numeric, (%s::jsonb ->> 'bond_maturity')::numeric, (%s::jsonb ->> 'traded_days')::int, (%s::jsonb ->> 'trade_count')::int, (%s::jsonb ->> 'dollar_volume')::numeric, (%s::jsonb ->> 'rel_bid_ask_bps')::numeric, (%s::jsonb ->> 'quoted_days')::int, (%s::jsonb ->> 'ytm')::numeric, %s::jsonb ->> 'ytm_basis', (%s::jsonb ->> 'mod_dur')::numeric, %s::jsonb ->> 'mod_dur_source', COALESCE((%s::jsonb ->> 'spread_final_bps')::numeric, (%s::jsonb ->> 'spread_final')::numeric * 10000), (%s::jsonb ->> 'residual_bps')::numeric, (%s::jsonb ->> 'rv_signal')::numeric, %s::jsonb ->> 'price_source', COALESCE(%s::jsonb -> 'flags', '{{}}'::jsonb), COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)", [tuple([pub, month, cusip] + [payload] * 24) for pub, month, cusip, payload in rows])
+            cur.executemany(f"INSERT INTO {table} (publication_id, month, cusip_id, distribution_rule, reference_cusip9, distribution_decision_id, issuer_id, ff17num, eligibility_state, eligibility_reason, price, amount_outstanding_k, maturity_years, traded_days, trade_count, dollar_volume, rel_bid_ask_bps, quoted_days, ytm, ytm_basis, mod_dur, mod_dur_source, spread_final_bps, residual_bps, rv_signal, price_source, flags, source_lineage, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'distribution_rule', %s::jsonb ->> 'reference_cusip9', %s::jsonb ->> 'distribution_decision_id', %s::jsonb ->> 'issuer_id', (%s::jsonb ->> 'ff17num')::int, COALESCE(%s::jsonb ->> 'eligibility_state', 'included'), COALESCE(%s::jsonb ->> 'eligibility_reason', 'eligible'), (%s::jsonb ->> 'pr')::numeric, (%s::jsonb ->> 'amt_outstanding_k')::numeric, (%s::jsonb ->> 'bond_maturity')::numeric, (%s::jsonb ->> 'traded_days')::int, (%s::jsonb ->> 'trade_count')::int, (%s::jsonb ->> 'dollar_volume')::numeric, (%s::jsonb ->> 'rel_bid_ask_bps')::numeric, (%s::jsonb ->> 'quoted_days')::int, (%s::jsonb ->> 'ytm')::numeric, %s::jsonb ->> 'ytm_basis', (%s::jsonb ->> 'mod_dur')::numeric, %s::jsonb ->> 'mod_dur_source', COALESCE((%s::jsonb ->> 'spread_final_bps')::numeric, (%s::jsonb ->> 'spread_final')::numeric * 10000), (%s::jsonb ->> 'residual_bps')::numeric, (%s::jsonb ->> 'rv_signal')::numeric, %s::jsonb ->> 'price_source', COALESCE(%s::jsonb -> 'flags', '{{}}'::jsonb), COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)", [tuple([pub, month, cusip] + [payload] * 27) for pub, month, cusip, payload in rows])
         elif surface == "snapshot":
             rows = [(publication_id, row["month"], row["cusip_id"], _canonical(row)) for row in facts[surface]]
             cur.executemany(
-                f"INSERT INTO {table} (publication_id, month, cusip_id, issuer_id, issuer_identity_state, ff17num, eligibility_state, eligibility_reason, currency, asset_class, amount_outstanding_k, maturity_date, maturity_years, coupon_pct, price, price_source, db_type, ytm, ytm_basis, mod_dur, mod_dur_source, spread_final, spread_final_bps, spread_definition, spread_source, rating_bucket, rating_state, traded_days, trade_count, dollar_volume, rel_bid_ask_bps, quoted_days, terms_source, source_lineage, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'issuer_id', COALESCE(%s::jsonb ->> 'issuer_identity_state', 'unresolved'), (%s::jsonb ->> 'ff17num')::int, COALESCE(%s::jsonb ->> 'eligibility_state', 'included'), COALESCE(%s::jsonb ->> 'eligibility_reason', 'eligible'), %s::jsonb ->> 'currency', %s::jsonb ->> 'asset_class', (%s::jsonb ->> 'amt_outstanding_k')::numeric, (%s::jsonb ->> 'maturity_date')::date, (%s::jsonb ->> 'bond_maturity')::numeric, (%s::jsonb ->> 'coupon_pct')::numeric, (%s::jsonb ->> 'pr')::numeric, %s::jsonb ->> 'price_source', (%s::jsonb ->> 'db_type')::int, (%s::jsonb ->> 'ytm')::numeric, %s::jsonb ->> 'ytm_basis', (%s::jsonb ->> 'mod_dur')::numeric, %s::jsonb ->> 'mod_dur_source', (%s::jsonb ->> 'spread_final')::numeric, (%s::jsonb ->> 'spread_final_bps')::numeric, COALESCE(%s::jsonb ->> 'spread_definition', 'ytm_minus_interpolated_dgs'), %s::jsonb ->> 'spread_source', COALESCE(%s::jsonb ->> 'rating_bucket', 'NR'), COALESCE(%s::jsonb ->> 'rating_state', 'missing'), (%s::jsonb ->> 'traded_days')::int, (%s::jsonb ->> 'trade_count')::int, (%s::jsonb ->> 'dollar_volume')::numeric, (%s::jsonb ->> 'rel_bid_ask_bps')::numeric, (%s::jsonb ->> 'quoted_days')::int, %s::jsonb ->> 'terms_source', COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)",
-                [tuple([pub, month, cusip] + [payload] * 32) for pub, month, cusip, payload in rows],
+                f"INSERT INTO {table} (publication_id, month, cusip_id, distribution_rule, reference_cusip9, distribution_decision_id, issuer_id, issuer_identity_state, ff17num, eligibility_state, eligibility_reason, currency, asset_class, amount_outstanding_k, maturity_date, maturity_years, coupon_pct, price, price_source, db_type, ytm, ytm_basis, mod_dur, mod_dur_source, spread_final, spread_final_bps, spread_definition, spread_source, rating_bucket, rating_state, traded_days, trade_count, dollar_volume, rel_bid_ask_bps, quoted_days, terms_source, source_lineage, payload) VALUES (%s, %s, %s, %s::jsonb ->> 'distribution_rule', %s::jsonb ->> 'reference_cusip9', %s::jsonb ->> 'distribution_decision_id', %s::jsonb ->> 'issuer_id', COALESCE(%s::jsonb ->> 'issuer_identity_state', 'unresolved'), (%s::jsonb ->> 'ff17num')::int, COALESCE(%s::jsonb ->> 'eligibility_state', 'included'), COALESCE(%s::jsonb ->> 'eligibility_reason', 'eligible'), %s::jsonb ->> 'currency', %s::jsonb ->> 'asset_class', (%s::jsonb ->> 'amt_outstanding_k')::numeric, (%s::jsonb ->> 'maturity_date')::date, (%s::jsonb ->> 'bond_maturity')::numeric, (%s::jsonb ->> 'coupon_pct')::numeric, (%s::jsonb ->> 'pr')::numeric, %s::jsonb ->> 'price_source', (%s::jsonb ->> 'db_type')::int, (%s::jsonb ->> 'ytm')::numeric, %s::jsonb ->> 'ytm_basis', (%s::jsonb ->> 'mod_dur')::numeric, %s::jsonb ->> 'mod_dur_source', (%s::jsonb ->> 'spread_final')::numeric, (%s::jsonb ->> 'spread_final_bps')::numeric, COALESCE(%s::jsonb ->> 'spread_definition', 'ytm_minus_interpolated_dgs'), %s::jsonb ->> 'spread_source', COALESCE(%s::jsonb ->> 'rating_bucket', 'NR'), COALESCE(%s::jsonb ->> 'rating_state', 'missing'), (%s::jsonb ->> 'traded_days')::int, (%s::jsonb ->> 'trade_count')::int, (%s::jsonb ->> 'dollar_volume')::numeric, (%s::jsonb ->> 'rel_bid_ask_bps')::numeric, (%s::jsonb ->> 'quoted_days')::int, %s::jsonb ->> 'terms_source', COALESCE(%s::jsonb -> 'source_lineage', '{{}}'::jsonb), %s::jsonb)",
+                [tuple([pub, month, cusip] + [payload] * 35) for pub, month, cusip, payload in rows],
             )
         else:
             state_column = "eligibility_state"
@@ -341,11 +396,29 @@ def _materialize_postgres(conn: Any, *, as_of: date, code_revision: str, facts: 
                     raise MaterializationError(
                         "parent must be the validated current pointer"
                     )
-                if parent[4] != config_hash() or last_closed_month is not None and last_closed_month < parent[2]:
+                parent_hash = str(parent[4]).strip()
+                is_legacy_to_dual = (
+                    parent_hash == "0c0d78a866bc1090"
+                    and config_hash() == "1863d3d5fa3a0edf"
+                    and source_lineage.get("distribution_rule") == "rule_144a_and_reg_s"
+                )
+                if (
+                    parent_hash != config_hash()
+                    and not is_legacy_to_dual
+                    or last_closed_month is not None and last_closed_month < parent[2]
+                ):
                     raise MaterializationError("parent config or month regression", reason_code="panel_gate_failed")
-                parent = {"status": parent[0], "first_month": parent[1], "last_closed_month": parent[2], "open_month": parent[3]}
+                parent = {"status": parent[0], "first_month": parent[1], "last_closed_month": parent[2], "open_month": parent[3], "config_hash": parent_hash}
             first_month, last_closed_month, open_month = _partition(facts=facts, parent=parent, first_month=first_month, last_closed_month=last_closed_month, open_month=open_month, inferred_first=inferred_first, inferred_last=inferred_last)
             evidence = {"config_hash": config_hash(), "row_counts": counts, "first_month": first_month.isoformat(), "last_closed_month": last_closed_month.isoformat()}
+            if parent is not None and parent["config_hash"] != config_hash():
+                evidence["config_transition"] = {
+                    "contract": "rule_144a_to_dual_series_delta_v1",
+                    "from_publication_id": str(parent_publication_id),
+                    "from_config_hash": parent["config_hash"],
+                    "to_config_hash": config_hash(),
+                    "authorized_code_revision": code_revision,
+                }
             cur.execute("INSERT INTO bond_panel_publications (publication_id, parent_publication_id, publication_status, config_hash, input_fingerprint, code_revision, first_month, last_closed_month, open_month, snapshot_rows, rv_signal_rows, returns_rows, ratings_pit_rows, source_lineage, gate_evidence) VALUES (%s, %s, 'prepared', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)", (publication_id, parent_publication_id, config_hash(), fingerprint, code_revision, first_month, last_closed_month, open_month, counts["snapshot"], counts["rv_signal"], counts["returns"], counts["rating_pit"], _canonical(source_lineage), _canonical(evidence)))
             _insert_rows(cur, publication_id, facts)
             for surface, table in _TABLES.items():
