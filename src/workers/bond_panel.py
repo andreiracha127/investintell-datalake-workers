@@ -193,6 +193,7 @@ def _load_inputs(
     mapping_snapshot_id: str,
     structural_publication_id: str | None = None,
     structural_month: date | None = None,
+    legacy_parent: bool = False,
 ) -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
     """Load additive 144A and approved Reg S execution series without merging them."""
     start = closed_month.date()
@@ -346,8 +347,10 @@ def _load_inputs(
             "LEFT JOIN bond_panel_snapshot prior "
             "ON prior.publication_id = %s::uuid AND prior.month = %s "
             "AND upper(btrim(COALESCE(prior.reference_cusip9, prior.payload ->> 'reference_cusip9', prior.cusip_id))) = m.reference_cusip9 "
-            "AND COALESCE(prior.distribution_rule, prior.payload ->> 'distribution_rule', 'rule_144a') = m.distribution_rule",
-            (mapping_json, structural_publication_id, structural_month),
+            "AND (COALESCE(prior.distribution_rule, prior.payload ->> 'distribution_rule', 'rule_144a') = m.distribution_rule "
+            "OR (%s::boolean AND m.distribution_rule = 'reg_s' "
+            "AND COALESCE(prior.distribution_rule, prior.payload ->> 'distribution_rule', 'rule_144a') = 'rule_144a'))",
+            (mapping_json, structural_publication_id, structural_month, legacy_parent),
         ),
         "monthly_curve": _frame(
             conn,
@@ -403,7 +406,7 @@ def _load_inputs(
     inputs["static_rating_mapping"] = _frame(
             conn,
             mapping_cte
-            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, r.rating_bucket, r.rating_as_of_month, "
+            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, r.rating_bucket, r.rating_as_of_month, "
             "CASE WHEN r.rating_state = 'rated' THEN 'static_current' ELSE 'static_carry_forward' END AS rating_state, "
             "r.reason_code AS rating_reason, r.source_sha256 FROM bond_rating_static r JOIN mapping m "
             "ON upper(btrim(r.cusip9)) = m.reference_cusip9",
@@ -728,6 +731,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 mapping_snapshot_id=mapping_snapshot_id,
                 structural_publication_id=str(parent["publication_id"]),
                 structural_month=parent.get("open_month") or parent["last_closed_month"],
+                legacy_parent=parent.get("config_hash") == LEGACY_PANEL_CONFIG_HASH,
             )
             stage_input_reasons: list[str] = []
             empty = [name for name, frame in inputs.items() if name not in {"monthly_liquidity", "static_rating_mapping"} and frame.empty]

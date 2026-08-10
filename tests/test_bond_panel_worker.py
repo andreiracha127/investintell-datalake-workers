@@ -208,7 +208,12 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert any("FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9" in sql for sql in mapped_queries)
     assert any("FROM mapping m JOIN panel_months pm ON pm.month = m.month" in sql for sql in mapped_queries)
     rating_sql = next(sql for sql in mapped_queries if "FROM bond_rating_static r JOIN mapping m" in sql)
-    assert "SELECT DISTINCT m.execution_cusip9 AS cusip9" in rating_sql
+    rating_select = rating_sql.split(") SELECT DISTINCT ", 1)[1].split(
+        " FROM bond_rating_static r JOIN mapping m", 1
+    )[0]
+    assert "m.distribution_rule" not in rating_select
+    assert "m.reference_cusip9" not in rating_select
+    assert "m.decision_id" not in rating_select
     assert "ON upper(btrim(r.cusip9)) = m.reference_cusip9" in rating_sql
     issuer_sql = next(sql for sql in mapped_queries if "sec_cusip_ticker_map" in sql)
     assert "non[-[:space:]]*corporate" in issuer_sql
@@ -251,6 +256,92 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
+
+
+def test_db_loader_allows_legacy_144a_amount_for_same_reference_reg_s_only(monkeypatch) -> None:
+    reference_queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "FROM mapping m JOIN bond_reference_terms" in sql:
+            reference_queries.append((sql, params))
+        return pd.DataFrame()
+
+    resolution = SimpleNamespace(
+        reference_cusip9="REFERENCE1",
+        reg_s_cusip9="REGS00001",
+        decision_id="decision-1",
+    )
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(
+        bond_panel,
+        "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            resolutions={"REFERENCE1": resolution}, reason_by_reference={}
+        ),
+    )
+
+    bond_panel._load_inputs(
+        object(),
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-08-01"),
+        date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+        structural_publication_id="legacy-parent",
+        structural_month=date(2026, 6, 1),
+        legacy_parent=True,
+    )
+
+    assert len(reference_queries) == 1
+    reference_sql, reference_params = reference_queries[0]
+    assert "prior.reference_cusip9, prior.payload ->> 'reference_cusip9', prior.cusip_id))) = m.reference_cusip9" in reference_sql
+    assert "m.distribution_rule = 'reg_s'" in reference_sql
+    assert "'rule_144a') = 'rule_144a'" in reference_sql
+    assert reference_params[1:] == ("legacy-parent", date(2026, 6, 1), True)
+
+
+def test_db_loader_does_not_enable_legacy_144a_amount_inheritance_for_normal_delta(monkeypatch) -> None:
+    reference_queries: list[tuple[str, tuple[object, ...]]] = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "FROM mapping m JOIN bond_reference_terms" in sql:
+            reference_queries.append((sql, params))
+        return pd.DataFrame()
+
+    resolution = SimpleNamespace(
+        reference_cusip9="REFERENCE1",
+        reg_s_cusip9="REGS00001",
+        decision_id="decision-1",
+    )
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(
+        bond_panel,
+        "resolve_reg_s_cusip_map_from_db",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            resolutions={"REFERENCE1": resolution}, reason_by_reference={}
+        ),
+    )
+
+    bond_panel._load_inputs(
+        object(),
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-08-01"),
+        date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+        structural_publication_id="normal-parent",
+        structural_month=date(2026, 7, 1),
+        legacy_parent=False,
+    )
+
+    assert len(reference_queries) == 1
+    assert reference_queries[0][1][1:] == ("normal-parent", date(2026, 7, 1), False)
 
 
 def test_db_loader_keeps_rule_144a_when_reg_s_is_unmapped(monkeypatch) -> None:

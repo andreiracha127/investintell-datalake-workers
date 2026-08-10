@@ -449,11 +449,56 @@ BEGIN
                 AND f.distribution_rule IN ('rule_144a', 'reg_s')
                 AND f.distribution_rule = 'rule_144a' AND f.cusip_id = f.reference_cusip9
           )
-          AND EXISTS (
-              SELECT 1 FROM bond_panel_snapshot f
-              WHERE f.publication_id = candidate.publication_id
-                AND f.distribution_rule = 'reg_s'
-                AND nullif(f.distribution_decision_id, '') IS NOT NULL
+          AND (
+              EXISTS (
+                  SELECT 1 FROM bond_panel_snapshot f
+                  WHERE f.publication_id = candidate.publication_id
+                    AND f.distribution_rule = 'reg_s'
+                    AND nullif(f.distribution_decision_id, '') IS NOT NULL
+              )
+              OR (
+                candidate.source_lineage->>'distribution_mapping_count' = '0'
+                AND candidate.source_lineage->>'distribution_mapping_open_count' = '0'
+                AND candidate.source_lineage->>'distribution_mapping_closed_count' = '0'
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_each_text(candidate.source_lineage) AS omission(key, value)
+                    WHERE omission.key LIKE 'distribution_mapping_omission:%'
+                      AND (omission.value IS NULL OR omission.value !~ '^[1-9][0-9]*$')
+                )
+                AND COALESCE((
+                    SELECT sum(CASE
+                        WHEN omission.value ~ '^[1-9][0-9]*$' THEN omission.value::numeric
+                        ELSE 0
+                    END)
+                    FROM jsonb_each_text(candidate.source_lineage) AS omission(key, value)
+                    WHERE omission.key LIKE 'distribution_mapping_omission:%'
+                ), 0) = (
+                    SELECT count(*) FROM bond_panel_snapshot f
+                    WHERE f.publication_id = candidate.publication_id
+                      AND f.month = candidate.open_month
+                      AND f.distribution_rule = 'rule_144a'
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM jsonb_each_text(candidate.source_lineage) AS omission(key, value)
+                    WHERE omission.key LIKE 'distribution_mapping_closed_omission:%'
+                      AND (omission.value IS NULL OR omission.value !~ '^[1-9][0-9]*$')
+                )
+                AND COALESCE((
+                    SELECT sum(CASE
+                        WHEN omission.value ~ '^[1-9][0-9]*$' THEN omission.value::numeric
+                        ELSE 0
+                    END)
+                    FROM jsonb_each_text(candidate.source_lineage) AS omission(key, value)
+                    WHERE omission.key LIKE 'distribution_mapping_closed_omission:%'
+                ), 0) = (
+                    SELECT count(*) FROM bond_panel_snapshot f
+                    WHERE f.publication_id = candidate.publication_id
+                      AND f.month = candidate.last_closed_month
+                      AND f.distribution_rule = 'rule_144a'
+                )
+              )
           )
     ) THEN RAISE EXCEPTION 'pointer config transition requires an authorized dual-series delta child'; END IF;
     IF TG_OP = 'UPDATE'

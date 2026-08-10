@@ -87,6 +87,24 @@ def test_panel_ddl_requires_an_authorized_dual_series_child_of_the_legacy_pointe
     assert "btrim(a.config_hash::text) = '1863d3d5fa3a0edf'" in sql
 
 
+def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:
+    sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
+
+    # The legacy-to-dual transition normally proves both legs in the snapshot.
+    # An approved snapshot with no active Reg S resolution may instead publish
+    # only the durable Rule 144A rows, but only when both windows declare zero
+    # mappings and typed omission evidence covers every Rule 144A row.
+    assert "candidate.source_lineage->>'distribution_mapping_count' = '0'" in sql
+    assert "candidate.source_lineage->>'distribution_mapping_open_count' = '0'" in sql
+    assert "candidate.source_lineage->>'distribution_mapping_closed_count' = '0'" in sql
+    assert "distribution_mapping_omission:%" in sql
+    assert "distribution_mapping_closed_omission:%" in sql
+    assert sql.count("omission.value IS NULL OR omission.value !~ '^[1-9][0-9]*$'") == 2
+    assert sql.count("omission.value::numeric") == 2
+    assert "f.month = candidate.open_month" in sql
+    assert "f.month = candidate.last_closed_month" in sql
+
+
 def test_panel_ddl_adds_nullable_distribution_identity_to_every_fact_table() -> None:
     sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
 

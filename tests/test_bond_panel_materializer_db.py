@@ -92,6 +92,25 @@ def _dual_child_facts() -> dict[str, list[dict[str, object]]]:
     return facts
 
 
+def _dual_144a_only_child_facts(
+    reference_count: int = 1,
+) -> dict[str, list[dict[str, object]]]:
+    """A dual-config delta can contain only the durable 144A lane."""
+    facts = _facts(["2024-02-01", "2024-03-01"], ["2024-02-01"])
+    for rows in facts.values():
+        original_rows = tuple(rows)
+        for index in range(1, reference_count):
+            for row in original_rows:
+                rows.append({**row, "cusip_id": f"03783310{index}"})
+        for row in rows:
+            row.update(
+                distribution_rule="rule_144a",
+                reference_cusip9=row["cusip_id"],
+                distribution_decision_id=None,
+            )
+    return facts
+
+
 def _insert_direct_base(
     conn,
     *,
@@ -484,6 +503,123 @@ def test_legacy_pointer_remains_readable_until_authorized_complete_dual_series_b
             assert conn.execute(
                 "SELECT cusip_id FROM bond_panel_current_snapshot_v1 ORDER BY cusip_id"
             ).fetchall() == [("037833100",), ("123456789",), ("LEGACY144",)]
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(
+                sql.SQL("DROP SCHEMA {} CASCADE").format(sql.Identifier(schema))
+            )
+
+
+@pytest.mark.skipif(
+    not os.getenv("SEC_TEST_DATABASE_URL"),
+    reason="SEC_TEST_DATABASE_URL unavailable",
+)
+def test_legacy_bootstrap_allows_144a_only_facts_only_with_zero_mapping_omissions() -> None:
+    import psycopg
+    from psycopg import sql
+
+    legacy_hash = "0c0d78a866bc1090"
+    schema = f"test_bond_panel_144a_only_bootstrap_{uuid4().hex}"
+    with psycopg.connect(os.environ["SEC_TEST_DATABASE_URL"]) as conn:
+        conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))
+        conn.execute(
+            sql.SQL("GRANT USAGE, CREATE ON SCHEMA {} TO worker_writer").format(
+                sql.Identifier(schema)
+            )
+        )
+        conn.execute(
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema))
+        )
+        try:
+            install_schema(conn)
+            legacy_id = uuid4()
+            _insert_direct_base(
+                conn,
+                publication_id=legacy_id,
+                config_hash=legacy_hash,
+                code_revision="legacy-144a-only-bootstrap",
+                cusip_id="LEGACY144",
+                source_lineage={"distribution_rule": "rule_144a"},
+                gate_evidence={"test": "legacy"},
+            )
+            conn.execute(
+                "INSERT INTO bond_panel_app_pointer (product, publication_id) "
+                "VALUES ('bond_panel_v1', %s)",
+                (legacy_id,),
+            )
+
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="authorized dual-series delta child",
+            ):
+                materialize(
+                    conn,
+                    as_of=date(2024, 3, 31),
+                    code_revision="missing-omission-proof",
+                    facts=_dual_144a_only_child_facts(),
+                    source_lineage={
+                        "distribution_rule": "rule_144a_and_reg_s",
+                        "distribution_mapping_snapshot_id": "snapshot-1",
+                    },
+                    parent_publication_id=str(legacy_id),
+                    first_month=date(2024, 1, 1),
+                    last_closed_month=date(2024, 2, 1),
+                    open_month=date(2024, 3, 1),
+                )
+
+            with pytest.raises(
+                psycopg.errors.RaiseException,
+                match="authorized dual-series delta child",
+            ):
+                materialize(
+                    conn,
+                    as_of=date(2024, 3, 31),
+                    code_revision="incomplete-omission-coverage",
+                    facts=_dual_144a_only_child_facts(reference_count=2),
+                    source_lineage={
+                        "distribution_rule": "rule_144a_and_reg_s",
+                        "distribution_mapping_snapshot_id": "snapshot-1",
+                        "distribution_mapping_count": "0",
+                        "distribution_mapping_open_count": "0",
+                        "distribution_mapping_closed_count": "0",
+                        "distribution_mapping_omission:no_validated_source": "1",
+                        "distribution_mapping_closed_omission:no_validated_source": "1",
+                    },
+                    parent_publication_id=str(legacy_id),
+                    first_month=date(2024, 1, 1),
+                    last_closed_month=date(2024, 2, 1),
+                    open_month=date(2024, 3, 1),
+                )
+
+            authorized = materialize(
+                conn,
+                as_of=date(2024, 3, 31),
+                code_revision="omission-authorized-144a-only-bootstrap",
+                facts=_dual_144a_only_child_facts(reference_count=2),
+                source_lineage={
+                    "distribution_rule": "rule_144a_and_reg_s",
+                    "distribution_mapping_snapshot_id": "snapshot-1",
+                    "distribution_mapping_count": "0",
+                    "distribution_mapping_open_count": "0",
+                    "distribution_mapping_closed_count": "0",
+                    "distribution_mapping_omission:no_validated_source": "2",
+                    "distribution_mapping_closed_omission:no_validated_source": "2",
+                },
+                parent_publication_id=str(legacy_id),
+                first_month=date(2024, 1, 1),
+                last_closed_month=date(2024, 2, 1),
+                open_month=date(2024, 3, 1),
+            )
+
+            assert conn.execute(
+                "SELECT publication_id FROM bond_panel_app_pointer "
+                "WHERE product = 'bond_panel_v1'"
+            ).fetchone()[0] == authorized.publication_id
+            assert conn.execute(
+                "SELECT count(*) FROM bond_panel_snapshot "
+                "WHERE publication_id = %s AND distribution_rule = 'reg_s'",
+                (authorized.publication_id,),
+            ).fetchone()[0] == 0
         finally:
             conn.execute("SET search_path TO public")
             conn.execute(
