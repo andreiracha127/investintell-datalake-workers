@@ -11,7 +11,10 @@ import pandas as pd
 import pytest
 
 from src.bonds.panel_materializer import MaterializationResult
-from src.bonds.distribution_series import DistributionSeriesError
+from src.bonds.distribution_series import (
+    DistributionSeriesError,
+    NoValidatedDistributionSourceError,
+)
 from src.workers import bond_panel
 
 
@@ -218,6 +221,12 @@ def test_db_loader_uses_rule_144a_and_additional_reg_s_execution_series(monkeypa
     assert "FROM bond_price_latest_v1" not in issuer_sql
     assert "db_type_reason" in issuer_sql
     reference_sql = next(sql for sql in mapped_queries if "FROM mapping m JOIN bond_reference_terms" in sql)
+    reference_select = reference_sql.split(") SELECT DISTINCT ", 1)[1].split(
+        " FROM mapping m JOIN bond_reference_terms", 1
+    )[0]
+    assert "m.distribution_rule" not in reference_select
+    assert "m.reference_cusip9" not in reference_select
+    assert "m.decision_id" not in reference_select
     assert "amount_outstanding_vendor" in reference_sql
     assert "prior.amount_outstanding_k" in reference_sql
     assert "JOIN bond_panel_snapshot" in reference_sql
@@ -291,6 +300,50 @@ def test_db_loader_keeps_rule_144a_when_reg_s_is_unmapped(monkeypatch) -> None:
     assert lineage["distribution_rule_144a_count"] == "1"
     assert lineage["distribution_execution_count"] == "1"
     assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
+
+
+def test_db_loader_keeps_rule_144a_when_no_validated_source_exists(monkeypatch) -> None:
+    mapped_payloads: list[list[dict[str, object]]] = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["REFERENCE1"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "jsonb_to_recordset" in sql:
+            mapped_payloads.append(json.loads(params[0]))
+        return pd.DataFrame()
+
+    def resolve(_conn, **_kwargs):
+        raise NoValidatedDistributionSourceError("no_validated_source")
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(bond_panel, "resolve_reg_s_cusip_map_from_db", resolve)
+
+    _inputs, lineage = bond_panel._load_inputs(
+        object(),
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-08-01"),
+        date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+    )
+
+    assert mapped_payloads
+    assert all(
+        [
+            (row["distribution_rule"], row["execution_cusip9"], row["month"])
+            for row in payload
+        ]
+        == [
+            ("rule_144a", "REFERENCE1", "2026-07-01"),
+            ("rule_144a", "REFERENCE1", "2026-08-01"),
+        ]
+        for payload in mapped_payloads
+    )
+    assert lineage["distribution_mapping_count"] == "0"
+    assert lineage["distribution_mapping_closed_count"] == "0"
+    assert lineage["distribution_mapping_omission:no_validated_source"] == "1"
+    assert lineage["distribution_mapping_closed_omission:no_validated_source"] == "1"
 
 
 def test_db_loader_omits_cross_as_of_execution_collisions(monkeypatch) -> None:
@@ -991,7 +1044,7 @@ def test_closed_returns_do_not_treat_an_active_bond_without_price_as_a_terminal_
     assert tombstones.empty
 
 
-def test_closed_returns_do_not_turn_a_missing_reg_s_mapping_into_a_terminal_exit() -> None:
+def test_closed_returns_tombstone_a_missing_reg_s_mapping_without_a_return() -> None:
     closed = pd.Timestamp("2026-07-01")
     anchor = pd.DataFrame({
         "cusip_id": ["REGSOLD01"],
@@ -1000,6 +1053,10 @@ def test_closed_returns_do_not_turn_a_missing_reg_s_mapping_into_a_terminal_exit
         "ytm": [0.05],
         "bond_maturity": [5.0],
         "rating_bucket": ["BBB"],
+        "rating_state": ["static_carry_forward"],
+        "rating_as_of_month": [pd.Timestamp("2026-06-01")],
+        "rating_reason": ["static_present"],
+        "rating_staleness_months": [1],
         "distribution_rule": ["reg_s"],
         "reference_cusip9": ["REFERENCE1"],
         "distribution_decision_id": ["decision-old"],
@@ -1010,7 +1067,33 @@ def test_closed_returns_do_not_turn_a_missing_reg_s_mapping_into_a_terminal_exit
     )
 
     assert returns.empty
-    assert tombstones.empty
+    assert tombstones[["cusip_id", "month", "eligibility_state", "eligibility_reason"]].to_dict("records") == [
+        {
+            "cusip_id": "REGSOLD01",
+            "month": closed,
+            "eligibility_state": "excluded",
+            "eligibility_reason": "distribution_mapping_removed",
+        }
+    ]
+    assert tombstones.loc[0, list(bond_panel.DISTRIBUTION_COLUMNS)].to_dict() == {
+        "distribution_rule": "reg_s",
+        "reference_cusip9": "REFERENCE1",
+        "distribution_decision_id": "decision-old",
+    }
+    assert tombstones.loc[0, [
+        "rating_bucket", "rating_state", "rating_as_of_month", "rating_reason", "rating_staleness_months",
+    ]].to_dict() == {
+        "rating_bucket": "BBB",
+        "rating_state": "static_carry_forward",
+        "rating_as_of_month": pd.Timestamp("2026-06-01"),
+        "rating_reason": "static_present",
+        "rating_staleness_months": 1,
+    }
+    assert tombstones.loc[0, "flags"] == {
+        "terminal_exit": False,
+        "mapping_removed": True,
+        "source": "parent_snapshot",
+    }
 
 
 def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals(monkeypatch) -> None:

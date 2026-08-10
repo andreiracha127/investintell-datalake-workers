@@ -24,7 +24,9 @@ from src.bonds.panel_resolvers import (
     monthly_returns,
 )
 from src.bonds.distribution_series import (
+    DistributionResolutionMap,
     DistributionSeriesError,
+    NoValidatedDistributionSourceError,
     resolve_reg_s_cusip_map_from_db,
 )
 from src.db import connect, resolve_dsn
@@ -210,18 +212,25 @@ def _load_inputs(
         for value in references.get("reference_isin", pd.Series(dtype=object)).dropna()
         if str(value).strip()
     }
-    closed_resolution_map = resolve_reg_s_cusip_map_from_db(
-        conn,
-        snapshot_id=mapping_snapshot_id,
-        as_of=closed_as_of,
-        reference_cusip9s=reference_cusip9s,
-    )
-    open_resolution_map = resolve_reg_s_cusip_map_from_db(
-        conn,
-        snapshot_id=mapping_snapshot_id,
-        as_of=as_of,
-        reference_cusip9s=reference_cusip9s,
-    )
+    def resolve_window(mapping_as_of: date) -> DistributionResolutionMap:
+        try:
+            return resolve_reg_s_cusip_map_from_db(
+                conn,
+                snapshot_id=mapping_snapshot_id,
+                as_of=mapping_as_of,
+                reference_cusip9s=reference_cusip9s,
+            )
+        except NoValidatedDistributionSourceError:
+            return DistributionResolutionMap(
+                resolutions={},
+                reason_by_reference={
+                    reference_cusip9: "no_validated_source"
+                    for reference_cusip9 in reference_cusip9s
+                },
+            )
+
+    closed_resolution_map = resolve_window(closed_as_of)
+    open_resolution_map = resolve_window(as_of)
     resolution_windows = (
         ("closed", closed_month.date(), closed_as_of, closed_resolution_map),
         ("open", open_month.date(), as_of, open_resolution_map),
@@ -331,7 +340,7 @@ def _load_inputs(
         "reference_terms": _frame(
             conn,
             mapping_cte
-            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
+            + " SELECT DISTINCT m.execution_cusip9 AS cusip9, r.coupon_rate, r.maturity_date, r.amount_outstanding_mm, "
             "r.amount_outstanding_vendor, prior.amount_outstanding_k, r.asset, r.asset_type, r.bond_type, r.debt_type "
             "FROM mapping m JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
             "LEFT JOIN bond_panel_snapshot prior "
@@ -536,14 +545,18 @@ def _closed_returns_and_tombstones(
         identity = identity.drop_duplicates(["cusip_id", "month"], keep="last")
         returns = returns.merge(identity, on=["cusip_id", "month"], how="left")
 
-    tombstones = terminal_exits[
-        ~terminal_exits["cusip_id"].astype(str).isin(current_ids)
-    ].copy().reset_index(drop=True)
+    tombstones = removed.copy().reset_index(drop=True)
     if tombstones.empty:
         return returns, tombstones
     tombstones["month"] = closed_month
     tombstones["eligibility_state"] = "excluded"
-    tombstones["eligibility_reason"] = "terminal_exit_removed"
+    mapping_removal = tombstones.get(
+        "distribution_rule", pd.Series("rule_144a", index=tombstones.index)
+    ).fillna("rule_144a").eq("reg_s")
+    tombstones["eligibility_reason"] = mapping_removal.map({
+        True: "distribution_mapping_removed",
+        False: "terminal_exit_removed",
+    })
     tombstones["issuer_identity_state"] = tombstones.get(
         "issuer_identity_state", pd.Series("unresolved", index=tombstones.index)
     ).fillna("unresolved")
@@ -553,11 +566,18 @@ def _closed_returns_and_tombstones(
     tombstones["rating_state"] = tombstones.get(
         "rating_state", pd.Series("missing", index=tombstones.index)
     ).fillna("missing")
-    tombstones["price_source"] = "terminal_parent_tombstone"
+    tombstones["price_source"] = mapping_removal.map({
+        True: "mapping_removal_parent_tombstone",
+        False: "terminal_parent_tombstone",
+    })
     tombstones["spread_definition"] = "ytm_minus_interpolated_dgs"
     tombstones["flags"] = [
-        {"terminal_exit": True, "source": "parent_snapshot"}
-        for _ in range(len(tombstones))
+        (
+            {"terminal_exit": False, "mapping_removed": True, "source": "parent_snapshot"}
+            if is_mapping_removal
+            else {"terminal_exit": True, "source": "parent_snapshot"}
+        )
+        for is_mapping_removal in mapping_removal
     ]
     for column in (
         "pr",

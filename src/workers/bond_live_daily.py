@@ -137,6 +137,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -414,6 +415,19 @@ def _valid_execution_isin(value: Any) -> str | None:
     return candidate if len(candidate) == 12 and candidate.isalnum() else None
 
 
+@dataclass(frozen=True)
+class _ExecutionCandidate:
+    """One provider execution identity, anchored to its curated reference."""
+
+    lane: str
+    window: str | None
+    reference_cusip9: str
+    execution_cusip9: str
+    execution_isin: str
+    coupon_rate: Any
+    maturity_date: Any
+
+
 def _universe(
     conn: psycopg.Connection, limit: int | None, *, snapshot_id: str | None, as_of: _dt.date,
 ) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
@@ -463,8 +477,7 @@ def _universe(
         omissions = rule_144a["omissions"] if lane == "rule_144a" else coverage_by_window[str(window)]["omissions"]
         omissions[reason] = omissions.get(reason, 0) + 1
 
-    # lane, window, execution CUSIP, execution ISIN, coupon, maturity
-    candidates: list[tuple[str, str | None, str, str, Any, Any]] = []
+    candidates: list[_ExecutionCandidate] = []
     for reference_cusip9 in reference_cusip9s:
         reference_isin, coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
         execution_isin = _valid_execution_isin(reference_isin)
@@ -472,7 +485,10 @@ def _universe(
             omit_lane("rule_144a", None, "missing_reference_isin")
             continue
         rule_144a["resolved"] += 1
-        candidates.append(("rule_144a", None, reference_cusip9, execution_isin, coupon_rate, maturity_date))
+        candidates.append(_ExecutionCandidate(
+            "rule_144a", None, reference_cusip9, reference_cusip9,
+            execution_isin, coupon_rate, maturity_date,
+        ))
 
     if snapshot_id:
         mapping_windows = (("closed", closed_as_of), ("open", as_of))
@@ -519,73 +535,93 @@ def _universe(
                 omit_lane("reg_s", window, "missing_reg_s_isin")
                 continue
             _reference_isin, coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
-            candidates.append(
-                ("reg_s", window, execution_cusip9, execution_isin, coupon_rate, maturity_date)
-            )
+            candidates.append(_ExecutionCandidate(
+                "reg_s", window, reference_cusip9, execution_cusip9,
+                execution_isin, coupon_rate, maturity_date,
+            ))
 
     execution["candidates"] = len(candidates)
     candidate_rows = list(enumerate(candidates))
     omitted: dict[int, str] = {}
 
     def omit_candidate(
-        index: int, candidate: tuple[str, str | None, str, str, Any, Any], reason: str
+        index: int, candidate: _ExecutionCandidate, reason: str,
     ) -> None:
         if index in omitted:
             return
         omitted[index] = reason
-        omit_lane(candidate[0], candidate[1], reason)
+        omit_lane(candidate.lane, candidate.window, reason)
         execution["omissions"][reason] = execution["omissions"].get(reason, 0) + 1
 
-    rule_144a_cusips = {
-        candidate[2] for _index, candidate in candidate_rows if candidate[0] == "rule_144a"
-    }
+    rule_144a_cusips = set(reference_cusip9s)
     rule_144a_isins = {
-        candidate[3] for _index, candidate in candidate_rows if candidate[0] == "rule_144a"
+        candidate.execution_isin
+        for _index, candidate in candidate_rows if candidate.lane == "rule_144a"
     }
     for index, candidate in candidate_rows:
-        if candidate[0] != "reg_s":
+        if candidate.lane != "reg_s":
             continue
-        if candidate[2] in rule_144a_cusips:
+        if candidate.execution_cusip9 in rule_144a_cusips:
             omit_candidate(index, candidate, "ambiguous_execution_cusip")
-        elif candidate[3] in rule_144a_isins:
+        elif candidate.execution_isin in rule_144a_isins:
             omit_candidate(index, candidate, "ambiguous_execution_isin")
 
-    by_execution_cusip: dict[
-        str, list[tuple[int, tuple[str, str | None, str, str, Any, Any]]]
-    ] = {}
+    reg_s_candidates = [
+        (index, candidate) for index, candidate in candidate_rows if candidate.lane == "reg_s"
+    ]
+    by_execution_cusip: dict[str, list[tuple[int, _ExecutionCandidate]]] = {}
+    by_execution_isin: dict[str, list[tuple[int, _ExecutionCandidate]]] = {}
+    for index, candidate in reg_s_candidates:
+        by_execution_cusip.setdefault(candidate.execution_cusip9, []).append((index, candidate))
+        by_execution_isin.setdefault(candidate.execution_isin, []).append((index, candidate))
+    for matching in (*by_execution_cusip.values(), *by_execution_isin.values()):
+        if len({candidate.reference_cusip9 for _index, candidate in matching}) > 1:
+            for index, candidate in matching:
+                omit_candidate(index, candidate, "ambiguous_execution_reference")
+
+    by_execution_cusip = {}
     for index, candidate in candidate_rows:
         if index not in omitted:
-            by_execution_cusip.setdefault(candidate[2], []).append((index, candidate))
+            by_execution_cusip.setdefault(candidate.execution_cusip9, []).append((index, candidate))
     for matching in by_execution_cusip.values():
-        if len({candidate[3] for _index, candidate in matching}) > 1:
+        if len({candidate.execution_isin for _index, candidate in matching}) > 1:
             for index, candidate in matching:
                 omit_candidate(index, candidate, "ambiguous_execution_cusip")
-    by_execution_isin: dict[
-        str, list[tuple[int, tuple[str, str | None, str, str, Any, Any]]]
-    ] = {}
+    by_execution_isin = {}
     for index, candidate in candidate_rows:
         if index not in omitted:
-            by_execution_isin.setdefault(candidate[3], []).append((index, candidate))
+            by_execution_isin.setdefault(candidate.execution_isin, []).append((index, candidate))
     for matching in by_execution_isin.values():
-        if len({candidate[2] for _index, candidate in matching}) > 1:
+        if len({candidate.execution_cusip9 for _index, candidate in matching}) > 1:
             for index, candidate in matching:
                 omit_candidate(index, candidate, "ambiguous_execution_isin")
 
-    unique: dict[tuple[Any, ...], tuple[str, str | None, str, str, Any, Any]] = {}
+    unique: dict[tuple[Any, ...], _ExecutionCandidate] = {}
     survivors = [(index, candidate) for index, candidate in candidate_rows if index not in omitted]
     for _index, candidate in survivors:
-        identity = candidate[2:]
+        identity = (
+            candidate.reference_cusip9, candidate.execution_cusip9, candidate.execution_isin,
+            candidate.coupon_rate, candidate.maturity_date,
+        )
         unique.setdefault(identity, candidate)
     execution["deduplicated"] = len(survivors) - len(unique)
     for _index, candidate in survivors:
-        lane, window, execution_cusip9, execution_isin, coupon_rate, maturity_date = candidate
-        if lane == "rule_144a":
+        if candidate.lane == "rule_144a":
             rule_144a["executable"] += 1
         else:
-            coverage_by_window[str(window)]["executable"] += 1
+            coverage_by_window[str(candidate.window)]["executable"] += 1
     executable = [
-        (candidate[2], candidate[3], candidate[4], candidate[5])
-        for candidate in sorted(unique.values(), key=lambda candidate: (candidate[2], candidate[3], candidate[0], str(candidate[1])))
+        (
+            candidate.execution_cusip9, candidate.execution_isin,
+            candidate.coupon_rate, candidate.maturity_date,
+        )
+        for candidate in sorted(
+            unique.values(),
+            key=lambda candidate: (
+                candidate.execution_cusip9, candidate.execution_isin,
+                candidate.lane, str(candidate.window),
+            ),
+        )
     ]
     execution["executable"] = len(executable)
 

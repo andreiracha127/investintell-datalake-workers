@@ -562,6 +562,88 @@ def test_cross_lane_isin_collision_omits_reg_s_without_stopping_rule_144a(monkey
     assert coverage["execution"]["omissions"] == {"ambiguous_execution_isin": 2}
 
 
+def test_reg_s_identity_reused_by_different_references_across_windows_is_omitted(monkeypatch) -> None:
+    """One execution identity cannot silently pick either Rule 144A reference."""
+    first_reference, second_reference = "912828XX1", "3133EJAA0"
+    execution_cusip, execution_isin = "G12345678", "XS1234567890"
+
+    def resolve(_conn, *, as_of, **_kwargs):
+        reference = (
+            first_reference
+            if as_of == _dt.date(2026, 7, 31)
+            else second_reference
+        )
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=execution_cusip,
+                    reg_s_isin=execution_isin,
+                )
+            },
+            reason_by_reference={
+                other: "unmapped"
+                for other in (first_reference, second_reference)
+                if other != reference
+            },
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({
+            "to_regclass": [(1,)],
+            Q_UNIVERSE: [
+                (first_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6)),
+                (second_reference, None, 5.0, _dt.date(2032, 1, 15)),
+            ],
+        }),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [(first_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["closed"]["executable"] == 0
+    assert coverage["open"]["executable"] == 0
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_reference": 2}
+
+
+def test_reg_s_cusip_colliding_with_reference_missing_provider_isin_is_omitted(monkeypatch) -> None:
+    """A Reg S execution CUSIP cannot write under any curated 144A reference."""
+    executable_reference, reference_without_isin = "912828XX1", "3133EJAA0"
+
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                executable_reference: SimpleNamespace(
+                    reference_cusip9=executable_reference,
+                    reg_s_cusip9=reference_without_isin,
+                    reg_s_isin="XS1234567890",
+                ),
+            },
+            reason_by_reference={reference_without_isin: "unmapped"},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({
+            "to_regclass": [(1,)],
+            Q_UNIVERSE: [
+                (executable_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6)),
+                (reference_without_isin, None, None, None),
+            ],
+        }),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [(executable_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_cusip": 2}
+
+
 # --------------------------------------------------------------------------- #
 # Stage 1: candles
 # --------------------------------------------------------------------------- #
