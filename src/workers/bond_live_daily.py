@@ -137,6 +137,7 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -204,16 +205,25 @@ def _int_env(name: str, default: int) -> int:
 # --------------------------------------------------------------------------- #
 # Universe
 # --------------------------------------------------------------------------- #
-# The curated reference cohort carries coupon/maturity terms, but it is NOT the
-# provider execution universe.  The provider sees only the approved Reg S pair
-# resolved from ``BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID`` at this run's as-of.
-# In particular, a reference (Rule 144A) ISIN is deliberately not selected: it
-# cannot become an accidental fallback when a governed Reg S ISIN is absent.
+# The curated reference cohort is itself the Rule 144A execution universe when
+# it has a reference ISIN.  Approved Reg S mappings add independent execution
+# series; neither identifier is ever a fallback for the other.
 _UNIVERSE_SQL = """
-SELECT upper(btrim(u.cusip9)) AS cusip9, r.coupon_rate, r.maturity_date
+SELECT upper(btrim(u.cusip9)) AS cusip9,
+       upper(btrim(r.isin)) AS isin,
+       r.coupon_rate,
+       r.maturity_date
 FROM bond_curated_universe u
 LEFT JOIN bond_reference_terms r
   ON upper(btrim(r.cusip9)) = upper(btrim(u.cusip9))
+WHERE u.cusip9 IS NOT NULL AND btrim(u.cusip9) <> ''
+ORDER BY upper(btrim(u.cusip9))
+"""
+
+_CURATED_UNIVERSE_SQL = """
+SELECT upper(btrim(u.cusip9)) AS cusip9, NULL::text AS isin,
+       NULL::numeric AS coupon_rate, NULL::date AS maturity_date
+FROM bond_curated_universe u
 WHERE u.cusip9 IS NOT NULL AND btrim(u.cusip9) <> ''
 ORDER BY upper(btrim(u.cusip9))
 """
@@ -405,16 +415,29 @@ def _valid_execution_isin(value: Any) -> str | None:
     return candidate if len(candidate) == 12 and candidate.isalnum() else None
 
 
-def _universe(
-    conn: psycopg.Connection, limit: int | None, *, snapshot_id: str, as_of: _dt.date,
-) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
-    """Resolve reference terms into the governed Reg S legs Stage 6 needs.
+@dataclass(frozen=True)
+class _ExecutionCandidate:
+    """One provider execution identity, anchored to its curated reference."""
 
-    Stage 6 builds both the last closed and current open months.  Its execution
-    CUSIP/ISIN can change at that boundary, so this sweep resolves and executes
-    both governed legs; resolving only ``as_of`` would backfill a closed month
-    with the current pair.  Mapping gaps and cross-as-of CUSIP collisions remain
-    typed coverage omissions -- neither can make the Rule 144A ISIN a fallback.
+    lane: str
+    window: str | None
+    reference_cusip9: str
+    execution_cusip9: str
+    execution_isin: str
+    coupon_rate: Any
+    maturity_date: Any
+
+
+def _universe(
+    conn: psycopg.Connection, limit: int | None, *, snapshot_id: str | None, as_of: _dt.date,
+) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
+    """Build independent Rule 144A and governed Reg S execution candidates.
+
+    The prior closed and current open Reg S mappings are additive to the
+    reference-terms Rule 144A series. Mapping gaps must remain typed coverage
+    rather than replacing, or stopping, a usable reference series. A CUSIP or
+    ISIN that identifies more than one counterpart is omitted wholesale: using
+    either pair would mix price/return histories under an arbitrary identity.
 
     The watermarks are read here for the ORDER and again in ``_load_candles``
     for each bond's WINDOW. That is deliberate rather than plumbed through: both
@@ -423,30 +446,60 @@ def _universe(
     disagree, and passing the dict along would make the sweep's window depend on
     a caller getting it right.
     """
-    if not (_relation_exists(conn, "bond_reference_terms")
-            and _relation_exists(conn, "bond_curated_universe")):
+    if not _relation_exists(conn, "bond_curated_universe"):
         return [], 0, {
             "snapshot_id": snapshot_id, "reference_total": 0, "resolved": 0,
             "executable": 0, "omissions": {},
+            "rule_144a": {"reference_total": 0, "resolved": 0, "executable": 0, "omissions": {}},
+            "reg_s": {"snapshot_id": snapshot_id, "closed": {"resolved": 0, "executable": 0, "omissions": {}}, "open": {"resolved": 0, "executable": 0, "omissions": {}}},
+            "execution": {"candidates": 0, "executable": 0, "deduplicated": 0, "omissions": {}},
         }
-    reference_rows = conn.execute(_UNIVERSE_SQL).fetchall()
+    reference_rows = conn.execute(
+        _UNIVERSE_SQL if _relation_exists(conn, "bond_reference_terms") else _CURATED_UNIVERSE_SQL
+    ).fetchall()
     terms_by_reference = {
-        str(row[0]).strip().upper(): (row[-2], row[-1])
-        for row in reference_rows
+        str(row[0]).strip().upper(): (row[1], row[2], row[3]) for row in reference_rows
     }
     reference_cusip9s = list(terms_by_reference)
     closed_as_of = as_of.replace(day=1) - _dt.timedelta(days=1)
+    rule_144a: dict[str, Any] = {
+        "reference_total": len(reference_cusip9s), "resolved": 0, "executable": 0, "omissions": {},
+    }
     coverage_by_window: dict[str, dict[str, Any]] = {
         name: {"resolved": 0, "executable": 0, "omissions": {}}
         for name in ("closed", "open")
     }
+    execution: dict[str, Any] = {
+        "candidates": 0, "executable": 0, "deduplicated": 0, "omissions": {},
+    }
 
-    def omit(window: str, reason: str) -> None:
-        omissions = coverage_by_window[window]["omissions"]
+    def omit_lane(lane: str, window: str | None, reason: str) -> None:
+        omissions = rule_144a["omissions"] if lane == "rule_144a" else coverage_by_window[str(window)]["omissions"]
         omissions[reason] = omissions.get(reason, 0) + 1
 
-    candidates: list[tuple[str, str, str, str, Any, Any]] = []
-    for window, mapping_as_of in (("closed", closed_as_of), ("open", as_of)):
+    candidates: list[_ExecutionCandidate] = []
+    for reference_cusip9 in reference_cusip9s:
+        reference_isin, coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+        execution_isin = _valid_execution_isin(reference_isin)
+        if execution_isin is None:
+            omit_lane("rule_144a", None, "missing_reference_isin")
+            continue
+        rule_144a["resolved"] += 1
+        candidates.append(_ExecutionCandidate(
+            "rule_144a", None, reference_cusip9, reference_cusip9,
+            execution_isin, coupon_rate, maturity_date,
+        ))
+
+    if snapshot_id:
+        mapping_windows = (("closed", closed_as_of), ("open", as_of))
+    else:
+        mapping_windows = ()
+        for window in coverage_by_window:
+            for _reference_cusip9 in reference_cusip9s:
+                omit_lane("reg_s", window, "no_mapping_snapshot")
+    for window, mapping_as_of in mapping_windows:
+        # ``mapping_windows`` is non-empty only for the branch with a snapshot.
+        assert snapshot_id is not None
         try:
             resolution_map = resolve_reg_s_cusip_map_from_db(
                 conn, snapshot_id=snapshot_id, as_of=mapping_as_of,
@@ -457,7 +510,7 @@ def _universe(
             # Preserve it as coverage, not as a provider/data failure, while the
             # other as-of leg can still be executable.
             for _reference_cusip9 in reference_cusip9s:
-                omit(window, "no_validated_source")
+                omit_lane("reg_s", window, "no_validated_source")
             continue
         resolutions = resolution_map.resolutions
         reasons = resolution_map.reason_by_reference
@@ -467,42 +520,110 @@ def _universe(
         for reference_cusip9 in reference_cusip9s:
             resolution = resolutions.get(reference_cusip9)
             if resolution is None:
-                omit(window, str(reasons.get(reference_cusip9, "unmapped")))
+                omit_lane("reg_s", window, str(reasons.get(reference_cusip9, "unmapped")))
                 continue
             execution_cusip9 = _valid_execution_cusip(
                 getattr(resolution, "reg_s_cusip9", None)
             )
             if execution_cusip9 is None:
-                omit(window, "missing_reg_s_cusip")
+                omit_lane("reg_s", window, "missing_reg_s_cusip")
                 continue
             execution_isin = _valid_execution_isin(
                 getattr(resolution, "reg_s_isin", None)
             )
             if execution_isin is None:
-                omit(window, "missing_reg_s_isin")
+                omit_lane("reg_s", window, "missing_reg_s_isin")
                 continue
-            coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
-            candidates.append(
-                (window, reference_cusip9, execution_cusip9, execution_isin, coupon_rate, maturity_date)
-            )
+            _reference_isin, coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+            candidates.append(_ExecutionCandidate(
+                "reg_s", window, reference_cusip9, execution_cusip9,
+                execution_isin, coupon_rate, maturity_date,
+            ))
 
-    by_execution_cusip: dict[str, list[tuple[str, str, str, str, Any, Any]]] = {}
-    for candidate in candidates:
-        by_execution_cusip.setdefault(candidate[2], []).append(candidate)
-    executable: list[tuple[Any, ...]] = []
-    for execution_cusip9, matching in by_execution_cusip.items():
-        signatures = {(reference_cusip9, execution_isin) for _, reference_cusip9, _, execution_isin, _, _ in matching}
-        if len(signatures) != 1:
-            # The resolver rejects collisions within one as-of.  A changed map
-            # can still collide across closed/open as-ofs; choosing either ISIN
-            # would silently rewrite that CUSIP's history, so omit both legs.
-            for window, *_rest in matching:
-                omit(window, "ambiguous_execution_cusip")
+    execution["candidates"] = len(candidates)
+    candidate_rows = list(enumerate(candidates))
+    omitted: dict[int, str] = {}
+
+    def omit_candidate(
+        index: int, candidate: _ExecutionCandidate, reason: str,
+    ) -> None:
+        if index in omitted:
+            return
+        omitted[index] = reason
+        omit_lane(candidate.lane, candidate.window, reason)
+        execution["omissions"][reason] = execution["omissions"].get(reason, 0) + 1
+
+    rule_144a_cusips = set(reference_cusip9s)
+    rule_144a_isins = {
+        candidate.execution_isin
+        for _index, candidate in candidate_rows if candidate.lane == "rule_144a"
+    }
+    for index, candidate in candidate_rows:
+        if candidate.lane != "reg_s":
             continue
-        for window, *_rest in matching:
-            coverage_by_window[window]["executable"] += 1
-        _window, _reference_cusip9, _cusip9, execution_isin, coupon_rate, maturity_date = matching[0]
-        executable.append((execution_cusip9, execution_isin, coupon_rate, maturity_date))
+        if candidate.execution_cusip9 in rule_144a_cusips:
+            omit_candidate(index, candidate, "ambiguous_execution_cusip")
+        elif candidate.execution_isin in rule_144a_isins:
+            omit_candidate(index, candidate, "ambiguous_execution_isin")
+
+    reg_s_candidates = [
+        (index, candidate) for index, candidate in candidate_rows if candidate.lane == "reg_s"
+    ]
+    by_execution_cusip: dict[str, list[tuple[int, _ExecutionCandidate]]] = {}
+    by_execution_isin: dict[str, list[tuple[int, _ExecutionCandidate]]] = {}
+    for index, candidate in reg_s_candidates:
+        by_execution_cusip.setdefault(candidate.execution_cusip9, []).append((index, candidate))
+        by_execution_isin.setdefault(candidate.execution_isin, []).append((index, candidate))
+    for matching in (*by_execution_cusip.values(), *by_execution_isin.values()):
+        if len({candidate.reference_cusip9 for _index, candidate in matching}) > 1:
+            for index, candidate in matching:
+                omit_candidate(index, candidate, "ambiguous_execution_reference")
+
+    by_execution_cusip = {}
+    for index, candidate in candidate_rows:
+        if index not in omitted:
+            by_execution_cusip.setdefault(candidate.execution_cusip9, []).append((index, candidate))
+    for matching in by_execution_cusip.values():
+        if len({candidate.execution_isin for _index, candidate in matching}) > 1:
+            for index, candidate in matching:
+                omit_candidate(index, candidate, "ambiguous_execution_cusip")
+    by_execution_isin = {}
+    for index, candidate in candidate_rows:
+        if index not in omitted:
+            by_execution_isin.setdefault(candidate.execution_isin, []).append((index, candidate))
+    for matching in by_execution_isin.values():
+        if len({candidate.execution_cusip9 for _index, candidate in matching}) > 1:
+            for index, candidate in matching:
+                omit_candidate(index, candidate, "ambiguous_execution_isin")
+
+    unique: dict[tuple[Any, ...], _ExecutionCandidate] = {}
+    survivors = [(index, candidate) for index, candidate in candidate_rows if index not in omitted]
+    for _index, candidate in survivors:
+        identity = (
+            candidate.reference_cusip9, candidate.execution_cusip9, candidate.execution_isin,
+            candidate.coupon_rate, candidate.maturity_date,
+        )
+        unique.setdefault(identity, candidate)
+    execution["deduplicated"] = len(survivors) - len(unique)
+    for _index, candidate in survivors:
+        if candidate.lane == "rule_144a":
+            rule_144a["executable"] += 1
+        else:
+            coverage_by_window[str(candidate.window)]["executable"] += 1
+    executable = [
+        (
+            candidate.execution_cusip9, candidate.execution_isin,
+            candidate.coupon_rate, candidate.maturity_date,
+        )
+        for candidate in sorted(
+            unique.values(),
+            key=lambda candidate: (
+                candidate.execution_cusip9, candidate.execution_isin,
+                candidate.lane, str(candidate.window),
+            ),
+        )
+    ]
+    execution["executable"] = len(executable)
 
     rows = sweep_priority_order(
         executable, _attempts(conn), _watermarks(conn, [row[0] for row in executable])
@@ -522,6 +643,15 @@ def _universe(
         "open_as_of": as_of.isoformat(),
         "closed": coverage_by_window["closed"],
         "open": coverage_by_window["open"],
+        "rule_144a": rule_144a,
+        "reg_s": {
+            "snapshot_id": snapshot_id,
+            "closed_as_of": closed_as_of.isoformat(),
+            "open_as_of": as_of.isoformat(),
+            "closed": coverage_by_window["closed"],
+            "open": coverage_by_window["open"],
+        },
+        "execution": execution,
     }
     return (list(rows[:limit]) if limit else list(rows)), len(rows), mapping_coverage
 
@@ -1126,8 +1256,6 @@ def run(
             execution_date=execution_date.isoformat(),
         )
     mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
-    if not mapping_snapshot_id:
-        return _halted("no_reg_s_mapping_snapshot")
     resolved = resolve_dsn(dsn)
 
     with connect(resolved) as conn, advisory_lock(conn, LOCK_BOND_LIVE_DAILY) as acquired:
@@ -1162,7 +1290,7 @@ def run(
         if universe_total == 0:
             conn.commit()
             return _halted(
-                "no_executable_reg_s_universe",
+                "no_executable_universe",
                 mapping_coverage=mapping_coverage,
             )
         # An upstream fault is still a stage outcome, never a reason to skip the

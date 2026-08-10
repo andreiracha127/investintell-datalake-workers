@@ -220,15 +220,15 @@ Verified by refreshing it `SET ROLE worker_writer` (10,073 rows). If the matview
 is ever rebuilt by an operator running as `postgres`, this has to be re-applied —
 the run reports `matview_failed` and exits non-zero if it is not.
 
-## 3e. Legacy T3 parity gate and the Regulation S replacement
+## 3e. Legacy T3 parity gate and the dual-series transition
 
 The T3 gate below is retained as the historical contract for the frozen
-`0c0d78a866bc1090` base. It is **not** an activation gate for the Regulation S
+`0c0d78a866bc1090` base. It is **not** an activation gate for the dual-series
 panel: production evidence collected on 2026-08-09 showed that the 10,206
-`bond_curated_universe` CUSIP9s are the Rule 144A reference leg, while the
-product is intended for non-US investors and must execute on the paired
-Regulation S leg. Comparing a Regulation S rebuild with that frozen Rule 144A
-base would compare different securities and cannot authorize Stage 6.
+`bond_curated_universe` CUSIP9s are the approved Rule 144A execution leg.
+Mapped Regulation S is additive and independently executable; it does not
+replace Rule 144A. Comparing a Regulation-S-only cohort with the frozen Rule
+144A base compares different securities and cannot authorize Stage 6.
 
 ### T3 parity gate contracts
 
@@ -247,13 +247,13 @@ in the JSON for investigation but never block the verdict.
 
 `db_type`, a numeric-versus-alphanumeric CUSIP, an ISIN prefix, and the absence
 of a Rule 144A label are not distribution-series classifiers. The current
-CUSIP9 is only a Rule 144A reference key. Stage 6 may use an execution CUSIP9
-only when one immutable approved mapping snapshot links that reference to an
-explicitly labelled Regulation S CUSIP/CINS in the same EDGAR document and
-issue block. Regulation S pairs documented only by ISIN or Common Code remain
-governed evidence but are ineligible for the CUSIP-keyed panel. Missing,
-conflicting, or ambiguous mappings fail closed; prices, ratings, and liquidity
-never fall back to the Rule 144A leg.
+CUSIP9 is a first-class Rule 144A execution key. Stage 6 may additionally use a
+Regulation S execution CUSIP9 only when one immutable approved mapping snapshot
+links it to that Rule 144A reference in the same EDGAR document and issue block.
+Regulation S pairs documented only by ISIN or Common Code remain governed
+evidence but are ineligible for the CUSIP-keyed panel. Missing, conflicting, or
+ambiguous Regulation S mappings never remove or degrade the independent Rule
+144A row; neither series is a fallback for the other.
 
 Formula comparison is performed only for a like-for-like common included cohort
 of at least the existing `MIN_MONTH_ROWS` (`300`) bonds. All four existing
@@ -291,24 +291,36 @@ records are fail-closed monthly-contract failures.
 
 This revised contract does not authorize production work. The parity worker is
 retained only to reproduce the historical Rule 144A result and explicitly
-refuses activation use under the Regulation S config. It is not rerun as a gate
-for the Regulation S base: doing so would again compare different securities.
+refuses activation use under the dual-series config. It is not rerun as a gate
+for the dual-series delta: doing so would again compare different securities.
 A future activation instead requires a separately authorized mapping load,
-Regulation S market-data coverage measurement, historical Regulation S base
-build, and exact review of that base's evidence before any pointer change.
+Regulation S market-data coverage measurement, and exact review of an explicit
+dual-series delta's evidence before any pointer change. There is no historical
+rebuild: immutable legacy rows remain the Rule 144A series and retain nullable
+distribution identity columns.
 
 Installing the updated DDL does not hide the current Rule 144A publication. The
-four current views anchor on the current pointer's permitted config hash and
-walk only ancestors with that same hash. The one allowed cross-config pointer
-transition is `0c0d78a866bc1090` to `180a82b3f1413d43`, and only to a validated
-parentless Regulation S replacement base. Its immutable `gate_evidence` must
-carry the `rule_144a_to_reg_s_base_v1` transition contract bound to the old
+four current views walk same-config ancestors and, from an active dual-series
+chain, may cross exactly once into its legacy Rule 144A ancestry. The serving
+hashes are legacy `0c0d78a866bc1090` and active dual-series
+`1863d3d5fa3a0edf`. Retired Regulation-S-only publications under
+`180a82b3f1413d43` remain stored for direct audit but cannot be a current-view
+root; schema installation stops if such a pointer is already active. The one
+allowed cross-config pointer transition is legacy to the active
+dual-series hash, and only to a validated dual-series child directly parented
+to the current legacy publication. Its immutable `gate_evidence` must carry the
+`rule_144a_to_dual_series_delta_v1` transition contract bound to the old
 publication, both hashes, and the authorized code revision; its lineage must
-bind the approved mapping snapshot. The trigger independently checks declared
-versus actual row counts, non-regressing dates, complete monthly partitions,
-RV/return subset keys, and exact snapshot/rating keys. An ordinary parentless
-materialization cannot overwrite an existing pointer. Missing or inconsistent
-transition evidence is a hard stop and leaves the Rule 144A pointer readable.
+bind the exact approved mapping snapshot with
+`distribution_rule=rule_144a_and_reg_s`. The trigger independently checks
+declared versus actual row counts, non-regressing dates, complete monthly
+partitions, RV/return subset keys, and exact snapshot/rating keys. Every new
+fact row in that child must carry nonblank `distribution_rule` and `reference_cusip9`;
+the snapshot must prove a Rule 144A row whose execution CUSIP equals the
+reference and a Regulation S row with a nonblank decision id. An ordinary
+parentless materialization cannot overwrite an existing pointer. Missing or
+inconsistent transition evidence is a hard stop and leaves the Rule 144A
+pointer readable.
 
 The mapping snapshot referenced by that transition is loaded separately by the
 one-off `bond_distribution_registry_backfill` worker. Its collector is always
@@ -318,16 +330,16 @@ the complete sealed bundle and requires zero inserts, then writes the immutable
 approval in the same transaction. Operators must reconcile the worker JSON,
 registry counts, and content hash in PostgreSQL and restore
 `WORKER=bond_live_daily` before Stage 6. This loader never promotes the panel
-pointer; the guarded Regulation S base transition remains the only promotion
+pointer; the guarded dual-series child transition remains the only promotion
 path.
 
-The first Stage 6 delta has a second, runtime authorization boundary. After the
-authorized transition, while the current pointer targets the new Regulation S
-base (`parent_publication_id IS NULL`),
+The dual-series bootstrap child has a second, runtime authorization boundary.
+Before that transition, while the current pointer targets the legacy parentless
+Rule 144A base (`parent_publication_id IS NULL`),
 `BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION` must equal the exact
 `CODE_REVISION` byte-for-byte. Missing, blank, or mismatched values fail closed
-as `initial_stage6_authorization_absent_or_mismatch`. Once a validated child has
-advanced the pointer, ordinary contiguous monthly deltas do not require this
+as `initial_stage6_authorization_absent_or_mismatch`. Once the validated
+bootstrap child has advanced the pointer, ordinary contiguous monthly deltas do not require this
 one-shot variable; the parent/month and immutable-publication gates still apply.
 Before reading new market inputs, the worker also verifies the pointed
 publication itself: its direct snapshot maximum must equal its declared open

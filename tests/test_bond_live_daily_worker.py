@@ -263,8 +263,8 @@ def _candle_payload(day: _dt.date, price: float, yield_pct: float | None = 4.5):
 # --------------------------------------------------------------------------- #
 # Governed Reg S execution universe
 # --------------------------------------------------------------------------- #
-def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkeypatch) -> None:
-    """A Rule 144A identifier is never a provider fallback for Reg S execution."""
+def test_daily_loads_rule_144a_and_mapped_reg_s_as_separate_series(monkeypatch) -> None:
+    """Reg S is additive: each approved identity keeps its own price series."""
     resolver_calls: list[dict[str, object]] = []
 
     def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
@@ -286,7 +286,10 @@ def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkey
         )
 
     conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
-    client = FakeClient(candles={"XS1234567890": _candle_payload(TODAY, 99.0)})
+    client = FakeClient(candles={
+        "US912828XX10": _candle_payload(TODAY, 101.0),
+        "XS1234567890": _candle_payload(TODAY, 99.0),
+    })
 
     out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
 
@@ -302,12 +305,19 @@ def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkey
             "reference_cusip9s": ["912828XX1"],
         },
     ]
-    assert [call[0] for call in client.candle_calls] == ["XS1234567890"]
+    assert {call[0] for call in client.candle_calls} == {"US912828XX10", "XS1234567890"}
     observation_writes = [
         params for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
     ]
-    assert observation_writes and observation_writes[0][0] == "G12345678"
-    assert out["coverage"]["universe"] == 1
+    assert {params[0] for params in observation_writes} == {"912828XX1", "G12345678"}
+    assert out["coverage"]["universe"] == 2
+    assert out["mapping_coverage"]["rule_144a"] == {
+        "reference_total": 1, "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["reg_s"]["open"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["execution"]["executable"] == 2
 
 
 def test_daily_sweeps_mapped_curated_reference_even_without_terms(monkeypatch) -> None:
@@ -328,8 +338,8 @@ def test_daily_sweeps_mapped_curated_reference_even_without_terms(monkeypatch) -
             reason_by_reference={},
         )
 
-    conn = FakeConn({Q_UNIVERSE: [(reference, None, None)]})
-    client = FakeClient(candles={execution_isin: _candle_payload(TODAY, 99.0)})
+    conn = FakeConn({Q_UNIVERSE: [(reference, None, None, None)]})
+    client = FakeClient(candles={execution_isin: _candle_payload(TODAY, 99.0)}, curve=HEALTHY_CURVE)
 
     out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
 
@@ -337,21 +347,24 @@ def test_daily_sweeps_mapped_curated_reference_even_without_terms(monkeypatch) -
     assert "LEFT JOIN bond_reference_terms r" in bond_live_daily._UNIVERSE_SQL
     assert [call[0] for call in client.candle_calls] == [execution_isin]
     assert out["coverage"]["universe"] == 1
-    assert out["mapping_coverage"] == {
-        "snapshot_id": REG_S_SNAPSHOT_ID,
-        "reference_total": 1,
-        "resolved": 1,
-        "executable": 1,
-        "omissions": {},
-        "closed_as_of": "2026-07-31",
-        "open_as_of": "2026-08-07",
-        "closed": {"resolved": 1, "executable": 1, "omissions": {}},
-        "open": {"resolved": 1, "executable": 1, "omissions": {}},
+    assert out["mapping_coverage"]["reference_total"] == 1
+    assert out["mapping_coverage"]["closed"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["open"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["rule_144a"] == {
+        "reference_total": 1, "resolved": 0, "executable": 0,
+        "omissions": {"missing_reference_isin": 1},
+    }
+    assert out["mapping_coverage"]["execution"] == {
+        "candidates": 2, "executable": 1, "deduplicated": 1, "omissions": {},
     }
 
 
-def test_missing_reg_s_isin_is_a_coverage_omission_with_no_provider_or_write(monkeypatch) -> None:
-    """Dropping execution ISIN must not silently reuse the Rule 144A ISIN."""
+def test_missing_reg_s_isin_is_an_omission_without_stopping_rule_144a(monkeypatch) -> None:
+    """A Reg S omission cannot replace or stop the independent Rule 144A lane."""
     def resolve(_conn, **_kwargs):
         return SimpleNamespace(
             resolutions={
@@ -364,15 +377,18 @@ def test_missing_reg_s_isin_is_a_coverage_omission_with_no_provider_or_write(mon
         )
 
     conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
-    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)}, curve=HEALTHY_CURVE)
 
     out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
 
-    assert out["state"] == "no_executable_reg_s_universe"
-    assert out["aborted"] is True
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
     assert out["mapping_coverage"]["omissions"] == {"missing_reg_s_isin": 1}
-    assert client.candle_calls == [] and client.tick_calls == []
-    assert conn.writes == []
+    assert [call[0] for call in client.candle_calls] == ["US912828XX10"]
+    observation_writes = [
+        params for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
+    ]
+    assert observation_writes and observation_writes[0][0] == "912828XX1"
 
 
 def test_daily_sweep_executes_the_closed_and_open_reg_s_legs_when_mapping_changes(monkeypatch) -> None:
@@ -404,7 +420,9 @@ def test_daily_sweep_executes_the_closed_and_open_reg_s_legs_when_mapping_change
     out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
 
     assert resolver_calls == [_dt.date(2026, 7, 31), TODAY]
-    assert {isin for isin, *_window in client.candle_calls} == {"XS1234567890", "XS0987654321"}
+    assert {isin for isin, *_window in client.candle_calls} == {
+        "US912828XX10", "XS1234567890", "XS0987654321",
+    }
     written_cusips = {
         params[0] for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
     }
@@ -439,20 +457,191 @@ def test_cross_as_of_cusip_collision_is_a_typed_omission_not_an_identifier_guess
         as_of=TODAY,
     )
 
-    assert rows == [] and total == 0
+    assert rows == [("912828XX1", "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
     assert coverage["closed"]["omissions"] == {"ambiguous_execution_cusip": 1}
     assert coverage["open"]["omissions"] == {"ambiguous_execution_cusip": 1}
 
 
-def test_missing_mapping_snapshot_aborts_before_provider_calls(monkeypatch) -> None:
-    """The immutable mapping pointer is a precondition, never an optional label."""
-    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+def test_missing_mapping_snapshot_is_reg_s_coverage_not_a_rule_144a_halt(monkeypatch) -> None:
+    """The absent additive mapping cannot stop an executable reference series."""
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)}, curve=HEALTHY_CURVE)
 
     out = _drive_run(monkeypatch, client=client, mapping_snapshot_id=None)
 
-    assert out["state"] == "no_reg_s_mapping_snapshot"
-    assert out["aborted"] is True
-    assert client.candle_calls == [] and client.tick_calls == []
+    assert out["state"] == "ok"
+    assert out["aborted"] is False
+    assert [call[0] for call in client.candle_calls] == ["US912828XX10"]
+    assert out["mapping_coverage"]["reg_s"]["open"]["omissions"] == {
+        "no_mapping_snapshot": 1,
+    }
+
+
+def test_exact_rule_144a_reg_s_identity_collision_keeps_only_rule_144a(monkeypatch) -> None:
+    """A Reg S leg may not reuse the Rule 144A execution identity."""
+    reference, isin = "912828XX1", "US912828XX10"
+
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference, reg_s_cusip9=reference, reg_s_isin=isin,
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={isin: _candle_payload(TODAY, 99.0)}, curve=HEALTHY_CURVE)
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert [call[0] for call in client.candle_calls] == [isin]
+    assert out["mapping_coverage"]["execution"] == {
+        "candidates": 3, "executable": 1, "deduplicated": 0,
+        "omissions": {"ambiguous_execution_cusip": 2},
+    }
+    assert out["mapping_coverage"]["reg_s"]["closed"]["executable"] == 0
+    assert out["mapping_coverage"]["reg_s"]["open"]["executable"] == 0
+
+
+def test_cross_lane_cusip_collision_omits_reg_s_without_stopping_rule_144a(monkeypatch) -> None:
+    """A conflicting Reg S identity cannot remove the independent Rule 144A leg."""
+    reference = "912828XX1"
+
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=reference,
+                    reg_s_isin="XS1234567890",
+                )
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({"to_regclass": [(1,)], Q_UNIVERSE: list(UNIVERSE)}),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [("912828XX1", "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_cusip": 2}
+
+
+def test_cross_lane_isin_collision_omits_reg_s_without_stopping_rule_144a(monkeypatch) -> None:
+    """A provider ISIN cannot feed a second execution CUSIP in another lane."""
+    reference, isin = "912828XX1", "US912828XX10"
+
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9="G12345678",
+                    reg_s_isin=isin,
+                )
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({"to_regclass": [(1,)], Q_UNIVERSE: list(UNIVERSE)}),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [(reference, isin, 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_isin": 2}
+
+
+def test_reg_s_identity_reused_by_different_references_across_windows_is_omitted(monkeypatch) -> None:
+    """One execution identity cannot silently pick either Rule 144A reference."""
+    first_reference, second_reference = "912828XX1", "3133EJAA0"
+    execution_cusip, execution_isin = "G12345678", "XS1234567890"
+
+    def resolve(_conn, *, as_of, **_kwargs):
+        reference = (
+            first_reference
+            if as_of == _dt.date(2026, 7, 31)
+            else second_reference
+        )
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=execution_cusip,
+                    reg_s_isin=execution_isin,
+                )
+            },
+            reason_by_reference={
+                other: "unmapped"
+                for other in (first_reference, second_reference)
+                if other != reference
+            },
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({
+            "to_regclass": [(1,)],
+            Q_UNIVERSE: [
+                (first_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6)),
+                (second_reference, None, 5.0, _dt.date(2032, 1, 15)),
+            ],
+        }),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [(first_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["closed"]["executable"] == 0
+    assert coverage["open"]["executable"] == 0
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_reference": 2}
+
+
+def test_reg_s_cusip_colliding_with_reference_missing_provider_isin_is_omitted(monkeypatch) -> None:
+    """A Reg S execution CUSIP cannot write under any curated 144A reference."""
+    executable_reference, reference_without_isin = "912828XX1", "3133EJAA0"
+
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                executable_reference: SimpleNamespace(
+                    reference_cusip9=executable_reference,
+                    reg_s_cusip9=reference_without_isin,
+                    reg_s_isin="XS1234567890",
+                ),
+            },
+            reason_by_reference={reference_without_isin: "unmapped"},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({
+            "to_regclass": [(1,)],
+            Q_UNIVERSE: [
+                (executable_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6)),
+                (reference_without_isin, None, None, None),
+            ],
+        }),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [(executable_reference, "US912828XX10", 4.0, _dt.date(2031, 8, 6))]
+    assert total == 1
+    assert coverage["execution"]["omissions"] == {"ambiguous_execution_cusip": 2}
 
 
 # --------------------------------------------------------------------------- #
