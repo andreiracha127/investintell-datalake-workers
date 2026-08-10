@@ -264,11 +264,13 @@ def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_linea
         artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID,
     )
     rows = backfill.rows_for_surface(artifacts, plan, "returns", start_after=0, limit=100)
-    tail = {(row["cusip_id"], row["month"]): row for row in rows.rows if row["month"] >= "2025-04-01"}
+    tail = {(row["cusip_id"], row["month"]): row for row in rows.rows}
 
     assert plan.input_fingerprint != plan.evidence()["base_repair"]["from_artifact_fingerprint"]
     assert plan.counts["returns"] == 31
     assert plan.evidence()["returns_first_month"] == "2025-03-01"
+    assert rows.total == 30
+    assert all(row["month"] >= "2025-04-01" for row in rows.rows)
     repair = plan.evidence()["base_repair"]
     assert {key: repair[key] for key in (
         "contract", "from_publication_id", "from_config_hash", "from_input_fingerprint",
@@ -322,6 +324,8 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     assert "WHERE publication_id=" in finalize
     assert "AND publication_id=" in finalize
     assert "base_repair" in finalize
+    assert backfill._sql_string(plan.returns_first_month) in finalize
+    assert f"publication_id={backfill._sql_string(plan.publication_id)}::uuid" in finalize
 
 
 def test_normal_mode_still_refuses_a_missing_return_tail(tmp_path: Path) -> None:

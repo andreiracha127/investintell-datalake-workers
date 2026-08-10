@@ -20,7 +20,6 @@ import uuid
 from typing import Any, Literal
 
 import duckdb
-import pandas as pd
 import pyarrow.parquet as pq
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,9 +27,6 @@ if __package__ in {None, ""} and str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scripts.backfill_psql_transport import render_immutable_batch, render_schema  # noqa: E402
-from src.bonds.panel_resolvers import coupon_from_price_ytm  # noqa: E402
-
-
 DEFAULT_ARTIFACT_DIRECTORY = Path(
     r"C:\Users\andre\Downloads\stage1_osbap_0k_volume_2025\bond_panel_monthly"
 )
@@ -339,86 +335,104 @@ def _canonical_digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
-def _repair_return_rows(artifacts: ArtifactSet) -> list[dict[str, Any]]:
-    """Return frozen historical facts plus the deterministic observed-only tail."""
+def _month_starts(first: str, last: str) -> list[str]:
+    current = date.fromisoformat(first)
+    end = date.fromisoformat(last)
+    values: list[str] = []
+    while current <= end:
+        values.append(current.isoformat())
+        current = date(current.year + (current.month == 12), current.month % 12 + 1, 1)
+    return values
+
+
+def _repair_return_tail_rows(
+    artifacts: ArtifactSet, *, start_after: int = 0, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """Build only the requested observed-return tail from frozen artifacts."""
+    if start_after < 0 or (limit is not None and limit <= 0):
+        raise CursorError("invalid_cursor_or_limit")
     conn, state = _connect()
     try:
-        historical = conn.execute(
-            "SELECT CAST(month AS DATE), cusip_id, total_return, price_return, carry_return, suspect "
-            "FROM read_parquet(?) WHERE CAST(month AS DATE) <= ? ORDER BY 1, 2",
-            [artifacts.path("bond_monthly_returns.parquet"), REPAIR_HISTORY_CUTOFF],
-        ).fetchall()
-        panel = conn.execute(
-            "SELECT CAST(month AS DATE), cusip_id, pr, ytm, bond_maturity FROM read_parquet(?) "
-            "WHERE CAST(month AS DATE) <= ? ORDER BY cusip_id, CAST(month AS DATE)",
-            [artifacts.path("bond_panel_live.parquet"), DEFAULT_CUTOFF],
+        bounded = "" if limit is None else " LIMIT ? OFFSET ?"
+        params: list[Any] = [
+            artifacts.path("bond_panel_live.parquet"),
+            artifacts.path("bond_monthly_returns.parquet"),
+        ]
+        if limit is not None:
+            params.extend([limit, start_after])
+        raw = conn.execute(
+            """WITH panel AS MATERIALIZED (
+                SELECT CAST(month AS DATE) AS month, cusip_id,
+                       CAST(pr AS DOUBLE) AS price, CAST(ytm AS DOUBLE) AS ytm,
+                       CAST(bond_maturity AS DOUBLE) AS maturity
+                FROM read_parquet(?)
+                WHERE CAST(month AS DATE) <= DATE '2026-06-01'
+            ), lagged AS MATERIALIZED (
+                SELECT *, lag(month) OVER w AS previous_month,
+                          lag(price) OVER w AS previous_price
+                FROM panel
+                WINDOW w AS (PARTITION BY cusip_id ORDER BY month)
+            ), historical_coupon AS (
+                SELECT r.cusip_id,
+                       median(12 * CAST(r.carry_return AS DOUBLE) * p.previous_price) AS coupon
+                FROM read_parquet(?) r
+                JOIN lagged p ON p.cusip_id=r.cusip_id AND p.month=CAST(r.month AS DATE)
+                WHERE CAST(r.month AS DATE) <= DATE '2025-03-01'
+                  AND isfinite(CAST(r.carry_return AS DOUBLE))
+                  AND isfinite(p.previous_price) AND p.previous_price <> 0
+                  AND date_diff('day', p.previous_month, p.month) BETWEEN 28 AND 31
+                GROUP BY r.cusip_id
+            ), implied_parts AS (
+                SELECT cusip_id, price, ytm, ytm / 2 AS y,
+                       greatest(CAST(round(2 * maturity) AS INTEGER), 1) AS periods
+                FROM panel
+                WHERE month <= DATE '2025-03-01'
+                  AND isfinite(price) AND isfinite(ytm) AND isfinite(maturity)
+            ), implied_math AS (
+                SELECT *, pow(1 + y, -periods) AS discount FROM implied_parts
+            ), implied_coupon AS (
+                SELECT cusip_id, median(greatest(0.0, least(20.0,
+                    CASE WHEN abs(y) > 0 AND (1 - discount) / y > 1e-9
+                         THEN (price / 100 - discount) / ((1 - discount) / y) * 200
+                         ELSE ytm * 100 END))) AS coupon
+                FROM implied_math GROUP BY cusip_id
+            ), coupons AS (
+                SELECT i.cusip_id, coalesce(h.coupon, i.coupon) AS coupon
+                FROM implied_coupon i LEFT JOIN historical_coupon h USING (cusip_id)
+                UNION ALL
+                SELECT h.cusip_id, h.coupon
+                FROM historical_coupon h LEFT JOIN implied_coupon i USING (cusip_id)
+                WHERE i.cusip_id IS NULL
+            ), tail AS (
+                SELECT l.month, l.cusip_id,
+                       (l.price - l.previous_price) / l.previous_price AS price_return,
+                       (c.coupon / 12) / l.previous_price AS carry_return
+                FROM lagged l JOIN coupons c USING (cusip_id)
+                WHERE l.month BETWEEN DATE '2025-04-01' AND DATE '2026-06-01'
+                  AND date_diff('day', l.previous_month, l.month) BETWEEN 28 AND 31
+                  AND isfinite(l.price) AND isfinite(l.previous_price)
+                  AND l.previous_price <> 0 AND isfinite(c.coupon)
+            )
+            SELECT month, cusip_id, price_return, carry_return,
+                   price_return + carry_return AS total_return
+            FROM tail ORDER BY month, cusip_id""" + bounded,
+            params,
         ).fetchall()
     finally:
         conn.close()
         state.cleanup()
-
-    prices: dict[str, list[tuple[date, float | None, float | None, float | None]]] = {}
-    for month, cusip, price, ytm, maturity in panel:
-        value = float(price) if price is not None and math.isfinite(float(price)) else None
-        ytm_value = float(ytm) if ytm is not None and math.isfinite(float(ytm)) else None
-        maturity_value = float(maturity) if maturity is not None and math.isfinite(float(maturity)) else None
-        prices.setdefault(cusip, []).append((month, value, ytm_value, maturity_value))
-
-    historical_coupon_samples: dict[str, list[float]] = {}
-    for month, cusip, _total, _price_return, carry_return, _suspect in historical:
-        carry = float(carry_return) if carry_return is not None and math.isfinite(float(carry_return)) else None
-        previous = next((point for point in reversed(prices.get(cusip, [])) if point[0] < month and 28 <= (month - point[0]).days <= 31), None)
-        if carry is not None and previous is not None and previous[1] not in (None, 0.0):
-            historical_coupon_samples.setdefault(cusip, []).append(12 * carry * previous[1])
-
-    coupons: dict[str, float] = {cusip: float(sorted(values)[len(values) // 2]) if len(values) % 2 else float((sorted(values)[len(values) // 2 - 1] + sorted(values)[len(values) // 2]) / 2) for cusip, values in historical_coupon_samples.items()}
-    for cusip, points in prices.items():
-        if cusip in coupons:
-            continue
-        known = [(price, ytm, maturity) for month, price, ytm, maturity in points if month <= date.fromisoformat(REPAIR_HISTORY_CUTOFF) and price is not None and ytm is not None and maturity is not None]
-        if known:
-            implied = coupon_from_price_ytm(
-                pd.Series([row[0] for row in known]),
-                pd.Series([row[1] for row in known]),
-                pd.Series([row[2] for row in known]),
-            )
-            values = sorted(float(value) for value in implied if math.isfinite(float(value)))
-            if values:
-                coupons[cusip] = values[len(values) // 2] if len(values) % 2 else (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
-
     lineage = _lineage(artifacts, "bond_panel_live.parquet", "bond_monthly_returns.parquet")
     original_artifact_fingerprint = _canonical_digest({"source_sha256": dict(sorted(artifacts.sha256.items()))})
     rows: list[dict[str, Any]] = []
-    for month, cusip, total, price_return, carry_return, suspect in historical:
+    for month, cusip, price_return, carry_return, total_return in raw:
+        total = float(total_return)
         rows.append({
-            "month": _scalar_month(month), "cusip_id": cusip, "total_return": float(total),
-            "price_return": _clean(price_return), "carry_return": _clean(carry_return), "suspect": bool(suspect),
-            "exit_basis": "observed", "exit_reason": None,
-            "payload": {"historical_return_coverage_through": REPAIR_HISTORY_CUTOFF, "source_lineage": lineage},
+            "month": _scalar_month(month), "cusip_id": cusip, "total_return": total,
+            "price_return": float(price_return), "carry_return": float(carry_return),
+            "suspect": abs(total) > .5, "exit_basis": "observed", "exit_reason": None,
+            "payload": {"base_repair": {"contract": REPAIR_CONTRACT, "from_publication_id": LEGACY_REPAIR_FROM_PUBLICATION_ID, "from_artifact_fingerprint": original_artifact_fingerprint}, "source_lineage": lineage},
         })
-    tail_start = date.fromisoformat(REPAIR_TAIL_FIRST_MONTH)
-    tail_end = date.fromisoformat(DEFAULT_CUTOFF)
-    for cusip, points in prices.items():
-        coupon = coupons.get(cusip)
-        if coupon is None or not math.isfinite(coupon):
-            continue
-        for previous, current in zip(points, points[1:], strict=False):
-            previous_month, previous_price, _previous_ytm, _previous_maturity = previous
-            month, price, _ytm, _maturity = current
-            if not (tail_start <= month <= tail_end and 28 <= (month - previous_month).days <= 31):
-                continue
-            if previous_price is None or previous_price == 0.0 or price is None:
-                continue
-            price_return = (price - previous_price) / previous_price
-            carry_return = (coupon / 12) / previous_price
-            total_return = price_return + carry_return
-            rows.append({
-                "month": _scalar_month(month), "cusip_id": cusip, "total_return": total_return,
-                "price_return": price_return, "carry_return": carry_return, "suspect": abs(total_return) > .5,
-                "exit_basis": "observed", "exit_reason": None,
-                "payload": {"base_repair": {"contract": REPAIR_CONTRACT, "from_publication_id": LEGACY_REPAIR_FROM_PUBLICATION_ID, "from_artifact_fingerprint": original_artifact_fingerprint}, "source_lineage": lineage},
-            })
-    return sorted(rows, key=lambda row: (row["month"], row["cusip_id"]))
+    return rows
 
 
 def build_repair_plan(artifacts: ArtifactSet, *, from_publication_id: str) -> BackfillPlan:
@@ -451,20 +465,20 @@ def build_repair_plan(artifacts: ArtifactSet, *, from_publication_id: str) -> Ba
         if returns_first_month != expected_returns_first:
             raise PlanError("repair_returns_must_start_one_month_after_snapshot")
         _require_zero(conn, reason="repair_historical_returns_must_be_contiguous", sql="SELECT count(*) FROM generate_series(CAST(? AS DATE), CAST(? AS DATE), INTERVAL '1 month') expected(month) LEFT JOIN (SELECT DISTINCT CAST(month AS DATE) AS return_month FROM read_parquet(?)) actual ON actual.return_month=expected.month::date WHERE actual.return_month IS NULL", params=[returns_first_month, REPAIR_HISTORY_CUTOFF, returns])
+        historical_return_count = int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)", [returns, REPAIR_HISTORY_CUTOFF]))
         counts = {"snapshot": int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= ?", [panel, DEFAULT_CUTOFF])), "rv_signal": int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= ?", [rv, DEFAULT_CUTOFF])), "rating_pit": int(_one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) <= ?", [panel, DEFAULT_CUTOFF]))}
         panel_without_rating_pit = int(_one(conn, "SELECT count(*) FROM (SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= DATE '2025-03-01' EXCEPT SELECT cusip_id, CAST(month AS DATE) FROM read_parquet(?) WHERE CAST(month AS DATE) <= DATE '2025-03-01')", [panel, ratings]))
     finally:
         conn.close()
         state.cleanup()
-    reconstructed = _repair_return_rows(artifacts)
-    tail = [row for row in reconstructed if row["month"] >= REPAIR_TAIL_FIRST_MONTH]
+    tail = _repair_return_tail_rows(artifacts)
     if not tail:
         raise PlanError("repair_tail_empty")
-    month_counts = [sum(row["month"] == _scalar_month(month) for row in tail) for month in pd.date_range(REPAIR_TAIL_FIRST_MONTH, DEFAULT_CUTOFF, freq="MS")]
+    month_counts = [sum(row["month"] == month for row in tail) for month in _month_starts(REPAIR_TAIL_FIRST_MONTH, DEFAULT_CUTOFF)]
     tail_digest = _canonical_digest(tail)
     if artifacts.sha256 == EXPECTED_SHA256 and (len(tail) != REPAIR_EXPECTED_TAIL_ROWS or len({row["cusip_id"] for row in tail}) != REPAIR_EXPECTED_TAIL_CUSIPS or sum(bool(row["suspect"]) for row in tail) != REPAIR_EXPECTED_TAIL_SUSPECT or tuple(month_counts) != REPAIR_TAIL_MONTH_COUNTS):
         raise PlanError("repair_tail_does_not_match_authorized_frozen_contract")
-    counts["returns"] = len(reconstructed)
+    counts["returns"] = historical_return_count + len(tail)
     if artifacts.sha256 == EXPECTED_SHA256 and counts["returns"] != REPAIR_EXPECTED_TOTAL_RETURNS:
         raise PlanError("repair_total_returns_does_not_match_authorized_frozen_contract")
     source_sha256 = dict(sorted(artifacts.sha256.items()))
@@ -599,11 +613,11 @@ def rows_for_surface(artifacts: ArtifactSet, plan: BackfillPlan, surface: Surfac
         raise ValueError(f"unknown_surface:{surface}")
     if start_after < 0 or limit <= 0:
         raise CursorError("invalid_cursor_or_limit")
-    total = plan.counts[surface]
+    total = int(plan.base_repair["tail_rows"]) if plan.is_repair and surface == "returns" else plan.counts[surface]
     if start_after > total:
         raise CursorError("start_after_exceeds_surface")
     if plan.is_repair and surface == "returns":
-        rows = _repair_return_rows(artifacts)[start_after:start_after + limit]
+        rows = _repair_return_tail_rows(artifacts, start_after=start_after, limit=limit)
     else:
         rows, _sources = _surface_query(artifacts, surface, plan.cutoff, limit, start_after)
     return SurfaceRows(surface, tuple(rows), start_after, start_after + len(rows), total)
@@ -693,15 +707,15 @@ def render_batch_sql(artifacts: ArtifactSet, plan: BackfillPlan, surface: Surfac
 
 
 def _render_repair_tail_batch(artifacts: ArtifactSet, plan: BackfillPlan, *, start_after: int, limit: int) -> str:
-    tail = [row for row in _repair_return_rows(artifacts) if row["month"] >= REPAIR_TAIL_FIRST_MONTH]
     if start_after < 0 or limit <= 0:
         raise CursorError("invalid_cursor_or_limit")
-    if start_after > len(tail):
+    tail_total = int(plan.base_repair["tail_rows"])
+    if start_after > tail_total:
         raise CursorError("start_after_exceeds_surface")
-    selected = tail[start_after:start_after + limit]
+    selected = _repair_return_tail_rows(artifacts, start_after=start_after, limit=limit)
     columns = _COLUMNS["returns"]
     values = [tuple([plan.publication_id] + [row[column] for column in columns[1:]]) for row in selected]
-    evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps({name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(start_after + len(selected)) + ",'remaining'," + str(len(tail) - start_after - len(selected)) + ",'done'," + ("true" if start_after + len(selected) == len(tail) else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
+    evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps({name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(start_after + len(selected)) + ",'remaining'," + str(tail_total - start_after - len(selected)) + ",'done'," + ("true" if start_after + len(selected) == tail_total else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
     emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=_TYPES["returns"], key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=start_after + len(selected), skipped=0, target_evidence_sql=evidence, nullable_columns=_NULLABLE["returns"])
     insert_select = "SELECT " + ", ".join(f's."{column}"' for column in columns) + " FROM _backfill_stage s"
     replay_safe = insert_select + f" WHERE EXISTS (SELECT 1 FROM bond_panel_publications p WHERE p.publication_id={_sql_string(plan.publication_id)}::uuid AND p.publication_status='prepared')"
@@ -756,7 +770,8 @@ def render_finalize_sql(plan: BackfillPlan) -> str:
     evidence = json.dumps(plan.evidence(), sort_keys=True, separators=(",", ":"))
     repair_evidence_check = f" AND gate_evidence @> {_sql_string(evidence)}::jsonb" if plan.is_repair else ""
     checks = "\n".join(f"    IF (SELECT count(*) FROM {_TABLES[surface]} WHERE publication_id={_sql_string(plan.publication_id)}::uuid) <> {plan.counts[surface]} THEN RAISE EXCEPTION 'partial {surface} surface'; END IF;" for surface in SURFACES)
-    return_coverage_check = f"    IF EXISTS (SELECT 1 FROM generate_series({_sql_string(plan.first_month)}::date, {_sql_string(plan.last_closed_month)}::date, INTERVAL '1 month') AS expected(month) LEFT JOIN bond_panel_returns r ON r.publication_id={_sql_string(plan.publication_id)}::uuid AND r.month=expected.month::date WHERE r.month IS NULL) THEN RAISE EXCEPTION 'returns history is not contiguous through closed-month cutoff'; END IF;"
+    coverage_first = plan.returns_first_month if plan.is_repair else plan.first_month
+    return_coverage_check = f"    IF EXISTS (SELECT 1 FROM generate_series({_sql_string(coverage_first)}::date, {_sql_string(plan.last_closed_month)}::date, INTERVAL '1 month') AS expected(month) LEFT JOIN bond_panel_returns r ON r.publication_id={_sql_string(plan.publication_id)}::uuid AND r.month=expected.month::date WHERE r.month IS NULL) THEN RAISE EXCEPTION 'returns history is not contiguous through closed-month cutoff'; END IF;"
     repair_cas = ""
     pointer_statement = f"INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES ({_sql_string(PRODUCT)}, {_sql_string(plan.publication_id)}::uuid) ON CONFLICT (product) DO UPDATE SET publication_id=EXCLUDED.publication_id, changed_at=now() WHERE bond_panel_app_pointer.publication_id IS DISTINCT FROM EXCLUDED.publication_id;"
     if plan.is_repair:
@@ -772,7 +787,10 @@ BEGIN
     UPDATE bond_panel_app_pointer
     SET publication_id={_sql_string(plan.publication_id)}::uuid, changed_at=now()
     WHERE product={_sql_string(PRODUCT)} AND publication_id={_sql_string(source_id)}::uuid;
-    IF NOT FOUND THEN RAISE EXCEPTION 'repair pointer compare-and-swap lost'; END IF;
+    IF NOT FOUND AND NOT EXISTS (
+        SELECT 1 FROM bond_panel_app_pointer
+        WHERE product={_sql_string(PRODUCT)} AND publication_id={_sql_string(plan.publication_id)}::uuid
+    ) THEN RAISE EXCEPTION 'repair pointer compare-and-swap lost'; END IF;
 END
 $repair_cas$;"""
     return f"""\\set ON_ERROR_STOP on

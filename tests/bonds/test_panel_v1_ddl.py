@@ -101,6 +101,10 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
     assert "min(f.month)" in sql
     assert "candidate.first_month + INTERVAL '1 month'" in sql
     assert "candidate.gate_evidence @> jsonb_build_object('base_repair'" in sql
+    assert "candidate.snapshot_rows = 3417683" in sql
+    assert "candidate.rv_signal_rows = 1687524" in sql
+    assert "candidate.returns_rows = 2801208" in sql
+    assert "candidate.ratings_pit_rows = 3417683" in sql
 
 
 def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:

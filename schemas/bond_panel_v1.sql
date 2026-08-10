@@ -520,6 +520,10 @@ BEGIN
              AND candidate.first_month = prior.first_month
              AND candidate.last_closed_month = prior.last_closed_month
              AND candidate.open_month IS NULL
+             AND candidate.snapshot_rows = 3417683
+             AND candidate.rv_signal_rows = 1687524
+             AND candidate.returns_rows = 2801208
+             AND candidate.ratings_pit_rows = 3417683
              AND candidate.gate_evidence @> jsonb_build_object('base_repair', jsonb_build_object(
                  'contract', 'legacy_parentless_return_coverage_repair_v1',
                  'from_publication_id', OLD.publication_id::text,
