@@ -16,9 +16,10 @@ cron **`30 7 * * *` UTC**.
 |---|-------|--------|-------|
 | 1 | `candles` | `bond_observation_daily`, `bond_live_daily_sweep` | Per-CUSIP delta from that CUSIP's own watermark. ~10k calls at ~190/min ≈ 55 min. |
 | 2 | `curve` | `bond_yield_curve_daily` | 13 tenors, one call each. Each response is the tenor's whole history, folded between its own watermark and `calc_date` — backfills itself on a cold table, never past the requested day (§3c). |
-| 3 | `ticks` | `bond_tick_daily` | Previous session, top `BOND_TICK_TOP_N` (500) by activity **inside the requested window** (`[calc_date − 90d, calc_date]`, both ends). Same consecutive-failure breaker as stage 1 — see §4b. |
+| 3 | `ticks` | `bond_tick_daily` | Previous session, the full curated universe by default. `BOND_TICK_TOP_N` is an explicit typed degradation only. Same consecutive-failure breaker as stage 1 — see §4b. |
 | 4 | `matview` | — | `REFRESH MATERIALIZED VIEW CONCURRENTLY bond_curated_securities`. |
 | 5 | `republish` | `bond_metric_v1`, `bond_serving_v1` | Invokes `bond_metrics.run()` then `bond_serving.run()`. |
+| 6 | `panel` | `bond_panel_v1` | Reads only production DB relations and atomically publishes the closed-month plus open-month delta after stage 5. |
 
 **Stage 5 is not optional.** `daily_chain` keys a run by `(chain, source_day,
 code_revision, config_version)` and returns a *completed* run's summary verbatim
@@ -45,10 +46,10 @@ mean paying for the same publication twice.
 | Variable | Required | Meaning |
 |----------|----------|---------|
 | `DATABASE_URL` | yes | The datalake (project-private network). |
-| `FINNHUB_API_KEY` | yes | Absent ⇒ the run reports `no_api_key`, writes nothing **and exits non-zero**. |
+| `FINNHUB_API_KEY` | yes | Absent ⇒ input lanes report `no_api_key`; refresh, republish, and panel still run before the non-zero verdict. |
 | `WORKER_LIMIT` | no | Caps the universe swept in one run (budget-bounded catch-up). **Every capped run is red** — see §3b. |
 | `WORKER_CALC_DATE` | no | Pins "today" for the window arithmetic (replay). **A date past the execution date is refused, never clamped** (`calc_date_in_future`) — see §3c. |
-| `BOND_TICK_TOP_N` | no | Tick cohort size (default 500). |
+| `BOND_TICK_TOP_N` | no | Optional emergency cap. Unset means full curated universe; any positive cap is reported as `bounded_tick_scope` and keeps the run red. |
 | `CODE_REVISION` | no | **One-off pin only — never a permanent service variable.** See §3a. |
 
 ### 3a. The deploy sha is a requirement, not a nicety
@@ -219,6 +220,121 @@ Verified by refreshing it `SET ROLE worker_writer` (10,073 rows). If the matview
 is ever rebuilt by an operator running as `postgres`, this has to be re-applied —
 the run reports `matview_failed` and exits non-zero if it is not.
 
+## 3e. Legacy T3 parity gate and the Regulation S replacement
+
+The T3 gate below is retained as the historical contract for the frozen
+`0c0d78a866bc1090` base. It is **not** an activation gate for the Regulation S
+panel: production evidence collected on 2026-08-09 showed that the 10,206
+`bond_curated_universe` CUSIP9s are the Rule 144A reference leg, while the
+product is intended for non-US investors and must execute on the paired
+Regulation S leg. Comparing a Regulation S rebuild with that frozen Rule 144A
+base would compare different securities and cannot authorize Stage 6.
+
+### T3 parity gate contracts
+
+1. Reference accounting requires every normalized CUSIP9 from
+   `bond_curated_universe` exactly once as included or typed excluded.
+2. Formula parity compares YTM, duration, duration-relative, and spread only on
+   at least 300 common included bonds. Historical membership drift is diagnostic.
+3. Rebuilt RV is validated structurally. Absolute cross-cohort RV deltas are
+   diagnostic because each monthly cohort is fit and standardized separately.
+
+Reference accounting is exact, not tolerance based: reference and rebuilt keys
+must be non-empty and unique; every reference key must be accounted for exactly
+once; exclusions require a nonblank typed reason; and included rows must satisfy
+their required identity. Frozen-versus-rebuilt membership size and overlap stay
+in the JSON for investigation but never block the verdict.
+
+`db_type`, a numeric-versus-alphanumeric CUSIP, an ISIN prefix, and the absence
+of a Rule 144A label are not distribution-series classifiers. The current
+CUSIP9 is only a Rule 144A reference key. Stage 6 may use an execution CUSIP9
+only when one immutable approved mapping snapshot links that reference to an
+explicitly labelled Regulation S CUSIP/CINS in the same EDGAR document and
+issue block. Regulation S pairs documented only by ISIN or Common Code remain
+governed evidence but are ineligible for the CUSIP-keyed panel. Missing,
+conflicting, or ambiguous mappings fail closed; prices, ratings, and liquidity
+never fall back to the Rule 144A leg.
+
+Formula comparison is performed only for a like-for-like common included cohort
+of at least the existing `MIN_MONTH_ROWS` (`300`) bonds. All four existing
+formula metrics remain hard gates: YTM, duration, duration-relative, and spread.
+The existing identity, configuration, lineage, typing, spread-semantics, and
+walk-forward gates also remain fail-closed. A cohort's membership percentage is
+diagnostic, not a coverage gate.
+
+Rebuilt RV is a structural contract, not a cross-cohort equality assertion. For
+each comparable month, its surface must be non-empty, unique, a subset of rebuilt
+included keys, sized to the fitted eligible cohort, and finite. Rowwise, each
+`residual_bps` must equal `spread_bps - fitted_bps`; each `rv_signal` must equal
+the population z-score recomputed from that row's residual cohort; and
+`spread_bps` must equal the same-key included snapshot spread after the canonical
+Stage 6 winsor clip. The report emits fixed-tolerance maximum errors for those
+three bindings, as well as the existing centered/unit-standardized checks. It
+continues to emit absolute frozen-versus-rebuilt RV deltas as diagnostics.
+
+Monthly results have exactly these states:
+
+| state | `comparable` | `aborted` | meaning |
+| --- | --- | --- | --- |
+| `parity_failed` | `true` or `false` | `true` | A reference, formula, RV-structural, or other hard gate failed. |
+| `parity_passed` | `true` | `false` | All hard gates passed and the common included cohort has at least 300 bonds. |
+| `parity_not_comparable` | `false` | `false` | Reference accounting and the other applicable hard gates passed, but fewer than 300 common included bonds are available; formula parity is not evaluated. |
+
+The overall result is `parity_passed` only when every declared month passes
+reference accounting and the other hard gates, every comparable month passes the
+four formula metrics and RV structure, no month failed, and at least one declared
+month is comparable. A noncomparable month neither passes nor fails formula
+parity by itself; no comparable month is an overall failure. The result list must
+contain each declared parity month exactly once and every monthly state tuple must
+match the table above; unknown, inconsistent, missing, duplicate, or unexpected
+records are fail-closed monthly-contract failures.
+
+This revised contract does not authorize production work. The parity worker is
+retained only to reproduce the historical Rule 144A result and explicitly
+refuses activation use under the Regulation S config. It is not rerun as a gate
+for the Regulation S base: doing so would again compare different securities.
+A future activation instead requires a separately authorized mapping load,
+Regulation S market-data coverage measurement, historical Regulation S base
+build, and exact review of that base's evidence before any pointer change.
+
+Installing the updated DDL does not hide the current Rule 144A publication. The
+four current views anchor on the current pointer's permitted config hash and
+walk only ancestors with that same hash. The one allowed cross-config pointer
+transition is `0c0d78a866bc1090` to `180a82b3f1413d43`, and only to a validated
+parentless Regulation S replacement base. Its immutable `gate_evidence` must
+carry the `rule_144a_to_reg_s_base_v1` transition contract bound to the old
+publication, both hashes, and the authorized code revision; its lineage must
+bind the approved mapping snapshot. The trigger independently checks declared
+versus actual row counts, non-regressing dates, complete monthly partitions,
+RV/return subset keys, and exact snapshot/rating keys. An ordinary parentless
+materialization cannot overwrite an existing pointer. Missing or inconsistent
+transition evidence is a hard stop and leaves the Rule 144A pointer readable.
+
+The mapping snapshot referenced by that transition is loaded separately by the
+one-off `bond_distribution_registry_backfill` worker. Its collector is always
+zero-write; production requires distinct `draft` and `approve` executions bound
+to an exact `CODE_REVISION` and equal load authorization. Approval first replays
+the complete sealed bundle and requires zero inserts, then writes the immutable
+approval in the same transaction. Operators must reconcile the worker JSON,
+registry counts, and content hash in PostgreSQL and restore
+`WORKER=bond_live_daily` before Stage 6. This loader never promotes the panel
+pointer; the guarded Regulation S base transition remains the only promotion
+path.
+
+The first Stage 6 delta has a second, runtime authorization boundary. After the
+authorized transition, while the current pointer targets the new Regulation S
+base (`parent_publication_id IS NULL`),
+`BOND_PANEL_STAGE6_INITIAL_AUTHORIZATION` must equal the exact
+`CODE_REVISION` byte-for-byte. Missing, blank, or mismatched values fail closed
+as `initial_stage6_authorization_absent_or_mismatch`. Once a validated child has
+advanced the pointer, ordinary contiguous monthly deltas do not require this
+one-shot variable; the parent/month and immutable-publication gates still apply.
+Before reading new market inputs, the worker also verifies the pointed
+publication itself: its direct snapshot maximum must equal its declared open
+month (or last closed month for a base), and its direct returns maximum must
+equal `last_closed_month`. A stale historical base is therefore repaired or
+replaced explicitly; a daily delta cannot jump over a missing return interval.
+
 ## 4. Reading the result
 
 **One rule: a run exits green only when it actually did the day's work.**
@@ -229,12 +345,12 @@ stays invisible for a week.
 
 | `state` | green? | what it means |
 |---------|--------|---------------|
-| `ok` | **yes** | all five stages ran; both publications reported that they published |
+| `ok` | **yes** | all six stages ran; both serving publications and the panel delta reported a publication |
 | `calc_date_in_future` | no | `WORKER_CALC_DATE` is past the execution date: refused before anything opens, never clamped (§3c) |
 | `locked` | no | another holder had this worker's advisory lock; **this run did nothing** (§4a) |
 | `no_observation_table` | no | `bond_observation_daily` is absent (the serving repo owns its DDL); nothing loaded |
 | `no_universe` | no | the curated universe is empty or its tables are absent |
-| `no_api_key` | no | `FINNHUB_API_KEY` unset: no candles, no curve, no ticks, no republication |
+| `no_api_key` | no | `FINNHUB_API_KEY` unset: candles, curve, and ticks are typed red; downstream stages still run before the final verdict |
 | `provider_rejected` | no | the key was rejected mid-sweep (401/403 is non-transient by design) |
 | `aborted` | no | the provider cut the candle sweep short (`MAX_CONSECUTIVE_FAILURES`) |
 | `candles_failed` | no | stage 1 loaded **nothing**: not one bond whose window re-opened on a day this lane had *already* loaded came back with a candle — empty payloads, failures, or both (§4d). A cold table and a replay of a day every bond is already past are excluded, so this is silent on both |
@@ -244,6 +360,9 @@ stays invisible for a week.
 | `republish_locked` | no | a publication worker's own lock was held: stage 5 did not recompute |
 | `republish_no_op` | no | a publication worker reported a dark state (`no_source`/`no_securities`/`no_observations`): nothing was published |
 | `republish_failed` | no | a publication worker failed, raised, or returned a state this contract does not know (drift is never read as success) |
+| `panel_failed` | no | stage 6 could not rebuild a non-empty DB-only delta or one of its required fact surfaces was empty; it never reads an operator-local artifact |
+| `panel_publish_failed` | no | stage 6 encountered a database/materializer operational failure; its pointer was not advanced |
+| `panel_gate_failed` | no | stage 6 refused a missing/incompatible current parent, non-contiguous month partition, absent/mismatched initial revision authorization, required relation, or validation gate; it does not bootstrap a two-month history |
 | `partial_sweep` | no | `WORKER_LIMIT` truncated the universe — the budget was covered, the day was not (§3b) |
 
 `halted_by` lists every clause that fired, in severity order; `state` is the
@@ -275,9 +394,9 @@ lock, then re-run the service (`railway service restart`, not `redeploy`). The
 state name stays `locked` on purpose — `daily_chain.classify_worker_result`
 reads that exact string and classifies it as transient/retryable.
 
-### 4c. The daily lock is held through stage 5 — and costs nothing
+### 4c. The daily lock is held through stage 6 — and costs nothing
 
-Decided 2026-08-08. The lock wraps **all five stages**, not just the three that
+The lock wraps **all six stages**, not just the three that
 write on its own connection.
 
 Released after stage 3, an overlapping manual restart could take it while this
@@ -296,19 +415,19 @@ worth keeping straight because they look alike:
   `src/db.py`). A session lock pins no snapshot and holds back no xmin horizon.
 * The run **commits** before stage 4, so the connection sits `idle`, not
   `idle in transaction`, for the minutes the two publication builds take. That
-  commit is load-bearing: adding a read on that connection between stage 3 and
-  stage 5 would silently turn it into a minutes-long transaction, which is the
+commit is load-bearing: adding a read on that connection between stage 3 and
+stage 6 would silently turn it into a minutes-long transaction, which is the
   trap. The code says so at the call site.
-* Stages 4 and 5 open their **own** connections (`_refresh_curated` in
-  autocommit; each publication worker its own), so the held connection only
-  carries the lock.
+* Stages 4 through 6 open their **own** connections (`_refresh_curated` in
+  autocommit; each publication worker and the panel materializer use their
+  own), so the held connection only carries the lock.
 
 This is `daily_publication_chain`'s idiom, not a new one: it holds
 `LOCK_DAILY_PUBLICATION_CHAIN` across these same two workers while each takes
 its own lock underneath. Deadlock-free by construction — nothing else in the
 fleet takes `LOCK_BOND_LIVE_DAILY` (900_353), so there is no cycle to close.
 
-One consequence to expect: if that idle connection dies during stage 5, the
+One consequence to expect: if that idle connection dies during stage 6, the
 release raises and the run exits red *after* the work landed. That is the safe
 direction (verify in the tables, per §4a) and it is the same exposure the chain
 already carries.
@@ -323,6 +442,13 @@ SELECT max(day) FROM bond_yield_curve_daily;                     -- same
 SELECT count(*) FROM bond_tick_daily WHERE day = <prev session>; -- > 0
 SELECT max(observation_date) FROM bond_serving_facts_v
  WHERE surface = 'observations' AND lane = 'latest';             -- the header's date
+SELECT max(computed_at), max(last_closed_month), max(open_month), count(*)
+  FROM bond_panel_publications WHERE publication_status='validated';
+SELECT p.publication_id, p.config_hash, p.snapshot_rows, p.rv_signal_rows,
+       p.returns_rows, p.ratings_pit_rows
+  FROM bond_panel_app_pointer a
+  JOIN bond_panel_publications p USING (publication_id)
+ WHERE a.product='bond_panel_v1';                                 -- exact current pin
 ```
 
 One caveat when reading the FIRST morning: at 07:30 UTC the previous session's
@@ -338,10 +464,16 @@ did not, and it is the more expensive lane to leave unbraked. By the time
 `client.ticks()` raises, the client has already spent its whole retry ladder —
 **126 s of backoff per exhausted logical request** (measured 2026-08-07, after
 the trailing-sleep fix; it was 246 s before), plus up to 7 × 45 s of
-connect/read timeout on top. Across the default 500-bond cohort that is
-**~17.5 h of backoff** spent proving something the first 25 calls already
-established — hours no outcome of stage 3 can change, taken out of a morning
-that has to reach the 11:00 publication window.
+connect/read timeout on top. Across the full ~10k universe that theoretical
+cost is much larger, which is why the breaker is part of the full-universe
+contract rather than an optional optimization. The first 25 exhausted calls
+already establish the outage; no later call can change that diagnosis.
+
+The normal provider budget was declared before activation: at the measured
+~190 calls/minute, the ~10k candle lane is about 55 minutes and the full tick
+lane adds roughly another 55 minutes, for about 110 minutes total before the
+database-only stages. A positive `BOND_TICK_TOP_N` is therefore an emergency
+degradation with its own reason code, not the steady-state schedule.
 
 Stage 3 now uses the **same** constant and the same shape as stage 1:
 `MAX_CONSECUTIVE_FAILURES` (25) consecutive exhaustions abort the lane, the
@@ -392,7 +524,8 @@ distinction each stage uses is a day the provider can be **proved** to owe:
   out of this same endpoint, so an empty answer for it is a fault. Bonds without
   that promise are excluded, and both exclusions are systematic rather than
   hypothetical:
-  * a **cold-start** bond gets `fetch_window`'s 30-day window and no evidence.
+  * a **cold-start** bond gets a bounded window reaching the prior closed-month
+    start (at least `fetch_window`'s 30-day default) and no prior evidence.
     409 of the 10,073 curated bonds have been attempted and have never once
     returned data (measured 2026-08-08; 9,779 do carry a live watermark), and the
     sweep ring sorts never-loaded bonds *first inside a round* — so a thin

@@ -84,6 +84,10 @@ class FinnhubConfigError(RuntimeError):
     """A non-retryable 4xx: wrong key, missing entitlement, bad parameter."""
 
 
+class FinnhubProfileError(RuntimeError):
+    """A successful profile HTTP response with no usable profile object."""
+
+
 class FinnhubClient:
     """Throttled, retrying access to the Finnhub bond endpoints.
 
@@ -120,7 +124,12 @@ class FinnhubClient:
 
     def profile_by_cusip(self, cusip: str) -> dict[str, Any]:
         payload = self._get_json("/bond/profile", {"cusip": cusip})
-        return payload if isinstance(payload, dict) else {}
+        if isinstance(payload, dict) and payload.get("error") is not None:
+            raise FinnhubProfileError("provider_error")
+        profile = payload.get("profile", payload) if isinstance(payload, dict) else None
+        if not isinstance(profile, dict) or not profile:
+            raise FinnhubProfileError("empty_profile")
+        return profile
 
     def daily_candles(self, isin: str, from_ts: int, to_ts: int) -> dict[str, Any]:
         payload = self._get_json(
@@ -134,6 +143,9 @@ class FinnhubClient:
 
     #: Columnar array keys merged across tick pages.
     TICK_ARRAY_KEYS = ("t", "p", "v", "si", "y", "ats", "cp", "rp", "c")
+    #: Internal metadata retained so an HTTP-200 failure is not normalized into
+    #: the same empty arrays as a valid zero-trade day.
+    TICK_PAYLOAD_STATE = "__finnhub_payload_state"
 
     def ticks(
         self, isin: str, day: str, *, exchange: str = "trace", limit: int = 25_000
@@ -144,9 +156,8 @@ class FinnhubClient:
         prints tens of trades a day, so one page is the norm). A day without
         trading comes back with an empty ``t``.
         """
-        merged: dict[str, list[Any]] = {key: [] for key in self.TICK_ARRAY_KEYS}
+        merged: dict[str, Any] = {key: [] for key in self.TICK_ARRAY_KEYS}
         skip = 0
-        total: Any = None
         while True:
             payload = self._get_json(
                 "/bond/tick",
@@ -159,19 +170,47 @@ class FinnhubClient:
                 },
             )
             if not isinstance(payload, dict):
-                break
-            page = payload.get("t") or []
+                merged[self.TICK_PAYLOAD_STATE] = "malformed_payload"
+                return merged
+            if not payload:
+                merged[self.TICK_PAYLOAD_STATE] = "api_empty"
+                return merged
+            if payload.get("error") is not None or payload.get("s") in {"error", "no_data"}:
+                merged[self.TICK_PAYLOAD_STATE] = "api_error"
+                return merged
+            page = payload.get("t")
+            total = payload.get("total")
+            if not isinstance(page, list) or (
+                total is not None and (not isinstance(total, int) or total < 0)
+            ):
+                merged[self.TICK_PAYLOAD_STATE] = "malformed_payload"
+                return merged
+            if not page:
+                merged[self.TICK_PAYLOAD_STATE] = (
+                    "valid_zero_trades"
+                    if skip == 0 and total in {None, 0}
+                    else "malformed_payload"
+                )
+                return merged
             for key in self.TICK_ARRAY_KEYS:
                 values = payload.get(key)
                 if isinstance(values, list):
                     merged[key].extend(values)
-            total = payload.get("total")
-            if not page or not isinstance(total, int):
-                break
-            if len(merged["t"]) >= total or len(page) < limit:
-                break
+            if total is None:
+                # The live endpoint currently omits ``total`` and returns a
+                # single page with ``skip`` plus columnar arrays. A short page
+                # is complete; a full page cannot prove it was not truncated.
+                merged[self.TICK_PAYLOAD_STATE] = (
+                    "ok" if len(page) < limit else "malformed_payload"
+                )
+                return merged
+            if len(merged["t"]) >= total:
+                merged[self.TICK_PAYLOAD_STATE] = "ok"
+                return merged
+            if len(page) < limit:
+                merged[self.TICK_PAYLOAD_STATE] = "malformed_payload"
+                return merged
             skip += len(page)
-        return merged
 
     # ---------------------------------------------------------- internals ---
 

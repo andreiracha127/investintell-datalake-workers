@@ -154,3 +154,75 @@ def test_the_worst_case_sleep_before_an_outage_is_reported_is_bounded() -> None:
     per_request = sum(slept)
     assert per_request == 126.0
     assert per_request * _finnhub.MAX_CONSECUTIVE_FAILURES == 3150.0
+
+
+@pytest.mark.parametrize("body", [b"{}", b"[]", b'{"profile": {}}', b'{"profile": []}'])
+def test_bond_profile_empty_or_non_object_is_a_typed_failure(body: bytes) -> None:
+    """A successful HTTP envelope is not successful enrichment by itself."""
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    with pytest.raises(_finnhub.FinnhubProfileError, match="empty_profile"):
+        client.profile_by_cusip("00033GAA3")
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"error":"not entitled"}',
+        b'{"error":"not entitled","profile":{"isin":"US912828XX10"}}',
+    ],
+)
+def test_bond_profile_provider_error_envelopes_are_typed_failures(body: bytes) -> None:
+    """A provider error wins even when its HTTP envelope carries a profile."""
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    with pytest.raises(_finnhub.FinnhubProfileError, match="provider_error"):
+        client.profile_by_cusip("00033GAA3")
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (b'{"isin":"US912828XX10"}', {"isin": "US912828XX10"}),
+        (
+            b'{"profile":{"isin":"US912828XX10"}}',
+            {"isin": "US912828XX10"},
+        ),
+    ],
+)
+def test_bond_profile_accepts_direct_and_nested_profiles(
+    body: bytes, expected: dict[str, str]
+) -> None:
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    assert client.profile_by_cusip("00033GAA3") == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "state"),
+    [
+        (b"{}", "api_empty"),
+        (b"[]", "malformed_payload"),
+        (b'{"error":"not entitled"}', "api_error"),
+        (b'{"t":"not-an-array"}', "malformed_payload"),
+        (b'{"t":[],"total":0}', "valid_zero_trades"),
+        (b'{"c":[],"cp":[],"p":[],"si":[],"skip":0,"t":[],"v":[]}', "valid_zero_trades"),
+    ],
+)
+def test_tick_client_preserves_empty_and_malformed_response_state(
+    body: bytes, state: str
+) -> None:
+    """The client must not normalize a failed HTTP-200 body into zero trades."""
+    client = _finnhub.FinnhubClient(
+        "k", opener=lambda _url, _timeout: _Response(body), base_sleep_s=0.0
+    )
+
+    assert client.ticks("US912828XX10", "2026-08-06")[
+        "__finnhub_payload_state"
+    ] == state

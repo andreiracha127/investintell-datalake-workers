@@ -5,7 +5,7 @@ recomputes the data daily"*. This is that worker. It runs BEFORE the publication
 chain, on its own Railway service, and it leaves the product fresh with no human
 in the loop.
 
-Five stages, each REPORTED separately so a partial day is visible rather than
+Six stages, each REPORTED separately so a partial day is visible rather than
 laundered into a green run:
 
   1. ``candles``  -- delta of daily price/YTM candles for the curated universe
@@ -25,6 +25,8 @@ laundered into a green run:
                      bond_curated_securities``.
   5. ``republish``-- re-run ``bond_metrics`` then ``bond_serving`` so the served
                      payloads carry the day just loaded.
+  6. ``panel``    -- publish the DB-only monthly research-panel delta after the
+                     serving inputs have been recomputed.
 
 WHY STAGE 5 EXISTS AT ALL (measured 2026-08-07, do not remove it):
 ``daily_chain`` keys a run by ``(chain, source_day, code_revision,
@@ -64,13 +66,14 @@ universe sets it. That includes the paths that look like polite no-ops:
 ===========================  =====  ====================================
 state                        green  why
 ===========================  =====  ====================================
-``ok``                       yes    all five stages ran, publications recomputed
+``ok``                       yes    all six stages ran, publications and panel published
 ``calc_date_in_future``      no     WORKER_CALC_DATE past the execution date:
                                     refused before anything opens, never clamped
 ``locked``                   no     another holder; this run did NOTHING
 ``no_observation_table``     no     the target hypertable is absent; nothing loaded
 ``no_universe``              no     the curated universe is empty/absent
-``no_api_key``               no     FINNHUB_API_KEY unset: no candles, no republication
+``no_api_key``               no     FINNHUB_API_KEY unset: input lanes are typed red;
+                                    downstream stages still run before the verdict
 ``provider_rejected``        no     the key was rejected mid-sweep (401/403)
 ``aborted``                  no     the provider cut the candle sweep short
 ``candles_failed``           no     stage 1 loaded nothing: not one bond whose
@@ -113,7 +116,7 @@ second run commits a PREFIX of its revised candles into the very table this
 run's publication build is reading, then aborts on the publication locks -- and
 this run exits green having served a mix of two sweeps. Holding it is free,
 because a session advisory lock is not a transaction: the connection is
-committed and left IDLE for the minutes stage 5 takes, so it pins no snapshot
+committed and left IDLE for the minutes stages 5-6 take, so it pins no snapshot
 and holds back no VACUUM. (Same two-level shape as ``daily_chain``, which holds
 its own lock across these same workers while each takes its own underneath.)
 
@@ -133,12 +136,18 @@ from __future__ import annotations
 
 import datetime as _dt
 import os
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import psycopg
 
 from src.bonds import live_daily
+from src.bonds.distribution_series import (
+    DistributionSeriesError,
+    NoValidatedDistributionSourceError,
+    resolve_reg_s_cusip_map_from_db,
+)
 from src.db import LOCK_BOND_LIVE_DAILY, advisory_lock, connect, resolve_dsn
 from src.workers._finnhub import (
     MAX_CONSECUTIVE_FAILURES,
@@ -162,10 +171,9 @@ CURATED_MATVIEW = "bond_curated_securities"
 #: provider later drops is reported as a failed unit, not a crashed run.
 CURVE_TENORS = ("1m", "2m", "3m", "4m", "6m", "1y", "2y", "3y", "5y", "7y", "10y", "20y", "30y")
 
-#: How many bonds get the (expensive, one-call-per-bond-day) tick treatment.
-#: The tape is only informative where it is liquid, and the cost lane is a head
-#: product by construction. Override with BOND_TICK_TOP_N.
-DEFAULT_TICK_TOP_N = 500
+#: Ticks are a full-universe daily obligation. ``BOND_TICK_TOP_N`` exists only
+#: as an explicit, reported emergency throttle; an unset value means every
+#: eligible resolved CUSIP is attempted.
 
 #: Rows per commit. Long transactions hold back VACUUM for the WHOLE database
 #: (a trap this repo has already paid for), so the sweep commits in slices.
@@ -196,17 +204,18 @@ def _int_env(name: str, default: int) -> int:
 # --------------------------------------------------------------------------- #
 # Universe
 # --------------------------------------------------------------------------- #
-# The sweep universe is the curated cohort INTERSECTED with the reference terms,
-# because candles are addressed by ISIN and ``bond_reference_terms`` is where the
-# CUSIP -> ISIN mapping lives (measured 2026-08-07: all 10,073 curated rows carry
-# an ISIN, a coupon and a maturity). The coupon/maturity ride along so a day
-# whose yield the provider does not report can still be SOLVED rather than lost.
+# The curated reference cohort carries coupon/maturity terms, but it is NOT the
+# provider execution universe.  The provider sees only the approved Reg S pair
+# resolved from ``BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID`` at this run's as-of.
+# In particular, a reference (Rule 144A) ISIN is deliberately not selected: it
+# cannot become an accidental fallback when a governed Reg S ISIN is absent.
 _UNIVERSE_SQL = """
-SELECT r.cusip9, r.isin, r.coupon_rate, r.maturity_date
-FROM bond_reference_terms r
-JOIN bond_curated_universe u ON u.cusip9 = r.cusip9
-WHERE r.isin IS NOT NULL AND btrim(r.isin) <> ''
-ORDER BY r.cusip9
+SELECT upper(btrim(u.cusip9)) AS cusip9, r.coupon_rate, r.maturity_date
+FROM bond_curated_universe u
+LEFT JOIN bond_reference_terms r
+  ON upper(btrim(r.cusip9)) = upper(btrim(u.cusip9))
+WHERE u.cusip9 IS NOT NULL AND btrim(u.cusip9) <> ''
+ORDER BY upper(btrim(u.cusip9))
 """
 
 # Per-CUSIP watermark: the last day THIS LANE already loaded, read in ONE pass
@@ -224,8 +233,9 @@ ORDER BY r.cusip9
 #
 # It is also what preserves the cold start: on a table preloaded with bulk
 # history only, an ABSENT live watermark is what puts the bond in
-# ``fetch_window``'s intended 30-day window instead of a 500-day one (430 of the
-# 10,206 curated bonds, measured 2026-08-07).
+# bounded cold window instead of a 500-day one.  The daily caller extends the
+# generic 30-day default only as far as the start of the prior closed month, so
+# a newly mapped Reg S leg can populate the complete month Stage 6 is closing.
 #
 # The source is INLINED, not bound: a bind parameter cannot be proved to imply
 # the partial index's predicate at plan time, and without that index this
@@ -236,8 +246,8 @@ ORDER BY r.cusip9
 _WATERMARK_SQL = f"""
 SELECT o.cusip9, max(o.day)
 FROM {OBSERVATION_TABLE} o
-JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
 WHERE o.source = '{live_daily.SOURCE_LIVE}'
+  AND o.cusip9 = ANY(%(cusips)s)
 GROUP BY o.cusip9
 """
 
@@ -323,8 +333,8 @@ ON CONFLICT (cusip9, day) DO UPDATE SET
 _ACTIVITY_SQL = f"""
 SELECT o.cusip9, coalesce(sum(o.volume), count(*))
 FROM {OBSERVATION_TABLE} o
-JOIN bond_curated_universe u ON u.cusip9 = o.cusip9
 WHERE o.day >= %(since)s AND o.day <= %(until)s
+  AND o.cusip9 = ANY(%(cusips)s)
 GROUP BY o.cusip9
 """
 
@@ -383,14 +393,28 @@ def sweep_priority_order(
     return sorted((tuple(row) for row in rows), key=key)
 
 
-def _universe(
-    conn: psycopg.Connection, limit: int | None
-) -> tuple[list[tuple[Any, ...]], int]:
-    """``(rows to sweep, size of the whole curated universe)``.
+def _valid_execution_cusip(value: Any) -> str | None:
+    """Return an exact CUSIP9, never a normalised guess."""
+    candidate = str(value or "").strip().upper()
+    return candidate if len(candidate) == 9 and candidate.isalnum() else None
 
-    The total is returned separately because it is the only thing that can say
-    whether a capped run covered the day or a slice of it, and a sliced list
-    cannot say it about itself.
+
+def _valid_execution_isin(value: Any) -> str | None:
+    """Return a provider-safe Reg S ISIN without manufacturing one."""
+    candidate = str(value or "").strip().upper()
+    return candidate if len(candidate) == 12 and candidate.isalnum() else None
+
+
+def _universe(
+    conn: psycopg.Connection, limit: int | None, *, snapshot_id: str, as_of: _dt.date,
+) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
+    """Resolve reference terms into the governed Reg S legs Stage 6 needs.
+
+    Stage 6 builds both the last closed and current open months.  Its execution
+    CUSIP/ISIN can change at that boundary, so this sweep resolves and executes
+    both governed legs; resolving only ``as_of`` would backfill a closed month
+    with the current pair.  Mapping gaps and cross-as-of CUSIP collisions remain
+    typed coverage omissions -- neither can make the Rule 144A ISIN a fallback.
 
     The watermarks are read here for the ORDER and again in ``_load_candles``
     for each bond's WINDOW. That is deliberate rather than plumbed through: both
@@ -401,18 +425,117 @@ def _universe(
     """
     if not (_relation_exists(conn, "bond_reference_terms")
             and _relation_exists(conn, "bond_curated_universe")):
-        return [], 0
+        return [], 0, {
+            "snapshot_id": snapshot_id, "reference_total": 0, "resolved": 0,
+            "executable": 0, "omissions": {},
+        }
+    reference_rows = conn.execute(_UNIVERSE_SQL).fetchall()
+    terms_by_reference = {
+        str(row[0]).strip().upper(): (row[-2], row[-1])
+        for row in reference_rows
+    }
+    reference_cusip9s = list(terms_by_reference)
+    closed_as_of = as_of.replace(day=1) - _dt.timedelta(days=1)
+    coverage_by_window: dict[str, dict[str, Any]] = {
+        name: {"resolved": 0, "executable": 0, "omissions": {}}
+        for name in ("closed", "open")
+    }
+
+    def omit(window: str, reason: str) -> None:
+        omissions = coverage_by_window[window]["omissions"]
+        omissions[reason] = omissions.get(reason, 0) + 1
+
+    candidates: list[tuple[str, str, str, str, Any, Any]] = []
+    for window, mapping_as_of in (("closed", closed_as_of), ("open", as_of)):
+        try:
+            resolution_map = resolve_reg_s_cusip_map_from_db(
+                conn, snapshot_id=snapshot_id, as_of=mapping_as_of,
+                reference_cusip9s=reference_cusip9s,
+            )
+        except NoValidatedDistributionSourceError:
+            # The bulk resolver uses this exception for the all-missing shape.
+            # Preserve it as coverage, not as a provider/data failure, while the
+            # other as-of leg can still be executable.
+            for _reference_cusip9 in reference_cusip9s:
+                omit(window, "no_validated_source")
+            continue
+        resolutions = resolution_map.resolutions
+        reasons = resolution_map.reason_by_reference
+        coverage_by_window[window]["resolved"] = sum(
+            reference in resolutions for reference in reference_cusip9s
+        )
+        for reference_cusip9 in reference_cusip9s:
+            resolution = resolutions.get(reference_cusip9)
+            if resolution is None:
+                omit(window, str(reasons.get(reference_cusip9, "unmapped")))
+                continue
+            execution_cusip9 = _valid_execution_cusip(
+                getattr(resolution, "reg_s_cusip9", None)
+            )
+            if execution_cusip9 is None:
+                omit(window, "missing_reg_s_cusip")
+                continue
+            execution_isin = _valid_execution_isin(
+                getattr(resolution, "reg_s_isin", None)
+            )
+            if execution_isin is None:
+                omit(window, "missing_reg_s_isin")
+                continue
+            coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+            candidates.append(
+                (window, reference_cusip9, execution_cusip9, execution_isin, coupon_rate, maturity_date)
+            )
+
+    by_execution_cusip: dict[str, list[tuple[str, str, str, str, Any, Any]]] = {}
+    for candidate in candidates:
+        by_execution_cusip.setdefault(candidate[2], []).append(candidate)
+    executable: list[tuple[Any, ...]] = []
+    for execution_cusip9, matching in by_execution_cusip.items():
+        signatures = {(reference_cusip9, execution_isin) for _, reference_cusip9, _, execution_isin, _, _ in matching}
+        if len(signatures) != 1:
+            # The resolver rejects collisions within one as-of.  A changed map
+            # can still collide across closed/open as-ofs; choosing either ISIN
+            # would silently rewrite that CUSIP's history, so omit both legs.
+            for window, *_rest in matching:
+                omit(window, "ambiguous_execution_cusip")
+            continue
+        for window, *_rest in matching:
+            coverage_by_window[window]["executable"] += 1
+        _window, _reference_cusip9, _cusip9, execution_isin, coupon_rate, maturity_date = matching[0]
+        executable.append((execution_cusip9, execution_isin, coupon_rate, maturity_date))
+
     rows = sweep_priority_order(
-        conn.execute(_UNIVERSE_SQL).fetchall(), _attempts(conn), _watermarks(conn)
+        executable, _attempts(conn), _watermarks(conn, [row[0] for row in executable])
     )
-    return (list(rows[:limit]) if limit else list(rows)), len(rows)
+    for value in coverage_by_window.values():
+        value["omissions"] = dict(sorted(value["omissions"].items()))
+    mapping_coverage = {
+        "snapshot_id": snapshot_id,
+        "reference_total": len(reference_cusip9s),
+        # Keep the original flat keys as the current open-leg summary for callers
+        # that need today's daily coverage; the nested legs preserve the closed
+        # month needed by Stage 6's candle backfill.
+        "resolved": coverage_by_window["open"]["resolved"],
+        "executable": len(rows),
+        "omissions": coverage_by_window["open"]["omissions"],
+        "closed_as_of": closed_as_of.isoformat(),
+        "open_as_of": as_of.isoformat(),
+        "closed": coverage_by_window["closed"],
+        "open": coverage_by_window["open"],
+    }
+    return (list(rows[:limit]) if limit else list(rows)), len(rows), mapping_coverage
 
 
-def _watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
+def _watermarks(
+    conn: psycopg.Connection, cusips: Sequence[Any] | None = None,
+) -> dict[str, _dt.date]:
     """Last day THIS LANE loaded, per bond. A bond absent here cold-starts."""
+    execution_cusips = [str(cusip) for cusip in cusips or ()]
+    if not execution_cusips:
+        return {}
     return {
         str(cusip): day
-        for cusip, day in conn.execute(_WATERMARK_SQL).fetchall()
+        for cusip, day in conn.execute(_WATERMARK_SQL, {"cusips": execution_cusips}).fetchall()
         if day is not None
     }
 
@@ -441,7 +564,7 @@ def _curve_watermarks(conn: psycopg.Connection) -> dict[str, _dt.date]:
 def _load_candles(
     conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
 ) -> dict[str, Any]:
-    watermarks = _watermarks(conn)
+    watermarks = _watermarks(conn, [row[0] for row in universe])
     swept = fetched = upserted = no_data = failed = resumed = 0
     consecutive = 0
     aborted = False
@@ -449,6 +572,9 @@ def _load_candles(
     dropped_after_window = 0
     first_day: _dt.date | None = None
     last_day: _dt.date | None = None
+    previous_month_end = today.replace(day=1) - _dt.timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+    cold_start_days = max(30, (today - previous_month_start).days)
 
     def stamp(cusip: str) -> None:
         """Record the ATTEMPT, whatever came of it -- data, no data, or a
@@ -500,7 +626,9 @@ def _load_candles(
         # are both excluded: they get a window nobody has evidence about.
         if watermark is not None and watermark <= today:
             resumed += 1
-        start, end = live_daily.fetch_window(watermark, today)
+        start, end = live_daily.fetch_window(
+            watermark, today, cold_start_days=cold_start_days
+        )
         try:
             payload = client.daily_candles(
                 str(isin), live_daily.to_epoch(start), live_daily.to_epoch(end)
@@ -670,31 +798,93 @@ def _load_curve(conn: psycopg.Connection, client: Any, today: _dt.date) -> dict[
 # --------------------------------------------------------------------------- #
 # Stage 3: ticks
 # --------------------------------------------------------------------------- #
+def _tick_scope(
+    conn: psycopg.Connection, universe: list[tuple[Any, ...]], today: _dt.date
+) -> tuple[list[str], dict[str, Any]]:
+    """Return the tick CUSIPs and the operator-visible scope contract."""
+    eligible = sorted({str(cusip9) for cusip9, isin, _, _ in universe if str(isin).strip()})
+    raw_cap = (os.getenv("BOND_TICK_TOP_N") or "").strip()
+    if not raw_cap:
+        return eligible, {
+            "scope": "full_universe", "configured_top_n": None,
+            "degraded": False, "degraded_reason": None,
+        }
+    try:
+        top_n = int(raw_cap)
+    except ValueError:
+        top_n = 0
+    if top_n <= 0:
+        return eligible, {
+            "scope": "invalid_top_n_ignored", "configured_top_n": raw_cap,
+            "degraded": True, "degraded_reason": "invalid_tick_top_n",
+        }
+    activity = conn.execute(
+        _ACTIVITY_SQL,
+        {
+            "since": today - _dt.timedelta(days=90),
+            "until": today,
+            "cusips": eligible,
+        },
+    ).fetchall()
+    return live_daily.rank_by_activity(activity, top_n), {
+        "scope": "bounded_top_n", "configured_top_n": top_n,
+        "degraded": True, "degraded_reason": "bounded_tick_scope",
+    }
+
+
+def _tick_payload_outcome(ticks: Any) -> str:
+    """Classify a returned tick payload without logging its contents."""
+    if not isinstance(ticks, Mapping):
+        return "malformed_payload"
+    client_state = ticks.get("__finnhub_payload_state")
+    if client_state in {
+        "api_empty", "api_error", "malformed_payload", "valid_zero_trades",
+    }:
+        return str(client_state)
+    if not ticks:
+        return "api_empty"
+    if ticks.get("error") is not None or ticks.get("s") in {"error", "no_data"}:
+        return "api_error"
+    stamps = ticks.get("t")
+    if not isinstance(stamps, list):
+        return "malformed_payload"
+    if not stamps:
+        return "valid_zero_trades"
+    prices = ticks.get("p")
+    if not isinstance(prices, list) or len(prices) != len(stamps):
+        return "malformed_payload"
+    sides = ticks.get("si")
+    if not isinstance(sides, list) or len(sides) != len(stamps):
+        return "malformed_payload"
+    return "ok"
+
+
 def _load_ticks(
     conn: psycopg.Connection, client: Any, universe: list[tuple[Any, ...]], today: _dt.date
 ) -> dict[str, Any]:
-    top_n = _int_env("BOND_TICK_TOP_N", DEFAULT_TICK_TOP_N)
+    started = time.monotonic()
     day = live_daily.previous_business_day(today)
-    activity = conn.execute(
-        _ACTIVITY_SQL,
-        {"since": today - _dt.timedelta(days=90), "until": today},
-    ).fetchall()
-    cohort = set(live_daily.rank_by_activity(activity, top_n))
+    cohort, scope = _tick_scope(conn, universe, today)
     isin_by_cusip = {str(c): str(i) for c, i, _, _ in universe}
 
-    swept = traded = upserted = failed = 0
+    swept = traded = upserted = failed = successes = no_trades = api_calls = 0
+    failure_reasons: dict[str, int] = {}
+    no_trade_reasons: dict[str, int] = {}
+    transient_failures = 0
     consecutive = 0
     aborted = False
-    for cusip9 in sorted(cohort):
+    for cusip9 in cohort:
         isin = isin_by_cusip.get(cusip9)
         if not isin:
             continue
         swept += 1
+        api_calls += 1
         try:
             ticks = client.ticks(isin, day.isoformat())
-            consecutive = 0
         except FinnhubTransientError:
             failed += 1
+            transient_failures += 1
+            failure_reasons["transient_error"] = failure_reasons.get("transient_error", 0) + 1
             consecutive += 1
             if consecutive >= MAX_CONSECUTIVE_FAILURES:
                 # The SAME breaker as the candle sweep, on the same constant and
@@ -708,8 +898,25 @@ def _load_ticks(
                 aborted = True
                 break
             continue
+        outcome = _tick_payload_outcome(ticks)
+        if outcome in {"api_empty", "api_error", "malformed_payload"}:
+            failed += 1
+            failure_reasons[outcome] = failure_reasons.get(outcome, 0) + 1
+            consecutive += 1
+            if consecutive >= MAX_CONSECUTIVE_FAILURES:
+                aborted = True
+                break
+            continue
+        successes += 1
+        consecutive = 0
+        if outcome == "valid_zero_trades":
+            no_trades += 1
+            no_trade_reasons[outcome] = no_trade_reasons.get(outcome, 0) + 1
+            continue
         aggregate = live_daily.aggregate_ticks(cusip9, day, ticks)
         if aggregate is None:
+            no_trades += 1
+            no_trade_reasons["no_usable_trades"] = no_trade_reasons.get("no_usable_trades", 0) + 1
             continue
         traded += 1
         with conn.cursor() as cur:
@@ -719,12 +926,16 @@ def _load_ticks(
             conn.commit()
     conn.commit()
     return {
-        # ``cohort`` vs ``swept``: the cost lane is the top-N by activity, but it
-        # can only ask about bonds the CANDLE sweep carried an ISIN for, so a
-        # capped run silently shrinks it. Reporting both is what makes that
-        # truncation readable instead of inferred.
+        # Keep the existing counters while making both the work and the scope
+        # auditable in the run JSON.
         "day": day.isoformat(), "cohort": len(cohort), "swept": swept,
-        "traded": traded, "rows_upserted": upserted, "transient_failures": failed,
+        "traded": traded, "rows_upserted": upserted,
+        "transient_failures": transient_failures,
+        "attempted_cusips": swept, "api_calls": api_calls,
+        "successes": successes, "no_trades": no_trades, "failures": failed,
+        "failure_reasons": failure_reasons, "no_trade_reasons": no_trade_reasons,
+        "elapsed_seconds": time.monotonic() - started,
+        **scope,
         # Reported next to the counts, exactly as the candle sweep does it,
         # because the two ways stage 3 comes up short read identically in the
         # totals otherwise: "every call failed" and "the breaker stopped a lane
@@ -757,15 +968,15 @@ def _refresh_curated(dsn: str) -> dict[str, Any]:
     survives a week. The caller asserts ``refreshed``, so a state added here
     later is red until someone decides otherwise.
     """
-    with connect(dsn, autocommit=True) as conn:
-        if not _relation_exists(conn, CURATED_MATVIEW):
-            return {"state": "absent", "matview": CURATED_MATVIEW}
-        try:
+    try:
+        with connect(dsn, autocommit=True) as conn:
+            if not _relation_exists(conn, CURATED_MATVIEW):
+                return {"state": "absent", "matview": CURATED_MATVIEW}
             with conn.cursor() as cur:
                 cur.execute(f"REFRESH MATERIALIZED VIEW CONCURRENTLY {CURATED_MATVIEW}")
-        except Exception as exc:
-            return {"state": "failed", "matview": CURATED_MATVIEW,
-                    "error": f"{type(exc).__name__}: {exc}"}
+    except Exception as exc:
+        return {"state": "failed", "matview": CURATED_MATVIEW,
+                "error": f"{type(exc).__name__}: {exc}"}
     return {"state": "refreshed", "matview": CURATED_MATVIEW}
 
 
@@ -828,9 +1039,13 @@ def _republish(dsn: str) -> dict[str, Any]:
     verdict here is the one thing that is true of a good run and of nothing
     else: **both publications reported that they published.**
     """
-    from src.workers import bond_metrics, bond_serving
-
     out: dict[str, Any] = {}
+    try:
+        from src.workers import bond_metrics, bond_serving
+    except Exception as exc:
+        out["import"] = {"state": "failed", "error": f"{type(exc).__name__}: {exc}"}
+        out["verdict"] = "failed"
+        return out
     verdict = "recomputed"
     for name, worker in (("bond_metrics", bond_metrics), ("bond_serving", bond_serving)):
         try:
@@ -848,6 +1063,22 @@ def _republish(dsn: str) -> dict[str, Any]:
             break
     out["verdict"] = verdict
     return out
+
+
+def _publish_panel(dsn: str, *, as_of: _dt.date) -> dict[str, Any]:
+    """Run the immutable panel delta after the serving recomputation.
+
+    The panel owns its transaction and pointer flip.  It is deliberately called
+    while this worker's daily lock remains held, so its DB snapshot cannot race
+    a second live sweep.  An operational exception is a typed stage result;
+    it must not suppress the end-only verdict of the preceding stages.
+    """
+    try:
+        from src.workers import bond_panel
+
+        return bond_panel.run(dsn, as_of=as_of)
+    except Exception as exc:
+        return {"state": "publish_failed", "aborted": True, "error": type(exc).__name__}
 
 
 # --------------------------------------------------------------------------- #
@@ -894,6 +1125,9 @@ def run(
             calc_date=today.isoformat(),
             execution_date=execution_date.isoformat(),
         )
+    mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
+    if not mapping_snapshot_id:
+        return _halted("no_reg_s_mapping_snapshot")
     resolved = resolve_dsn(dsn)
 
     with connect(resolved) as conn, advisory_lock(conn, LOCK_BOND_LIVE_DAILY) as acquired:
@@ -911,32 +1145,61 @@ def run(
             # is not the same as tolerated: nothing was loaded, so it is red.
             conn.commit()
             return _halted("no_observation_table", table=OBSERVATION_TABLE)
-        universe, universe_total = _universe(conn, limit)
-        if not universe:
+        try:
+            universe, universe_total, mapping_coverage = _universe(
+                conn, limit, snapshot_id=mapping_snapshot_id, as_of=today,
+            )
+        except DistributionSeriesError as exc:
+            conn.commit()
+            return _halted(
+                "reg_s_mapping_resolution_failed",
+                mapping_snapshot_id=mapping_snapshot_id,
+                detail=str(exc),
+            )
+        if universe_total == 0 and mapping_coverage["reference_total"] == 0:
             conn.commit()
             return _halted("no_universe")
+        if universe_total == 0:
+            conn.commit()
+            return _halted(
+                "no_executable_reg_s_universe",
+                mapping_coverage=mapping_coverage,
+            )
+        # An upstream fault is still a stage outcome, never a reason to skip the
+        # downstream refresh/republication sequence.  The input stages are typed
+        # individually below; stages 4-5 always get their chance under the same
+        # daily lock and the final verdict names every triggered condition.
+        client = None
+        provider_error: str | None = None
+        provider_detail: str | None = None
         try:
             client = client_from_env()
         except FinnhubConfigError as exc:
-            # A configuration fault, not an empty day: it must look different --
-            # and it must not be green. Without the secret there are no candles,
-            # no curve, no ticks and no republication, which is a Railway service
-            # doing nothing every morning behind a successful deploy.
-            conn.commit()
-            return _halted("no_api_key", detail=str(exc))
+            provider_error = "no_api_key"
+            provider_detail = str(exc)
 
-        try:
-            candles = _load_candles(conn, client, universe, today)
-            curve = _load_curve(conn, client, today)
-            ticks = _load_ticks(conn, client, universe, today)
-        except FinnhubConfigError as exc:
-            # A key REVOKED mid-sweep (401/403 is non-transient by design, so it
-            # is raised rather than counted). Whatever was loaded before it is
-            # already committed; the run is typed and red instead of a traceback.
-            conn.commit()
-            return _halted("provider_rejected", detail=str(exc), provider=client.stats())
+        if client is None:
+            candles = {"aborted": True, "resumed": 0, "with_data": 0, "state": provider_error}
+            curve = {"tenors": 0, "skipped_tenors": [], "state": provider_error}
+            ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
+        else:
+            try:
+                candles = _load_candles(conn, client, universe, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                candles = {"aborted": True, "resumed": 0, "with_data": 0, "state": provider_error}
+            try:
+                curve = _load_curve(conn, client, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                curve = {"tenors": 0, "skipped_tenors": [], "state": provider_error}
+            try:
+                ticks = _load_ticks(conn, client, universe, today)
+            except FinnhubConfigError as exc:
+                provider_error, provider_detail = "provider_rejected", str(exc)
+                ticks = {"swept": 0, "aborted": True, "transient_failures": 0, "state": provider_error}
 
-        # Stages 4 and 5 run INSIDE the daily lock, and that placement is the
+        # Stages 4 through 6 run INSIDE the daily lock, and that placement is the
         # whole of what makes the lock mean anything. Held only through stage 3,
         # a manual restart could take it while this run was still refreshing and
         # republishing: the second run would commit a PREFIX of its own revised
@@ -951,10 +1214,9 @@ def run(
         # connection IDLE rather than IDLE IN TRANSACTION for the minutes the two
         # publication builds take, so nothing here holds back the global xmin
         # horizon -- the VACUUM trap this repo has already paid for (runbook §6).
-        # KEEP IT: an added read on ``conn`` between here and stage 5 would
-        # silently re-open a minutes-long transaction. Both stages below open
-        # their OWN connections (``_refresh_curated`` autocommit; each
-        # publication worker its own), so this one only carries the lock.
+        # KEEP IT: an added read on ``conn`` between here and stage 6 would
+        # silently re-open a minutes-long transaction. Every downstream stage
+        # below opens its OWN connection, so this one only carries the lock.
         #
         # This is ``daily_publication_chain``'s idiom, not a new one: it holds
         # LOCK_DAILY_PUBLICATION_CHAIN across these same two workers while each
@@ -964,6 +1226,61 @@ def run(
         conn.commit()
         matview = _refresh_curated(resolved)
         republish = _republish(resolved)
+        swept = len(universe)
+        sweep_incomplete = swept < universe_total
+        historical_calc_date = today < execution_date
+        candles_aborted = bool(candles.get("aborted"))
+        candles_failed = candles.get("resumed", 0) > 0 and candles.get("with_data") == 0
+        curve_failed = (
+            curve["tenors"] == 0
+            and len(curve["skipped_tenors"]) < len(CURVE_TENORS)
+        )
+        ticks_failed = ticks["swept"] > 0 and (
+            ticks.get("failures", ticks["transient_failures"]) == ticks["swept"]
+            or bool(ticks["aborted"])
+        )
+        ticks_degraded = bool(ticks.get("degraded"))
+        input_lane_reasons = [
+            state
+            for hit, state in (
+                (provider_error is not None, provider_error or "provider_rejected"),
+                (candles_aborted, "aborted"),
+                (candles_failed, "candles_failed"),
+                (curve_failed, "curve_failed"),
+                (ticks_failed, "ticks_failed"),
+                (ticks_degraded, "ticks_degraded_scope"),
+            )
+            if hit
+        ]
+        if sweep_incomplete:
+            # Stage 6 flips an immutable monthly pointer.  A capped ring run has
+            # only covered its budget, not the open month, so calculate that
+            # coverage verdict before it can call the panel.  Stage 4/5 still
+            # make the real rows it did load available; a later full rerun alone
+            # may materialize the closed/open panel delta.
+            panel = {"state": "deferred", "aborted": False, "reason": "partial_sweep"}
+        elif input_lane_reasons:
+            # The immutable monthly pointer must not freeze stale or missing
+            # live inputs merely because the provider lane happened to iterate
+            # over the whole universe.  Stages 4-5 still expose every durable
+            # row they could recompute; only Stage 6 waits for a healthy rerun.
+            panel = {
+                "state": "deferred",
+                "aborted": False,
+                "reason": "input_lanes_failed",
+                "blocked_by": input_lane_reasons,
+            }
+        elif historical_calc_date:
+            # A dated replay may backfill immutable daily rows, but it must not
+            # ask the current monthly parent to move backwards.  Publication is
+            # reserved for the execution date's current panel month.
+            panel = {
+                "state": "deferred",
+                "aborted": False,
+                "reason": "historical_calc_date",
+            }
+        else:
+            panel = _publish_panel(resolved, as_of=today)
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
@@ -971,8 +1288,19 @@ def run(
     # top-level ``aborted`` key. In severity order, so ``state`` names the thing
     # an operator should look at first.
     verdict = str(republish.get("verdict") or "failed")
-    swept = len(universe)
+    panel_state = str(panel.get("state") or "failed")
+    panel_reason = {
+        "failed": "panel_failed",
+        "publish_failed": "panel_publish_failed",
+        "gate_failed": "panel_gate_failed",
+    }.get(panel_state, "panel_failed")
     reasons: list[tuple[bool, str]] = [
+        (provider_error is not None, provider_error or "provider_rejected"),
+        # Stage 6 is successful only when its own immutable pointer protocol
+        # says it published.  Every empty/degraded/refused shape remains typed
+        # in ``panel`` and cannot be laundered into an otherwise green day.
+        (not (sweep_incomplete or input_lane_reasons or historical_calc_date)
+         and (panel_state not in {"published", "current"} or bool(panel.get("aborted"))), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),
@@ -989,7 +1317,7 @@ def run(
         # database never got.
         (matview.get("state") != "refreshed", "matview_failed"),
         # The provider cut the candle sweep short.
-        (bool(candles.get("aborted")), "aborted"),
+        (candles_aborted, "aborted"),
         # Stage 1 asked about days it had already loaded and got NOTHING back.
         # The success state is asserted, as everywhere else in this list: the
         # only outcome in which the price stage did its work is that at least
@@ -1023,7 +1351,7 @@ def run(
         # It also gives the candle lane the "every call failed" half that stage 3
         # already had: below ``MAX_CONSECUTIVE_FAILURES`` bonds, a total outage
         # never trips the breaker, so ``aborted`` alone could not see it.
-        (candles.get("resumed", 0) > 0 and candles.get("with_data") == 0, "candles_failed"),
+        (candles_failed, "candles_failed"),
         # A stage that did NO work is not a stage that had nothing to do -- and
         # the way stage 2 does no work is not only by failing. A 200 whose
         # ``data`` folds to nothing left ``failed_tenors`` empty, so a curve
@@ -1040,8 +1368,7 @@ def run(
         # themselves on the next run. ``failed_tenors``/``empty_tenors``/
         # ``skipped_tenors`` in the JSON say which shape it was, the way
         # ``matview.state`` does for stage 4.
-        (curve["tenors"] == 0
-         and len(curve["skipped_tenors"]) < len(CURVE_TENORS), "curve_failed"),
+        (curve_failed, "curve_failed"),
         # Stage 3 comes up short in two shapes and they get ONE state, because
         # they are one event -- the provider is not answering -- and they take
         # one hand. Either every call failed, or the breaker stopped the lane
@@ -1049,16 +1376,18 @@ def run(
         # share: there is no tick watermark, so tomorrow's run asks for
         # tomorrow's session and the tape of every bond the outage cut off is
         # gone for good. ``ticks.aborted`` in the JSON says which shape it was.
-        (ticks["swept"] > 0 and (
-            ticks["transient_failures"] == ticks["swept"] or bool(ticks["aborted"])
-        ), "ticks_failed"),
+        (ticks_failed, "ticks_failed"),
+        # A requested emergency cap is a valid operational escape hatch, never
+        # a completed daily full-universe tick run. Stage 4/5 still execute; the
+        # typed state keeps the resulting report and deploy non-green.
+        (ticks_degraded, "ticks_degraded_scope"),
         # A capped run covered its BUDGET, not the day. It still republishes --
         # the rows it loaded are real and every security carries its own
         # observation date, so the payload stays honest -- but the run must not
         # report the day as done while most of the universe was never asked
         # about. The ring ordering means the next runs finish it; this state is
         # what says it is not finished yet.
-        (swept < universe_total, "partial_sweep"),
+        (sweep_incomplete, "partial_sweep"),
     ]
     triggered = [state for hit, state in reasons if hit]
     return {
@@ -1073,10 +1402,12 @@ def run(
             "complete": swept == universe_total,
             "limit": limit,
         },
+        "mapping_coverage": mapping_coverage,
         "candles": candles,
         "curve": curve,
         "ticks": ticks,
         "matview": matview,
         "republish": republish,
-        "provider": client.stats(),
+        "panel": panel,
+        "provider": client.stats() if client is not None else {"state": provider_error, "detail": provider_detail},
     }

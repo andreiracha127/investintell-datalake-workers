@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import datetime as _dt
 import os
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -125,11 +126,13 @@ HEALTHY_CURVE = {
 
 #: Markers the FakeConn answers by. Kept next to each other because a run()-level
 #: test drives all four query shapes through one connection.
-Q_UNIVERSE = "FROM bond_reference_terms r"
+Q_UNIVERSE = "bond_curated_universe u"
 Q_WATERMARK = "max(o.day)"
 Q_ATTEMPTS = "FROM bond_live_daily_sweep"
 Q_CURVE_WATERMARK = "GROUP BY tenor"
 Q_ACTIVITY = "coalesce(sum(o.volume)"
+
+REG_S_SNAPSHOT_ID = "7d2b63ce-63a0-534b-9741-d10242d399ad"
 
 
 class _FakeConnect:
@@ -160,10 +163,13 @@ def _drive_run(
     relations: bool = True,
     matview: dict | None = None,
     republish: dict | None = None,
+    panel: dict | None = None,
     limit: int | None = None,
     calc_date: _dt.date = TODAY,
     connector: "_FakeConnect | None" = None,
     events: list[tuple[str, int]] | None = None,
+    mapping_snapshot_id: str | None = REG_S_SNAPSHOT_ID,
+    resolver=None,
 ):
     """Run ``bond_live_daily.run`` against fakes, exercising the REAL verdict.
 
@@ -208,8 +214,37 @@ def _drive_run(
         _note("republish")
         return republish or {"verdict": "recomputed"}
 
+    def _panel_stub(_dsn, *, as_of=None):
+        _note("panel")
+        return panel or {"state": "published", "aborted": False}
+
     monkeypatch.setattr(bond_live_daily, "_refresh_curated", _matview)
     monkeypatch.setattr(bond_live_daily, "_republish", _republish_stub)
+    monkeypatch.setattr(bond_live_daily, "_publish_panel", _panel_stub)
+
+    def _identity_reg_s_map(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        references = list(reference_cusip9s)
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=reference,
+                    reg_s_isin=f"US{reference}0",
+                )
+                for reference in references
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(
+        bond_live_daily,
+        "resolve_reg_s_cusip_map_from_db",
+        resolver if resolver is not None else _identity_reg_s_map,
+    )
+    if mapping_snapshot_id is None:
+        monkeypatch.delenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", raising=False)
+    else:
+        monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", mapping_snapshot_id)
 
     def _client():
         if client_error is not None:
@@ -223,6 +258,201 @@ def _drive_run(
 def _candle_payload(day: _dt.date, price: float, yield_pct: float | None = 4.5):
     return {"s": "ok", "t": [live_daily.to_epoch(day)], "c": [price],
             "y": [yield_pct] if yield_pct is not None else [None]}
+
+
+# --------------------------------------------------------------------------- #
+# Governed Reg S execution universe
+# --------------------------------------------------------------------------- #
+def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkeypatch) -> None:
+    """A Rule 144A identifier is never a provider fallback for Reg S execution."""
+    resolver_calls: list[dict[str, object]] = []
+
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        references = list(reference_cusip9s)
+        resolver_calls.append({
+            "snapshot_id": snapshot_id,
+            "as_of": as_of,
+            "reference_cusip9s": references,
+        })
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                    reg_s_isin="XS1234567890",
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={"XS1234567890": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert resolver_calls == [
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": _dt.date(2026, 7, 31),
+            "reference_cusip9s": ["912828XX1"],
+        },
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": TODAY,
+            "reference_cusip9s": ["912828XX1"],
+        },
+    ]
+    assert [call[0] for call in client.candle_calls] == ["XS1234567890"]
+    observation_writes = [
+        params for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
+    ]
+    assert observation_writes and observation_writes[0][0] == "G12345678"
+    assert out["coverage"]["universe"] == 1
+
+
+def test_daily_sweeps_mapped_curated_reference_even_without_terms(monkeypatch) -> None:
+    reference = "912828XX1"
+    execution_cusip = "G12345678"
+    execution_isin = "XS1234567890"
+
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        assert reference_cusip9s == [reference]
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=execution_cusip,
+                    reg_s_isin=execution_isin,
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: [(reference, None, None)]})
+    client = FakeClient(candles={execution_isin: _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert "FROM bond_curated_universe u" in bond_live_daily._UNIVERSE_SQL
+    assert "LEFT JOIN bond_reference_terms r" in bond_live_daily._UNIVERSE_SQL
+    assert [call[0] for call in client.candle_calls] == [execution_isin]
+    assert out["coverage"]["universe"] == 1
+    assert out["mapping_coverage"] == {
+        "snapshot_id": REG_S_SNAPSHOT_ID,
+        "reference_total": 1,
+        "resolved": 1,
+        "executable": 1,
+        "omissions": {},
+        "closed_as_of": "2026-07-31",
+        "open_as_of": "2026-08-07",
+        "closed": {"resolved": 1, "executable": 1, "omissions": {}},
+        "open": {"resolved": 1, "executable": 1, "omissions": {}},
+    }
+
+
+def test_missing_reg_s_isin_is_a_coverage_omission_with_no_provider_or_write(monkeypatch) -> None:
+    """Dropping execution ISIN must not silently reuse the Rule 144A ISIN."""
+    def resolve(_conn, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert out["state"] == "no_executable_reg_s_universe"
+    assert out["aborted"] is True
+    assert out["mapping_coverage"]["omissions"] == {"missing_reg_s_isin": 1}
+    assert client.candle_calls == [] and client.tick_calls == []
+    assert conn.writes == []
+
+
+def test_daily_sweep_executes_the_closed_and_open_reg_s_legs_when_mapping_changes(monkeypatch) -> None:
+    """A closed-month backfill must not use the current Reg S identifier."""
+    resolver_calls: list[_dt.date] = []
+
+    def resolve(_conn, *, as_of, **_kwargs):
+        resolver_calls.append(as_of)
+        if as_of == _dt.date(2026, 7, 31):
+            resolution = SimpleNamespace(
+                reference_cusip9="912828XX1",
+                reg_s_cusip9="OLDREG001",
+                reg_s_isin="XS1234567890",
+            )
+        else:
+            resolution = SimpleNamespace(
+                reference_cusip9="912828XX1",
+                reg_s_cusip9="NEWREG002",
+                reg_s_isin="XS0987654321",
+            )
+        return SimpleNamespace(resolutions={"912828XX1": resolution}, reason_by_reference={})
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={
+        "XS1234567890": _candle_payload(TODAY, 99.0),
+        "XS0987654321": _candle_payload(TODAY, 98.0),
+    })
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert resolver_calls == [_dt.date(2026, 7, 31), TODAY]
+    assert {isin for isin, *_window in client.candle_calls} == {"XS1234567890", "XS0987654321"}
+    written_cusips = {
+        params[0] for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
+    }
+    assert written_cusips == {"OLDREG001", "NEWREG002"}
+    assert out["mapping_coverage"]["closed"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["open"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+
+
+def test_cross_as_of_cusip_collision_is_a_typed_omission_not_an_identifier_guess(monkeypatch) -> None:
+    """One CUSIP with two as-of ISINs cannot be selected silently for either leg."""
+    def resolve(_conn, *, as_of, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                    reg_s_isin=("XS1234567890" if as_of == _dt.date(2026, 7, 31) else "XS0987654321"),
+                )
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({"to_regclass": [(1,)], Q_UNIVERSE: list(UNIVERSE)}),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [] and total == 0
+    assert coverage["closed"]["omissions"] == {"ambiguous_execution_cusip": 1}
+    assert coverage["open"]["omissions"] == {"ambiguous_execution_cusip": 1}
+
+
+def test_missing_mapping_snapshot_aborts_before_provider_calls(monkeypatch) -> None:
+    """The immutable mapping pointer is a precondition, never an optional label."""
+    client = FakeClient(candles={"US912828XX10": _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, client=client, mapping_snapshot_id=None)
+
+    assert out["state"] == "no_reg_s_mapping_snapshot"
+    assert out["aborted"] is True
+    assert client.candle_calls == [] and client.tick_calls == []
 
 
 # --------------------------------------------------------------------------- #
@@ -265,9 +495,8 @@ def test_a_higher_ranked_bulk_day_cannot_move_the_live_lane_s_watermark() -> Non
 
     bond_live_daily._load_candles(conn, client, UNIVERSE, TODAY)
 
-    cold_start, _ = live_daily.fetch_window(None, TODAY)
     (_, from_ts, _) = client.candle_calls[0]
-    assert from_ts == live_daily.to_epoch(cold_start)
+    assert from_ts == live_daily.to_epoch(_dt.date(2026, 7, 1))
 
 
 def test_the_watermark_predicate_matches_the_partial_index_it_needs() -> None:
@@ -476,6 +705,69 @@ def test_the_tick_lane_asks_for_the_previous_session_only() -> None:
     assert client.tick_calls == [("US912828XX10", DAY.isoformat())]
     assert stats["traded"] == 1 and stats["day"] == DAY.isoformat()
     assert stats["aborted"] is False
+
+
+def test_the_default_tick_scope_attempts_every_eligible_resolved_cusip() -> None:
+    """An unset cap is the full resolved universe, not an activity head."""
+    universe = [_bond("FULLSCOPE1"), _bond("FULLSCOPE2"), _bond("FULLSCOPE3")]
+    client = FakeClient(ticks={
+        row[1]: {"t": [], "total": 0}
+        for row in universe
+    })
+
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+
+    assert [isin for isin, _ in client.tick_calls] == [row[1] for row in universe]
+    assert stats["scope"] == "full_universe"
+    assert stats["configured_top_n"] is None
+    assert stats["degraded"] is False
+    assert stats["attempted_cusips"] == 3 and stats["api_calls"] == 3
+    assert stats["successes"] == 3 and stats["no_trades"] == 3
+    assert stats["failures"] == 0 and stats["elapsed_seconds"] >= 0
+
+
+def test_tick_payload_outcomes_distinguish_empty_error_malformed_and_zero_trades() -> None:
+    """A 200 without a usable tape fails; an explicit empty tape is a quiet day."""
+    universe = [_bond("EMPTYTAPE"), _bond("ERRORTAPE"), _bond("BADTAPE00"), _bond("ZEROTAPE0")]
+    client = FakeClient(ticks={
+        "USEMPTYTAPE0": {},
+        "USERRORTAPE0": {"error": "unavailable"},
+        "USBADTAPE000": {"t": "not-a-list"},
+        "USZEROTAPE00": {"t": [], "total": 0},
+    })
+
+    stats = bond_live_daily._load_ticks(FakeConn({}), client, universe, TODAY)
+
+    assert stats["successes"] == 1 and stats["no_trades"] == 1
+    assert stats["failures"] == 3 and stats["transient_failures"] == 0
+    assert stats["failure_reasons"] == {
+        "api_empty": 1, "api_error": 1, "malformed_payload": 1,
+    }
+    assert stats["no_trade_reasons"] == {"valid_zero_trades": 1}
+    assert stats["aborted"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"__finnhub_payload_state": "ok", "t": [1_722_470_400]},
+        {"__finnhub_payload_state": "ok", "t": [1_722_470_400], "p": []},
+        {"__finnhub_payload_state": "ok", "t": "not-a-list", "p": [100.0]},
+    ],
+)
+def test_ok_tick_payload_state_does_not_bypass_structural_validation(payload) -> None:
+    assert bond_live_daily._tick_payload_outcome(payload) == "malformed_payload"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"t": [1_722_470_400], "p": [100.0]},
+        {"t": [1_722_470_400, 1_722_470_401], "p": [100.0, 100.1], "si": [1]},
+    ],
+)
+def test_nonempty_tick_payload_requires_a_side_for_each_trade(payload) -> None:
+    assert bond_live_daily._tick_payload_outcome(payload) == "malformed_payload"
 
 
 class _NoTape(FakeClient):
@@ -772,6 +1064,19 @@ def test_a_failed_matview_refresh_is_reported_and_never_costs_the_republication(
     assert out["republish"]["verdict"] == "recomputed"
 
 
+def test_matview_connection_failure_is_a_typed_stage_result(monkeypatch) -> None:
+    def fail_connect(*_args, **_kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(bond_live_daily, "connect", fail_connect)
+
+    outcome = bond_live_daily._refresh_curated("postgresql://unreachable")
+
+    assert outcome["state"] == "failed"
+    assert outcome["matview"] == "bond_curated_securities"
+    assert outcome["error"] == "OSError: database unavailable"
+
+
 def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> None:
     """The hole the state table had: ``absent`` is not ``failed``, and used to pass.
 
@@ -808,10 +1113,10 @@ def test_a_matview_that_is_absent_is_a_stage_that_did_no_work(monkeypatch) -> No
     assert _drive_run(monkeypatch, matview={"state": "refreshed"})["state"] == "ok"
 
 
-def test_the_daily_lock_is_held_through_the_matview_and_the_republication(
+def test_the_daily_lock_is_held_through_the_panel_publication(
     monkeypatch,
 ) -> None:
-    """Stages 4 and 5 run INSIDE the lock, or the lock protects only the writes.
+    """Stages 4 through 6 run INSIDE the lock, or the lock protects only writes.
 
     Released after stage 3, an overlapping manual restart takes this worker's
     lock while the first run is still refreshing and republishing. The second run
@@ -828,18 +1133,91 @@ def test_the_daily_lock_is_held_through_the_matview_and_the_republication(
     no VACUUM horizon (the trap this repo has already paid for).
     """
     events: list[tuple[str, int]] = []
-    out = _drive_run(monkeypatch, events=events)
+    out = _drive_run(monkeypatch, events=events, calc_date=_dt.date.today())
 
     assert out["state"] == "ok"
     assert [name for name, _ in events] == [
-        "lock_acquired", "matview", "republish", "lock_released"
+        "lock_acquired", "matview", "republish", "panel", "lock_released"
     ]
 
     commits = dict(events)
     assert commits["matview"] > 0, "the load connection must be committed before stage 4"
-    assert commits["republish"] == commits["matview"] == commits["lock_released"], (
+    assert commits["panel"] == commits["republish"] == commits["matview"] == commits["lock_released"], (
         "nothing may run on the held connection while the publications build"
     )
+
+
+def test_missing_provider_configuration_defers_panel_after_the_end_stages(monkeypatch) -> None:
+    """Stages 4-5 still run, but stale inputs may not advance the panel pointer."""
+    events: list[tuple[str, int]] = []
+    out = _drive_run(
+        monkeypatch,
+        client_error=_finnhub.FinnhubConfigError("rejected"),
+        events=events,
+    )
+
+    assert out["state"] == "no_api_key"
+    assert [name for name, _ in events] == [
+        "lock_acquired", "matview", "republish", "lock_released"
+    ]
+    assert out["panel"] == {
+        "state": "deferred",
+        "aborted": False,
+        "reason": "input_lanes_failed",
+        "blocked_by": ["no_api_key", "aborted", "curve_failed"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("loader", "stage_result", "expected_state"),
+    [
+        (
+            "_load_candles",
+            {"swept": 1, "resumed": 1, "with_data": 0, "aborted": False},
+            "candles_failed",
+        ),
+        (
+            "_load_curve",
+            {"tenors": 0, "skipped_tenors": [], "failed_tenors": [], "empty_tenors": []},
+            "curve_failed",
+        ),
+        (
+            "_load_ticks",
+            {
+                "swept": 1,
+                "failures": 1,
+                "transient_failures": 1,
+                "aborted": False,
+                "degraded": False,
+            },
+            "ticks_failed",
+        ),
+        (
+            "_load_ticks",
+            {
+                "swept": 1,
+                "failures": 0,
+                "transient_failures": 0,
+                "aborted": False,
+                "degraded": True,
+            },
+            "ticks_degraded_scope",
+        ),
+    ],
+)
+def test_failed_input_lane_defers_stage_six(
+    monkeypatch, loader: str, stage_result: dict, expected_state: str
+) -> None:
+    events: list[tuple[str, int]] = []
+    monkeypatch.setattr(bond_live_daily, loader, lambda *_args, **_kwargs: stage_result)
+
+    out = _drive_run(monkeypatch, events=events)
+
+    assert out["state"] == expected_state
+    assert out["panel"]["state"] == "deferred"
+    assert out["panel"]["reason"] == "input_lanes_failed"
+    assert expected_state in out["panel"]["blocked_by"]
+    assert "panel" not in [name for name, _ in events]
 
 
 def test_run_worker_reads_the_top_level_aborted_key(monkeypatch) -> None:
@@ -863,6 +1241,30 @@ def test_a_complete_run_is_the_only_green_one(monkeypatch) -> None:
     assert out["coverage"] == {
         "universe": 1, "swept": 1, "remaining": 0, "complete": True, "limit": None,
     }
+
+
+@pytest.mark.parametrize("panel_state", ["failed", "publish_failed", "gate_failed"])
+def test_panel_failures_are_end_only_verdict_reasons(monkeypatch, panel_state) -> None:
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": panel_state, "aborted": True},
+        calc_date=_dt.date.today(),
+    )
+
+    assert out["state"] == f"panel_{panel_state}"
+    assert f"panel_{panel_state}" in out["halted_by"]
+
+
+def test_panel_already_current_is_a_healthy_daily_outcome(monkeypatch) -> None:
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": "current", "aborted": False, "reason": "panel_month_already_current"},
+        calc_date=_dt.date.today(),
+    )
+
+    assert out["aborted"] is False
+    assert out["state"] == "ok"
+    assert out["panel"]["state"] == "current"
 
 
 @pytest.mark.parametrize(
@@ -894,7 +1296,9 @@ def test_a_run_that_did_no_work_never_exits_green(monkeypatch, kwargs, state) ->
     assert out["state"] == state
     assert out["aborted"] is True
     # Same key on every result, so one log query reads them all.
-    assert out["halted_by"] == [state]
+    assert out["halted_by"][0] == state
+    if state != "no_api_key":
+        assert out["halted_by"] == [state]
 
 
 def test_a_calc_date_past_the_execution_date_is_refused_never_clamped(monkeypatch) -> None:
@@ -1044,8 +1448,9 @@ def test_a_sweep_that_re_asked_for_loaded_days_and_got_nothing_is_not_green(
 def test_a_cold_table_is_not_evidence_that_the_provider_broke(monkeypatch) -> None:
     """``resumed``, not ``swept`` -- and this is the first reason why.
 
-    A bond this lane has never loaded gets ``fetch_window``'s 30-day cold-start
-    window, and nothing in the database says the provider ever had a day for it.
+    A bond this lane has never loaded gets a bounded cold-start window reaching
+    the prior closed-month start, and nothing in the database says the provider
+    ever had a day for it.
     409 of the 10,073 curated bonds are exactly that (measured on production
     2026-08-08: attempted, never once returned data), and the sweep RING sorts
     never-loaded bonds first inside a round -- so a thin ``WORKER_LIMIT`` slice
@@ -1084,8 +1489,13 @@ def test_a_replay_of_a_day_the_table_is_already_past_is_benign_in_both_lanes(
         Q_WATERMARK: _loaded("912828XX1", day=TODAY),   # already past the replay
         Q_CURVE_WATERMARK: _curve_at(TODAY),            # ...and so is every tenor
     })
+    events: list[tuple[str, int]] = []
     out = _drive_run(
-        monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE), calc_date=replay
+        monkeypatch,
+        conn=conn,
+        client=FakeClient(curve=HEALTHY_CURVE),
+        calc_date=replay,
+        events=events,
     )
 
     assert out["candles"]["with_data"] == 0 and out["candles"]["resumed"] == 0
@@ -1094,6 +1504,52 @@ def test_a_replay_of_a_day_the_table_is_already_past_is_benign_in_both_lanes(
     assert out["curve"]["empty_tenors"] == []
     assert out["state"] == "ok"
     assert out["halted_by"] == []
+    assert out["panel"] == {
+        "state": "deferred", "aborted": False, "reason": "historical_calc_date",
+    }
+    assert "panel" not in [name for name, _ in events]
+
+
+def test_same_month_historical_calc_date_also_defers_stage_six(monkeypatch) -> None:
+    replay = _dt.date.today() - _dt.timedelta(days=1)
+    assert (replay.year, replay.month) == (_dt.date.today().year, _dt.date.today().month)
+    events: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_candles",
+        lambda *_args, **_kwargs: {
+            "swept": 1, "resumed": 0, "with_data": 0, "aborted": False,
+        },
+    )
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_curve",
+        lambda *_args, **_kwargs: {
+            "tenors": 0,
+            "skipped_tenors": list(bond_live_daily.CURVE_TENORS),
+            "failed_tenors": [],
+            "empty_tenors": [],
+        },
+    )
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_ticks",
+        lambda *_args, **_kwargs: {
+            "swept": 1,
+            "failures": 0,
+            "transient_failures": 0,
+            "aborted": False,
+            "degraded": False,
+        },
+    )
+
+    out = _drive_run(monkeypatch, calc_date=replay, events=events)
+
+    assert out["state"] == "ok" and out["aborted"] is False
+    assert out["panel"] == {
+        "state": "deferred", "aborted": False, "reason": "historical_calc_date",
+    }
+    assert "panel" not in [name for name, _ in events]
 
 
 def test_a_curve_that_answered_with_nothing_for_every_tenor_did_no_work(
@@ -1463,6 +1919,41 @@ def test_a_capped_run_reports_the_budget_it_covered_not_the_day(monkeypatch) -> 
     ] == "ok"
 
 
+def test_partial_sweep_defers_stage_six_until_a_full_rerun(monkeypatch) -> None:
+    """The panel pointer may advance only after the sweep's coverage verdict is complete."""
+    universe = [_bond(f"91282800{i}") for i in range(5)]
+    partial_events: list[tuple[str, int]] = []
+
+    partial = _drive_run(
+        monkeypatch,
+        conn=FakeConn({Q_UNIVERSE: universe}),
+        limit=2,
+        events=partial_events,
+        calc_date=_dt.date.today(),
+    )
+
+    assert partial["state"] == "partial_sweep"
+    assert partial["panel"] == {"state": "deferred", "aborted": False, "reason": "partial_sweep"}
+    assert [name for name, _ in partial_events] == [
+        "lock_acquired", "matview", "republish", "lock_released",
+    ]
+
+    full_events: list[tuple[str, int]] = []
+    full = _drive_run(
+        monkeypatch,
+        conn=FakeConn({Q_UNIVERSE: universe}),
+        limit=5,
+        events=full_events,
+        calc_date=_dt.date.today(),
+    )
+
+    assert full["state"] == "ok"
+    assert full["panel"]["state"] == "published"
+    assert [name for name, _ in full_events] == [
+        "lock_acquired", "matview", "republish", "panel", "lock_released",
+    ]
+
+
 def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch) -> None:
     """End to end through _universe: the cap slices the RING."""
     universe = [_bond("AAAAAAAA1"), _bond("BBBBBBBB2"), _bond("CCCCCCCC3")]
@@ -1473,17 +1964,56 @@ def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch
         Q_ATTEMPTS: [("AAAAAAAA1", _stamp(0))],
     })
 
-    rows, total = bond_live_daily._universe(conn, 2)
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=reference,
+                    reg_s_isin=f"US{reference}0",
+                )
+                for reference in reference_cusip9s
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+
+    rows, total, coverage = bond_live_daily._universe(
+        conn, 2, snapshot_id=REG_S_SNAPSHOT_ID, as_of=TODAY,
+    )
 
     assert [row[0] for row in rows] == ["BBBBBBBB2", "CCCCCCCC3"]
     assert total == 3, "the cap must not hide how big the universe is"
+    assert coverage["executable"] == 3
 
 
-def test_the_tick_cohort_reports_the_truncation_a_capped_run_imposes() -> None:
-    """A capped run shrinks the cost lane too; ``cohort`` vs ``swept`` says so."""
+def test_an_explicit_tick_cap_is_reported_as_a_degraded_scope(monkeypatch) -> None:
+    """Emergency top-N is available, but can never read like full daily coverage."""
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
     conn = FakeConn({Q_ACTIVITY: [("912828XX1", 1_000_000), ("NOTSWEPT1", 5)]})
     stats = bond_live_daily._load_ticks(conn, FakeClient(), UNIVERSE, TODAY)
-    assert stats["cohort"] == 2 and stats["swept"] == 1
+    assert stats["scope"] == "bounded_top_n"
+    assert stats["configured_top_n"] == 1
+    assert stats["degraded"] is True
+    assert stats["degraded_reason"] == "bounded_tick_scope"
+    assert stats["cohort"] == 1 and stats["attempted_cusips"] == 1
+
+
+def test_an_emergency_tick_cap_makes_the_run_verdict_non_green(monkeypatch) -> None:
+    """A successful capped tape sweep is explicitly degraded, not ``ok``."""
+    monkeypatch.setenv("BOND_TICK_TOP_N", "1")
+    conn = FakeConn({
+        Q_UNIVERSE: list(UNIVERSE),
+        Q_ACTIVITY: [("912828XX1", 1_000_000)],
+    })
+
+    out = _drive_run(monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE))
+
+    assert out["ticks"]["degraded"] is True
+    assert out["state"] == "ticks_degraded_scope"
+    assert out["aborted"] is True
+    assert "ticks_degraded_scope" in out["halted_by"]
 
 
 # --------------------------------------------------------------------------- #
