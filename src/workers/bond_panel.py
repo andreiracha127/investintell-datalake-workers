@@ -174,7 +174,9 @@ def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame
         "COALESCE(reference_cusip9, payload ->> 'reference_cusip9', cusip_id) AS reference_cusip9, "
         "COALESCE(distribution_decision_id, payload ->> 'distribution_decision_id') AS distribution_decision_id "
         "FROM bond_panel_current_snapshot_v1 "
-        "WHERE eligibility_state = 'included' AND month = (SELECT max(month) FROM bond_panel_current_snapshot_v1 WHERE month < %s)",
+        "WHERE month = (SELECT max(month) FROM bond_panel_current_snapshot_v1 WHERE month < %s) "
+        "AND (eligibility_state = 'included' "
+        "OR COALESCE(distribution_rule, payload ->> 'distribution_rule', 'rule_144a') = 'reg_s')",
         (closed_month.date(),),
     )
     anchor["month"] = pd.to_datetime(anchor["month"])
@@ -527,15 +529,23 @@ def _closed_returns_and_tombstones(
         anchor = pd.DataFrame(columns=required_anchor)
     current_ids = set(current_snapshot.get("cusip_id", pd.Series(dtype=object)).astype(str))
     removed = anchor[~anchor["cusip_id"].astype(str).isin(current_ids)].copy()
+    included_parent = anchor.get(
+        "eligibility_state", pd.Series("included", index=anchor.index)
+    ).eq("included")
+    removed_included = removed.get(
+        "eligibility_state", pd.Series("included", index=removed.index)
+    ).eq("included")
     removed_rules = removed.get(
         "distribution_rule", pd.Series("rule_144a", index=removed.index)
     ).fillna("rule_144a")
     # A missing/changed governed Reg S mapping is a coverage omission, not
     # evidence that the security matured or exited. Only the durable 144A
     # reference lane may currently generate an unexplained terminal exit.
-    terminal_exits = removed[~removed_rules.eq("reg_s")].copy()
+    terminal_exits = removed[removed_included & ~removed_rules.eq("reg_s")].copy()
     terminal_exits["month"] = closed_month
-    returns_input = pd.concat([anchor, current_snapshot], ignore_index=True, sort=False)
+    returns_input = pd.concat(
+        [anchor[included_parent], current_snapshot], ignore_index=True, sort=False
+    )
     returns = monthly_returns(returns_input, terminal_exits=terminal_exits)
     returns = returns[returns["month"].eq(closed_month)].reset_index(drop=True)
     identity_columns = ["cusip_id", "month", *DISTRIBUTION_COLUMNS]
@@ -548,7 +558,7 @@ def _closed_returns_and_tombstones(
         identity = identity.drop_duplicates(["cusip_id", "month"], keep="last")
         returns = returns.merge(identity, on=["cusip_id", "month"], how="left")
 
-    tombstones = removed.copy().reset_index(drop=True)
+    tombstones = removed[removed_included | removed_rules.eq("reg_s")].copy().reset_index(drop=True)
     if tombstones.empty:
         return returns, tombstones
     tombstones["month"] = closed_month

@@ -1032,6 +1032,35 @@ def test_parent_return_anchor_normalizes_postgres_numerics_for_returns(monkeypat
     assert returns["month"].tolist() == [closed]
 
 
+def test_parent_return_anchor_reads_included_rows_and_excluded_reg_s_only(monkeypatch) -> None:
+    closed = pd.Timestamp("2026-07-01")
+    captured: dict[str, object] = {}
+
+    def frame(_conn, sql, params=()):
+        captured.update(sql=sql, params=params)
+        return pd.DataFrame(
+            {
+                "cusip_id": ["INCLUDED144A", "EXCLUDEDREGS"],
+                "month": [date(2026, 6, 1), date(2026, 6, 1)],
+                "pr": [100.0, 100.0],
+                "ytm": [0.05, 0.05],
+                "bond_maturity": [5.0, 5.0],
+                "rating_bucket": ["BBB", "BBB"],
+                "eligibility_state": ["included", "excluded"],
+                "distribution_rule": ["rule_144a", "reg_s"],
+            }
+        )
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+
+    anchor = bond_panel._parent_return_anchor(object(), closed)
+
+    assert anchor["cusip_id"].tolist() == ["INCLUDED144A", "EXCLUDEDREGS"]
+    assert captured["params"] == (closed.date(),)
+    assert "eligibility_state = 'included'" in captured["sql"]
+    assert "COALESCE(distribution_rule, payload ->> 'distribution_rule', 'rule_144a') = 'reg_s'" in captured["sql"]
+
+
 def test_legacy_parent_anchor_synthesizes_identity_for_terminal_exit_rows(monkeypatch) -> None:
     closed = pd.Timestamp("2026-07-01")
     captured: dict[str, object] = {}
@@ -1180,6 +1209,38 @@ def test_closed_returns_tombstone_a_missing_reg_s_mapping_without_a_return() -> 
         "rating_reason": "static_present",
         "rating_staleness_months": 1,
     }
+    assert tombstones.loc[0, "flags"] == {
+        "terminal_exit": False,
+        "mapping_removed": True,
+        "source": "parent_snapshot",
+    }
+
+
+def test_closed_returns_tombstone_previously_excluded_reg_s_without_terminal_return() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame(
+        {
+            "cusip_id": ["REGSOLD01", "EXCLUDED144A"],
+            "month": [pd.Timestamp("2026-06-01")] * 2,
+            "pr": [100.0, 100.0],
+            "ytm": [0.05, 0.05],
+            "bond_maturity": [5.0, 5.0],
+            "rating_bucket": ["BBB", "BBB"],
+            "eligibility_state": ["excluded", "excluded"],
+            "distribution_rule": ["reg_s", "rule_144a"],
+            "reference_cusip9": ["REFERENCE1", "EXCLUDED144A"],
+            "distribution_decision_id": ["decision-old", None],
+        }
+    )
+
+    returns, tombstones = bond_panel._closed_returns_and_tombstones(
+        anchor, pd.DataFrame(), closed
+    )
+
+    assert returns.empty
+    assert tombstones[["cusip_id", "eligibility_reason"]].to_dict("records") == [
+        {"cusip_id": "REGSOLD01", "eligibility_reason": "distribution_mapping_removed"}
+    ]
     assert tombstones.loc[0, "flags"] == {
         "terminal_exit": False,
         "mapping_removed": True,
