@@ -518,6 +518,58 @@ def _parent_integrity_reasons(parent: dict[str, Any]) -> list[str]:
     return reasons
 
 
+def _economic_series_identities(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize the economic identity that must survive a return boundary."""
+    columns = ["cusip_id", "distribution_rule", "reference_cusip9"]
+    if frame.empty:
+        return pd.DataFrame(columns=columns)
+    if "cusip_id" not in frame:
+        raise ValueError("economic series identity requires cusip_id")
+    cusip_id = frame["cusip_id"].astype("string").str.strip().str.upper()
+    distribution_rule = frame.get(
+        "distribution_rule", pd.Series("rule_144a", index=frame.index, dtype="string")
+    ).astype("string").str.strip().str.lower()
+    distribution_rule = distribution_rule.mask(
+        distribution_rule.isna() | distribution_rule.eq(""), "rule_144a"
+    )
+    reference_cusip9 = frame.get(
+        "reference_cusip9", pd.Series(pd.NA, index=frame.index, dtype="string")
+    ).astype("string").str.strip().str.upper()
+    reference_cusip9 = reference_cusip9.mask(
+        reference_cusip9.isna() | reference_cusip9.eq(""), cusip_id
+    )
+    return pd.DataFrame({
+        "cusip_id": cusip_id,
+        "distribution_rule": distribution_rule,
+        "reference_cusip9": reference_cusip9,
+    })
+
+
+def _validate_economic_series_identity(
+    anchor: pd.DataFrame, current_snapshot: pd.DataFrame
+) -> None:
+    """Reject CUSIP reuse before CUSIP-keyed return arithmetic can chain it."""
+    identities = {
+        "parent": _economic_series_identities(anchor),
+        "current": _economic_series_identities(current_snapshot),
+    }
+    for side, identity in identities.items():
+        duplicated = identity[identity["cusip_id"].duplicated(keep=False)]
+        if not duplicated.empty:
+            cusips = ",".join(sorted(duplicated["cusip_id"].dropna().unique()))
+            raise ValueError(f"duplicate economic series identity in {side}: {cusips}")
+    shared = identities["parent"].merge(
+        identities["current"], on="cusip_id", how="inner", suffixes=("_parent", "_current")
+    )
+    mismatched = shared[
+        shared["distribution_rule_parent"].ne(shared["distribution_rule_current"])
+        | shared["reference_cusip9_parent"].ne(shared["reference_cusip9_current"])
+    ]
+    if not mismatched.empty:
+        cusips = ",".join(sorted(mismatched["cusip_id"].dropna().unique()))
+        raise ValueError(f"economic series identity mismatch: {cusips}")
+
+
 def _closed_returns_and_tombstones(
     anchor: pd.DataFrame,
     current_snapshot: pd.DataFrame,
@@ -527,6 +579,7 @@ def _closed_returns_and_tombstones(
     required_anchor = ["cusip_id", "month", "pr", "ytm", "bond_maturity", "rating_bucket"]
     if anchor.empty:
         anchor = pd.DataFrame(columns=required_anchor)
+    _validate_economic_series_identity(anchor, current_snapshot)
     current_ids = set(current_snapshot.get("cusip_id", pd.Series(dtype=object)).astype(str))
     removed = anchor[~anchor["cusip_id"].astype(str).isin(current_ids)].copy()
     included_parent = anchor.get(

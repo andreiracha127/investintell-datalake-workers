@@ -1164,6 +1164,72 @@ def test_closed_returns_do_not_treat_an_active_bond_without_price_as_a_terminal_
     assert tombstones.empty
 
 
+def test_closed_returns_rejects_reused_cusip_from_144a_to_reg_s() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame({
+        "cusip_id": ["REUSED001"], "month": [pd.Timestamp("2026-06-01")],
+        "distribution_rule": ["rule_144a"], "reference_cusip9": ["REUSED001"],
+    })
+    current = pd.DataFrame({
+        "cusip_id": ["REUSED001"], "month": [closed],
+        "distribution_rule": ["reg_s"], "reference_cusip9": ["REFERENCE1"],
+    })
+
+    with pytest.raises(ValueError, match="economic series identity mismatch"):
+        bond_panel._closed_returns_and_tombstones(anchor, current, closed)
+
+
+def test_closed_returns_rejects_reg_s_cusip_with_changed_reference() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame({
+        "cusip_id": ["REGS00001"], "month": [pd.Timestamp("2026-06-01")],
+        "distribution_rule": ["reg_s"], "reference_cusip9": ["REFERENCE1"],
+    })
+    current = pd.DataFrame({
+        "cusip_id": ["REGS00001"], "month": [closed],
+        "distribution_rule": ["reg_s"], "reference_cusip9": ["REFERENCE2"],
+    })
+
+    with pytest.raises(ValueError, match="economic series identity mismatch"):
+        bond_panel._closed_returns_and_tombstones(anchor, current, closed)
+
+
+def test_closed_returns_allows_decision_rotation_for_same_economic_series() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame({
+        "cusip_id": ["REGS00001"], "month": [pd.Timestamp("2026-06-01")],
+        "pr": [100.0], "ytm": [0.05], "bond_maturity": [5.0], "rating_bucket": ["BBB"],
+        "distribution_rule": ["reg_s"], "reference_cusip9": ["REFERENCE1"],
+        "distribution_decision_id": ["decision-old"],
+    })
+    current = pd.DataFrame({
+        "cusip_id": ["REGS00001"], "month": [closed],
+        "pr": [101.0], "ytm": [0.05], "bond_maturity": [5.0], "rating_bucket": ["BBB"],
+        "distribution_rule": ["reg_s"], "reference_cusip9": ["REFERENCE1"],
+        "distribution_decision_id": ["decision-new"],
+    })
+
+    returns, tombstones = bond_panel._closed_returns_and_tombstones(anchor, current, closed)
+
+    assert returns[["cusip_id", "distribution_decision_id"]].to_dict("records") == [
+        {"cusip_id": "REGS00001", "distribution_decision_id": "decision-new"}
+    ]
+    assert tombstones.empty
+
+
+def test_closed_returns_rejects_duplicate_series_identity_on_one_side() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame({
+        "cusip_id": ["DUPLICATE", "DUPLICATE"],
+        "month": [pd.Timestamp("2026-06-01")] * 2,
+        "distribution_rule": ["rule_144a", "rule_144a"],
+        "reference_cusip9": ["DUPLICATE", "DUPLICATE"],
+    })
+
+    with pytest.raises(ValueError, match="duplicate economic series identity"):
+        bond_panel._closed_returns_and_tombstones(anchor, pd.DataFrame(), closed)
+
+
 def test_closed_returns_tombstone_a_missing_reg_s_mapping_without_a_return() -> None:
     closed = pd.Timestamp("2026-07-01")
     anchor = pd.DataFrame({
