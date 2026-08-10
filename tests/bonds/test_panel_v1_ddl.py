@@ -96,10 +96,7 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
     assert "92740098-1571-559d-9fb3-119de8321754" in sql
     assert "candidate.parent_publication_id IS NULL" in sql
     assert "prior.parent_publication_id IS NULL" in sql
-    assert "candidate.first_month = prior.first_month" in sql
-    assert "candidate.last_closed_month = prior.last_closed_month" in sql
     assert "min(f.month)" in sql
-    assert "candidate.first_month + INTERVAL '1 month'" in sql
     assert "candidate.gate_evidence @> jsonb_build_object('base_repair'" in sql
     assert "candidate.snapshot_rows = 3417683" in sql
     assert "candidate.rv_signal_rows = 1687524" in sql
@@ -108,6 +105,31 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
     assert "candidate.code_revision = 't3_historical_base_return_coverage_repair_v1'" in sql
     assert "candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'" in sql
     assert "'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663'" in sql
+    assert "prior.input_fingerprint = '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb'" in sql
+    assert "prior.gate_evidence @> jsonb_build_object(" in sql
+    assert "'input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb'" in sql
+    assert "'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581'" in sql
+    assert "candidate.source_lineage->'source_sha256' = jsonb_build_object(" in sql
+    assert "= DATE '2002-08-01'" in sql
+
+    repair_start = sql.rindex("IF TG_OP = 'UPDATE'", 0, exception_at)
+    repair_block = sql[repair_start:direct_child_at]
+    assert "candidate.first_month = prior.first_month" not in repair_block
+    assert "candidate.last_closed_month = prior.last_closed_month" not in repair_block
+    assert "'from_input_fingerprint', prior.input_fingerprint" not in repair_block
+    assert "prior.gate_evidence @> jsonb_build_object('input_fingerprint', prior.input_fingerprint)" not in repair_block
+    assert "candidate.source_lineage->'source_sha256' = prior.source_lineage->'source_sha256'" not in repair_block
+    assert "= (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = prior.publication_id)" not in repair_block
+
+    authorized_source_sha256 = {
+        "bond_monthly_returns.parquet": "d0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179",
+        "bond_panel_live.parquet": "3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210",
+        "bond_ratings_pit.parquet": "97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4",
+        "rv_signal_live.parquet": "b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e",
+        "universe_snapshots_live.parquet": "ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a",
+    }
+    for artifact, digest in authorized_source_sha256.items():
+        assert repair_block.count(f"'{artifact}', '{digest}'") == 2
 
 
 def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:

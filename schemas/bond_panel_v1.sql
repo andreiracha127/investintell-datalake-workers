@@ -513,14 +513,17 @@ BEGIN
            WHERE prior.publication_id = OLD.publication_id
              AND candidate.publication_id = NEW.publication_id
              AND prior.publication_id = '92740098-1571-559d-9fb3-119de8321754'::uuid
-             AND btrim(prior.config_hash::text) = '0c0d78a866bc1090'
-             AND btrim(candidate.config_hash::text) = '0c0d78a866bc1090'
+              AND btrim(prior.config_hash::text) = '0c0d78a866bc1090'
+              AND prior.input_fingerprint = '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb'
+              AND prior.first_month = DATE '2002-07-01'
+              AND prior.last_closed_month = DATE '2026-06-01'
+              AND btrim(candidate.config_hash::text) = '0c0d78a866bc1090'
              AND prior.parent_publication_id IS NULL
              AND candidate.parent_publication_id IS NULL
              AND candidate.code_revision = 't3_historical_base_return_coverage_repair_v1'
-             AND candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'
-             AND candidate.first_month = prior.first_month
-             AND candidate.last_closed_month = prior.last_closed_month
+              AND candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'
+              AND candidate.first_month = DATE '2002-07-01'
+              AND candidate.last_closed_month = DATE '2026-06-01'
              AND candidate.open_month IS NULL
              AND candidate.snapshot_rows = 3417683
              AND candidate.rv_signal_rows = 1687524
@@ -528,9 +531,9 @@ BEGIN
              AND candidate.ratings_pit_rows = 3417683
              AND candidate.gate_evidence @> jsonb_build_object('base_repair', jsonb_build_object(
                  'contract', 'legacy_parentless_return_coverage_repair_v1',
-                 'from_publication_id', OLD.publication_id::text,
-                 'from_config_hash', btrim(prior.config_hash::text),
-                 'from_input_fingerprint', prior.input_fingerprint,
+                  'from_publication_id', '92740098-1571-559d-9fb3-119de8321754',
+                  'from_config_hash', '0c0d78a866bc1090',
+                  'from_input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb',
                  'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581',
                  'first_month', '2002-07-01',
                  'last_closed_month', '2026-06-01',
@@ -543,8 +546,23 @@ BEGIN
                  'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663',
                  'authorized_code_revision', 't3_historical_base_return_coverage_repair_v1'
              ))
-             AND prior.gate_evidence @> jsonb_build_object('input_fingerprint', prior.input_fingerprint)
-             AND candidate.source_lineage->'source_sha256' = prior.source_lineage->'source_sha256'
+              AND prior.gate_evidence @> jsonb_build_object(
+                  'input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb',
+                  'source_sha256', jsonb_build_object(
+                      'bond_monthly_returns.parquet', 'd0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179',
+                      'bond_panel_live.parquet', '3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210',
+                      'bond_ratings_pit.parquet', '97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4',
+                      'rv_signal_live.parquet', 'b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e',
+                      'universe_snapshots_live.parquet', 'ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a'
+                  )
+              )
+              AND candidate.source_lineage->'source_sha256' = jsonb_build_object(
+                  'bond_monthly_returns.parquet', 'd0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179',
+                  'bond_panel_live.parquet', '3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210',
+                  'bond_ratings_pit.parquet', '97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4',
+                  'rv_signal_live.parquet', 'b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e',
+                  'universe_snapshots_live.parquet', 'ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a'
+              )
              AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.snapshot_rows
              AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.rv_signal_rows
              AND (SELECT count(*) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.returns_rows
@@ -552,8 +570,8 @@ BEGIN
              AND (SELECT max(f.month) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
              AND (SELECT max(f.month) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
              AND (SELECT max(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
-             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = (candidate.first_month + INTERVAL '1 month')::date
-             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = prior.publication_id)
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = DATE '2002-08-01'
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = prior.publication_id) = DATE '2002-08-01'
              AND (SELECT max(f.month) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
              AND NOT EXISTS (SELECT 1 FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id AND (f.month < candidate.first_month OR f.month > candidate.last_closed_month))
              AND NOT EXISTS (
