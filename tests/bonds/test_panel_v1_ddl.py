@@ -25,6 +25,8 @@ def test_panel_ddl_is_rerunnable_and_enforces_lifecycle_and_ancestry() -> None:
     assert "bond_panel_assert_publication_transition" in sql
     assert "bond_panel_assert_parent" in sql
     assert "bond_panel_assert_pointer_validated" in sql
+    assert "bond_panel_repair_tail_batch_attestation" in sql
+    assert "bond_panel_assert_repair_tail_attestation" in sql
     assert "ALTER VIEW bond_panel_current_snapshot_v1 OWNER TO worker_writer" in sql
     rating_block = sql.split("CREATE TABLE IF NOT EXISTS bond_panel_rating_pit", 1)[1].split("CREATE OR REPLACE FUNCTION", 1)[0]
     assert "agency" not in rating_block.lower()
@@ -111,6 +113,9 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
     assert "'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581'" in sql
     assert "candidate.source_lineage->'source_sha256' = jsonb_build_object(" in sql
     assert "= DATE '2002-08-01'" in sql
+    assert "bond_panel_repair_tail_batch_attestation terminal_batch" in sql
+    assert "terminal_batch.committed_through = 200955" in sql
+    assert "terminal_batch.evidence @> jsonb_build_object(" in sql
 
     repair_start = sql.rindex("IF TG_OP = 'UPDATE'", 0, exception_at)
     repair_block = sql[repair_start:direct_child_at]
@@ -129,7 +134,7 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
         "universe_snapshots_live.parquet": "ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a",
     }
     for artifact, digest in authorized_source_sha256.items():
-        assert repair_block.count(f"'{artifact}', '{digest}'") == 2
+        assert repair_block.count(f"'{artifact}', '{digest}'") == 3
 
 
 def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:

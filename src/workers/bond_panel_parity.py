@@ -8,6 +8,7 @@ or moves a publication pointer.
 from __future__ import annotations
 
 from datetime import date
+import os
 from typing import Any
 
 import numpy as np
@@ -141,7 +142,11 @@ def _normalized_monthly_curve(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rebuild_month(
-    conn: Any, month: pd.Timestamp, structural_publication_id: str = BASE_PUBLICATION_ID,
+    conn: Any,
+    month: pd.Timestamp,
+    structural_publication_id: str = BASE_PUBLICATION_ID,
+    *,
+    mapping_snapshot_id: str,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -162,6 +167,7 @@ def _rebuild_month(
         month,
         month,
         as_of,
+        mapping_snapshot_id=mapping_snapshot_id,
         structural_publication_id=structural_publication_id,
         structural_month=month.date(),
     )
@@ -962,6 +968,9 @@ def run(dsn: str | None = None) -> dict[str, object]:
             return _failure("current_publication_fingerprint_mismatch")
         if current[3] != "validated":
             return _failure("current_publication_status_mismatch")
+        mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
+        if not mapping_snapshot_id:
+            return _failure("distribution_mapping_snapshot_id_absent")
         for month in PARITY_MONTHS:
             frozen_snapshot, frozen_rv = _frozen_snapshot(conn, current[0], month), _frozen_rv(conn, current[0], month)
             try:
@@ -974,7 +983,12 @@ def run(dsn: str | None = None) -> dict[str, object]:
                     input_exclusions,
                     _reference_keys,
                     _fit_diagnostics,
-                ) = _rebuild_month(conn, month, current[0])
+                ) = _rebuild_month(
+                    conn,
+                    month,
+                    current[0],
+                    mapping_snapshot_id=mapping_snapshot_id,
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 return _failure(f"rebuild_error:{exc}", results)
             results.append(_compare_month(

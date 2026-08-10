@@ -925,6 +925,7 @@ def test_overall_fails_closed_for_invalid_declared_month_coverage(
 
 def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", "approved-snapshot")
     reference_keys = pd.Series(_cusips(parity.MIN_MONTH_ROWS))
     fit_diagnostics = _fit_diagnostics(parity.PARITY_MONTHS[0])
     comparisons = iter([
@@ -948,7 +949,7 @@ def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -
     monkeypatch.setattr(
         parity,
         "_rebuild_month",
-        lambda _conn, month, _structural_publication_id: (
+        lambda _conn, month, _structural_publication_id, **_kwargs: (
             pd.DataFrame(), pd.DataFrame(), None, month, pd.DataFrame(), {},
             reference_keys, fit_diagnostics,
         ),
@@ -974,6 +975,7 @@ def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -
 
 def test_run_accepts_only_the_exact_authorized_repaired_root(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", "approved-snapshot")
     frozen_publication_ids: list[str] = []
     structural_publication_ids: list[str] = []
 
@@ -997,7 +999,7 @@ def test_run_accepts_only_the_exact_authorized_repaired_root(monkeypatch) -> Non
     monkeypatch.setattr(
         parity,
         "_rebuild_month",
-        lambda _conn, month, structural_publication_id: (
+        lambda _conn, month, structural_publication_id, **_kwargs: (
             structural_publication_ids.append(structural_publication_id) or pd.DataFrame(),
             pd.DataFrame(), None, month, pd.DataFrame(), {}, pd.Series(dtype="string"), pd.DataFrame(),
         ),
@@ -1013,6 +1015,31 @@ def test_run_accepts_only_the_exact_authorized_repaired_root(monkeypatch) -> Non
     assert outcome["state"] == "parity_passed"
     assert frozen_publication_ids == [parity.REPAIRED_BASE_PUBLICATION_ID] * len(parity.PARITY_MONTHS)
     assert structural_publication_ids == [parity.REPAIRED_BASE_PUBLICATION_ID] * len(parity.PARITY_MONTHS)
+
+
+def test_run_requires_mapping_snapshot_before_rebuilding_authorized_root(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
+    monkeypatch.delenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", raising=False)
+
+    class Connection:
+        def execute(self, _statement, _params=()):
+            return type("Result", (), {"fetchone": lambda self: (
+                parity.REPAIRED_BASE_PUBLICATION_ID,
+                parity.PANEL_CONFIG_HASH,
+                parity.REPAIRED_BASE_INPUT_FINGERPRINT,
+                "validated",
+            )})()
+
+    monkeypatch.setattr(parity, "connect", lambda _dsn: contextlib.nullcontext(Connection()))
+    monkeypatch.setattr(parity, "resolve_dsn", lambda dsn: dsn)
+    monkeypatch.setattr(parity, "_rebuild_month", lambda *_args, **_kwargs: pytest.fail("must not rebuild"))
+
+    assert parity.run("postgresql://example") == {
+        "state": "parity_failed",
+        "reason": "distribution_mapping_snapshot_id_absent",
+        "aborted": True,
+        "months": [],
+    }
 
 
 def test_run_retires_legacy_144a_parity_for_the_reg_s_config_without_connecting(monkeypatch) -> None:
@@ -1045,14 +1072,19 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
     as_of = date(2025, 1, 31)
     reference_frame = pd.DataFrame({"cusip9": _cusips(parity.MIN_MONTH_ROWS)})
     construction_frames: list[pd.DataFrame] = []
+    loader_kwargs: list[dict[str, object]] = []
 
-    monkeypatch.setattr(parity.bond_panel, "_load_inputs", lambda *_args, **_kwargs: ({
-        "daily_observations": pd.DataFrame({"day": [as_of]}),
-        "monthly_curve": pd.DataFrame({
-            "day": [as_of, as_of], "tenor": ["3y", "5y"], "yield_pct": [4.0, 4.0],
-        }),
-        "resolved_issuer_sector": reference_frame,
-    }, {"source": "verified"}))
+    def load_inputs(*_args, **kwargs):
+        loader_kwargs.append(kwargs)
+        return ({
+            "daily_observations": pd.DataFrame({"day": [as_of]}),
+            "monthly_curve": pd.DataFrame({
+                "day": [as_of, as_of], "tenor": ["3y", "5y"], "yield_pct": [4.0, 4.0],
+            }),
+            "resolved_issuer_sector": reference_frame,
+        }, {"source": "verified"})
+
+    monkeypatch.setattr(parity.bond_panel, "_load_inputs", load_inputs)
 
     def build_panel(**inputs):
         construction_frames.append(inputs["resolved_issuer_sector"])
@@ -1089,9 +1121,14 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
         _input_exclusions,
         reference_keys,
         fit_diagnostics,
-    ) = parity._rebuild_month(object(), month)
+    ) = parity._rebuild_month(object(), month, mapping_snapshot_id="approved-snapshot")
 
     assert len(construction_frames) == 1
+    assert loader_kwargs == [{
+        "mapping_snapshot_id": "approved-snapshot",
+        "structural_publication_id": parity.BASE_PUBLICATION_ID,
+        "structural_month": month.date(),
+    }]
     assert construction_frames[0] is reference_frame
     pd.testing.assert_series_equal(reference_keys, reference_frame["cusip9"])
     assert rebuilt_rv["residual_bps"].equals(_rv(month)["residual_bps"])
@@ -1100,6 +1137,7 @@ def test_rebuild_exposes_reference_and_fit_evidence(monkeypatch) -> None:
 
 def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", "approved-snapshot")
     calls: list[tuple[pd.Timestamp, pd.Timestamp, date]] = []
     structural_calls: list[dict[str, object]] = []
     fit_calls: list[pd.Timestamp] = []
@@ -1161,10 +1199,12 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     ]
     assert structural_calls == [
         {
+            "mapping_snapshot_id": "approved-snapshot",
             "structural_publication_id": parity.BASE_PUBLICATION_ID,
             "structural_month": date(2025, 1, 1),
         },
         {
+            "mapping_snapshot_id": "approved-snapshot",
             "structural_publication_id": parity.BASE_PUBLICATION_ID,
             "structural_month": date(2026, 6, 1),
         },

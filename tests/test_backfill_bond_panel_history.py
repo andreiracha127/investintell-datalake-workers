@@ -317,7 +317,7 @@ def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_linea
     assert tail[("CCC000003", "2025-05-01")]["carry_return"] > 0
 
 
-def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_source(tmp_path: Path) -> None:
+def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_source(tmp_path: Path, monkeypatch) -> None:
     directory = _artifact_dir(tmp_path)
     panel_path = directory / "bond_panel_live.parquet"
     panel = pq.read_table(panel_path)
@@ -341,6 +341,14 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     }
     copied = copies["snapshot"]
     tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
+    original_tail_rows = backfill._repair_return_tail_rows
+    tail_calls: list[tuple[int, int | None]] = []
+
+    def bounded_tail_rows(*args, start_after: int = 0, limit: int | None = None, **kwargs):
+        tail_calls.append((start_after, limit))
+        return original_tail_rows(*args, start_after=start_after, limit=limit, **kwargs)
+
+    monkeypatch.setattr(backfill, "_repair_return_tail_rows", bounded_tail_rows)
     resumed_tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=1, limit=1)
     finalize = backfill.render_finalize_sql(plan)
 
@@ -367,17 +375,20 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     assert "repair tail requires exact copied historical returns before tail" in tail
     assert "publication_status='prepared'" in tail
     assert "publication_status IN ('prepared','validated')" not in tail
-    assert "CREATE TEMP TABLE _repair_tail_prefix" in resumed_tail
-    assert "repair tail prefix immutable evidence conflict" in resumed_tail
+    assert "bond_panel_repair_tail_batch_attestation" in resumed_tail
+    assert "repair tail requires contiguous attested prefix" in resumed_tail
+    assert "CREATE TEMP TABLE _repair_tail_prefix" not in resumed_tail
+    assert tail_calls == [(1, 1)]
     assert "repair tail final count mismatch" in resumed_tail
-    for column in backfill._COPY_COLUMNS["returns"][1:]:
-        assert f"candidate.{column}" in resumed_tail
-        assert f"expected.{column}" in resumed_tail
+    assert "immutable evidence conflict with existing target row" in resumed_tail
     assert "WHERE publication_id=" in finalize
     assert "AND publication_id=" in finalize
     assert "base_repair" in finalize
     assert backfill._sql_string(plan.returns_first_month) in finalize
     assert f"publication_id={backfill._sql_string(plan.publication_id)}::uuid" in finalize
+    assert "bond_panel_repair_tail_batch_attestation" in finalize
+    assert "repair terminal tail attestation missing or non-identical" in finalize
+    assert f"committed_through={plan.base_repair['tail_rows']}" in finalize
 
 
 def test_frozen_repair_plan_pins_authorized_identity_and_tail_facts_before_emission() -> None:
@@ -405,6 +416,35 @@ def test_repair_returns_copy_replays_historical_facts_after_tail_without_countin
     assert "candidate.month <= (SELECT max(legacy.month)" in copy_sql
     assert "repair historical copy count mismatch:returns" in copy_sql
     assert "repair copy count mismatch:returns" not in copy_sql
+
+
+def test_repair_terminal_tail_replay_is_validated_only_when_pointer_is_exact(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    panel_path = directory / "bond_panel_live.parquet"
+    panel = pq.read_table(panel_path)
+    pq.write_table(pa.concat_tables([panel, pa.Table.from_pylist([{
+        "cusip_id": "AAA000001", "month": "2025-02-01", "pr": 100.0, "ytm": .05,
+        "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012,
+        "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5,
+        "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0,
+        "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0,
+        "db_type": 1.0, "price_source": "frozen",
+    }])]), panel_path)
+    _write(directory / "bond_monthly_returns.parquet", [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+    plan = backfill.build_repair_plan(artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)
+
+    terminal = backfill.render_batch_sql(
+        artifacts, plan, "returns", start_after=plan.base_repair["tail_rows"] - 1, limit=1,
+    )
+    nonterminal = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
+
+    assert "repair terminal tail replay requires validated pointed candidate" in terminal
+    assert f"pointer.publication_id={backfill._sql_string(plan.publication_id)}::uuid" in terminal
+    assert "candidate.publication_status='prepared'" in terminal
+    assert "repair terminal tail replay requires validated pointed candidate" not in nonterminal
 
 
 def test_normal_mode_still_refuses_a_missing_return_tail(tmp_path: Path) -> None:

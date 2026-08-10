@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""} and str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.backfill_psql_transport import _copy_csv, render_immutable_batch, render_schema  # noqa: E402
+from scripts.backfill_psql_transport import render_immutable_batch, render_schema  # noqa: E402
 DEFAULT_ARTIFACT_DIRECTORY = Path(
     r"C:\Users\andre\Downloads\stage1_osbap_0k_volume_2025\bond_panel_monthly"
 )
@@ -221,6 +221,20 @@ def _validate_authorized_repair_plan(plan: BackfillPlan) -> None:
         or plan.base_repair != _authorized_repair_base_evidence()
     ):
         raise PlanError("repair_plan_not_authorized")
+
+
+def _repair_tail_attestation_evidence(
+    plan: BackfillPlan, *, cursor: int, committed_through: int,
+) -> dict[str, Any]:
+    return {
+        "publication_id": plan.publication_id,
+        "surface": "returns_repair_tail",
+        "cursor": cursor,
+        "committed_through": committed_through,
+        "source_sha256": plan.source_sha256,
+        "tail_digest": plan.base_repair["tail_digest"],
+        "base_repair": plan.base_repair,
+    }
 
 
 def _sha256(path: Path) -> str:
@@ -789,64 +803,71 @@ def _render_repair_tail_batch(artifacts: ArtifactSet, plan: BackfillPlan, *, sta
     if start_after < 0 or limit <= 0:
         raise CursorError("invalid_cursor_or_limit")
     tail_total = int(plan.base_repair["tail_rows"])
-    if start_after > tail_total:
+    if start_after >= tail_total:
         raise CursorError("start_after_exceeds_surface")
     selected = _repair_return_tail_rows(artifacts, start_after=start_after, limit=limit)
+    if not selected:  # pragma: no cover - guarded by the frozen tail contract
+        raise PlanError("repair_tail_slice_empty")
     columns = _COPY_COLUMNS["returns"]
     column_types = _COPY_TYPES["returns"]
     nullable_columns = _COPY_NULLABLE["returns"]
     values = [tuple([plan.publication_id] + [row.get(column) for column in columns[1:]]) for row in selected]
-    evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps({name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(start_after + len(selected)) + ",'remaining'," + str(tail_total - start_after - len(selected)) + ",'done'," + ("true" if start_after + len(selected) == tail_total else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
-    emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=column_types, key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=start_after + len(selected), skipped=0, target_evidence_sql=evidence, nullable_columns=nullable_columns)
+    committed_through = start_after + len(selected)
+    tail_sources = {name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}
+    evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps(tail_sources, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(committed_through) + ",'remaining'," + str(tail_total - committed_through) + ",'done'," + ("true" if committed_through == tail_total else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
+    emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=column_types, key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=committed_through, skipped=0, target_evidence_sql=evidence, nullable_columns=nullable_columns)
     source_id = plan.base_repair["from_publication_id"]
     expected_before = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after}"
-    expected_after = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after + len(selected)}"
+    expected_after = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {committed_through}"
+    terminal = committed_through == tail_total
+    attestation = _repair_tail_attestation_evidence(
+        plan, cursor=start_after, committed_through=committed_through,
+    )
+    attestation_json = _sql_string(json.dumps(attestation, sort_keys=True, separators=(",", ":")))
+    predecessor_evidence = dict(attestation)
+    predecessor_evidence.pop("cursor")
+    predecessor_evidence["committed_through"] = start_after
+    predecessor_json = _sql_string(json.dumps(predecessor_evidence, sort_keys=True, separators=(",", ":")))
+    prepared_current = f"""EXISTS (
+        SELECT 1
+        FROM bond_panel_publications candidate
+        JOIN bond_panel_app_pointer pointer ON pointer.product={_sql_string(PRODUCT)}
+        WHERE candidate.publication_id={_sql_string(plan.publication_id)}::uuid
+          AND candidate.publication_status='prepared'
+          AND pointer.publication_id={_sql_string(source_id)}::uuid
+    )"""
+    validated_terminal = f"""EXISTS (
+        SELECT 1
+        FROM bond_panel_publications candidate
+        JOIN bond_panel_app_pointer pointer ON pointer.product={_sql_string(PRODUCT)}
+        WHERE candidate.publication_id={_sql_string(plan.publication_id)}::uuid
+          AND candidate.publication_status='validated'
+          AND pointer.publication_id={_sql_string(plan.publication_id)}::uuid
+    )"""
     repair_order_check = f"""DO $repair_tail_order$
 BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM bond_panel_publications
-        WHERE publication_id={_sql_string(plan.publication_id)}::uuid
-          AND publication_status='prepared'
-    ) THEN RAISE EXCEPTION 'repair tail requires prepared candidate'; END IF;
+    IF NOT ({prepared_current}) THEN
+        IF NOT ({'TRUE' if terminal else 'FALSE'} AND {validated_terminal}) THEN
+            RAISE EXCEPTION '{'repair terminal tail replay requires validated pointed candidate' if terminal else 'repair tail requires prepared candidate and current legacy pointer'}';
+        END IF;
+    END IF;
+    IF {start_after} > 0 AND NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_repair_tail_batch_attestation prior_batch
+        WHERE prior_batch.publication_id={_sql_string(plan.publication_id)}::uuid
+          AND prior_batch.committed_through={start_after}
+          AND prior_batch.evidence @> {predecessor_json}::jsonb
+    ) THEN RAISE EXCEPTION 'repair tail requires contiguous attested prefix'; END IF;
     IF (SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(plan.publication_id)}::uuid) NOT IN ({expected_before}, {expected_after}) THEN
         RAISE EXCEPTION 'repair tail requires exact copied historical returns before tail';
     END IF;
 END
 $repair_tail_order$;
 """
-    prefix_check = ""
-    if start_after:
-        prefix = _repair_return_tail_rows(artifacts, start_after=0, limit=start_after)
-        prefix_values = [tuple([plan.publication_id] + [row.get(column) for column in columns[1:]]) for row in prefix]
-        definitions = ", ".join(
-            f'"{column}" {kind}' if column in nullable_columns else f'"{column}" {kind} NOT NULL'
-            for column, kind in zip(columns, column_types, strict=True)
-        )
-        copied_columns = ", ".join(f'"{column}"' for column in columns)
-        expected_facts = ", ".join(f"expected.{column}" for column in columns[1:])
-        candidate_facts = ", ".join(f"candidate.{column}" for column in columns[1:])
-        prefix_check = f"""CREATE TEMP TABLE _repair_tail_prefix ({definitions}) ON COMMIT DROP;
-COPY _repair_tail_prefix ({copied_columns}) FROM STDIN WITH (FORMAT csv, NULL '\\N');
-{_copy_csv(prefix_values)}\\.
-DO $repair_tail_prefix$
-BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM _repair_tail_prefix expected
-        LEFT JOIN bond_panel_returns candidate
-          ON candidate.publication_id={_sql_string(plan.publication_id)}::uuid
-         AND candidate.month=expected.month
-         AND candidate.cusip_id=expected.cusip_id
-        WHERE candidate.publication_id IS NULL
-           OR ROW({candidate_facts}) IS DISTINCT FROM ROW({expected_facts})
-    ) THEN RAISE EXCEPTION 'repair tail prefix immutable evidence conflict'; END IF;
-END
-$repair_tail_prefix$;
-"""
     lock_statement = 'LOCK TABLE "bond_panel_returns" IN SHARE ROW EXCLUSIVE MODE;\n'
     if lock_statement not in emitted:  # pragma: no cover - guards transport drift
         raise RuntimeError("psql_transport_lock_shape_changed")
-    emitted = emitted.replace(lock_statement, lock_statement + repair_order_check + prefix_check, 1)
+    emitted = emitted.replace(lock_statement, lock_statement + repair_order_check, 1)
     insert_select = "SELECT " + ", ".join(f's."{column}"' for column in columns) + " FROM _backfill_stage s"
     replay_safe = insert_select + f" WHERE EXISTS (SELECT 1 FROM bond_panel_publications p WHERE p.publication_id={_sql_string(plan.publication_id)}::uuid AND p.publication_status='prepared')"
     emitted = emitted.replace(insert_select, replay_safe, 1)
@@ -858,10 +879,31 @@ BEGIN
 END
 $repair_tail_final_count$;
 """
+    attestation_check = f"""DO $repair_tail_attestation$
+BEGIN
+    IF {prepared_current} THEN
+        INSERT INTO bond_panel_repair_tail_batch_attestation (
+            publication_id, cursor, committed_through, predecessor_committed_through, evidence
+        ) VALUES (
+            {_sql_string(plan.publication_id)}::uuid, {start_after}, {committed_through},
+            {'NULL' if start_after == 0 else str(start_after)}, {attestation_json}::jsonb
+        ) ON CONFLICT (publication_id, cursor) DO NOTHING;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_repair_tail_batch_attestation current_batch
+        WHERE current_batch.publication_id={_sql_string(plan.publication_id)}::uuid
+          AND current_batch.cursor={start_after}
+          AND current_batch.committed_through={committed_through}
+          AND current_batch.evidence = {attestation_json}::jsonb
+    ) THEN RAISE EXCEPTION 'repair tail attestation conflict'; END IF;
+END
+$repair_tail_attestation$;
+"""
     commit_statement = "COMMIT;\nSELECT jsonb_build_object("
     if commit_statement not in emitted:  # pragma: no cover - guards transport drift
         raise RuntimeError("psql_transport_commit_shape_changed")
-    return emitted.replace(commit_statement, final_count_check + commit_statement, 1)
+    return emitted.replace(commit_statement, final_count_check + attestation_check + commit_statement, 1)
 
 
 def render_repair_copy_sql(plan: BackfillPlan, surface: Surface) -> str:
@@ -960,6 +1002,24 @@ def render_finalize_sql(plan: BackfillPlan) -> str:
     checks = "\n".join(f"    IF (SELECT count(*) FROM {_TABLES[surface]} WHERE publication_id={_sql_string(plan.publication_id)}::uuid) <> {plan.counts[surface]} THEN RAISE EXCEPTION 'partial {surface} surface'; END IF;" for surface in SURFACES)
     coverage_first = plan.returns_first_month if plan.is_repair else plan.first_month
     return_coverage_check = f"    IF EXISTS (SELECT 1 FROM generate_series({_sql_string(coverage_first)}::date, {_sql_string(plan.last_closed_month)}::date, INTERVAL '1 month') AS expected(month) LEFT JOIN bond_panel_returns r ON r.publication_id={_sql_string(plan.publication_id)}::uuid AND r.month=expected.month::date WHERE r.month IS NULL) THEN RAISE EXCEPTION 'returns history is not contiguous through closed-month cutoff'; END IF;"
+    terminal_attestation_check = ""
+    if plan.is_repair:
+        terminal_attestation = _repair_tail_attestation_evidence(
+            plan,
+            cursor=0,
+            committed_through=int(plan.base_repair["tail_rows"]),
+        )
+        terminal_attestation.pop("cursor")
+        terminal_attestation_json = _sql_string(
+            json.dumps(terminal_attestation, sort_keys=True, separators=(",", ":")),
+        )
+        terminal_attestation_check = f"""    IF NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_repair_tail_batch_attestation terminal_batch
+        WHERE terminal_batch.publication_id={_sql_string(plan.publication_id)}::uuid
+          AND terminal_batch.committed_through={plan.base_repair['tail_rows']}
+          AND terminal_batch.evidence @> {terminal_attestation_json}::jsonb
+    ) THEN RAISE EXCEPTION 'repair terminal tail attestation missing or non-identical'; END IF;"""
     repair_cas = ""
     pointer_statement = f"INSERT INTO bond_panel_app_pointer (product, publication_id) VALUES ({_sql_string(PRODUCT)}, {_sql_string(plan.publication_id)}::uuid) ON CONFLICT (product) DO UPDATE SET publication_id=EXCLUDED.publication_id, changed_at=now() WHERE bond_panel_app_pointer.publication_id IS DISTINCT FROM EXCLUDED.publication_id;"
     if plan.is_repair:
@@ -989,6 +1049,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM bond_panel_publications WHERE publication_id={_sql_string(plan.publication_id)}::uuid AND publication_status IN ('prepared','validated') AND config_hash={_sql_string(plan.config_hash)} AND input_fingerprint={_sql_string(plan.input_fingerprint)} AND code_revision={_sql_string(plan.code_revision)} AND first_month={_sql_string(plan.first_month)}::date AND last_closed_month={_sql_string(plan.last_closed_month)}::date AND open_month IS NULL AND source_lineage @> jsonb_build_object('source_sha256',{_sql_string(hashes)}::jsonb){repair_evidence_check}) THEN RAISE EXCEPTION 'non-identical base publication finalization'; END IF;
 {checks}
 {return_coverage_check}
+{terminal_attestation_check}
 END
 $finalize_backfill$;
 UPDATE bond_panel_publications SET publication_status='validated', validated_at=COALESCE(validated_at, now()), gate_evidence=gate_evidence || jsonb_build_object('validated_counts',{_sql_string(json.dumps(plan.counts, sort_keys=True))}::jsonb,'source_sha256',{_sql_string(hashes)}::jsonb,'historical_return_coverage_through',{_sql_string(plan.returns_last_month)}) WHERE publication_id={_sql_string(plan.publication_id)}::uuid AND publication_status='prepared';
