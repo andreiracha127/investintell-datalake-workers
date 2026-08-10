@@ -406,11 +406,13 @@ def _valid_execution_isin(value: Any) -> str | None:
 def _universe(
     conn: psycopg.Connection, limit: int | None, *, snapshot_id: str, as_of: _dt.date,
 ) -> tuple[list[tuple[Any, ...]], int, dict[str, Any]]:
-    """Resolve reference terms into a governed Reg S execution universe.
+    """Resolve reference terms into the governed Reg S legs Stage 6 needs.
 
-    The returned total is the *executable Reg S* cohort, not the number of
-    Rule 144A references.  Mapping gaps are explicit coverage omissions: they
-    are not provider no-data and cannot cause the reference ISIN to be used.
+    Stage 6 builds both the last closed and current open months.  Its execution
+    CUSIP/ISIN can change at that boundary, so this sweep resolves and executes
+    both governed legs; resolving only ``as_of`` would backfill a closed month
+    with the current pair.  Mapping gaps and cross-as-of CUSIP collisions remain
+    typed coverage omissions -- neither can make the Rule 144A ISIN a fallback.
 
     The watermarks are read here for the ORDER and again in ``_load_candles``
     for each bond's WINDOW. That is deliberate rather than plumbed through: both
@@ -431,63 +433,93 @@ def _universe(
         for row in reference_rows
     }
     reference_cusip9s = list(terms_by_reference)
-    try:
-        resolution_map = resolve_reg_s_cusip_map_from_db(
-            conn, snapshot_id=snapshot_id, as_of=as_of,
-            reference_cusip9s=reference_cusip9s,
-        )
-    except NoValidatedDistributionSourceError:
-        # The bulk resolver uses this exception for the all-missing shape.
-        # Preserve it as coverage, not a provider/data failure.
-        return [], 0, {
-            "snapshot_id": snapshot_id,
-            "reference_total": len(reference_cusip9s),
-            "resolved": 0,
-            "executable": 0,
-            "omissions": {"no_validated_source": len(reference_cusip9s)},
-        }
-    omissions: dict[str, int] = {}
+    closed_as_of = as_of.replace(day=1) - _dt.timedelta(days=1)
+    coverage_by_window: dict[str, dict[str, Any]] = {
+        name: {"resolved": 0, "executable": 0, "omissions": {}}
+        for name in ("closed", "open")
+    }
 
-    def omit(reason: str) -> None:
+    def omit(window: str, reason: str) -> None:
+        omissions = coverage_by_window[window]["omissions"]
         omissions[reason] = omissions.get(reason, 0) + 1
 
+    candidates: list[tuple[str, str, str, str, Any, Any]] = []
+    for window, mapping_as_of in (("closed", closed_as_of), ("open", as_of)):
+        try:
+            resolution_map = resolve_reg_s_cusip_map_from_db(
+                conn, snapshot_id=snapshot_id, as_of=mapping_as_of,
+                reference_cusip9s=reference_cusip9s,
+            )
+        except NoValidatedDistributionSourceError:
+            # The bulk resolver uses this exception for the all-missing shape.
+            # Preserve it as coverage, not as a provider/data failure, while the
+            # other as-of leg can still be executable.
+            for _reference_cusip9 in reference_cusip9s:
+                omit(window, "no_validated_source")
+            continue
+        resolutions = resolution_map.resolutions
+        reasons = resolution_map.reason_by_reference
+        coverage_by_window[window]["resolved"] = sum(
+            reference in resolutions for reference in reference_cusip9s
+        )
+        for reference_cusip9 in reference_cusip9s:
+            resolution = resolutions.get(reference_cusip9)
+            if resolution is None:
+                omit(window, str(reasons.get(reference_cusip9, "unmapped")))
+                continue
+            execution_cusip9 = _valid_execution_cusip(
+                getattr(resolution, "reg_s_cusip9", None)
+            )
+            if execution_cusip9 is None:
+                omit(window, "missing_reg_s_cusip")
+                continue
+            execution_isin = _valid_execution_isin(
+                getattr(resolution, "reg_s_isin", None)
+            )
+            if execution_isin is None:
+                omit(window, "missing_reg_s_isin")
+                continue
+            coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+            candidates.append(
+                (window, reference_cusip9, execution_cusip9, execution_isin, coupon_rate, maturity_date)
+            )
+
+    by_execution_cusip: dict[str, list[tuple[str, str, str, str, Any, Any]]] = {}
+    for candidate in candidates:
+        by_execution_cusip.setdefault(candidate[2], []).append(candidate)
     executable: list[tuple[Any, ...]] = []
-    used_execution_cusips: set[str] = set()
-    resolutions = resolution_map.resolutions
-    reasons = resolution_map.reason_by_reference
-    for reference_cusip9 in reference_cusip9s:
-        resolution = resolutions.get(reference_cusip9)
-        if resolution is None:
-            omit(str(reasons.get(reference_cusip9, "unmapped")))
+    for execution_cusip9, matching in by_execution_cusip.items():
+        signatures = {(reference_cusip9, execution_isin) for _, reference_cusip9, _, execution_isin, _, _ in matching}
+        if len(signatures) != 1:
+            # The resolver rejects collisions within one as-of.  A changed map
+            # can still collide across closed/open as-ofs; choosing either ISIN
+            # would silently rewrite that CUSIP's history, so omit both legs.
+            for window, *_rest in matching:
+                omit(window, "ambiguous_execution_cusip")
             continue
-        execution_cusip9 = _valid_execution_cusip(
-            getattr(resolution, "reg_s_cusip9", None)
-        )
-        if execution_cusip9 is None:
-            omit("missing_reg_s_cusip")
-            continue
-        execution_isin = _valid_execution_isin(
-            getattr(resolution, "reg_s_isin", None)
-        )
-        if execution_isin is None:
-            omit("missing_reg_s_isin")
-            continue
-        if execution_cusip9 in used_execution_cusips:
-            omit("ambiguous_execution_cusip")
-            continue
-        used_execution_cusips.add(execution_cusip9)
-        coupon_rate, maturity_date = terms_by_reference[reference_cusip9]
+        for window, *_rest in matching:
+            coverage_by_window[window]["executable"] += 1
+        _window, _reference_cusip9, _cusip9, execution_isin, coupon_rate, maturity_date = matching[0]
         executable.append((execution_cusip9, execution_isin, coupon_rate, maturity_date))
 
     rows = sweep_priority_order(
         executable, _attempts(conn), _watermarks(conn, [row[0] for row in executable])
     )
+    for value in coverage_by_window.values():
+        value["omissions"] = dict(sorted(value["omissions"].items()))
     mapping_coverage = {
         "snapshot_id": snapshot_id,
         "reference_total": len(reference_cusip9s),
-        "resolved": sum(reference in resolutions for reference in reference_cusip9s),
+        # Keep the original flat keys as the current open-leg summary for callers
+        # that need today's daily coverage; the nested legs preserve the closed
+        # month needed by Stage 6's candle backfill.
+        "resolved": coverage_by_window["open"]["resolved"],
         "executable": len(rows),
-        "omissions": dict(sorted(omissions.items())),
+        "omissions": coverage_by_window["open"]["omissions"],
+        "closed_as_of": closed_as_of.isoformat(),
+        "open_as_of": as_of.isoformat(),
+        "closed": coverage_by_window["closed"],
+        "open": coverage_by_window["open"],
     }
     return (list(rows[:limit]) if limit else list(rows)), len(rows), mapping_coverage
 
@@ -1127,9 +1159,9 @@ def run(
                 mapping_coverage=mapping_coverage,
             )
         # An upstream fault is still a stage outcome, never a reason to skip the
-        # downstream refresh/republication/panel sequence.  The input stages are
-        # typed individually below; stages 4-6 always get their chance under the
-        # same daily lock and the final verdict names every triggered condition.
+        # downstream refresh/republication sequence.  The input stages are typed
+        # individually below; stages 4-5 always get their chance under the same
+        # daily lock and the final verdict names every triggered condition.
         client = None
         provider_error: str | None = None
         provider_detail: str | None = None
@@ -1187,7 +1219,17 @@ def run(
         conn.commit()
         matview = _refresh_curated(resolved)
         republish = _republish(resolved)
-        panel = _publish_panel(resolved, as_of=today)
+        swept = len(universe)
+        sweep_incomplete = swept < universe_total
+        if sweep_incomplete:
+            # Stage 6 flips an immutable monthly pointer.  A capped ring run has
+            # only covered its budget, not the open month, so calculate that
+            # coverage verdict before it can call the panel.  Stage 4/5 still
+            # make the real rows it did load available; a later full rerun alone
+            # may materialize the closed/open panel delta.
+            panel = {"state": "deferred", "aborted": False, "reason": "partial_sweep"}
+        else:
+            panel = _publish_panel(resolved, as_of=today)
 
     # THE VERDICT. Every stage above has already RUN -- this is computed at the
     # end and never used to skip work -- and each clause below is a way the day
@@ -1201,13 +1243,12 @@ def run(
         "publish_failed": "panel_publish_failed",
         "gate_failed": "panel_gate_failed",
     }.get(panel_state, "panel_failed")
-    swept = len(universe)
     reasons: list[tuple[bool, str]] = [
         (provider_error is not None, provider_error or "provider_rejected"),
         # Stage 6 is successful only when its own immutable pointer protocol
         # says it published.  Every empty/degraded/refused shape remains typed
         # in ``panel`` and cannot be laundered into an otherwise green day.
-        (panel_state not in {"published", "current"} or bool(panel.get("aborted")), panel_reason),
+        (not sweep_incomplete and (panel_state not in {"published", "current"} or bool(panel.get("aborted"))), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),
@@ -1298,7 +1339,7 @@ def run(
         # report the day as done while most of the universe was never asked
         # about. The ring ordering means the next runs finish it; this state is
         # what says it is not finished yet.
-        (swept < universe_total, "partial_sweep"),
+        (sweep_incomplete, "partial_sweep"),
     ]
     triggered = [state for hit, state in reasons if hit]
     return {

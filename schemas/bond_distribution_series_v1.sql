@@ -184,7 +184,7 @@ BEGIN
             observed_value !~ '^[A-Z0-9]{9}$'
             OR observed_value IN ('000000000','XXXXXXXXX','NNNNNNNNN','999999999')
         ))
-       OR (expected_kind = 'isin' AND observed_value !~ '^[A-Z0-9]{12}$')
+       OR (expected_kind = 'isin' AND observed_value !~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$')
        OR (expected_kind = 'common_code' AND observed_value !~ '^[0-9]{9}$') THEN
         RAISE EXCEPTION 'identifier source observation has invalid executable syntax';
     END IF;

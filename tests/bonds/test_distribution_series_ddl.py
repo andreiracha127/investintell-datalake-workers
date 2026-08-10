@@ -41,7 +41,7 @@ def test_ddl_has_additive_immutable_evidence_and_governed_pair_registry() -> Non
         "snapshot composition is closed after approval",
         "content hash is computed by the controlled loader path",
         "observed_value !~ '^[A-Z0-9]{9}$'",
-        "observed_value !~ '^[A-Z0-9]{12}$'",
+        "observed_value !~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$'",
         "observed_value !~ '^[0-9]{9}$'",
         "FOR UPDATE",
         "snapshot composition is closed after approval",
@@ -61,6 +61,12 @@ def test_ddl_observation_guard_rejects_the_canonical_nine_character_cusip_placeh
     ddl = (ROOT / "schemas" / "bond_distribution_series_v1.sql").read_text(encoding="utf-8")
 
     assert "observed_value IN ('000000000','XXXXXXXXX','NNNNNNNNN','999999999')" in ddl
+
+
+def test_ddl_observation_guard_requires_minimum_iso_isin_structure() -> None:
+    ddl = (ROOT / "schemas" / "bond_distribution_series_v1.sql").read_text(encoding="utf-8")
+
+    assert "observed_value !~ '^[A-Z]{2}[A-Z0-9]{9}[0-9]$'" in ddl
 
 
 def test_ddl_serializes_composition_and_approval_on_the_snapshot_row() -> None:

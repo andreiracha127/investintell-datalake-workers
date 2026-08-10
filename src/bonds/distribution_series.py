@@ -305,14 +305,16 @@ def identifier_value_has_valid_syntax(identifier_kind: str, value: object) -> bo
     The repository's canonical CUSIP qualifier enforces the established
     nine-character uppercase-alphanumeric form (and rejects placeholders) but
     deliberately has no check-digit rule.  CINS therefore follows that same
-    structural CUSIP9 rule.  ISIN and Common Code are exact structural forms.
+    structural CUSIP9 rule.  ISIN requires its minimum ISO structure (two
+    alphabetic prefix characters and a numeric final character), without
+    implementing a check-digit algorithm.  Common Code is exact structural form.
     """
     if not isinstance(value, str):
         return False
     if identifier_kind == "cusip9":
         return normalize_cusip9(value).normalized_cusip9 == value
     if identifier_kind == "isin":
-        return re.fullmatch(r"[A-Z0-9]{12}", value) is not None
+        return re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", value) is not None
     if identifier_kind == "common_code":
         return re.fullmatch(r"[0-9]{9}", value) is not None
     return False

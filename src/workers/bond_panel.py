@@ -287,7 +287,7 @@ def _load_inputs(
         "monthly_liquidity": _frame(
             conn,
             mapping_cte
-            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.execution_cusip9 AND l.month = m.month WHERE l.month IN (%s, %s)), "
+            + ", historical AS (SELECT m.execution_cusip9 AS cusip9, l.month, l.quoted_days, l.rel_bid_ask_bps, l.dollar_volume, l.quote_state, l.reason_code, 1 AS priority FROM bond_liquidity_monthly l JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9 AND l.month = m.month WHERE l.month IN (%s, %s)), "
             "live AS (SELECT m.execution_cusip9 AS cusip9, date_trunc('month', t.day)::date AS month, count(*) FILTER (WHERE t.bid_ask_bps >= 0)::int AS quoted_days, percentile_cont(.5) WITHIN GROUP (ORDER BY t.bid_ask_bps) FILTER (WHERE t.bid_ask_bps >= 0) AS rel_bid_ask_bps, sum(t.par_volume * t.price_median / 100.0) FILTER (WHERE t.par_volume IS NOT NULL AND t.price_median IS NOT NULL) AS dollar_volume, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'quoted' ELSE 'unquoted' END AS quote_state, CASE WHEN count(*) FILTER (WHERE t.bid_ask_bps >= 0) > 0 THEN 'live_tick_median_valid_bps' ELSE 'live_tick_missing_or_crossed_bps' END AS reason_code, 0 AS priority FROM bond_tick_daily t JOIN mapping m ON upper(btrim(t.cusip9)) = m.execution_cusip9 AND date_trunc('month', t.day)::date = m.month AND m.month = %s WHERE t.day >= %s AND t.day <= %s GROUP BY m.execution_cusip9, date_trunc('month', t.day)::date), "
             "all_rows AS (SELECT * FROM live UNION ALL SELECT * FROM historical) SELECT DISTINCT ON (cusip9, month) cusip9, month, quoted_days, rel_bid_ask_bps, dollar_volume, quote_state, reason_code FROM all_rows ORDER BY cusip9, month, priority",
             (mapping_json, closed_month.date(), open_month.date(), open_month.date(), start, end),
@@ -559,7 +559,7 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
                 today,
                 mapping_snapshot_id=mapping_snapshot_id,
                 structural_publication_id=str(parent["publication_id"]),
-                structural_month=parent["last_closed_month"],
+                structural_month=parent.get("open_month") or parent["last_closed_month"],
             )
             stage_input_reasons: list[str] = []
             empty = [name for name, frame in inputs.items() if name not in {"monthly_liquidity", "static_rating_mapping"} and frame.empty]

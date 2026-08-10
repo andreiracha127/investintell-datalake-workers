@@ -902,6 +902,8 @@ def test_publish_has_no_approved_snapshot_alias_and_cli_accepts_only_draft_snaps
         ("CUSIP", "NNNNNNNNN", "invalid cusip9"),
         ("CINS", "999999999", "invalid cusip9"),
         ("ISIN", "US344045AB5", "invalid isin"),
+        ("ISIN", "XXXXXXXXXXXX", "invalid isin"),
+        ("ISIN", "123456789012", "invalid isin"),
         ("Common Code", "30498160X", "invalid common code"),
     ],
 )

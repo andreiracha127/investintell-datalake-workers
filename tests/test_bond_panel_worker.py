@@ -186,6 +186,7 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert "JOIN bond_panel_snapshot" in reference_sql
     liquidity_sql = next(sql for sql in mapped_queries if "bond_liquidity_monthly" in sql)
     assert ")), historical AS" in liquidity_sql
+    assert "JOIN mapping m ON upper(btrim(l.cusip9)) = m.reference_cusip9" in liquidity_sql
     assert "), live AS" in liquidity_sql
     assert "l.month IN (%s, %s)" in liquidity_sql
     assert "AND m.month = %s WHERE t.day >= %s AND t.day <= %s" in liquidity_sql
@@ -200,6 +201,38 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert lineage["distribution_mapping_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["distribution_mapping_closed_omission:no_supported_reg_s_cusip"] == "1"
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
+
+
+def test_delta_loads_prior_amount_from_the_parent_open_snapshot(monkeypatch) -> None:
+    parent = {
+        "publication_id": "delta-parent",
+        "parent_publication_id": "base",
+        "first_month": date(2020, 1, 1),
+        "last_closed_month": date(2026, 6, 1),
+        "open_month": date(2026, 7, 1),
+        "snapshot_max_month": date(2026, 7, 1),
+        "returns_max_month": date(2026, 6, 1),
+        "source_lineage": REG_S_LINEAGE,
+    }
+    captured: dict[str, object] = {}
+
+    def load(*_args, **kwargs):
+        captured.update(kwargs)
+        raise DistributionSeriesError("stop_after_capture")
+
+    monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_missing_columns", lambda _conn: [])
+    monkeypatch.setattr(bond_panel, "_current_parent", lambda _conn: parent)
+    monkeypatch.setattr(bond_panel, "connect", lambda _dsn: contextlib.nullcontext(object()))
+    monkeypatch.setattr(bond_panel, "_load_inputs", load)
+    monkeypatch.setenv("CODE_REVISION", "revision-123")
+    monkeypatch.setenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID", REG_S_SNAPSHOT_ID)
+
+    outcome = bond_panel.run("postgresql://example", as_of=date(2026, 8, 8))
+
+    assert outcome["state"] == "gate_failed"
+    assert captured["structural_publication_id"] == "delta-parent"
+    assert captured["structural_month"] == date(2026, 7, 1)
 
 
 def test_initial_stage6_base_requires_revision_bound_authorization(monkeypatch) -> None:

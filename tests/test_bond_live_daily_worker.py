@@ -290,11 +290,18 @@ def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkey
 
     out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
 
-    assert resolver_calls == [{
-        "snapshot_id": REG_S_SNAPSHOT_ID,
-        "as_of": TODAY,
-        "reference_cusip9s": ["912828XX1"],
-    }]
+    assert resolver_calls == [
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": _dt.date(2026, 7, 31),
+            "reference_cusip9s": ["912828XX1"],
+        },
+        {
+            "snapshot_id": REG_S_SNAPSHOT_ID,
+            "as_of": TODAY,
+            "reference_cusip9s": ["912828XX1"],
+        },
+    ]
     assert [call[0] for call in client.candle_calls] == ["XS1234567890"]
     observation_writes = [
         params for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
@@ -307,6 +314,10 @@ def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkey
         "resolved": 1,
         "executable": 1,
         "omissions": {},
+        "closed_as_of": "2026-07-31",
+        "open_as_of": "2026-08-07",
+        "closed": {"resolved": 1, "executable": 1, "omissions": {}},
+        "open": {"resolved": 1, "executable": 1, "omissions": {}},
     }
 
 
@@ -333,6 +344,75 @@ def test_missing_reg_s_isin_is_a_coverage_omission_with_no_provider_or_write(mon
     assert out["mapping_coverage"]["omissions"] == {"missing_reg_s_isin": 1}
     assert client.candle_calls == [] and client.tick_calls == []
     assert conn.writes == []
+
+
+def test_daily_sweep_executes_the_closed_and_open_reg_s_legs_when_mapping_changes(monkeypatch) -> None:
+    """A closed-month backfill must not use the current Reg S identifier."""
+    resolver_calls: list[_dt.date] = []
+
+    def resolve(_conn, *, as_of, **_kwargs):
+        resolver_calls.append(as_of)
+        if as_of == _dt.date(2026, 7, 31):
+            resolution = SimpleNamespace(
+                reference_cusip9="912828XX1",
+                reg_s_cusip9="OLDREG001",
+                reg_s_isin="XS1234567890",
+            )
+        else:
+            resolution = SimpleNamespace(
+                reference_cusip9="912828XX1",
+                reg_s_cusip9="NEWREG002",
+                reg_s_isin="XS0987654321",
+            )
+        return SimpleNamespace(resolutions={"912828XX1": resolution}, reason_by_reference={})
+
+    conn = FakeConn({Q_UNIVERSE: list(UNIVERSE)})
+    client = FakeClient(candles={
+        "XS1234567890": _candle_payload(TODAY, 99.0),
+        "XS0987654321": _candle_payload(TODAY, 98.0),
+    })
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert resolver_calls == [_dt.date(2026, 7, 31), TODAY]
+    assert {isin for isin, *_window in client.candle_calls} == {"XS1234567890", "XS0987654321"}
+    written_cusips = {
+        params[0] for sql, params in conn.writes if "INSERT INTO bond_observation_daily" in sql
+    }
+    assert written_cusips == {"OLDREG001", "NEWREG002"}
+    assert out["mapping_coverage"]["closed"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+    assert out["mapping_coverage"]["open"] == {
+        "resolved": 1, "executable": 1, "omissions": {},
+    }
+
+
+def test_cross_as_of_cusip_collision_is_a_typed_omission_not_an_identifier_guess(monkeypatch) -> None:
+    """One CUSIP with two as-of ISINs cannot be selected silently for either leg."""
+    def resolve(_conn, *, as_of, **_kwargs):
+        return SimpleNamespace(
+            resolutions={
+                "912828XX1": SimpleNamespace(
+                    reference_cusip9="912828XX1",
+                    reg_s_cusip9="G12345678",
+                    reg_s_isin=("XS1234567890" if as_of == _dt.date(2026, 7, 31) else "XS0987654321"),
+                )
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_live_daily, "resolve_reg_s_cusip_map_from_db", resolve)
+    rows, total, coverage = bond_live_daily._universe(
+        FakeConn({"to_regclass": [(1,)], Q_UNIVERSE: list(UNIVERSE)}),
+        None,
+        snapshot_id=REG_S_SNAPSHOT_ID,
+        as_of=TODAY,
+    )
+
+    assert rows == [] and total == 0
+    assert coverage["closed"]["omissions"] == {"ambiguous_execution_cusip": 1}
+    assert coverage["open"]["omissions"] == {"ambiguous_execution_cusip": 1}
 
 
 def test_missing_mapping_snapshot_aborts_before_provider_calls(monkeypatch) -> None:
@@ -1694,6 +1774,39 @@ def test_a_capped_run_reports_the_budget_it_covered_not_the_day(monkeypatch) -> 
     assert _drive_run(monkeypatch, conn=FakeConn({Q_UNIVERSE: universe}), limit=50)[
         "state"
     ] == "ok"
+
+
+def test_partial_sweep_defers_stage_six_until_a_full_rerun(monkeypatch) -> None:
+    """The panel pointer may advance only after the sweep's coverage verdict is complete."""
+    universe = [_bond(f"91282800{i}") for i in range(5)]
+    partial_events: list[tuple[str, int]] = []
+
+    partial = _drive_run(
+        monkeypatch,
+        conn=FakeConn({Q_UNIVERSE: universe}),
+        limit=2,
+        events=partial_events,
+    )
+
+    assert partial["state"] == "partial_sweep"
+    assert partial["panel"] == {"state": "deferred", "aborted": False, "reason": "partial_sweep"}
+    assert [name for name, _ in partial_events] == [
+        "lock_acquired", "matview", "republish", "lock_released",
+    ]
+
+    full_events: list[tuple[str, int]] = []
+    full = _drive_run(
+        monkeypatch,
+        conn=FakeConn({Q_UNIVERSE: universe}),
+        limit=5,
+        events=full_events,
+    )
+
+    assert full["state"] == "ok"
+    assert full["panel"]["state"] == "published"
+    assert [name for name, _ in full_events] == [
+        "lock_acquired", "matview", "republish", "panel", "lock_released",
+    ]
 
 
 def test_the_capped_universe_is_the_ring_prefix_not_the_cusip_prefix(monkeypatch) -> None:
