@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
@@ -15,6 +16,22 @@ from scripts import backfill_bond_panel_history as backfill
 
 def _write(path: Path, rows: list[dict[str, object]]) -> None:
     pq.write_table(pa.Table.from_pylist(rows), path)
+
+
+def _authorized_frozen_repair_plan() -> backfill.BackfillPlan:
+    return backfill.BackfillPlan(
+        publication_id=backfill.REPAIR_EXPECTED_PUBLICATION_ID,
+        input_fingerprint=backfill.REPAIR_EXPECTED_INPUT_FINGERPRINT,
+        cutoff=backfill.DEFAULT_CUTOFF,
+        first_month=backfill.REPAIR_EXPECTED_FIRST_MONTH,
+        last_closed_month=backfill.DEFAULT_CUTOFF,
+        returns_last_month=backfill.DEFAULT_CUTOFF,
+        counts=dict(backfill.REPAIR_EXPECTED_COUNTS),
+        source_sha256=dict(backfill.EXPECTED_SHA256),
+        panel_without_rating_pit=backfill.REPAIR_EXPECTED_PANEL_WITHOUT_RATING_PIT,
+        base_repair=backfill._authorized_repair_base_evidence(),
+        returns_first_month=backfill.REPAIR_EXPECTED_RETURNS_FIRST_MONTH,
+    )
 
 
 def _artifact_dir(tmp_path: Path) -> Path:
@@ -361,6 +378,33 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     assert "base_repair" in finalize
     assert backfill._sql_string(plan.returns_first_month) in finalize
     assert f"publication_id={backfill._sql_string(plan.publication_id)}::uuid" in finalize
+
+
+def test_frozen_repair_plan_pins_authorized_identity_and_tail_facts_before_emission() -> None:
+    plan = _authorized_frozen_repair_plan()
+
+    assert "INSERT INTO bond_panel_publications" in backfill.render_prepare_sql(plan)
+    assert "INSERT INTO bond_panel_returns" in backfill.render_repair_copy_sql(plan, "returns")
+    assert "validated_and_pointed" in backfill.render_finalize_sql(plan)
+
+    for drifted in (
+        replace(plan, publication_id="00000000-0000-0000-0000-000000000000"),
+        replace(plan, input_fingerprint="0" * 64),
+        replace(plan, counts={**plan.counts, "returns": plan.counts["returns"] - 1}),
+        replace(plan, base_repair={**plan.base_repair, "tail_digest": "0" * 64}),
+        replace(plan, base_repair={**plan.base_repair, "tail_month_counts": [0] * 15}),
+    ):
+        with pytest.raises(backfill.PlanError, match="repair_plan_not_authorized"):
+            backfill.render_prepare_sql(drifted)
+
+
+def test_repair_returns_copy_replays_historical_facts_after_tail_without_counting_tail(tmp_path: Path) -> None:
+    copy_sql = backfill.render_repair_copy_sql(_authorized_frozen_repair_plan(), "returns")
+
+    assert "source.month <= (SELECT max(legacy.month)" in copy_sql
+    assert "candidate.month <= (SELECT max(legacy.month)" in copy_sql
+    assert "repair historical copy count mismatch:returns" in copy_sql
+    assert "repair copy count mismatch:returns" not in copy_sql
 
 
 def test_normal_mode_still_refuses_a_missing_return_tail(tmp_path: Path) -> None:
