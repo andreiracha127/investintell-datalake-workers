@@ -36,6 +36,27 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
     )
 );
 
+-- Repair-tail resume evidence is deliberately separate from the immutable
+-- publication record: a prepared publication cannot be updated in place.
+-- The predecessor foreign key proves a contiguous, append-only cursor chain.
+CREATE TABLE IF NOT EXISTS bond_panel_repair_tail_batch_attestation (
+    publication_id uuid NOT NULL REFERENCES bond_panel_publications(publication_id) ON DELETE RESTRICT,
+    cursor integer NOT NULL CHECK (cursor >= 0),
+    committed_through integer NOT NULL CHECK (committed_through > cursor),
+    predecessor_committed_through integer,
+    evidence jsonb NOT NULL CHECK (jsonb_typeof(evidence) = 'object'),
+    attested_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (publication_id, cursor),
+    UNIQUE (publication_id, committed_through),
+    CHECK (
+        (cursor = 0 AND predecessor_committed_through IS NULL)
+        OR (cursor > 0 AND predecessor_committed_through = cursor)
+    ),
+    FOREIGN KEY (publication_id, predecessor_committed_through)
+        REFERENCES bond_panel_repair_tail_batch_attestation(publication_id, committed_through)
+        ON DELETE RESTRICT
+);
+
 -- Re-applying the DDL must admit both the controlled legacy history seeder and
 -- the active Reg S configuration. The worker itself still mints only the active
 -- hash; the legacy value is required by backfill_bond_panel_history.py on a fresh
@@ -263,6 +284,25 @@ BEGIN
         SELECT 1 FROM bond_panel_publications p
         WHERE p.publication_id = NEW.publication_id AND p.publication_status = 'prepared'
     ) THEN RAISE EXCEPTION 'facts only write during prepared lifecycle'; END IF;
+    RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION bond_panel_assert_repair_tail_attestation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP <> 'INSERT' THEN
+        RAISE EXCEPTION 'immutable bond panel repair-tail attestation';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1
+        FROM bond_panel_publications p
+        WHERE p.publication_id = NEW.publication_id
+          AND p.publication_status = 'prepared'
+          AND p.code_revision = 't3_historical_base_return_coverage_repair_v1'
+    ) THEN
+        RAISE EXCEPTION 'repair-tail attestations write only during prepared lifecycle';
+    END IF;
     RETURN NEW;
 END;
 $$;
@@ -501,6 +541,139 @@ BEGIN
               )
           )
     ) THEN RAISE EXCEPTION 'pointer config transition requires an authorized dual-series delta child'; END IF;
+    -- One deliberately narrow replacement is allowed for the incomplete T3
+    -- legacy root.  It is not an ancestry shortcut: the old root remains
+    -- immutable and the candidate must prove the frozen-artifact repair
+    -- contract, complete direct facts, and exact source identity.
+    IF TG_OP = 'UPDATE'
+       AND NEW.publication_id IS DISTINCT FROM OLD.publication_id
+       AND EXISTS (
+           SELECT 1
+           FROM bond_panel_publications prior, bond_panel_publications candidate
+           WHERE prior.publication_id = OLD.publication_id
+             AND candidate.publication_id = NEW.publication_id
+             AND prior.publication_id = '92740098-1571-559d-9fb3-119de8321754'::uuid
+             AND candidate.publication_id = 'b3c92982-d82f-5a76-bb51-a4c980d21b25'::uuid
+              AND btrim(prior.config_hash::text) = '0c0d78a866bc1090'
+              AND prior.input_fingerprint = '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb'
+              AND prior.first_month = DATE '2002-07-01'
+              AND prior.last_closed_month = DATE '2026-06-01'
+              AND btrim(candidate.config_hash::text) = '0c0d78a866bc1090'
+             AND prior.parent_publication_id IS NULL
+             AND candidate.parent_publication_id IS NULL
+             AND candidate.code_revision = 't3_historical_base_return_coverage_repair_v1'
+              AND candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'
+              AND candidate.first_month = DATE '2002-07-01'
+              AND candidate.last_closed_month = DATE '2026-06-01'
+             AND candidate.open_month IS NULL
+             AND candidate.snapshot_rows = 3417683
+             AND candidate.rv_signal_rows = 1687524
+             AND candidate.returns_rows = 2801208
+             AND candidate.ratings_pit_rows = 3417683
+             AND candidate.gate_evidence @> jsonb_build_object('base_repair', jsonb_build_object(
+                 'contract', 'legacy_parentless_return_coverage_repair_v1',
+                  'from_publication_id', '92740098-1571-559d-9fb3-119de8321754',
+                  'from_config_hash', '0c0d78a866bc1090',
+                  'from_input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb',
+                 'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581',
+                 'first_month', '2002-07-01',
+                 'last_closed_month', '2026-06-01',
+                 'reconstruction', 'median_coupon_from_historical_carry_then_price_ytm_fallback',
+                 'tail_rows', 200955,
+                 'tail_months', 15,
+                 'tail_month_counts', jsonb_build_array(13641, 14542, 14288, 14178, 13956, 13812, 13660, 13331, 13195, 13229, 12899, 12734, 12610, 12476, 12404),
+                 'tail_cusips', 17494,
+                 'tail_suspect', 47,
+                 'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663',
+                 'authorized_code_revision', 't3_historical_base_return_coverage_repair_v1'
+             ))
+              AND prior.gate_evidence @> jsonb_build_object(
+                  'input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb',
+                  'source_sha256', jsonb_build_object(
+                      'bond_monthly_returns.parquet', 'd0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179',
+                      'bond_panel_live.parquet', '3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210',
+                      'bond_ratings_pit.parquet', '97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4',
+                      'rv_signal_live.parquet', 'b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e',
+                      'universe_snapshots_live.parquet', 'ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a'
+                  )
+              )
+              AND candidate.source_lineage->'source_sha256' = jsonb_build_object(
+                  'bond_monthly_returns.parquet', 'd0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179',
+                  'bond_panel_live.parquet', '3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210',
+                  'bond_ratings_pit.parquet', '97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4',
+                  'rv_signal_live.parquet', 'b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e',
+                  'universe_snapshots_live.parquet', 'ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a'
+              )
+             AND EXISTS (
+                 SELECT 1
+                 FROM bond_panel_repair_tail_batch_attestation terminal_batch
+                 WHERE terminal_batch.publication_id = candidate.publication_id
+                   AND terminal_batch.committed_through = 200955
+                   AND terminal_batch.evidence @> jsonb_build_object(
+                       'publication_id', 'b3c92982-d82f-5a76-bb51-a4c980d21b25',
+                       'surface', 'returns_repair_tail',
+                       'committed_through', 200955,
+                       'source_sha256', jsonb_build_object(
+                           'bond_monthly_returns.parquet', 'd0c8827437d6a49c4481ead71eac69097d00db11a19d91e2b58dc3d714ae8179',
+                           'bond_panel_live.parquet', '3e4d451faa05bcedefa086903325e93842a59e31368c7e12aaa5a4972214e210',
+                           'bond_ratings_pit.parquet', '97c645ce7d98ad945288369e20ed40abe2d7d1590b4953f7a983bc6e719efcb4',
+                           'rv_signal_live.parquet', 'b6afc8bc44dd11563b794b2c11a9d13eb9a882af4d364a728e87a34258c90e6e',
+                           'universe_snapshots_live.parquet', 'ab48d99f466ae3a943ce0a2819175ab6efdd95212b4efc9079151750057b077a'
+                       ),
+                       'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663',
+                       'base_repair', jsonb_build_object(
+                           'contract', 'legacy_parentless_return_coverage_repair_v1',
+                           'from_publication_id', '92740098-1571-559d-9fb3-119de8321754',
+                           'from_config_hash', '0c0d78a866bc1090',
+                           'from_input_fingerprint', '5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb',
+                           'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581',
+                           'first_month', '2002-07-01',
+                           'last_closed_month', '2026-06-01',
+                           'reconstruction', 'median_coupon_from_historical_carry_then_price_ytm_fallback',
+                           'tail_rows', 200955,
+                           'tail_months', 15,
+                           'tail_month_counts', jsonb_build_array(13641, 14542, 14288, 14178, 13956, 13812, 13660, 13331, 13195, 13229, 12899, 12734, 12610, 12476, 12404),
+                           'tail_cusips', 17494,
+                           'tail_suspect', 47,
+                           'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663',
+                           'authorized_code_revision', 't3_historical_base_return_coverage_repair_v1'
+                       )
+                   )
+             )
+             AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.snapshot_rows
+             AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.rv_signal_rows
+             AND (SELECT count(*) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.returns_rows
+             AND (SELECT count(*) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.ratings_pit_rows
+             AND (SELECT max(f.month) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT max(f.month) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT max(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = DATE '2002-08-01'
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = prior.publication_id) = DATE '2002-08-01'
+             AND (SELECT max(f.month) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND NOT EXISTS (SELECT 1 FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id AND (f.month < candidate.first_month OR f.month > candidate.last_closed_month))
+             AND NOT EXISTS (
+                 SELECT 1 FROM generate_series((candidate.first_month + INTERVAL '1 month')::date, candidate.last_closed_month, INTERVAL '1 month') expected(month)
+                 WHERE NOT EXISTS (SELECT 1 FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id AND f.month = expected.month::date)
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id AND f.eligibility_state = 'included'
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+             )
+       ) THEN
+        RETURN NEW;
+    END IF;
     IF TG_OP = 'UPDATE'
        AND NEW.publication_id IS DISTINCT FROM OLD.publication_id
        AND NOT EXISTS (
@@ -528,6 +701,9 @@ FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_immutable();
 DROP TRIGGER IF EXISTS bond_panel_returns_immutable ON bond_panel_returns;
 CREATE TRIGGER bond_panel_returns_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_returns
 FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_immutable();
+DROP TRIGGER IF EXISTS bond_panel_repair_tail_attestation_immutable ON bond_panel_repair_tail_batch_attestation;
+CREATE TRIGGER bond_panel_repair_tail_attestation_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_repair_tail_batch_attestation
+FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_repair_tail_attestation();
 DROP TRIGGER IF EXISTS bond_panel_rating_pit_immutable ON bond_panel_rating_pit;
 CREATE TRIGGER bond_panel_rating_pit_immutable BEFORE INSERT OR UPDATE OR DELETE ON bond_panel_rating_pit
 FOR EACH ROW EXECUTE FUNCTION bond_panel_assert_immutable();
@@ -579,6 +755,7 @@ SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_rat
 ORDER BY f.month, f.cusip_id, a.depth;
 
 ALTER TABLE bond_panel_publications OWNER TO worker_writer;
+ALTER TABLE bond_panel_repair_tail_batch_attestation OWNER TO worker_writer;
 ALTER TABLE bond_panel_app_pointer OWNER TO worker_writer;
 ALTER TABLE bond_panel_snapshot OWNER TO worker_writer;
 ALTER TABLE bond_panel_rv_signal OWNER TO worker_writer;
@@ -587,12 +764,14 @@ ALTER TABLE bond_panel_rating_pit OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_publication_transition() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_parent() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_immutable() OWNER TO worker_writer;
+ALTER FUNCTION bond_panel_assert_repair_tail_attestation() OWNER TO worker_writer;
 ALTER FUNCTION bond_panel_assert_pointer_validated() OWNER TO worker_writer;
 ALTER VIEW bond_panel_current_snapshot_v1 OWNER TO worker_writer;
 ALTER VIEW bond_panel_current_rv_signal_v1 OWNER TO worker_writer;
 ALTER VIEW bond_panel_current_returns_v1 OWNER TO worker_writer;
 ALTER VIEW bond_panel_current_rating_pit_v1 OWNER TO worker_writer;
 REVOKE ALL ON TABLE bond_panel_publications FROM PUBLIC;
+REVOKE ALL ON TABLE bond_panel_repair_tail_batch_attestation FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_app_pointer FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_snapshot FROM PUBLIC;
 REVOKE ALL ON TABLE bond_panel_rv_signal FROM PUBLIC;

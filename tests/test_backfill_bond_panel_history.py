@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
@@ -15,6 +16,22 @@ from scripts import backfill_bond_panel_history as backfill
 
 def _write(path: Path, rows: list[dict[str, object]]) -> None:
     pq.write_table(pa.Table.from_pylist(rows), path)
+
+
+def _authorized_frozen_repair_plan() -> backfill.BackfillPlan:
+    return backfill.BackfillPlan(
+        publication_id=backfill.REPAIR_EXPECTED_PUBLICATION_ID,
+        input_fingerprint=backfill.REPAIR_EXPECTED_INPUT_FINGERPRINT,
+        cutoff=backfill.DEFAULT_CUTOFF,
+        first_month=backfill.REPAIR_EXPECTED_FIRST_MONTH,
+        last_closed_month=backfill.DEFAULT_CUTOFF,
+        returns_last_month=backfill.DEFAULT_CUTOFF,
+        counts=dict(backfill.REPAIR_EXPECTED_COUNTS),
+        source_sha256=dict(backfill.EXPECTED_SHA256),
+        panel_without_rating_pit=backfill.REPAIR_EXPECTED_PANEL_WITHOUT_RATING_PIT,
+        base_repair=backfill._authorized_repair_base_evidence(),
+        returns_first_month=backfill.REPAIR_EXPECTED_RETURNS_FIRST_MONTH,
+    )
 
 
 def _artifact_dir(tmp_path: Path) -> Path:
@@ -236,3 +253,206 @@ def test_emit_schema_installs_then_transfers_worker_ownership(capsys: pytest.Cap
     assert "CREATE TABLE IF NOT EXISTS bond_panel_publications" in emitted
     assert "ALTER TABLE bond_panel_publications OWNER TO worker_writer" in emitted
     assert "COMMIT;" in emitted
+
+
+def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_lineage(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    # The frozen returns artifact is deliberately incomplete, as is the legacy
+    # publication being replaced.  Snapshot prices remain frozen through June.
+    _write(directory / "bond_monthly_returns.parquet", [
+        # A return needs a predecessor price, so the first return month is one
+        # month after the first snapshot month in the real frozen artifacts.
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    panel_path = directory / "bond_panel_live.parquet"
+    panel = pq.read_table(panel_path)
+    extra = pa.Table.from_pylist([
+        {"cusip_id": "AAA000001", "month": "2025-02-01", "pr": 100.0, "ytm": .05, "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012, "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0, "db_type": 1.0, "price_source": "frozen"},
+        {"cusip_id": "BBB000002", "month": "2025-03-01", "pr": 99.0, "ytm": .06, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 98.0, "prc_ask": 100.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"},
+        *[
+            {"cusip_id": "BBB000002", "month": str(month.date()), "pr": 100.0, "ytm": .06, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"}
+            for month in pd.date_range("2025-05-01", "2026-06-01", freq="MS")
+        ],
+        *[
+            {"cusip_id": "CCC000003", "month": str(month.date()), "pr": 100.0, "ytm": .07, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"}
+            for month in pd.date_range("2025-04-01", "2026-06-01", freq="MS")
+        ],
+    ])
+    pq.write_table(pa.concat_tables([panel, extra]), panel_path)
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+
+    plan = backfill.build_repair_plan(
+        artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID,
+    )
+    rows = backfill.rows_for_surface(artifacts, plan, "returns", start_after=0, limit=100)
+    tail = {(row["cusip_id"], row["month"]): row for row in rows.rows}
+
+    assert plan.input_fingerprint != plan.evidence()["base_repair"]["from_artifact_fingerprint"]
+    assert plan.counts["returns"] == 45
+    assert plan.evidence()["returns_first_month"] == "2025-03-01"
+    assert rows.total == 44
+    assert all(row["month"] >= "2025-04-01" for row in rows.rows)
+    repair = plan.evidence()["base_repair"]
+    assert {key: repair[key] for key in (
+        "contract", "from_publication_id", "from_config_hash", "from_input_fingerprint",
+        "first_month", "last_closed_month", "reconstruction", "tail_rows", "tail_months",
+    )} == {
+        "contract": "legacy_parentless_return_coverage_repair_v1",
+        "from_publication_id": backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID,
+        "from_config_hash": backfill.CONFIG_HASH,
+        "from_input_fingerprint": backfill.LEGACY_REPAIR_FROM_INPUT_FINGERPRINT,
+        "first_month": "2025-02-01",
+        "last_closed_month": "2026-06-01",
+        "reconstruction": "median_coupon_from_historical_carry_then_price_ytm_fallback",
+        "tail_rows": 44,
+        "tail_months": 15,
+    }
+    assert repair["tail_month_counts"] == [2, *([3] * 14)]
+    assert len(repair["tail_digest"]) == 64
+    assert tail[("AAA000001", "2025-04-01")]["price_return"] == 0.0
+    assert tail[("AAA000001", "2025-04-01")]["carry_return"] == pytest.approx(.001)
+    assert tail[("AAA000001", "2025-04-01")]["exit_basis"] == "observed"
+    assert tail[("AAA000001", "2025-04-01")]["exit_reason"] is None
+    assert tail[("BBB000002", "2025-04-01")]["carry_return"] > 0
+    assert tail[("CCC000003", "2025-05-01")]["carry_return"] > 0
+
+
+def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_source(tmp_path: Path, monkeypatch) -> None:
+    directory = _artifact_dir(tmp_path)
+    panel_path = directory / "bond_panel_live.parquet"
+    panel = pq.read_table(panel_path)
+    pq.write_table(pa.concat_tables([panel, pa.Table.from_pylist([{
+        "cusip_id": "AAA000001", "month": "2025-02-01", "pr": 100.0, "ytm": .05,
+        "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012,
+        "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5,
+        "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0,
+        "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0,
+        "db_type": 1.0, "price_source": "frozen",
+    }])]), panel_path)
+    _write(directory / "bond_monthly_returns.parquet", [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+    plan = backfill.build_repair_plan(artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)
+
+    copies = {
+        surface: backfill.render_repair_copy_sql(plan, surface)
+        for surface in backfill.SURFACES
+    }
+    copied = copies["snapshot"]
+    tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
+    original_tail_rows = backfill._repair_return_tail_rows
+    tail_calls: list[tuple[int, int | None]] = []
+
+    def bounded_tail_rows(*args, start_after: int = 0, limit: int | None = None, **kwargs):
+        tail_calls.append((start_after, limit))
+        return original_tail_rows(*args, start_after=start_after, limit=limit, **kwargs)
+
+    monkeypatch.setattr(backfill, "_repair_return_tail_rows", bounded_tail_rows)
+    resumed_tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=1, limit=1)
+    finalize = backfill.render_finalize_sql(plan)
+
+    assert f"WHERE publication_id={backfill._sql_string(backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)}::uuid" in copied
+    assert "INSERT INTO bond_panel_snapshot" in copied
+    assert "bond_panel_live.parquet" not in copied
+    assert "candidate.publication_status IN ('prepared','validated')" in copied
+    assert "pointer.publication_id=candidate.publication_id" in copied
+    assert (
+        f"WHERE source.publication_id={backfill._sql_string(backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)}::uuid\n"
+        "  AND EXISTS (\n      SELECT 1 FROM bond_panel_publications candidate"
+    ) in copied
+    for surface, copy_sql in copies.items():
+        assert f"repair copy immutable evidence conflict:{surface}" in copy_sql
+        for column in (
+            "distribution_rule",
+            "reference_cusip9",
+            "distribution_decision_id",
+            *backfill._COLUMNS[surface][1:],
+        ):
+            assert f"candidate.{column}" in copy_sql
+            assert f"source.{column}" in copy_sql
+    assert "COPY _backfill_stage" in tail
+    assert "repair tail requires exact copied historical returns before tail" in tail
+    assert "publication_status='prepared'" in tail
+    assert "publication_status IN ('prepared','validated')" not in tail
+    assert "bond_panel_repair_tail_batch_attestation" in resumed_tail
+    assert "repair tail requires contiguous attested prefix" in resumed_tail
+    assert "CREATE TEMP TABLE _repair_tail_prefix" not in resumed_tail
+    assert tail_calls == [(1, 1)]
+    assert "repair tail final count mismatch" in resumed_tail
+    assert "immutable evidence conflict with existing target row" in resumed_tail
+    assert "WHERE publication_id=" in finalize
+    assert "AND publication_id=" in finalize
+    assert "base_repair" in finalize
+    assert backfill._sql_string(plan.returns_first_month) in finalize
+    assert f"publication_id={backfill._sql_string(plan.publication_id)}::uuid" in finalize
+    assert "bond_panel_repair_tail_batch_attestation" in finalize
+    assert "repair terminal tail attestation missing or non-identical" in finalize
+    assert f"committed_through={plan.base_repair['tail_rows']}" in finalize
+
+
+def test_frozen_repair_plan_pins_authorized_identity_and_tail_facts_before_emission() -> None:
+    plan = _authorized_frozen_repair_plan()
+
+    assert "INSERT INTO bond_panel_publications" in backfill.render_prepare_sql(plan)
+    assert "INSERT INTO bond_panel_returns" in backfill.render_repair_copy_sql(plan, "returns")
+    assert "validated_and_pointed" in backfill.render_finalize_sql(plan)
+
+    for drifted in (
+        replace(plan, publication_id="00000000-0000-0000-0000-000000000000"),
+        replace(plan, input_fingerprint="0" * 64),
+        replace(plan, counts={**plan.counts, "returns": plan.counts["returns"] - 1}),
+        replace(plan, base_repair={**plan.base_repair, "tail_digest": "0" * 64}),
+        replace(plan, base_repair={**plan.base_repair, "tail_month_counts": [0] * 15}),
+    ):
+        with pytest.raises(backfill.PlanError, match="repair_plan_not_authorized"):
+            backfill.render_prepare_sql(drifted)
+
+
+def test_repair_returns_copy_replays_historical_facts_after_tail_without_counting_tail(tmp_path: Path) -> None:
+    copy_sql = backfill.render_repair_copy_sql(_authorized_frozen_repair_plan(), "returns")
+
+    assert "source.month <= (SELECT max(legacy.month)" in copy_sql
+    assert "candidate.month <= (SELECT max(legacy.month)" in copy_sql
+    assert "repair historical copy count mismatch:returns" in copy_sql
+    assert "repair copy count mismatch:returns" not in copy_sql
+
+
+def test_repair_terminal_tail_replay_is_validated_only_when_pointer_is_exact(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    panel_path = directory / "bond_panel_live.parquet"
+    panel = pq.read_table(panel_path)
+    pq.write_table(pa.concat_tables([panel, pa.Table.from_pylist([{
+        "cusip_id": "AAA000001", "month": "2025-02-01", "pr": 100.0, "ytm": .05,
+        "mod_dur": 5.0, "bond_maturity": 4.0, "credit_spread": .012,
+        "trade_count": 8.0, "dollar_volume": 9.0, "traded_days": 5,
+        "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0,
+        "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 4.0,
+        "db_type": 1.0, "price_source": "frozen",
+    }])]), panel_path)
+    _write(directory / "bond_monthly_returns.parquet", [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+    plan = backfill.build_repair_plan(artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)
+
+    terminal = backfill.render_batch_sql(
+        artifacts, plan, "returns", start_after=plan.base_repair["tail_rows"] - 1, limit=1,
+    )
+    nonterminal = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
+
+    assert "repair terminal tail replay requires validated pointed candidate" in terminal
+    assert f"pointer.publication_id={backfill._sql_string(plan.publication_id)}::uuid" in terminal
+    assert "candidate.publication_status='prepared'" in terminal
+    assert "repair terminal tail replay requires validated pointed candidate" not in nonterminal
+
+
+def test_normal_mode_still_refuses_a_missing_return_tail(tmp_path: Path) -> None:
+    directory = _artifact_dir(tmp_path)
+    _write(directory / "bond_monthly_returns.parquet", [
+        {"cusip_id": "AAA000001", "month": "2025-03-01", "total_return": .01, "price_return": .009, "carry_return": .001, "suspect": False},
+    ])
+    artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
+
+    with pytest.raises(backfill.PlanError, match="returns_history_must_reach_cutoff"):
+        backfill.build_plan(artifacts)

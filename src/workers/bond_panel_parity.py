@@ -8,6 +8,7 @@ or moves a publication pointer.
 from __future__ import annotations
 
 from datetime import date
+import os
 from typing import Any
 
 import numpy as np
@@ -27,6 +28,12 @@ PANEL_CONFIG_HASH = "0c0d78a866bc1090"
 REG_S_PANEL_CONFIG_HASH = bond_panel.PANEL_CONFIG_HASH
 BASE_PUBLICATION_ID = "92740098-1571-559d-9fb3-119de8321754"
 BASE_INPUT_FINGERPRINT = "5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb"
+REPAIRED_BASE_PUBLICATION_ID = "b3c92982-d82f-5a76-bb51-a4c980d21b25"
+REPAIRED_BASE_INPUT_FINGERPRINT = "6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e"
+AUTHORIZED_CURRENT_PUBLICATIONS = {
+    BASE_PUBLICATION_ID: BASE_INPUT_FINGERPRINT,
+    REPAIRED_BASE_PUBLICATION_ID: REPAIRED_BASE_INPUT_FINGERPRINT,
+}
 PARITY_MONTHS = (pd.Timestamp("2025-01-01"), pd.Timestamp("2026-06-01"))
 SPREAD_DEFINITION = "ytm_minus_interpolated_dgs"
 RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
@@ -65,25 +72,25 @@ def _current_publication(conn: Any) -> tuple[str, str, str, str] | None:
     return None if row is None else tuple(str(value) for value in row)
 
 
-def _frozen_snapshot(conn: Any, month: pd.Timestamp) -> pd.DataFrame:
+def _frozen_snapshot(conn: Any, publication_id: str, month: pd.Timestamp) -> pd.DataFrame:
     frame = _frame(
         conn,
         "SELECT cusip_id, month, eligibility_state, eligibility_reason, ytm, mod_dur, "
         "maturity_years, spread_final, spread_final_bps, spread_definition, source_lineage "
         "FROM bond_panel_snapshot WHERE publication_id = %s AND month = %s",
-        (BASE_PUBLICATION_ID, month.date()),
+        (publication_id, month.date()),
     )
     if "month" in frame:
         frame["month"] = pd.to_datetime(frame["month"])
     return frame
 
 
-def _frozen_rv(conn: Any, month: pd.Timestamp) -> pd.DataFrame:
+def _frozen_rv(conn: Any, publication_id: str, month: pd.Timestamp) -> pd.DataFrame:
     frame = _frame(
         conn,
         "SELECT cusip_id, month, rv_signal, spread_definition, source_lineage "
         "FROM bond_panel_rv_signal WHERE publication_id = %s AND month = %s",
-        (BASE_PUBLICATION_ID, month.date()),
+        (publication_id, month.date()),
     )
     if "month" in frame:
         frame["month"] = pd.to_datetime(frame["month"])
@@ -135,7 +142,11 @@ def _normalized_monthly_curve(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rebuild_month(
-    conn: Any, month: pd.Timestamp,
+    conn: Any,
+    month: pd.Timestamp,
+    structural_publication_id: str = BASE_PUBLICATION_ID,
+    *,
+    mapping_snapshot_id: str,
 ) -> tuple[
     pd.DataFrame,
     pd.DataFrame,
@@ -156,7 +167,8 @@ def _rebuild_month(
         month,
         month,
         as_of,
-        structural_publication_id=BASE_PUBLICATION_ID,
+        mapping_snapshot_id=mapping_snapshot_id,
+        structural_publication_id=structural_publication_id,
         structural_month=month.date(),
     )
     reference_frame = inputs["resolved_issuer_sector"].copy()
@@ -947,16 +959,20 @@ def run(dsn: str | None = None) -> dict[str, object]:
         current = _current_publication(conn)
         if current is None:
             return _failure("current_publication_missing")
-        if current[0] != BASE_PUBLICATION_ID:
+        expected_fingerprint = AUTHORIZED_CURRENT_PUBLICATIONS.get(current[0])
+        if expected_fingerprint is None:
             return _failure("current_publication_id_mismatch")
         if current[1] != PANEL_CONFIG_HASH:
             return _failure("current_publication_config_mismatch")
-        if current[2] != BASE_INPUT_FINGERPRINT:
+        if current[2] != expected_fingerprint:
             return _failure("current_publication_fingerprint_mismatch")
         if current[3] != "validated":
             return _failure("current_publication_status_mismatch")
+        mapping_snapshot_id = (os.getenv("BOND_PANEL_REG_S_MAPPING_SNAPSHOT_ID") or "").strip()
+        if not mapping_snapshot_id:
+            return _failure("distribution_mapping_snapshot_id_absent")
         for month in PARITY_MONTHS:
-            frozen_snapshot, frozen_rv = _frozen_snapshot(conn, month), _frozen_rv(conn, month)
+            frozen_snapshot, frozen_rv = _frozen_snapshot(conn, current[0], month), _frozen_rv(conn, current[0], month)
             try:
                 (
                     rebuilt_snapshot,
@@ -967,7 +983,12 @@ def run(dsn: str | None = None) -> dict[str, object]:
                     input_exclusions,
                     _reference_keys,
                     _fit_diagnostics,
-                ) = _rebuild_month(conn, month)
+                ) = _rebuild_month(
+                    conn,
+                    month,
+                    current[0],
+                    mapping_snapshot_id=mapping_snapshot_id,
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 return _failure(f"rebuild_error:{exc}", results)
             results.append(_compare_month(
