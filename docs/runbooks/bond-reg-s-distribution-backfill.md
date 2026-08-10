@@ -86,6 +86,17 @@ For each downloaded document retain accession, document URL/type, retrieval time
 raw SHA-256, parser version, exact source label/value, and a stable table/section
 locator. A parser candidate is not approval.
 
+`explicit-label-v2` bounds the durable parse artifact without weakening evidence:
+every `candidate` and `ambiguous` block is retained. Blocks with no explicit
+label are not repeated by table row; a document with no actionable block retains
+one deterministic `zero_match`, while zero blocks beside actionable evidence are
+collapsed. The parse result reports both zero-only documents and the number of
+collapsed zero blocks. This version change requires regenerating parse and
+adjudication artifacts; do not mix a v1 manifest with v2 records.
+Adjudication manifest v2 binds both version fields into its checksum. Export,
+seal, dry-run bundle construction, and publish all reject a stale manifest or
+any record whose parser version differs from the current parser.
+
 ## 4. Human adjudication
 
 Review `adjudication/manifest.json` against the raw document. An approval must

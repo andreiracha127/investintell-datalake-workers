@@ -18,11 +18,12 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any, Protocol
+from typing import Any, Iterable, Protocol
 from urllib.request import Request, urlopen
 
 SEC_API_FULL_TEXT_SEARCH = "https://api.sec-api.io/full-text-search"
-PARSER_VERSION = "explicit-label-v1"
+PARSER_VERSION = "explicit-label-v2"
+ADJUDICATION_MANIFEST_VERSION = 2
 TARGETED_QUERY_VERSION = "targeted-exact-v1"
 _DOWNLOAD_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 SEARCH_QUERY_VERSIONS = (
@@ -96,6 +97,26 @@ def _write_json(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
+def _write_json_array(path: Path, values: Iterable[object]) -> None:
+    """Atomically stream one canonical JSON array without retaining it in memory."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write("[")
+            first = True
+            for value in values:
+                if not first:
+                    handle.write(",")
+                handle.write(canonical_json(value))
+                first = False
+            handle.write("]\n")
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    temporary.replace(path)
+
+
 def _write_text(path: Path, value: str, *, encoding: str = "utf-8") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
@@ -165,10 +186,45 @@ def _terminal_unavailable_entries(output_root: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _adjudication_digest(records: list[dict[str, Any]], terminal: object = None) -> str:
-    """Preserve the legacy records digest unless terminal evidence must also be bound."""
-    value: object = records if terminal is None else {"records": records, "permanently_unavailable": terminal}
+def _adjudication_digest(
+    records: list[dict[str, Any]],
+    terminal: object = None,
+    *,
+    parser_version: str = PARSER_VERSION,
+    manifest_version: int = ADJUDICATION_MANIFEST_VERSION,
+) -> str:
+    """Bind records and terminal evidence to their exact parser/manifest contract."""
+    value: dict[str, object] = {
+        "manifest_version": manifest_version,
+        "parser_version": parser_version,
+        "records": records,
+    }
+    if terminal is not None:
+        value["permanently_unavailable"] = terminal
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _validate_record_parser_versions(records: object, *, artifact: str) -> list[dict[str, Any]]:
+    if not isinstance(records, list):
+        raise ValueError(f"{artifact} records must be a list")
+    if any(
+        not isinstance(record, dict) or record.get("parser_version") != PARSER_VERSION
+        for record in records
+    ):
+        raise ValueError(f"{artifact} record parser_version mismatch")
+    return records
+
+
+def _validate_current_manifest(manifest: object) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest must be an object")
+    if manifest.get("manifest_version") != ADJUDICATION_MANIFEST_VERSION:
+        raise ValueError("manifest version mismatch")
+    if manifest.get("parser_version") != PARSER_VERSION:
+        raise ValueError("manifest parser_version mismatch")
+    return manifest, _validate_record_parser_versions(
+        manifest.get("records"), artifact="manifest"
+    )
 
 
 def _validate_terminal_unavailable_evidence(
@@ -677,41 +733,85 @@ def parse_document(raw: bytes, *, document_hash: str, accession: str) -> list[di
 
 
 def parse(output_root: Path) -> dict[str, int]:
-    records: list[dict[str, Any]] = []
+    record_count = candidates = zero_match_documents = zero_match_blocks_collapsed = 0
     permanently_unavailable = 0
-    for item in sorted(_read_json(output_root / "downloads.json", []), key=lambda value: value["document_key"]):
-        if _is_terminal_unavailable(item):
-            permanently_unavailable += 1
-            continue
-        raw_path = output_root / item["raw_path"]
-        for record in parse_document(raw_path.read_bytes(), document_hash=item["document_hash"], accession=item["accession"]):
-            record["parent_form"] = item.get("parent_form")
-            record["document_type"] = item.get("document_type")
-            record["filed_at"] = item.get("filed_at")
-            record["evidence_link"] = {
-                "filing_url": item.get("filing_url"), "raw_path": item["raw_path"],
-                "retrieved_at": item.get("retrieved_at"),
-            }
-            record["document_key"] = item["document_key"]
-            records.append(record)
-    _write_json(output_root / "parse" / "records.json", records)
-    result = {"records": len(records), "candidates": sum(record["status"] == "candidate" for record in records)}
+
+    def retained_records() -> Iterable[dict[str, Any]]:
+        nonlocal record_count, candidates, permanently_unavailable
+        nonlocal zero_match_documents, zero_match_blocks_collapsed
+        downloads = sorted(
+            _read_json(output_root / "downloads.json", []),
+            key=lambda value: value["document_key"],
+        )
+        for item in downloads:
+            if _is_terminal_unavailable(item):
+                permanently_unavailable += 1
+                continue
+            raw_path = output_root / item["raw_path"]
+            document_records = parse_document(
+                raw_path.read_bytes(),
+                document_hash=item["document_hash"],
+                accession=item["accession"],
+            )
+            actionable = [
+                record for record in document_records
+                if record.get("status") != "zero_match"
+            ]
+            if actionable:
+                retained = actionable
+            else:
+                retained = document_records[:1]
+                if retained:
+                    zero_match_documents += 1
+            zero_match_blocks_collapsed += len(document_records) - len(retained)
+            for record in retained:
+                record["parent_form"] = item.get("parent_form")
+                record["document_type"] = item.get("document_type")
+                record["filed_at"] = item.get("filed_at")
+                record["evidence_link"] = {
+                    "filing_url": item.get("filing_url"),
+                    "raw_path": item["raw_path"],
+                    "retrieved_at": item.get("retrieved_at"),
+                }
+                record["document_key"] = item["document_key"]
+                record_count += 1
+                candidates += record.get("status") == "candidate"
+                yield record
+
+    _write_json_array(output_root / "parse" / "records.json", retained_records())
+    result = {"records": record_count, "candidates": candidates}
+    if zero_match_documents:
+        result["zero_match_documents"] = zero_match_documents
+    if zero_match_blocks_collapsed:
+        result["zero_match_blocks_collapsed"] = zero_match_blocks_collapsed
     if permanently_unavailable:
         result["permanently_unavailable"] = permanently_unavailable
     return result
 
 
 def adjudication_export(output_root: Path) -> dict[str, int | str]:
-    records = _read_json(output_root / "parse" / "records.json", [])
+    records = _validate_record_parser_versions(
+        _read_json(output_root / "parse" / "records.json", []),
+        artifact="parse",
+    )
     pending = [{**record, "adjudication": "pending"} for record in records]
-    payload = {"manifest_version": 1, "parser_version": PARSER_VERSION, "records": pending}
+    payload = {
+        "manifest_version": ADJUDICATION_MANIFEST_VERSION,
+        "parser_version": PARSER_VERSION,
+        "records": pending,
+    }
     terminal_entries = _terminal_unavailable_entries(output_root)
     if terminal_entries:
         payload["permanently_unavailable"] = {
             "count": len(terminal_entries), "records": terminal_entries,
             "sha256": hashlib.sha256(canonical_json(terminal_entries).encode("utf-8")).hexdigest(),
         }
-    digest = _adjudication_digest(pending, payload.get("permanently_unavailable"))
+    digest = _adjudication_digest(
+        pending,
+        payload.get("permanently_unavailable"),
+        parser_version=payload["parser_version"],
+        manifest_version=payload["manifest_version"],
+    )
     payload["sha256"] = digest
     _write_json(output_root / "adjudication" / "manifest.json", payload)
     _write_text(output_root / "adjudication" / "manifest.sha256", digest + "\n", encoding="ascii")
@@ -728,10 +828,7 @@ _ADJUDICATION_STATES = frozenset({"pending", "approved", "rejected"})
 def seal_adjudication(output_root: Path) -> dict[str, int | str]:
     """Seal human adjudications by validating them and refreshing only manifest hashes."""
     manifest_path = output_root / "adjudication" / "manifest.json"
-    manifest = _read_json(manifest_path, {})
-    records = manifest.get("records")
-    if not isinstance(records, list):
-        raise ValueError("manifest records must be a list")
+    manifest, records = _validate_current_manifest(_read_json(manifest_path, {}))
     for record in records:
         if not isinstance(record, dict) or record.get("adjudication") not in _ADJUDICATION_STATES:
             raise ValueError("invalid adjudication")
@@ -740,7 +837,12 @@ def seal_adjudication(output_root: Path) -> dict[str, int | str]:
             if not isinstance(snapshot_id, str) or not snapshot_id.strip():
                 raise ValueError("approved record missing draft_snapshot_id")
     terminal_result = _validate_terminal_unavailable_evidence(output_root, manifest)
-    digest = _adjudication_digest(records, manifest.get("permanently_unavailable"))
+    digest = _adjudication_digest(
+        records,
+        manifest.get("permanently_unavailable"),
+        parser_version=manifest["parser_version"],
+        manifest_version=manifest["manifest_version"],
+    )
     _write_json(manifest_path, {**manifest, "sha256": digest})
     _write_text(output_root / "adjudication" / "manifest.sha256", digest + "\n", encoding="ascii")
     return {"records": len(records), "sha256": digest, **terminal_result}
@@ -889,10 +991,16 @@ def build_registry_bundle(
     output_root: Path, draft_snapshot_id: str | None = None
 ) -> dict[str, object]:
     """Build the deterministic, sealed registry payload without any database effect."""
-    manifest = _read_json(output_root / "adjudication" / "manifest.json", {})
-    records = manifest.get("records", [])
+    manifest, records = _validate_current_manifest(
+        _read_json(output_root / "adjudication" / "manifest.json", {})
+    )
     _validate_terminal_unavailable_evidence(output_root, manifest)
-    expected = _adjudication_digest(records, manifest.get("permanently_unavailable"))
+    expected = _adjudication_digest(
+        records,
+        manifest.get("permanently_unavailable"),
+        parser_version=manifest["parser_version"],
+        manifest_version=manifest["manifest_version"],
+    )
     if manifest.get("sha256") != expected:
         raise ValueError("manifest checksum mismatch")
     for record in records:

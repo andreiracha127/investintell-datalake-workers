@@ -65,11 +65,23 @@ def _approved_preview_record(*, label: str = "CUSIP", value: str = "344045AB5") 
         "status": "candidate", "adjudication": "approved", "draft_snapshot_id": "snapshot-draft",
         "valid_from": "2025-01-01", "accession": "a-1", "block_locator": "table[0]/row[0]",
         "parent_form": "424B2", "document_type": "EX-4.1", "document_hash": "a" * 64,
-        "parser_version": "explicit-label-v1",
+        "parser_version": backfill.PARSER_VERSION,
         "evidence_link": {"filing_url": "https://www.sec.gov/example.htm", "retrieved_at": "2025-07-23T00:00:00+00:00"},
         "reg_s": [{"identifier_label": "CUSIP", "exact_label": "Reg S CUSIP", "source_value": "G35906AC3", "normalized_value": "G35906AC3", "tenure": "not_stated"}],
         "rule_144a": [{"identifier_label": label, "exact_label": f"Rule 144A {label}", "source_value": value, "normalized_value": value, "tenure": "not_stated"}],
     }
+
+
+def _manifest_payload(
+    records: list[dict[str, object]], *, sha256: str | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "manifest_version": backfill.ADJUDICATION_MANIFEST_VERSION,
+        "parser_version": backfill.PARSER_VERSION,
+        "records": records,
+    }
+    payload["sha256"] = sha256 or backfill._adjudication_digest(records)
+    return payload
 
 
 def test_evidence_only_cli_starts_without_importing_publish_dependencies() -> None:
@@ -738,6 +750,84 @@ def test_parser_refuses_cross_block_pairing_and_marks_duplicates_ambiguous() -> 
     assert all(record["reason"] in {"missing_paired_side", "duplicate_identifier_label"} for record in records)
 
 
+def test_parse_streams_actionable_blocks_and_compacts_document_zero_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    downloads = []
+    for accession in ("all-zero", "with-candidate"):
+        raw = accession.encode("ascii")
+        digest = hashlib.sha256(raw).hexdigest()
+        (raw_dir / f"{digest}.bin").write_bytes(raw)
+        downloads.append({
+            "accession": accession,
+            "document_key": f"document-{accession}",
+            "document_hash": digest,
+            "raw_path": f"raw/{digest}.bin",
+        })
+    (tmp_path / "downloads.json").write_text(json.dumps(downloads), encoding="utf-8")
+
+    def record(status: str, locator: str) -> dict[str, object]:
+        return {
+            "status": status,
+            "reason": (
+                "same_explicit_block"
+                if status == "candidate"
+                else "no_explicit_labeled_identifiers"
+            ),
+            "block_locator": locator,
+        }
+
+    def fake_parse_document(
+        _raw: bytes, *, document_hash: str, accession: str,
+    ) -> list[dict[str, object]]:
+        del document_hash
+        if accession == "all-zero":
+            return [record("zero_match", "text[0]"), record("zero_match", "text[1]")]
+        return [
+            record("zero_match", "text[0]"),
+            record("candidate", "table[0]/row[0]"),
+            record("zero_match", "text[1]"),
+        ]
+
+    monkeypatch.setattr(backfill, "parse_document", fake_parse_document)
+
+    result = backfill.parse(tmp_path)
+    records = json.loads((tmp_path / "parse" / "records.json").read_text(encoding="utf-8"))
+
+    assert result == {
+        "records": 2,
+        "candidates": 1,
+        "zero_match_documents": 1,
+        "zero_match_blocks_collapsed": 3,
+    }
+    assert [(item["status"], item["block_locator"]) for item in records] == [
+        ("zero_match", "text[0]"),
+        ("candidate", "table[0]/row[0]"),
+    ]
+    assert (tmp_path / "parse" / "records.json").read_text(encoding="utf-8") == (
+        backfill.canonical_json(records) + "\n"
+    )
+
+
+def test_streamed_json_array_failure_preserves_prior_artifact_and_removes_temp(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "records.json"
+    target.write_text('[{"prior":true}]\n', encoding="utf-8")
+
+    def broken_records():
+        yield {"new": 1}
+        raise RuntimeError("interrupted")
+
+    with pytest.raises(RuntimeError, match="interrupted"):
+        backfill._write_json_array(target, broken_records())
+
+    assert target.read_text(encoding="utf-8") == '[{"prior":true}]\n'
+    assert not target.with_suffix(".json.tmp").exists()
+
+
 @pytest.mark.parametrize("second_label", ["Reg S CUSIP", "Reg S CINS"])
 def test_parser_marks_mixed_tenure_execution_identifiers_ambiguous(second_label: str) -> None:
     source = f"""
@@ -773,8 +863,56 @@ def test_parse_and_adjudication_manifest_are_stable_and_keep_ambiguous_unapprove
     assert first == second
     assert manifest_one == manifest_two
     payload = json.loads((tmp_path / "adjudication" / "manifest.json").read_text())
-    assert payload["sha256"] == hashlib.sha256(backfill.canonical_json(payload["records"]).encode()).hexdigest()
+    assert payload["sha256"] == backfill._adjudication_digest(
+        payload["records"],
+        parser_version=payload["parser_version"],
+        manifest_version=payload["manifest_version"],
+    )
     assert all(record["adjudication"] == "pending" for record in payload["records"])
+
+
+def test_adjudication_boundaries_refuse_stale_or_mixed_parser_versions(tmp_path: Path) -> None:
+    parse_dir = tmp_path / "parse"
+    parse_dir.mkdir()
+    stale = {"status": "zero_match", "parser_version": "explicit-label-v1"}
+    (parse_dir / "records.json").write_text(json.dumps([stale]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="parse record parser_version mismatch"):
+        backfill.adjudication_export(tmp_path)
+
+    current = {"status": "zero_match", "parser_version": backfill.PARSER_VERSION}
+    (parse_dir / "records.json").write_text(json.dumps([current]), encoding="utf-8")
+    backfill.adjudication_export(tmp_path)
+    manifest_path = tmp_path / "adjudication" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["manifest_version"] == backfill.ADJUDICATION_MANIFEST_VERSION
+
+    stale_manifest = {**manifest, "parser_version": "explicit-label-v1"}
+    manifest_path.write_text(json.dumps(stale_manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest parser_version mismatch"):
+        backfill.seal_adjudication(tmp_path)
+    with pytest.raises(ValueError, match="manifest parser_version mismatch"):
+        backfill.build_registry_bundle(tmp_path)
+
+    legacy_manifest = {**manifest, "manifest_version": 1}
+    manifest_path.write_text(json.dumps(legacy_manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest version mismatch"):
+        backfill.seal_adjudication(tmp_path)
+    with pytest.raises(ValueError, match="manifest version mismatch"):
+        backfill.build_registry_bundle(tmp_path)
+
+    mixed_manifest = json.loads(json.dumps(manifest))
+    mixed_manifest["records"].append({**mixed_manifest["records"][0], "parser_version": "explicit-label-v1"})
+    mixed_manifest["sha256"] = backfill._adjudication_digest(
+        mixed_manifest["records"],
+        parser_version=mixed_manifest["parser_version"],
+        manifest_version=mixed_manifest["manifest_version"],
+    )
+    manifest_path.write_text(json.dumps(mixed_manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="manifest record parser_version mismatch"):
+        backfill.seal_adjudication(tmp_path)
+    with pytest.raises(ValueError, match="manifest record parser_version mismatch"):
+        backfill.build_registry_bundle(tmp_path)
 
 
 def test_publish_dry_run_emits_only_explicitly_approved_schema_compatible_rows(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -783,7 +921,7 @@ def test_publish_dry_run_emits_only_explicitly_approved_schema_compatible_rows(t
         "status": "candidate", "accession": "a-1", "block_locator": "table[0]/row[0]",
         "adjudication": "approved", "draft_snapshot_id": "snapshot-draft", "valid_from": "2025-01-01", "parent_form": "424B2",
         "document_type": "EX-4.1", "filed_at": "2025-07-22T12:00:00-04:00", "document_hash": "a" * 64,
-        "parser_version": "explicit-label-v1",
+        "parser_version": backfill.PARSER_VERSION,
         "evidence_link": {"filing_url": "https://www.sec.gov/example.htm", "retrieved_at": "2025-07-23T00:00:00+00:00"},
         "reg_s": [
             {"identifier_label": "CINS", "exact_label": "Reg S CINS", "source_value": "G35906AC3", "normalized_value": "G35906AC3", "tenure": "not_stated"},
@@ -798,7 +936,9 @@ def test_publish_dry_run_emits_only_explicitly_approved_schema_compatible_rows(t
     ambiguous = {**approved, "status": "ambiguous", "adjudication": "pending"}
     rejected = {**approved, "adjudication": "rejected"}
     records = [approved, pending, ambiguous, rejected]
-    (tmp_path / "adjudication" / "manifest.json").write_text(json.dumps({"records": records, "sha256": hashlib.sha256(backfill.canonical_json(records).encode()).hexdigest()}))
+    (tmp_path / "adjudication" / "manifest.json").write_text(
+        json.dumps(_manifest_payload(records)), encoding="utf-8"
+    )
 
     summary = backfill.publish(tmp_path, dry_run=True, draft_snapshot_id="snapshot-draft")
 
@@ -842,9 +982,9 @@ def test_build_registry_bundle_matches_dry_run_payload(tmp_path: Path, capsys: p
     (tmp_path / "adjudication").mkdir()
     record = _approved_preview_record()
     records = [record]
-    (tmp_path / "adjudication" / "manifest.json").write_text(json.dumps({
-        "records": records, "sha256": hashlib.sha256(backfill.canonical_json(records).encode()).hexdigest(),
-    }), encoding="utf-8")
+    (tmp_path / "adjudication" / "manifest.json").write_text(
+        json.dumps(_manifest_payload(records)), encoding="utf-8"
+    )
 
     bundle = backfill.build_registry_bundle(tmp_path, "snapshot-draft")
     backfill.publish(tmp_path, dry_run=True, draft_snapshot_id="snapshot-draft")
@@ -857,9 +997,11 @@ def test_publish_dry_run_never_turns_pending_candidate_into_registry_facts(tmp_p
     (tmp_path / "adjudication").mkdir()
     records = [{
         "status": "candidate", "adjudication": "pending", "accession": "a-1", "block_locator": "block",
-        "reg_s": [], "rule_144a": [],
+        "parser_version": backfill.PARSER_VERSION, "reg_s": [], "rule_144a": [],
     }]
-    (tmp_path / "adjudication" / "manifest.json").write_text(json.dumps({"records": records, "sha256": hashlib.sha256(backfill.canonical_json(records).encode()).hexdigest()}))
+    (tmp_path / "adjudication" / "manifest.json").write_text(
+        json.dumps(_manifest_payload(records)), encoding="utf-8"
+    )
 
     summary = backfill.publish(tmp_path, dry_run=True)
 
@@ -875,14 +1017,16 @@ def test_seal_adjudication_preserves_human_decision_then_enables_dry_run(tmp_pat
         "status": "candidate", "adjudication": "approved", "draft_snapshot_id": "snapshot-draft",
         "valid_from": "2025-01-01", "accession": "a-1", "block_locator": "table[0]/row[0]",
         "parent_form": "424B2", "document_type": "EX-4.1", "document_hash": "a" * 64,
-        "parser_version": "explicit-label-v1",
+        "parser_version": backfill.PARSER_VERSION,
         "evidence_link": {"filing_url": "https://www.sec.gov/example.htm", "retrieved_at": "2025-07-23T00:00:00+00:00"},
         "reg_s": [{"identifier_label": "CUSIP", "exact_label": "Reg S CUSIP", "source_value": "G35906AC3", "normalized_value": "G35906AC3", "tenure": "not_stated"}],
         "rule_144a": [{"identifier_label": "CUSIP", "exact_label": "Rule 144A CUSIP", "source_value": "344045AB5", "normalized_value": "344045AB5", "tenure": "not_stated"}],
     }
     records = [record]
     manifest = tmp_path / "adjudication" / "manifest.json"
-    manifest.write_text(json.dumps({"records": records, "sha256": "0" * 64}), encoding="utf-8")
+    manifest.write_text(
+        json.dumps(_manifest_payload(records, sha256="0" * 64)), encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match="manifest checksum mismatch"):
         backfill.publish(tmp_path, dry_run=True)
@@ -898,8 +1042,13 @@ def test_seal_adjudication_preserves_human_decision_then_enables_dry_run(tmp_pat
 @pytest.mark.parametrize("adjudication", ["", "candidate", "invalid"])
 def test_seal_adjudication_refuses_invalid_human_state(tmp_path: Path, adjudication: str) -> None:
     (tmp_path / "adjudication").mkdir()
-    records = [{"status": "candidate", "adjudication": adjudication, "accession": "a-1"}]
-    (tmp_path / "adjudication" / "manifest.json").write_text(json.dumps({"records": records, "sha256": "0" * 64}))
+    records = [{
+        "status": "candidate", "adjudication": adjudication, "accession": "a-1",
+        "parser_version": backfill.PARSER_VERSION,
+    }]
+    (tmp_path / "adjudication" / "manifest.json").write_text(
+        json.dumps(_manifest_payload(records, sha256="0" * 64)), encoding="utf-8"
+    )
 
     with pytest.raises(ValueError, match="invalid adjudication"):
         backfill.seal_adjudication(tmp_path)
