@@ -6,7 +6,7 @@ registry composition and ``approve`` closes an already-loaded composition.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import os
 from pathlib import Path
 from typing import Any
@@ -58,9 +58,12 @@ def _parse_datetime(value: object, field: str, *, optional: bool = False) -> dat
     if not isinstance(value, str):
         raise ValueError(f"bundle {field} is invalid")
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except ValueError as error:
         raise ValueError(f"bundle {field} is invalid") from error
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _parse_date(value: object, field: str, *, optional: bool = False) -> date | None:

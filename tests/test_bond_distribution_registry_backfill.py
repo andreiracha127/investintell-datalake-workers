@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import contextlib
-from datetime import date
+from datetime import date, datetime, timezone
 import inspect
 import json
 import os
@@ -19,6 +19,12 @@ from src.bonds.distribution_series import (
     distribution_snapshot_content_hash,
 )
 from src.workers import bond_distribution_registry_backfill as worker
+
+
+def test_bundle_date_only_timestamp_is_normalized_to_utc() -> None:
+    assert worker._parse_datetime("2025-01-01", "filed_at") == datetime(
+        2025, 1, 1, tzinfo=timezone.utc
+    )
 
 
 def _bundle(*, snapshot_id: str = "draft-1", decisions: bool = True) -> dict[str, Any]:
