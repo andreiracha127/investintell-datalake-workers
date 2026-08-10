@@ -415,6 +415,72 @@ def test_resolver_refuses_ambiguous_reg_s_cusips() -> None:
         )
 
 
+def test_resolver_deduplicates_independent_decisions_that_corroborate_the_same_pair() -> None:
+    from src.bonds.distribution_series import (
+        DistributionPairDecision,
+        DistributionPairIdentifier,
+        resolve_reg_s_cusip,
+    )
+
+    snapshot, approval, decision, identifiers, observations = _approved_mapping()
+    second = DistributionPairDecision(
+        decision_id="decision-2",
+        snapshot_id=snapshot.snapshot_id,
+        decision_state="approved",
+        source_observation_id="parser-observation-3",
+        valid_from=date(2024, 1, 1),
+    )
+    second_identifiers = (
+        DistributionPairIdentifier(
+            "second-144a", second.decision_id, "parser-observation-3",
+            "rule_144a", "cusip9", "123456789", "permanent", date(2024, 1, 1),
+        ),
+        DistributionPairIdentifier(
+            "second-regs", second.decision_id, "parser-observation-4",
+            "reg_s", "cusip9", "987654321", "permanent", date(2024, 1, 1),
+        ),
+    )
+    observations += (
+        observations[0].__class__(
+            "parser-observation-3", "source-evidence-2", "parser-v1", "page=2;block=1",
+            "Rule 144A CUSIP", "123456789", "123456789", "validated",
+        ),
+        observations[0].__class__(
+            "parser-observation-4", "source-evidence-2", "parser-v1", "page=2;block=1",
+            "Regulation S CUSIP", "987654321", "987654321", "validated",
+        ),
+    )
+    all_identifiers = identifiers + second_identifiers
+    snapshot, approval = _approval_for_composition(
+        snapshot, (decision, second), all_identifiers
+    )
+
+    forward = resolve_reg_s_cusip(
+        snapshot_id=snapshot.snapshot_id,
+        as_of=date(2024, 6, 1),
+        reference_cusip9="123456789",
+        snapshots=(snapshot,),
+        approvals=(approval,),
+        decisions=(decision, second),
+        identifiers=all_identifiers,
+        parser_observations=observations,
+    )
+    reversed_order = resolve_reg_s_cusip(
+        snapshot_id=snapshot.snapshot_id,
+        as_of=date(2024, 6, 1),
+        reference_cusip9="123456789",
+        snapshots=(snapshot,),
+        approvals=(approval,),
+        decisions=(second, decision),
+        identifiers=tuple(reversed(all_identifiers)),
+        parser_observations=tuple(reversed(observations)),
+    )
+
+    assert forward == reversed_order
+    assert forward.decision_id == "decision-1"
+    assert forward.reg_s_cusip9 == "987654321"
+
+
 def test_resolver_does_not_infer_from_unrelated_security_attributes() -> None:
     from src.bonds.distribution_series import NoValidatedDistributionSourceError, resolve_reg_s_cusip
 

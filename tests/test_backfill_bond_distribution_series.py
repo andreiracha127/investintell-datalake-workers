@@ -596,12 +596,13 @@ def test_download_retries_http_request_timeout(
     assert summary["retries"] == 1 and len(client.calls) == 2
 
 
-def test_parse_official_minimal_table_groups_separate_identification_rows_per_currency_section() -> None:
+def test_parse_official_minimal_table_groups_sections_and_flags_overlapping_tenures() -> None:
     records = backfill.parse_document(
         FIXTURES.joinpath("official_minimal_table.html").read_bytes(), document_hash="abc", accession="000119312525175440"
     )
 
-    assert [record["status"] for record in records] == ["candidate", "candidate", "candidate"]
+    assert [record["status"] for record in records] == ["ambiguous", "ambiguous", "ambiguous"]
+    assert all(record["reason"] == "duplicate_identifier_label" for record in records)
     usd, eur, gbp = records
     assert usd["block_locator"] == "table[0]/identification-numbers"
     assert usd["reg_s"][2]["normalized_value"] == "USG35906AC33"
@@ -721,6 +722,23 @@ def test_parser_refuses_cross_block_pairing_and_marks_duplicates_ambiguous() -> 
 
     assert [record["status"] for record in records] == ["ambiguous", "ambiguous", "ambiguous"]
     assert all(record["reason"] in {"missing_paired_side", "duplicate_identifier_label"} for record in records)
+
+
+@pytest.mark.parametrize("second_label", ["Reg S CUSIP", "Reg S CINS"])
+def test_parser_marks_mixed_tenure_execution_identifiers_ambiguous(second_label: str) -> None:
+    source = f"""
+    <table><tr><td>
+      Temporary Reg S CUSIP G35906AC3
+      Permanent {second_label} G35906AD1
+      Rule 144A CUSIP 344045AB5
+    </td></tr></table>
+    """.encode()
+
+    records = backfill.parse_document(source, document_hash="hash", accession="accession")
+
+    assert len(records) == 1
+    assert records[0]["status"] == "ambiguous"
+    assert records[0]["reason"] == "duplicate_identifier_label"
 
 
 def test_parse_and_adjudication_manifest_are_stable_and_keep_ambiguous_unapproved(tmp_path: Path) -> None:

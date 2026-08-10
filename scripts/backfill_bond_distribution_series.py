@@ -651,9 +651,14 @@ def _record_for_block(locator: str, block: str, *, document_hash: str, accession
     elif not sides["reg_s"] or not sides["rule_144a"]:
         status, reason = "ambiguous", "missing_paired_side"
     elif any(
-        len([item for item in values if (item["identifier_label"], item["tenure"]) == identity]) > 1
+        len([
+            item for item in values
+            if _identifier_kind(item["identifier_label"]) == identifier_kind
+        ]) > 1
         for values in sides.values()
-        for identity in {(item["identifier_label"], item["tenure"]) for item in values}
+        for identifier_kind in {
+            _identifier_kind(item["identifier_label"]) for item in values
+        }
     ):
         status, reason = "ambiguous", "duplicate_identifier_label"
     else:

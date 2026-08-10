@@ -1221,6 +1221,29 @@ def run(
         republish = _republish(resolved)
         swept = len(universe)
         sweep_incomplete = swept < universe_total
+        candles_aborted = bool(candles.get("aborted"))
+        candles_failed = candles.get("resumed", 0) > 0 and candles.get("with_data") == 0
+        curve_failed = (
+            curve["tenors"] == 0
+            and len(curve["skipped_tenors"]) < len(CURVE_TENORS)
+        )
+        ticks_failed = ticks["swept"] > 0 and (
+            ticks.get("failures", ticks["transient_failures"]) == ticks["swept"]
+            or bool(ticks["aborted"])
+        )
+        ticks_degraded = bool(ticks.get("degraded"))
+        input_lane_reasons = [
+            state
+            for hit, state in (
+                (provider_error is not None, provider_error or "provider_rejected"),
+                (candles_aborted, "aborted"),
+                (candles_failed, "candles_failed"),
+                (curve_failed, "curve_failed"),
+                (ticks_failed, "ticks_failed"),
+                (ticks_degraded, "ticks_degraded_scope"),
+            )
+            if hit
+        ]
         if sweep_incomplete:
             # Stage 6 flips an immutable monthly pointer.  A capped ring run has
             # only covered its budget, not the open month, so calculate that
@@ -1228,6 +1251,17 @@ def run(
             # make the real rows it did load available; a later full rerun alone
             # may materialize the closed/open panel delta.
             panel = {"state": "deferred", "aborted": False, "reason": "partial_sweep"}
+        elif input_lane_reasons:
+            # The immutable monthly pointer must not freeze stale or missing
+            # live inputs merely because the provider lane happened to iterate
+            # over the whole universe.  Stages 4-5 still expose every durable
+            # row they could recompute; only Stage 6 waits for a healthy rerun.
+            panel = {
+                "state": "deferred",
+                "aborted": False,
+                "reason": "input_lanes_failed",
+                "blocked_by": input_lane_reasons,
+            }
         else:
             panel = _publish_panel(resolved, as_of=today)
 
@@ -1248,7 +1282,8 @@ def run(
         # Stage 6 is successful only when its own immutable pointer protocol
         # says it published.  Every empty/degraded/refused shape remains typed
         # in ``panel`` and cannot be laundered into an otherwise green day.
-        (not sweep_incomplete and (panel_state not in {"published", "current"} or bool(panel.get("aborted"))), panel_reason),
+        (not (sweep_incomplete or input_lane_reasons)
+         and (panel_state not in {"published", "current"} or bool(panel.get("aborted"))), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.
         (verdict != "recomputed", _REPUBLISH_STATE.get(verdict, "republish_failed")),
@@ -1265,7 +1300,7 @@ def run(
         # database never got.
         (matview.get("state") != "refreshed", "matview_failed"),
         # The provider cut the candle sweep short.
-        (bool(candles.get("aborted")), "aborted"),
+        (candles_aborted, "aborted"),
         # Stage 1 asked about days it had already loaded and got NOTHING back.
         # The success state is asserted, as everywhere else in this list: the
         # only outcome in which the price stage did its work is that at least
@@ -1299,7 +1334,7 @@ def run(
         # It also gives the candle lane the "every call failed" half that stage 3
         # already had: below ``MAX_CONSECUTIVE_FAILURES`` bonds, a total outage
         # never trips the breaker, so ``aborted`` alone could not see it.
-        (candles.get("resumed", 0) > 0 and candles.get("with_data") == 0, "candles_failed"),
+        (candles_failed, "candles_failed"),
         # A stage that did NO work is not a stage that had nothing to do -- and
         # the way stage 2 does no work is not only by failing. A 200 whose
         # ``data`` folds to nothing left ``failed_tenors`` empty, so a curve
@@ -1316,8 +1351,7 @@ def run(
         # themselves on the next run. ``failed_tenors``/``empty_tenors``/
         # ``skipped_tenors`` in the JSON say which shape it was, the way
         # ``matview.state`` does for stage 4.
-        (curve["tenors"] == 0
-         and len(curve["skipped_tenors"]) < len(CURVE_TENORS), "curve_failed"),
+        (curve_failed, "curve_failed"),
         # Stage 3 comes up short in two shapes and they get ONE state, because
         # they are one event -- the provider is not answering -- and they take
         # one hand. Either every call failed, or the breaker stopped the lane
@@ -1325,14 +1359,11 @@ def run(
         # share: there is no tick watermark, so tomorrow's run asks for
         # tomorrow's session and the tape of every bond the outage cut off is
         # gone for good. ``ticks.aborted`` in the JSON says which shape it was.
-        (ticks["swept"] > 0 and (
-            ticks.get("failures", ticks["transient_failures"]) == ticks["swept"]
-            or bool(ticks["aborted"])
-        ), "ticks_failed"),
+        (ticks_failed, "ticks_failed"),
         # A requested emergency cap is a valid operational escape hatch, never
         # a completed daily full-universe tick run. Stage 4/5 still execute; the
         # typed state keeps the resulting report and deploy non-green.
-        (bool(ticks.get("degraded")), "ticks_degraded_scope"),
+        (ticks_degraded, "ticks_degraded_scope"),
         # A capped run covered its BUDGET, not the day. It still republishes --
         # the rows it loaded are real and every security carries its own
         # observation date, so the payload stays honest -- but the run must not

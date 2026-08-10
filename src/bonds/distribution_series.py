@@ -437,10 +437,15 @@ def _resolve_reference_from_index(
         if governed_without_cusip:
             raise NoSupportedRegSCusipError("no_supported_reg_s_cusip")
         raise NoValidatedDistributionSourceError("no_validated_source")
-    unique = set(candidate_pairs)
-    if len(unique) != 1:
+    unique_pairs = {(cusip, isin) for _decision_id, cusip, isin in candidate_pairs}
+    if len(unique_pairs) != 1:
         raise AmbiguousDistributionMappingError("ambiguous_mapping")
-    decision_id, reg_s_cusip9, reg_s_isin = next(iter(unique))
+    reg_s_cusip9, reg_s_isin = next(iter(unique_pairs))
+    decision_id = min(
+        decision_id
+        for decision_id, cusip, isin in candidate_pairs
+        if (cusip, isin) == (reg_s_cusip9, reg_s_isin)
+    )
     return DistributionResolution(snapshot_id, decision_id, reference_cusip9, reg_s_cusip9, reg_s_isin)
 
 

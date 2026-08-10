@@ -204,21 +204,48 @@ def _load_inputs(
         reference_cusip9s=reference_cusip9s,
     )
     resolution_windows = (
-        (closed_month.date(), closed_as_of, closed_resolution_map),
-        (open_month.date(), as_of, open_resolution_map),
+        ("closed", closed_month.date(), closed_as_of, closed_resolution_map),
+        ("open", open_month.date(), as_of, open_resolution_map),
     )
-    mapping_rows = [
+    mapping_candidates = [
         {
             "reference_cusip9": resolution.reference_cusip9,
             "execution_cusip9": resolution.reg_s_cusip9,
+            "execution_isin": getattr(resolution, "reg_s_isin", None),
             "decision_id": resolution.decision_id,
             "month": month.isoformat(),
+            "window": window,
         }
-        for month, _mapping_as_of, resolution_map in resolution_windows
+        for window, month, _mapping_as_of, resolution_map in resolution_windows
         for _reference, resolution in sorted(resolution_map.resolutions.items())
     ]
-    for month, _mapping_as_of, resolution_map in resolution_windows:
-        if not resolution_map.resolutions:
+    candidates_by_execution: dict[str, list[dict[str, object]]] = {}
+    for candidate in mapping_candidates:
+        candidates_by_execution.setdefault(str(candidate["execution_cusip9"]), []).append(candidate)
+    ambiguous_execution_cusips = {
+        execution_cusip9
+        for execution_cusip9, candidates in candidates_by_execution.items()
+        if len({
+            (candidate["reference_cusip9"], candidate["execution_isin"])
+            for candidate in candidates
+        }) > 1
+    }
+    cross_as_of_omissions = {"closed": 0, "open": 0}
+    mapping_rows: list[dict[str, object]] = []
+    for candidate in mapping_candidates:
+        if candidate["execution_cusip9"] in ambiguous_execution_cusips:
+            cross_as_of_omissions[str(candidate["window"])] += 1
+            continue
+        mapping_rows.append({
+            key: candidate[key]
+            for key in ("reference_cusip9", "execution_cusip9", "decision_id", "month")
+        })
+    mapping_counts = {
+        window: sum(row["month"] == month.isoformat() for row in mapping_rows)
+        for window, month, _mapping_as_of, _resolution_map in resolution_windows
+    }
+    for window, month, _mapping_as_of, _resolution_map in resolution_windows:
+        if mapping_counts[window] == 0:
             raise ValueError(f"reg_s_mapping_zero_approved:{month.isoformat()}")
     mapping_json = json.dumps(mapping_rows, sort_keys=True, separators=(",", ":"))
     mapping_cte = (
@@ -324,26 +351,26 @@ def _load_inputs(
     lineage["static_rating_mapping"] = f"bond_rating_static:{rating_hashes[0]}"
     lineage["distribution_rule"] = "reg_s"
     lineage["distribution_mapping_snapshot_id"] = mapping_snapshot_id
-    lineage["distribution_mapping_count"] = str(len(open_resolution_map.resolutions))
+    lineage["distribution_mapping_count"] = str(mapping_counts["open"])
     lineage["distribution_mapping_closed_as_of"] = closed_as_of.isoformat()
     lineage["distribution_mapping_open_as_of"] = as_of.isoformat()
-    lineage["distribution_mapping_closed_count"] = str(len(closed_resolution_map.resolutions))
-    lineage["distribution_mapping_open_count"] = str(len(open_resolution_map.resolutions))
-    for reason, count in sorted(
-        (
-            reason,
-            sum(1 for value in open_resolution_map.reason_by_reference.values() if value == reason),
-        )
+    lineage["distribution_mapping_closed_count"] = str(mapping_counts["closed"])
+    lineage["distribution_mapping_open_count"] = str(mapping_counts["open"])
+    open_omissions = {
+        reason: sum(1 for value in open_resolution_map.reason_by_reference.values() if value == reason)
         for reason in set(open_resolution_map.reason_by_reference.values())
-    ):
-        lineage[f"distribution_mapping_omission:{reason}"] = str(count)
-    for reason, count in sorted(
-        (
-            reason,
-            sum(1 for value in closed_resolution_map.reason_by_reference.values() if value == reason),
-        )
+    }
+    closed_omissions = {
+        reason: sum(1 for value in closed_resolution_map.reason_by_reference.values() if value == reason)
         for reason in set(closed_resolution_map.reason_by_reference.values())
-    ):
+    }
+    if cross_as_of_omissions["open"]:
+        open_omissions["ambiguous_execution_cusip"] = cross_as_of_omissions["open"]
+    if cross_as_of_omissions["closed"]:
+        closed_omissions["ambiguous_execution_cusip"] = cross_as_of_omissions["closed"]
+    for reason, count in sorted(open_omissions.items()):
+        lineage[f"distribution_mapping_omission:{reason}"] = str(count)
+    for reason, count in sorted(closed_omissions.items()):
         lineage[f"distribution_mapping_closed_omission:{reason}"] = str(count)
     return inputs, lineage
 

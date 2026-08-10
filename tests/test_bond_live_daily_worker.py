@@ -1119,8 +1119,8 @@ def test_the_daily_lock_is_held_through_the_panel_publication(
     )
 
 
-def test_missing_provider_configuration_still_runs_the_end_stages(monkeypatch) -> None:
-    """A typed upstream failure is reported only after refresh/republication/panel."""
+def test_missing_provider_configuration_defers_panel_after_the_end_stages(monkeypatch) -> None:
+    """Stages 4-5 still run, but stale inputs may not advance the panel pointer."""
     events: list[tuple[str, int]] = []
     out = _drive_run(
         monkeypatch,
@@ -1130,8 +1130,66 @@ def test_missing_provider_configuration_still_runs_the_end_stages(monkeypatch) -
 
     assert out["state"] == "no_api_key"
     assert [name for name, _ in events] == [
-        "lock_acquired", "matview", "republish", "panel", "lock_released"
+        "lock_acquired", "matview", "republish", "lock_released"
     ]
+    assert out["panel"] == {
+        "state": "deferred",
+        "aborted": False,
+        "reason": "input_lanes_failed",
+        "blocked_by": ["no_api_key", "aborted", "curve_failed"],
+    }
+
+
+@pytest.mark.parametrize(
+    ("loader", "stage_result", "expected_state"),
+    [
+        (
+            "_load_candles",
+            {"swept": 1, "resumed": 1, "with_data": 0, "aborted": False},
+            "candles_failed",
+        ),
+        (
+            "_load_curve",
+            {"tenors": 0, "skipped_tenors": [], "failed_tenors": [], "empty_tenors": []},
+            "curve_failed",
+        ),
+        (
+            "_load_ticks",
+            {
+                "swept": 1,
+                "failures": 1,
+                "transient_failures": 1,
+                "aborted": False,
+                "degraded": False,
+            },
+            "ticks_failed",
+        ),
+        (
+            "_load_ticks",
+            {
+                "swept": 1,
+                "failures": 0,
+                "transient_failures": 0,
+                "aborted": False,
+                "degraded": True,
+            },
+            "ticks_degraded_scope",
+        ),
+    ],
+)
+def test_failed_input_lane_defers_stage_six(
+    monkeypatch, loader: str, stage_result: dict, expected_state: str
+) -> None:
+    events: list[tuple[str, int]] = []
+    monkeypatch.setattr(bond_live_daily, loader, lambda *_args, **_kwargs: stage_result)
+
+    out = _drive_run(monkeypatch, events=events)
+
+    assert out["state"] == expected_state
+    assert out["panel"]["state"] == "deferred"
+    assert out["panel"]["reason"] == "input_lanes_failed"
+    assert expected_state in out["panel"]["blocked_by"]
+    assert "panel" not in [name for name, _ in events]
 
 
 def test_run_worker_reads_the_top_level_aborted_key(monkeypatch) -> None:

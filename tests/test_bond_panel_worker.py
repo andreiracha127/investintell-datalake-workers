@@ -203,6 +203,65 @@ def test_db_loader_uses_reg_s_execution_sources_and_reference_terms(monkeypatch)
     assert lineage["static_rating_mapping"] == f"bond_rating_static:{'a' * 64}"
 
 
+def test_db_loader_omits_cross_as_of_execution_collisions(monkeypatch) -> None:
+    mapped_payloads: list[list[dict[str, object]]] = []
+
+    def frame(_conn, sql, params=()):
+        if sql.strip().startswith("SELECT upper(btrim(cusip9)) AS reference_cusip9"):
+            return pd.DataFrame({"reference_cusip9": ["CLOSEDREF", "OPENREF", "STABLEREF"]})
+        if sql.startswith("SELECT DISTINCT source_sha256"):
+            return pd.DataFrame({"source_sha256": ["a" * 64]})
+        if "jsonb_to_recordset" in sql:
+            mapped_payloads.append(json.loads(params[0]))
+        return pd.DataFrame()
+
+    def resolution(reference, cusip, isin, decision):
+        return SimpleNamespace(
+            reference_cusip9=reference,
+            reg_s_cusip9=cusip,
+            reg_s_isin=isin,
+            decision_id=decision,
+        )
+
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        assert snapshot_id == REG_S_SNAPSHOT_ID
+        assert reference_cusip9s == ["CLOSEDREF", "OPENREF", "STABLEREF"]
+        changing = (
+            {"CLOSEDREF": resolution("CLOSEDREF", "G11111111", "XS1111111111", "closed")}
+            if as_of == date(2026, 7, 31)
+            else {"OPENREF": resolution("OPENREF", "G11111111", "XS2222222222", "open")}
+        )
+        return SimpleNamespace(
+            resolutions={
+                **changing,
+                "STABLEREF": resolution("STABLEREF", "G22222222", "XS3333333333", "stable"),
+            },
+            reason_by_reference={},
+        )
+
+    monkeypatch.setattr(bond_panel, "_frame", frame)
+    monkeypatch.setattr(bond_panel, "resolve_reg_s_cusip_map_from_db", resolve)
+
+    _inputs, lineage = bond_panel._load_inputs(
+        object(),
+        pd.Timestamp("2026-07-01"),
+        pd.Timestamp("2026-08-01"),
+        date(2026, 8, 8),
+        mapping_snapshot_id=REG_S_SNAPSHOT_ID,
+    )
+
+    assert mapped_payloads
+    assert all(
+        {(row["reference_cusip9"], row["execution_cusip9"]) for row in payload}
+        == {("STABLEREF", "G22222222")}
+        for payload in mapped_payloads
+    )
+    assert lineage["distribution_mapping_closed_count"] == "1"
+    assert lineage["distribution_mapping_open_count"] == "1"
+    assert lineage["distribution_mapping_closed_omission:ambiguous_execution_cusip"] == "1"
+    assert lineage["distribution_mapping_omission:ambiguous_execution_cusip"] == "1"
+
+
 def test_delta_loads_prior_amount_from_the_parent_open_snapshot(monkeypatch) -> None:
     parent = {
         "publication_id": "delta-parent",
