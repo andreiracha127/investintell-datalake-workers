@@ -283,6 +283,12 @@ def build_plan(artifacts: ArtifactSet, *, cutoff: str = DEFAULT_CUTOFF) -> Backf
             raise PlanError("returns_history_absent")
         if _scalar_month(returns_last) != cutoff:
             raise PlanError("returns_history_must_reach_cutoff")
+        _require_zero(
+            conn,
+            reason="returns_history_must_be_contiguous_through_cutoff",
+            sql="SELECT count(*) FROM generate_series(CAST(? AS DATE), CAST(? AS DATE), INTERVAL '1 month') AS expected(month) LEFT JOIN (SELECT DISTINCT CAST(month AS DATE) AS month FROM read_parquet(?) WHERE CAST(month AS DATE) <= CAST(? AS DATE)) actual ON actual.month=CAST(expected.month AS DATE) WHERE actual.month IS NULL",
+            params=[first_month, cutoff, returns, cutoff],
+        )
         future_returns = _one(conn, "SELECT count(*) FROM read_parquet(?) WHERE CAST(month AS DATE) > ?", [returns, cutoff])
         if future_returns:
             raise PlanError("returns_artifact_extends_past_base_cutoff")
@@ -512,6 +518,7 @@ def render_finalize_sql(plan: BackfillPlan) -> str:
     """Validate exact loaded counts then atomically validate and point exactly once."""
     hashes = json.dumps(plan.source_sha256, sort_keys=True, separators=(",", ":"))
     checks = "\n".join(f"    IF (SELECT count(*) FROM {_TABLES[surface]} WHERE publication_id={_sql_string(plan.publication_id)}::uuid) <> {plan.counts[surface]} THEN RAISE EXCEPTION 'partial {surface} surface'; END IF;" for surface in SURFACES)
+    return_coverage_check = f"    IF EXISTS (SELECT 1 FROM generate_series({_sql_string(plan.first_month)}::date, {_sql_string(plan.last_closed_month)}::date, INTERVAL '1 month') AS expected(month) LEFT JOIN bond_panel_returns r ON r.publication_id={_sql_string(plan.publication_id)}::uuid AND r.month=expected.month::date WHERE r.month IS NULL) THEN RAISE EXCEPTION 'returns history is not contiguous through closed-month cutoff'; END IF;"
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL ROLE worker_writer;
@@ -519,6 +526,7 @@ DO $finalize_backfill$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM bond_panel_publications WHERE publication_id={_sql_string(plan.publication_id)}::uuid AND publication_status IN ('prepared','validated') AND config_hash={_sql_string(plan.config_hash)} AND input_fingerprint={_sql_string(plan.input_fingerprint)} AND code_revision={_sql_string(CODE_REVISION)} AND first_month={_sql_string(plan.first_month)}::date AND last_closed_month={_sql_string(plan.last_closed_month)}::date AND open_month IS NULL AND source_lineage @> jsonb_build_object('source_sha256',{_sql_string(hashes)}::jsonb)) THEN RAISE EXCEPTION 'non-identical base publication finalization'; END IF;
 {checks}
+{return_coverage_check}
 END
 $finalize_backfill$;
 UPDATE bond_panel_publications SET publication_status='validated', validated_at=COALESCE(validated_at, now()), gate_evidence=gate_evidence || jsonb_build_object('validated_counts',{_sql_string(json.dumps(plan.counts, sort_keys=True))}::jsonb,'source_sha256',{_sql_string(hashes)}::jsonb,'historical_return_coverage_through',{_sql_string(plan.returns_last_month)}) WHERE publication_id={_sql_string(plan.publication_id)}::uuid AND publication_status='prepared';

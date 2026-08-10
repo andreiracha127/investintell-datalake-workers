@@ -408,13 +408,7 @@ def _closed_returns_and_tombstones(
     if anchor.empty:
         anchor = pd.DataFrame(columns=required_anchor)
     current_ids = set(current_snapshot.get("cusip_id", pd.Series(dtype=object)).astype(str))
-    observed_ids = set(
-        current_snapshot.loc[
-            current_snapshot.get("pr", pd.Series(index=current_snapshot.index, dtype=float)).notna(),
-            "cusip_id",
-        ].astype(str)
-    ) if "cusip_id" in current_snapshot else set()
-    terminal_exits = anchor[~anchor["cusip_id"].astype(str).isin(observed_ids)].copy()
+    terminal_exits = anchor[~anchor["cusip_id"].astype(str).isin(current_ids)].copy()
     terminal_exits["month"] = closed_month
     returns_input = pd.concat([anchor, current_snapshot], ignore_index=True, sort=False)
     returns = monthly_returns(returns_input, terminal_exits=terminal_exits)

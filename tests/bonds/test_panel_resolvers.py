@@ -173,6 +173,48 @@ def test_spread_model_rejects_future_rows_when_an_asof_is_declared() -> None:
         fit_month(rows, as_of=pd.Timestamp("2024-01-31"))
 
 
+@pytest.mark.parametrize("prediction", [0.02, np.nan], ids=["zero_residual_std", "nonfinite_residual_std"])
+def test_spread_model_skips_month_when_residual_scale_is_not_finite_or_positive(
+    monkeypatch: pytest.MonkeyPatch, prediction: float,
+) -> None:
+    rows = pd.DataFrame({
+        "cusip_id": [f"CUS{i:06d}" for i in range(300)],
+        "issuer_id": [f"issuer-{index % 2}" for index in range(300)],
+        "month": pd.Timestamp("2024-01-01"), "spread_final": .02, "bond_maturity": 5.,
+        "amt_outstanding_k": 500_000., "dollar_volume": 1., "db_type": 1, "rating_bucket": "A", "ff17num": 10,
+    })
+
+    class FakeFit:
+        rsquared = .5
+
+        def predict(self, x: pd.DataFrame) -> np.ndarray:
+            return np.full(len(x), prediction)
+
+    class FakeModel:
+        def fit(self, **_kwargs: object) -> FakeFit:
+            return FakeFit()
+
+    monkeypatch.setattr("src.bonds.panel_resolvers.sm.OLS", lambda *_args, **_kwargs: FakeModel())
+
+    signal, diag = fit_month(rows)
+
+    assert signal.empty
+    assert diag == {"n": 300, "skipped": True}
+
+
+def test_spread_model_skips_degenerate_single_cluster_before_clustered_fit() -> None:
+    rows = pd.DataFrame({
+        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": ["issuer"] * 300,
+        "month": pd.Timestamp("2024-01-01"), "spread_final": .02, "bond_maturity": 5.,
+        "amt_outstanding_k": 500_000., "dollar_volume": 1., "db_type": 1, "rating_bucket": "A", "ff17num": 10,
+    })
+
+    signal, diag = fit_month(rows)
+
+    assert signal.empty
+    assert diag == {"n": 300, "skipped": True}
+
+
 def test_monthly_returns_persists_typed_terminal_exit_rows() -> None:
     panel = pd.DataFrame({"cusip_id": ["AAA"], "month": pd.to_datetime(["2024-01-01"]), "pr": [60.], "ytm": [.08], "bond_maturity": [5.]})
     exits = pd.DataFrame({"cusip_id": ["AAA"], "month": pd.to_datetime(["2024-02-01"]), "pr": [60.], "ytm": [.08], "bond_maturity": [5.], "rating_bucket": ["D"]})

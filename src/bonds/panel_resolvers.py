@@ -518,16 +518,22 @@ def fit_month(
         return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
     if "issuer_id" not in df or df["issuer_id"].isna().any():
         raise ValueError("spread model requires resolved issuer_id for clustered errors")
+    if df["issuer_id"].nunique() < 2:
+        return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
     fit = sm.OLS(df["spread_bps"].astype(float), x).fit(
         cov_type="cluster", cov_kwds={"groups": df["issuer_id"]}
     )
-    residual = df["spread_bps"] - fit.predict(x)
+    fitted = fit.predict(x)
+    residual = df["spread_bps"] - fitted
+    residual_std = float(residual.std(ddof=0))
+    if not np.isfinite(residual_std) or residual_std <= 0.0:
+        return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
     continuous = [column for column in ("log_maturity", "log_amt", "log_volume") if column in x]
     try:
         max_vif = float(np.nanmax([variance_inflation_factor(x[continuous].to_numpy(), index) for index in range(len(continuous))]))
     except Exception:
         max_vif = float("nan")
-    return pd.DataFrame({"cusip_id": df["cusip_id"], "month": df["month"], "spread_bps": df["spread_bps"], "fitted_bps": fit.predict(x), "residual_bps": residual, "rv_signal": (residual - residual.mean()) / residual.std(ddof=0)}).reset_index(drop=True), {"n": int(len(df)), "r2": round(float(fit.rsquared), 4), "max_vif_continuous": round(max_vif, 2), "skipped": False}
+    return pd.DataFrame({"cusip_id": df["cusip_id"], "month": df["month"], "spread_bps": df["spread_bps"], "fitted_bps": fitted, "residual_bps": residual, "rv_signal": (residual - residual.mean()) / residual_std}).reset_index(drop=True), {"n": int(len(df)), "r2": round(float(fit.rsquared), 4), "max_vif_continuous": round(max_vif, 2), "skipped": False}
 
 
 def fit_all_months(

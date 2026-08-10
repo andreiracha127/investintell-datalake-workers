@@ -245,21 +245,33 @@ def _normalized_reference_cusip9(value: str) -> str:
 
 _EXACT_LABEL_TAXONOMY: dict[str, tuple[DistributionRule, IdentifierKind]] = {
     "RULE 144A CUSIP": ("rule_144a", "cusip9"),
+    "RULE144A CUSIP": ("rule_144a", "cusip9"),
     "144A CUSIP": ("rule_144a", "cusip9"),
     "RULE 144A CINS": ("rule_144a", "cusip9"),
+    "RULE144A CINS": ("rule_144a", "cusip9"),
     "144A CINS": ("rule_144a", "cusip9"),
     "RULE 144A ISIN": ("rule_144a", "isin"),
+    "RULE144A ISIN": ("rule_144a", "isin"),
     "144A ISIN": ("rule_144a", "isin"),
     "RULE 144A COMMON CODE": ("rule_144a", "common_code"),
+    "RULE144A COMMON CODE": ("rule_144a", "common_code"),
     "144A COMMON CODE": ("rule_144a", "common_code"),
     "REGULATION S CUSIP": ("reg_s", "cusip9"),
+    "REGULATIONS CUSIP": ("reg_s", "cusip9"),
     "REG S CUSIP": ("reg_s", "cusip9"),
+    "REGS CUSIP": ("reg_s", "cusip9"),
     "REGULATION S CINS": ("reg_s", "cusip9"),
+    "REGULATIONS CINS": ("reg_s", "cusip9"),
     "REG S CINS": ("reg_s", "cusip9"),
+    "REGS CINS": ("reg_s", "cusip9"),
     "REGULATION S ISIN": ("reg_s", "isin"),
+    "REGULATIONS ISIN": ("reg_s", "isin"),
     "REG S ISIN": ("reg_s", "isin"),
+    "REGS ISIN": ("reg_s", "isin"),
     "REGULATION S COMMON CODE": ("reg_s", "common_code"),
+    "REGULATIONS COMMON CODE": ("reg_s", "common_code"),
     "REG S COMMON CODE": ("reg_s", "common_code"),
+    "REGS COMMON CODE": ("reg_s", "common_code"),
 }
 
 

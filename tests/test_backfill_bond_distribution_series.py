@@ -4,6 +4,8 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 from datetime import date
 
@@ -13,6 +15,7 @@ from scripts import backfill_bond_distribution_series as backfill
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "bond_distribution"
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class _Response:
@@ -67,6 +70,19 @@ def _approved_preview_record(*, label: str = "CUSIP", value: str = "344045AB5") 
         "reg_s": [{"identifier_label": "CUSIP", "exact_label": "Reg S CUSIP", "source_value": "G35906AC3", "normalized_value": "G35906AC3", "tenure": "not_stated"}],
         "rule_144a": [{"identifier_label": label, "exact_label": f"Rule 144A {label}", "source_value": value, "normalized_value": value, "tenure": "not_stated"}],
     }
+
+
+def test_evidence_only_cli_starts_without_importing_publish_dependencies() -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "backfill_bond_distribution_series.py"), "--help"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "targeted-discover" in result.stdout
 
 
 def test_discover_paginates_versioned_queries_and_resumes_from_checkpoint(tmp_path: Path) -> None:
@@ -881,6 +897,10 @@ def test_publish_has_no_approved_snapshot_alias_and_cli_accepts_only_draft_snaps
     [
         ("CUSIP", "344045AB", "invalid cusip9"),
         ("CINS", "g35906ac3", "invalid cusip9"),
+        ("CUSIP", "000000000", "invalid cusip9"),
+        ("CINS", "XXXXXXXXX", "invalid cusip9"),
+        ("CUSIP", "NNNNNNNNN", "invalid cusip9"),
+        ("CINS", "999999999", "invalid cusip9"),
         ("ISIN", "US344045AB5", "invalid isin"),
         ("Common Code", "30498160X", "invalid common code"),
     ],

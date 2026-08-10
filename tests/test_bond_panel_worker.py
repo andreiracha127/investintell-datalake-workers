@@ -499,6 +499,23 @@ def test_closed_returns_use_observed_exclusions_and_tombstone_removed_parent_bon
     assert tombstones.loc[0, "flags"] == {"terminal_exit": True, "source": "parent_snapshot"}
 
 
+def test_closed_returns_do_not_treat_an_active_bond_without_price_as_a_terminal_exit() -> None:
+    closed = pd.Timestamp("2026-07-01")
+    anchor = pd.DataFrame({
+        "cusip_id": ["ACTIVE_NO_PRICE"], "month": [pd.Timestamp("2026-06-01")],
+        "pr": [100.0], "ytm": [0.05], "bond_maturity": [5.0], "rating_bucket": ["BBB"],
+    })
+    current = pd.DataFrame({
+        "cusip_id": ["ACTIVE_NO_PRICE"], "month": [closed],
+        "pr": [None], "ytm": [0.05], "bond_maturity": [5.0], "rating_bucket": ["BBB"],
+    })
+
+    returns, tombstones = bond_panel._closed_returns_and_tombstones(anchor, current, closed)
+
+    assert returns.empty
+    assert tombstones.empty
+
+
 def test_panel_publishes_with_missing_execution_ratings_and_closed_month_signals(monkeypatch) -> None:
     closed = pd.Timestamp("2026-07-01")
     open_month = pd.Timestamp("2026-08-01")

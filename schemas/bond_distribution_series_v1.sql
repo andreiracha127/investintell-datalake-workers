@@ -178,7 +178,12 @@ BEGIN
        OR NEW.identifier_kind <> expected_kind THEN
         RAISE EXCEPTION 'identifier source observation does not match value/kind/side taxonomy';
     END IF;
-    IF (expected_kind = 'cusip9' AND observed_value !~ '^[A-Z0-9]{9}$')
+    -- This is the exact executable subset of normalize_cusip9: the other
+    -- canonical placeholders and synthetic prefixes already fail the form.
+    IF (expected_kind = 'cusip9' AND (
+            observed_value !~ '^[A-Z0-9]{9}$'
+            OR observed_value IN ('000000000','XXXXXXXXX','NNNNNNNNN','999999999')
+        ))
        OR (expected_kind = 'isin' AND observed_value !~ '^[A-Z0-9]{12}$')
        OR (expected_kind = 'common_code' AND observed_value !~ '^[0-9]{9}$') THEN
         RAISE EXCEPTION 'identifier source observation has invalid executable syntax';

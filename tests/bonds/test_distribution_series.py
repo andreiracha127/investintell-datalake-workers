@@ -190,8 +190,11 @@ def test_resolver_refuses_conflicting_same_block_reg_s_isins() -> None:
     ("label", "expected"),
     [
         ("Rule 144A CINS", ("rule_144a", "cusip9")),
+        ("Rule144A CUSIP", ("rule_144a", "cusip9")),
         ("Regulation S CUSIP", ("reg_s", "cusip9")),
+        ("RegulationS CINS", ("reg_s", "cusip9")),
         ("Reg S ISIN", ("reg_s", "isin")),
+        ("RegS Common Code", ("reg_s", "common_code")),
         ("144A Common Code", ("rule_144a", "common_code")),
         ("Issuer CUSIP", None),
     ],
@@ -585,6 +588,10 @@ def test_bulk_resolver_marks_execution_cusip_collision_ambiguous() -> None:
     [
         ("cusip9", "AB12CD345", True),
         ("cusip9", "AB12", False),
+        ("cusip9", "000000000", False),
+        ("cusip9", "XXXXXXXXX", False),
+        ("cusip9", "NNNNNNNNN", False),
+        ("cusip9", "999999999", False),
         ("isin", "USG35906AC33", True),
         ("isin", "usg35906ac33", False),
         ("common_code", "304981598", True),

@@ -21,7 +21,6 @@ import time
 from typing import Any, Protocol
 from urllib.request import Request, urlopen
 
-
 SEC_API_FULL_TEXT_SEARCH = "https://api.sec-api.io/full-text-search"
 PARSER_VERSION = "explicit-label-v1"
 TARGETED_QUERY_VERSION = "targeted-exact-v1"
@@ -773,6 +772,8 @@ def _prospective_registry_rows(
     record: dict[str, Any], draft_snapshot_id: str
 ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
     """Build schema-shaped rows without creating a snapshot or writing a database."""
+    from src.bonds.distribution_series import identifier_value_has_valid_syntax
+
     evidence_link = record.get("evidence_link")
     if not isinstance(evidence_link, dict):
         raise ValueError("approved record missing evidence link")
@@ -826,12 +827,9 @@ def _prospective_registry_rows(
         for index, evidence in enumerate(record[distribution_rule]):
             identifier_kind = _identifier_kind(evidence.get("identifier_label"))
             identifier_value = _required(evidence, "normalized_value")
-            if identifier_kind == "cusip9" and not re.fullmatch(r"[A-Z0-9]{9}", identifier_value):
-                raise ValueError("approved record has invalid cusip9 evidence")
-            if identifier_kind == "isin" and not re.fullmatch(r"[A-Z0-9]{12}", identifier_value):
-                raise ValueError("approved record has invalid isin evidence")
-            if identifier_kind == "common_code" and not re.fullmatch(r"[0-9]{9}", identifier_value):
-                raise ValueError("approved record has invalid common code evidence")
+            if not identifier_value_has_valid_syntax(identifier_kind, identifier_value):
+                error_name = {"cusip9": "cusip9", "isin": "isin", "common_code": "common code"}[identifier_kind]
+                raise ValueError(f"approved record has invalid {error_name} evidence")
             identifier_id = _stable_id(
                 "pair-identifier", [decision_id, distribution_rule, identifier_kind, identifier_value, record["valid_from"]]
             )
