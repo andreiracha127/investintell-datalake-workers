@@ -121,7 +121,11 @@ def test_mismatched_returned_cusip_is_refused_without_terms_write() -> None:
     assert summary["mismatch"] == 1
     assert summary["loaded"] == 0
     assert not any("INSERT INTO bond_reference_terms (" in sql for sql, _ in conn.queries)
-    attempt = next(params for sql, params in conn.queries if "finnhub_attempt" in sql)
+    attempt = next(
+        params
+        for sql, params in conn.queries
+        if "INSERT INTO bond_reference_terms_finnhub_attempt" in sql
+    )
     assert attempt[3:5] == ("refused", "cusip_mismatch")
 
 
@@ -272,7 +276,13 @@ def test_window_excludes_fresh_successes_before_applying_the_limit() -> None:
     selection_sql = next(sql for sql, _ in conn.queries if "FROM bond_curated_universe" in sql)
     eligibility = "r.finnhub_profile_state IS DISTINCT FROM 'success'"
     assert eligibility in selection_sql
+    assert "NOT EXISTS" in selection_sql
+    assert "FROM bond_reference_terms_finnhub_attempt a" in selection_sql
+    assert "a.profile_state IN ('empty', 'refused')" in selection_sql
+    assert "a.fetched_at >= now() - %s::interval" in selection_sql
     assert selection_sql.index(eligibility) < selection_sql.index("ORDER BY c.cusip9 LIMIT %s")
+    selection_params = next(params for sql, params in conn.queries if sql == selection_sql)
+    assert selection_params == ("000000000", "30 days", "30 days", 1)
 
 
 def test_schema_declares_worker_writer_ownership_and_legacy_constraints() -> None:
@@ -300,7 +310,11 @@ def test_retry_attempts_are_append_only_and_keep_transient_then_success_truth() 
         conn, _Client({"00033GAA3": PROFILE}), batch_label="2026-08-08", limit=1,
     )
 
-    attempts = [params for sql, params in conn.queries if "finnhub_attempt" in sql]
+    attempts = [
+        params
+        for sql, params in conn.queries
+        if "INSERT INTO bond_reference_terms_finnhub_attempt" in sql
+    ]
     assert first["transient"] == 1 and second["loaded"] == 1
     assert [(params[3], params[4]) for params in attempts] == [
         ("transient", "transient_error"), ("success", "returned_cusip"),

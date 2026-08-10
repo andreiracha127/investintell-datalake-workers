@@ -210,11 +210,12 @@ def _int_env(name: str, default: int) -> int:
 # In particular, a reference (Rule 144A) ISIN is deliberately not selected: it
 # cannot become an accidental fallback when a governed Reg S ISIN is absent.
 _UNIVERSE_SQL = """
-SELECT r.cusip9, r.coupon_rate, r.maturity_date
-FROM bond_reference_terms r
-JOIN bond_curated_universe u ON u.cusip9 = r.cusip9
-WHERE r.cusip9 IS NOT NULL AND btrim(r.cusip9) <> ''
-ORDER BY r.cusip9
+SELECT upper(btrim(u.cusip9)) AS cusip9, r.coupon_rate, r.maturity_date
+FROM bond_curated_universe u
+LEFT JOIN bond_reference_terms r
+  ON upper(btrim(r.cusip9)) = upper(btrim(u.cusip9))
+WHERE u.cusip9 IS NOT NULL AND btrim(u.cusip9) <> ''
+ORDER BY upper(btrim(u.cusip9))
 """
 
 # Per-CUSIP watermark: the last day THIS LANE already loaded, read in ONE pass
@@ -232,8 +233,9 @@ ORDER BY r.cusip9
 #
 # It is also what preserves the cold start: on a table preloaded with bulk
 # history only, an ABSENT live watermark is what puts the bond in
-# ``fetch_window``'s intended 30-day window instead of a 500-day one (430 of the
-# 10,206 curated bonds, measured 2026-08-07).
+# bounded cold window instead of a 500-day one.  The daily caller extends the
+# generic 30-day default only as far as the start of the prior closed month, so
+# a newly mapped Reg S leg can populate the complete month Stage 6 is closing.
 #
 # The source is INLINED, not bound: a bind parameter cannot be proved to imply
 # the partial index's predicate at plan time, and without that index this
@@ -570,6 +572,9 @@ def _load_candles(
     dropped_after_window = 0
     first_day: _dt.date | None = None
     last_day: _dt.date | None = None
+    previous_month_end = today.replace(day=1) - _dt.timedelta(days=1)
+    previous_month_start = previous_month_end.replace(day=1)
+    cold_start_days = max(30, (today - previous_month_start).days)
 
     def stamp(cusip: str) -> None:
         """Record the ATTEMPT, whatever came of it -- data, no data, or a
@@ -621,7 +626,9 @@ def _load_candles(
         # are both excluded: they get a window nobody has evidence about.
         if watermark is not None and watermark <= today:
             resumed += 1
-        start, end = live_daily.fetch_window(watermark, today)
+        start, end = live_daily.fetch_window(
+            watermark, today, cold_start_days=cold_start_days
+        )
         try:
             payload = client.daily_candles(
                 str(isin), live_daily.to_epoch(start), live_daily.to_epoch(end)
@@ -1221,6 +1228,7 @@ def run(
         republish = _republish(resolved)
         swept = len(universe)
         sweep_incomplete = swept < universe_total
+        historical_calc_date = today < execution_date
         candles_aborted = bool(candles.get("aborted"))
         candles_failed = candles.get("resumed", 0) > 0 and candles.get("with_data") == 0
         curve_failed = (
@@ -1262,6 +1270,15 @@ def run(
                 "reason": "input_lanes_failed",
                 "blocked_by": input_lane_reasons,
             }
+        elif historical_calc_date:
+            # A dated replay may backfill immutable daily rows, but it must not
+            # ask the current monthly parent to move backwards.  Publication is
+            # reserved for the execution date's current panel month.
+            panel = {
+                "state": "deferred",
+                "aborted": False,
+                "reason": "historical_calc_date",
+            }
         else:
             panel = _publish_panel(resolved, as_of=today)
 
@@ -1282,7 +1299,7 @@ def run(
         # Stage 6 is successful only when its own immutable pointer protocol
         # says it published.  Every empty/degraded/refused shape remains typed
         # in ``panel`` and cannot be laundered into an otherwise green day.
-        (not (sweep_incomplete or input_lane_reasons)
+        (not (sweep_incomplete or input_lane_reasons or historical_calc_date)
          and (panel_state not in {"published", "current"} or bool(panel.get("aborted"))), panel_reason),
         # Stage 5 did not recompute: the load is durable but unserved, and
         # nothing retries it before tomorrow.

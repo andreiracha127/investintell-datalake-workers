@@ -711,6 +711,20 @@ def test_parser_preserves_explicit_6_2_1_cusip_and_cins_display_groups_only() ->
     ]
 
 
+def test_parser_stops_compact_identifiers_before_connector_words() -> None:
+    source = b"""
+    <table><tr><td>
+      Rule 144A CUSIP 344045AB5 and Regulation S CUSIP G35906AC3
+    </td></tr></table>
+    """
+
+    records = backfill.parse_document(source, document_hash="hash", accession="accession")
+
+    assert len(records) == 1 and records[0]["status"] == "candidate"
+    assert records[0]["rule_144a"][0]["normalized_value"] == "344045AB5"
+    assert records[0]["reg_s"][0]["normalized_value"] == "G35906AC3"
+
+
 def test_parser_refuses_cross_block_pairing_and_marks_duplicates_ambiguous() -> None:
     source = b"""
     <table><tr><td>Regulation S ISIN USG35906AC33</td></tr></table>

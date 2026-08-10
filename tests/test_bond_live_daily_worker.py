@@ -126,7 +126,7 @@ HEALTHY_CURVE = {
 
 #: Markers the FakeConn answers by. Kept next to each other because a run()-level
 #: test drives all four query shapes through one connection.
-Q_UNIVERSE = "FROM bond_reference_terms r"
+Q_UNIVERSE = "bond_curated_universe u"
 Q_WATERMARK = "max(o.day)"
 Q_ATTEMPTS = "FROM bond_live_daily_sweep"
 Q_CURVE_WATERMARK = "GROUP BY tenor"
@@ -308,6 +308,35 @@ def test_daily_loads_the_mapped_reg_s_isin_and_writes_the_execution_cusip(monkey
     ]
     assert observation_writes and observation_writes[0][0] == "G12345678"
     assert out["coverage"]["universe"] == 1
+
+
+def test_daily_sweeps_mapped_curated_reference_even_without_terms(monkeypatch) -> None:
+    reference = "912828XX1"
+    execution_cusip = "G12345678"
+    execution_isin = "XS1234567890"
+
+    def resolve(_conn, *, snapshot_id, as_of, reference_cusip9s):
+        assert reference_cusip9s == [reference]
+        return SimpleNamespace(
+            resolutions={
+                reference: SimpleNamespace(
+                    reference_cusip9=reference,
+                    reg_s_cusip9=execution_cusip,
+                    reg_s_isin=execution_isin,
+                )
+            },
+            reason_by_reference={},
+        )
+
+    conn = FakeConn({Q_UNIVERSE: [(reference, None, None)]})
+    client = FakeClient(candles={execution_isin: _candle_payload(TODAY, 99.0)})
+
+    out = _drive_run(monkeypatch, conn=conn, client=client, resolver=resolve)
+
+    assert "FROM bond_curated_universe u" in bond_live_daily._UNIVERSE_SQL
+    assert "LEFT JOIN bond_reference_terms r" in bond_live_daily._UNIVERSE_SQL
+    assert [call[0] for call in client.candle_calls] == [execution_isin]
+    assert out["coverage"]["universe"] == 1
     assert out["mapping_coverage"] == {
         "snapshot_id": REG_S_SNAPSHOT_ID,
         "reference_total": 1,
@@ -466,9 +495,8 @@ def test_a_higher_ranked_bulk_day_cannot_move_the_live_lane_s_watermark() -> Non
 
     bond_live_daily._load_candles(conn, client, UNIVERSE, TODAY)
 
-    cold_start, _ = live_daily.fetch_window(None, TODAY)
     (_, from_ts, _) = client.candle_calls[0]
-    assert from_ts == live_daily.to_epoch(cold_start)
+    assert from_ts == live_daily.to_epoch(_dt.date(2026, 7, 1))
 
 
 def test_the_watermark_predicate_matches_the_partial_index_it_needs() -> None:
@@ -1105,7 +1133,7 @@ def test_the_daily_lock_is_held_through_the_panel_publication(
     no VACUUM horizon (the trap this repo has already paid for).
     """
     events: list[tuple[str, int]] = []
-    out = _drive_run(monkeypatch, events=events)
+    out = _drive_run(monkeypatch, events=events, calc_date=_dt.date.today())
 
     assert out["state"] == "ok"
     assert [name for name, _ in events] == [
@@ -1217,7 +1245,11 @@ def test_a_complete_run_is_the_only_green_one(monkeypatch) -> None:
 
 @pytest.mark.parametrize("panel_state", ["failed", "publish_failed", "gate_failed"])
 def test_panel_failures_are_end_only_verdict_reasons(monkeypatch, panel_state) -> None:
-    out = _drive_run(monkeypatch, panel={"state": panel_state, "aborted": True})
+    out = _drive_run(
+        monkeypatch,
+        panel={"state": panel_state, "aborted": True},
+        calc_date=_dt.date.today(),
+    )
 
     assert out["state"] == f"panel_{panel_state}"
     assert f"panel_{panel_state}" in out["halted_by"]
@@ -1227,6 +1259,7 @@ def test_panel_already_current_is_a_healthy_daily_outcome(monkeypatch) -> None:
     out = _drive_run(
         monkeypatch,
         panel={"state": "current", "aborted": False, "reason": "panel_month_already_current"},
+        calc_date=_dt.date.today(),
     )
 
     assert out["aborted"] is False
@@ -1415,8 +1448,9 @@ def test_a_sweep_that_re_asked_for_loaded_days_and_got_nothing_is_not_green(
 def test_a_cold_table_is_not_evidence_that_the_provider_broke(monkeypatch) -> None:
     """``resumed``, not ``swept`` -- and this is the first reason why.
 
-    A bond this lane has never loaded gets ``fetch_window``'s 30-day cold-start
-    window, and nothing in the database says the provider ever had a day for it.
+    A bond this lane has never loaded gets a bounded cold-start window reaching
+    the prior closed-month start, and nothing in the database says the provider
+    ever had a day for it.
     409 of the 10,073 curated bonds are exactly that (measured on production
     2026-08-08: attempted, never once returned data), and the sweep RING sorts
     never-loaded bonds first inside a round -- so a thin ``WORKER_LIMIT`` slice
@@ -1455,8 +1489,13 @@ def test_a_replay_of_a_day_the_table_is_already_past_is_benign_in_both_lanes(
         Q_WATERMARK: _loaded("912828XX1", day=TODAY),   # already past the replay
         Q_CURVE_WATERMARK: _curve_at(TODAY),            # ...and so is every tenor
     })
+    events: list[tuple[str, int]] = []
     out = _drive_run(
-        monkeypatch, conn=conn, client=FakeClient(curve=HEALTHY_CURVE), calc_date=replay
+        monkeypatch,
+        conn=conn,
+        client=FakeClient(curve=HEALTHY_CURVE),
+        calc_date=replay,
+        events=events,
     )
 
     assert out["candles"]["with_data"] == 0 and out["candles"]["resumed"] == 0
@@ -1465,6 +1504,52 @@ def test_a_replay_of_a_day_the_table_is_already_past_is_benign_in_both_lanes(
     assert out["curve"]["empty_tenors"] == []
     assert out["state"] == "ok"
     assert out["halted_by"] == []
+    assert out["panel"] == {
+        "state": "deferred", "aborted": False, "reason": "historical_calc_date",
+    }
+    assert "panel" not in [name for name, _ in events]
+
+
+def test_same_month_historical_calc_date_also_defers_stage_six(monkeypatch) -> None:
+    replay = _dt.date.today() - _dt.timedelta(days=1)
+    assert (replay.year, replay.month) == (_dt.date.today().year, _dt.date.today().month)
+    events: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_candles",
+        lambda *_args, **_kwargs: {
+            "swept": 1, "resumed": 0, "with_data": 0, "aborted": False,
+        },
+    )
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_curve",
+        lambda *_args, **_kwargs: {
+            "tenors": 0,
+            "skipped_tenors": list(bond_live_daily.CURVE_TENORS),
+            "failed_tenors": [],
+            "empty_tenors": [],
+        },
+    )
+    monkeypatch.setattr(
+        bond_live_daily,
+        "_load_ticks",
+        lambda *_args, **_kwargs: {
+            "swept": 1,
+            "failures": 0,
+            "transient_failures": 0,
+            "aborted": False,
+            "degraded": False,
+        },
+    )
+
+    out = _drive_run(monkeypatch, calc_date=replay, events=events)
+
+    assert out["state"] == "ok" and out["aborted"] is False
+    assert out["panel"] == {
+        "state": "deferred", "aborted": False, "reason": "historical_calc_date",
+    }
+    assert "panel" not in [name for name, _ in events]
 
 
 def test_a_curve_that_answered_with_nothing_for_every_tenor_did_no_work(
@@ -1844,6 +1929,7 @@ def test_partial_sweep_defers_stage_six_until_a_full_rerun(monkeypatch) -> None:
         conn=FakeConn({Q_UNIVERSE: universe}),
         limit=2,
         events=partial_events,
+        calc_date=_dt.date.today(),
     )
 
     assert partial["state"] == "partial_sweep"
@@ -1858,6 +1944,7 @@ def test_partial_sweep_defers_stage_six_until_a_full_rerun(monkeypatch) -> None:
         conn=FakeConn({Q_UNIVERSE: universe}),
         limit=5,
         events=full_events,
+        calc_date=_dt.date.today(),
     )
 
     assert full["state"] == "ok"

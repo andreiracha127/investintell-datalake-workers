@@ -524,7 +524,8 @@ distinction each stage uses is a day the provider can be **proved** to owe:
   out of this same endpoint, so an empty answer for it is a fault. Bonds without
   that promise are excluded, and both exclusions are systematic rather than
   hypothetical:
-  * a **cold-start** bond gets `fetch_window`'s 30-day window and no evidence.
+  * a **cold-start** bond gets a bounded window reaching the prior closed-month
+    start (at least `fetch_window`'s 30-day default) and no prior evidence.
     409 of the 10,073 curated bonds have been attempted and have never once
     returned data (measured 2026-08-08; 9,779 do carry a live watermark), and the
     sweep ring sorts never-loaded bonds *first inside a round* — so a thin

@@ -213,9 +213,21 @@ def _window(conn: Any, cursor: str | None, limit: int,
               OR r.finnhub_fetched_at IS NULL
               OR r.finnhub_fetched_at < now() - %s::interval
           )
+          AND NOT EXISTS (
+              SELECT 1
+              FROM bond_reference_terms_finnhub_attempt a
+              WHERE a.cusip9 = c.cusip9
+                AND a.profile_state IN ('empty', 'refused')
+                AND a.fetched_at >= now() - %s::interval
+          )
         ORDER BY c.cusip9 LIMIT %s
         """,
-        (cursor or "", f"{stale_after_days} days", limit),
+        (
+            cursor or "",
+            f"{stale_after_days} days",
+            f"{stale_after_days} days",
+            limit,
+        ),
     ).fetchall()
     return [(row[0], bool(row[1]) if len(row) > 1 else False) for row in rows]
 
