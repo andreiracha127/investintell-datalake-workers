@@ -87,6 +87,22 @@ def test_panel_ddl_requires_an_authorized_dual_series_child_of_the_legacy_pointe
     assert "btrim(a.config_hash::text) = '1863d3d5fa3a0edf'" in sql
 
 
+def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() -> None:
+    sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
+
+    exception_at = sql.index("legacy_parentless_return_coverage_repair_v1")
+    direct_child_at = sql.index("pointer candidate must directly extend the current publication")
+    assert exception_at < direct_child_at
+    assert "92740098-1571-559d-9fb3-119de8321754" in sql
+    assert "candidate.parent_publication_id IS NULL" in sql
+    assert "prior.parent_publication_id IS NULL" in sql
+    assert "candidate.first_month = prior.first_month" in sql
+    assert "candidate.last_closed_month = prior.last_closed_month" in sql
+    assert "min(f.month)" in sql
+    assert "candidate.first_month + INTERVAL '1 month'" in sql
+    assert "candidate.gate_evidence @> jsonb_build_object('base_repair'" in sql
+
+
 def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:
     sql = Path("schemas/bond_panel_v1.sql").read_text(encoding="utf-8")
 

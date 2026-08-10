@@ -501,6 +501,69 @@ BEGIN
               )
           )
     ) THEN RAISE EXCEPTION 'pointer config transition requires an authorized dual-series delta child'; END IF;
+    -- One deliberately narrow replacement is allowed for the incomplete T3
+    -- legacy root.  It is not an ancestry shortcut: the old root remains
+    -- immutable and the candidate must prove the frozen-artifact repair
+    -- contract, complete direct facts, and exact source identity.
+    IF TG_OP = 'UPDATE'
+       AND NEW.publication_id IS DISTINCT FROM OLD.publication_id
+       AND EXISTS (
+           SELECT 1
+           FROM bond_panel_publications prior, bond_panel_publications candidate
+           WHERE prior.publication_id = OLD.publication_id
+             AND candidate.publication_id = NEW.publication_id
+             AND prior.publication_id = '92740098-1571-559d-9fb3-119de8321754'::uuid
+             AND btrim(prior.config_hash::text) = '0c0d78a866bc1090'
+             AND btrim(candidate.config_hash::text) = '0c0d78a866bc1090'
+             AND prior.parent_publication_id IS NULL
+             AND candidate.parent_publication_id IS NULL
+             AND candidate.first_month = prior.first_month
+             AND candidate.last_closed_month = prior.last_closed_month
+             AND candidate.open_month IS NULL
+             AND candidate.gate_evidence @> jsonb_build_object('base_repair', jsonb_build_object(
+                 'contract', 'legacy_parentless_return_coverage_repair_v1',
+                 'from_publication_id', OLD.publication_id::text,
+                 'from_config_hash', btrim(prior.config_hash::text),
+                 'from_input_fingerprint', prior.input_fingerprint,
+                 'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581',
+                 'authorized_code_revision', candidate.code_revision
+             ))
+             AND prior.gate_evidence @> jsonb_build_object('input_fingerprint', prior.input_fingerprint)
+             AND candidate.source_lineage->'source_sha256' = prior.source_lineage->'source_sha256'
+             AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.snapshot_rows
+             AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.rv_signal_rows
+             AND (SELECT count(*) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.returns_rows
+             AND (SELECT count(*) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.ratings_pit_rows
+             AND (SELECT max(f.month) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT max(f.month) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT max(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = (candidate.first_month + INTERVAL '1 month')::date
+             AND (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = (SELECT min(f.month) FROM bond_panel_returns f WHERE f.publication_id = prior.publication_id)
+             AND (SELECT max(f.month) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.last_closed_month
+             AND NOT EXISTS (SELECT 1 FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id AND (f.month < candidate.first_month OR f.month > candidate.last_closed_month))
+             AND NOT EXISTS (
+                 SELECT 1 FROM generate_series((candidate.first_month + INTERVAL '1 month')::date, candidate.last_closed_month, INTERVAL '1 month') expected(month)
+                 WHERE NOT EXISTS (SELECT 1 FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id AND f.month = expected.month::date)
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id AND f.eligibility_state = 'included'
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+             )
+             AND NOT EXISTS (
+                 SELECT f.month, f.cusip_id FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id
+                 EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id
+             )
+       ) THEN
+        RETURN NEW;
+    END IF;
     IF TG_OP = 'UPDATE'
        AND NEW.publication_id IS DISTINCT FROM OLD.publication_id
        AND NOT EXISTS (
