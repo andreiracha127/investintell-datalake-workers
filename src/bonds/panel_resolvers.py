@@ -115,11 +115,23 @@ def eligibility(panel: pd.DataFrame) -> pd.Series:
             (pd.isna(value["issuer_id"]) or not str(value["issuer_id"]).strip(), "unresolved_issuer"),
             (pd.isna(value["ff17num"]), "missing_sector"),
             (pd.isna(value["amt_outstanding_k"]), "missing_amount"),
-            (value["amt_outstanding_k"] < 250_000, "too_small"),
+            (
+                pd.notna(value["amt_outstanding_k"])
+                and value["amt_outstanding_k"] < 250_000,
+                "too_small",
+            ),
             (pd.isna(value["bond_maturity"]), "missing_maturity"),
-            (value["bond_maturity"] < 1, "matured_or_short"),
+            (
+                pd.notna(value["bond_maturity"])
+                and value["bond_maturity"] < 1,
+                "matured_or_short",
+            ),
             (pd.isna(value["traded_days"]), "missing_traded_days"),
-            (value["traded_days"] < 5, "illiquid"),
+            (
+                pd.notna(value["traded_days"])
+                and value["traded_days"] < 5,
+                "illiquid",
+            ),
             (pd.isna(value["pr"]), "missing_price"),
             (not pd.isna(value["pr"]) and not 1 <= value["pr"] <= 300, "invalid_price"),
             (pd.isna(value["ytm"]), "missing_ytm"),

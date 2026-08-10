@@ -69,6 +69,27 @@ def test_eligibility_distinguishes_absent_currency_and_asset_class() -> None:
     ]
 
 
+def test_eligibility_classifies_object_none_numeric_inputs_as_missing() -> None:
+    rows = pd.DataFrame({
+        "ytm": [0.05] * 3,
+        "mod_dur": [5.0] * 3,
+        "pr": [100.0] * 3,
+        "amt_outstanding_k": pd.Series([None, 300_000, 300_000], dtype=object),
+        "bond_maturity": pd.Series([2.0, None, 2.0], dtype=object),
+        "traded_days": pd.Series([5, 5, None], dtype=object),
+        "issuer_id": ["issuer"] * 3,
+        "ff17num": [10] * 3,
+        "currency": ["USD"] * 3,
+        "asset_class": ["corporate"] * 3,
+    })
+
+    assert eligibility(rows).tolist() == [
+        "missing_amount",
+        "missing_maturity",
+        "missing_traded_days",
+    ]
+
+
 def test_static_rating_mapping_is_neutral_and_marks_absent_or_stale() -> None:
     mapping = pd.DataFrame({"cusip_id": ["AAA"], "rating_bucket": ["BBB"],
                             "rating_as_of_month": pd.to_datetime(["2023-01-01"]), "rating_state": ["static_carry_forward"], "rating_reason": ["frozen_pack_static"]})
