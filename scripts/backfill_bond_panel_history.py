@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if __package__ in {None, ""} and str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.backfill_psql_transport import render_immutable_batch, render_schema  # noqa: E402
+from scripts.backfill_psql_transport import _copy_csv, render_immutable_batch, render_schema  # noqa: E402
 DEFAULT_ARTIFACT_DIRECTORY = Path(
     r"C:\Users\andre\Downloads\stage1_osbap_0k_volume_2025\bond_panel_monthly"
 )
@@ -679,17 +679,30 @@ _COLUMNS: dict[Surface, tuple[str, ...]] = {
     "returns": ("publication_id", "month", "cusip_id", "total_return", "price_return", "carry_return", "exit_basis", "exit_reason", "suspect", "payload"),
     "rating_pit": ("publication_id", "month", "cusip_id", "rating_bucket", "rating_as_of_month", "rating_state", "rating_reason", "rating_staleness_months", "source_lineage", "payload"),
 }
+_DISTRIBUTION_COLUMNS = ("distribution_rule", "reference_cusip9", "distribution_decision_id")
+_COPY_COLUMNS: dict[Surface, tuple[str, ...]] = {
+    surface: columns[:3] + _DISTRIBUTION_COLUMNS + columns[3:]
+    for surface, columns in _COLUMNS.items()
+}
 _TYPES: dict[Surface, tuple[str, ...]] = {
     "snapshot": ("uuid", "date", "text", "text", "text", "integer", "text", "text", "text", "text", "numeric", "date", "numeric", "numeric", "numeric", "text", "integer", "numeric", "text", "numeric", "text", "numeric", "numeric", "text", "text", "text", "text", "integer", "integer", "numeric", "numeric", "integer", "text", "jsonb", "jsonb"),
     "rv_signal": ("uuid", "date", "text", "text", "integer", "text", "text", "numeric", "numeric", "numeric", "integer", "integer", "numeric", "numeric", "integer", "numeric", "text", "numeric", "text", "numeric", "text", "numeric", "numeric", "text", "jsonb", "jsonb", "jsonb"),
     "returns": ("uuid", "date", "text", "numeric", "numeric", "numeric", "text", "text", "boolean", "jsonb"),
     "rating_pit": ("uuid", "date", "text", "text", "date", "text", "text", "integer", "jsonb", "jsonb"),
 }
+_COPY_TYPES: dict[Surface, tuple[str, ...]] = {
+    surface: types[:3] + ("text", "text", "text") + types[3:]
+    for surface, types in _TYPES.items()
+}
 _NULLABLE: dict[Surface, tuple[str, ...]] = {
     "snapshot": ("issuer_id", "ff17num", "amount_outstanding_k", "maturity_date", "maturity_years", "coupon_pct", "price", "price_source", "db_type", "ytm", "ytm_basis", "mod_dur", "mod_dur_source", "spread_final", "spread_final_bps", "spread_source", "traded_days", "trade_count", "dollar_volume", "rel_bid_ask_bps", "quoted_days", "terms_source"),
     "rv_signal": ("issuer_id", "ff17num", "price", "amount_outstanding_k", "maturity_years", "traded_days", "trade_count", "dollar_volume", "rel_bid_ask_bps", "quoted_days", "ytm", "ytm_basis", "mod_dur", "mod_dur_source", "spread_final_bps", "residual_bps", "rv_signal", "price_source"),
     "returns": ("price_return", "carry_return", "exit_reason"),
     "rating_pit": ("rating_as_of_month", "rating_staleness_months"),
+}
+_COPY_NULLABLE: dict[Surface, tuple[str, ...]] = {
+    surface: _DISTRIBUTION_COLUMNS + nullable
+    for surface, nullable in _NULLABLE.items()
 }
 
 
@@ -730,10 +743,12 @@ def _render_repair_tail_batch(artifacts: ArtifactSet, plan: BackfillPlan, *, sta
     if start_after > tail_total:
         raise CursorError("start_after_exceeds_surface")
     selected = _repair_return_tail_rows(artifacts, start_after=start_after, limit=limit)
-    columns = _COLUMNS["returns"]
-    values = [tuple([plan.publication_id] + [row[column] for column in columns[1:]]) for row in selected]
+    columns = _COPY_COLUMNS["returns"]
+    column_types = _COPY_TYPES["returns"]
+    nullable_columns = _COPY_NULLABLE["returns"]
+    values = [tuple([plan.publication_id] + [row.get(column) for column in columns[1:]]) for row in selected]
     evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps({name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(start_after + len(selected)) + ",'remaining'," + str(tail_total - start_after - len(selected)) + ",'done'," + ("true" if start_after + len(selected) == tail_total else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
-    emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=_TYPES["returns"], key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=start_after + len(selected), skipped=0, target_evidence_sql=evidence, nullable_columns=_NULLABLE["returns"])
+    emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=column_types, key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=start_after + len(selected), skipped=0, target_evidence_sql=evidence, nullable_columns=nullable_columns)
     source_id = plan.base_repair["from_publication_id"]
     expected_before = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after}"
     expected_after = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after + len(selected)}"
@@ -750,13 +765,54 @@ BEGIN
 END
 $repair_tail_order$;
 """
+    prefix_check = ""
+    if start_after:
+        prefix = _repair_return_tail_rows(artifacts, start_after=0, limit=start_after)
+        prefix_values = [tuple([plan.publication_id] + [row.get(column) for column in columns[1:]]) for row in prefix]
+        definitions = ", ".join(
+            f'"{column}" {kind}' if column in nullable_columns else f'"{column}" {kind} NOT NULL'
+            for column, kind in zip(columns, column_types, strict=True)
+        )
+        copied_columns = ", ".join(f'"{column}"' for column in columns)
+        expected_facts = ", ".join(f"expected.{column}" for column in columns[1:])
+        candidate_facts = ", ".join(f"candidate.{column}" for column in columns[1:])
+        prefix_check = f"""CREATE TEMP TABLE _repair_tail_prefix ({definitions}) ON COMMIT DROP;
+COPY _repair_tail_prefix ({copied_columns}) FROM STDIN WITH (FORMAT csv, NULL '\\N');
+{_copy_csv(prefix_values)}\\.
+DO $repair_tail_prefix$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM _repair_tail_prefix expected
+        LEFT JOIN bond_panel_returns candidate
+          ON candidate.publication_id={_sql_string(plan.publication_id)}::uuid
+         AND candidate.month=expected.month
+         AND candidate.cusip_id=expected.cusip_id
+        WHERE candidate.publication_id IS NULL
+           OR ROW({candidate_facts}) IS DISTINCT FROM ROW({expected_facts})
+    ) THEN RAISE EXCEPTION 'repair tail prefix immutable evidence conflict'; END IF;
+END
+$repair_tail_prefix$;
+"""
     lock_statement = 'LOCK TABLE "bond_panel_returns" IN SHARE ROW EXCLUSIVE MODE;\n'
     if lock_statement not in emitted:  # pragma: no cover - guards transport drift
         raise RuntimeError("psql_transport_lock_shape_changed")
-    emitted = emitted.replace(lock_statement, lock_statement + repair_order_check, 1)
+    emitted = emitted.replace(lock_statement, lock_statement + repair_order_check + prefix_check, 1)
     insert_select = "SELECT " + ", ".join(f's."{column}"' for column in columns) + " FROM _backfill_stage s"
     replay_safe = insert_select + f" WHERE EXISTS (SELECT 1 FROM bond_panel_publications p WHERE p.publication_id={_sql_string(plan.publication_id)}::uuid AND p.publication_status='prepared')"
-    return emitted.replace(insert_select, replay_safe, 1)
+    emitted = emitted.replace(insert_select, replay_safe, 1)
+    final_count_check = f"""DO $repair_tail_final_count$
+BEGIN
+    IF (SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(plan.publication_id)}::uuid) <> {expected_after} THEN
+        RAISE EXCEPTION 'repair tail final count mismatch';
+    END IF;
+END
+$repair_tail_final_count$;
+"""
+    commit_statement = "COMMIT;\nSELECT jsonb_build_object("
+    if commit_statement not in emitted:  # pragma: no cover - guards transport drift
+        raise RuntimeError("psql_transport_commit_shape_changed")
+    return emitted.replace(commit_statement, final_count_check + commit_statement, 1)
 
 
 def render_repair_copy_sql(plan: BackfillPlan, surface: Surface) -> str:
@@ -765,7 +821,7 @@ def render_repair_copy_sql(plan: BackfillPlan, surface: Surface) -> str:
         raise PlanError("repair_copy_requires_repair_plan")
     source_id = plan.base_repair["from_publication_id"]
     table = _TABLES[surface]
-    columns = _COLUMNS[surface]
+    columns = _COPY_COLUMNS[surface]
     source_columns = ", ".join(f"source.{column}" for column in columns[1:])
     target_columns = ", ".join(columns)
     candidate_facts = ", ".join(f"candidate.{column}" for column in columns[1:])
@@ -777,13 +833,17 @@ DO $repair_source$
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM bond_panel_publications prior
-        JOIN bond_panel_app_pointer pointer ON pointer.product={_sql_string(PRODUCT)} AND pointer.publication_id=prior.publication_id
+        JOIN bond_panel_app_pointer pointer ON pointer.product={_sql_string(PRODUCT)}
         JOIN bond_panel_publications candidate ON candidate.publication_id={_sql_string(plan.publication_id)}::uuid
         WHERE prior.publication_id={_sql_string(source_id)}::uuid
           AND prior.publication_status='validated' AND prior.parent_publication_id IS NULL
           AND prior.config_hash={_sql_string(CONFIG_HASH)}
-          AND candidate.publication_status='prepared' AND candidate.parent_publication_id IS NULL
+          AND candidate.publication_status IN ('prepared','validated') AND candidate.parent_publication_id IS NULL
           AND candidate.gate_evidence @> jsonb_build_object('base_repair',{_sql_string(json.dumps(plan.base_repair, sort_keys=True))}::jsonb)
+          AND (
+              (candidate.publication_status='prepared' AND pointer.publication_id=prior.publication_id)
+              OR (candidate.publication_status='validated' AND pointer.publication_id=candidate.publication_id)
+          )
     ) THEN RAISE EXCEPTION 'repair copy requires exact evidence-bound current legacy source'; END IF;
 END
 $repair_source$;
@@ -806,6 +866,11 @@ INSERT INTO {table} ({target_columns})
 SELECT {_sql_string(plan.publication_id)}::uuid, {source_columns}
 FROM {table} source
 WHERE source.publication_id={_sql_string(source_id)}::uuid
+  AND EXISTS (
+      SELECT 1 FROM bond_panel_publications candidate
+      WHERE candidate.publication_id={_sql_string(plan.publication_id)}::uuid
+        AND candidate.publication_status='prepared'
+  )
 ON CONFLICT (publication_id, month, cusip_id) DO NOTHING;
 DO $repair_copy_count$
 BEGIN

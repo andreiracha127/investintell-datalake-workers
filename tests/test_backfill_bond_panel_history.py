@@ -324,18 +324,38 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     }
     copied = copies["snapshot"]
     tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
+    resumed_tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=1, limit=1)
     finalize = backfill.render_finalize_sql(plan)
 
     assert f"WHERE publication_id={backfill._sql_string(backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)}::uuid" in copied
     assert "INSERT INTO bond_panel_snapshot" in copied
     assert "bond_panel_live.parquet" not in copied
+    assert "candidate.publication_status IN ('prepared','validated')" in copied
+    assert "pointer.publication_id=candidate.publication_id" in copied
+    assert (
+        f"WHERE source.publication_id={backfill._sql_string(backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)}::uuid\n"
+        "  AND EXISTS (\n      SELECT 1 FROM bond_panel_publications candidate"
+    ) in copied
     for surface, copy_sql in copies.items():
         assert f"repair copy immutable evidence conflict:{surface}" in copy_sql
-        for column in backfill._COLUMNS[surface][1:]:
+        for column in (
+            "distribution_rule",
+            "reference_cusip9",
+            "distribution_decision_id",
+            *backfill._COLUMNS[surface][1:],
+        ):
             assert f"candidate.{column}" in copy_sql
             assert f"source.{column}" in copy_sql
     assert "COPY _backfill_stage" in tail
     assert "repair tail requires exact copied historical returns before tail" in tail
+    assert "publication_status='prepared'" in tail
+    assert "publication_status IN ('prepared','validated')" not in tail
+    assert "CREATE TEMP TABLE _repair_tail_prefix" in resumed_tail
+    assert "repair tail prefix immutable evidence conflict" in resumed_tail
+    assert "repair tail final count mismatch" in resumed_tail
+    for column in backfill._COPY_COLUMNS["returns"][1:]:
+        assert f"candidate.{column}" in resumed_tail
+        assert f"expected.{column}" in resumed_tail
     assert "WHERE publication_id=" in finalize
     assert "AND publication_id=" in finalize
     assert "base_repair" in finalize
