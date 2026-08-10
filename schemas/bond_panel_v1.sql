@@ -517,6 +517,8 @@ BEGIN
              AND btrim(candidate.config_hash::text) = '0c0d78a866bc1090'
              AND prior.parent_publication_id IS NULL
              AND candidate.parent_publication_id IS NULL
+             AND candidate.code_revision = 't3_historical_base_return_coverage_repair_v1'
+             AND candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'
              AND candidate.first_month = prior.first_month
              AND candidate.last_closed_month = prior.last_closed_month
              AND candidate.open_month IS NULL
@@ -530,7 +532,16 @@ BEGIN
                  'from_config_hash', btrim(prior.config_hash::text),
                  'from_input_fingerprint', prior.input_fingerprint,
                  'from_artifact_fingerprint', 'e963304af08c1f513d048e1e7eee9fbe334fc3fe01b1c80f3cd5b7f8acb19581',
-                 'authorized_code_revision', candidate.code_revision
+                 'first_month', '2002-07-01',
+                 'last_closed_month', '2026-06-01',
+                 'reconstruction', 'median_coupon_from_historical_carry_then_price_ytm_fallback',
+                 'tail_rows', 200955,
+                 'tail_months', 15,
+                 'tail_month_counts', jsonb_build_array(13641, 14542, 14288, 14178, 13956, 13812, 13660, 13331, 13195, 13229, 12899, 12734, 12610, 12476, 12404),
+                 'tail_cusips', 17494,
+                 'tail_suspect', 47,
+                 'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663',
+                 'authorized_code_revision', 't3_historical_base_return_coverage_repair_v1'
              ))
              AND prior.gate_evidence @> jsonb_build_object('input_fingerprint', prior.input_fingerprint)
              AND candidate.source_lineage->'source_sha256' = prior.source_lineage->'source_sha256'

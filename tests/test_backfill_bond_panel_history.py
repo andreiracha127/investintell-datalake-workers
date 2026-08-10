@@ -256,6 +256,10 @@ def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_linea
             {"cusip_id": "BBB000002", "month": str(month.date()), "pr": 100.0, "ytm": .06, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"}
             for month in pd.date_range("2025-05-01", "2026-06-01", freq="MS")
         ],
+        *[
+            {"cusip_id": "CCC000003", "month": str(month.date()), "pr": 100.0, "ytm": .07, "mod_dur": 4.0, "bond_maturity": 5.0, "credit_spread": .011, "trade_count": 6.0, "dollar_volume": 2.0, "traded_days": 5, "prc_bid": 99.0, "prc_ask": 101.0, "rel_bid_ask_bps": 200.0, "quoted_days": 5, "amt_outstanding_k": 300000, "ff17num": 5.0, "db_type": 1.0, "price_source": "frozen"}
+            for month in pd.date_range("2025-04-01", "2026-06-01", freq="MS")
+        ],
     ])
     pq.write_table(pa.concat_tables([panel, extra]), panel_path)
     artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
@@ -267,9 +271,9 @@ def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_linea
     tail = {(row["cusip_id"], row["month"]): row for row in rows.rows}
 
     assert plan.input_fingerprint != plan.evidence()["base_repair"]["from_artifact_fingerprint"]
-    assert plan.counts["returns"] == 31
+    assert plan.counts["returns"] == 45
     assert plan.evidence()["returns_first_month"] == "2025-03-01"
-    assert rows.total == 30
+    assert rows.total == 44
     assert all(row["month"] >= "2025-04-01" for row in rows.rows)
     repair = plan.evidence()["base_repair"]
     assert {key: repair[key] for key in (
@@ -283,16 +287,17 @@ def test_repair_plan_reconstructs_missing_observed_tail_with_deterministic_linea
         "first_month": "2025-02-01",
         "last_closed_month": "2026-06-01",
         "reconstruction": "median_coupon_from_historical_carry_then_price_ytm_fallback",
-        "tail_rows": 30,
+        "tail_rows": 44,
         "tail_months": 15,
     }
-    assert repair["tail_month_counts"] == [2] * 15
+    assert repair["tail_month_counts"] == [2, *([3] * 14)]
     assert len(repair["tail_digest"]) == 64
     assert tail[("AAA000001", "2025-04-01")]["price_return"] == 0.0
     assert tail[("AAA000001", "2025-04-01")]["carry_return"] == pytest.approx(.001)
     assert tail[("AAA000001", "2025-04-01")]["exit_basis"] == "observed"
     assert tail[("AAA000001", "2025-04-01")]["exit_reason"] is None
     assert tail[("BBB000002", "2025-04-01")]["carry_return"] > 0
+    assert tail[("CCC000003", "2025-05-01")]["carry_return"] > 0
 
 
 def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_source(tmp_path: Path) -> None:
@@ -321,6 +326,7 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     assert "INSERT INTO bond_panel_snapshot" in copied
     assert "bond_panel_live.parquet" not in copied
     assert "COPY _backfill_stage" in tail
+    assert "repair tail requires exact copied historical returns before tail" in tail
     assert "WHERE publication_id=" in finalize
     assert "AND publication_id=" in finalize
     assert "base_repair" in finalize

@@ -383,26 +383,43 @@ def _repair_return_tail_rows(
                   AND date_diff('day', p.previous_month, p.month) BETWEEN 28 AND 31
                 GROUP BY r.cusip_id
             ), implied_parts AS (
-                SELECT cusip_id, price, ytm, ytm / 2 AS y,
-                       greatest(CAST(round(2 * maturity) AS INTEGER), 1) AS periods
+                SELECT month, cusip_id, price, ytm, ytm / 2 AS y,
+                        greatest(CAST(round(2 * maturity) AS INTEGER), 1) AS periods
                 FROM panel
-                WHERE month <= DATE '2025-03-01'
-                  AND isfinite(price) AND isfinite(ytm) AND isfinite(maturity)
+                WHERE isfinite(price) AND isfinite(ytm) AND isfinite(maturity)
             ), implied_math AS (
                 SELECT *, pow(1 + y, -periods) AS discount FROM implied_parts
+            ), implied_coupon_points AS (
+                SELECT month, cusip_id, greatest(0.0, least(20.0,
+                    CASE WHEN abs(y) > 0 AND (1 - discount) / y > 1e-9
+                         THEN (price / 100 - discount) / ((1 - discount) / y) * 200
+                         ELSE ytm * 100 END)) AS coupon
+                FROM implied_math
             ), implied_coupon AS (
                 SELECT cusip_id, median(greatest(0.0, least(20.0,
                     CASE WHEN abs(y) > 0 AND (1 - discount) / y > 1e-9
                          THEN (price / 100 - discount) / ((1 - discount) / y) * 200
                          ELSE ytm * 100 END))) AS coupon
-                FROM implied_math GROUP BY cusip_id
+                FROM implied_math WHERE month <= DATE '2025-03-01' GROUP BY cusip_id
+            ), entrant_implied_coupon AS (
+                SELECT cusip_id, coupon
+                FROM (
+                    SELECT cusip_id, coupon,
+                           row_number() OVER (PARTITION BY cusip_id ORDER BY month) AS ordinal
+                    FROM implied_coupon_points
+                    WHERE month > DATE '2025-03-01'
+                ) ranked
+                WHERE ordinal = 1
             ), coupons AS (
-                SELECT i.cusip_id, coalesce(h.coupon, i.coupon) AS coupon
-                FROM implied_coupon i LEFT JOIN historical_coupon h USING (cusip_id)
-                UNION ALL
-                SELECT h.cusip_id, h.coupon
-                FROM historical_coupon h LEFT JOIN implied_coupon i USING (cusip_id)
-                WHERE i.cusip_id IS NULL
+                SELECT ids.cusip_id, coalesce(h.coupon, i.coupon, entrant.coupon) AS coupon
+                FROM (
+                    SELECT cusip_id FROM historical_coupon
+                    UNION SELECT cusip_id FROM implied_coupon
+                    UNION SELECT cusip_id FROM entrant_implied_coupon
+                ) ids
+                LEFT JOIN historical_coupon h USING (cusip_id)
+                LEFT JOIN implied_coupon i USING (cusip_id)
+                LEFT JOIN entrant_implied_coupon entrant USING (cusip_id)
             ), tail AS (
                 SELECT l.month, l.cusip_id,
                        (l.price - l.previous_price) / l.previous_price AS price_return,
@@ -717,6 +734,26 @@ def _render_repair_tail_batch(artifacts: ArtifactSet, plan: BackfillPlan, *, sta
     values = [tuple([plan.publication_id] + [row[column] for column in columns[1:]]) for row in selected]
     evidence = "jsonb_build_object('publication_id'," + _sql_string(plan.publication_id) + ",'surface','returns_repair_tail','source_sha256'," + _sql_string(json.dumps({name: artifacts.sha256[name] for name in ("bond_panel_live.parquet", "bond_monthly_returns.parquet")}, sort_keys=True)) + "::jsonb,'cursor'," + str(start_after) + ",'selected'," + str(len(selected)) + ",'committed_through'," + str(start_after + len(selected)) + ",'remaining'," + str(tail_total - start_after - len(selected)) + ",'done'," + ("true" if start_after + len(selected) == tail_total else "false") + ",'config_hash'," + _sql_string(plan.config_hash) + ",'base_repair'," + _sql_string(json.dumps(plan.base_repair, sort_keys=True)) + "::jsonb)"
     emitted = render_immutable_batch(target=_TABLES["returns"], columns=columns, column_types=_TYPES["returns"], key_columns=("publication_id", "month", "cusip_id"), rows=values, artifact_sha256=artifacts.sha256["bond_panel_live.parquet"], start_after=start_after, committed_through=start_after + len(selected), skipped=0, target_evidence_sql=evidence, nullable_columns=_NULLABLE["returns"])
+    source_id = plan.base_repair["from_publication_id"]
+    expected_before = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after}"
+    expected_after = f"(SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(source_id)}::uuid) + {start_after + len(selected)}"
+    repair_order_check = f"""DO $repair_tail_order$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM bond_panel_publications
+        WHERE publication_id={_sql_string(plan.publication_id)}::uuid
+          AND publication_status='prepared'
+    ) THEN RAISE EXCEPTION 'repair tail requires prepared candidate'; END IF;
+    IF (SELECT count(*) FROM bond_panel_returns WHERE publication_id={_sql_string(plan.publication_id)}::uuid) NOT IN ({expected_before}, {expected_after}) THEN
+        RAISE EXCEPTION 'repair tail requires exact copied historical returns before tail';
+    END IF;
+END
+$repair_tail_order$;
+"""
+    lock_statement = 'LOCK TABLE "bond_panel_returns" IN SHARE ROW EXCLUSIVE MODE;\n'
+    if lock_statement not in emitted:  # pragma: no cover - guards transport drift
+        raise RuntimeError("psql_transport_lock_shape_changed")
+    emitted = emitted.replace(lock_statement, lock_statement + repair_order_check, 1)
     insert_select = "SELECT " + ", ".join(f's."{column}"' for column in columns) + " FROM _backfill_stage s"
     replay_safe = insert_select + f" WHERE EXISTS (SELECT 1 FROM bond_panel_publications p WHERE p.publication_id={_sql_string(plan.publication_id)}::uuid AND p.publication_status='prepared')"
     return emitted.replace(insert_select, replay_safe, 1)

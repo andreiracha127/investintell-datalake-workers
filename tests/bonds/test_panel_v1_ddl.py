@@ -105,6 +105,9 @@ def test_panel_ddl_has_a_narrow_evidence_bound_legacy_root_repair_exception() ->
     assert "candidate.rv_signal_rows = 1687524" in sql
     assert "candidate.returns_rows = 2801208" in sql
     assert "candidate.ratings_pit_rows = 3417683" in sql
+    assert "candidate.code_revision = 't3_historical_base_return_coverage_repair_v1'" in sql
+    assert "candidate.input_fingerprint = '6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e'" in sql
+    assert "'tail_digest', 'e6f2911143d01b1417973714a7d35f0040af90b0747917d326c5d055c29c9663'" in sql
 
 
 def test_panel_ddl_allows_an_omission_authorized_144a_only_bootstrap() -> None:
