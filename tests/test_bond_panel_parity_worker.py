@@ -948,7 +948,7 @@ def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -
     monkeypatch.setattr(
         parity,
         "_rebuild_month",
-        lambda _conn, month: (
+        lambda _conn, month, _structural_publication_id: (
             pd.DataFrame(), pd.DataFrame(), None, month, pd.DataFrame(), {},
             reference_keys, fit_diagnostics,
         ),
@@ -970,6 +970,49 @@ def test_run_aggregates_one_noncomparable_and_one_comparable_pass(monkeypatch) -
         "comparable_passed_months": 1,
         "noncomparable_months": 1,
     }
+
+
+def test_run_accepts_only_the_exact_authorized_repaired_root(monkeypatch) -> None:
+    monkeypatch.setattr(parity, "config_hash", lambda: parity.PANEL_CONFIG_HASH)
+    frozen_publication_ids: list[str] = []
+    structural_publication_ids: list[str] = []
+
+    class Connection:
+        def execute(self, _statement, _params=()):
+            return type("Result", (), {"fetchone": lambda self: (
+                parity.REPAIRED_BASE_PUBLICATION_ID,
+                parity.PANEL_CONFIG_HASH,
+                parity.REPAIRED_BASE_INPUT_FINGERPRINT,
+                "validated",
+            )})()
+
+    monkeypatch.setattr(parity, "connect", lambda _dsn: contextlib.nullcontext(Connection()))
+    monkeypatch.setattr(parity, "resolve_dsn", lambda dsn: dsn)
+    monkeypatch.setattr(
+        parity,
+        "_frozen_snapshot",
+        lambda _conn, publication_id, _month: frozen_publication_ids.append(publication_id) or pd.DataFrame(),
+    )
+    monkeypatch.setattr(parity, "_frozen_rv", lambda _conn, _publication_id, _month: pd.DataFrame())
+    monkeypatch.setattr(
+        parity,
+        "_rebuild_month",
+        lambda _conn, month, structural_publication_id: (
+            structural_publication_ids.append(structural_publication_id) or pd.DataFrame(),
+            pd.DataFrame(), None, month, pd.DataFrame(), {}, pd.Series(dtype="string"), pd.DataFrame(),
+        ),
+    )
+    monkeypatch.setattr(
+        parity,
+        "_compare_month",
+        lambda month, *_args, **_kwargs: _monthly_result(month, "parity_passed", True),
+    )
+
+    outcome = parity.run("postgresql://example")
+
+    assert outcome["state"] == "parity_passed"
+    assert frozen_publication_ids == [parity.REPAIRED_BASE_PUBLICATION_ID] * len(parity.PARITY_MONTHS)
+    assert structural_publication_ids == [parity.REPAIRED_BASE_PUBLICATION_ID] * len(parity.PARITY_MONTHS)
 
 
 def test_run_retires_legacy_144a_parity_for_the_reg_s_config_without_connecting(monkeypatch) -> None:
