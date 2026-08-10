@@ -768,6 +768,8 @@ def render_repair_copy_sql(plan: BackfillPlan, surface: Surface) -> str:
     columns = _COLUMNS[surface]
     source_columns = ", ".join(f"source.{column}" for column in columns[1:])
     target_columns = ", ".join(columns)
+    candidate_facts = ", ".join(f"candidate.{column}" for column in columns[1:])
+    source_facts = ", ".join(f"source.{column}" for column in columns[1:])
     return f"""\\set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL ROLE worker_writer;
@@ -785,6 +787,21 @@ BEGIN
     ) THEN RAISE EXCEPTION 'repair copy requires exact evidence-bound current legacy source'; END IF;
 END
 $repair_source$;
+LOCK TABLE {table} IN SHARE ROW EXCLUSIVE MODE;
+DO $repair_copy_conflict$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM {table} source
+        JOIN {table} candidate
+          ON candidate.publication_id={_sql_string(plan.publication_id)}::uuid
+         AND source.publication_id={_sql_string(source_id)}::uuid
+         AND candidate.month=source.month
+         AND candidate.cusip_id=source.cusip_id
+        WHERE ROW({candidate_facts}) IS DISTINCT FROM ROW({source_facts})
+    ) THEN RAISE EXCEPTION 'repair copy immutable evidence conflict:{surface}'; END IF;
+END
+$repair_copy_conflict$;
 INSERT INTO {table} ({target_columns})
 SELECT {_sql_string(plan.publication_id)}::uuid, {source_columns}
 FROM {table} source

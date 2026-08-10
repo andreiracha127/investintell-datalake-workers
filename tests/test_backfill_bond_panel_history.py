@@ -318,13 +318,22 @@ def test_repair_sql_copies_only_old_publication_facts_and_cas_points_exact_sourc
     artifacts = backfill.ArtifactSet.open(directory, expected_hashes=_hashes(directory))
     plan = backfill.build_repair_plan(artifacts, from_publication_id=backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)
 
-    copied = backfill.render_repair_copy_sql(plan, "snapshot")
+    copies = {
+        surface: backfill.render_repair_copy_sql(plan, surface)
+        for surface in backfill.SURFACES
+    }
+    copied = copies["snapshot"]
     tail = backfill.render_batch_sql(artifacts, plan, "returns", start_after=0, limit=1)
     finalize = backfill.render_finalize_sql(plan)
 
     assert f"WHERE publication_id={backfill._sql_string(backfill.LEGACY_REPAIR_FROM_PUBLICATION_ID)}::uuid" in copied
     assert "INSERT INTO bond_panel_snapshot" in copied
     assert "bond_panel_live.parquet" not in copied
+    for surface, copy_sql in copies.items():
+        assert f"repair copy immutable evidence conflict:{surface}" in copy_sql
+        for column in backfill._COLUMNS[surface][1:]:
+            assert f"candidate.{column}" in copy_sql
+            assert f"source.{column}" in copy_sql
     assert "COPY _backfill_stage" in tail
     assert "repair tail requires exact copied historical returns before tail" in tail
     assert "WHERE publication_id=" in finalize
