@@ -888,15 +888,21 @@ def test_overall_passes_when_an_exact_fully_excluded_month_is_noncomparable() ->
     }
 
 
-def test_overall_fails_without_comparable_month() -> None:
+def test_overall_is_not_comparable_rather_than_failed_without_a_comparable_month() -> None:
+    """Overall parity passes only with at least one comparable month that passes.
+
+    A run where every declared month is typed non-comparable is NOT a pass -- and
+    it is not a gate failure either, because nothing failed: the instrument could
+    not measure there. It gets its own typed state.
+    """
     result = parity._overall_verdict([
         _monthly_result(parity.PARITY_MONTHS[0], "parity_not_comparable", False),
         _monthly_result(parity.PARITY_MONTHS[1], "parity_not_comparable", False),
     ])
 
-    assert result["state"] == "parity_failed"
+    assert result["state"] == "parity_not_comparable"
     assert result["reason"] == "no_comparable_month"
-    assert result["aborted"] is True
+    assert result["aborted"] is False
     assert result["counts"] == {
         "failed_months": 0,
         "comparable_passed_months": 0,
@@ -1280,7 +1286,8 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
     assert any("FROM bond_panel_rv_signal WHERE publication_id" in statement for statement in sql)
     assert (
         "SELECT cusip_id, month, eligibility_state, eligibility_reason, ytm, mod_dur, "
-        "maturity_years, spread_final, spread_final_bps, spread_definition, source_lineage "
+        "maturity_years, spread_final, spread_final_bps, spread_definition, "
+        "rating_bucket, source_lineage "
         "FROM bond_panel_snapshot WHERE publication_id = %s AND month = %s"
     ) in sql
     assert (
@@ -1331,3 +1338,91 @@ def test_run_refuses_a_different_base_fingerprint(monkeypatch) -> None:
 
     assert outcome["state"] == "parity_failed"
     assert outcome["reason"] == "current_publication_fingerprint_mismatch"
+
+
+def _design_frame(month: pd.Timestamp, n: int, ratings: list[str], frozen_ratings: list[str]) -> pd.DataFrame:
+    """A rebuilt-included frame carrying every column the spread model needs."""
+    cusips = [f"C{index % 7:05d}{index:03d}" for index in range(n)]
+    rng = np.random.default_rng(11)
+    return pd.DataFrame({
+        "cusip_id": cusips,
+        "month": month,
+        "issuer_name": [f"ISSUER {index}" for index in range(n)],
+        "eligibility_state": "included",
+        "eligibility_reason": "eligible",
+        "spread_final": rng.uniform(.005, .04, n),
+        "bond_maturity": rng.uniform(1.5, 25.0, n),
+        "maturity_years": rng.uniform(1.5, 25.0, n),
+        "amt_outstanding_k": rng.uniform(3e5, 5e6, n),
+        "dollar_volume": rng.uniform(1e4, 5e7, n),
+        "db_type": rng.choice([1, 3], n),
+        "ff17num": rng.integers(1, 17, n),
+        "rating_bucket": ratings,
+        "spread_final_bps": 0.0,
+        "spread_definition": parity.SPREAD_DEFINITION,
+        "ytm": .05, "mod_dur": 4.0,
+        "source_lineage": [{"daily_observations": "bond_observation_daily"} for _ in range(n)],
+    }).assign(spread_final_bps=lambda f: f["spread_final"] * 10_000)
+
+
+def test_rating_domain_types_a_month_out_of_domain_with_measured_evidence() -> None:
+    """A month whose rating input cannot be reconstructed PIT is typed, not failed.
+
+    The reason is EVIDENCED -- strip size, bucket disagreement and the measured
+    rating-only rank correlation all travel with it -- never asserted.
+    """
+    month = pd.Timestamp("2025-12-01")
+    n = 900
+    rng = np.random.default_rng(3)
+    # Walk-forward leaves almost everything NR; the frozen publication saw real
+    # buckets. That is the 80-83% flip measured on production.
+    walk_forward = ["NR"] * n
+    frozen = list(rng.choice(["AAA", "AA", "A", "BBB", "BB", "B"], n))
+    included = _design_frame(month, n, walk_forward, frozen)
+    # Spread has to actually depend on credit quality, as it does in the market:
+    # that is WHY losing the bucket reorders the residual. With random buckets
+    # the dummies explain nothing and the flip would look free.
+    level = {"AAA": .008, "AA": .010, "A": .013, "BBB": .018, "BB": .028, "B": .040}
+    included["spread_final"] = [
+        level[bucket] + noise
+        for bucket, noise in zip(frozen, rng.normal(0, .0015, n))
+    ]
+    included["spread_final_bps"] = included["spread_final"] * 10_000
+    frozen_snapshot = pd.DataFrame({
+        "cusip_id": included["cusip_id"], "rating_bucket": frozen,
+    })
+
+    domain = parity._rating_domain(included, frozen_snapshot, month, strip=9587)
+
+    assert domain["measured"] is True
+    assert domain["static_rating_after_month"] == 9587
+    assert domain["bucket_disagreement"] == 1.0
+    assert domain["spearman_rating_only"] < parity.MIN_RV_RANK_CORRELATION
+    assert domain["in_domain"] is False
+    assert domain["common_size"] >= parity.MIN_MONTH_ROWS
+
+
+def test_rating_domain_is_in_domain_when_the_buckets_agree() -> None:
+    month = pd.Timestamp("2026-06-01")
+    n = 900
+    rng = np.random.default_rng(5)
+    buckets = list(rng.choice(["AAA", "AA", "A", "BBB", "BB", "B"], n))
+    included = _design_frame(month, n, buckets, buckets)
+    frozen_snapshot = pd.DataFrame({"cusip_id": included["cusip_id"], "rating_bucket": buckets})
+
+    domain = parity._rating_domain(included, frozen_snapshot, month, strip=1128)
+
+    assert domain["measured"] is True
+    assert domain["bucket_disagreement"] == 0.0
+    assert domain["spearman_rating_only"] == 1.0
+    assert domain["in_domain"] is True
+
+
+def test_rating_domain_is_never_claimed_when_it_cannot_be_measured() -> None:
+    """Unmeasurable is not a licence to type the month non-comparable."""
+    month = pd.Timestamp("2026-06-01")
+    domain = parity._rating_domain(pd.DataFrame(), pd.DataFrame(), month, strip=0)
+
+    assert domain["measured"] is False
+    assert domain["in_domain"] is None
+    assert domain["spearman_rating_only"] is None

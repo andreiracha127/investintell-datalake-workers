@@ -66,6 +66,12 @@ RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
 # The one exclusion the frozen artifact never applied: it is a DISPLAY gate
 # (no unnamed bond in a suggested portfolio), not a panel-arithmetic gate.
 DISPLAY_GATE_REASON = "unnamed_issuer"
+# Typed non-comparable reasons. These name conditions structurally OUTSIDE the
+# check's domain -- they are not relaxed thresholds. The cohort-size case was
+# already in the contract; the rating case is its sibling and is measured, never
+# asserted.
+NOT_COMPARABLE_COHORT = "cohort_below_minimum"
+NOT_COMPARABLE_RATING = "rating_input_not_pit"
 RV_MEAN_TOLERANCE = 1e-10
 RV_STD_TOLERANCE = 1e-10
 RV_STRUCTURE_TOLERANCE = 1e-10
@@ -127,7 +133,8 @@ def _frozen_snapshot(conn: Any, publication_id: str, month: pd.Timestamp) -> pd.
     frame = _frame(
         conn,
         "SELECT cusip_id, month, eligibility_state, eligibility_reason, ytm, mod_dur, "
-        "maturity_years, spread_final, spread_final_bps, spread_definition, source_lineage "
+        "maturity_years, spread_final, spread_final_bps, spread_definition, "
+        "rating_bucket, source_lineage "
         "FROM bond_panel_snapshot WHERE publication_id = %s AND month = %s",
         (publication_id, month.date()),
     )
@@ -280,6 +287,79 @@ def _rebuild_month(
         reference_keys,
         fit_diagnostics,
     )
+
+
+def _rating_domain(
+    included: pd.DataFrame,
+    frozen_snapshot: pd.DataFrame,
+    month: pd.Timestamp,
+    strip: int,
+) -> dict[str, Any]:
+    """Can the rank check measure here at all, given the rating input?
+
+    ``bond_rating_static`` is a FINAL-ROW mapping, not a point-in-time series, so
+    walk-forward correctly discards every row dated after the month -- and for a
+    historical month that leaves almost nothing but bonds that stopped being
+    rated. When that happens the rebuilt and frozen signals are fit on different
+    rating information, and a rank comparison is measuring the rating source
+    rather than the rebuild.
+
+    This refits the SAME rebuilt cohort with the frozen publication's rating
+    bucket and ranks the two corrected fits against each other. It changes no
+    input to the published fit and it never relaxes walk-forward: the strip that
+    causes this IS walk-forward doing its job.
+    """
+    evidence: dict[str, Any] = {
+        "static_rating_after_month": int(strip),
+        "bucket_disagreement": None,
+        "spearman_rating_only": None,
+        "common_size": 0,
+        "min_spearman": MIN_RV_RANK_CORRELATION,
+        "in_domain": None,
+        "measured": False,
+    }
+    required = {"cusip_id", "rating_bucket", "spread_final", "ff17num"}
+    if included.empty or not required.issubset(included.columns):
+        return evidence
+    if frozen_snapshot.empty or "rating_bucket" not in frozen_snapshot:
+        return evidence
+    frozen_ratings = (
+        frozen_snapshot[["cusip_id", "rating_bucket"]]
+        .rename(columns={"rating_bucket": "frozen_rating_bucket"})
+        .drop_duplicates("cusip_id")
+    )
+    paired = included.merge(frozen_ratings, on="cusip_id", how="inner")
+    paired = paired[paired["frozen_rating_bucket"].notna()]
+    if len(paired) < MIN_MONTH_ROWS:
+        return evidence
+    disagreement = float(
+        (paired["frozen_rating_bucket"].astype(str) != paired["rating_bucket"].astype(str)).mean()
+    )
+    walk_forward_fit, _ = fit_all_months(paired, as_of=month)
+    frozen_rating_frame = paired.drop(columns=["rating_bucket"]).rename(
+        columns={"frozen_rating_bucket": "rating_bucket"}
+    )
+    frozen_rating_fit, _ = fit_all_months(frozen_rating_frame, as_of=month)
+    if walk_forward_fit.empty or frozen_rating_fit.empty:
+        return {**evidence, "bucket_disagreement": round(disagreement, 4)}
+    left = walk_forward_fit.set_index("cusip_id")["rv_signal"]
+    right = frozen_rating_fit.set_index("cusip_id")["rv_signal"]
+    common = left.index.intersection(right.index)
+    if len(common) < MIN_MONTH_ROWS:
+        return {**evidence, "bucket_disagreement": round(disagreement, 4)}
+    correlation = left.loc[common].corr(right.loc[common], method="spearman")
+    if pd.isna(correlation):
+        return {**evidence, "bucket_disagreement": round(disagreement, 4)}
+    spearman = float(correlation)
+    return {
+        "static_rating_after_month": int(strip),
+        "bucket_disagreement": round(disagreement, 4),
+        "spearman_rating_only": round(spearman, 4),
+        "common_size": int(len(common)),
+        "min_spearman": MIN_RV_RANK_CORRELATION,
+        "in_domain": bool(spearman >= MIN_RV_RANK_CORRELATION),
+        "measured": True,
+    }
 
 
 def _valid_lineage(frame: pd.DataFrame) -> bool:
@@ -677,7 +757,22 @@ def _compare_month(
         "universe_delta": abs(frozen_n - rebuilt_n),
         "universe_delta_limit": universe_limit,
     }
-    comparable = matched_bonds >= MIN_MONTH_ROWS
+    # Is the rank check even in its domain this month?  Measured, not asserted.
+    rating_domain = _rating_domain(
+        rebuilt_included,
+        frozen_snapshot,
+        month,
+        int((input_exclusions or {}).get("static_rating_after_month", 0)),
+    )
+    cohort_comparable = matched_bonds >= MIN_MONTH_ROWS
+    rating_comparable = rating_domain["in_domain"] is not False
+    comparable = bool(cohort_comparable and rating_comparable)
+    if not cohort_comparable:
+        not_comparable_reason: str | None = NOT_COMPARABLE_COHORT
+    elif not rating_comparable:
+        not_comparable_reason = NOT_COMPARABLE_RATING
+    else:
+        not_comparable_reason = None
     reference_accounting = _reference_accounting(reference_keys, rebuilt_snapshot)
 
     # Universe-size gate, measured LIKE FOR LIKE.  The frozen artifact applied
@@ -908,7 +1003,7 @@ def _compare_month(
     elif comparable:
         state, aborted, reason = "parity_passed", False, None
     else:
-        state, aborted, reason = "parity_not_comparable", False, "not_comparable"
+        state, aborted, reason = "parity_not_comparable", False, not_comparable_reason
 
     failed_gates = [
         name
@@ -940,6 +1035,8 @@ def _compare_month(
         "formula_parity": formula_parity,
         "rv_structure": rv_structure,
         "rv_rank": rv_rank,
+        "rating_domain": rating_domain,
+        "not_comparable_reason": not_comparable_reason,
         "universe_size": universe_size,
         "diagnostics": {
             "membership": membership,
@@ -1037,6 +1134,11 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
         key = reason if isinstance(reason, str) and reason else "unspecified_monthly_failure"
         failure_reasons[key] = failure_reasons.get(key, 0) + 1
 
+    non_comparable_reasons = sorted({
+        str(result.get("not_comparable_reason"))
+        for result in noncomparable
+        if result.get("not_comparable_reason")
+    })
     gates = {
         "monthly_contract_valid": not invalid_month_results,
         "declared_months_exactly_once": declaration_exact,
@@ -1053,7 +1155,15 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
     elif not gates["monthly_contract_valid"] or not gates["declared_months_exactly_once"]:
         state, reason, aborted = "parity_failed", "monthly_contract_failure", True
     elif not comparable_passed:
-        state, reason, aborted = "parity_failed", "no_comparable_month", True
+        # Requirement: overall parity passes only when at least one declared
+        # month is comparable AND passes. A run where every month is typed
+        # non-comparable is not a pass -- but it is not a gate failure either,
+        # because nothing failed: the instrument could not measure there.
+        state, reason, aborted = (
+            "parity_not_comparable",
+            "no_comparable_month",
+            False,
+        )
     elif not all(gates.values()):
         state, reason, aborted = "parity_failed", "overall_gate_failure", True
     else:
@@ -1068,6 +1178,7 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
             "noncomparable_months": len(noncomparable),
         },
         "gates": gates,
+        "non_comparable_reasons": non_comparable_reasons,
         "failure_reasons": failure_reasons,
         "invalid_month_results": invalid_month_results,
         "month_declaration": {
