@@ -1109,7 +1109,13 @@ def run(dsn: str | None = None) -> dict[str, object]:
                 ) = _rebuild_month(
                     conn,
                     month,
-                    current[0],
+                    # The STRUCTURAL publication must also be the one that holds
+                    # the month.  `amt_outstanding_k` is carried forward from the
+                    # prior snapshot -- `bond_reference_terms` publishes only the
+                    # unproven vendor amount, which the resolver refuses to read
+                    # as thousands -- so pointing this at the delta made every
+                    # bond fall out as `missing_amount` (8,187 of 10,208).
+                    frozen_publication_id,
                     mapping_snapshot_id=mapping_snapshot_id,
                 )
             except (KeyError, TypeError, ValueError) as exc:
