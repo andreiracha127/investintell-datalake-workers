@@ -594,8 +594,152 @@ this run are `2025-12` and `2026-06`, both pre-flighted above at `97.2%` and
 `99.5%` of the frozen included count before the display gate. The walk-forward
 rule was not bent to reach a month; the month was chosen to respect it.
 
-## F. Production parity execution JSON — redesigned contract, run 2026-08-11
+## F. Production parity execution — redesigned contract, run 2026-08-11
 
-_Filled in from the executed run; see the verification table that follows._
+Railway service `bond-live-daily` (`e673db8e-...`), `WORKER=bond_panel_parity`,
+deployment `861af9d7-6923-4482-b2b7-1be2e9f5b645`. As on 2026-08-08, the
+deployment executed only after `railway service restart`; `railway up` alone
+built and started the container without running the job. Railway reports the
+deployment `CRASHED` because the worker exits non-zero on `parity_failed`. The
+worker JSON and the unchanged target tables are the execution evidence.
 
-<!-- RUN_JSON_PLACEHOLDER -->
+### F.1 Verdict: `parity_failed`, `aborted = true`. Stage 6 was NOT executed.
+
+`state="parity_failed"`, `reason="monthly_parity_failure"`,
+`counts={"failed_months":2,"comparable_passed_months":0,"noncomparable_months":0}`,
+`month_declaration.declared=["2025-12-01","2026-06-01"]` with no missing,
+duplicate or unexpected month.
+
+**One gate failed, the same one in both months: `rv_rank_correlation`.** Every
+other hard gate passed, in both months.
+
+| Gate | 2025-12 | 2026-06 |
+| --- | ---: | ---: |
+| Exact reference accounting | pass (`10,208 / 10,208`) | pass (`10,208 / 10,208`) |
+| Typed exclusions | pass (`100%`) | pass (`100%`) |
+| Spread definition and numeric semantics | pass (max abs error `0`) | pass (max abs error `0`) |
+| Walk-forward boundary | pass (`max_input_day 2025-12-31`, `fit_as_of 2025-12-01`) | pass (`max_input_day 2026-06-30`, `fit_as_of 2026-06-01`) |
+| **Rebuilt universe size** | **pass** — `9,201 / 9,304` = `98.89%` | **pass** — `8,709 / 8,603` = `101.23%` |
+| Formula parity (ytm, duration, spread, duration-relative) | **pass** at machine precision | **pass** at machine precision |
+| RV structural validation | pass (all 15 sub-gates) | pass (all 15 sub-gates) |
+| **RV rank correlation `>= 0.80`** | **fail — `0.4194`** | **fail — `0.7840`** |
+
+Formula parity, on `7,507` and `7,008` common bonds respectively: `ytm` median
+`0` / p99 `1.39e-13` bp; duration median `0` / p99 `5.33e-15` y; spread median
+`0` / p99 `1.42e-13` bp. The rebuilt panel reproduces the frozen arithmetic
+exactly.
+
+Universe accounting, `2026-06`: `10,208` reference CUSIPs, `7,013` included,
+`3,195` excluded, every exclusion typed — `unnamed_issuer` `1,696`,
+`matured_or_short` `676`, `illiquid` `322`, `missing_amount` `175`,
+`missing_asset_class` `190`, `missing_currency` `135`, `invalid_ytm` `1`. For
+`2025-12`: `7,507` included, `2,701` excluded — `unnamed_issuer` `1,694`,
+`illiquid` `332`, `matured_or_short` `251`, `missing_asset_class` `190`,
+`missing_currency` `162`, `missing_amount` `72`.
+
+RV absolute z-score deltas, recorded as a diagnostic and not a blocker:
+`2026-06` median `0.0886` / p90 `0.2232` / p99 `0.7429`; `2025-12` median
+`0.1349` / p90 `0.7474` / p99 `1.7296`.
+
+### F.2 Why the rank gate failed, decomposed and measured
+
+Neither figure is a rebuild defect. Both were reproduced from the frozen
+`2026-06` snapshot itself, by refitting it under each changed condition in turn
+and ranking against the published `rv_signal`:
+
+| Fit | Spearman vs published | n |
+| --- | ---: | ---: |
+| A — frozen inputs, frozen specification (control) | `0.9963` | `8,603` |
+| B — cohort restricted to `7,013` bonds, otherwise frozen | `0.9929` | `7,013` |
+| C — full cohort, **144A control added** | `0.8738` | `8,603` |
+| D — full cohort, **walk-forward static ratings** | `0.9219` | `8,603` |
+| E — all three together (the rebuild's conditions) | `0.8020` | `7,013` |
+
+The production run measured `0.7840` for `2026-06`; fit E predicts `0.8020`
+using a random cohort proxy rather than the real eligibility-driven one. The
+agreement confirms the decomposition.
+
+Read it directly:
+
+- **The cohort costs nothing** (`0.9963 -> 0.9929`). Fitting on `7,013` instead
+  of `8,603` bonds barely moves the ordering. The universe-size gate's premise
+  holds.
+- **The 144A control costs the most** (`-0.1225`). That is the measurable
+  footprint of the premium that was absorbed by the residual for 24 years. The
+  parity gate is comparing a corrected signal against an **uncorrected**
+  reference, so a `>= 0.80` rank agreement stopped being the right expectation
+  the moment section D landed.
+- **The non-PIT rating input costs the rest** (`-0.0744`). `bond_rating_static`
+  is a final-row mapping, not a point-in-time series, so walk-forward correctly
+  discards any row dated after the month. For `2026-06` that strips `1,128`
+  mappings and `10.6%` of buckets change, mostly investment grade to `NR`. For
+  `2025-12` it strips `9,588` — which is exactly why that month collapses to
+  `0.4194` while `2026-06` only reaches `0.7840`.
+
+**The walk-forward rule was not relaxed to recover either number, and will not
+be.** A rating input that is not point-in-time degrading a historical month is
+the rule working, not failing.
+
+### F.3 What was not done, and why
+
+No publication was prepared, validated or pointed. Verified read-only in the
+tables after the run:
+
+| Evidence | Measured value |
+| --- | --- |
+| Publications total | `3` (unchanged) |
+| `max(computed_at)` | `2026-08-11T00:38:11.906749Z` (unchanged) |
+| Pointer | `3bfbf94e-1264-57f0-9a47-a3cbca214c6b` (unchanged) |
+| Pointer `changed_at` | `2026-08-11T00:38:11.906749Z` (unchanged) |
+| Snapshot rows by publication | `92740098` `3,417,683`; `b3c92982` `3,417,683`; `3bfbf94e` `20,416` (unchanged) |
+
+The gate is conjunctive and it failed. Stage 6 stays unexecuted and the pointer
+stays where it is, as the contract requires.
+
+### F.4 The decision this hands back to the owner
+
+The rank gate cannot pass while the frozen reference and the rebuild carry
+different model specifications. Two coherent ways forward, both cheap, and the
+choice is a product call, not an engineering one:
+
+1. **Re-baseline.** Republish the historical base under the corrected
+   specification, then re-run parity. Frozen and rebuilt would then share a
+   specification and the `>= 0.80` gate would measure what it was meant to
+   measure. Fit A shows the harness reproduces the published signal at `0.9963`,
+   so the rebase is mechanical.
+2. **Sequence the two changes.** Land T1 alone — parity would then compare like
+   with like and, on the measured decomposition, clear `0.80` comfortably in
+   `2026-06` (fit B: `0.9929`, degraded only by the rating input to about
+   `0.92`) — and land the 144A correction afterwards as its own declared
+   research round with its own re-baselined history.
+
+Option 2 still leaves `2025-12` failing on the rating input alone (`0.4194`),
+so whichever is chosen, **T4 — a genuinely point-in-time rating source — is now
+on the critical path for any historical parity month**, not merely for the HY
+cap and the expected-loss term.
+
+### F.5 Two operational findings recorded
+
+- **`CODE_REVISION` is still pinned** on `bond-live-daily` to
+  `7139388f0f65aab9e0232495822e07ab29e2d613`. `railway.toml` states in terms why
+  this must not be a permanent variable: a fixed value shadows the per-deploy
+  `RAILWAY_GIT_COMMIT_SHA`, so a code-only change re-serves the previous payload
+  under the same `publication_id` while the run reports success. It was a
+  one-off pin for a deliberate republication on 2026-08-07 and has not been
+  removed. It must come off before the next Stage 6, and removing it is an
+  owner-authorised production config change, not something this run did.
+- **A single-month rebuild was not expressible** until this run. `_load_inputs`
+  emitted one mapping row per curated CUSIP per resolution window, and a
+  single-month rebuild resolves the same month in both windows, so every row was
+  duplicated and the candidate join fanned out. Fixed by treating the mapping as
+  a set. It had never been seen because the parity worker refused to run at all
+  under the active identity.
+
+### F.6 Production parity execution JSON
+
+Emitted by deployment `861af9d7-6923-4482-b2b7-1be2e9f5b645` at
+`2026-08-11T04:04:12Z`. Quoted verbatim, abridged only where marked:
+
+```json
+{"worker":"bond_panel_parity","state":"parity_failed","reason":"monthly_parity_failure","aborted":true,"counts":{"failed_months":2,"comparable_passed_months":0,"noncomparable_months":0},"gates":{"monthly_contract_valid":true,"declared_months_exactly_once":true,"all_months_nonblocking":false,"at_least_one_comparable_month":false,"all_comparable_months_passed":false},"failure_reasons":{"gate_failed":2},"invalid_month_results":[],"month_declaration":{"declared":["2025-12-01","2026-06-01"],"observed":["2025-12-01","2026-06-01"],"missing":[],"duplicates":[],"unexpected":[]},"months":[{"month":"2025-12-01","state":"parity_failed","reason":"gate_failed","aborted":true,"matched_bonds":7507,"comparable":true,"reference_accounting":{"passed":true,"gates":{"reference_nonempty":true,"reference_keys_valid":true,"reference_keys_unique":true,"rebuilt_keys_valid":true,"rebuilt_keys_unique":true,"exact_reference_key_set":true,"eligibility_states_recognized":true,"excluded_reasons_typed":true,"included_identity_present":true},"reference_source_rows":10208,"reference_size":10208,"rebuilt_size":10208,"included_size":7507,"excluded_size":2701,"exclusion_counts":{"illiquid":332,"matured_or_short":251,"missing_amount":72,"missing_asset_class":190,"missing_currency":162,"unnamed_issuer":1694}},"hard_gates":{"frozen_snapshot_nonempty":true,"rebuilt_snapshot_nonempty":true,"snapshot_types":true,"frozen_rv_types":true,"frozen_lineage":true,"unique_universe_keys":true,"typed_exclusions":true,"spread_definition":true,"spread_numeric_semantics":true,"walk_forward":true,"rebuilt_universe_size":true},"formula_parity":{"evaluated":true,"passed":true,"metrics":{"ytm_abs_bps":{"median":0,"p90":6.938893903907228e-14,"p99":1.3877787807814457e-13},"duration_abs_years":{"median":0,"p90":1.7763568394002505e-15,"p99":5.329070518200751e-15},"spread_abs_bps":{"median":0,"p90":7.105427357601002e-14,"p99":1.4210854715202004e-13},"duration_relative":{"median":0,"p90":2.870161797913839e-16,"p99":1.871973274647541e-15}},"gates":{"ytm_abs_bps":true,"duration_abs_years":true,"spread_abs_bps":true,"duration_relative":true}},"rv_structure":{"passed":true,"row_count":7507,"fit_row_count":7507,"included_row_count":7507,"rv_mean":-3.78602763159771e-18,"rv_population_std":1,"max_residual_identity_error":0,"max_rv_signal_error":0,"max_snapshot_spread_error":0},"rv_rank":{"common_size":7507,"spearman":0.4194239088582035,"min_spearman":0.8,"evaluated":true,"passed":false,"unavailable_reason":null},"universe_size":{"frozen_included_size":9304,"rebuilt_included_size":7507,"rebuilt_display_gate_excluded":1694,"rebuilt_included_ex_display_gate":9201,"ratio_ex_display_gate":0.9889294926913156,"ratio_product_universe":0.8068572656921754,"min_ratio":0.9,"evaluated":true,"passed":true},"diagnostics":{"membership":{"frozen_included_size":9304,"rebuilt_included_size":7507,"common_size":7507,"symmetric_difference_size":1797,"universe_delta":1797,"universe_delta_limit":46.52},"rv_abs":{"frozen_size":9304,"rebuilt_size":7507,"common_size":7507,"matched_coverage":1,"metrics":{"median":0.13493094976182823,"p90":0.7473603932498153,"p99":1.7296334151269261},"unavailable_reason":null}},"typed_exclusions":{"frozen":1,"rebuilt":1},"spread_definition":"ytm_minus_interpolated_dgs","spread_semantics":{"frozen":{"rows":9304,"max_abs_error":0,"max_bps_conversion_error":0},"rebuilt":{"rows":7507,"max_abs_error":0,"max_bps_conversion_error":0}},"walk_forward":{"max_input_day":"2025-12-31","calendar_month_end":"2025-12-31","fit_as_of":"2025-12-01","input_exclusions":{"static_rating_after_month":9588}},"failed_gates":["rv_rank_correlation"]},{"month":"2026-06-01","state":"parity_failed","reason":"gate_failed","aborted":true,"matched_bonds":7008,"comparable":true,"reference_accounting":{"passed":true,"reference_source_rows":10208,"reference_size":10208,"rebuilt_size":10208,"included_size":7013,"excluded_size":3195,"exclusion_counts":{"illiquid":322,"invalid_ytm":1,"matured_or_short":676,"missing_amount":175,"missing_asset_class":190,"missing_currency":135,"unnamed_issuer":1696}},"hard_gates":{"frozen_snapshot_nonempty":true,"rebuilt_snapshot_nonempty":true,"snapshot_types":true,"frozen_rv_types":true,"frozen_lineage":true,"unique_universe_keys":true,"typed_exclusions":true,"spread_definition":true,"spread_numeric_semantics":true,"walk_forward":true,"rebuilt_universe_size":true},"formula_parity":{"evaluated":true,"passed":true},"rv_structure":{"passed":true},"rv_rank":{"common_size":7008,"spearman":0.7840366815576979,"min_spearman":0.8,"evaluated":true,"passed":false,"unavailable_reason":null},"universe_size":{"frozen_included_size":8603,"rebuilt_included_size":7013,"rebuilt_display_gate_excluded":1696,"rebuilt_included_ex_display_gate":8709,"ratio_ex_display_gate":1.0123212832732769,"ratio_product_universe":0.8151807509008485,"min_ratio":0.9,"evaluated":true,"passed":true},"diagnostics":{"rv_abs":{"frozen_size":8603,"rebuilt_size":7013,"common_size":7008,"matched_coverage":1,"metrics":{"median":0.08855305768405328,"p90":0.2232402309413639,"p99":0.742887010340494}}},"spread_definition":"ytm_minus_interpolated_dgs","walk_forward":{"max_input_day":"2026-06-30","calendar_month_end":"2026-06-30","fit_as_of":"2026-06-01","input_exclusions":{"static_rating_after_month":1128}},"failed_gates":["rv_rank_correlation"]}]}
+```
