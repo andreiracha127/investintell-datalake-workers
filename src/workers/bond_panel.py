@@ -324,6 +324,24 @@ def _load_inputs(
                 key: candidate[key]
                 for key in ("reference_cusip9", "execution_cusip9", "decision_id", "month")
             } | {"distribution_rule": "reg_s"})
+    # The mapping is a SET of (month, execution series), not a bag.  The daily
+    # lane resolves two DISTINCT months so the windows never collide, but a
+    # single-month rebuild (the parity gate) resolves the same month in both the
+    # closed and the open window and emitted every row twice — which fanned the
+    # candidate join out and failed with "duplicate CUSIP-months".  Collapse on
+    # the full identity tuple, deterministically, before it reaches SQL.
+    seen_mapping_keys: set[tuple[object, ...]] = set()
+    deduplicated_mapping_rows: list[dict[str, object]] = []
+    for row in mapping_rows:
+        key = (
+            row["month"], row["execution_cusip9"], row["reference_cusip9"],
+            row["distribution_rule"], row["decision_id"],
+        )
+        if key in seen_mapping_keys:
+            continue
+        seen_mapping_keys.add(key)
+        deduplicated_mapping_rows.append(row)
+    mapping_rows = deduplicated_mapping_rows
     mapping_counts = {
         window: sum(
             row["month"] == month.isoformat() and row["distribution_rule"] == "reg_s"
