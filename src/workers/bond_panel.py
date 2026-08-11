@@ -11,6 +11,7 @@ import os
 import time
 import json
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
@@ -38,6 +39,14 @@ DISTRIBUTION_COLUMNS = (
     "reference_cusip9",
     "distribution_decision_id",
 )
+POSTGRES_INTEGER_FIELDS = frozenset({
+    "ff17num",
+    "db_type",
+    "traded_days",
+    "trade_count",
+    "quoted_days",
+    "rating_staleness_months",
+})
 REQUIRED_RELATIONS = (
     "bond_observation_daily",
     "bond_price_observation",
@@ -673,6 +682,14 @@ def _records(frame: pd.DataFrame) -> list[dict[str, object]]:
             value: Any = raw_value
             if value is None or value is pd.NA or (not isinstance(value, (list, dict)) and pd.isna(value)):
                 cleaned[key] = None
+            elif key in POSTGRES_INTEGER_FIELDS:
+                try:
+                    integer_value = Decimal(str(value))
+                except (InvalidOperation, ValueError):
+                    raise ValueError(f"{key} must be an integer or null") from None
+                if not integer_value.is_finite() or integer_value != integer_value.to_integral_value():
+                    raise ValueError(f"{key} must be an integer or null")
+                cleaned[key] = int(integer_value)
             elif callable(getattr(value, "date", None)):
                 cleaned[key] = value.date().isoformat()
             elif isinstance(value, date):

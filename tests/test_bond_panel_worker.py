@@ -26,6 +26,41 @@ REG_S_LINEAGE = {
 }
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "ff17num",
+        "db_type",
+        "traded_days",
+        "trade_count",
+        "quoted_days",
+        "rating_staleness_months",
+    ),
+)
+def test_records_serialize_nullable_integer_fields_as_json_integers(field) -> None:
+    records = bond_panel._records(pd.DataFrame({field: [4, None]}))
+
+    assert type(records[0][field]) is int
+    assert json.dumps(records[0], separators=(",", ":")) == f'{{"{field}":4}}'
+    assert records[1][field] is None
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "ff17num",
+        "db_type",
+        "traded_days",
+        "trade_count",
+        "quoted_days",
+        "rating_staleness_months",
+    ),
+)
+def test_records_reject_fractional_values_for_postgres_integer_fields(field) -> None:
+    with pytest.raises(ValueError, match=rf"^{field} must be an integer or null$"):
+        bond_panel._records(pd.DataFrame({field: [4.5]}))
+
+
 def test_panel_refuses_to_bootstrap_a_two_month_history(monkeypatch) -> None:
     """A daily delta needs a validated compatible parent; it never self-bases."""
     monkeypatch.setattr(bond_panel, "_required_relations", lambda _conn: [])
