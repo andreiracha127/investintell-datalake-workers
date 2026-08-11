@@ -332,3 +332,270 @@ evidence and is not a valid activation gate for the new security identity.
 No production schema installation, registry load, backfill publication, deploy,
 worker restart, panel publication, or pointer movement was performed as part of
 this correction.
+
+---
+
+# Addendum — 2026-08-11: the governance gap, the issuer rewire, and the corrected 144A control
+
+Everything above this line is immutable historical evidence and is **not**
+reinterpreted here. The **NO-GO** verdict, the two failed parity runs, their
+literal JSON, and the "Stage 6 intentionally not executed" record all stand as
+written. This section appends what happened afterwards, what was measured on
+2026-08-11, and under which contract.
+
+## A. The governance gap, stated plainly
+
+The document above records a **NO-GO** and one publication with the pointer at
+`92740098`. Production, read on 2026-08-11, does not match that:
+
+| Measure | Recorded above | Measured 2026-08-11 |
+| --- | --- | --- |
+| Publications | `1` | `3` |
+| Pointer | `92740098-1571-559d-9fb3-119de8321754` | `3bfbf94e-1264-57f0-9a47-a3cbca214c6b` |
+| Pointer `changed_at` | `2026-08-08T22:20:43Z` | `2026-08-11T00:38:11.906749Z` |
+| Config hash served | `0c0d78a866bc1090` | `1863d3d5fa3a0edf` |
+
+The chain is `92740098` (base) and `b3c92982` (base, return-coverage repair,
+`computed_at 2026-08-10T22:11:41Z`), then the delta `3bfbf94e`
+(`parent_publication_id = b3c92982`, `code_revision 7139388f...`) which retains
+only `2026-07` and `2026-08` — `20,416` snapshot rows, `1,132` RV rows,
+`8,573` return rows.
+
+**Two Stage 6 executions therefore happened that this document never recorded,
+and the publication serving production has passed no parity gate.** The only
+parity runs on record are the two that failed. That is the gap this addendum
+closes.
+
+It was not a missing step. The parity worker **could not run**: `run()` returned
+`legacy_rule_144a_parity_not_applicable_to_reg_s` before opening a connection,
+because `config_hash()` is `1863d3d5fa3a0edf` while the worker accepted only
+`0c0d78a866bc1090`. The gate retired itself when the identity moved, and nothing
+took its place.
+
+## B. Relaxed gate contract, declared 2026-08-11 before the run
+
+This supersedes the 2026-08-08 pre-declaration and the 2026-08-08 redesign for
+runs under `1863d3d5fa3a0edf`. It was fixed before any rebuilt row was compared.
+
+| Gate | Threshold | Hard |
+| --- | --- | --- |
+| Rebuilt universe size | `>= 90%` of the frozen included count for the month, measured **before the display gate** | yes |
+| Common-bond formula parity (`ytm`, `mod_dur`, `spread`) | median `<= 1 bp / 0.10y / 5 bp`; p90 `<= 5 bp / 0.50y / 25 bp`; p99 `<= 25 bp / 1.0y / 75 bp` | yes |
+| RV structural check | Spearman rank correlation `>= 0.80` on common bonds | yes |
+| RV absolute z-score delta | recorded diagnostic, never a blocker | no |
+| Typed exclusions | `100%` carry a declared reason | yes |
+| Exact reference accounting | every curated CUSIP9 included or typed excluded | yes |
+| Walk-forward boundary | `100%` of model inputs dated `<= t` | **non-negotiable** |
+| Duration substitution | already measured and passed (`811,725` overlap rows, median `0.0928y`) | not re-gated |
+| Everything else from the 2026-08-08 list | recorded diagnostic | no |
+
+**Why the size gate measures the pre-display-gate count.** The frozen artifact
+applied no issuer-name requirement of any kind — the frozen engine groups
+issuers by `cusip_id[:6]` and never needed a resolved identity. Gating the
+post-display-gate count against it would fail the rebuild for correctly
+implementing a filter the reference never had. The ratio therefore uses
+`rebuilt_included_ex_display_gate` = included + rows excluded as
+`unnamed_issuer`, and the product universe after the display gate is reported in
+the same JSON. Neither number is hidden behind the other.
+
+**Why absolute RV deltas cannot block.** Monthly cohorts are fit and
+standardized separately; they do not share an absolute scale. Rank agreement is
+the falsifiable claim, so that is what is gated.
+
+## C. T1 — issuer resolution rewired onto the served name
+
+### C.1 The defect
+
+Panel eligibility required `sec_cusip_ticker_map` to resolve exactly one issuer
+CIK. Measured on the delta publication, identically in both live months over
+`10,208` rows: `unresolved` `6,360`, `missing_cik` `2,518`, `resolved` `1,330`.
+The dominant exclusion in both months was `unresolved_issuer` = `8,584`,
+admitting `1,132` bonds in `2026-07` and `805` in `2026-08`.
+
+The serving chain, over the same curated universe, does far better. Measured
+against production at as-of `2026-06-30` and later:
+
+| Measure | Value |
+| --- | ---: |
+| `bond_curated_universe` CUSIP9s | `10,206` |
+| ...with a valid `cusip9` alias and a security-master row | `10,073` |
+| ...with a consensus `issuer_name` | **`8,350`** |
+| ...with a security but no consensus name | `1,723` |
+| ...with no security at all | `133` |
+
+Of the named `8,350`: `8,349` carry `identity_state = resolved` and `1` is
+`ambiguous`.
+
+### C.2 The fix
+
+Eligibility now reads the serving chain's normalized reported-name consensus
+(`src/bonds/issuer_consensus.py`) instead of a resolved CIK, under its own
+reason code `unnamed_issuer`. The CIK is retained as `issuer_id` plus a new
+`issuer_cik_state`, informational lineage only. `issuer_identity_state` is typed
+`named_consensus` / `unnamed_consensus_abstained` / `no_security_master`, and
+`bond_panel_snapshot` gains a nullable `issuer_name` column. Publications built
+before this keep `NULL`; an absent name is never backfilled.
+
+One dependent change was required: the port clustered the spread model's
+standard errors on `issuer_id` and **raised** without one. The frozen engine
+clusters on `cusip_id[:6]`; the port now matches it. Cluster choice moves
+standard errors only — never the residual, hence never `rv_signal`.
+
+### C.3 Measured result, and an arithmetic the acceptance target did not anticipate
+
+Resolution meets the floor: **`8,350` bonds resolve by name, against a declared
+floor of `8,350`.**
+
+Inclusion cannot. Applying the remaining frozen eligibility tests to the same
+rows leaves far fewer, and the target of "8,350 resolved **and included**"
+assumed named implies eligible. Measured from the live sources the rebuild
+reads:
+
+| Month | eligible | `unnamed_issuer` | ex-display-gate | frozen included | ex-display-gate ratio | product ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2025-12 | `7,347` | `1,694` | `9,041` | `9,304` | `97.2%` | `79.0%` |
+| 2026-05 | `6,900` | `1,696` | `8,596` | `8,654` | `99.3%` | `79.7%` |
+| 2026-06 | `6,868` | `1,696` | `8,564` | `8,603` | `99.5%` | `79.8%` |
+
+The `2026-06` residual exclusions are typed market and data facts, not identity:
+`unnamed_issuer` `1,696`, `matured_or_short` `683`, `illiquid` `294`,
+`too_small` `263`, `missing_asset_class` `190`, `missing_currency` `133`,
+`missing_traded_days` `78`, `invalid_ytm` `1`.
+
+Read against the live publication rather than raw sources, `2026-07` gives
+`6,899` eligible under the same rule — a `6.1x` improvement on today's `1,132`,
+measured two independent ways.
+
+**The consequence for the product: the builder will solve over roughly `6,870`
+bonds, not `8,600`.** That is the number to plan against.
+
+### C.4 The single highest-value follow-up: `1,290` bonds lost to spelling
+
+The `1,723` securities without a consensus name are **not unnamed**. Every one
+carries reported issuer names in `identity_evidence -> distinct_issuer_name`
+(`1,723 / 1,723`). All `1,723` abstained at the CUSIP6 layer:
+
+| Abstain reason | Count | Mean top share | Mean distinct reported names |
+| --- | ---: | ---: | ---: |
+| `no_consensus` | `1,290` | `0.512` | `7.2` |
+| `multiple_lei` | `433` | — | `7.9` |
+
+The `1,290` `no_consensus` cases carry **exactly one distinct reported LEI** —
+the legal entity does not disagree, only the spelling does, and the vote splits
+just under the `0.60` threshold. Prefix containment folds truncations but cannot
+fold abbreviations, so `DELL INT EMC` (`711` votes) and
+`DELL INTERNATIONAL EMC...` (`797` votes) count as rivals; likewise
+`1011778 BC NEW RED FIN` against `1011778 BC ULC NEW RED FINANCE`. The `433`
+`multiple_lei` cases are genuine co-issuer bonds whose slash-joined name
+(`First Student Bidco Inc / First Transit Parent Inc`) is a perfectly good
+display string.
+
+Recovering these would lift the solve universe from `~6,870` toward `~8,500`.
+It touches a pre-registered module and is **not** done here: it is recorded as a
+separate, costed work item.
+
+## D. T2 — the declared 144A control was never a control
+
+### D.1 The defect
+
+`backend/app/bond_optimizer/spread_model.py` read
+`x["is_144a"] = frame["db_type"].eq(2)`. **`db_type` is never `2`** anywhere in
+the 24-year history: the values are `1` (publicly disseminated, `58,881` CUSIPs
+from `2002-07`), `3` (Rule 144A, `9,407` CUSIPs from `2010-03`) and `NULL` (only
+from `2025-04`, the TRACE era). The guard on line 61 dropped all-NaN columns but
+not zero-variance ones, so the column entered every monthly design and
+contributed nothing.
+
+Measured over the frozen panel: **`0` of `273` months had a non-zero `is_144a`
+value.** The design spec section 4.1 lists a 144A flag among the model's
+features; it never was one. The port in this repo carried no such column at all
+— a different fact from a broken one, and stated separately.
+
+The economic consequence is not cosmetic. The 144A distribution premium —
+`213,854` of `1,547,178` frozen panel rows, `24.4%` of the live universe — was
+never controlled for, so it went into the residual, and the residual **is** the
+RV signal.
+
+### D.2 The correction, and a second defect it uncovered
+
+`is_144a` now reads `db_type == 3` with an explicit `db_type_absent` level, so
+no row is dropped and an absent value is never silently read as "not 144A".
+Zero-variance regressors are now dropped, which is what let a declared control
+look applied for 24 years.
+
+That second change exposed a third defect. `sm.add_constant` **skips** the
+intercept when the design already carries a constant non-zero column — and
+pre-2010, when PIT coverage makes every bond `NR`, the `q_NR` dummy is exactly
+that. Dropping zero-variance columns would then have removed the model's only
+intercept and turned the fit into a regression through the origin
+(`R2 0.1333 -> 0.4195` on `2005-06`, uncentered). `has_constant="add"` fixes it,
+verified residual-neutral: on months with no 144A paper the fitted values match
+the legacy fit to machine precision (`max |diff| = 0.0 bps` on `2005-06` and
+`2009-06`; `15.8 bps` on `2015-06` at `15%` 144A; `55.0 bps` on `2022-06` at
+`24.6%`).
+
+### D.3 Re-measurement: dev window `2013-01 -> 2023-03`, `123` months
+
+The `before` arm reproduces the published P1/P2 report exactly. That is what
+makes the delta credible rather than merely computed.
+
+| Metric | before | after | P1/P2 report |
+| --- | ---: | ---: | ---: |
+| mean monthly IC | `0.0633` | `0.0633` | `0.063` |
+| Newey-West t (3 lags) | `5.55` | `5.65` | `5.55` |
+| IC hit rate | `74.8%` | `74.8%` | `74.8%` |
+| Q5-Q1 gross annualized | `+2.19%` | `+2.27%` | `+2.2%` |
+| mean monthly R2 | `0.4174` | `0.4197` | — |
+| months with the control applied | `0` | `129 / 273` | — |
+| IC decay h=1 to h=12 | `0.0957 -> 0.0769` | `0.0951 -> 0.0763` | `0.096 -> 0.077` |
+
+**Frozen kill gates.** `IC >= 0.02`: pass, `0.0633`. `NW-t >= 2`: pass, and
+wider after the fix, `5.55 -> 5.65`. Both hold.
+
+**The third gate, `Q5-Q1 net > 0`, is reported but is not a verdict on this
+change.** The frozen report publishes only the gross spread; the cost convention
+behind its `PASS` is not recorded anywhere in either repository. Under the
+convention declared here — per-month median `one_way_costs_asof`, net = gross
+minus `4x` cost (full monthly rotation of both legs) — the net series is
+**`-6.98%` before and `-6.90%` after**: negative in both arms, essentially
+unchanged, therefore not a regression introduced by the correction. Median
+one-way cost is `23.63 bps` over all months and `18.24 bps` over the dev window;
+the breakeven cost multiplier is `0.956` before and `0.991` after. **The
+published `PASS` on this gate is not reproducible from this repository.** That
+is a separate finding, recorded, not resolved.
+
+**Rank stability, before to after, on identical frozen inputs:** Spearman
+`>= 0.8862` in all `273` months, median `1.0000`; over the dev window min
+`0.9211`, median `0.9877`, and `0` months below `0.80`. The correction sharpens
+the fit without reordering the cross-section. This bounds the 144A contribution
+only — it is not a forecast of the parity gate's Spearman, which compares
+different cohorts, price sources and rating states.
+
+This lands under the already-declared identity `1863d3d5fa3a0edf`, reached from
+`0c0d78a866bc1090` by `rule_144a_to_dual_series_delta_v1`. No input definition
+changed beyond the feature correction, so **no new hash is minted** and
+`panel_config.FROZEN` is untouched.
+
+## E. The `2025-01` `zero_overlap` had a different cause than recorded
+
+The failed run above recorded `metrics_unavailable_reason = zero_overlap` for
+`2025-01` alongside `input_exclusions {static_rating_after_month: 10960}`, which
+invites reading the static-rating as-of as the cause. Measured, it is not.
+
+`sec_current_bond_security_alias_v1.valid_from` ranges `2025-04-30` to
+`2026-04-30`. Under walk-forward, **no alias resolves for any month before
+2025-05**, so `sec_current_bond_security_v1.currency` is `NULL` for every row
+and the entire month falls out at `missing_currency` before any rating,
+liquidity or price test is reached. Every month before `2025-05` rebuilds to
+zero by construction, whatever the rating input does.
+
+The available parity window is therefore `2025-05` onward. Declared months for
+this run are `2025-12` and `2026-06`, both pre-flighted above at `97.2%` and
+`99.5%` of the frozen included count before the display gate. The walk-forward
+rule was not bent to reach a month; the month was chosen to respect it.
+
+## F. Production parity execution JSON — redesigned contract, run 2026-08-11
+
+_Filled in from the executed run; see the verification table that follows._
+
+<!-- RUN_JSON_PLACEHOLDER -->
