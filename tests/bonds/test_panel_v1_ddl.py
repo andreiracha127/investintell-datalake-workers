@@ -39,9 +39,17 @@ def test_panel_ddl_keeps_retired_publications_stored_but_never_serves_or_activat
     legacy_hash = "0c0d78a866bc1090"
     retired_reg_s_hash = "180a82b3f1413d43"
 
+    # The re-baselined identity: the same frozen dictionary plus a DECLARED
+    # `spread_model_144a_control` key, never an edit in place. It is admitted by
+    # the schema BEFORE `panel_config` mints it, so the DDL can be installed and
+    # dry-run ahead of the research round that produces it.
+    rebaselined_hash = "c35f73b69e1cb885"
+
     assert active_hash == "1863d3d5fa3a0edf"
-    stored_hashes = f"'{legacy_hash}', '{retired_reg_s_hash}', '{active_hash}'"
-    serving_hashes = f"'{legacy_hash}', '{active_hash}'"
+    stored_hashes = (
+        f"'{legacy_hash}', '{retired_reg_s_hash}', '{active_hash}', '{rebaselined_hash}'"
+    )
+    serving_hashes = f"'{legacy_hash}', '{active_hash}', '{rebaselined_hash}'"
     assert f"CHECK (config_hash IN ({stored_hashes}))" in sql
     assert "DROP CONSTRAINT IF EXISTS bond_panel_publications_config_hash_check" in sql
     assert (
@@ -51,6 +59,10 @@ def test_panel_ddl_keeps_retired_publications_stored_but_never_serves_or_activat
     assert sql.count(f"p.config_hash IN ({serving_hashes})") == 4
     assert f"p.config_hash IN ({stored_hashes})" not in sql
     assert sql.count("p.config_hash = a.config_hash") == 4
+    # The re-baseline fork must RETURN early: its candidate descends from a new
+    # root and therefore can never "directly extend" the current publication.
+    assert "dual_series_to_rebaselined_144a_control_v1" in sql
+    assert "rebaselined_root_publication_id" in sql
     assert "pointer rejects retired Reg S-only activation target" in sql
     assert "schema install refuses an active retired Reg S-only pointer" in sql
 

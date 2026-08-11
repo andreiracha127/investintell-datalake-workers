@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS bond_panel_publications (
     publication_status text NOT NULL CHECK (publication_status IN ('prepared', 'validated', 'failed')),
     failure_reason text,
     config_hash char(16) NOT NULL CONSTRAINT bond_panel_publications_config_hash_check
-        CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43', '1863d3d5fa3a0edf')),
+        CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')),
     input_fingerprint char(64) NOT NULL,
     code_revision text NOT NULL,
     first_month date NOT NULL,
@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS bond_panel_repair_tail_batch_attestation (
 ALTER TABLE bond_panel_publications
     DROP CONSTRAINT IF EXISTS bond_panel_publications_config_hash_check;
 ALTER TABLE bond_panel_publications
-    ADD CONSTRAINT bond_panel_publications_config_hash_check CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43', '1863d3d5fa3a0edf')) NOT VALID;
+    ADD CONSTRAINT bond_panel_publications_config_hash_check CHECK (config_hash IN ('0c0d78a866bc1090', '180a82b3f1413d43', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS bond_panel_app_pointer (
     product text PRIMARY KEY DEFAULT 'bond_panel_v1' CHECK (product = 'bond_panel_v1'),
@@ -394,6 +394,78 @@ BEGIN
           AND (candidate.last_closed_month < prior.last_closed_month
                OR COALESCE(candidate.open_month, candidate.last_closed_month) < COALESCE(prior.open_month, prior.last_closed_month))
     ) THEN RAISE EXCEPTION 'pointer rejects config or month regression'; END IF;
+    -- Re-baseline fork: proven contract, then RETURN, because a re-baselined
+    -- chain descends from a NEW root and therefore cannot 'directly extend'
+    -- the current publication -- the same reason the legacy root replacement
+    -- below returns early rather than passing that guard.
+    IF TG_OP = 'UPDATE'
+       AND NEW.publication_id IS DISTINCT FROM OLD.publication_id
+       AND EXISTS (
+        -- Authorized branch 2: the RE-BASELINE transition.  The frozen reference
+        -- was fit with a declared 144A control that was identically zero for 24
+        -- years (db_type was compared against 2, a value that never occurs), so
+        -- every parity run measured a corrected signal against an uncorrected
+        -- baseline.  The correction is a new declared research identity, and the
+        -- history is rebuilt under it rather than the frozen dictionary being
+        -- edited in place.
+        --
+        -- Shape: the candidate is a DELTA whose parent is a full-history ROOT,
+        -- both under the new hash.  It is not an ancestry shortcut -- the old
+        -- chain stays immutable, the root must span the same first month as the
+        -- publication it replaces, and every surface count must be exact.
+           SELECT 1
+           FROM bond_panel_publications prior,
+             bond_panel_publications candidate,
+             bond_panel_publications rebased_root
+        WHERE prior.publication_id = OLD.publication_id
+          AND candidate.publication_id = NEW.publication_id
+          AND btrim(prior.config_hash::text) = '1863d3d5fa3a0edf'
+          AND btrim(candidate.config_hash::text) = 'c35f73b69e1cb885'
+          AND rebased_root.publication_id = candidate.parent_publication_id
+          AND btrim(rebased_root.config_hash::text) = 'c35f73b69e1cb885'
+          AND rebased_root.parent_publication_id IS NULL
+          AND rebased_root.publication_status = 'validated'
+          -- The re-baselined root must cover the same history it replaces and
+          -- must not lose a month: the served views recurse UPWARD, so a root
+          -- that stops short silently shortens the product.
+          AND rebased_root.first_month <= prior.first_month
+          AND rebased_root.last_closed_month >= prior.last_closed_month - INTERVAL '1 month'
+          -- The delta must carry the live months, so the pointer move cannot
+          -- drop them from the served surface.
+          AND candidate.open_month IS NOT NULL
+          AND candidate.open_month >= COALESCE(prior.open_month, prior.last_closed_month)
+          AND candidate.last_closed_month >= prior.last_closed_month
+          AND candidate.gate_evidence @> jsonb_build_object(
+              'config_transition', jsonb_build_object(
+                  'contract', 'dual_series_to_rebaselined_144a_control_v1',
+                  'from_publication_id', OLD.publication_id::text,
+                  'from_config_hash', btrim(prior.config_hash::text),
+                  'to_config_hash', btrim(candidate.config_hash::text),
+                  'rebaselined_root_publication_id', rebased_root.publication_id::text,
+                  'authorized_code_revision', candidate.code_revision
+              )
+          )
+          AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = candidate.publication_id) = candidate.snapshot_rows
+          AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id) = candidate.rv_signal_rows
+          AND (SELECT count(*) FROM bond_panel_returns f WHERE f.publication_id = candidate.publication_id) = candidate.returns_rows
+          AND (SELECT count(*) FROM bond_panel_rating_pit f WHERE f.publication_id = candidate.publication_id) = candidate.ratings_pit_rows
+          AND (SELECT count(*) FROM bond_panel_snapshot f WHERE f.publication_id = rebased_root.publication_id) = rebased_root.snapshot_rows
+          AND (SELECT count(*) FROM bond_panel_rv_signal f WHERE f.publication_id = rebased_root.publication_id) = rebased_root.rv_signal_rows
+          -- Every RV row must correspond to an INCLUDED snapshot row, the same
+          -- invariant the dual-series branch asserts.
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_rv_signal f WHERE f.publication_id = candidate.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f
+              WHERE f.publication_id = candidate.publication_id AND f.eligibility_state = 'included'
+          )
+          AND NOT EXISTS (
+              SELECT f.month, f.cusip_id FROM bond_panel_rv_signal f WHERE f.publication_id = rebased_root.publication_id
+              EXCEPT SELECT f.month, f.cusip_id FROM bond_panel_snapshot f
+              WHERE f.publication_id = rebased_root.publication_id AND f.eligibility_state = 'included'
+          )
+       ) THEN
+        RETURN NEW;
+    END IF;
     IF TG_OP = 'UPDATE' AND EXISTS (
         SELECT 1
         FROM bond_panel_publications prior, bond_panel_publications candidate
@@ -724,7 +796,7 @@ CREATE OR REPLACE VIEW bond_panel_current_snapshot_v1 AS
 WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
     SELECT p.publication_id, p.parent_publication_id, 0 AS depth, ARRAY[p.publication_id], p.config_hash
     FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id
-    WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf')
+    WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')
     UNION ALL
     SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, p.config_hash AS config_hash
     FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id
@@ -739,7 +811,7 @@ ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_rv_signal_v1 AS
 WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf')
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')
     UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, p.config_hash AS config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND (p.config_hash = a.config_hash OR (btrim(a.config_hash::text) = '1863d3d5fa3a0edf' AND btrim(p.config_hash::text) = '0c0d78a866bc1090'))
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_rv_signal f USING (publication_id)
@@ -747,7 +819,7 @@ ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_returns_v1 AS
 WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf')
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')
     UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, p.config_hash AS config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND (p.config_hash = a.config_hash OR (btrim(a.config_hash::text) = '1863d3d5fa3a0edf' AND btrim(p.config_hash::text) = '0c0d78a866bc1090'))
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_returns f USING (publication_id)
@@ -755,7 +827,7 @@ ORDER BY f.month, f.cusip_id, a.depth;
 
 CREATE OR REPLACE VIEW bond_panel_current_rating_pit_v1 AS
 WITH RECURSIVE ancestry(publication_id, parent_publication_id, depth, path, config_hash) AS (
-    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf')
+    SELECT p.publication_id, p.parent_publication_id, 0, ARRAY[p.publication_id], p.config_hash FROM bond_panel_app_pointer pointer JOIN bond_panel_publications p ON p.publication_id = pointer.publication_id WHERE pointer.product = 'bond_panel_v1' AND p.publication_status = 'validated' AND p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf', 'c35f73b69e1cb885')
     UNION ALL SELECT p.publication_id, p.parent_publication_id, a.depth + 1, a.path || p.publication_id, p.config_hash AS config_hash FROM ancestry a JOIN bond_panel_publications p ON p.publication_id = a.parent_publication_id WHERE NOT p.publication_id = ANY(a.path) AND p.publication_status = 'validated' AND (p.config_hash = a.config_hash OR (btrim(a.config_hash::text) = '1863d3d5fa3a0edf' AND btrim(p.config_hash::text) = '0c0d78a866bc1090'))
 )
 SELECT DISTINCT ON (f.month, f.cusip_id) f.* FROM ancestry a JOIN bond_panel_rating_pit f USING (publication_id)
