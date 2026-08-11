@@ -319,3 +319,61 @@ The production re-baseline, the pointer move and Stage 6 were **not executed**:
 reconstructed point-in-time gate the publication? If yes, Stage 6 waits on T4.
 If no, the contract needs a typed non-comparable state for that condition —
 declared deliberately, not invented under time pressure.
+
+
+---
+
+# 11. Deploy-source question: evidence, not inference
+
+**Answer: the service is GitHub-connected, but the ACTIVE deployment right now is
+a CLI upload, and cron runs inherit the active deployment's source. So with the
+pin removed, tomorrow's 07:30 UTC cron has no rung that resolves.**
+
+Evidence, from Railway deployment metadata (`railway deployment list --json`,
+32 deployments):
+
+| Fact | Evidence |
+| --- | --- |
+| The service normally deploys from GitHub | `13 / 32` deployments carry `meta.repo = andreiracha127/investintell-datalake-workers` and a 40-hex `meta.commitHash` |
+| Most recent GitHub deploy | `5058c5f0`, `2026-08-11T00:33:29Z`, commit `7139388f0f65…` — exactly `origin/main` HEAD |
+| **Current active deployment** | `1ea9bc6b`, `2026-08-11T04:23:47Z`, `meta.cliCaller = claude_code`, **no `repo`, no `commitHash`** |
+| **What a cron run looks like** | `2026-08-09T07:30:12Z` — in the cron window, `reason = redeploy`, `meta.cliCaller = skill:use-railway@1.3.7`, **no `commitHash`** |
+
+That last row is the load-bearing one: a cron firing at 07:30 **re-deploys the
+then-active deployment and inherits its source metadata**. On 2026-08-09 the
+active deployment was a CLI upload, so the cron run was a CLI-sourced redeploy
+with no git metadata. It survived only because `CODE_REVISION` was pinned and the
+ladder resolved at rung 1.
+
+Corroboration from the sibling service: `bond_daily_chain_runs` shows the
+`bond-chain` service recording full 40-hex revisions on its unattended runs
+(`cfa628e552a9…` 2026-08-07, `e36213c335db…` 2026-08-06) with no pin set — that
+is rung 3 working, and it is what `bond-live-daily` would also get from a
+GitHub-sourced deployment.
+
+## Consequence, and it is wider than stage 6
+
+`src/workers/bond_serving.py::_code_revision()` RAISES
+`BondServingRevisionUnresolved` when every rung is silent, and that class is
+deliberately not a `RuntimeError` precisely so it surfaces as a failed run rather
+than the `no_source` dark state. With the pin removed and the active deployment
+carrying no git metadata:
+
+- **stage 5** (republication of `bond_metric_v1` and `bond_serving_v1`) raises and
+  fails;
+- **stage 6** fails separately at `bond_panel.run()` → `panel_gate_failed` /
+  `code_revision_absent`.
+
+The whole `bond-live-daily` run fails at 07:30 UTC. Nothing is corrupted — both
+failures are fail-closed and write nothing — but the daily lane does not publish.
+
+Latest `bond_serving_builds` row is `created_at 2026-08-09T16:00:26Z` for
+`as_of 2026-08-07`; nothing since.
+
+## The remedy needs neither a re-pin nor a merge
+
+A **GitHub-originated deploy of the already-merged `main` commit**
+`7139388f0f65aab9e0232495822e07ab29e2d613` restores git metadata on the active
+deployment, and the ladder then resolves unattended at rung 3 — no pin, no code
+change, no merge. That commit was already GitHub-deployed once, as `5058c5f0`.
+Flagged for the owner, not executed.
