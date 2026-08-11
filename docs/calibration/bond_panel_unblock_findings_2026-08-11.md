@@ -377,3 +377,55 @@ A **GitHub-originated deploy of the already-merged `main` commit**
 deployment, and the ladder then resolves unattended at rung 3 — no pin, no code
 change, no merge. That commit was already GitHub-deployed once, as `5058c5f0`.
 Flagged for the owner, not executed.
+
+
+---
+
+# 12. Typed non-comparable state — implemented (owner-authorized)
+
+`rating_input_not_pit`, distinct from the 300-bond `cohort_below_minimum`.
+`_rating_domain` refits the same rebuilt cohort with the frozen publication's
+rating bucket and ranks the two corrected fits against each other — the rating
+component in isolation, changing no input to the published fit.
+
+All four binding requirements enforced: its own reason code; measured evidence
+travelling with every non-comparable month (strip size, bucket disagreement,
+rating-only Spearman, common size) and the state **never claimed when it cannot
+be measured**; overall parity passing only with at least one comparable month
+that passes, an all-non-comparable run typed `parity_not_comparable` with
+`aborted=false`; and walk-forward untouched — the strip that causes this IS
+walk-forward working.
+
+Hard gates still apply to a non-comparable month: accounting, typed exclusions,
+spread semantics, universe size and walk-forward must hold everywhere.
+
+**T4 remains the binding constraint on any claim of historical fidelity.** The
+number that says why: `80-83%` of rating buckets flip to `NR` under walk-forward
+for every month before 2026-06, because `bond_rating_static` is a final-row
+mapping extended through 2026-07 rather than a point-in-time series.
+
+# 13. Re-baseline DDL — proven on a scratch database, NOT applied to production
+
+The owner refused to waive two blockers. The dry run found a third.
+
+| # | Blocker | Resolution |
+| --- | --- | --- |
+| 1 | Four served views filter the ancestry root on the pointer's config hash; a pointer at the new hash returns **zero rows from all four** | new hash added to all four views and to the publications CHECK |
+| 2 | The re-baselined root drops `2026-07`/`2026-08` because the views recurse upward | authorized shape is a DELTA carrying the live months whose parent is the re-baselined root; the branch asserts it |
+| 3 | **Found only by running it:** `pointer candidate must directly extend the current publication` requires `candidate.parent = OLD` — a re-baseline FORKS the chain and can never satisfy it | branch reshaped from a `NOT EXISTS` clause into an **early-return fork**, the same shape the legacy root replacement uses |
+
+Dry run, scratch Postgres, schema installed from `schemas/bond_panel_v1.sql`:
+
+| Step | Result |
+| --- | --- |
+| BEFORE | snapshot serves `2026-05 … 2026-08`, 8 rows |
+| NEGATIVE CONTROL — same move without the declared transition record | **refused** |
+| POINTER MOVED — with the record present | **accepted** |
+| AFTER | snapshot 8 rows `2026-05 … 2026-08`; rv_signal 3; returns 3; rating_pit 8 — **all four views serve and both live months survive** |
+
+Seeding fixture kept at `tests/fixtures/bond_panel_rebaseline_dryrun.sql` so the
+dry run is repeatable rather than a claim.
+
+**Nothing was applied to production.** The write still needs the owner's decision
+on the deploy source (§11), because the re-baseline and Stage 6 both need a
+revision the ladder can resolve.
