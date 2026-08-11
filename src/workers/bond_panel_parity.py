@@ -24,19 +24,35 @@ from src.bonds.panel_resolvers import (
 from src.db import connect, resolve_dsn
 from src.workers import bond_panel
 
-PANEL_CONFIG_HASH = "0c0d78a866bc1090"
-REG_S_PANEL_CONFIG_HASH = bond_panel.PANEL_CONFIG_HASH
+LEGACY_PANEL_CONFIG_HASH = "0c0d78a866bc1090"
+# The active identity after ``rule_144a_to_dual_series_delta_v1``.  The gate now
+# runs UNDER it: refusing to run under the current hash left the serving
+# publication with no parity evidence at all.
+PANEL_CONFIG_HASH = bond_panel.PANEL_CONFIG_HASH
 BASE_PUBLICATION_ID = "92740098-1571-559d-9fb3-119de8321754"
 BASE_INPUT_FINGERPRINT = "5a7af9e1adaed315e9940293cf3e9e789ca6350993688d58ab3e759cee37a3cb"
 REPAIRED_BASE_PUBLICATION_ID = "b3c92982-d82f-5a76-bb51-a4c980d21b25"
 REPAIRED_BASE_INPUT_FINGERPRINT = "6e00313b5f2774dbd71e4c6f96f8c628e3a19015e9a1775b0dac986c5fdf1e7e"
+DELTA_PUBLICATION_ID = "3bfbf94e-1264-57f0-9a47-a3cbca214c6b"
+DELTA_INPUT_FINGERPRINT = "4504c4a89ab1bc36481d81df7206d8efe16527f7351bab0a4471a0c3fd25600b"
 AUTHORIZED_CURRENT_PUBLICATIONS = {
     BASE_PUBLICATION_ID: BASE_INPUT_FINGERPRINT,
     REPAIRED_BASE_PUBLICATION_ID: REPAIRED_BASE_INPUT_FINGERPRINT,
+    DELTA_PUBLICATION_ID: DELTA_INPUT_FINGERPRINT,
 }
-PARITY_MONTHS = (pd.Timestamp("2025-01-01"), pd.Timestamp("2026-06-01"))
+# Declared months.  2025-04-30 is the first ``sec_current_bond_security_alias_v1``
+# validity date, so no month before 2025-05 can resolve a security under
+# walk-forward and every earlier rebuild is empty by construction — that, not
+# the rating as-of, is what produced the 2025-01 ``zero_overlap`` stop.
+PARITY_MONTHS = (pd.Timestamp("2025-12-01"), pd.Timestamp("2026-06-01"))
+# Relaxed contract adopted 2026-08-11 (supersedes the 2026-08-08 pre-declaration).
+MIN_REBUILT_UNIVERSE_RATIO = 0.90
+MIN_RV_RANK_CORRELATION = 0.80
 SPREAD_DEFINITION = "ytm_minus_interpolated_dgs"
 RECOGNIZED_ELIGIBILITY_STATES = frozenset({"included", "excluded"})
+# The one exclusion the frozen artifact never applied: it is a DISPLAY gate
+# (no unnamed bond in a suggested portfolio), not a panel-arithmetic gate.
+DISPLAY_GATE_REASON = "unnamed_issuer"
 RV_MEAN_TOLERANCE = 1e-10
 RV_STD_TOLERANCE = 1e-10
 RV_STRUCTURE_TOLERANCE = 1e-10
@@ -70,6 +86,28 @@ def _current_publication(conn: Any) -> tuple[str, str, str, str] | None:
         "WHERE pointer.product = 'bond_panel_v1'"
     ).fetchone()
     return None if row is None else tuple(str(value) for value in row)
+
+
+def _publication_for_month(conn: Any, publication_id: str, month: pd.Timestamp) -> str | None:
+    """Walk the parent chain to the publication that actually holds ``month``.
+
+    The active pointer is a DELTA: it retains only the two live months, and its
+    parent carries the frozen history.  Reading the pointer alone made every
+    historical month look empty.
+    """
+    seen: set[str] = set()
+    current: str | None = publication_id
+    while current is not None and current not in seen:
+        seen.add(current)
+        row = conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM bond_panel_snapshot WHERE publication_id = %s AND month = %s), "
+            "(SELECT parent_publication_id::text FROM bond_panel_publications WHERE publication_id = %s)",
+            (current, month.date(), current),
+        ).fetchone()
+        if row is not None and bool(row[0]):
+            return current
+        current = str(row[1]) if row is not None and row[1] is not None else None
+    return None
 
 
 def _frozen_snapshot(conn: Any, publication_id: str, month: pd.Timestamp) -> pd.DataFrame:
@@ -454,8 +492,11 @@ def _reference_accounting(
         "eligibility_reason",
         pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string"),
     ).astype("string").str.strip()
+    # Display identity, not CIK: an included bond must carry a resolved issuer
+    # NAME, because the product constraint is that no unnamed bond may reach a
+    # suggested portfolio.
     identities = rebuilt_snapshot.get(
-        "issuer_id",
+        "issuer_name",
         pd.Series(pd.NA, index=rebuilt_snapshot.index, dtype="string"),
     ).astype("string").str.strip()
 
@@ -626,6 +667,40 @@ def _compare_month(
     comparable = matched_bonds >= MIN_MONTH_ROWS
     reference_accounting = _reference_accounting(reference_keys, rebuilt_snapshot)
 
+    # Universe-size gate, measured LIKE FOR LIKE.  The frozen artifact applied
+    # no issuer-name requirement at all — the frozen engine grouped issuers by
+    # ``cusip_id[:6]``.  Gating the post-display-gate count against it would
+    # fail the rebuild for correctly implementing a filter the reference never
+    # had.  The gate therefore compares the count BEFORE the display gate, and
+    # the product universe (after it) is reported alongside, never hidden.
+    display_excluded = int(
+        (
+            rebuilt_snapshot.get(
+                "eligibility_state", pd.Series(dtype="object")
+            ).astype("string").eq("excluded")
+            & rebuilt_snapshot.get(
+                "eligibility_reason", pd.Series(dtype="object")
+            ).astype("string").str.strip().eq(DISPLAY_GATE_REASON)
+        ).sum()
+    ) if {"eligibility_state", "eligibility_reason"}.issubset(rebuilt_snapshot.columns) else 0
+    rebuilt_ex_display_gate = rebuilt_n + display_excluded
+    universe_ratio = rebuilt_ex_display_gate / frozen_n if frozen_n else 0.0
+    universe_size = {
+        "frozen_included_size": frozen_n,
+        "rebuilt_included_size": rebuilt_n,
+        "rebuilt_display_gate_excluded": display_excluded,
+        "rebuilt_included_ex_display_gate": rebuilt_ex_display_gate,
+        "ratio_ex_display_gate": universe_ratio,
+        "ratio_product_universe": rebuilt_n / frozen_n if frozen_n else 0.0,
+        "min_ratio": MIN_REBUILT_UNIVERSE_RATIO,
+    }
+    # A month the frozen artifact never included has no size to compare against.
+    universe_size_ok = bool(
+        frozen_n == 0 or universe_ratio >= MIN_REBUILT_UNIVERSE_RATIO
+    )
+    universe_size["evaluated"] = bool(frozen_n)
+    universe_size["passed"] = universe_size_ok if frozen_n else None
+
     frozen_rv_present = not frozen_rv.empty
     frozen_lineage_ok = (
         _valid_lineage(frozen_snapshot)
@@ -676,6 +751,7 @@ def _compare_month(
         ),
         "spread_numeric_semantics": frozen_semantics_ok and rebuilt_semantics_ok,
         "walk_forward": walk_forward_ok,
+        "rebuilt_universe_size": universe_size_ok,
     }
 
     formula_metrics: dict[str, dict[str, float | None]] = {}
@@ -718,6 +794,8 @@ def _compare_month(
         rebuilt_rv, rebuilt_included, fit_diagnostics, month
     )
     rebuilt_rv_n = int(len(rebuilt_rv))
+    rv_rank_correlation: float | None = None
+    rv_rank_n = 0
     if not frozen_rv_present:
         rv_metrics = {"median": None, "p90": None, "p99": None}
         rv_unavailable_reason = "frozen_rv_empty"
@@ -747,6 +825,18 @@ def _compare_month(
         rv_unavailable_reason = (
             "no_common_rv_keys" if rv_common.empty else None
         )
+        if len(rv_common) >= MIN_MONTH_ROWS:
+            frozen_values = pd.to_numeric(rv_common["rv_signal_frozen"], errors="coerce")
+            rebuilt_values = pd.to_numeric(rv_common["rv_signal_rebuilt"], errors="coerce")
+            finite_pairs = frozen_values.notna() & rebuilt_values.notna()
+            if int(finite_pairs.sum()) >= MIN_MONTH_ROWS:
+                correlation = frozen_values[finite_pairs].corr(
+                    rebuilt_values[finite_pairs], method="spearman"
+                )
+                rv_rank_correlation = (
+                    float(correlation) if pd.notna(correlation) else None
+                )
+                rv_rank_n = int(finite_pairs.sum())
     rv_abs = {
         "frozen_size": int(len(frozen_rv)),
         "rebuilt_size": rebuilt_rv_n,
@@ -761,6 +851,32 @@ def _compare_month(
         "metrics": rv_metrics,
         "unavailable_reason": rv_unavailable_reason,
     }
+    # Separately fit and standardized monthly cohorts do not share an absolute
+    # scale, so ``rv_abs`` above stays a recorded diagnostic.  What must hold is
+    # that the rebuilt signal ORDERS the common bonds the same way.
+    # Applicable only when BOTH surfaces are large enough to rank-compare.  A
+    # frozen surface smaller than the cohort minimum is a historical fact about
+    # the artifact, not a defect in the rebuild, so it is recorded and skipped
+    # rather than failed.
+    rv_rank_evaluated = bool(
+        comparable
+        and min(int(len(frozen_rv)), rebuilt_rv_n) >= MIN_MONTH_ROWS
+    )
+    rv_rank_ok = bool(
+        rv_rank_correlation is not None
+        and rv_rank_n >= MIN_MONTH_ROWS
+        and rv_rank_correlation >= MIN_RV_RANK_CORRELATION
+    ) if rv_rank_evaluated else True
+    rv_rank = {
+        "common_size": rv_rank_n,
+        "spearman": rv_rank_correlation,
+        "min_spearman": MIN_RV_RANK_CORRELATION,
+        "evaluated": rv_rank_evaluated,
+        "passed": rv_rank_ok if rv_rank_evaluated else None,
+        "unavailable_reason": None if rv_rank_evaluated else (
+            "not_comparable" if not comparable else "surface_below_cohort_minimum"
+        ),
+    }
 
     blocking_failure = (
         not reference_accounting["passed"]
@@ -770,6 +886,7 @@ def _compare_month(
             and (
                 formula_parity["passed"] is not True
                 or not rv_structure["passed"]
+                or not rv_rank_ok
             )
         )
     )
@@ -795,6 +912,8 @@ def _compare_month(
         failed_gates.extend(
             name for name, passed in rv_structure["gates"].items() if not passed
         )
+        if not rv_rank_ok:
+            failed_gates.append("rv_rank_correlation")
 
     return {
         "month": label,
@@ -807,6 +926,8 @@ def _compare_month(
         "hard_gates": hard_gates,
         "formula_parity": formula_parity,
         "rv_structure": rv_structure,
+        "rv_rank": rv_rank,
+        "universe_size": universe_size,
         "diagnostics": {
             "membership": membership,
             "rv_abs": rv_abs,
@@ -949,8 +1070,6 @@ def _overall_verdict(month_results: list[dict[str, Any]]) -> dict[str, Any]:
 def run(dsn: str | None = None) -> dict[str, object]:
     """Run the two-month, DB-only parity gate without modifying any relation."""
     active_config_hash = config_hash()
-    if active_config_hash == REG_S_PANEL_CONFIG_HASH:
-        return _failure("legacy_rule_144a_parity_not_applicable_to_reg_s")
     if active_config_hash != PANEL_CONFIG_HASH:
         return _failure("config_hash_mismatch")
     results: list[dict[str, object]] = []
@@ -962,7 +1081,7 @@ def run(dsn: str | None = None) -> dict[str, object]:
         expected_fingerprint = AUTHORIZED_CURRENT_PUBLICATIONS.get(current[0])
         if expected_fingerprint is None:
             return _failure("current_publication_id_mismatch")
-        if current[1] != PANEL_CONFIG_HASH:
+        if current[1] not in {PANEL_CONFIG_HASH, LEGACY_PANEL_CONFIG_HASH}:
             return _failure("current_publication_config_mismatch")
         if current[2] != expected_fingerprint:
             return _failure("current_publication_fingerprint_mismatch")
@@ -972,7 +1091,11 @@ def run(dsn: str | None = None) -> dict[str, object]:
         if not mapping_snapshot_id:
             return _failure("distribution_mapping_snapshot_id_absent")
         for month in PARITY_MONTHS:
-            frozen_snapshot, frozen_rv = _frozen_snapshot(conn, current[0], month), _frozen_rv(conn, current[0], month)
+            frozen_publication_id = _publication_for_month(conn, current[0], month)
+            if frozen_publication_id is None:
+                return _failure(f"frozen_month_absent:{month.date().isoformat()}", results)
+            frozen_snapshot = _frozen_snapshot(conn, frozen_publication_id, month)
+            frozen_rv = _frozen_rv(conn, frozen_publication_id, month)
             try:
                 (
                     rebuilt_snapshot,

@@ -31,6 +31,7 @@ def _snapshot(
         "cusip_id": cusips,
         "month": month,
         "issuer_id": [f"ISSUER-{cusip}" for cusip in cusips],
+        "issuer_name": [f"ISSUER {cusip}" for cusip in cusips],
         "eligibility_state": eligibility_state,
         "eligibility_reason": eligibility_reason,
         "ytm": ytm,
@@ -484,8 +485,8 @@ def test_reference_accounting_rejects_excluded_blank_reason() -> None:
     assert result["gates"]["excluded_reasons_typed"] is False
 
 
-def test_reference_accounting_rejects_missing_issuer_id_column() -> None:
-    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1).drop(columns="issuer_id")
+def test_reference_accounting_rejects_missing_issuer_name_column() -> None:
+    rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1).drop(columns="issuer_name")
 
     result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
 
@@ -493,10 +494,10 @@ def test_reference_accounting_rejects_missing_issuer_id_column() -> None:
     assert result["gates"]["included_identity_present"] is False
 
 
-@pytest.mark.parametrize("issuer_id", [pd.NA, "   "])
-def test_reference_accounting_rejects_invalid_included_issuer_identity(issuer_id: object) -> None:
+@pytest.mark.parametrize("issuer_name", [pd.NA, "   "])
+def test_reference_accounting_rejects_invalid_included_issuer_identity(issuer_name: object) -> None:
     rebuilt = _snapshot(pd.Timestamp("2025-01-01"), n=1)
-    rebuilt["issuer_id"] = issuer_id
+    rebuilt["issuer_name"] = issuer_name
 
     result = parity._reference_accounting(pd.Series(["000000000"]), rebuilt)
 
@@ -598,7 +599,7 @@ def test_compare_month_reports_noncomparable_when_common_cohort_is_below_minimum
     assert result["formula_parity"]["evaluated"] is False
 
 
-def test_compare_month_reports_noncomparable_when_every_reference_key_is_excluded() -> None:
+def test_compare_month_blocks_when_every_reference_key_is_excluded() -> None:
     month = pd.Timestamp("2025-01-01")
     rebuilt = _snapshot(
         month,
@@ -616,8 +617,14 @@ def test_compare_month_reports_noncomparable_when_every_reference_key_is_exclude
         rebuilt_rv=pd.DataFrame(),
     )
 
-    assert result["state"] == "parity_not_comparable"
-    assert result["aborted"] is False
+    # Under the relaxed contract adopted 2026-08-11 the rebuilt universe size is
+    # a HARD gate: a month that includes nothing against a frozen month that
+    # included ten bonds is materially incomplete, which is exactly the defect
+    # (1,132 rebuilt against 8,603 frozen) the gate exists to catch.
+    assert result["state"] == "parity_failed"
+    assert result["aborted"] is True
+    assert result["hard_gates"]["rebuilt_universe_size"] is False
+    assert result["universe_size"]["ratio_ex_display_gate"] == 0.0
     assert result["reference_accounting"]["passed"] is True
     assert result["reference_accounting"]["included_size"] == 0
     assert result["reference_accounting"]["excluded_size"] == 10
@@ -629,7 +636,7 @@ def test_compare_month_reports_noncomparable_when_every_reference_key_is_exclude
     }
 
 
-def test_compare_month_passes_with_historical_membership_drift_as_diagnostic() -> None:
+def test_compare_month_blocks_membership_drift_beyond_the_size_floor() -> None:
     month = pd.Timestamp("2025-01-01")
 
     result = _compare_fixture(
@@ -638,10 +645,47 @@ def test_compare_month_passes_with_historical_membership_drift_as_diagnostic() -
         frozen_rv=_rv(month, n=350),
     )
 
-    assert result["state"] == "parity_passed"
+    # 300 / 350 = 85.7%, under the 90% floor of the relaxed contract.
+    assert result["state"] == "parity_failed"
+    assert result["hard_gates"]["rebuilt_universe_size"] is False
+    assert result["universe_size"]["ratio_ex_display_gate"] == pytest.approx(300 / 350)
     assert result["diagnostics"]["membership"]["frozen_included_size"] == 350
     assert result["diagnostics"]["membership"]["rebuilt_included_size"] == 300
     assert result["diagnostics"]["membership"]["symmetric_difference_size"] == 50
+
+
+def test_compare_month_size_gate_exempts_the_display_gate_exclusion() -> None:
+    """The frozen artifact never applied an issuer-name filter, so the size gate
+    counts the rebuild BEFORE the display gate and reports both numbers."""
+    month = pd.Timestamp("2025-01-01")
+    rebuilt = pd.concat(
+        [
+            _snapshot(month, n=300),
+            _snapshot(
+                month,
+                n=50,
+                offset=300,
+                eligibility_state="excluded",
+                eligibility_reason=parity.DISPLAY_GATE_REASON,
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    result = _compare_fixture(
+        month,
+        frozen_snapshot=_snapshot(month, n=350),
+        frozen_rv=_rv(month, n=350),
+        rebuilt_snapshot=rebuilt,
+        reference_keys=pd.Series(_cusips(350)),
+    )
+
+    assert result["state"] == "parity_passed"
+    assert result["universe_size"]["rebuilt_included_size"] == 300
+    assert result["universe_size"]["rebuilt_display_gate_excluded"] == 50
+    assert result["universe_size"]["rebuilt_included_ex_display_gate"] == 350
+    assert result["universe_size"]["ratio_ex_display_gate"] == 1.0
+    assert result["universe_size"]["ratio_product_universe"] == pytest.approx(300 / 350)
 
 
 def test_compare_month_fails_reference_accounting_even_when_noncomparable() -> None:
@@ -810,14 +854,22 @@ def test_overall_passes_when_an_exact_fully_excluded_month_is_noncomparable() ->
     rebuilt = _snapshot(
         month,
         n=10,
-        offset=200,
+        offset=100,
         eligibility_state="excluded",
         eligibility_reason="missing_currency",
     )
+    # The frozen month included nothing either, so the size gate does not apply
+    # and the month is legitimately non-comparable rather than incomplete.
     noncomparable = _compare_fixture(
         month,
-        frozen_snapshot=_snapshot(month, n=10, offset=100),
-        frozen_rv=_rv(month, n=10, offset=100),
+        frozen_snapshot=_snapshot(
+            month,
+            n=10,
+            offset=100,
+            eligibility_state="excluded",
+            eligibility_reason="missing_currency",
+        ),
+        frozen_rv=pd.DataFrame(),
         rebuilt_snapshot=rebuilt,
         rebuilt_rv=pd.DataFrame(),
     )
@@ -1042,17 +1094,25 @@ def test_run_requires_mapping_snapshot_before_rebuilding_authorized_root(monkeyp
     }
 
 
-def test_run_retires_legacy_144a_parity_for_the_reg_s_config_without_connecting(monkeypatch) -> None:
+def test_run_refuses_a_foreign_config_identity_without_connecting(monkeypatch) -> None:
+    """The gate now RUNS under the active dual-series identity; only a hash it
+    does not recognise stops it before opening a connection."""
+    monkeypatch.setattr(parity, "config_hash", lambda: "deadbeefdeadbeef")
     monkeypatch.setattr(parity, "connect", lambda _dsn: (_ for _ in ()).throw(AssertionError("no DB")))
 
     outcome = parity.run("postgresql://example")
 
     assert outcome == {
         "state": "parity_failed",
-        "reason": "legacy_rule_144a_parity_not_applicable_to_reg_s",
+        "reason": "config_hash_mismatch",
         "aborted": True,
         "months": [],
     }
+
+
+def test_run_accepts_the_active_dual_series_identity() -> None:
+    assert parity.PANEL_CONFIG_HASH == "1863d3d5fa3a0edf"
+    assert parity.LEGACY_PANEL_CONFIG_HASH == "0c0d78a866bc1090"
 
 
 def test_run_refuses_unknown_config_mismatch_without_connecting(monkeypatch) -> None:
@@ -1194,14 +1254,14 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
         "noncomparable_months": 0,
     }
     assert calls == [
-        (pd.Timestamp("2025-01-01"), pd.Timestamp("2025-01-01"), date(2025, 1, 31)),
+        (pd.Timestamp("2025-12-01"), pd.Timestamp("2025-12-01"), date(2025, 12, 31)),
         (pd.Timestamp("2026-06-01"), pd.Timestamp("2026-06-01"), date(2026, 6, 30)),
     ]
     assert structural_calls == [
         {
             "mapping_snapshot_id": "approved-snapshot",
             "structural_publication_id": parity.BASE_PUBLICATION_ID,
-            "structural_month": date(2025, 1, 1),
+            "structural_month": date(2025, 12, 1),
         },
         {
             "mapping_snapshot_id": "approved-snapshot",
