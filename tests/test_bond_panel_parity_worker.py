@@ -1254,14 +1254,14 @@ def test_run_uses_exact_clock_and_issues_no_writes(monkeypatch) -> None:
         "noncomparable_months": 0,
     }
     assert calls == [
-        (pd.Timestamp("2025-12-01"), pd.Timestamp("2025-12-01"), date(2025, 12, 31)),
+        (pd.Timestamp("2026-05-01"), pd.Timestamp("2026-05-01"), date(2026, 5, 31)),
         (pd.Timestamp("2026-06-01"), pd.Timestamp("2026-06-01"), date(2026, 6, 30)),
     ]
     assert structural_calls == [
         {
             "mapping_snapshot_id": "approved-snapshot",
             "structural_publication_id": parity.BASE_PUBLICATION_ID,
-            "structural_month": date(2025, 12, 1),
+            "structural_month": date(2026, 5, 1),
         },
         {
             "mapping_snapshot_id": "approved-snapshot",

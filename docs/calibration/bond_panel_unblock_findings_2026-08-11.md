@@ -226,3 +226,96 @@ the expected-loss term. `2025-12` fails on the rating input alone.
   walk-forward no alias resolves before then, `currency` is NULL for every row
   and the month falls out at `missing_currency`. Any month before `2025-05`
   rebuilds to zero by construction, whatever the rating input does.
+
+
+---
+
+# Update — owner chose to re-baseline (option a)
+
+## 6. `CODE_REVISION` pin removed
+
+Deleted from `bond-live-daily`, verified absent. **Consequence, so it is not read
+as a regression:** `_code_revision()` now falls through to
+`RAILWAY_GIT_COMMIT_SHA`, injected only on GitHub-originated deploys. The service
+runs a CLI upload, so the daily worker will stop at `panel_gate_failed` /
+`code_revision_absent` — loud, writing nothing — **until the branch is merged to
+`main`**. Strictly better than the silent stale-pin state it replaces. Parity is
+unaffected: it materializes nothing and never calls `_code_revision()`.
+
+## 7. The re-baseline is proven mechanical, off-production
+
+Refit every month of base publication `b3c92982` with the corrected model:
+
+| Check | Result |
+| --- | ---: |
+| Published RV rows | `1,687,524` |
+| **Refit RV rows** | **`1,687,524`** — exact |
+| Months fit / skipped | `288 / 0` |
+| Months where the 144A control survives | `144 / 288` |
+| Rank vs published: median / p10 / **min** | `1.0000` / `0.9336` / **`0.8672`** |
+
+Row-count identity is load-bearing: zero-variance drops cannot remove rows, so a
+difference would mean a month silently changed fit status. There is none. Median
+`1.0000` is expected — pre-2010 has no 144A paper, so those fits are identical.
+
+## 8. Only ONE parity month can pass, and it is T4's fault
+
+Selection rule declared before inspecting rank: smallest walk-forward rating
+strip with >= 300 common bonds. All 14 candidates measured.
+`spearman_rating_only` isolates the rating input with both sides corrected:
+
+| Month | strip | bucket disagreement | rating-only Spearman |
+| --- | ---: | ---: | ---: |
+| 2025-05 … 2026-05 (13 months) | `8,605`-`10,418` | `80.8%`-`82.5%` | **`0.6152` - `0.7036`** |
+| **2026-06** | **`1,128`** | **`10.6%`** | **`0.9396`** |
+
+`bond_rating_static` is a **final-row** mapping extended through `2026-07`. Under
+walk-forward a historical month keeps almost nothing but bonds that stopped being
+rated, so `80-83%` of buckets flip to `NR`. `2026-06` looks healthy only because
+it sits one month inside the extension horizon — an artifact of when the mapping
+was built, not point-in-time-ness.
+
+**T4 is the binding constraint on historical parity. Measured, not suspected.**
+Re-baselining removes the 144A component; it cannot remove this one.
+
+Declared months and predictions, recorded before the run: `2026-06` at
+`0.91-0.93` (pass), `2026-05` at `0.68-0.70` (**fail**). `2026-05` is declared
+knowing it fails — dropping it after measuring which month passes would be
+selecting the winner.
+
+## 9. `Q5-Q1 net`: both halves
+
+| | before | after |
+| --- | ---: | ---: |
+| gross annualized | `+2.19%` | `+2.27%` |
+| implied annual one-way cost | `2.2908%` | `2.2906%` |
+| net at `4x` (the gate) | `-6.97%` | `-6.89%` |
+| **net at the realized `3.3%`/month turnover** | **`+1.89%`** | **`+1.97%`** |
+| breakeven monthly turnover | `23.90%` | `24.77%` |
+
+The published `PASS` is not reproducible from either repository, **and** the gate
+is mis-scaled: `validation.py:107` charges full monthly rotation of both legs,
+its own comment calls that "a deliberately conservative diagnostic, not a
+strategy", and the dev backtest turned `3.3%`/month. At the realized turnover the
+signal clears in both arms. No friendlier convention was substituted.
+
+## 10. What is NOT done, and why
+
+The production re-baseline, the pointer move and Stage 6 were **not executed**:
+
+1. §8 proves that even a perfect re-baseline leaves every admissible month except
+   `2026-06` failing on the rating input, so Stage 6 most likely waits on T4
+   regardless — an irreversible republication first buys nothing.
+2. The four served views filter the ancestry root on
+   `config_hash IN ('0c0d78a866bc1090','1863d3d5fa3a0edf')`. A pointer at the new
+   hash `c35f73b69e1cb885` matches neither and **all four return zero rows**.
+   The re-baselined publication is also a full-history root, and the views
+   recurse upward, so `2026-07` and `2026-08` leave the served surface until a
+   delta is rebuilt on top. This needs a scratch-database dry run that does not
+   exist yet.
+3. The write needs the merge to `main` first, for `RAILWAY_GIT_COMMIT_SHA`.
+
+**Open question for the owner:** does a month whose rating input cannot be
+reconstructed point-in-time gate the publication? If yes, Stage 6 waits on T4.
+If no, the contract needs a typed non-comparable state for that condition —
+declared deliberately, not invented under time pressure.

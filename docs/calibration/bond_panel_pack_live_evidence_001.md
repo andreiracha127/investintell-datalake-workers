@@ -743,3 +743,215 @@ Emitted by deployment `861af9d7-6923-4482-b2b7-1be2e9f5b645` at
 ```json
 {"worker":"bond_panel_parity","state":"parity_failed","reason":"monthly_parity_failure","aborted":true,"counts":{"failed_months":2,"comparable_passed_months":0,"noncomparable_months":0},"gates":{"monthly_contract_valid":true,"declared_months_exactly_once":true,"all_months_nonblocking":false,"at_least_one_comparable_month":false,"all_comparable_months_passed":false},"failure_reasons":{"gate_failed":2},"invalid_month_results":[],"month_declaration":{"declared":["2025-12-01","2026-06-01"],"observed":["2025-12-01","2026-06-01"],"missing":[],"duplicates":[],"unexpected":[]},"months":[{"month":"2025-12-01","state":"parity_failed","reason":"gate_failed","aborted":true,"matched_bonds":7507,"comparable":true,"reference_accounting":{"passed":true,"gates":{"reference_nonempty":true,"reference_keys_valid":true,"reference_keys_unique":true,"rebuilt_keys_valid":true,"rebuilt_keys_unique":true,"exact_reference_key_set":true,"eligibility_states_recognized":true,"excluded_reasons_typed":true,"included_identity_present":true},"reference_source_rows":10208,"reference_size":10208,"rebuilt_size":10208,"included_size":7507,"excluded_size":2701,"exclusion_counts":{"illiquid":332,"matured_or_short":251,"missing_amount":72,"missing_asset_class":190,"missing_currency":162,"unnamed_issuer":1694}},"hard_gates":{"frozen_snapshot_nonempty":true,"rebuilt_snapshot_nonempty":true,"snapshot_types":true,"frozen_rv_types":true,"frozen_lineage":true,"unique_universe_keys":true,"typed_exclusions":true,"spread_definition":true,"spread_numeric_semantics":true,"walk_forward":true,"rebuilt_universe_size":true},"formula_parity":{"evaluated":true,"passed":true,"metrics":{"ytm_abs_bps":{"median":0,"p90":6.938893903907228e-14,"p99":1.3877787807814457e-13},"duration_abs_years":{"median":0,"p90":1.7763568394002505e-15,"p99":5.329070518200751e-15},"spread_abs_bps":{"median":0,"p90":7.105427357601002e-14,"p99":1.4210854715202004e-13},"duration_relative":{"median":0,"p90":2.870161797913839e-16,"p99":1.871973274647541e-15}},"gates":{"ytm_abs_bps":true,"duration_abs_years":true,"spread_abs_bps":true,"duration_relative":true}},"rv_structure":{"passed":true,"row_count":7507,"fit_row_count":7507,"included_row_count":7507,"rv_mean":-3.78602763159771e-18,"rv_population_std":1,"max_residual_identity_error":0,"max_rv_signal_error":0,"max_snapshot_spread_error":0},"rv_rank":{"common_size":7507,"spearman":0.4194239088582035,"min_spearman":0.8,"evaluated":true,"passed":false,"unavailable_reason":null},"universe_size":{"frozen_included_size":9304,"rebuilt_included_size":7507,"rebuilt_display_gate_excluded":1694,"rebuilt_included_ex_display_gate":9201,"ratio_ex_display_gate":0.9889294926913156,"ratio_product_universe":0.8068572656921754,"min_ratio":0.9,"evaluated":true,"passed":true},"diagnostics":{"membership":{"frozen_included_size":9304,"rebuilt_included_size":7507,"common_size":7507,"symmetric_difference_size":1797,"universe_delta":1797,"universe_delta_limit":46.52},"rv_abs":{"frozen_size":9304,"rebuilt_size":7507,"common_size":7507,"matched_coverage":1,"metrics":{"median":0.13493094976182823,"p90":0.7473603932498153,"p99":1.7296334151269261},"unavailable_reason":null}},"typed_exclusions":{"frozen":1,"rebuilt":1},"spread_definition":"ytm_minus_interpolated_dgs","spread_semantics":{"frozen":{"rows":9304,"max_abs_error":0,"max_bps_conversion_error":0},"rebuilt":{"rows":7507,"max_abs_error":0,"max_bps_conversion_error":0}},"walk_forward":{"max_input_day":"2025-12-31","calendar_month_end":"2025-12-31","fit_as_of":"2025-12-01","input_exclusions":{"static_rating_after_month":9588}},"failed_gates":["rv_rank_correlation"]},{"month":"2026-06-01","state":"parity_failed","reason":"gate_failed","aborted":true,"matched_bonds":7008,"comparable":true,"reference_accounting":{"passed":true,"reference_source_rows":10208,"reference_size":10208,"rebuilt_size":10208,"included_size":7013,"excluded_size":3195,"exclusion_counts":{"illiquid":322,"invalid_ytm":1,"matured_or_short":676,"missing_amount":175,"missing_asset_class":190,"missing_currency":135,"unnamed_issuer":1696}},"hard_gates":{"frozen_snapshot_nonempty":true,"rebuilt_snapshot_nonempty":true,"snapshot_types":true,"frozen_rv_types":true,"frozen_lineage":true,"unique_universe_keys":true,"typed_exclusions":true,"spread_definition":true,"spread_numeric_semantics":true,"walk_forward":true,"rebuilt_universe_size":true},"formula_parity":{"evaluated":true,"passed":true},"rv_structure":{"passed":true},"rv_rank":{"common_size":7008,"spearman":0.7840366815576979,"min_spearman":0.8,"evaluated":true,"passed":false,"unavailable_reason":null},"universe_size":{"frozen_included_size":8603,"rebuilt_included_size":7013,"rebuilt_display_gate_excluded":1696,"rebuilt_included_ex_display_gate":8709,"ratio_ex_display_gate":1.0123212832732769,"ratio_product_universe":0.8151807509008485,"min_ratio":0.9,"evaluated":true,"passed":true},"diagnostics":{"rv_abs":{"frozen_size":8603,"rebuilt_size":7013,"common_size":7008,"matched_coverage":1,"metrics":{"median":0.08855305768405328,"p90":0.2232402309413639,"p99":0.742887010340494}}},"spread_definition":"ytm_minus_interpolated_dgs","walk_forward":{"max_input_day":"2026-06-30","calendar_month_end":"2026-06-30","fit_as_of":"2026-06-01","input_exclusions":{"static_rating_after_month":1128}},"failed_gates":["rv_rank_correlation"]}]}
 ```
+
+---
+
+# Addendum II — 2026-08-11: owner decision to re-baseline, and what the measurement then proved
+
+The owner adjudicated the fork left open in §F.4 and chose **option (a),
+re-baseline the history under the corrected specification.** Recorded rationale:
+keeping an uncorrected reference means every future parity run measures against
+a baseline already known to be wrong, and option (b) re-baselines anyway after
+shipping a signal known to be replaced. Fit A reproducing the published signal
+at `0.9963` is what makes this mechanical rather than a leap.
+
+This section records what was done, what was measured off-production, and the
+one thing the measurement then proved that changes the plan.
+
+## G.1 The `CODE_REVISION` pin is removed
+
+Deleted from service `bond-live-daily` on 2026-08-11, verified absent
+(`{"deleted":true,"key":"CODE_REVISION"}`, `code_revision_count=0`). This
+restores the documented state; `railway.toml` states that a persistent pin
+shadows the per-deploy `RAILWAY_GIT_COMMIT_SHA`, so a code-only change re-serves
+the previous payload under the same `publication_id` while reporting success —
+and a re-baseline is exactly a code-only change.
+
+**Consequence, stated so it is not later mistaken for a regression:**
+`_code_revision()` now falls through to `RAILWAY_GIT_COMMIT_SHA`, which Railway
+injects **only on GitHub-originated deploys**. The service currently runs a CLI
+upload, so `bond_panel.run()` will stop at `panel_gate_failed` /
+`code_revision_absent` — loud and safe, writing nothing. **Until the branch is
+merged to `main` and a GitHub-source deploy exists, the daily lane does not
+publish.** That is the correct failure, and it is strictly better than the
+silent stale-pin state it replaces. The parity worker is unaffected: it never
+calls `_code_revision()` because it materializes nothing.
+
+## G.2 The re-baseline is mechanical — proven off-production, before any write
+
+The corrected model was refit over **every month of the current base
+publication** `b3c92982`, off-production, from an export of its included rows.
+Only `rv_signal` changes; `bond_panel_snapshot`, `_returns` and `_rating_pit`
+are copied unchanged.
+
+| Check | Result |
+| --- | ---: |
+| Published RV rows | `1,687,524` |
+| **Refit RV rows** | **`1,687,524`** — exact match |
+| Months fit / skipped | `288 / 0` |
+| Months where the 144A control survives into the design | `144` of `288` |
+| Mean monthly R² | `0.4132` |
+| Rank vs published — median | `1.0000` |
+| Rank vs published — p10 | `0.9336` |
+| **Rank vs published — minimum** | **`0.8672`** |
+
+The row-count identity is the load-bearing check: dropping zero-variance columns
+cannot remove rows and `MIN_MONTH_ROWS` is unchanged, so any difference would
+mean a month silently changed fit status. There is none. The median of `1.0000`
+is expected — before 2010-03 no 144A paper exists, `db_type` is constant, the
+control is correctly dropped and the fit is bit-identical. Movement is confined
+to the `144` months that actually contain 144A paper, and even there no month
+falls below `0.8672`.
+
+## G.3 What the measurement proved: only ONE parity month can pass, and the reason is T4
+
+Parity months must come from `2025-05` onward (§E). The selection rule was
+declared before inspecting any rank result: **smallest walk-forward rating strip
+among months with at least 300 common bonds.** All fourteen candidates were
+measured so the choice is auditable.
+
+`spearman_rating_only` isolates the rating input alone: the same cohort, both
+sides carrying the corrected 144A control, fit once with the frozen publication's
+rating bucket and once with the walk-forward `bond_rating_static` bucket. Post
+re-baseline this is the **only** remaining source of disagreement.
+
+| Month | rating strip | bucket disagreement | `spearman_rating_only` | common bonds |
+| --- | ---: | ---: | ---: | ---: |
+| 2025-05 | `10,418` | `82.3%` | `0.6473` | `10,094` |
+| 2025-06 | `10,309` | `82.5%` | `0.6302` | `9,877` |
+| 2025-07 | `10,206` | `82.5%` | `0.6152` | `9,857` |
+| 2025-08 | `10,083` | `82.3%` | `0.6568` | `9,642` |
+| 2025-09 | `9,902` | `81.8%` | `0.6473` | `9,679` |
+| 2025-10 | `9,788` | `82.5%` | `0.6435` | `9,429` |
+| 2025-11 | `9,683` | `82.4%` | `0.6564` | `9,184` |
+| 2025-12 | `9,587` | `82.4%` | `0.6639` | `9,304` |
+| 2026-01 | `9,409` | `81.7%` | `0.6811` | `9,215` |
+| 2026-02 | `9,276` | `82.1%` | `0.7036` | `8,946` |
+| 2026-03 | `9,032` | `81.0%` | `0.6678` | `9,017` |
+| 2026-04 | `8,873` | `81.8%` | `0.6790` | `8,693` |
+| 2026-05 | `8,605` | `80.8%` | `0.7020` | `8,654` |
+| **2026-06** | **`1,128`** | **`10.6%`** | **`0.9396`** | `8,603` |
+
+The rule selects `2026-06` uniquely, and not narrowly: the runner-up strips
+`7.6x` more mappings and lands `0.24` lower on rank. Thirteen of fourteen
+candidate months sit in a tight `0.615 - 0.704` band, all far below the `0.80`
+floor, **on the rating input alone**.
+
+The cause is structural, not incidental. `bond_rating_static` is a **final-row**
+mapping: `rating_as_of_month` is each CUSIP's last observed rating month, and the
+mapping was extended through `2026-07`. Under walk-forward, month `t` may only
+use rows dated `<= t`, which for any historical month retains almost nothing but
+bonds that stopped being rated — `80-83%` of buckets flip, mostly investment
+grade to `NR`. `2026-06` looks healthy only because it sits one month inside the
+extension horizon. That is an artifact of when the mapping was built, not
+evidence of point-in-time-ness.
+
+**Therefore: T4 — a genuinely point-in-time rating source — is not a parallel
+workstream. It is the binding constraint on historical parity, and this is now
+measured rather than suspected.** Re-baselining removes the 144A component from
+the comparison; it cannot remove this one.
+
+### Declared months and predictions, recorded BEFORE the run
+
+Both months are declared. Predictions are recorded here first so the run
+confirms rather than reveals:
+
+| Month | Predicted Spearman | Predicted verdict | Basis |
+| --- | ---: | --- | --- |
+| 2026-06 | `0.91 - 0.93` | pass | rating `0.9396` x cohort `0.9929`, less the ~2% the composed prediction over-stated last run (`0.802` composed vs `0.784` actual) |
+| 2026-05 | `0.68 - 0.70` | **fail** | rating `0.7020` x cohort ~`0.99` |
+
+`2026-05` is declared knowing it fails. Dropping it after measuring which month
+passes would be selecting the winner, and the second month is what makes the
+finding falsifiable.
+
+## G.4 The `Q5-Q1 net` record, both halves
+
+§D.3 recorded that the published `PASS` is not reproducible from either
+repository. That stands, and the second half now completes it.
+
+`validation.py:107` computes `net = gross - 4 x cost`: full monthly rotation of
+**both** legs. The harness's own comment calls this "a deliberately conservative
+diagnostic, not a strategy". The strategy it screens turned over **`3.3%` per
+month** in the dev backtest and paid `0.17%/yr` in realized costs.
+
+| Convention | before | after |
+| --- | ---: | ---: |
+| Q5-Q1 gross annualized | `+2.19%` | `+2.27%` |
+| Implied annual one-way cost | `2.2908%` | `2.2906%` |
+| Net at `4x` (the gate's bound) | `-6.97%` | `-6.89%` |
+| **Net at the realized `3.3%`/month turnover** | **`+1.89%`** | **`+1.97%`** |
+| Breakeven monthly turnover | `23.90%` | `24.77%` |
+
+The implied annual one-way cost agreeing to four decimal places across the two
+arms (`2.2908%` vs `2.2906%`) is the internal consistency check: the arms differ
+only in gross, exactly as a feature correction should.
+
+So both halves, together: **the published `PASS` cannot be reproduced from this
+repository, and the gate is mis-scaled — it charges roughly `7.5x` the turnover
+the strategy actually realized, which is the whole reason it reads negative.**
+At the realized turnover the signal clears the gate in both arms. No friendlier
+convention was substituted to obtain that; the `4x` bound is reported as the
+declared gate and the realized-turnover figure is reported beside it.
+
+## G.5 The DDL surface a new identity requires — enumerated, not yet applied
+
+Candidate identity: adding `"spread_model_144a_control":
+"db_type_eq_3_with_absent_level_v1"` to `panel_config.FROZEN` yields
+**`c35f73b69e1cb885`** from `1863d3d5fa3a0edf`. The frozen dictionary is
+extended by declaration, never edited in place.
+
+Four things must change together, and **two of them can take the product dark if
+they are wrong**:
+
+1. `bond_panel_publications_config_hash_check` must admit the new hash
+   (rerunnable `ALTER ... NOT VALID`, precedent already in the file).
+2. `bond_panel_assert_pointer_validated()` needs **one** new authorized branch.
+   The guard fires only when the hash changes and no branch matches, so every
+   subsequent same-hash daily delta needs nothing. Model it on the
+   `92740098 -> b3c92982` **root-replacement** branch — full-history root,
+   `parent_publication_id IS NULL` on both sides — not on the delta branch,
+   which hardcodes the two-month shape and the `0c0d... -> 1863d...` pair.
+3. **`bond_panel_current_snapshot_v1` and its three siblings filter the ancestry
+   root on `p.config_hash IN ('0c0d78a866bc1090', '1863d3d5fa3a0edf')`.** A
+   pointer at `c35f73b69e1cb885` matches neither, so all four served views would
+   return **zero rows** — not stale data, nothing. The cross-hash ancestry clause
+   needs the new pair too.
+4. **The re-baselined publication is a full-history root** (`parent NULL`,
+   `2002-07 -> 2026-06`). The views recurse *upward* through
+   `parent_publication_id`, so a root pointer exposes only the root's months:
+   **`2026-07` and `2026-08` leave the served surface** until a daily delta is
+   built on top of it.
+
+Because of (3) and (4) the execution is a single indivisible block — DDL,
+republish root, parity, pointer move, immediately rebuild the daily delta under
+the new hash, verify both live months are back — and it must be dry-run against
+a scratch database first. It was **not** executed here: see §G.6.
+
+## G.6 Where this stops, and why
+
+Executed and durable: the pin removal (§G.1), the off-production proof that the
+re-baseline is mechanical (§G.2), the month-selection measurement (§G.3), and
+the `Q5-Q1` record (§G.4).
+
+**Not executed: the production re-baseline, the pointer move, and Stage 6.**
+Three reasons, in order of weight:
+
+1. **The measurement changed the expected outcome.** §G.3 proves that even a
+   perfect re-baseline leaves `2026-05` — and every other admissible month
+   except `2026-06` — failing on the rating input alone. Stage 6 most likely
+   waits on T4 regardless, so executing an irreversible republication first buys
+   nothing and risks a great deal.
+2. **A wrong view definition takes the product dark.** §G.5 (3) and (4) mean a
+   mis-sequenced pointer move returns zero rows from all four served surfaces.
+   That needs a scratch-database dry run, which does not exist yet.
+3. **The write requires the merge to `main` first.** `bond_panel.run()` needs
+   `RAILWAY_GIT_COMMIT_SHA`, injected only on a GitHub-originated deploy
+   (§G.1). Publishing from a CLI upload would either fail closed or, worse,
+   publish under an unresolvable revision.
+
+The question the owner now holds, with a fourteen-month controlled table behind
+it: **does a month whose rating input cannot be reconstructed point-in-time gate
+the publication?** If yes, Stage 6 waits on T4. If no, the contract needs a typed
+non-comparable state for that condition — which should be declared deliberately,
+not invented under time pressure.

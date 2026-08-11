@@ -40,11 +40,24 @@ AUTHORIZED_CURRENT_PUBLICATIONS = {
     REPAIRED_BASE_PUBLICATION_ID: REPAIRED_BASE_INPUT_FINGERPRINT,
     DELTA_PUBLICATION_ID: DELTA_INPUT_FINGERPRINT,
 }
-# Declared months.  2025-04-30 is the first ``sec_current_bond_security_alias_v1``
-# validity date, so no month before 2025-05 can resolve a security under
-# walk-forward and every earlier rebuild is empty by construction — that, not
-# the rating as-of, is what produced the 2025-01 ``zero_overlap`` stop.
-PARITY_MONTHS = (pd.Timestamp("2025-12-01"), pd.Timestamp("2026-06-01"))
+# Declared months.  Two constraints fix the admissible window, both measured.
+#
+# Floor: 2025-04-30 is the first ``sec_current_bond_security_alias_v1`` validity
+# date, so no month before 2025-05 can resolve a security under walk-forward and
+# every earlier rebuild is empty by construction — that, not the rating as-of, is
+# what produced the 2025-01 ``zero_overlap`` stop.
+#
+# Selection, declared before any rank result was inspected: smallest walk-forward
+# rating strip among months with at least MIN_MONTH_ROWS common bonds.  All 14
+# candidates were measured (evidence doc §G.3).  ``bond_rating_static`` is a
+# FINAL-ROW mapping extended through 2026-07, so walk-forward retains almost
+# nothing for a historical month — 80-83% of buckets flip to NR — and the
+# rating-only rank correlation sits in 0.615-0.704 for thirteen of fourteen
+# candidates.  Only 2026-06, one month inside the extension horizon, reaches
+# 0.9396.  2026-05 is the runner-up and is declared KNOWING it fails: dropping it
+# after measuring which month passes would be selecting the winner, and it is
+# what makes the finding falsifiable.
+PARITY_MONTHS = (pd.Timestamp("2026-05-01"), pd.Timestamp("2026-06-01"))
 # Relaxed contract adopted 2026-08-11 (supersedes the 2026-08-08 pre-declaration).
 MIN_REBUILT_UNIVERSE_RATIO = 0.90
 MIN_RV_RANK_CORRELATION = 0.80

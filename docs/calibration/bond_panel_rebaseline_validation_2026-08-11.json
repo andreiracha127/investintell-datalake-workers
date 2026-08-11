@@ -1,0 +1,116 @@
+{
+  "published_rv_rows": 1687524,
+  "refit_rv_rows": 1687524,
+  "rows_match": true,
+  "months_total": 288,
+  "months_skipped": 0,
+  "months_with_144a_applied": 144,
+  "mean_r2": 0.4132,
+  "rank_vs_published": {
+    "months": 288,
+    "median": 1.0,
+    "p10": 0.9336,
+    "min": 0.8672,
+    "max": 1.0
+  },
+  "rating_sensitivity": [
+    {
+      "month": "2025-05-01",
+      "n": 10094,
+      "rating_strip": 10418,
+      "bucket_disagreement": 0.8229,
+      "spearman_rating_only": 0.6473
+    },
+    {
+      "month": "2025-06-01",
+      "n": 9877,
+      "rating_strip": 10309,
+      "bucket_disagreement": 0.8254,
+      "spearman_rating_only": 0.6302
+    },
+    {
+      "month": "2025-07-01",
+      "n": 9857,
+      "rating_strip": 10206,
+      "bucket_disagreement": 0.8248,
+      "spearman_rating_only": 0.6152
+    },
+    {
+      "month": "2025-08-01",
+      "n": 9642,
+      "rating_strip": 10083,
+      "bucket_disagreement": 0.823,
+      "spearman_rating_only": 0.6568
+    },
+    {
+      "month": "2025-09-01",
+      "n": 9679,
+      "rating_strip": 9902,
+      "bucket_disagreement": 0.8183,
+      "spearman_rating_only": 0.6473
+    },
+    {
+      "month": "2025-10-01",
+      "n": 9429,
+      "rating_strip": 9788,
+      "bucket_disagreement": 0.8246,
+      "spearman_rating_only": 0.6435
+    },
+    {
+      "month": "2025-11-01",
+      "n": 9184,
+      "rating_strip": 9683,
+      "bucket_disagreement": 0.8244,
+      "spearman_rating_only": 0.6564
+    },
+    {
+      "month": "2025-12-01",
+      "n": 9304,
+      "rating_strip": 9587,
+      "bucket_disagreement": 0.8239,
+      "spearman_rating_only": 0.6639
+    },
+    {
+      "month": "2026-01-01",
+      "n": 9215,
+      "rating_strip": 9409,
+      "bucket_disagreement": 0.8171,
+      "spearman_rating_only": 0.6811
+    },
+    {
+      "month": "2026-02-01",
+      "n": 8946,
+      "rating_strip": 9276,
+      "bucket_disagreement": 0.8213,
+      "spearman_rating_only": 0.7036
+    },
+    {
+      "month": "2026-03-01",
+      "n": 9017,
+      "rating_strip": 9032,
+      "bucket_disagreement": 0.8099,
+      "spearman_rating_only": 0.6678
+    },
+    {
+      "month": "2026-04-01",
+      "n": 8693,
+      "rating_strip": 8873,
+      "bucket_disagreement": 0.8184,
+      "spearman_rating_only": 0.679
+    },
+    {
+      "month": "2026-05-01",
+      "n": 8654,
+      "rating_strip": 8605,
+      "bucket_disagreement": 0.8084,
+      "spearman_rating_only": 0.702
+    },
+    {
+      "month": "2026-06-01",
+      "n": 8603,
+      "rating_strip": 1128,
+      "bucket_disagreement": 0.1062,
+      "spearman_rating_only": 0.9396
+    }
+  ]
+}
