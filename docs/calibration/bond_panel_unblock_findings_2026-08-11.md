@@ -429,3 +429,72 @@ dry run is repeatable rather than a claim.
 **Nothing was applied to production.** The write still needs the owner's decision
 on the deploy source (§11), because the re-baseline and Stage 6 both need a
 revision the ladder can resolve.
+
+
+---
+
+# 14. CORRECTION: the pin was redundant, not load-bearing. The daily chain is healthy.
+
+**My §11 prediction was wrong.** I predicted that with `CODE_REVISION` removed the
+07:30 UTC cron would fail at `BondServingRevisionUnresolved` / `code_revision_absent`.
+It did not. The cron ran and the run finished **green**.
+
+## What actually happened
+
+The 07:30 cron re-ran the active deployment **without creating a new deployment
+row** — which is why the deployment list showed nothing at 07:30 and I read that
+as "the cron has not run". The service status is now `Completed`, and the worker
+emitted its final line at `2026-08-11T09:56:46Z`:
+
+`worker="bond_live_daily" state="ok" aborted=false halted_by=[] as_of="2026-08-11"`
+
+## Which rung resolved — proven, not inferred
+
+`bond_metric_v1` publication identity is
+`uuid5(namespace, "bond_metric_v1|{as_of}|{code_revision}|{fingerprint}")`, so the
+revision can be recovered by inversion. Against the published row
+(`publication_id 1b9ed5a9-0fa3-5a8e-ba81-a7241064cd92`, `as_of 2026-08-10`,
+`input_fingerprint 00fce091…f30a`):
+
+**`code_revision = 7139388f0f65aab9e0232495822e07ab29e2d613`** — 40 hex, i.e.
+**rung 3, `RAILWAY_GIT_COMMIT_SHA`**, and exactly `main` HEAD.
+
+So Railway injects `RAILWAY_GIT_COMMIT_SHA` into CLI-upload deployments on this
+service too. My inference rested on `meta.commitHash` being absent from the
+deployment record — and `_code_revision()`'s own docstring had already warned
+that "the variables API does not list `RAILWAY_GIT_*` because it is per-deployment
+metadata, so its absence there proves nothing". The same caveat applies to the
+deployment meta. I should have tested the runtime value instead of reading the
+metadata, and the inversion above is that test.
+
+**The removed pin held `7139388f0f65aab9e0232495822e07ab29e2d613` — the identical
+value rung 3 resolves to.** The pin was redundant. Removing it changed nothing
+about the identity this run published under, which is why nothing broke.
+
+## The five verification points, measured
+
+| Check | Result |
+| --- | --- |
+| `code_revision` is a 40-hex SHA, not a pin value or `unknown` | **`7139388f0f65aab9e0232495822e07ab29e2d613`**, recovered by inverting the publication id |
+| `bond_serving_builds` advances past `2026-08-09T16:00:26Z` | **`2026-08-11T09:43:43.29025Z`**, 14 rows |
+| Stage 5 republished both products | `bond_metric_v1` → `1b9ed5a9-0fa3-5a8e-ba81-a7241064cd92`, `as_of 2026-08-10`, `1,268,436` rows over `211,406` securities, built `09:23:50Z`; `bond_serving_v1` → `1ee50a16-8dac-5cdb-93f4-690fadd73b3d`, `2,031,147` rows across catalog/detail/observations/fund_exposure, built `09:43:43Z` |
+| Stage 6 reports its own state, not `code_revision_absent` | `panel={"state":"current","aborted":false,"reason":"panel_month_already_current","publication_id":"3bfbf94e…","config_hash":"1863d3d5fa3a0edf"}` — it passed the revision gate at `bond_panel.py:780` and correctly declined to republish an unchanged month |
+| `max(day)` in `bond_observation_daily` moved | `2026-08-10`; candles swept `10,208`, `7,467` rows upserted, `2,741` with no data; ticks full-universe `7,468` rows in `3,704s`; curve 13 tenors to `2026-08-10`; matview refreshed |
+
+Provider cost of that run: `20,429` HTTP calls, `0` retries, `0` errors.
+
+## Was anything else riding on the pin?
+
+**No.** Every stage that consumes the revision ladder resolved it from rung 3 and
+completed: stage 5 republished both products, stage 6 passed the gate and made a
+correct no-op decision, and the panel pointer is untouched
+(`3bfbf94e`, `changed_at 2026-08-11T00:38:11.906749Z`, still 3 publications).
+
+The one residual is provenance, not function: the active deployment is a CLI
+upload of a clean `origin/main` worktree rather than a GitHub-originated build.
+The code and the resolved revision are both `main` HEAD, so a
+`railway redeploy --from-source` would deploy the same commit and resolve the
+same revision — changing only the deployment's provenance metadata, at the cost
+of a full re-sweep (~62 minutes, ~20k provider calls). **Not executed:** the
+premise that authorized it — a failing revision ladder — is falsified above, and
+the owner should decide whether the provenance alone is worth the run.
