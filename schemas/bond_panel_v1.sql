@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS bond_panel_snapshot (
     reference_cusip9 text,
     distribution_decision_id text,
     issuer_id text,
+    -- Display identity: the serving chain's normalized reported-name consensus
+    -- (see src/bonds/issuer_consensus.py).  ``issuer_id`` remains the SEC CIK
+    -- where one resolves, as informational lineage only.
+    issuer_name text,
     issuer_identity_state text NOT NULL DEFAULT 'unresolved'
         CHECK (issuer_identity_state <> ''),
     ff17num integer,
@@ -226,7 +230,10 @@ CREATE TABLE IF NOT EXISTS bond_panel_rating_pit (
 ALTER TABLE bond_panel_snapshot
     ADD COLUMN IF NOT EXISTS distribution_rule text CHECK (distribution_rule IS NULL OR distribution_rule IN ('rule_144a', 'reg_s')),
     ADD COLUMN IF NOT EXISTS reference_cusip9 text,
-    ADD COLUMN IF NOT EXISTS distribution_decision_id text;
+    ADD COLUMN IF NOT EXISTS distribution_decision_id text,
+    -- Immutable publications built before the issuer-name rewire keep NULL
+    -- here: an absent name stays absent and is never backfilled.
+    ADD COLUMN IF NOT EXISTS issuer_name text;
 ALTER TABLE bond_panel_rv_signal
     ADD COLUMN IF NOT EXISTS distribution_rule text CHECK (distribution_rule IS NULL OR distribution_rule IN ('rule_144a', 'reg_s')),
     ADD COLUMN IF NOT EXISTS reference_cusip9 text,

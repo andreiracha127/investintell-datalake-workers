@@ -177,7 +177,7 @@ def _parent_return_anchor(conn: Any, closed_month: pd.Timestamp) -> pd.DataFrame
         "rating_bucket, rating_state, NULLIF(payload ->> 'rating_as_of_month', '')::date AS rating_as_of_month, "
         "payload ->> 'rating_reason' AS rating_reason, "
         "NULLIF(payload ->> 'rating_staleness_months', '')::int AS rating_staleness_months, "
-        "eligibility_state, issuer_id, issuer_identity_state, ff17num, currency, asset_class, "
+        "eligibility_state, issuer_id, issuer_name, issuer_identity_state, ff17num, currency, asset_class, "
         "amount_outstanding_k AS amt_outstanding_k, maturity_date, coupon_pct, db_type, "
         "COALESCE(distribution_rule, payload ->> 'distribution_rule', 'rule_144a') AS distribution_rule, "
         "COALESCE(reference_cusip9, payload ->> 'reference_cusip9', cusip_id) AS reference_cusip9, "
@@ -383,7 +383,16 @@ def _load_inputs(
             "WHEN count(DISTINCT p.db_type) FILTER (WHERE p.db_type_state = 'present' AND p.db_type IS NOT NULL AND p.db_type <> 'NaN'::numeric AND p.db_type = trunc(p.db_type)) = 0 THEN 'pit_missing_or_invalid' ELSE 'pit_conflicting' END AS db_type_reason "
             "FROM panel_months pm CROSS JOIN LATERAL bond_price_fund_asof_v1(pm.price_as_of) p GROUP BY pm.month, p.security_id) "
             "SELECT m.execution_cusip9 AS cusip9, m.distribution_rule, m.reference_cusip9, m.decision_id AS distribution_decision_id, pm.month, map.issuer_cik AS issuer_id, "
-            "COALESCE(map.issuer_identity_state, 'unresolved') AS issuer_identity_state, s.currency, "
+            # Issuer DISPLAY identity comes from the serving chain's normalized
+            # reported-name consensus (src/bonds/issuer_consensus.py), the same
+            # value the product catalogue already shows.  The SEC CIK stays as
+            # informational lineage: requiring it resolved excluded 8,584 of
+            # 10,208 bonds the catalogue names today.
+            "COALESCE(NULLIF(btrim(s.issuer_name), ''), NULLIF(btrim(rs.issuer_name), '')) AS issuer_name, "
+            "CASE WHEN COALESCE(NULLIF(btrim(s.issuer_name), ''), NULLIF(btrim(rs.issuer_name), '')) IS NOT NULL THEN 'named_consensus' "
+            "WHEN a.security_id IS NULL AND ra.security_id IS NULL THEN 'no_security_master' "
+            "ELSE 'unnamed_consensus_abstained' END AS issuer_identity_state, "
+            "COALESCE(map.issuer_identity_state, 'missing_cik') AS issuer_cik_state, s.currency, "
             "CASE WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ~* '(^|[^[:alnum:]])non[-[:space:]]*corporate([^[:alnum:]]|$)' THEN 'noncorporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) ~* '(^|[^[:alnum:]])corporate([^[:alnum:]]|$)' THEN 'corporate' "
             "WHEN concat_ws(' ', r.asset, r.asset_type, r.bond_type, r.debt_type) <> '' THEN 'noncorporate' ELSE 'missing' END AS asset_class, i.ff17num, "
@@ -391,6 +400,11 @@ def _load_inputs(
             "FROM mapping m JOIN panel_months pm ON pm.month = m.month "
             "LEFT JOIN aliases a ON a.month = pm.month AND a.cusip9 = m.execution_cusip9 "
             "LEFT JOIN sec_current_bond_security_v1 s ON s.security_id = a.security_id "
+            # The Reg S execution leg may have no security-master row of its
+            # own; the issuer is the same legal entity on both legs, so the
+            # 144A reference leg supplies the name when it does.
+            "LEFT JOIN aliases ra ON ra.month = pm.month AND ra.cusip9 = m.reference_cusip9 "
+            "LEFT JOIN sec_current_bond_security_v1 rs ON rs.security_id = ra.security_id "
             "LEFT JOIN bond_reference_terms r ON upper(btrim(r.cusip9)) = m.reference_cusip9 "
             "LEFT JOIN bond_issuer_sector i ON upper(btrim(i.cusip9)) = m.reference_cusip9 "
             "LEFT JOIN price ON price.month = pm.month AND price.security_id = a.security_id "
@@ -633,8 +647,10 @@ def _closed_returns_and_tombstones(
         False: "terminal_exit_removed",
     })
     tombstones["issuer_identity_state"] = tombstones.get(
-        "issuer_identity_state", pd.Series("unresolved", index=tombstones.index)
-    ).fillna("unresolved")
+        "issuer_identity_state", pd.Series("no_security_master", index=tombstones.index)
+    ).fillna("no_security_master")
+    if "issuer_name" not in tombstones:
+        tombstones["issuer_name"] = None
     tombstones["rating_bucket"] = tombstones.get(
         "rating_bucket", pd.Series("NR", index=tombstones.index)
     ).fillna("NR")
@@ -826,7 +842,9 @@ def run(dsn: str | None = None, *, as_of: date | None = None) -> dict[str, objec
             )
             if panel.empty:
                 return _failure("panel_failed", elapsed=time.monotonic() - started, input_reasons=["panel_rebuild_empty"], closed_month=closed_month.date().isoformat(), open_month=open_month.date().isoformat())
-            panel["issuer_identity_state"] = panel["issuer_identity_state"].fillna("unresolved") if "issuer_identity_state" in panel else "unresolved"
+            panel["issuer_identity_state"] = panel["issuer_identity_state"].fillna("no_security_master") if "issuer_identity_state" in panel else "no_security_master"
+            if "issuer_name" not in panel:
+                panel["issuer_name"] = None
             panel["liquidity_reason"] = panel["reason_code"].fillna("monthly_liquidity_absent") if "reason_code" in panel else "monthly_liquidity_absent"
             terms_present = panel.get("coupon_pct", pd.Series(index=panel.index, dtype=float)).notna() & panel.get("maturity_date", pd.Series(index=panel.index, dtype=object)).notna() & panel.get("amt_outstanding_k", pd.Series(index=panel.index, dtype=float)).notna()
             panel["terms_source"] = terms_present.map({True: "bond_reference_terms", False: "terms_missing"})

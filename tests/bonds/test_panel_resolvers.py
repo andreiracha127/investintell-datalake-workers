@@ -34,13 +34,13 @@ def test_spread_is_ytm_minus_interpolated_treasury_never_oas() -> None:
 def test_eligibility_has_a_typed_reason_without_inferring_distribution_rule() -> None:
     rows = pd.DataFrame([
         {"cusip_id": "OK", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "issuer_name": "ISSUER CO", "ff17num": 10, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
         {"cusip_id": "SECTOR", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": np.nan, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "issuer_name": "ISSUER CO", "ff17num": np.nan, "db_type": 1, "currency": "USD", "asset_class": "corporate"},
         {"cusip_id": "DBTYPE", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": np.nan, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "issuer_name": "ISSUER CO", "ff17num": 10, "db_type": np.nan, "currency": "USD", "asset_class": "corporate"},
         {"cusip_id": "144A", "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 3, "currency": "USD", "asset_class": "corporate"},
+         "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "issuer_name": "ISSUER CO", "ff17num": 10, "db_type": 3, "currency": "USD", "asset_class": "corporate"},
     ])
     assert eligibility(rows).tolist() == ["eligible", "missing_sector", "eligible", "eligible"]
     snapshot = build_universe_snapshot(rows)
@@ -55,7 +55,7 @@ def test_eligibility_has_a_typed_reason_without_inferring_distribution_rule() ->
 def test_eligibility_distinguishes_absent_currency_and_asset_class() -> None:
     base = {
         "ytm": .05, "mod_dur": 5., "pr": 100., "amt_outstanding_k": 300_000,
-        "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "ff17num": 10, "db_type": 1,
+        "bond_maturity": 2., "traded_days": 5, "issuer_id": "issuer", "issuer_name": "ISSUER CO", "ff17num": 10, "db_type": 1,
     }
     rows = pd.DataFrame([
         {**base, "currency": None, "asset_class": "corporate"},
@@ -77,7 +77,7 @@ def test_eligibility_classifies_object_none_numeric_inputs_as_missing() -> None:
         "amt_outstanding_k": pd.Series([None, 300_000, 300_000], dtype=object),
         "bond_maturity": pd.Series([2.0, None, 2.0], dtype=object),
         "traded_days": pd.Series([5, 5, None], dtype=object),
-        "issuer_id": ["issuer"] * 3,
+        "issuer_id": ["issuer"] * 3, "issuer_name": ["ISSUER CO"] * 3,
         "ff17num": [10] * 3,
         "currency": ["USD"] * 3,
         "asset_class": ["corporate"] * 3,
@@ -154,9 +154,12 @@ def test_typed_exits_are_matured_distressed_or_last_price_flat() -> None:
     assert exited.tolist() == [True, True, True]
 
 
-def test_spread_model_clusters_by_resolved_issuer_not_cusip6(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spread_model_clusters_by_cusip6_like_the_frozen_engine(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CUSIP6 is the frozen contract (``bond_optimizer/spread_model.fit_month``).
+    A resolved CIK was never required, and demanding one dropped every bond the
+    SEC map cannot resolve."""
     rows = pd.DataFrame({
-        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": [f"issuer-{i % 3}" for i in range(300)],
+        "cusip_id": [f"C{i % 3:05d}{i:03d}" for i in range(300)], "issuer_id": [f"issuer-{i % 3}" for i in range(300)],
         "month": pd.Timestamp("2024-01-01"), "spread_final": np.linspace(.01, .03, 300), "bond_maturity": np.linspace(2., 8., 300),
         "amt_outstanding_k": [Decimal(300_000 + index * 1_000) for index in range(300)],
         "dollar_volume": [Decimal(1 + index) for index in range(300)],
@@ -180,13 +183,16 @@ def test_spread_model_clusters_by_resolved_issuer_not_cusip6(monkeypatch: pytest
 
     monkeypatch.setattr("src.bonds.panel_resolvers.sm.OLS", fake_ols)
     fit_month(rows)
-    assert list(observed["cov_kwds"]["groups"]) == rows["issuer_id"].tolist()
+    assert list(observed["cov_kwds"]["groups"]) == rows["cusip_id"].str[:6].tolist()
+    # The 144A control is a DECLARED feature of the cross-sectional model
+    # (design §4.1).  db_type is constant (1) here, so the zero-variance guard
+    # drops it rather than letting a dead column pose as an applied control.
     assert "is_144a" not in observed["exog_columns"]
 
 
 def test_spread_model_rejects_future_rows_when_an_asof_is_declared() -> None:
     rows = pd.DataFrame({
-        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": ["issuer"] * 300,
+        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": ["issuer"] * 300, "issuer_name": ["ISSUER CO"] * 300,
         "month": pd.Timestamp("2024-02-01"), "spread_final": .02, "bond_maturity": 5.,
         "amt_outstanding_k": 500_000., "dollar_volume": 1., "db_type": 1, "rating_bucket": "A", "ff17num": 10,
     })
@@ -200,7 +206,7 @@ def test_spread_model_skips_month_when_residual_scale_is_not_finite_or_positive(
 ) -> None:
     rows = pd.DataFrame({
         "cusip_id": [f"CUS{i:06d}" for i in range(300)],
-        "issuer_id": [f"issuer-{index % 2}" for index in range(300)],
+        "issuer_id": [f"issuer-{index % 2}" for index in range(300)], "issuer_name": [f"ISSUER {index % 2}" for index in range(300)],
         "month": pd.Timestamp("2024-01-01"), "spread_final": .02, "bond_maturity": 5.,
         "amt_outstanding_k": 500_000., "dollar_volume": 1., "db_type": 1, "rating_bucket": "A", "ff17num": 10,
     })
@@ -225,7 +231,7 @@ def test_spread_model_skips_month_when_residual_scale_is_not_finite_or_positive(
 
 def test_spread_model_skips_degenerate_single_cluster_before_clustered_fit() -> None:
     rows = pd.DataFrame({
-        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": ["issuer"] * 300,
+        "cusip_id": [f"CUS{i:06d}" for i in range(300)], "issuer_id": ["issuer"] * 300, "issuer_name": ["ISSUER CO"] * 300,
         "month": pd.Timestamp("2024-01-01"), "spread_final": .02, "bond_maturity": 5.,
         "amt_outstanding_k": 500_000., "dollar_volume": 1., "db_type": 1, "rating_bucket": "A", "ff17num": 10,
     })
@@ -282,7 +288,7 @@ def test_db_shaped_month_builder_uses_observed_then_analytical_terms_and_one_spr
     daily = pd.DataFrame({"cusip9": ["AAA", "AAA"], "day": pd.to_datetime(["2024-01-05", "2024-01-20"]), "price": [100., 100.], "ytm": [np.nan, np.nan], "volume": [np.nan, np.nan]})
     terms = pd.DataFrame({"cusip9": ["AAA"], "coupon_rate": [5.], "maturity_date": pd.to_datetime(["2029-01-20"]), "amount_outstanding_mm": [500], "amount_outstanding_vendor": [np.nan], "amount_outstanding_k": [500_000.]})
     curve = pd.DataFrame({"day": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02"]), "tenor": ["1y", "5y", "10y"], "yield_pct": [4., 4., 4.]})
-    sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10], "db_type": [1], "db_type_reason": ["pit_present"]})
+    sector = pd.DataFrame({"cusip9": ["AAA"], "issuer_id": ["issuer"], "issuer_name": ["ISSUER CO"], "ff17num": [10], "db_type": [1], "db_type_reason": ["pit_present"]})
     liquidity = pd.DataFrame({"cusip9": ["AAA"], "month": [date(2024, 1, 1)], "traded_days": [5], "quoted_days": [2], "rel_bid_ask_bps": [50.], "dollar_volume": [300.], "quote_state": ["quoted"], "reason_code": [None]})
     rows = build_db_monthly_panel(daily, terms, curve, sector, liquidity, pd.DataFrame(), months=[pd.Timestamp("2024-01-01")])
     row = rows.iloc[0]
@@ -303,7 +309,7 @@ def test_db_month_builder_does_not_treat_unproven_vendor_amount_as_millions() ->
         "amount_outstanding_vendor": [525.],
     })
     sector = pd.DataFrame({
-        "cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10],
+        "cusip9": ["AAA"], "issuer_id": ["issuer"], "issuer_name": ["ISSUER CO"], "ff17num": [10],
         "db_type": [1], "currency": ["USD"], "asset_class": ["corporate"],
     })
 
@@ -324,7 +330,7 @@ def test_db_month_builder_requires_explicit_normalized_amount_even_without_vendo
         "amount_outstanding_vendor": [np.nan],
     })
     sector = pd.DataFrame({
-        "cusip9": ["AAA"], "issuer_id": ["issuer"], "ff17num": [10],
+        "cusip9": ["AAA"], "issuer_id": ["issuer"], "issuer_name": ["ISSUER CO"], "ff17num": [10],
         "db_type": [1], "currency": ["USD"], "asset_class": ["corporate"],
     })
 
@@ -341,7 +347,7 @@ def test_db_month_builder_uses_month_specific_identity_and_db_type_rows() -> Non
     sector = pd.DataFrame({
         "cusip9": ["AAA", "AAA"],
         "month": months,
-        "issuer_id": ["issuer-old", "issuer-new"],
+        "issuer_id": ["issuer-old", "issuer-new"], "issuer_name": ["ISSUER OLD", "ISSUER NEW"],
         "ff17num": [10, 20],
         "db_type": [1, 3],
         "currency": ["USD", "USD"],
@@ -389,7 +395,7 @@ def test_db_month_builder_keeps_unobserved_candidates_for_typed_exclusion() -> N
     })
     sector = pd.DataFrame({
         "cusip9": ["OBSERVED", "MISSING"],
-        "issuer_id": ["issuer-1", "issuer-2"],
+        "issuer_id": ["issuer-1", "issuer-2"], "issuer_name": ["ISSUER ONE", "ISSUER TWO"],
         "ff17num": [10, 10],
         "db_type": [1, 1],
         "db_type_reason": ["pit_present", "pit_present"],
@@ -411,3 +417,59 @@ def test_db_month_builder_keeps_unobserved_candidates_for_typed_exclusion() -> N
     assert set(snapshot.index) == {"OBSERVED", "MISSING"}
     assert snapshot.loc["MISSING", "eligibility_state"] == "excluded"
     assert snapshot.loc["MISSING", "eligibility_reason"] == "missing_traded_days"
+
+
+def test_spread_model_applies_the_144a_control_when_db_type_varies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The declared 144A control (design §4.1) reads ``db_type == 3``.
+
+    The reference implementation compared against ``2``, a value that never
+    occurs in 24 years of source data, so the column was identically zero and
+    the 144A distribution premium was absorbed by the residual — the RV signal
+    itself.  Here db_type varies, so the control must survive into the design
+    and ``db_type_absent`` must carry the unobserved rows as their own level
+    rather than being folded into "not 144A".
+    """
+    rows = pd.DataFrame({
+        "cusip_id": [f"C{index % 3:05d}{index:03d}" for index in range(300)],
+        "issuer_id": [f"issuer-{index % 3}" for index in range(300)],
+        "issuer_name": [f"ISSUER {index % 3}" for index in range(300)],
+        "month": pd.Timestamp("2024-01-01"),
+        "spread_final": np.linspace(.01, .03, 300),
+        "bond_maturity": np.linspace(2., 8., 300),
+        "amt_outstanding_k": [Decimal(300_000 + index * 1_000) for index in range(300)],
+        "dollar_volume": [Decimal(1 + index) for index in range(300)],
+        "db_type": [(3 if index % 4 == 0 else (None if index % 4 == 1 else 1)) for index in range(300)],
+        "rating_bucket": "A", "ff17num": 10,
+    })
+    observed: dict[str, object] = {}
+
+    class FakeFit:
+        rsquared = .5
+
+        def predict(self, x: pd.DataFrame) -> np.ndarray:
+            return np.zeros(len(x))
+
+    class FakeModel:
+        def fit(self, **kwargs: object) -> FakeFit:
+            observed.update(kwargs)
+            return FakeFit()
+
+    def fake_ols(_endog, exog, **_kwargs):
+        observed["exog"] = exog
+        return FakeModel()
+
+    monkeypatch.setattr("src.bonds.panel_resolvers.sm.OLS", fake_ols)
+    signal, diagnostics = fit_month(rows)
+
+    exog = observed["exog"]
+    assert "is_144a" in exog.columns
+    assert "db_type_absent" in exog.columns
+    assert exog["is_144a"].sum() == 75
+    assert exog["db_type_absent"].sum() == 75
+    # No row is dropped for an absent db_type.
+    assert len(signal) == 300
+    assert diagnostics["is_144a_applied"] is True
+    assert diagnostics["db_type_absent_applied"] is True
+    assert diagnostics["issuer_clusters"] == 3

@@ -17,6 +17,11 @@ BUCKET_ORDER = ("AAA", "AA", "A", "BBB", "BB", "B", "CCC", "D")
 BUCKET_NUMERIC = {bucket: i + 1 for i, bucket in enumerate(BUCKET_ORDER)}
 SPREAD_WINSOR_BPS = (1.0, 3000.0)
 MIN_MONTH_ROWS = 300
+# OSBAP ``db_type``: 1 = publicly disseminated (BTDS), 3 = Rule 144A, NULL =
+# the source does not carry the field (TRACE era, 2025-04 onward).  Measured
+# over the full 24-year history: 58,881 CUSIPs at 1 from 2002-07, 9,407 at 3
+# from 2010-03, NULL only from 2025-04.  The value 2 never occurs.
+DB_TYPE_144A = 3
 
 
 @dataclass(frozen=True)
@@ -100,7 +105,7 @@ def validate_computed_spread(panel: pd.DataFrame, spread_final: pd.Series, gate:
 
 
 def eligibility(panel: pd.DataFrame) -> pd.Series:
-    required = ("ytm", "mod_dur", "pr", "amt_outstanding_k", "bond_maturity", "traded_days", "issuer_id", "ff17num", "currency", "asset_class")
+    required = ("ytm", "mod_dur", "pr", "amt_outstanding_k", "bond_maturity", "traded_days", "issuer_name", "ff17num", "currency", "asset_class")
     missing = [name for name in required if name not in panel]
     if missing:
         raise ValueError(f"eligibility frame missing columns: {missing}")
@@ -112,7 +117,15 @@ def eligibility(panel: pd.DataFrame) -> pd.Series:
             (not pd.isna(value["currency"]) and str(value["currency"]).strip().upper() != "USD", "non_usd"),
             (pd.isna(value["asset_class"]) or str(value["asset_class"]).strip().lower() in {"", "missing"}, "missing_asset_class"),
             (not pd.isna(value["asset_class"]) and str(value["asset_class"]).strip().lower() not in {"", "missing", "corporate"}, "noncorporate"),
-            (pd.isna(value["issuer_id"]) or not str(value["issuer_id"]).strip(), "unresolved_issuer"),
+            # DISPLAY eligibility, not legal-identity resolution: the owner's
+            # constraint is that no unnamed bond may reach a suggested
+            # portfolio.  The frozen engine never needed a resolved identity —
+            # it groups issuers by ``cusip_id[:6]`` — so requiring a resolved
+            # CIK here excluded 8,584 bonds the serving chain already names.
+            # The input is the serving chain's normalized issuer-name
+            # consensus; a bond with no consensus name is still excluded, with
+            # its own declared reason.
+            (pd.isna(value["issuer_name"]) or not str(value["issuer_name"]).strip(), "unnamed_issuer"),
             (pd.isna(value["ff17num"]), "missing_sector"),
             (pd.isna(value["amt_outstanding_k"]), "missing_amount"),
             (
@@ -398,8 +411,8 @@ def build_db_monthly_panel(
         # canonical monthly key is Timestamp, matching observation-derived rows.
         liquidity["month"] = pd.to_datetime(liquidity["month"])
     ratings_input = static_rating_mapping.rename(columns={"cusip9": "cusip_id"}).copy()
-    if "issuer_id" not in sector.columns:
-        raise ValueError("resolved issuer_id is required for the DB monthly panel")
+    if "issuer_name" not in sector.columns:
+        raise ValueError("issuer_name consensus is required for the DB monthly panel")
     if "month" in sector:
         sector["month"] = pd.to_datetime(sector["month"])
         if sector.duplicated(["cusip_id", "month"]).any():
@@ -509,6 +522,18 @@ def _design(frame: pd.DataFrame) -> pd.DataFrame:
     amount = pd.to_numeric(frame["amt_outstanding_k"], errors="coerce").astype(float)
     volume = pd.to_numeric(frame["dollar_volume"], errors="coerce").astype(float)
     x = pd.DataFrame({"log_maturity": np.log(maturity.clip(lower=.25)), "log_amt": np.log(amount.clip(lower=1)), "log_volume": np.log1p(volume.clip(lower=0))}, index=frame.index)
+    # 144A control (design spec §4.1).  ``db_type`` is the BTDS/144A axis:
+    # 1 = publicly disseminated, 3 = 144A, NULL = not carried by the source.
+    # The value 2 never occurs in 24 years of data, which is why the reference
+    # implementation's ``db_type.eq(2)`` was an identically-zero column and the
+    # 144A distribution premium landed in the residual — i.e. in the RV signal.
+    # A month whose db_type is entirely absent, or has no variation, drops the
+    # column below rather than contributing a dead regressor.
+    # Absence gets its OWN level (``db_type_absent``) instead of being folded
+    # into "not 144A": no row is dropped and no state is fabricated.
+    db_type = pd.to_numeric(frame["db_type"], errors="coerce") if "db_type" in frame else pd.Series(np.nan, index=frame.index)
+    x["is_144a"] = db_type.eq(DB_TYPE_144A).astype(float)
+    x["db_type_absent"] = db_type.isna().astype(float)
     rating = pd.get_dummies(frame["rating_bucket"], prefix="q", dtype=float).drop(columns=["q_BBB"], errors="ignore")
     sector = pd.get_dummies(frame["ff17num"].astype(int), prefix="s", dtype=float)
     return pd.concat([x, rating, sector.iloc[:, 1:] if len(sector.columns) > 1 else sector], axis=1)
@@ -523,17 +548,35 @@ def fit_month(
     df["spread_bps"] = (df["spread_final"] * 10_000).clip(*SPREAD_WINSOR_BPS)
     if len(df) < MIN_MONTH_ROWS:
         return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
-    x = sm.add_constant(_design(df)).astype("float64")
+    # ``has_constant="add"`` is required, not cosmetic: the default SKIPS the
+    # intercept whenever the design already carries a constant non-zero column,
+    # and pre-2010 — when PIT coverage makes every bond ``NR`` — the ``q_NR``
+    # dummy is exactly that.  Dropping zero-variance columns below would then
+    # remove the model's only intercept and silently turn the fit into a
+    # regression through the origin.  Verified residual-neutral: on months with
+    # no 144A paper the fitted values are identical to machine precision.
+    x = sm.add_constant(_design(df), has_constant="add").astype("float64")
     x = x.drop(columns=[column for column in x if x[column].isna().all()])
+    # A zero-variance regressor is collinear with the intercept and carries no
+    # information; keeping it made a DECLARED control (the 144A flag) look
+    # applied when it was identically zero.  Drop it explicitly, and record the
+    # surviving design in the diagnostics so the claim is auditable.
+    x = x.drop(columns=[column for column in x if column != "const" and x[column].nunique(dropna=True) < 2])
     df, x = df[x.notna().all(axis=1)], x[x.notna().all(axis=1)]
     if len(df) < MIN_MONTH_ROWS:
         return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
-    if "issuer_id" not in df or df["issuer_id"].isna().any():
-        raise ValueError("spread model requires resolved issuer_id for clustered errors")
-    if df["issuer_id"].nunique() < 2:
+    # Issuer clusters are CUSIP6, matching the frozen reference engine
+    # (``bond_optimizer/spread_model.fit_month``).  A resolved CIK was never
+    # the frozen contract, and demanding one would silently drop every bond
+    # whose identity the SEC map cannot resolve.  Cluster choice moves the
+    # standard errors only — never the residual, hence never ``rv_signal``.
+    issuer = df["cusip_id"].astype(str).str[:6]
+    if issuer.eq("").any():
+        raise ValueError("spread model requires a CUSIP6 issuer cluster key")
+    if issuer.nunique() < 2:
         return pd.DataFrame(), {"n": int(len(df)), "skipped": True}
     fit = sm.OLS(df["spread_bps"].astype(float), x).fit(
-        cov_type="cluster", cov_kwds={"groups": df["issuer_id"]}
+        cov_type="cluster", cov_kwds={"groups": issuer}
     )
     fitted = fit.predict(x)
     residual = df["spread_bps"] - fitted
@@ -545,7 +588,7 @@ def fit_month(
         max_vif = float(np.nanmax([variance_inflation_factor(x[continuous].to_numpy(), index) for index in range(len(continuous))]))
     except Exception:
         max_vif = float("nan")
-    return pd.DataFrame({"cusip_id": df["cusip_id"], "month": df["month"], "spread_bps": df["spread_bps"], "fitted_bps": fitted, "residual_bps": residual, "rv_signal": (residual - residual.mean()) / residual_std}).reset_index(drop=True), {"n": int(len(df)), "r2": round(float(fit.rsquared), 4), "max_vif_continuous": round(max_vif, 2), "skipped": False}
+    return pd.DataFrame({"cusip_id": df["cusip_id"], "month": df["month"], "spread_bps": df["spread_bps"], "fitted_bps": fitted, "residual_bps": residual, "rv_signal": (residual - residual.mean()) / residual_std}).reset_index(drop=True), {"n": int(len(df)), "r2": round(float(fit.rsquared), 4), "max_vif_continuous": round(max_vif, 2), "is_144a_applied": bool("is_144a" in x), "db_type_absent_applied": bool("db_type_absent" in x), "issuer_clusters": int(issuer.nunique()), "skipped": False}
 
 
 def fit_all_months(
