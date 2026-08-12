@@ -154,14 +154,14 @@ LOCK_CREDIT_REGIME = 900_205
 LOCK_REGIME_COMPOSITE = 900_206
 LOCK_REGIME_GATE = 900_207
 LOCK_REGIME_QUADRANT = 900_208
-# TECH DEBT: main also introduced screener_metrics with 900_207. Keep the
-# combo-regime-gate lock ownership here; reassign main-added metrics locks
-# before these services are allowed to run concurrently.
-LOCK_SCREENER_METRICS = 900_207
+# The screener publisher shares this id with its schema migration. It must not
+# share a lock with any other worker: deploy is execution and an unrelated job
+# must never make a screener publication silently skip as ``lock_busy``.
+LOCK_SCREENER_METRICS = 900_221
 LOCK_FUND_FACTORS = 900_214
 # open_macro_v03 direct-activation runtime worker (Stage B). 900_215 is the next
 # free id in the metrics band (900_2xx); it does not collide with any worker above
-# (900_207 is the known SCREENER/REGIME_GATE double-assignment, left untouched).
+# (the former SCREENER/REGIME_GATE double-assignment was removed at 900_221).
 LOCK_OPEN_MACRO_V03 = 900_215
 LOCK_IPCA_FACTOR_PACK = 900_216
 # 900_216 was taken by the IPCA factor pack while this branch sat unmerged; two
