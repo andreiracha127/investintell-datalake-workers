@@ -16,13 +16,14 @@ from __future__ import annotations
 import datetime as _dt
 import time
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from src.db import LOCK_SCREENER_METRICS, advisory_lock, connect
+from src.db import LOCK_SCREENER_METRICS, connect
 
 BENCHMARK_TICKERS: tuple[str, ...] = ("SPY", "GLD", "AGG", "TLT", "USO")
 LOOKBACK_DAYS = 745
@@ -105,6 +106,9 @@ UPSERT_SQL = f"""
 @dataclass
 class MetricsReport:
     total_active: int = 0
+    eligible: int = 0
+    excluded: int = 0
+    selected: int = 0
     computed: int = 0
     skipped_no_eod: int = 0
     deleted_inactive: int = 0
@@ -329,19 +333,47 @@ def group_price_rows(rows: Iterable[tuple[Any, ...]]) -> dict[str, pd.DataFrame]
     }
 
 
-def _active_tickers(conn, *, tickers: list[str] | None, limit: int | None) -> list[str]:
-    params: list[Any] = []
-    where = "WHERE status = 'active'"
+def _eligible_tickers(
+    conn,
+    as_of: _dt.date,
+    *,
+    tickers: list[str] | None,
+    limit: int | None,
+) -> list[str]:
+    """Return canonical screener membership, optionally narrowed for a partial run."""
+    params: list[Any] = [as_of]
+    where = ""
     if tickers:
-        where += " AND ticker = ANY(%s)"
+        where += " WHERE ticker = ANY(%s)"
         params.append(tickers)
-    sql = f"SELECT ticker FROM universe_constituents {where} ORDER BY ticker"
-    if limit:
+    sql = (
+        "SELECT ticker FROM public.screener_equity_eligible(%s) "
+        f"{where} ORDER BY ticker"
+    )
+    if limit is not None:
         sql += " LIMIT %s"
         params.append(limit)
     with conn.cursor() as cur:
         cur.execute(sql, params)
         return [r[0] for r in cur.fetchall()]
+
+
+def _screener_universe_counts(conn, as_of: _dt.date) -> tuple[int, int]:
+    """Return broad active and canonical screener-eligible membership counts."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                (SELECT count(*)
+                 FROM public.universe_constituents
+                 WHERE status = 'active'),
+                (SELECT count(*)
+                 FROM public.screener_equity_eligible(%s))
+            """,
+            (as_of,),
+        )
+        active, eligible = cur.fetchone()
+    return int(active), int(eligible)
 
 
 def _load_price_frames(
@@ -354,7 +386,9 @@ def _load_price_frames(
             """
             SELECT ticker, date, adj_close, close, volume
             FROM eod_prices
-            WHERE ticker = ANY(%s) AND date >= %s AND date <= %s
+            WHERE ticker = ANY(%s)
+              AND date >= %s AND date <= %s
+              AND adj_close IS NOT NULL AND close IS NOT NULL
             ORDER BY ticker, date
             """,
             (tickers, start, end),
@@ -420,32 +454,137 @@ def _upsert_metrics(conn, records: list[dict[str, Any]]) -> int:
         for i in range(0, len(records), UPSERT_CHUNK):
             chunk = records[i : i + UPSERT_CHUNK]
             cur.executemany(UPSERT_SQL, chunk)
-            conn.commit()
             upserted += len(chunk)
     return upserted
 
 
-def _delete_inactive_metrics(conn) -> int:
+def _delete_ineligible_metrics(conn, as_of: _dt.date) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
             DELETE FROM screener_metrics sm
             WHERE NOT EXISTS (
                 SELECT 1
-                FROM universe_constituents uc
-                WHERE uc.ticker = sm.ticker AND uc.status = 'active'
+                FROM public.screener_equity_eligible(%s) eligible
+                WHERE eligible.ticker = sm.ticker
             )
-            """
+            """,
+            (as_of,),
         )
         deleted = cur.rowcount
-    conn.commit()
     return int(deleted)
 
 
-def _refresh_screener_equity_snapshot(dsn: str) -> None:
-    with connect(dsn, autocommit=True) as conn:
-        with conn.cursor() as cur:
-            cur.execute("REFRESH MATERIALIZED VIEW screener_equity_snapshot_mv")
+def _try_publish_lock(conn) -> bool:
+    """Acquire the screener's transaction lock without waiting.
+
+    PostgreSQL releases this lock only when ``conn.commit()`` or rollback ends
+    the transaction.  Unlike a session-lock context manager, there is no gap in
+    which a schema swap can start before the published generation is visible.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)",
+            (LOCK_SCREENER_METRICS,),
+        )
+        return bool(cur.fetchone()[0])
+
+
+@contextmanager
+def _publish_transaction_lock(conn):
+    """Keep the transaction-shaped call site; commit/rollback releases the lock."""
+    yield _try_publish_lock(conn)
+
+
+def _verify_metric_parity(conn, as_of: _dt.date, computed_at: _dt.datetime) -> None:
+    """Fail before publication unless the base table is this eligible generation."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH eligible AS (
+                SELECT ticker FROM public.screener_equity_eligible(%s)
+            ), missing AS (
+                SELECT ticker FROM eligible
+                EXCEPT
+                SELECT ticker FROM screener_metrics
+            ), extra AS (
+                SELECT ticker FROM screener_metrics
+                EXCEPT
+                SELECT ticker FROM eligible
+            ), stale AS (
+                SELECT eligible.ticker
+                FROM eligible
+                JOIN screener_metrics sm USING (ticker)
+                WHERE sm.computed_at IS DISTINCT FROM %s OR sm.as_of IS NULL
+            )
+            SELECT
+                (SELECT count(*) FROM eligible),
+                (SELECT count(*) FROM screener_metrics sm
+                 JOIN eligible USING (ticker)
+                 WHERE sm.computed_at = %s AND sm.as_of IS NOT NULL),
+                (SELECT count(*) FROM missing),
+                (SELECT count(*) FROM extra),
+                (SELECT count(*) FROM stale)
+            """,
+            (as_of, computed_at, computed_at),
+        )
+        eligible, current, missing, extra, stale = cur.fetchone()
+    if missing or extra or stale or current != eligible:
+        raise RuntimeError(
+            "Metric parity mismatch: "
+            f"eligible={eligible}, current={current}, missing={missing}, "
+            f"extra={extra}, stale={stale}"
+        )
+
+
+def _refresh_screener_equity_snapshot(conn, as_of: _dt.date) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('investintell.screener_as_of', %s, true)",
+            (as_of.isoformat(),),
+        )
+        cur.execute("REFRESH MATERIALIZED VIEW screener_equity_snapshot_mv")
+
+
+def _verify_snapshot_parity(conn, as_of: _dt.date, computed_at: _dt.datetime) -> None:
+    """Fail closed unless the published MV matches the current base generation."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            WITH eligible AS (
+                SELECT ticker FROM public.screener_equity_eligible(%s)
+            ), missing AS (
+                SELECT ticker FROM eligible
+                EXCEPT
+                SELECT ticker FROM screener_equity_snapshot_mv
+            ), extra AS (
+                SELECT ticker FROM screener_equity_snapshot_mv
+                EXCEPT
+                SELECT ticker FROM eligible
+            ), stale AS (
+                SELECT eligible.ticker
+                FROM eligible
+                JOIN screener_equity_snapshot_mv snapshot USING (ticker)
+                WHERE snapshot.computed_at IS DISTINCT FROM %s OR snapshot.as_of IS NULL
+            )
+            SELECT
+                (SELECT count(*) FROM eligible),
+                (SELECT count(*) FROM screener_equity_snapshot_mv snapshot
+                 JOIN eligible USING (ticker)
+                 WHERE snapshot.computed_at = %s AND snapshot.as_of IS NOT NULL),
+                (SELECT count(*) FROM missing),
+                (SELECT count(*) FROM extra),
+                (SELECT count(*) FROM stale)
+            """,
+            (as_of, computed_at, computed_at),
+        )
+        eligible, snapshot, missing, extra, stale = cur.fetchone()
+    if missing or extra or stale or snapshot != eligible:
+        raise RuntimeError(
+            "Snapshot parity mismatch: "
+            f"eligible={eligible}, snapshot={snapshot}, missing={missing}, "
+            f"extra={extra}, stale={stale}"
+        )
 
 
 def run(
@@ -456,20 +595,43 @@ def run(
     tickers: list[str] | None = None,
     batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict:
-    """Compute screener metrics for active constituents and refresh the MV."""
+    """Compute canonical screener metrics and atomically publish a full snapshot."""
     started = time.monotonic()
-    anchor = _dt.date.fromisoformat(calc_date) if calc_date else _dt.date.today()
+    anchor = (
+        _dt.date.fromisoformat(calc_date)
+        if calc_date
+        else _dt.datetime.now(_dt.UTC).date()
+    )
     load_start = anchor - _dt.timedelta(days=LOOKBACK_DAYS)
+    full_publish = tickers is None and limit is None and calc_date is None
 
     report = MetricsReport(null_counts=dict.fromkeys(METRIC_COLUMNS, 0))
     with connect(dsn) as conn:
-        with advisory_lock(conn, LOCK_SCREENER_METRICS) as got:
+        with _publish_transaction_lock(conn) as got:
             if not got:
                 return {"status": "skipped", "reason": "lock_busy", "computed": 0}
 
-            todo = _active_tickers(conn, tickers=tickers, limit=limit)
-            report.total_active = len(todo)
-            report.deleted_inactive = _delete_inactive_metrics(conn)
+            active_count, eligible_count = _screener_universe_counts(conn, anchor)
+            if eligible_count > active_count:
+                raise RuntimeError(
+                    "Screener eligible set exceeds the active universe: "
+                    f"active={active_count}, eligible={eligible_count}"
+                )
+            if full_publish and eligible_count == 0:
+                raise RuntimeError(
+                    "Screener eligible set is empty; refusing to replace the live snapshot"
+                )
+
+            todo = _eligible_tickers(conn, anchor, tickers=tickers, limit=limit)
+            report.total_active = active_count
+            report.eligible = eligible_count
+            report.excluded = active_count - eligible_count
+            report.selected = len(todo)
+            if full_publish and report.selected != report.eligible:
+                raise RuntimeError(
+                    "Screener eligible selection count mismatch: "
+                    f"selected={report.selected}, eligible={report.eligible}"
+                )
 
             benchmark_frames = _load_price_frames(
                 conn, list(BENCHMARK_TICKERS), load_start, anchor
@@ -513,22 +675,44 @@ def run(
                 if records:
                     report.computed += _upsert_metrics(conn, records)
                 print(
-                    f"screener_metrics: {report.computed}/{report.total_active} "
-                    f"computed, skipped_no_eod={report.skipped_no_eod}",
+                    f"screener_metrics: {report.computed}/{report.selected} computed, "
+                    f"active={report.total_active}, eligible={report.eligible}, "
+                    f"excluded={report.excluded}, "
+                    f"skipped_no_eod={report.skipped_no_eod}",
                     flush=True,
                 )
 
-    if report.computed > 0:
-        _refresh_screener_equity_snapshot(dsn)
+            if full_publish:
+                if report.computed != report.eligible:
+                    raise RuntimeError(
+                        "Screener metric generation incomplete: "
+                        f"computed={report.computed}, eligible={report.eligible}, "
+                        f"skipped_no_eod={report.skipped_no_eod}"
+                    )
+                report.deleted_inactive = _delete_ineligible_metrics(conn, anchor)
+                _verify_metric_parity(conn, anchor, computed_at)
+                _refresh_screener_equity_snapshot(conn, anchor)
+                _verify_snapshot_parity(conn, anchor, computed_at)
+
+            # The transaction-scoped lock is released by this commit, so the
+            # migration can never observe a pre-commit generation and swap the
+            # MV before the publisher's writes become visible.
+            conn.commit()
 
     report.elapsed_seconds = time.monotonic() - started
     return {
         "status": "succeeded",
         "total_active": report.total_active,
+        "eligible": report.eligible,
+        "excluded": report.excluded,
+        "selected": report.selected,
         "computed": report.computed,
         "skipped_no_eod": report.skipped_no_eod,
         "deleted_inactive": report.deleted_inactive,
         "null_counts": report.null_counts,
         "elapsed_seconds": round(report.elapsed_seconds, 3),
         "as_of": anchor.isoformat(),
+        "anchor": anchor.isoformat(),
+        "coverage_as_of": anchor.isoformat(),
+        "published": full_publish,
     }
