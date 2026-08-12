@@ -19,6 +19,8 @@ lean.json
 data/
 !fixtures/input_packs/golden/certified_input_pack/data/
 !fixtures/input_packs/golden/certified_input_pack/data/**
+!fixtures/p1_packs/open_macro_v03_certified_input_pack_003/data/
+!fixtures/p1_packs/open_macro_v03_certified_input_pack_003/data/**
 qc-a3-parity/results/
 qc-a3-parity/src/calibration_harness.py
 qc-a3-parity/src/db.py

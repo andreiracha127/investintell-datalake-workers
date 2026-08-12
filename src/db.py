@@ -189,6 +189,10 @@ LOCK_FUND_PEER_GROUPS = 900_219
 # and must stay free to run), so it takes its own id: 900_220 is the next free one in
 # the metrics band (900_2xx) after LOCK_FUND_PEER_GROUPS.
 LOCK_OPEN_MACRO_V03_CHAIN = 900_220
+# Public status-only evidence has its own atomic publication boundary and must not
+# share the v04 decision worker lock: the evidence worker reads an already-published
+# v04 row, then owns only its private lineage + public evidence relations.
+LOCK_OPEN_MACRO_V04_PIT_EVIDENCE = 900_221
 LOCK_FUND_INSTITUTIONAL_REVEAL = 900_209
 LOCK_MATVIEW_REFRESH = 900_210
 LOCK_STOCK_DAILY_RETURNS = 900_211
