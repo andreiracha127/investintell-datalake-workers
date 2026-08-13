@@ -121,6 +121,7 @@ class _FakeConn:
     def __init__(self, responder) -> None:
         self.executed: list = []
         self.commits = 0
+        self.rollbacks = 0
         self.closed = False
         self.responder = responder
 
@@ -129,9 +130,11 @@ class _FakeConn:
 
     def commit(self) -> None:
         self.commits += 1
+        self.responder.transaction_commit()
 
     def rollback(self) -> None:
-        pass
+        self.rollbacks += 1
+        self.responder.transaction_rollback()
 
     def close(self) -> None:
         self.closed = True
@@ -150,6 +153,20 @@ class FakeDatabase:
         self.macro_override = macro_override or {}
         self.decisions: list[dict] = []
         self.allocations: list[dict] = []
+        self.captures: list[dict] = []
+        self._committed = ([], [], [])
+
+    def transaction_commit(self) -> None:
+        self._committed = (
+            [dict(row) for row in self.decisions],
+            [dict(row) for row in self.allocations],
+            [dict(row) for row in self.captures],
+        )
+
+    def transaction_rollback(self) -> None:
+        self.decisions, self.allocations, self.captures = (
+            [dict(row) for row in rows] for rows in self._committed
+        )
 
     # -- the served tables ------------------------------------------------- #
     def _macro(self, series_id: str, horizon) -> list[tuple]:
@@ -187,6 +204,26 @@ class FakeDatabase:
                 return {"rowcount": 0}
             self.allocations.append(dict(params))
             return {"rowcount": 1}
+        if sql is w.CAPTURE_INSERT_SQL:
+            existing = next((row for row in self.captures
+                             if (row["as_of"], row["series_id"])
+                             == (params["as_of"], params["series_id"])), None)
+            if existing is not None:
+                return {"rowcount": 0, "rows": []}
+            self.captures.append(dict(params))
+            columns = ("series_digest_sha256", "row_count", "min_obs_date",
+                       "max_obs_date", "producer_run_id", "global_input_digest_sha256")
+            return {"rows": [tuple(params[column] for column in columns)]}
+        if sql is w.CAPTURE_READ_SQL:
+            row = next((row for row in self.captures
+                        if (row["as_of"], row["series_id"])
+                        == (params["as_of"], params["series_id"])), None)
+            columns = ("series_digest_sha256", "row_count", "min_obs_date",
+                       "max_obs_date", "producer_run_id", "global_input_digest_sha256")
+            return {"rows": [] if row is None else [tuple(row[column] for column in columns)]}
+        if sql is w.CAPTURE_COUNT_SQL:
+            return {"rows": [(sum(row["as_of"] == params["as_of"]
+                                  for row in self.captures),)]}
         if sql.startswith("SELECT count(*)"):
             table = "open_macro_v04_decisions" if "v04_decisions" in sql else None
             n = len(self.decisions) if table else len(self.allocations)
@@ -559,6 +596,49 @@ def test_only_the_current_month_is_live_and_only_when_it_is_new(published) -> No
     assert stats["n_bootstrap"] == stats["n_published"] - 1
 
 
+def test_new_live_month_captures_exactly_four_horizon_bounded_inputs(published) -> None:
+    stats, database = published
+    assert {row["series_id"] for row in database.captures} == set(w.REQUIRED_SERIES)
+    assert {row["as_of"] for row in database.captures} == {LATEST}
+    assert {row["producer_run_id"] for row in database.captures} == {stats["run_id"]}
+    for row in database.captures:
+        source = pd.Series(
+            [value for date, value in _macro_rows(row["series_id"]) if date <= LATEST],
+            index=pd.to_datetime([date for date, _ in _macro_rows(row["series_id"])
+                                  if date <= LATEST]),
+        )
+        assert row["row_count"] == len(source)
+        assert row["min_obs_date"] == source.index.min().date()
+        assert row["max_obs_date"] == source.index.max().date()
+        assert row["series_digest_sha256"] == w._digest([
+            f"{date:%Y-%m-%d}|{float(value):.17g}" for date, value in source.items()
+        ])
+
+
+def test_existing_latest_month_and_bootstrap_rows_create_no_capture() -> None:
+    _, database = run_worker(existing_as_of={LATEST})
+    assert database.captures == []
+
+
+def test_conflicting_immutable_capture_fails_closed_and_rolls_back(published) -> None:
+    _, database = published
+    original = database.captures[0]
+    conflict = {**original, "series_digest_sha256": "f" * 64}
+    decision = dict(database.decisions[-1])
+    allocation = dict(database.allocations[-1])
+    decisions_before = len(database.decisions)
+    allocations_before = len(database.allocations)
+
+    with pytest.raises(w.OpenMacroV04Error, match="immutable input capture conflict"):
+        w.publish(
+            database.conn, [decision], [allocation], LATEST, capture_rows=[conflict])
+
+    assert database.conn.rollbacks == 1
+    assert len(database.decisions) == decisions_before
+    assert len(database.allocations) == allocations_before
+    assert database.captures[0] == original
+
+
 def test_a_month_that_already_existed_is_not_relabelled_live() -> None:
     """The row was not lived through THIS run. Whatever it says, this run did not
     witness it."""
@@ -874,5 +954,3 @@ def test_a_past_month_end_override_is_honoured() -> None:
 def test_the_override_env_is_read(monkeypatch) -> None:
     monkeypatch.setenv(w.AS_OF_ENV, "2026-06-30")
     assert w.resolve_as_of(today=RUN_TODAY) == _dt.date(2026, 6, 30)
-
-

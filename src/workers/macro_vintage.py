@@ -10,8 +10,13 @@ from __future__ import annotations
 
 import datetime as _dt
 import math
+import os
 import re
 from typing import Any
+
+from src.db import LOCK_MACRO_VINTAGE, advisory_lock, connect
+from src.macro_sources import SEED_SOURCES, SOURCE_SPEC_VERSION
+from src.workers.macro_ingestion import FRED_BASE_URL, TokenBucket
 
 _VINTAGE_COL = re.compile(r"_(\d{8})$")
 _MISSING = frozenset((".", "#N/A", "", "NaN", "nan", "null", "None"))
@@ -62,14 +67,23 @@ def parse_alfred_vintages(series_id: str, payload: dict[str, Any]) -> list[dict[
     return rows
 
 
-import os
-
-from src.db import LOCK_MACRO_VINTAGE, advisory_lock, connect
-from src.macro_sources import SEED_SOURCES, SOURCE_SPEC_VERSION
-from src.workers.macro_ingestion import FRED_BASE_URL, TokenBucket
-
 _REALTIME_ALL = {"realtime_start": "1776-07-04", "realtime_end": "9999-12-31"}
 _SCHEMA = "schemas/macro_observation_vintage.sql"
+_OPEN_MACRO_V04_EVIDENCE_FRED_SERIES = (
+    "MTSDS133FMS",
+    "GDP",
+    "SUBLPDCILSLGNQ",
+    "M2SL",
+)
+_VINTAGE_SERIES_IDS = tuple(
+    dict.fromkeys(
+        (
+            *(spec.series_id for spec in SEED_SOURCES),
+            *_OPEN_MACRO_V04_EVIDENCE_FRED_SERIES,
+        )
+    )
+)
+_VINTAGE_DATE_CHUNK_SIZE = 500
 
 
 class MacroVintageFetchError(RuntimeError):
@@ -85,15 +99,55 @@ def ensure_schema(conn) -> None:
 
 
 def fetch_vintages(client, api_key: str, series_id: str, bucket: TokenBucket) -> dict:
-    """ALFRED all-vintages fetch (output_type=2) for one series. Retries on 5xx/429;
-    request failures fail closed because these sources are mandatory provenance."""
+    """Fetch one series' complete ALFRED vintage matrix without truncation."""
+    dates_payload = _fred_get_json(
+        client,
+        bucket,
+        f"{FRED_BASE_URL}/series/vintagedates",
+        {"series_id": series_id, "api_key": api_key, "file_type": "json", "limit": 10_000},
+        series_id,
+    )
+    vintage_dates = dates_payload.get("vintage_dates")
+    if not isinstance(vintage_dates, list) or not all(
+        isinstance(value, str) for value in vintage_dates
+    ):
+        raise MacroVintageFetchError(f"ALFRED vintage-date response for {series_id} is malformed")
+
+    observations: dict[str, dict[str, Any]] = {}
+    for offset in range(0, len(vintage_dates), _VINTAGE_DATE_CHUNK_SIZE):
+        chunk = vintage_dates[offset : offset + _VINTAGE_DATE_CHUNK_SIZE]
+        payload = _fred_get_json(
+            client,
+            bucket,
+            f"{FRED_BASE_URL}/series/observations",
+            {
+                "series_id": series_id,
+                "api_key": api_key,
+                "file_type": "json",
+                "output_type": 2,
+                "vintage_dates": ",".join(chunk),
+            },
+            series_id,
+        )
+        rows = payload.get("observations")
+        if not isinstance(rows, list):
+            raise MacroVintageFetchError(f"ALFRED observation response for {series_id} is malformed")
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("date"), str):
+                raise MacroVintageFetchError(
+                    f"ALFRED observation response for {series_id} is malformed"
+                )
+            observations.setdefault(row["date"], {}).update(row)
+    return {"observations": [observations[key] for key in sorted(observations)]}
+
+
+def _fred_get_json(client, bucket: TokenBucket, url: str, params: dict, series_id: str) -> dict:
+    """Retry one bounded FRED request and fail closed on malformed responses."""
     import time
-    params = {"series_id": series_id, "api_key": api_key, "file_type": "json",
-              "output_type": 2, **_REALTIME_ALL}
     last_retry_status: int | None = None
     for attempt in range(3):
         bucket.acquire()
-        resp = client.get(f"{FRED_BASE_URL}/series/observations", params=params)
+        resp = client.get(url, params=params)
         if resp.status_code in (429, 503) or resp.status_code >= 500:
             last_retry_status = resp.status_code
             time.sleep(min(30.0, 2.0 * (2 ** attempt)))
@@ -104,7 +158,10 @@ def fetch_vintages(client, api_key: str, series_id: str, bucket: TokenBucket) ->
             resp.raise_for_status()
         except Exception as exc:
             raise MacroVintageFetchError(_alfred_error_message(resp, series_id)) from exc
-        return resp.json()
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            raise MacroVintageFetchError(f"ALFRED response for {series_id} is malformed")
+        return payload
     raise MacroVintageFetchError(
         f"ALFRED request for {series_id} failed after retry exhaustion"
         + (f" (last_status={last_retry_status})" if last_retry_status else "")
@@ -152,11 +209,15 @@ def upsert_vintages(conn, records: list[tuple]) -> int:
 
 
 def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> dict:
-    """Backfill + refresh all basket vintages. Idempotent (DO NOTHING). Re-runs
-    only add newly-published vintages. ``calc_date`` is accepted for the shared
-    runner contract and ignored; ``limit`` caps series count (smoke runs)."""
+    """Refresh every FRED vintage needed by the macro decision and its evidence.
+
+    Re-runs only add newly published vintages. ``calc_date`` is accepted for the
+    shared runner contract and ignored; ``limit`` caps series count (smoke runs).
+    """
     api_key = os.environ["FRED_API_KEY"]
-    specs = list(SEED_SOURCES)[: limit or len(SEED_SOURCES)]
+    series_ids = list(_VINTAGE_SERIES_IDS)
+    if limit is not None:
+        series_ids = series_ids[:limit]
     conn = connect(dsn)
     try:
         ensure_schema(conn)
@@ -167,10 +228,10 @@ def run(dsn: str, *, calc_date: str | None = None, limit: int | None = None) -> 
             bucket = TokenBucket()
             upserted = 0
             with httpx.Client(timeout=30.0) as client:
-                for spec in specs:
-                    payload = fetch_vintages(client, api_key, spec.series_id, bucket)
-                    rows = parse_alfred_vintages(spec.series_id, payload)
+                for series_id in series_ids:
+                    payload = fetch_vintages(client, api_key, series_id, bucket)
+                    rows = parse_alfred_vintages(series_id, payload)
                     upserted += upsert_vintages(conn, rows_to_records(rows, SOURCE_SPEC_VERSION))
-            return {"status": "ok", "series": len(specs), "upserted": upserted}
+            return {"status": "ok", "series": len(series_ids), "upserted": upserted}
     finally:
         conn.close()

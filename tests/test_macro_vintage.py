@@ -1,8 +1,11 @@
+import datetime as _dt
+import os as _os
 import pathlib
 
 import pytest
 
 from src import db
+from src.workers import macro_vintage as mv
 
 
 def test_ddl_file_exists_and_declares_table() -> None:
@@ -19,11 +22,6 @@ def test_lock_id_registered_and_unique() -> None:
     assert db.LOCK_MACRO_VINTAGE == 900_321
     ids = [v for k, v in vars(db).items() if k.startswith("LOCK_") and isinstance(v, int)]
     assert ids.count(900_321) == 1
-
-
-import datetime as _dt
-
-from src.workers import macro_vintage as mv
 
 
 def store_last_sql(store: dict) -> str:
@@ -128,6 +126,60 @@ def test_run_returns_lock_busy_sentinel(monkeypatch) -> None:
     assert out["status"] == "lock_busy"
 
 
+def test_run_fetches_every_fred_series_required_by_open_macro_v04_evidence(
+    monkeypatch,
+) -> None:
+    import contextlib
+    import httpx
+
+    expected_series = [
+        "INDPRO",
+        "PCEC96",
+        "PAYEMS",
+        "ACOGNO",
+        "CPILFESL",
+        "PPIFIS",
+        "AHETPI",
+        "MICH",
+        "MTSDS133FMS",
+        "GDP",
+        "SUBLPDCILSLGNQ",
+        "M2SL",
+    ]
+    fetched: list[str] = []
+
+    @contextlib.contextmanager
+    def _acquired(conn, lock_id):
+        yield True
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def _fetch(client, api_key, series_id, bucket):
+        fetched.append(series_id)
+        return {"observations": []}
+
+    monkeypatch.setenv("FRED_API_KEY", "test-key")
+    monkeypatch.setattr(mv, "connect", lambda dsn, **kwargs: _FakeConn({}))
+    monkeypatch.setattr(mv, "advisory_lock", _acquired)
+    monkeypatch.setattr(mv, "ensure_schema", lambda conn: None)
+    monkeypatch.setattr(mv, "fetch_vintages", _fetch)
+    monkeypatch.setattr(mv, "upsert_vintages", lambda conn, records: 0)
+    monkeypatch.setattr(httpx, "Client", _Client)
+
+    out = mv.run("postgresql://example")
+
+    assert out == {"status": "ok", "series": 12, "upserted": 0}
+    assert fetched == expected_series
+
+
 class _FakeBucket:
     def acquire(self) -> None:
         pass
@@ -149,9 +201,52 @@ class _FakeResponse:
 class _FakeClient:
     def __init__(self, responses: list[_FakeResponse]):
         self.responses = list(responses)
+        self.calls: list[tuple[str, dict]] = []
 
     def get(self, *args, **kwargs) -> _FakeResponse:
+        self.calls.append((args[0], kwargs["params"]))
         return self.responses.pop(0)
+
+
+def test_fetch_vintages_chunks_large_alfred_vintage_matrices(monkeypatch) -> None:
+    monkeypatch.setattr(mv, "_VINTAGE_DATE_CHUNK_SIZE", 2)
+    client = _FakeClient([
+        _FakeResponse(200, {
+            "count": 3,
+            "vintage_dates": ["2024-01-01", "2024-02-01", "2024-03-01"],
+        }),
+        _FakeResponse(200, {
+            "observations": [
+                {"date": "2023-12-01", "M2SL_20240101": "1", "M2SL_20240201": "2"},
+            ],
+        }),
+        _FakeResponse(200, {
+            "observations": [
+                {"date": "2023-12-01", "M2SL_20240301": "3"},
+                {"date": "2024-01-01", "M2SL_20240301": "4"},
+            ],
+        }),
+    ])
+
+    payload = mv.fetch_vintages(client, "key", "M2SL", _FakeBucket())
+
+    assert payload == {
+        "observations": [
+            {
+                "date": "2023-12-01",
+                "M2SL_20240101": "1",
+                "M2SL_20240201": "2",
+                "M2SL_20240301": "3",
+            },
+            {"date": "2024-01-01", "M2SL_20240301": "4"},
+        ],
+    }
+    assert client.calls[0][0].endswith("/series/vintagedates")
+    assert [call[1]["vintage_dates"] for call in client.calls[1:]] == [
+        "2024-01-01,2024-02-01",
+        "2024-03-01",
+    ]
+    assert all(call[1]["output_type"] == 2 for call in client.calls[1:])
 
 
 def test_fetch_vintages_fails_closed_on_alfred_400() -> None:
@@ -177,9 +272,6 @@ def test_fetch_vintages_fails_closed_after_retry_exhaustion(monkeypatch) -> None
         mv.fetch_vintages(client, "key", "PAYEMS", _FakeBucket())
 
 
-import os as _os
-
-
 @pytest.mark.skipif(not _os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY")
 def test_smoke_fetch_real_payems_has_vintages() -> None:
     import httpx
@@ -188,3 +280,16 @@ def test_smoke_fetch_real_payems_has_vintages() -> None:
     rows = mv.parse_alfred_vintages("PAYEMS", payload)
     assert len(rows) > 50  # decades of monthly revisions
     assert all(r["revision_number"] >= 0 for r in rows)
+
+
+@pytest.mark.skipif(not _os.getenv("FRED_API_KEY"), reason="needs FRED_API_KEY")
+def test_smoke_fetch_real_m2sl_large_history_has_vintages() -> None:
+    import httpx
+
+    with httpx.Client(timeout=120.0) as client:
+        payload = mv.fetch_vintages(
+            client, _os.environ["FRED_API_KEY"], "M2SL", mv.TokenBucket()
+        )
+    rows = mv.parse_alfred_vintages("M2SL", payload)
+    assert len(rows) > 1_000
+    assert all(row["revision_number"] >= 0 for row in rows)

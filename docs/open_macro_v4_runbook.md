@@ -35,14 +35,16 @@ The worker's DB role cannot `CREATE TABLE`. Use the **IAP tunnel as `postgres`**
 gcloud compute start-iap-tunnel timescale-sp 5432 \
   --local-host-port=localhost:5432 --zone southamerica-east1-a
 
-# terminal 2 — apply, in dependency order (allocations FK-references decisions)
+# terminal 2 — apply in dependency order
 psql "postgresql://postgres@localhost:5432/market" \
   -v ON_ERROR_STOP=1 \
   -f schemas/open_macro_v04_decisions.sql \
-  -f schemas/open_macro_v04_allocations.sql
+  -f schemas/open_macro_v04_allocations.sql \
+  -f schemas/open_macro_v04_decision_input_captures.sql \
+  -f schemas/open_macro_v04_pit_evidence.sql
 ```
 
-Both files are `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`, so
+The producer files are idempotent, so
 re-running is safe — **but** `IF NOT EXISTS` is a no-op on an existing table and
 repairs nothing. If a table already exists in a different shape, the worker's Gate 3
 will say exactly which column diverges; fix it with an explicit `ALTER`, do not
@@ -54,14 +56,19 @@ Confirm:
 SELECT table_name, count(*) AS columns
 FROM information_schema.columns
 WHERE table_schema = 'public'
-  AND table_name IN ('open_macro_v04_decisions', 'open_macro_v04_allocations')
+  AND table_name IN (
+      'open_macro_v04_decisions', 'open_macro_v04_allocations',
+      'open_macro_v04_decision_input_captures'
+  )
 GROUP BY 1 ORDER BY 1;
 -- expected: open_macro_v04_allocations | 21
+--           open_macro_v04_decision_input_captures | 9
 --           open_macro_v04_decisions   | 29
 ```
 
-Then grant the worker role what it needs (it writes these two tables and reads
-`macro_data`, `eod_prices`, `open_macro_v03_decision_chain`):
+The capture DDL grants `worker_writer` append-only capture access. If a distinct
+producer role is used, grant it write access to decisions/allocations and insert-only
+capture access; the evidence service needs only SELECT on captures.
 
 ```sql
 GRANT SELECT, INSERT, UPDATE ON open_macro_v04_decisions,  open_macro_v04_allocations
