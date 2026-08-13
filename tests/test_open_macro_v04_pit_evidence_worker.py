@@ -773,7 +773,7 @@ def test_registered_lock_is_unique_and_dispatcher_names_the_evidence_worker() ->
         for name, value in vars(db).items()
         if name.startswith("LOCK_") and isinstance(value, int)
     ]
-    assert db.LOCK_OPEN_MACRO_V04_PIT_EVIDENCE == 900_221
+    assert db.LOCK_OPEN_MACRO_V04_PIT_EVIDENCE == 900_222
     assert lock_ids.count(db.LOCK_OPEN_MACRO_V04_PIT_EVIDENCE) == 1
     runner = Path("src/run_worker.py").read_text(encoding="utf-8")
     assert "|open_macro_v04_pit_evidence" in runner
